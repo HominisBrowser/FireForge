@@ -1,5 +1,11 @@
 # FireForge
 
+[![npm version](https://img.shields.io/npm/v/@hominis/fireforge)](https://www.npmjs.com/package/@hominis/fireforge)
+[![license](https://img.shields.io/npm/l/@hominis/fireforge)](LICENSE.md)
+[![node](https://img.shields.io/node/v/@hominis/fireforge)](package.json)
+[![types](https://img.shields.io/npm/types/@hominis/fireforge)](https://www.npmjs.com/package/@hominis/fireforge)
+[![npm downloads](https://img.shields.io/npm/dm/@hominis/fireforge)](https://www.npmjs.com/package/@hominis/fireforge)
+
 **Build and maintain your own Firefox-based browser with a patch-first workflow.**
 
 FireForge gives you a toolkit for forking Firefox: download a specific ESR release, manage your customisations as an ordered stack of contextual patches, survive version upgrades with semi-automated rebase, wire custom code into Mozilla's startup paths, and build the result. It also ships **Furnace**, a component system for creating and overriding Firefox custom elements.
@@ -13,7 +19,7 @@ Inspired by [fern.js](https://github.com/nicktrosper/user-agent-desktop?tab=read
 ```bash
 mkdir mybrowser && cd mybrowser
 npm init -y
-npm install --save-dev fireforge
+npm install --save-dev @hominis/fireforge
 
 npx fireforge setup              # interactive project init
 npx fireforge download            # fetch Firefox source (~1 GB)

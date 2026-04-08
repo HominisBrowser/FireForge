@@ -1,0 +1,24 @@
+# Common mozconfig for ${name}
+# This file is merged with platform-specific configs
+
+# Application identity
+ac_add_options --with-app-name=${binaryName}
+ac_add_options --with-branding=browser/branding/${binaryName}
+export MOZ_APP_BASENAME=${binaryName}
+
+# Build options
+ac_add_options --enable-application=browser
+ac_add_options --enable-bootstrap
+
+# Optimization (override in platform configs as needed)
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+
+# Disable crash reporting
+ac_add_options --disable-crashreporter
+
+# Note: To disable telemetry, set MOZ_TELEMETRY_REPORTING= in your build environment
+# or configure runtime prefs in user.js
+
+# Disable features we don't need
+ac_add_options --disable-updater

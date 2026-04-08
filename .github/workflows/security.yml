@@ -1,0 +1,88 @@
+name: Security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Detect code scanning availability
+        id: code_scanning
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          status="$({
+            curl -sS \
+              -o /dev/null \
+              -w "%{http_code}" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPOSITORY}/code-scanning/alerts?per_page=1"
+          })"
+
+          case "$status" in
+            200)
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              ;;
+            403|404)
+              echo "enabled=false" >> "$GITHUB_OUTPUT"
+              echo "CodeQL upload is unavailable for ${REPOSITORY} (GitHub API returned HTTP ${status})."
+              ;;
+            *)
+              echo "Unexpected GitHub API response while checking code scanning availability: HTTP ${status}." >&2
+              exit 1
+              ;;
+          esac
+
+      - if: steps.code_scanning.outputs.enabled == 'true'
+        uses: actions/checkout@v6.0.2
+      - if: steps.code_scanning.outputs.enabled == 'true'
+        uses: actions/setup-node@v6.3.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - if: steps.code_scanning.outputs.enabled == 'true'
+        run: npm ci
+      - if: steps.code_scanning.outputs.enabled == 'true'
+        uses: github/codeql-action/init@v4.35.1
+        with:
+          languages: javascript-typescript
+      - if: steps.code_scanning.outputs.enabled == 'true'
+        run: npm run build
+      - if: steps.code_scanning.outputs.enabled == 'true'
+        uses: github/codeql-action/analyze@v4.35.1
+      - if: steps.code_scanning.outputs.enabled != 'true'
+        run: echo 'Skipping CodeQL because this repository is not configured to accept code scanning uploads from this workflow.'
+
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-node@v6.3.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm audit --audit-level=high

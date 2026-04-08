@@ -1,0 +1,10 @@
+# macOS-specific mozconfig for ${name}
+
+# Note: MOZ_MACBUNDLE_ID must be set via branding/configure.sh, not mozconfig.
+# It is automatically set when using --with-branding.
+
+# Use system toolchain
+ac_add_options --with-macos-sdk=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+
+# Code signing (disabled for development)
+# ac_add_options --enable-apple-silicon (uncomment for ARM builds)

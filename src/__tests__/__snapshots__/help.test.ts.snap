@@ -1,0 +1,47 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`CLI help output > documents kebab-case setup flags and choice-limited categories 1`] = `
+"Usage: fireforge [options] [command]
+
+A build tool for customizing Firefox
+
+Options:
+  -V, --version                     output the version number
+  -v, --verbose                     Enable debug output
+  -h, --help                        display help for command
+
+Commands:
+  setup [options]                   Initialize a new FireForge project
+  download [options]                Download Firefox source
+  bootstrap                         Install Firefox build dependencies
+  import [options]                  Apply patches from the patches directory
+  resolve                           Update a broken patch with manual fixes and
+                                    continue
+  build [options]                   Build the browser
+  run                               Launch the built browser
+  status [options]                  Show modified files in engine/
+  reset [options]                   Reset engine/ to clean state
+  discard [options] <file>          Discard changes to a specific file (deletes
+                                    untracked files)
+  export [options] <paths...>       Export new changes as a patch (use re-export
+                                    to update existing patches)
+  export-all [options]              Export all changes as a patch
+  re-export [options] [patches...]  Re-export existing patches from current
+                                    engine state
+  rebase [options]                  Semi-automated ESR version upgrade — apply
+                                    patches with fuzz and re-export
+  package [options]                 Create distribution package
+  watch                             Watch for changes and auto-rebuild
+  test [options] [paths...]         Run tests via mach test
+  config [options] <key> [value]    Get or set configuration values
+  doctor [options]                  Diagnose project issues
+  register [options] <path>         Register a file in the appropriate build
+                                    manifest
+  wire [options] <name>             Wire a chrome subscript into the browser
+  token                             Design token management
+  lint [paths...]                   Lint engine changes against patch quality
+                                    rules
+  furnace                           Component management (Furnace)
+  help [command]                    display help for command
+"
+`;

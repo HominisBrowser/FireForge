@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: EUPL-1.2
+export const PUBLIC_API_EXPORTS = [
+  'validateConfig',
+  'loadConfig',
+  'validateFurnaceConfig',
+  'loadFurnaceConfig',
+  'ensureFurnaceConfig',
+  'loadFurnaceState',
+  'saveFurnaceState',
+  'getTokensCssPath',
+  'validateTokenAdd',
+  'addToken',
+  'validateComponent',
+  'validateAllComponents',
+  'applyAllComponents',
+  'ExitCode',
+  'FireForgeError',
+  'GeneralError',
+  'InvalidArgumentError',
+  'CancellationError',
+  'ResolutionError',
+  'CommandError',
+].sort();

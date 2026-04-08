@@ -1,0 +1,308 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`userMessage snapshots > AmbiguousBuildArtifactsError 1`] = `
+"Build Error: Multiple build artifact directories were found.
+
+Candidates: obj-x86_64, obj-aarch64
+
+FireForge will not guess which build output to use.
+
+To fix this:
+  1. Remove stale obj-* directories you no longer need
+  2. Keep only the active build output directory
+  3. Run the command again"
+`;
+
+exports[`userMessage snapshots > BootstrapError 1`] = `
+"Build Error: Bootstrap failed.
+
+The Firefox build dependencies could not be installed. This often happens if the Python interpreter selected for mach is missing or misconfigured.
+
+To fix this:
+  1. Check the error output above
+  2. Ensure you have sufficient permissions
+  3. Try running bootstrap manually:
+     cd engine && python3 mach bootstrap"
+`;
+
+exports[`userMessage snapshots > BrandingError 1`] = `
+"Branding Error: template not found
+
+Branding is required to set MOZ_APP_VENDOR, MOZ_MACBUNDLE_ID, and other Firefox identity values."
+`;
+
+exports[`userMessage snapshots > BuildError with command 1`] = `
+"Build Error: compilation failed
+
+Command: mach build
+
+To fix this:
+  1. Check the build output above for specific errors
+  2. Ensure all dependencies are installed with "fireforge bootstrap"
+  3. Try a clean build by deleting obj-* directories"
+`;
+
+exports[`userMessage snapshots > BuildError without command 1`] = `
+"Build Error: unknown build failure
+
+To fix this:
+  1. Check the build output above for specific errors
+  2. Ensure all dependencies are installed with "fireforge bootstrap"
+  3. Try a clean build by deleting obj-* directories"
+`;
+
+exports[`userMessage snapshots > CancellationError 1`] = `"cancelled"`;
+
+exports[`userMessage snapshots > ConfigError with field 1`] = `
+"Configuration Error: invalid value
+
+Field: firefox.version
+
+To fix this:
+  1. Check your fireforge.json file for errors
+  2. Run "fireforge setup" to create a new configuration
+  3. See the documentation for the expected format"
+`;
+
+exports[`userMessage snapshots > ConfigNotFoundError 1`] = `
+"Configuration Error: Configuration file not found: /project/fireforge.json
+
+This directory does not appear to be a FireForge project.
+
+To fix this:
+  1. Navigate to your project root directory
+  2. Run "fireforge setup" to initialize a new project"
+`;
+
+exports[`userMessage snapshots > DirtyRepositoryError 1`] = `
+"Git Error: The Firefox source has uncommitted changes.
+
+To fix this:
+  1. Export your changes with "fireforge export"
+  2. Use "fireforge reset" to restore clean state
+  3. Then run "fireforge import" to reapply patches"
+`;
+
+exports[`userMessage snapshots > DownloadError with URL 1`] = `
+"Download Error: connection timed out
+
+URL: https://archive.mozilla.org/test
+
+To fix this:
+  1. Check your internet connection
+  2. Verify the Firefox version in fireforge.json is valid
+  3. Try again with "fireforge download --force""
+`;
+
+exports[`userMessage snapshots > DownloadError without URL 1`] = `
+"Download Error: network error
+
+To fix this:
+  1. Check your internet connection
+  2. Verify the Firefox version in fireforge.json is valid
+  3. Try again with "fireforge download --force""
+`;
+
+exports[`userMessage snapshots > EngineExistsError 1`] = `
+"Download Error: Firefox source already exists.
+
+Path: /project/engine
+
+To fix this:
+  1. Use "fireforge download --force" to re-download
+  2. Or manually delete the engine/ directory"
+`;
+
+exports[`userMessage snapshots > ExtractionError 1`] = `
+"Extraction Error: Failed to extract Firefox source archive.
+
+Archive: /tmp/firefox-140.0.tar.xz
+
+To fix this:
+  1. Delete the corrupted archive and try again
+  2. Ensure you have enough disk space
+  3. Verify tar/xz tools are installed"
+`;
+
+exports[`userMessage snapshots > FurnaceError with component 1`] = `
+"Furnace Error (my-button): registration failed
+
+Run "fireforge furnace validate" to diagnose issues."
+`;
+
+exports[`userMessage snapshots > FurnaceError without component 1`] = `
+"Furnace Error: config invalid
+
+Run "fireforge furnace validate" to diagnose issues."
+`;
+
+exports[`userMessage snapshots > GeneralError 1`] = `"unexpected failure"`;
+
+exports[`userMessage snapshots > GitError with command 1`] = `
+"Git Error: checkout failed
+
+Command: git checkout main
+
+To fix this:
+  1. Ensure git is installed and in your PATH
+  2. Check if the repository is in a valid state
+  3. Try running "fireforge reset" to start fresh"
+`;
+
+exports[`userMessage snapshots > GitError without command 1`] = `
+"Git Error: unknown failure
+
+To fix this:
+  1. Ensure git is installed and in your PATH
+  2. Check if the repository is in a valid state
+  3. Try running "fireforge reset" to start fresh"
+`;
+
+exports[`userMessage snapshots > GitIndexLockError with age 1`] = `
+"Git Error: Firefox source indexing is blocked by an existing git index lock.
+
+Lock file: /engine/.git/index.lock
+Approximate lock age: 3 minute(s)
+
+This usually means a previous git or FireForge process was interrupted while indexing the engine tree.
+
+To fix this:
+  1. Make sure no other git process is still running inside engine/
+  2. Remove "/engine/.git/index.lock" if it is stale
+  3. Re-run "fireforge download --force""
+`;
+
+exports[`userMessage snapshots > GitIndexLockError without age 1`] = `
+"Git Error: Firefox source indexing is blocked by an existing git index lock.
+
+Lock file: /engine/.git/index.lock
+This usually means a previous git or FireForge process was interrupted while indexing the engine tree.
+
+To fix this:
+  1. Make sure no other git process is still running inside engine/
+  2. Remove "/engine/.git/index.lock" if it is stale
+  3. Re-run "fireforge download --force""
+`;
+
+exports[`userMessage snapshots > GitNotFoundError 1`] = `
+"Git Error: Git is not installed or not found in PATH.
+
+To fix this:
+  1. Install git from https://git-scm.com/
+  2. Ensure git is in your system PATH
+  3. Restart your terminal and try again"
+`;
+
+exports[`userMessage snapshots > InvalidArgumentError with argument 1`] = `
+"Invalid Argument: must be a number
+
+Argument: --jobs"
+`;
+
+exports[`userMessage snapshots > InvalidArgumentError without argument 1`] = `"Invalid Argument: bad value"`;
+
+exports[`userMessage snapshots > InvalidFieldError 1`] = `
+"Configuration Error: Field "build.jobs" has invalid value. Expected number, got string
+
+Field: build.jobs
+
+To fix this:
+  1. Check your fireforge.json file for errors
+  2. Run "fireforge setup" to create a new configuration
+  3. See the documentation for the expected format"
+`;
+
+exports[`userMessage snapshots > MachNotFoundError 1`] = `
+"Build Error: Firefox build system (mach) not found.
+
+Expected location: /project/engine/mach
+
+To fix this:
+  1. Run "fireforge download" to download Firefox source
+  2. Ensure the engine/ directory contains the Firefox source"
+`;
+
+exports[`userMessage snapshots > MissingFieldError 1`] = `
+"Configuration Error: Required field "vendor" is missing from fireforge.json
+
+Field: vendor
+
+To fix this:
+  1. Check your fireforge.json file for errors
+  2. Run "fireforge setup" to create a new configuration
+  3. See the documentation for the expected format"
+`;
+
+exports[`userMessage snapshots > MozconfigError 1`] = `
+"Build Error: missing template
+
+To fix this:
+  1. Check that configs/ directory exists
+  2. Ensure platform-specific mozconfig exists
+  3. Run "fireforge setup" to regenerate configs"
+`;
+
+exports[`userMessage snapshots > PartialEngineExistsError 1`] = `
+"Download Error: Firefox source exists, but the baseline git repository was not fully initialized.
+
+Path: /project/engine
+
+To fix this:
+  1. Re-run "fireforge download --force" to recreate the baseline repository
+  2. Or manually delete the engine/ directory before downloading again"
+`;
+
+exports[`userMessage snapshots > PatchApplyError 1`] = `
+"Git Error: Failed to apply patch.
+
+Patch: /patches/001-toolbar.patch
+
+This usually means the patch conflicts with existing changes.
+
+To fix this:
+  1. Check if the Firefox version matches the patch
+  2. Use "fireforge reset" to start with clean source
+  3. Update the patch to match the current Firefox version"
+`;
+
+exports[`userMessage snapshots > PatchError with patch name 1`] = `
+"Patch Error: apply failed
+
+Patch: 001-toolbar.patch
+
+To fix this:
+  1. Check if the patch is compatible with the Firefox version
+  2. Use "fireforge reset" to start with clean source
+  3. Update the patch for the current Firefox version"
+`;
+
+exports[`userMessage snapshots > PatchError without patch name 1`] = `
+"Patch Error: generic failure
+
+To fix this:
+  1. Check if the patch is compatible with the Firefox version
+  2. Use "fireforge reset" to start with clean source
+  3. Update the patch for the current Firefox version"
+`;
+
+exports[`userMessage snapshots > PythonNotFoundError 1`] = `
+"Build Error: Python 3.8-3.12 is required but not found.
+
+Firefox mach declares the supported Python range in engine/mach, and FireForge could not find any interpreter in that range.
+
+To fix this:
+  1. Install a supported Python version (3.8-3.12) from https://python.org/
+  2. Ensure that interpreter is in your PATH (for example as python3.12 or python3)
+  3. Re-run "fireforge doctor" to confirm FireForge can see it"
+`;
+
+exports[`userMessage snapshots > ResolutionError 1`] = `"conflict unresolved"`;
+
+exports[`userMessage snapshots > VersionNotFoundError 1`] = `
+"Download Error: Firefox version "999.0" was not found.
+
+To fix this:
+  1. Check the version number in fireforge.json
+  2. Visit https://archive.mozilla.org/pub/firefox/releases/ to see available versions
+  3. Update firefox.version in fireforge.json to a valid version"
+`;

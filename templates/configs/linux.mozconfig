@@ -1,0 +1,12 @@
+# Linux-specific mozconfig for ${name}
+
+# Use system libraries where available
+ac_add_options --with-system-zlib
+ac_add_options --with-system-jpeg
+
+# PGO disabled by default (can enable for release builds)
+# ac_add_options --enable-lto=cross
+# ac_add_options --enable-profile-generate
+
+# Wayland support
+ac_add_options --enable-default-toolkit=cairo-gtk3-wayland

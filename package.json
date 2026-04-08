@@ -1,0 +1,106 @@
+{
+  "name": "fireforge",
+  "version": "0.9.0",
+  "description": "FireForge — a build tool for customizing Firefox",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json",
+    "./*": null
+  },
+  "bin": {
+    "fireforge": "./dist/bin/fireforge.js"
+  },
+  "scripts": {
+    "fireforge": "tsx bin/fireforge.ts",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "clean": "node ./scripts/clean.mjs",
+    "lint": "eslint src/ bin/ scripts/ eslint.config.js vitest.config.ts",
+    "lint:ci": "eslint src/ bin/ scripts/ eslint.config.js vitest.config.ts --max-warnings 0",
+    "lint:fix": "eslint src/ bin/ scripts/ eslint.config.js vitest.config.ts --fix",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:package": "npm run pack:verify",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage && node ./scripts/check-coverage-thresholds.mjs",
+    "test:firefox-full": "node ./scripts/run-full-firefox-integration.mjs",
+    "pack:verify": "vitest run src/__tests__/wrapper-smoke.test.ts",
+    "pack:dry-run": "npm pack --dry-run --json --silent",
+    "format": "prettier --write --ignore-unknown \"src/**/*.ts\" \"bin/**/*.ts\" \"scripts/**/*.mjs\" \"package.json\" \"eslint.config.js\" \"vitest.config.ts\" \"tsconfig.json\" \"tsconfig.build.json\" \".lintstagedrc.json\" \".prettierignore\" \".prettierrc\" \".gitignore\" \"README.md\" \"CHANGELOG.md\"",
+    "format:check": "prettier --check --ignore-unknown \"src/**/*.ts\" \"bin/**/*.ts\" \"scripts/**/*.mjs\" \"package.json\" \"eslint.config.js\" \"vitest.config.ts\" \"tsconfig.json\" \"tsconfig.build.json\" \".lintstagedrc.json\" \".prettierignore\" \".prettierrc\" \".gitignore\" \"README.md\" \"CHANGELOG.md\"",
+    "prepare": "node -e \"import('./scripts/prepare.mjs').catch((error) => { if (error && typeof error === 'object' && 'code' in error && error.code === 'ERR_MODULE_NOT_FOUND') process.exit(0); throw error; })\"",
+    "prepack": "npm run build",
+    "release:check": "npm run format:check && npm run lint:ci && npm run typecheck && npm run test:coverage && npm run pack:verify && npm run pack:dry-run",
+    "prepublishOnly": "npm run release:check"
+  },
+  "files": [
+    "dist/",
+    "!dist/**/*.test.*",
+    "!dist/**/__tests__/",
+    "!dist/**/test-utils/",
+    "!dist/**/*.js.map",
+    "templates/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE.md"
+  ],
+  "dependencies": {
+    "@clack/prompts": "^1.2.0",
+    "acorn": "^8.14.0",
+    "commander": "^14.0.0",
+    "estree-walker": "^3.0.3",
+    "magic-string": "^0.30.17",
+    "picocolors": "^1.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@types/estree": "^1.0.8",
+    "@types/node": "^25.5.2",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^4.1.2",
+    "eslint": "^10.0.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jsdoc": "^62.9.0",
+    "eslint-plugin-simple-import-sort": "^13.0.0",
+    "fast-check": "^4.6.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.7.4",
+    "tsx": "^4.7.0",
+    "typescript": "~6.0.0",
+    "typescript-eslint": "^8.0.0",
+    "vite": "^8.0.7",
+    "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "npm@11.12.1",
+  "license": "EUPL-1.2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/topfi/fireforge.git"
+  },
+  "homepage": "https://github.com/topfi/fireforge",
+  "bugs": {
+    "url": "https://github.com/topfi/fireforge/issues"
+  },
+  "keywords": [
+    "fireforge",
+    "firefox",
+    "browser",
+    "build-tool",
+    "customization",
+    "patch-workflow"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

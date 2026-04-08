@@ -240,11 +240,11 @@ Furnace manages Firefox custom elements (`MozLitElement`). Override stock compon
 <details>
 <summary>Component types</summary>
 
-| Type         | Description                                                      | Local files                    |
-| ------------ | ---------------------------------------------------------------- | ------------------------------ |
-| **Stock**    | Engine components tracked for Storybook preview                  | None                           |
+| Type         | Description                                                       | Local files                    |
+| ------------ | ----------------------------------------------------------------- | ------------------------------ |
+| **Stock**    | Engine components tracked for Storybook preview                   | None                           |
 | **Override** | Forked copies: `css-only` (restyle) or `full` (behaviour + style) | `components/overrides/<name>/` |
-| **Custom**   | New elements that do not exist in Firefox                        | `components/custom/<name>/`    |
+| **Custom**   | New elements that do not exist in Firefox                         | `components/custom/<name>/`    |
 
 </details>
 

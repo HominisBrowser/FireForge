@@ -85,11 +85,11 @@
   "license": "EUPL-1.2",
   "repository": {
     "type": "git",
-    "url": "https://github.com/topfi/fireforge.git"
+    "url": "https://github.com/HominisBrowser/FireForge.git"
   },
-  "homepage": "https://github.com/topfi/fireforge",
+  "homepage": "https://github.com/HominisBrowser/FireForge",
   "bugs": {
-    "url": "https://github.com/topfi/fireforge/issues"
+    "url": "https://github.com/HominisBrowser/FireForge/issues"
   },
   "keywords": [
     "fireforge",

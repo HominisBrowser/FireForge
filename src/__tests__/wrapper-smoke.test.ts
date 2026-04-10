@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileOptions } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,8 +11,16 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { PUBLIC_API_EXPORTS } from '../test-utils/public-api.js';
 
 const execFileAsync = promisify(execFile);
+type StringExecFileOptions = Omit<ExecFileOptions, 'encoding'> & { encoding?: BufferEncoding };
+type StringExecFileResult = { stderr: string; stdout: string };
+
 const repoRoot = process.cwd();
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const npmCliPath = process.env['npm_execpath'];
+const npmInvocation =
+  npmCliPath && /(?:^|[/\\])npm-cli\.js$/i.test(npmCliPath)
+    ? { args: [npmCliPath], file: process.execPath }
+    : { args: [], file: npmCmd };
 const packageManifest = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8')) as {
   name: string;
   version: string;
@@ -32,7 +40,7 @@ afterAll(async () => {
 
 describe('installed package smoke test', () => {
   it('npm pack --dry-run exposes the intended package surface', async () => {
-    const { stdout } = await execFileAsync(npmCmd, ['pack', '--dry-run', '--json', '--silent'], {
+    const { stdout } = await execNpm(['pack', '--dry-run', '--json', '--silent'], {
       cwd: repoRoot,
     });
     const [firstPackResult] = parsePackResult(stdout);
@@ -61,7 +69,7 @@ describe('installed package smoke test', () => {
 
   it('npm pack produces a working installable tarball and installed CLI entrypoint', async () => {
     // Pack the repo — prepack will run tsc
-    const { stdout: packOut } = await execFileAsync(npmCmd, ['pack', '--json', '--silent'], {
+    const { stdout: packOut } = await execNpm(['pack', '--json', '--silent'], {
       cwd: repoRoot,
     });
     const [firstPackResult] = parsePackResult(packOut);
@@ -78,8 +86,8 @@ describe('installed package smoke test', () => {
     // Create a temp project
     const tempDir = await mkdtemp(join(tmpdir(), 'fireforge-smoke-'));
     cleanupPaths.push(tempDir);
-    await execFileAsync(npmCmd, ['init', '-y'], { cwd: tempDir });
-    await execFileAsync(npmCmd, ['install', tgzPath], { cwd: tempDir });
+    await execNpm(['init', '-y'], { cwd: tempDir });
+    await execNpm(['install', tgzPath], { cwd: tempDir });
 
     const installedPkgRoot = join(tempDir, 'node_modules', ...installedPackagePathSegments);
     const shippedFiles = await listRelativeFiles(installedPkgRoot);
@@ -140,9 +148,13 @@ describe('installed package smoke test', () => {
       '.bin',
       process.platform === 'win32' ? 'fireforge.cmd' : 'fireforge'
     );
-    const { stdout: installedCliVersion } = await execFileAsync(installedCliPath, ['--version'], {
-      cwd: tempDir,
-    });
+    const { stdout: installedCliVersion } = await execFilePortable(
+      installedCliPath,
+      ['--version'],
+      {
+        cwd: tempDir,
+      }
+    );
     expect(installedCliVersion.trim()).toBe(packageVersion);
 
     const { stdout: exportedKeysOutput } = await execFileAsync(
@@ -217,7 +229,7 @@ describe('installed package smoke test', () => {
   }, 120_000);
 
   it('can pack from a publication staging directory without a git checkout', async () => {
-    await execFileAsync(npmCmd, ['run', 'build'], { cwd: repoRoot });
+    await execNpm(['run', 'build'], { cwd: repoRoot });
 
     const stageDir = await mkdtemp(join(tmpdir(), 'fireforge-pack-stage-'));
     cleanupPaths.push(stageDir);
@@ -229,11 +241,9 @@ describe('installed package smoke test', () => {
     await cp(join(repoRoot, 'CHANGELOG.md'), join(stageDir, 'CHANGELOG.md'));
     await cp(join(repoRoot, 'LICENSE.md'), join(stageDir, 'LICENSE.md'));
 
-    const { stdout } = await execFileAsync(
-      npmCmd,
-      ['pack', '--json', '--ignore-scripts', '--silent'],
-      { cwd: stageDir }
-    );
+    const { stdout } = await execNpm(['pack', '--json', '--ignore-scripts', '--silent'], {
+      cwd: stageDir,
+    });
     const [firstPackResult] = parsePackResult(stdout);
     if (!firstPackResult) {
       throw new Error('Unexpected empty npm pack --json output');
@@ -247,6 +257,25 @@ describe('installed package smoke test', () => {
     expect(filename).toBe(`${packageTarballPrefix}-${packageVersion}.tgz`);
   }, 120_000);
 });
+
+function execNpm(
+  args: string[],
+  options: StringExecFileOptions = {}
+): Promise<StringExecFileResult> {
+  return execFilePortable(npmInvocation.file, [...npmInvocation.args, ...args], options);
+}
+
+function execFilePortable(
+  file: string,
+  args: string[],
+  options: StringExecFileOptions = {}
+): Promise<StringExecFileResult> {
+  return execFileAsync(file, args, {
+    encoding: 'utf8',
+    ...options,
+    shell: options.shell ?? (process.platform === 'win32' && /\.(?:bat|cmd)$/i.test(file)),
+  }) as Promise<StringExecFileResult>;
+}
 
 function parsePackResult(stdout: string): Array<{
   filename?: string;

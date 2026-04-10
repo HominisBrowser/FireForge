@@ -24,6 +24,13 @@ export function hasAriaRole(content: string): boolean {
   );
 }
 
+/** Detects generic elements being used as custom interactive controls. */
+export function hasGenericInteractiveElement(content: string): boolean {
+  return /<(div|span)\b(?=[^>]*(?:@click|@key(?:down|press|up)|\btabindex\s*=|\.onclick\s*=))/i.test(
+    content
+  );
+}
+
 /** Detects Lit-style template click handlers. */
 export function hasTemplateClickHandler(content: string): boolean {
   return /@click\s*=\s*\$\{/.test(content);

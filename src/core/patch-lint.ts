@@ -94,19 +94,22 @@ function extractAddedLinesPerFile(diffContent: string): Map<string, string[]> {
 }
 
 // ---------------------------------------------------------------------------
-// CSS lint (existing — now with severity)
+// CSS lint
 // ---------------------------------------------------------------------------
 
 /**
- * Lints patched CSS files for raw color values and non-tokenized custom properties.
+ * Lints patched CSS files for introduced raw color values and non-tokenized
+ * custom properties.
  *
  * @param repoDir - Absolute path to the engine (repository) directory
  * @param affectedFiles - File paths (relative to repoDir) affected by the patch
+ * @param diffContent - Optional unified diff used to scope raw color checks to introduced lines
  * @returns Array of lint issues found
  */
 export async function lintPatchedCss(
   repoDir: string,
-  affectedFiles: string[]
+  affectedFiles: string[],
+  diffContent?: string
 ): Promise<PatchLintIssue[]> {
   const cssFiles = affectedFiles.filter((f) => f.endsWith('.css'));
   if (cssFiles.length === 0) return [];
@@ -128,6 +131,7 @@ export async function lintPatchedCss(
   }
 
   const issues: PatchLintIssue[] = [];
+  const addedLinesByFile = diffContent ? extractAddedLinesPerFile(diffContent) : undefined;
 
   for (const file of cssFiles) {
     const filePath = join(repoDir, file);
@@ -136,15 +140,18 @@ export async function lintPatchedCss(
     const rawCss = await readText(filePath);
     // Strip block comments before scanning
     const cssContent = rawCss.replace(/\/\*[\s\S]*?\*\//g, '');
+    const rawColorContent = addedLinesByFile
+      ? (addedLinesByFile.get(file) ?? []).join('\n').replace(/\/\*[\s\S]*?\*\//g, '')
+      : cssContent;
 
-    // Check for raw color values
-    if (hasRawCssColors(cssContent)) {
+    // Check only introduced raw color values when diff context is available.
+    if (hasRawCssColors(rawColorContent)) {
       issues.push({
         file,
         check: 'raw-color-value',
         message:
           'Raw color value found. Use CSS custom properties (var(--...)) for design token consistency.',
-        severity: 'warning',
+        severity: 'error',
       });
     }
 
@@ -460,7 +467,7 @@ export async function lintExportedPatch(
   const lineCount = diffContent.split('\n').length;
 
   const [cssIssues, headerIssues, jsIssues, modifiedHeaderIssues] = await Promise.all([
-    lintPatchedCss(repoDir, affectedFiles),
+    lintPatchedCss(repoDir, affectedFiles, diffContent),
     lintNewFileHeaders(repoDir, [...newFiles], config),
     lintPatchedJs(repoDir, affectedFiles, newFiles, config),
     lintModifiedFileHeaders(repoDir, affectedFiles, newFiles),

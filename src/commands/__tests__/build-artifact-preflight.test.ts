@@ -132,6 +132,13 @@ describe('build artifact preflight', () => {
     );
   });
 
+  it('buildCommand fails instead of guessing when build artifacts are ambiguous', async () => {
+    await expect(buildCommand('/project', { ui: true })).rejects.toThrow(
+      /Multiple build artifact directories/
+    );
+    expect(buildUI).not.toHaveBeenCalled();
+  });
+
   it('packageCommand rejects copied build artifacts that point at another workspace', async () => {
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(

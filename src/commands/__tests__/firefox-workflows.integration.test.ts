@@ -552,7 +552,7 @@ describe('Firefox workflow fixtures', () => {
   });
 
   it('imports two overlapping patches modifying the same file in sequence', async () => {
-    // This tests the scenario from real Hominis: patches 3 and 17 both touch moz.build.
+    // This tests a real-world scenario where two patches both touch moz.build.
     // Patch 1 adds to DIRS, patch 2 (superseding patch 1's entry for that file) adds to EXTRA_JS_MODULES.
     // After import, both changes should be present.
     const engineDir = join(projectRoot, 'engine');

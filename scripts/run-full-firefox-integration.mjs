@@ -65,7 +65,7 @@ const setupManagedFiles = [
   'configs/common.mozconfig',
   'configs/linux.mozconfig',
   'configs/darwin.mozconfig',
-  'configs/windows.mozconfig',
+  'configs/win32.mozconfig',
   '.fireforge/state.json',
   'patches/patches.json',
 ];

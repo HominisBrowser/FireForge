@@ -1,4 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    rm: vi.fn(actual.rm),
+  };
+});
+
 import { access, mkdir, mkdtemp, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -92,5 +100,23 @@ describe('file-lock', () => {
         onTimeoutMessage: 'lock still held',
       })
     ).rejects.toThrow('lock still held');
+  });
+
+  it('surfaces stale-lock cleanup failures that are not disappearance races', async () => {
+    const tempDir = await makeTempDir('fireforge-stale-lock-error-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+    const staleTime = new Date(Date.now() - 1_000);
+    await utimes(lockPath, staleTime, staleTime);
+
+    vi.mocked(rm).mockRejectedValueOnce(
+      Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    );
+
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+        staleMs: 10,
+      })
+    ).rejects.toThrow('permission denied');
   });
 });

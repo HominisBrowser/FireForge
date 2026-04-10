@@ -107,12 +107,51 @@ describe('validateAccessibility', () => {
     expect(roleIssues).toHaveLength(0);
   });
 
-  it('warns when no role is set at all', async () => {
+  it('does not warn when native semantic markup provides accessibility semantics', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`
       class MyComponent extends MozLitElement {
         render() {
-          return html\`<div>no role here</div>\`;
+          return html\`
+            <nav data-l10n-id="primary-navigation">
+              <a href="about:preferences" data-l10n-id="settings-link"></a>
+              <button data-l10n-id="open-settings"></button>
+            </nav>
+          \`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    const roleIssues = issues.filter((i) => i.check === 'no-aria-role');
+    expect(roleIssues).toHaveLength(0);
+  });
+
+  it('does not warn for named section semantics without explicit ARIA role', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`
+            <section aria-label="Downloads">
+              <button data-l10n-id="open-downloads"></button>
+            </section>
+          \`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    const roleIssues = issues.filter((i) => i.check === 'no-aria-role');
+    expect(roleIssues).toHaveLength(0);
+  });
+
+  it('warns when generic clickable markup has no role', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<div @click=\${() => doSomething()} tabindex="0">Open</div>\`;
         }
       }
     `);

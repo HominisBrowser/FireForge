@@ -16,7 +16,7 @@ import {
   resumeRepository,
   stageAllFiles,
 } from '../git.js';
-import { parsePorcelainStatus } from '../git-status.js';
+import { getDirtyFiles, getWorkingTreeStatus, parsePorcelainStatus } from '../git-status.js';
 
 describe('parsePorcelainStatus', () => {
   it('returns empty array for empty output', () => {
@@ -135,6 +135,28 @@ describe('resetChanges', () => {
 
       await expect(git(repoDir, ['status', '--short'])).resolves.toBe('');
       await expect(git(repoDir, ['diff', 'HEAD', '--name-only'])).resolves.toBe('');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('git status helpers', () => {
+  it('throws when git status is requested outside a repository', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-status-error-'));
+
+    try {
+      await expect(getWorkingTreeStatus(repoDir)).rejects.toThrow(/git|repository/i);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when dirty-file checks run outside a repository', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-dirty-error-'));
+
+    try {
+      await expect(getDirtyFiles(repoDir, ['file.txt'])).rejects.toThrow(/git|repository|head/i);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }

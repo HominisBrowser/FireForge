@@ -77,7 +77,12 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     },
     secondExportState: {
       'browser/components/example/panel.js': 'export const panelVersion = 3;\n',
-      'browser/components/example/panel-helper.js': 'export const helperEnabled = true;\n',
+      'browser/components/example/panel-helper.js': [
+        JS_LICENSE_HEADER,
+        '',
+        'export const helperEnabled = true;',
+        '',
+      ].join('\n'),
     },
     exportOptions: {
       name: 'panel-feature',
@@ -110,7 +115,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
 
   // ----- New fixtures: CSS & theming -------------------------------------
 
-  /** New CSS design-token stylesheet with light-dark() theming. */
+  /** New CSS design-token stylesheet with tokenized light-dark() theming. */
   cssDesignTokens: {
     exportPath: 'browser/themes/shared/mybrowser-tokens.css',
     initialFiles: {} as Record<string, string>,
@@ -120,7 +125,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
         '',
         ':root {',
         '  /* Surfaces */',
-        '  --mybrowser-surface-canvas: light-dark(#f0f0f4, #15141a);',
+        '  --mybrowser-surface-canvas: light-dark(var(--background-color-box), var(--background-color-box));',
         '  --mybrowser-surface-tile: var(--background-color-box);',
         '  --mybrowser-surface-tile-hover: var(--button-background-color-hover);',
         '',
@@ -352,7 +357,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
 
   // ----- New fixtures: multi-file patches --------------------------------
 
-  /** 3-file theme patch: CSS + jar.inc.mn + moz.build. Models Hominis theme packaging. */
+  /** 3-file theme patch: CSS + jar.inc.mn + moz.build. Models theme packaging. */
   multiFileThemePatch: {
     exportPath: 'browser/themes/shared/',
     initialFiles: {
@@ -386,7 +391,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
 
   // ----- New fixtures: preferences & test authoring ----------------------
 
-  /** New .js preferences file with pref() calls. Models Hominis's prefs file. */
+  /** New .js preferences file with pref() calls. Models browser prefs. */
   prefsFile: {
     exportPath: 'browser/app/profile/mybrowser-prefs.js',
     initialFiles: {} as Record<string, string>,
@@ -414,7 +419,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     expectedFilesAffected: ['browser/app/profile/mybrowser-prefs.js'],
   },
 
-  /** New browser test file + updated .toml manifest. Models Hominis test authoring. */
+  /** New browser test file + updated .toml manifest. Models browser test authoring. */
   testFileWithManifest: {
     exportPath: 'browser/components/mybrowser/test/',
     initialFiles: {
@@ -454,9 +459,9 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     ],
   },
 
-  // ----- New fixtures: real-world edge cases from Hominis experimentation --
+  // ----- New fixtures: real-world edge cases from browser experimentation --
 
-  /** Rust file modification — like real Hominis build.rs bindgen fix. Lint-clean (non-JS/CSS). */
+  /** Rust file modification, like a real build.rs bindgen fix. Lint-clean (non-JS/CSS). */
   rustFileModification: {
     exportPath: 'tools/profiler/rust-api/build.rs',
     initialFiles: {
@@ -503,7 +508,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     expectedFilesAffected: ['tools/profiler/rust-api/build.rs'],
   },
 
-  /** CSS with proper header but light-dark(#hex) raw colors — triggers warning but not error. */
+  /** CSS with proper header but light-dark(#hex) raw colors — triggers raw-color lint. */
   cssTokensWithRawColors: {
     exportPath: 'browser/themes/shared/mybrowser-palette.css',
     initialFiles: {} as Record<string, string>,
@@ -591,7 +596,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     },
     expectedFilesAffected: ['browser/base/content/browser.js'],
   },
-  // ----- New fixtures: real-world edge cases from Hominis deep-dive --------
+  // ----- New fixtures: real-world edge cases from browser deep-dive --------
 
   /**
    * .sys.mjs with block-comment SPDX license header.
@@ -716,7 +721,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
 
   /**
    * Patch stacking: two patches modifying the same file sequentially.
-   * Models Hominis patches 3 + 17 both touching moz.build.
+   * Models two sequential patches both touching moz.build.
    */
   patchStackBase: {
     initialFiles: {
@@ -763,7 +768,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     secondPatch: {
       name: 'storage-build-integration',
       category: 'infra' as const,
-      description: 'Register HominisStore in build system',
+      description: 'Register MyBrowserStore in build system',
       files: {
         'browser/modules/moz.build': [
           'DIRS += [',
@@ -774,7 +779,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
           '',
           'EXTRA_JS_MODULES += [',
           '    "BrowserUsageTelemetry.sys.mjs",',
-          '    "HominisStore.sys.mjs",',
+          '    "MyBrowserStore.sys.mjs",',
           ']',
           '',
         ].join('\n'),
@@ -788,7 +793,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
    * Observer topic regex edge case: notifyObservers with a variable (not string literal)
    * argument followed by an object literal. The regex's [^)]* greedily consumes the
    * multi-line object, then matches a distant quote and captures a huge false-positive.
-   * Models the real HominisStore.sys.mjs bug.
+   * Models a real observer-topic parsing bug.
    */
   observerRegexEdgeCase: {
     exportPath: 'browser/modules/mybrowser/EventBus.sys.mjs',

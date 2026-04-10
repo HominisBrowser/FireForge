@@ -2,6 +2,7 @@
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { GitError } from '../errors/git.js';
 import { removeFile } from '../utils/fs.js';
 import { exec } from '../utils/process.js';
 import type { GitStatusEntry } from './git-base.js';
@@ -44,7 +45,7 @@ export async function removeUntrackedPath(repoDir: string, filePath: string): Pr
  */
 export async function removeAddedPath(repoDir: string, filePath: string): Promise<void> {
   await ensureGit();
-  await exec('git', ['reset', 'HEAD', '--', filePath], { cwd: repoDir });
+  await git(['reset', 'HEAD', '--', filePath], repoDir);
   await removeUntrackedPath(repoDir, filePath);
 }
 
@@ -105,8 +106,7 @@ export async function unstageFiles(repoDir: string, files: string[]): Promise<vo
  */
 export async function fileExistsInHead(repoDir: string, filePath: string): Promise<boolean> {
   await ensureGit();
-  const result = await exec('git', ['ls-tree', 'HEAD', '--', filePath], { cwd: repoDir });
-  return result.stdout.trim().length > 0;
+  return (await git(['ls-tree', 'HEAD', '--', filePath], repoDir)).trim().length > 0;
 }
 
 /**
@@ -122,7 +122,15 @@ export async function getFileContentFromHead(
   await ensureGit();
   const result = await exec('git', ['show', `HEAD:${filePath}`], { cwd: repoDir });
   if (result.exitCode !== 0) {
-    return null;
+    const stderr = result.stderr.trim();
+    if (
+      /exists on disk, but not in 'HEAD'|path '.*' exists, but not '.*'|path '.*' does not exist in 'HEAD'/i.test(
+        stderr
+      )
+    ) {
+      return null;
+    }
+    throw new GitError(stderr || 'Git command failed', `show HEAD:${filePath}`);
   }
   return result.stdout;
 }

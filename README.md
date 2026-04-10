@@ -171,14 +171,14 @@ If the manifest drifts after an interrupted export or manual edits, `fireforge i
 <details>
 <summary>Patch lint checks</summary>
 
-`fireforge lint` runs automatically during export. Use `--skip-lint` to downgrade errors to warnings, though I would recommend against making that a habit.
+`fireforge lint` runs automatically during export, export-all, and re-export. Use `--skip-lint` to downgrade errors to warnings, though I would recommend against making that a habit.
 
 | Check                          | Scope                           | Severity |
 | ------------------------------ | ------------------------------- | -------- |
 | `missing-license-header`       | New files (JS/CSS/FTL)          | error    |
 | `relative-import`              | JS/MJS files                    | error    |
 | `token-prefix-violation`       | CSS files (with furnace)        | error    |
-| `raw-color-value`              | CSS files                       | warning  |
+| `raw-color-value`              | Introduced CSS color values     | error    |
 | `missing-modification-comment` | Modified upstream JS/MJS        | warning  |
 | `file-too-large`               | New files >650 lines            | warning  |
 | `missing-jsdoc`                | Exports in new `.sys.mjs`       | warning  |
@@ -265,7 +265,7 @@ Furnace validates components on deploy. Errors block apply; warnings are advisor
 | `missing-css`            | warning  | No `.css` file                              |
 | `filename-mismatch`      | error    | File name does not match tag name           |
 | `missing-override-json`  | error    | Override missing `override.json`            |
-| `no-aria-role`           | warning  | No ARIA role found                          |
+| `no-aria-role`           | warning  | Generic interactive markup lacks semantics  |
 | `no-keyboard-handler`    | warning  | Has `@click` but no keyboard handler        |
 | `relative-import`        | error    | Imports must use `chrome://` URIs           |
 | `raw-color-value`        | error    | Raw hex/rgb/hsl (use CSS custom properties) |

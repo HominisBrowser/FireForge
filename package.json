@@ -1,6 +1,6 @@
 {
   "name": "@hominis/fireforge",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "FireForge — a build tool for customizing Firefox",
   "type": "module",
   "main": "./dist/src/index.js",

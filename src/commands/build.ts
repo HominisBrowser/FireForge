@@ -6,7 +6,7 @@ import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { build, buildArtifactMismatchMessage, buildUI, hasBuildArtifacts } from '../core/mach.js';
 import { GeneralError } from '../errors/base.js';
-import { BuildError } from '../errors/build.js';
+import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { BuildOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
@@ -60,6 +60,9 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   }
 
   const buildCheck = await hasBuildArtifacts(paths.engine);
+  if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
+    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
+  }
   const mismatchMessage = buildArtifactMismatchMessage(paths.engine, buildCheck, 'Build');
   if (mismatchMessage) {
     throw new GeneralError(mismatchMessage);

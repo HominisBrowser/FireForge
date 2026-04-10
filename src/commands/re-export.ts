@@ -9,7 +9,6 @@ import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
 import { updatePatch, updatePatchMetadata } from '../core/patch-export.js';
-import { lintExportedPatch } from '../core/patch-lint.js';
 import { getClaimedFiles, loadPatchesManifest } from '../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -19,6 +18,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
+import { runPatchLint } from './export-shared.js';
 
 /**
  * Resolves patch identifiers (numbers or filenames) to manifest entries.
@@ -145,6 +145,8 @@ async function reExportSinglePatch(
     return false;
   }
 
+  await runPatchLint(paths.engine, existingFiles, diffContent, config, options.skipLint);
+
   if (isDryRun) {
     info(`[dry-run] ${patch.filename}: ${existingFiles.length} file(s)`);
   } else {
@@ -164,16 +166,6 @@ async function reExportSinglePatch(
           filesAffected: currentFilesAffected,
         };
       }
-    }
-
-    const lintIssues = await lintExportedPatch(paths.engine, existingFiles, diffContent, config);
-    for (const issue of lintIssues) {
-      const prefix = issue.severity === 'error' && !options.skipLint ? 'ERROR ' : '';
-      warn(`${prefix}[${issue.check}] ${issue.file}: ${issue.message}`);
-    }
-    const lintErrors = lintIssues.filter((i) => i.severity === 'error');
-    if (lintErrors.length > 0 && !options.skipLint) {
-      warn(`${patch.filename}: ${lintErrors.length} lint error(s). Use --skip-lint to bypass.`);
     }
 
     success(`Re-exported ${patch.filename}`);

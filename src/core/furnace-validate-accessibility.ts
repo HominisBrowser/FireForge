@@ -8,6 +8,7 @@ import {
   createIssue,
   hasAriaRole,
   hasDelegatesFocusEnabled,
+  hasGenericInteractiveElement,
   hasTemplateClickHandler,
   hasTemplateKeyboardHandler,
 } from './furnace-validate-helpers.js';
@@ -26,13 +27,13 @@ export async function validateAccessibility(
   const content = await readText(mjsPath);
   const issues: ValidationIssue[] = [];
 
-  if (!hasAriaRole(content)) {
+  if (!hasAriaRole(content) && hasGenericInteractiveElement(content)) {
     issues.push(
       createIssue(
         tagName,
         'warning',
         'no-aria-role',
-        'No ARIA role attribute found. Consider adding role= for screen reader support.'
+        'Generic interactive markup has no native semantics. Prefer native elements, or add role= when native markup cannot provide the semantics.'
       )
     );
   }

@@ -80,6 +80,7 @@ import { multiselect } from '@clack/prompts';
 
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-status.js';
 import { updatePatch, updatePatchMetadata } from '../../core/patch-export.js';
+import { lintExportedPatch } from '../../core/patch-lint.js';
 import { getClaimedFiles, loadPatchesManifest } from '../../core/patch-manifest.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
@@ -117,6 +118,7 @@ describe('reExportCommand - --scan flag', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(updatePatch).mockResolvedValue(undefined);
     vi.mocked(updatePatchMetadata).mockResolvedValue(undefined);
+    vi.mocked(lintExportedPatch).mockResolvedValue([]);
     vi.mocked(isCancel).mockReturnValue(false);
     vi.mocked(multiselect).mockResolvedValue([]);
   });
@@ -325,6 +327,155 @@ describe('reExportCommand - --scan flag', () => {
 
     await reExportCommand('/fake/root', ['001'], { dryRun: true });
 
+    expect(updatePatch).not.toHaveBeenCalled();
+    expect(updatePatchMetadata).not.toHaveBeenCalled();
+  });
+
+  it('fails and does not write artifacts when lint finds errors', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(lintExportedPatch).mockResolvedValueOnce([
+      {
+        check: 'relative-import',
+        file: 'browser/modules/foo/a.js',
+        message: 'bad import',
+        severity: 'error',
+      },
+    ]);
+
+    await expect(reExportCommand('/fake/root', ['001'], {})).rejects.toThrow(
+      'All selected patches failed to re-export'
+    );
+
+    expect(updatePatch).not.toHaveBeenCalled();
+    expect(updatePatchMetadata).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      'ERROR [relative-import] browser/modules/foo/a.js: bad import'
+    );
+  });
+
+  it('does not persist scan-discovered metadata when lint blocks re-export', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue(['browser/modules/foo/a.js']);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue(['browser/modules/foo/new.js']);
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(lintExportedPatch).mockResolvedValueOnce([
+      {
+        check: 'missing-license-header',
+        file: 'browser/modules/foo/new.js',
+        message: 'missing license',
+        severity: 'error',
+      },
+    ]);
+
+    await expect(reExportCommand('/fake/root', ['001'], { scan: true })).rejects.toThrow(
+      'All selected patches failed to re-export'
+    );
+
+    expect(info).toHaveBeenCalledWith('  + browser/modules/foo/new.js');
+    expect(updatePatch).not.toHaveBeenCalled();
+    expect(updatePatchMetadata).not.toHaveBeenCalled();
+  });
+
+  it('blocks only the lint-failing patch when re-exporting all patches', async () => {
+    const firstPatch = makePatch('001-ui-first.patch', ['dir/a.js']);
+    const secondPatch = makePatch('002-ui-second.patch', ['dir/b.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([firstPatch, secondPatch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(lintExportedPatch)
+      .mockResolvedValueOnce([
+        {
+          check: 'relative-import',
+          file: 'dir/a.js',
+          message: 'bad import',
+          severity: 'error',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await expect(reExportCommand('/fake/root', [], { all: true })).resolves.toBeUndefined();
+
+    expect(updatePatch).toHaveBeenCalledTimes(1);
+    expect(updatePatch).toHaveBeenCalledWith(
+      '/fake/patches/002-ui-second.patch',
+      expect.any(String)
+    );
+    expect(updatePatchMetadata).toHaveBeenCalledTimes(1);
+    expect(updatePatchMetadata).toHaveBeenCalledWith(
+      '/fake/patches',
+      '002-ui-second.patch',
+      expect.any(Object)
+    );
+    expect(success).toHaveBeenCalledWith('Re-exported 1 of 2 patch(es)');
+  });
+
+  it('writes artifacts and downgrades lint errors with --skip-lint', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(lintExportedPatch).mockResolvedValueOnce([
+      {
+        check: 'relative-import',
+        file: 'browser/modules/foo/a.js',
+        message: 'bad import',
+        severity: 'error',
+      },
+    ]);
+
+    await expect(
+      reExportCommand('/fake/root', ['001'], { skipLint: true })
+    ).resolves.toBeUndefined();
+
+    expect(updatePatch).toHaveBeenCalledTimes(1);
+    expect(updatePatchMetadata).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('[relative-import] browser/modules/foo/a.js: bad import');
+    expect(info).toHaveBeenCalledWith('Lint: 1 error(s) downgraded to warnings (--skip-lint)');
+    const lintOrder = vi.mocked(lintExportedPatch).mock.invocationCallOrder[0] ?? 0;
+    const updateOrder =
+      vi.mocked(updatePatch).mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
+    expect(lintOrder).toBeLessThan(updateOrder);
+  });
+
+  it('writes artifacts when lint returns warnings only', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(lintExportedPatch).mockResolvedValueOnce([
+      {
+        check: 'missing-modification-comment',
+        file: 'browser/modules/foo/a.js',
+        message: 'missing marker',
+        severity: 'warning',
+      },
+    ]);
+
+    await expect(reExportCommand('/fake/root', ['001'], {})).resolves.toBeUndefined();
+
+    expect(updatePatch).toHaveBeenCalledTimes(1);
+    expect(updatePatchMetadata).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      '[missing-modification-comment] browser/modules/foo/a.js: missing marker'
+    );
+  });
+
+  it('runs lint during dry-run without writing artifacts', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(lintExportedPatch).mockResolvedValueOnce([
+      {
+        check: 'missing-modification-comment',
+        file: 'browser/modules/foo/a.js',
+        message: 'missing marker',
+        severity: 'warning',
+      },
+    ]);
+
+    await expect(reExportCommand('/fake/root', ['001'], { dryRun: true })).resolves.toBeUndefined();
+
+    expect(lintExportedPatch).toHaveBeenCalledTimes(1);
     expect(updatePatch).not.toHaveBeenCalled();
     expect(updatePatchMetadata).not.toHaveBeenCalled();
   });

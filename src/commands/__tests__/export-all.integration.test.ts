@@ -88,15 +88,24 @@ describe('export-all lint integration', () => {
   });
 
   it('export-all succeeds with warnings only', async () => {
-    // CSS with license header but raw hex color — triggers raw-color-value warning only
     await initCommittedRepo(join(projectRoot, 'engine'), {
-      'browser/themes/shared/.gitkeep': '',
+      'browser/base/content/browser.js': [
+        '// This Source Code Form is subject to the terms of the Mozilla Public',
+        '// License, v. 2.0. If a copy of the MPL was not distributed with this',
+        '// file, You can obtain one at http://mozilla.org/MPL/2.0/.',
+        '',
+        'export const originalValue = true;',
+        '',
+      ].join('\n'),
     });
     await writeFiles(join(projectRoot, 'engine'), {
-      'browser/themes/shared/warn-only.css': [
-        '/* SPDX-License-Identifier: EUPL-1.2 */',
+      'browser/base/content/browser.js': [
+        '// This Source Code Form is subject to the terms of the Mozilla Public',
+        '// License, v. 2.0. If a copy of the MPL was not distributed with this',
+        '// file, You can obtain one at http://mozilla.org/MPL/2.0/.',
         '',
-        '.panel { background: #ff6600; }',
+        'export const originalValue = true;',
+        'export const addedValue = true;',
         '',
       ].join('\n'),
     });

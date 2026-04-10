@@ -58,7 +58,43 @@ describe('lintPatchedCss', () => {
 
     expect(issues).toHaveLength(1);
     expect(issues[0]?.check).toBe('raw-color-value');
-    expect(issues[0]?.severity).toBe('warning');
+    expect(issues[0]?.severity).toBe('error');
+  });
+
+  it('detects introduced raw CSS color values from added diff lines', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('body { color: var(--brand-color); }\n.new { color: #ff0000; }');
+
+    const diff =
+      'diff --git a/style.css b/style.css\n' +
+      '--- a/style.css\n' +
+      '+++ b/style.css\n' +
+      '@@ -1 +1,2 @@\n' +
+      ' body { color: var(--brand-color); }\n' +
+      '+.new { color: #ff0000; }\n';
+
+    const issues = await lintPatchedCss('/engine', ['style.css'], diff);
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.check).toBe('raw-color-value');
+    expect(issues[0]?.severity).toBe('error');
+  });
+
+  it('does not flag pre-existing raw CSS colors outside added diff lines', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('body { color: #ff0000; }\n.new { color: var(--brand-color); }');
+
+    const diff =
+      'diff --git a/style.css b/style.css\n' +
+      '--- a/style.css\n' +
+      '+++ b/style.css\n' +
+      '@@ -1 +1,2 @@\n' +
+      ' body { color: #ff0000; }\n' +
+      '+.new { color: var(--brand-color); }\n';
+
+    const issues = await lintPatchedCss('/engine', ['style.css'], diff);
+
+    expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(0);
   });
 
   it('skips files that do not exist', async () => {

@@ -8,6 +8,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
+  readText: vi.fn(() => Promise.resolve('')),
 }));
 
 import { readdir } from 'node:fs/promises';
@@ -91,5 +92,41 @@ describe('validateStructure', () => {
 
     const issues = await validateStructure('/comp', 'moz-widget', 'custom');
     expect(issues.some((i) => i.check === 'missing-override-json')).toBe(false);
+  });
+
+  it('reports missing .ftl when a custom component is marked localized', async () => {
+    // Source has .mjs and .css but no .ftl. Without the new check, apply
+    // would silently deploy nothing for the locale and runtime
+    // localization would fail without a clear signal.
+    mockPathExists.mockImplementation((p: string) => Promise.resolve(!p.endsWith('.ftl')));
+    mockReaddir.mockResolvedValue([
+      { isFile: () => true, name: 'moz-widget.mjs' },
+      { isFile: () => true, name: 'moz-widget.css' },
+    ] as never);
+
+    const issues = await validateStructure('/comp', 'moz-widget', 'custom', {
+      description: 'Localized widget',
+      targetPath: 'toolkit/content/widgets/moz-widget',
+      register: true,
+      localized: true,
+    });
+
+    const ftlIssue = issues.find((i) => i.check === 'missing-ftl');
+    expect(ftlIssue).toBeDefined();
+    expect(ftlIssue?.severity).toBe('error');
+  });
+
+  it('does not report missing .ftl when localized is false', async () => {
+    mockPathExists.mockImplementation((p: string) => Promise.resolve(!p.endsWith('.ftl')));
+    mockReaddir.mockResolvedValue([{ isFile: () => true, name: 'moz-widget.mjs' }] as never);
+
+    const issues = await validateStructure('/comp', 'moz-widget', 'custom', {
+      description: 'Plain widget',
+      targetPath: 'toolkit/content/widgets/moz-widget',
+      register: true,
+      localized: false,
+    });
+
+    expect(issues.some((i) => i.check === 'missing-ftl')).toBe(false);
   });
 });

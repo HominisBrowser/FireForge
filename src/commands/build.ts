@@ -9,8 +9,8 @@ import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { BuildOptions } from '../types/commands/index.js';
-import { pathExists } from '../utils/fs.js';
-import { error, info, intro, outro, verbose } from '../utils/logger.js';
+import { checkDiskSpace, pathExists } from '../utils/fs.js';
+import { error, info, intro, outro, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { isPositiveInteger } from '../utils/validation.js';
 
@@ -53,6 +53,9 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   const config = await loadConfig(projectRoot);
   const paths = getProjectPaths(projectRoot);
   validateBrandOverride(config.binaryName, options.brand);
+
+  // Disk space pre-flight: a full Firefox build can be ~20 GB
+  await checkDiskSpace(projectRoot, 20 * 1024 * 1024 * 1024, warn);
 
   // Check if engine exists
   if (!(await pathExists(paths.engine))) {

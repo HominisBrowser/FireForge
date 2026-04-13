@@ -18,11 +18,16 @@ vi.mock('../furnace/diff.js', () => ({
   furnaceDiffCommand: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../furnace/init.js', () => ({
+  furnaceInitCommand: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../furnace/list.js', () => ({
   furnaceListCommand: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../furnace/override.js', () => ({
+  furnaceBatchOverrideCommand: vi.fn(() => Promise.resolve()),
   furnaceOverrideCommand: vi.fn(() => Promise.resolve()),
 }));
 
@@ -30,8 +35,16 @@ vi.mock('../furnace/preview.js', () => ({
   furnacePreviewCommand: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../furnace/refresh.js', () => ({
+  furnaceRefreshCommand: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../furnace/remove.js', () => ({
   furnaceRemoveCommand: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock('../furnace/rename.js', () => ({
+  furnaceRenameCommand: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../furnace/scan.js', () => ({
@@ -40,6 +53,10 @@ vi.mock('../furnace/scan.js', () => ({
 
 vi.mock('../furnace/status.js', () => ({
   furnaceStatusCommand: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock('../furnace/sync.js', () => ({
+  furnaceSyncCommand: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../furnace/validate.js', () => ({
@@ -52,11 +69,14 @@ import { furnaceDeployCommand } from '../furnace/deploy.js';
 import { furnaceDiffCommand } from '../furnace/diff.js';
 import { registerFurnace } from '../furnace/index.js';
 import { furnaceListCommand } from '../furnace/list.js';
-import { furnaceOverrideCommand } from '../furnace/override.js';
+import { furnaceBatchOverrideCommand, furnaceOverrideCommand } from '../furnace/override.js';
 import { furnacePreviewCommand } from '../furnace/preview.js';
+import { furnaceRefreshCommand } from '../furnace/refresh.js';
 import { furnaceRemoveCommand } from '../furnace/remove.js';
+import { furnaceRenameCommand } from '../furnace/rename.js';
 import { furnaceScanCommand } from '../furnace/scan.js';
 import { furnaceStatusCommand } from '../furnace/status.js';
+import { furnaceSyncCommand } from '../furnace/sync.js';
 import { furnaceValidateCommand } from '../furnace/validate.js';
 
 function createProgram(): Command {
@@ -89,6 +109,7 @@ describe('registerFurnace', () => {
       'apply',
       'deploy',
       'scan',
+      'init',
       'create',
       'override',
       'list',
@@ -96,6 +117,9 @@ describe('registerFurnace', () => {
       'preview',
       'validate',
       'diff',
+      'refresh',
+      'rename',
+      'sync',
     ]);
   });
 
@@ -114,7 +138,7 @@ describe('registerFurnace', () => {
   it('routes apply with filtered options', async () => {
     await runFurnaceCommand('apply', '--dry-run');
 
-    expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', { dryRun: true });
+    expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', undefined, { dryRun: true });
   });
 
   it('routes deploy with an optional component name and options', async () => {
@@ -128,7 +152,17 @@ describe('registerFurnace', () => {
   it('routes scan to the Furnace scanner entrypoint', async () => {
     await runFurnaceCommand('scan');
 
-    expect(furnaceScanCommand).toHaveBeenCalledWith('/project');
+    expect(furnaceScanCommand).toHaveBeenCalledWith('/project', {});
+  });
+
+  it('routes init with options', async () => {
+    await runFurnaceCommand('init', '--prefix', 'ff-', '--force');
+
+    const { furnaceInitCommand } = await import('../furnace/init.js');
+    expect(furnaceInitCommand).toHaveBeenCalledWith('/project', {
+      prefix: 'ff-',
+      force: true,
+    });
   });
 
   it('routes create with parsed compose tags and register toggle', async () => {
@@ -169,17 +203,29 @@ describe('registerFurnace', () => {
     });
   });
 
+  it('routes multi-name override invocations to batch override', async () => {
+    await runFurnaceCommand('override', 'moz-button', 'moz-card', '--type', 'full');
+
+    expect(furnaceBatchOverrideCommand).toHaveBeenCalledWith(
+      '/project',
+      ['moz-button', 'moz-card'],
+      {
+        type: 'full',
+      }
+    );
+  });
+
   it('routes list to the Furnace listing entrypoint', async () => {
     await runFurnaceCommand('list');
 
-    expect(furnaceListCommand).toHaveBeenCalledWith('/project');
+    expect(furnaceListCommand).toHaveBeenCalledWith('/project', {});
   });
 
-  it('routes remove with the force option', async () => {
-    await runFurnaceCommand('remove', 'moz-button', '--force');
+  it('routes remove with the yes option', async () => {
+    await runFurnaceCommand('remove', 'moz-button', '--yes');
 
     expect(furnaceRemoveCommand).toHaveBeenCalledWith('/project', 'moz-button', {
-      force: true,
+      yes: true,
     });
   });
 
@@ -194,12 +240,51 @@ describe('registerFurnace', () => {
   it('routes validate with an optional component name', async () => {
     await runFurnaceCommand('validate', 'moz-button');
 
-    expect(furnaceValidateCommand).toHaveBeenCalledWith('/project', 'moz-button');
+    expect(furnaceValidateCommand).toHaveBeenCalledWith('/project', 'moz-button', {});
   });
 
   it('routes diff to the component diff entrypoint', async () => {
     await runFurnaceCommand('diff', 'moz-button');
 
     expect(furnaceDiffCommand).toHaveBeenCalledWith('/project', 'moz-button');
+  });
+
+  it('routes refresh with filtered options', async () => {
+    await runFurnaceCommand('refresh', 'moz-button', '--dry-run');
+
+    expect(furnaceRefreshCommand).toHaveBeenCalledWith('/project', 'moz-button', {
+      dryRun: true,
+    });
+  });
+
+  it('routes validate with --fix option', async () => {
+    await runFurnaceCommand('validate', '--fix');
+
+    expect(furnaceValidateCommand).toHaveBeenCalledWith('/project', undefined, { fix: true });
+  });
+
+  it('routes sync with options', async () => {
+    await runFurnaceCommand('sync', '--dry-run', '--strategy', 'theirs');
+
+    expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', {
+      dryRun: true,
+      strategy: 'theirs',
+    });
+  });
+
+  it('routes diff without a name (all components)', async () => {
+    await runFurnaceCommand('diff');
+
+    expect(furnaceDiffCommand).toHaveBeenCalledWith('/project', undefined);
+  });
+
+  it('routes rename with old and new names', async () => {
+    await runFurnaceCommand('rename', 'moz-old-widget', 'moz-new-widget');
+
+    expect(furnaceRenameCommand).toHaveBeenCalledWith(
+      '/project',
+      'moz-old-widget',
+      'moz-new-widget'
+    );
   });
 });

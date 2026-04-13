@@ -43,6 +43,8 @@ vi.mock('../../core/patch-apply.js', () => ({
 
 vi.mock('../../core/patch-lint.js', () => ({
   lintExportedPatch: vi.fn(() => Promise.resolve([])),
+  buildPatchQueueContext: vi.fn(() => Promise.resolve({ entries: [] })),
+  lintPatchQueue: vi.fn(() => []),
 }));
 
 vi.mock('../../utils/fs.js', () => ({

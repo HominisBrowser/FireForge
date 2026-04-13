@@ -62,7 +62,7 @@ describe('resolveCommand', () => {
       vendor: 'Test',
       appId: 'test',
       binaryName: 'test',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
     });
     vi.mocked(isGitRepository).mockResolvedValue(true);
     vi.mocked(pathExists).mockResolvedValue(true);
@@ -109,7 +109,7 @@ describe('resolveCommand', () => {
       expect.any(String),
       patchFilename,
       expect.objectContaining({
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
       })
     );
     expect(saveState).toHaveBeenCalledWith(projectRoot, {});
@@ -185,7 +185,7 @@ describe('resolveCommand', () => {
       patchFilename,
       expect.objectContaining({
         filesAffected: ['file1.js'],
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
       })
     );
   });

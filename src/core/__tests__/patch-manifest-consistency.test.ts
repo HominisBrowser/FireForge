@@ -76,7 +76,7 @@ describe('patch manifest consistency', () => {
               name: 'toolbar',
               description: 'Toolbar tweak',
               createdAt: '2026-01-01T00:00:00.000Z',
-              sourceEsrVersion: '140.0esr',
+              sourceEsrVersion: '140.9.0esr',
               filesAffected: ['browser/wrong.js'],
             },
           ],
@@ -120,7 +120,7 @@ describe('patch manifest consistency', () => {
               name: 'toolbar',
               description: 'Toolbar tweak',
               createdAt: '2026-01-01T00:00:00.000Z',
-              sourceEsrVersion: '140.0esr',
+              sourceEsrVersion: '140.9.0esr',
               filesAffected: ['browser/toolbar.js'],
             },
             {
@@ -130,7 +130,7 @@ describe('patch manifest consistency', () => {
               name: 'toolbar-duplicate',
               description: 'Duplicate toolbar tweak',
               createdAt: '2026-01-02T00:00:00.000Z',
-              sourceEsrVersion: '140.0esr',
+              sourceEsrVersion: '140.9.0esr',
               filesAffected: ['browser/toolbar.js'],
             },
             {
@@ -140,7 +140,7 @@ describe('patch manifest consistency', () => {
               name: 'missing',
               description: 'Missing patch file',
               createdAt: '2026-01-03T00:00:00.000Z',
-              sourceEsrVersion: '140.0esr',
+              sourceEsrVersion: '140.9.0esr',
               filesAffected: ['browser/missing.js'],
             },
           ],
@@ -184,7 +184,7 @@ describe('patch manifest consistency', () => {
               name: 'toolbar',
               description: 'Toolbar tweak',
               createdAt: '2026-01-01T00:00:00.000Z',
-              sourceEsrVersion: '140.0esr',
+              sourceEsrVersion: '140.9.0esr',
               filesAffected: ['browser/wrong.js'],
             },
           ],
@@ -194,7 +194,7 @@ describe('patch manifest consistency', () => {
       )}\n`,
     });
 
-    const rebuilt = await rebuildPatchesManifest(patchesDir, '140.0esr');
+    const rebuilt = await rebuildPatchesManifest(patchesDir, '140.9.0esr');
     const loaded = await loadPatchesManifest(patchesDir);
 
     expect(rebuilt).toEqual(loaded);
@@ -208,7 +208,7 @@ describe('patch manifest consistency', () => {
       filename: '002-sidebar.patch',
       category: 'infra',
       name: 'sidebar',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
       filesAffected: ['browser/sidebar.js'],
     });
   });

@@ -84,6 +84,71 @@ toolkit.jar:
 
     expect(mockWriteText).not.toHaveBeenCalled();
   });
+  it('throws a descriptive error when jar.mn is empty', async () => {
+    mockReadText.mockResolvedValue('');
+
+    await expect(addJarMnEntries('/engine', 'moz-widget', ['moz-widget.mjs'])).rejects.toThrow(
+      /empty or contains only whitespace/
+    );
+  });
+
+  it('throws a descriptive error when jar.mn is whitespace-only', async () => {
+    mockReadText.mockResolvedValue('   \n\n  \n');
+
+    await expect(addJarMnEntries('/engine', 'moz-widget', ['moz-widget.mjs'])).rejects.toThrow(
+      /empty or contains only whitespace/
+    );
+  });
+
+  it('detects indent from existing lines instead of hardcoding 3 spaces', async () => {
+    // Use 4-space indent in the mock jar.mn
+    mockReadText.mockResolvedValue(
+      [
+        'toolkit.jar:',
+        '% content global %content/global/',
+        '    content/global/elements/findbar.js  (widgets/findbar/findbar.js)',
+      ].join('\n')
+    );
+
+    await addJarMnEntries('/engine', 'moz-widget', ['moz-widget.mjs']);
+
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    // The new entry should use 4-space indent, matching the existing line
+    expect(written).toContain('    content/global/elements/moz-widget.mjs');
+  });
+
+  it('does not match moz-card entries when registering moz-card-group', async () => {
+    mockReadText.mockResolvedValue(
+      [
+        'toolkit.jar:',
+        '% content global %content/global/',
+        '   content/global/elements/moz-card.mjs  (widgets/moz-card/moz-card.mjs)',
+        '   content/global/elements/moz-card.css  (widgets/moz-card/moz-card.css)',
+      ].join('\n')
+    );
+
+    await addJarMnEntries('/engine', 'moz-card-group', ['moz-card-group.mjs']);
+
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    expect(written).toContain('moz-card-group.mjs');
+    // Original entries preserved
+    expect(written).toContain('moz-card.mjs');
+    expect(written).toContain('moz-card.css');
+  });
+
+  it('throws a descriptive error when jar.mn has no content/global section', async () => {
+    mockReadText.mockResolvedValue(
+      [
+        'toolkit.jar:',
+        '% skin global classic/1.0 %skin/classic/global/',
+        '   skin/classic/global/buttons.css (themes/shared/buttons.css)',
+      ].join('\n')
+    );
+
+    await expect(addJarMnEntries('/engine', 'moz-widget', ['moz-widget.mjs'])).rejects.toThrow(
+      /content\/global\/ section/
+    );
+  });
 });
 
 describe('removeJarMnEntries', () => {
@@ -113,6 +178,23 @@ describe('removeJarMnEntries', () => {
 
     expect(mockReadText).not.toHaveBeenCalled();
     expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('does not remove moz-card-group entries when removing moz-card', async () => {
+    mockReadText.mockResolvedValue(
+      [
+        'toolkit.jar:',
+        '% content global %content/global/',
+        '   content/global/elements/moz-card.mjs  (widgets/moz-card/moz-card.mjs)',
+        '   content/global/elements/moz-card-group.mjs  (widgets/moz-card-group/moz-card-group.mjs)',
+      ].join('\n')
+    );
+
+    await removeJarMnEntries('/engine', 'moz-card');
+
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    expect(written).not.toContain('moz-card.mjs');
+    expect(written).toContain('moz-card-group.mjs');
   });
 
   it('does not write when there is nothing to remove', async () => {

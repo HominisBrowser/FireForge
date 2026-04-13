@@ -21,7 +21,13 @@ export class FurnaceError extends FireForgeError {
       ? `Furnace Error (${this.component}): ${this.message}`
       : `Furnace Error: ${this.message}`;
 
-    msg += '\n\nRun "fireforge furnace validate" to diagnose issues.';
+    msg += '\n\nTo fix this:\n';
+    msg += '  1. Check the error message above for specifics\n';
+    // Avoid circular advice when the error is thrown during validation itself.
+    if (!this.message.includes('furnace validate')) {
+      msg += '  2. Run "fireforge furnace validate" to diagnose issues\n';
+    }
+    msg += `  ${this.message.includes('furnace validate') ? '2' : '3'}. Use "fireforge doctor --repair-furnace" if state is inconsistent`;
 
     return msg;
   }

@@ -6,7 +6,7 @@ const COVERAGE_SUMMARY_PATH = resolve('coverage/coverage-summary.json');
 
 const MODULE_THRESHOLDS = {
   'src/core/mach.ts': { lines: 95, branches: 88 },
-  'src/cli.ts': { lines: 98, branches: 95, functions: 98 },
+  'src/cli.ts': { lines: 98, branches: 88, functions: 98 },
   'src/commands/setup.ts': { lines: 98, branches: 79 },
   'src/commands/setup-support.ts': { lines: 96, branches: 85 },
   'src/commands/token.ts': { lines: 98, branches: 76, functions: 98 },

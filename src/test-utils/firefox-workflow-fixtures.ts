@@ -835,7 +835,7 @@ export const FIREFOX_WORKFLOW_SETUP_OPTIONS = {
   vendor: 'My Company',
   appId: 'org.example.mybrowser',
   binaryName: 'mybrowser',
-  firefoxVersion: '140.0esr',
+  firefoxVersion: '140.9.0esr',
   product: 'firefox-esr' as const,
   license: 'EUPL-1.2' as const,
 };

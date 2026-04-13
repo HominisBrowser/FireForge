@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG: FireForgeConfig = {
   appId: 'org.example.mybrowser',
   binaryName: 'mybrowser',
   firefox: {
-    version: '140.0esr',
+    version: '140.9.0esr',
     product: 'firefox-esr',
   },
   license: 'EUPL-1.2',
@@ -30,7 +30,7 @@ export async function createTempProject(prefix = 'fireforge-test-'): Promise<str
 
 /** Removes a temporary test project and all of its contents. */
 export async function removeTempProject(root: string): Promise<void> {
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
 }
 
 /** Writes a map of relative file paths into a test project root. */

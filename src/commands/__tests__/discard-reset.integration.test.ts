@@ -57,7 +57,7 @@ describe('discardCommand and resetCommand integration', () => {
       'tracked.txt': 'changed\n',
     });
 
-    await discardCommand(projectRoot, 'tracked.txt', { force: true });
+    await discardCommand(projectRoot, 'tracked.txt', { yes: true });
 
     await expect(readText(join(projectRoot, 'engine'), 'tracked.txt')).resolves.toBe('original\n');
     await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
@@ -68,7 +68,7 @@ describe('discardCommand and resetCommand integration', () => {
       'new.txt': 'untracked\n',
     });
 
-    await discardCommand(projectRoot, 'new.txt', { force: true });
+    await discardCommand(projectRoot, 'new.txt', { yes: true });
 
     await expect(access(join(projectRoot, 'engine', 'new.txt'))).rejects.toThrow();
     await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
@@ -79,7 +79,7 @@ describe('discardCommand and resetCommand integration', () => {
       'nested/new.txt': 'untracked\n',
     });
 
-    await discardCommand(projectRoot, 'nested/new.txt', { force: true });
+    await discardCommand(projectRoot, 'nested/new.txt', { yes: true });
 
     await expect(access(join(projectRoot, 'engine', 'nested', 'new.txt'))).rejects.toThrow();
     await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
@@ -88,7 +88,7 @@ describe('discardCommand and resetCommand integration', () => {
   it('handles staged renames using the original path', async () => {
     await git(join(projectRoot, 'engine'), ['mv', 'rename-me.txt', 'renamed.txt']);
 
-    await discardCommand(projectRoot, 'rename-me.txt', { force: true });
+    await discardCommand(projectRoot, 'rename-me.txt', { yes: true });
 
     await expect(access(join(projectRoot, 'engine', 'rename-me.txt'))).resolves.toBeUndefined();
     await expect(access(join(projectRoot, 'engine', 'renamed.txt'))).rejects.toThrow();
@@ -129,7 +129,7 @@ describe('discardCommand and resetCommand integration', () => {
     });
     await git(join(projectRoot, 'engine'), ['add', 'staged-new.txt']);
 
-    await resetCommand(projectRoot, { force: true });
+    await resetCommand(projectRoot, { yes: true });
 
     await expect(readText(join(projectRoot, 'engine'), 'tracked.txt')).resolves.toBe('original\n');
     await expect(access(join(projectRoot, 'engine', 'staged-new.txt'))).rejects.toThrow();
@@ -143,7 +143,7 @@ describe('discardCommand and resetCommand integration', () => {
     });
     await git(join(projectRoot, 'engine'), ['add', 'staged-new.txt']);
 
-    await discardCommand(projectRoot, 'staged-new.txt', { force: true });
+    await discardCommand(projectRoot, 'staged-new.txt', { yes: true });
 
     await expect(access(join(projectRoot, 'engine', 'staged-new.txt'))).rejects.toThrow();
     await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');

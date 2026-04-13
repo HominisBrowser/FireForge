@@ -46,6 +46,11 @@ import {
   deletePatch,
   findExistingPatchForFile,
   findSupersededPatches,
+  getNextPatchFilename,
+  getNextPatchNumber,
+  parseFilename,
+  planExport,
+  updatePatchAndMetadata,
   updatePatchMetadata,
 } from '../patch-export.js';
 import {
@@ -84,7 +89,7 @@ describe('patch-export threshold coverage', () => {
           name: 'old',
           description: '',
           createdAt: '',
-          sourceEsrVersion: '140.0esr',
+          sourceEsrVersion: '140.9.0esr',
           filesAffected: ['browser/base/content/browser.js'],
         },
       ],
@@ -102,7 +107,7 @@ describe('patch-export threshold coverage', () => {
         name: 'dock',
         description: 'Dock',
         diff: 'new patch',
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
         filesAffected: ['browser/base/content/browser.js'],
       })
     ).rejects.toThrow('manifest exploded');
@@ -154,7 +159,7 @@ describe('patch-export threshold coverage', () => {
           name: 'old',
           description: '',
           createdAt: '',
-          sourceEsrVersion: '140.0esr',
+          sourceEsrVersion: '140.9.0esr',
           filesAffected: ['a.js'],
         },
       ],
@@ -171,6 +176,63 @@ describe('patch-export threshold coverage', () => {
     );
   });
 
+  it('refuses updatePatchAndMetadata when patches.json is missing or the patch file is absent', async () => {
+    await expect(
+      updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'new' })
+    ).rejects.toThrow(/patches\.json is missing/);
+
+    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
+      version: 1,
+      patches: [
+        {
+          filename: '001-ui-old.patch',
+          order: 1,
+          category: 'ui',
+          name: 'old',
+          description: '',
+          createdAt: '',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['a.js'],
+        },
+      ],
+    } as never);
+    vi.mocked(pathExists).mockResolvedValue(false);
+
+    await expect(
+      updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'new' })
+    ).rejects.toThrow(/patch file is missing on disk/);
+  });
+
+  it('allocates patch numbers and filenames from finite patch orders only', async () => {
+    vi.mocked(discoverPatches).mockResolvedValue([
+      { filename: 'legacy.patch', path: '/patches/legacy.patch', order: Number.NaN },
+      { filename: '002-ui-real.patch', path: '/patches/002-ui-real.patch', order: 2 },
+    ] as never);
+
+    await expect(getNextPatchNumber('/patches')).resolves.toBe('003');
+    await expect(getNextPatchFilename('/patches', 'ui', 'Dock Panel')).resolves.toBe(
+      '003-ui-dock-panel.patch'
+    );
+  });
+
+  it('parses new-format, legacy, and invalid patch filenames', () => {
+    expect(parseFilename('001-ui-sidebar.patch')).toEqual({
+      order: 1,
+      category: 'ui',
+      name: 'sidebar',
+    });
+    expect(parseFilename('002-sidebar.patch')).toEqual({
+      order: 2,
+      category: null,
+      name: 'sidebar',
+    });
+    expect(parseFilename('garbage')).toEqual({
+      order: Number.POSITIVE_INFINITY,
+      category: null,
+      name: 'garbage',
+    });
+  });
+
   it('finds superseded single-file new-file patches and respects exclusions', async () => {
     vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
       version: 1,
@@ -182,7 +244,7 @@ describe('patch-export threshold coverage', () => {
           name: 'old',
           description: '',
           createdAt: '',
-          sourceEsrVersion: '140.0esr',
+          sourceEsrVersion: '140.9.0esr',
           filesAffected: ['browser/base/content/browser.js'],
         },
         {
@@ -192,7 +254,7 @@ describe('patch-export threshold coverage', () => {
           name: 'other',
           description: '',
           createdAt: '',
-          sourceEsrVersion: '140.0esr',
+          sourceEsrVersion: '140.9.0esr',
           filesAffected: ['browser/components/preferences/main.js'],
         },
       ],
@@ -224,7 +286,7 @@ describe('patch-export threshold coverage', () => {
           name: 'old',
           description: '',
           createdAt: '',
-          sourceEsrVersion: '140.0esr',
+          sourceEsrVersion: '140.9.0esr',
           filesAffected: ['browser/base/content/browser.js'],
         },
       ],
@@ -240,7 +302,7 @@ describe('patch-export threshold coverage', () => {
         name: 'dock',
         description: 'Dock',
         diff: 'new patch',
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
         filesAffected: ['browser/base/content/browser.js'],
       })
     ).resolves.toEqual(
@@ -250,6 +312,24 @@ describe('patch-export threshold coverage', () => {
     );
 
     expect(removeFile).toHaveBeenCalledWith('/patches/001-ui-old.patch');
+  });
+
+  it('plans an export even when there is no existing manifest', async () => {
+    vi.mocked(discoverPatches).mockResolvedValue([] as never);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(null);
+
+    const plan = await planExport({
+      patchesDir: '/patches',
+      category: 'ui',
+      name: 'dock',
+      description: 'Dock',
+      filesAffected: ['browser/base/content/browser.js'],
+      sourceEsrVersion: '140.9.0esr',
+    });
+
+    expect(plan.patchFilename).toBe('001-ui-dock.patch');
+    expect(plan.manifestBefore).toBeNull();
+    expect(plan.manifestAfter.patches[0]?.filename).toBe('001-ui-dock.patch');
   });
 
   it('returns early when deleting a patch whose file is already gone', async () => {

@@ -60,7 +60,7 @@ describe('packageCommand', () => {
     vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
     vi.mocked(loadConfig).mockResolvedValue({
       binaryName: 'mybrowser',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
     } as never);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
@@ -154,7 +154,7 @@ describe('registerPackage', () => {
     vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
     vi.mocked(loadConfig).mockResolvedValue({
       binaryName: 'mybrowser',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
     } as never);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });

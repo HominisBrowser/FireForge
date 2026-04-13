@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Manifest I/O: load, save, and add operations for patches.json.
+ * Manifest I/O: load, save, and mutating operations for patches.json.
+ *
+ * Mutations (add / remove / renumber) are intended to be the only sanctioned
+ * way to change on-disk manifest state. They run under the shared patch
+ * directory lock so concurrent commands cannot race each other into
+ * inconsistent manifests.
  */
 
+import { randomUUID } from 'node:crypto';
+import { rename } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { FireForgeError } from '../errors/base.js';
+import { ExitCode } from '../errors/codes.js';
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { pathExists, readJson, removeFile, writeJson } from '../utils/fs.js';
+import { warn } from '../utils/logger.js';
 import { validatePatchesManifest } from './patch-manifest-validate.js';
 
 /** Filename for the patches manifest */
@@ -99,4 +109,304 @@ export async function addPatchToManifest(
   manifest.patches.sort((a, b) => a.order - b.order);
 
   await savePatchesManifest(patchesDir, manifest);
+}
+
+/**
+ * Removes a single patch entry from the manifest by filename. Leaves the
+ * ordinal gap in place — callers wanting to close the gap must use
+ * {@link renumberPatchesInManifest} explicitly. This matches the spec: delete
+ * is a row removal, not a resequencing.
+ *
+ * Not atomic with any on-disk patch file deletion; callers are expected to
+ * remove the .patch file separately under the same lock.
+ *
+ * @param patchesDir - Path to the patches directory
+ * @param filename - Filename of the patch to remove from the manifest
+ * @returns True when the manifest was written (i.e. an entry was removed),
+ *   false when no matching entry existed
+ */
+export async function removePatchFromManifest(
+  patchesDir: string,
+  filename: string
+): Promise<boolean> {
+  const manifest = await loadPatchesManifest(patchesDir);
+  if (!manifest) return false;
+
+  const originalLength = manifest.patches.length;
+  manifest.patches = manifest.patches.filter((p) => p.filename !== filename);
+
+  if (manifest.patches.length === originalLength) {
+    return false;
+  }
+
+  await savePatchesManifest(patchesDir, manifest);
+  return true;
+}
+
+/**
+ * A single rename step in a {@link renumberPatchesInManifest} plan.
+ */
+export interface PatchRenameEntry {
+  /** New filename (e.g. `005-ui-sidebar.patch`). */
+  newFilename: string;
+  /** New numeric order — must match the prefix of `newFilename`. */
+  newOrder: number;
+}
+
+/**
+ * Renames patch files on disk and rewrites the corresponding manifest rows
+ * atomically-ish: file renames use a two-phase staging strategy (rename each
+ * entry to a unique temp filename first, then rename the temp to its final
+ * target) so cycles like `003 → 005` while `005` also moves do not collide.
+ *
+ * The manifest is rewritten once at the end with all new filenames and
+ * orders. Failure semantics:
+ *
+ *   - **Phase 1 (stage)**: rolls back by renaming staged files back to
+ *     their originals. Manifest is untouched. Best-effort — a rollback
+ *     rename failure is warned but not re-thrown.
+ *   - **Phase 2 (stage → final)**: rolls back to the pre-operation state
+ *     by reversing every partial step: files already at their final
+ *     names are renamed back to staging, and all staged files are then
+ *     renamed back to their originals. The manifest is untouched. If
+ *     the rollback itself fails midway, the thrown error is augmented
+ *     with a description of the residue so the operator can inspect.
+ *   - **Phase 3 (manifest write)**: by this point all files are on disk
+ *     at their new names; a manifest write failure will roll the files
+ *     back to their original names before re-throwing so the directory
+ *     and manifest stay in agreement. A rollback failure at this stage
+ *     is warned (manifest was never mutated) and the original error is
+ *     re-thrown.
+ *
+ * Does not sort the rename map for the caller — the map is the authoritative
+ * plan. Entries not present in the map keep their existing filename and
+ * order.
+ *
+ * @param patchesDir - Path to the patches directory
+ * @param renameMap - Map from existing filename → new filename/order
+ */
+export async function renumberPatchesInManifest(
+  patchesDir: string,
+  renameMap: Map<string, PatchRenameEntry>
+): Promise<void> {
+  if (renameMap.size === 0) return;
+
+  const manifest = await loadPatchesManifest(patchesDir);
+  if (!manifest) {
+    throw new Error('Cannot renumber patches: patches.json is missing.');
+  }
+
+  // Phase 1: rename each old filename to a unique temp staging name so the
+  // later rename to the final target cannot collide with another entry
+  // currently occupying that slot.
+  const stagingId = randomUUID();
+  const stagedRenames: Array<{ from: string; staged: string; toEntry: PatchRenameEntry }> = [];
+
+  try {
+    for (const [oldFilename, entry] of renameMap) {
+      const oldPath = join(patchesDir, oldFilename);
+      if (!(await pathExists(oldPath))) {
+        throw new Error(`Cannot renumber: patch file is missing on disk: ${oldFilename}`);
+      }
+      const stagedName = `.fireforge-renumber-${stagingId}-${oldFilename}`;
+      const stagedPath = join(patchesDir, stagedName);
+      await rename(oldPath, stagedPath);
+      stagedRenames.push({ from: oldFilename, staged: stagedName, toEntry: entry });
+    }
+  } catch (error: unknown) {
+    // Roll back phase 1: put any already-staged files back.
+    for (const { from, staged } of stagedRenames) {
+      try {
+        await rename(join(patchesDir, staged), join(patchesDir, from));
+      } catch (rollbackError: unknown) {
+        warn(
+          `Rollback warning: could not restore ${from} from staging: ${toError(rollbackError).message}`
+        );
+      }
+    }
+    throw error;
+  }
+
+  // Phase 2: rename each staged file to its final target, tracking which
+  // entries have completed so we can reverse the partial state on failure.
+  const completedFinalRenames: Array<{ from: string; staged: string; toEntry: PatchRenameEntry }> =
+    [];
+  try {
+    for (const stagedEntry of stagedRenames) {
+      const { staged, toEntry } = stagedEntry;
+      const targetPath = join(patchesDir, toEntry.newFilename);
+      if (await pathExists(targetPath)) {
+        throw new Error(
+          `Cannot renumber: target patch filename already exists on disk: ${toEntry.newFilename}`
+        );
+      }
+      await rename(join(patchesDir, staged), targetPath);
+      completedFinalRenames.push(stagedEntry);
+    }
+  } catch (error: unknown) {
+    // Phase 2 rollback — reverse both the partial final-name moves and
+    // the phase-1 staging. This collapses the directory back to its
+    // pre-operation filenames so the manifest (which was never
+    // touched) remains consistent with what is on disk. If any
+    // individual rollback step itself fails, we warn with the residue
+    // filename so the operator can finish the cleanup by hand, but we
+    // still re-throw the original error so the caller sees the real
+    // cause.
+    const residue: string[] = [];
+    for (const completed of completedFinalRenames) {
+      try {
+        await rename(
+          join(patchesDir, completed.toEntry.newFilename),
+          join(patchesDir, completed.staged)
+        );
+      } catch (rollbackError: unknown) {
+        residue.push(completed.toEntry.newFilename);
+        warn(
+          `Rollback warning: could not revert ${completed.toEntry.newFilename} to staging: ${toError(rollbackError).message}`
+        );
+      }
+    }
+    for (const stagedEntry of stagedRenames) {
+      try {
+        await rename(join(patchesDir, stagedEntry.staged), join(patchesDir, stagedEntry.from));
+      } catch (rollbackError: unknown) {
+        residue.push(stagedEntry.staged);
+        warn(
+          `Rollback warning: could not restore ${stagedEntry.from} from staging: ${toError(rollbackError).message}`
+        );
+      }
+    }
+    if (residue.length > 0) {
+      warn(
+        `Renumber phase 2 rollback left residue files (pattern: .fireforge-renumber-${stagingId}-*). ` +
+          `Inspect ${patchesDir} and remove or rename: ${residue.join(', ')}`
+      );
+    }
+    throw error;
+  }
+
+  // Phase 3: rewrite the manifest rows. Any entry without a rename keeps its
+  // existing metadata; entries in the map get their filename + order
+  // updated. Sort by the new order so the manifest remains ordered.
+  const filenameUpdates = new Map<string, PatchRenameEntry>();
+  for (const [oldFilename, entry] of renameMap) {
+    filenameUpdates.set(oldFilename, entry);
+  }
+  const updatedPatches: PatchMetadata[] = manifest.patches.map((p) => {
+    const update = filenameUpdates.get(p.filename);
+    if (!update) return p;
+    return {
+      ...p,
+      filename: update.newFilename,
+      order: update.newOrder,
+    };
+  });
+
+  updatedPatches.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
+
+  try {
+    await savePatchesManifest(patchesDir, {
+      ...manifest,
+      patches: updatedPatches,
+    });
+  } catch (error: unknown) {
+    // Phase 3 rollback: reverse every completed rename. The manifest
+    // save failed before it could be persisted, so the on-disk state
+    // must match what the manifest still records. Best-effort: any
+    // individual step that fails gets warned; the original save
+    // error is always re-thrown so the caller sees the real cause.
+    for (const completed of completedFinalRenames) {
+      try {
+        await rename(
+          join(patchesDir, completed.toEntry.newFilename),
+          join(patchesDir, completed.from)
+        );
+      } catch (rollbackError: unknown) {
+        warn(
+          `Rollback warning: could not revert ${completed.toEntry.newFilename} → ${completed.from} after manifest save failed: ${toError(rollbackError).message}`
+        );
+      }
+    }
+    throw error;
+  }
+}
+
+/**
+ * Thrown when {@link removePatchFileAndManifest} cannot complete the file
+ * delete AND cannot restore the manifest row afterward, so the on-disk
+ * state and manifest state are known to disagree. Carries both the
+ * primary delete error and the rollback error so the caller (and the
+ * operator) can see the full failure chain instead of only the original
+ * error with a warning about the rollback buried in logs.
+ *
+ * Extends {@link FireForgeError} so the CLI top-level handler routes it
+ * through the rich-error formatter rather than the generic unexpected-error
+ * path; the dedicated `.name` is kept so programmatic callers and tests
+ * can still distinguish it with `instanceof PatchDeleteRollbackError`.
+ */
+export class PatchDeleteRollbackError extends FireForgeError {
+  readonly code = ExitCode.PATCH_ERROR;
+
+  constructor(
+    public readonly filename: string,
+    public readonly deleteError: Error,
+    public readonly rollbackError: Error
+  ) {
+    super(
+      `Failed to delete ${filename}, AND failed to restore patches.json afterward. ` +
+        `The patch directory is now inconsistent: the manifest no longer lists ${filename} ` +
+        `but the patch file may still exist on disk. ` +
+        `Delete error: ${deleteError.message}. ` +
+        `Manifest rollback error: ${rollbackError.message}. ` +
+        `Inspect ${filename} in the patches directory and either remove it or restore the manifest row by hand.`
+    );
+  }
+}
+
+/**
+ * Deletes both a patch file on disk and its manifest row under the caller's
+ * lock. This is a convenience for the `patch delete` command; callers that
+ * need different ordering (e.g. deleting the file first without touching the
+ * manifest) should call the primitives separately.
+ *
+ * Failure semantics: if the manifest row was already removed and the
+ * file deletion then fails, the original manifest is restored best-effort
+ * and the delete error is re-thrown. If the restore itself also fails,
+ * a {@link PatchDeleteRollbackError} is thrown that carries both the
+ * delete error and the rollback error so neither is hidden behind a
+ * warning log. Callers can detect the compound failure with
+ * `instanceof PatchDeleteRollbackError`.
+ *
+ * @param patchesDir - Path to the patches directory
+ * @param filename - Patch filename to delete
+ */
+export async function removePatchFileAndManifest(
+  patchesDir: string,
+  filename: string
+): Promise<void> {
+  const patchPath = join(patchesDir, filename);
+  const originalManifest = await loadPatchesManifest(patchesDir);
+  const removedFromManifest = await removePatchFromManifest(patchesDir, filename);
+
+  try {
+    if (await pathExists(patchPath)) {
+      await removeFile(patchPath);
+    }
+  } catch (error: unknown) {
+    const deleteError = toError(error);
+    if (removedFromManifest && originalManifest) {
+      try {
+        await savePatchesManifest(patchesDir, originalManifest);
+      } catch (rollbackError: unknown) {
+        // Compound failure: both the delete and the rollback failed,
+        // so the directory is in a known-inconsistent state. Throw a
+        // dedicated error type that carries both causes so the
+        // operator's log shows the complete picture instead of the
+        // original delete error with a warning about the rollback
+        // buried in stderr.
+        throw new PatchDeleteRollbackError(filename, deleteError, toError(rollbackError));
+      }
+    }
+    throw deleteError;
+  }
 }

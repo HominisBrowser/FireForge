@@ -7,6 +7,7 @@ import type {
   CustomComponentConfig,
   FurnaceConfig,
   RegistrationStatus,
+  StepError,
   ValidationIssue,
 } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
@@ -15,7 +16,7 @@ import { warn } from '../utils/logger.js';
 import { stripJsComments } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { getFurnacePaths } from './furnace-config.js';
-import { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
+import { CUSTOM_ELEMENTS_JS, FTL_DIR, JAR_MN } from './furnace-constants.js';
 import { getTokensCssPath } from './token-manager.js';
 
 /**
@@ -85,7 +86,8 @@ export async function validateRegistrationPatterns(
 export async function checkRegistrationConsistency(
   root: string,
   name: string,
-  config: CustomComponentConfig
+  config: CustomComponentConfig,
+  ftlDir?: string
 ): Promise<RegistrationStatus> {
   const { engine: engineDir } = getProjectPaths(root);
   const furnacePaths = getFurnacePaths(root);
@@ -141,6 +143,30 @@ export async function checkRegistrationConsistency(
     status.filesInSync = false;
   }
 
+  // Localized components deploy a .ftl file outside `targetDir` (into the
+  // shared Fluent tree). The .mjs/.css loop above cannot see it, so drift
+  // there would otherwise be invisible to apply's fast-path and to `status`.
+  if (config.localized) {
+    const ftlName = `${name}.ftl`;
+    const ftlSrc = join(componentDir, ftlName);
+    if (await pathExists(ftlSrc)) {
+      const ftlDest = join(engineDir, ftlDir ?? FTL_DIR, ftlName);
+      if (!(await pathExists(ftlDest))) {
+        status.missingTargetFiles.push(ftlName);
+        status.filesInSync = false;
+      } else {
+        const srcContent = await readText(ftlSrc);
+        const destContent = await readText(ftlDest);
+        const srcHash = createHash('sha256').update(srcContent).digest('hex');
+        const destHash = createHash('sha256').update(destContent).digest('hex');
+        if (srcHash !== destHash) {
+          status.driftedFiles.push(ftlName);
+          status.filesInSync = false;
+        }
+      }
+    }
+  }
+
   // Check jar.mn entries
   const jarMnPath = join(engineDir, JAR_MN);
   if (await pathExists(jarMnPath)) {
@@ -191,6 +217,7 @@ export async function validateJarMnEntries(
   }
 
   const jarContent = await readText(jarMnPath);
+  const furnacePaths = getFurnacePaths(root);
 
   for (const [name, customConfig] of Object.entries(config.custom)) {
     if (!customConfig.register) continue;
@@ -204,7 +231,15 @@ export async function validateJarMnEntries(
       });
     }
 
-    if (!jarContent.includes(`content/global/elements/${name}.css`)) {
+    // Only complain about a missing CSS entry when the source actually
+    // ships a CSS file. Components that intentionally have no CSS would
+    // otherwise generate a permanent false-positive that trains developers
+    // to ignore validator output.
+    const cssSourcePath = join(furnacePaths.customDir, name, `${name}.css`);
+    if (
+      (await pathExists(cssSourcePath)) &&
+      !jarContent.includes(`content/global/elements/${name}.css`)
+    ) {
       issues.push({
         component: name,
         severity: 'warning',
@@ -266,4 +301,46 @@ export async function validateTokenLink(
   }
 
   return issues;
+}
+
+/**
+ * Post-apply registration consistency check for custom components.
+ *
+ * Detects customElements.js / jar.mn inconsistencies caused by a partial
+ * apply. Errors are surfaced as step-level warnings on the affected
+ * component rather than blocking the entire apply.
+ */
+export async function runPostApplyConsistencyChecks(
+  root: string,
+  config: { custom: Record<string, CustomComponentConfig> },
+  result: { applied: Array<{ name: string; stepErrors?: StepError[] }> },
+  ftlDir: string
+): Promise<void> {
+  for (const [name, customConfig] of Object.entries(config.custom)) {
+    if (!customConfig.register) continue;
+    if (!result.applied.some((a) => a.name === name)) continue;
+    try {
+      const status = await checkRegistrationConsistency(root, name, customConfig, ftlDir);
+      const issues: string[] = [];
+      if (!status.customElementsPresent) {
+        issues.push('missing customElements.js registration');
+      }
+      if (!status.jarMnMjs && status.sourceExists) {
+        issues.push('missing jar.mn .mjs entry');
+      }
+      if (issues.length > 0) {
+        const entry = result.applied.find((a) => a.name === name);
+        if (entry) {
+          const stepErrors = entry.stepErrors ?? [];
+          stepErrors.push({
+            step: 'post-apply consistency',
+            error: `Registration inconsistency: ${issues.join(', ')}`,
+          });
+          entry.stepErrors = stepErrors;
+        }
+      }
+    } catch {
+      // Consistency check is best-effort; failures here should not block apply
+    }
+  }
 }

@@ -209,6 +209,65 @@ describe('validateAccessibility', () => {
     expect(issues.some((issue) => issue.check === 'no-delegates-focus')).toBe(true);
   });
 
+  it('warns when a positive tabindex is used', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<div tabindex="3">Content</div>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'positive-tabindex')).toBe(true);
+  });
+
+  it('does not warn for tabindex="0" or tabindex="-1"', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`
+            <div tabindex="0">Focusable</div>
+            <div tabindex="-1">Programmatic</div>
+          \`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'positive-tabindex')).toBe(false);
+  });
+
+  it('warns when a form input has no accessible label', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<input type="text" />\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'unlabelled-form-input')).toBe(true);
+  });
+
+  it('does not warn for inputs with aria-label', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<input type="text" aria-label="Search" />\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'unlabelled-form-input')).toBe(false);
+  });
+
   it('ignores symbol-only text nodes when checking for hardcoded text', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`

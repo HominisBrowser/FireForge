@@ -51,11 +51,11 @@ describe('patch manifest helper coverage', () => {
   });
 
   it('reports compatibility cleanly for matching, minor-drift, and major-drift versions', () => {
-    expect(checkVersionCompatibility('140.0esr', '140.0esr')).toBeNull();
+    expect(checkVersionCompatibility('140.9.0esr', '140.9.0esr')).toBeNull();
     expect(checkVersionCompatibility('140.1esr', '140.2esr')).toBe(
       'Patch was created for Firefox 140.1esr, current version is 140.2esr.'
     );
-    expect(checkVersionCompatibility('140.0esr', '141.0esr')).toContain(
+    expect(checkVersionCompatibility('140.9.0esr', '141.0esr')).toContain(
       'Major version mismatch may cause conflicts.'
     );
   });
@@ -79,7 +79,7 @@ describe('patch manifest helper coverage', () => {
               name: 'toolbar-followup',
               description: 'Second toolbar patch',
               createdAt: '2026-01-03T00:00:00.000Z',
-              sourceEsrVersion: '140.0esr',
+              sourceEsrVersion: '140.9.0esr',
               filesAffected: ['browser/toolbar.js'],
             },
             {
@@ -89,7 +89,7 @@ describe('patch manifest helper coverage', () => {
               name: 'toolbar',
               description: 'First toolbar patch',
               createdAt: '2026-01-01T00:00:00.000Z',
-              sourceEsrVersion: '140.0esr',
+              sourceEsrVersion: '140.9.0esr',
               filesAffected: ['browser/toolbar.js'],
             },
             {
@@ -99,7 +99,7 @@ describe('patch manifest helper coverage', () => {
               name: 'new-widget',
               description: 'Adds widget',
               createdAt: '2026-01-02T00:00:00.000Z',
-              sourceEsrVersion: '140.0esr',
+              sourceEsrVersion: '140.9.0esr',
               filesAffected: ['browser/new-widget.js'],
             },
           ],
@@ -156,7 +156,7 @@ describe('patch manifest helper coverage', () => {
       name: 'second',
       description: 'Second patch',
       createdAt: '2026-01-02T00:00:00.000Z',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
       filesAffected: ['browser/second.js'],
     });
 
@@ -167,7 +167,7 @@ describe('patch manifest helper coverage', () => {
       name: 'first',
       description: 'First patch',
       createdAt: '2026-01-01T00:00:00.000Z',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
       filesAffected: ['browser/first.js'],
     });
 
@@ -180,7 +180,7 @@ describe('patch manifest helper coverage', () => {
         name: 'third',
         description: 'Third patch',
         createdAt: '2026-01-03T00:00:00.000Z',
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
         filesAffected: ['browser/third.js'],
       },
       ['002-ui-second.patch']
@@ -205,7 +205,7 @@ describe('patch manifest helper coverage', () => {
       name: 'first-old',
       description: 'Old patch metadata',
       createdAt: '2026-01-03T00:00:00.000Z',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
       filesAffected: ['browser/first.js'],
     });
 
@@ -216,7 +216,7 @@ describe('patch manifest helper coverage', () => {
       name: 'second',
       description: 'Second patch',
       createdAt: '2026-01-02T00:00:00.000Z',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
       filesAffected: ['browser/second.js'],
     });
 
@@ -227,7 +227,7 @@ describe('patch manifest helper coverage', () => {
       name: 'first-new',
       description: 'Updated patch metadata',
       createdAt: '2026-01-01T00:00:00.000Z',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
       filesAffected: ['browser/first.js'],
     });
 

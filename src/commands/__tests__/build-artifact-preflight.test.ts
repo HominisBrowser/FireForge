@@ -8,7 +8,7 @@ vi.mock('../../core/config.js', () => ({
       vendor: 'My Company',
       appId: 'org.example.mybrowser',
       binaryName: 'mybrowser',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
       license: 'EUPL-1.2',
       build: { jobs: 8 },
     })
@@ -48,6 +48,7 @@ vi.mock('../../core/furnace-stories.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
+  checkDiskSpace: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../utils/process.js', () => ({
@@ -58,6 +59,7 @@ vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
+  warn: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
     error: vi.fn(),

@@ -30,12 +30,15 @@ vi.mock('../token-manager.js', () => ({
 
 import { readdir } from 'node:fs/promises';
 
-import type { CustomComponentConfig } from '../../types/furnace.js';
+import type { CustomComponentConfig, FurnaceConfig, StepError } from '../../types/furnace.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 import { loadConfig } from '../config.js';
 import {
   checkRegistrationConsistency,
+  runPostApplyConsistencyChecks,
+  validateJarMnEntries,
+  validateRegistrationPatterns,
   validateTokenLink,
 } from '../furnace-validate-registration.js';
 
@@ -45,6 +48,14 @@ const COMPONENT_CONFIG: CustomComponentConfig = {
   register: true,
   targetPath: 'toolkit/content',
 };
+
+const LOCALIZED_CONFIG: CustomComponentConfig = {
+  ...COMPONENT_CONFIG,
+  localized: true,
+};
+
+const FTL_DEST = '/engine/toolkit/locales/en-US/toolkit/global/moz-dock.ftl';
+const FTL_SRC = '/project/components/custom/moz-dock/moz-dock.ftl';
 
 describe('furnace registration validation helpers', () => {
   beforeEach(() => {
@@ -168,6 +179,106 @@ describe('furnace registration validation helpers', () => {
     );
   });
 
+  it('flags localized components whose .ftl is missing from the Fluent tree', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        ['/project/components/custom/moz-dock', '/engine/toolkit/content', FTL_SRC].includes(
+          filePath
+        )
+      )
+    );
+    vi.mocked(readdir).mockResolvedValue([] as never);
+
+    await expect(
+      checkRegistrationConsistency('/project', 'moz-dock', LOCALIZED_CONFIG)
+    ).resolves.toEqual(
+      expect.objectContaining({
+        sourceExists: true,
+        targetExists: true,
+        filesInSync: false,
+        missingTargetFiles: ['moz-dock.ftl'],
+        driftedFiles: [],
+      })
+    );
+  });
+
+  it('flags localized components whose deployed .ftl has drifted from source', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        [
+          '/project/components/custom/moz-dock',
+          '/engine/toolkit/content',
+          FTL_SRC,
+          FTL_DEST,
+        ].includes(filePath)
+      )
+    );
+    vi.mocked(readdir).mockResolvedValue([] as never);
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath === FTL_SRC) return Promise.resolve('source-ftl');
+      if (filePath === FTL_DEST) return Promise.resolve('stale-ftl');
+      return Promise.resolve('');
+    });
+
+    await expect(
+      checkRegistrationConsistency('/project', 'moz-dock', LOCALIZED_CONFIG)
+    ).resolves.toEqual(
+      expect.objectContaining({
+        filesInSync: false,
+        driftedFiles: ['moz-dock.ftl'],
+        missingTargetFiles: [],
+      })
+    );
+  });
+
+  it('treats localized components as in-sync when source and deployed .ftl match', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        [
+          '/project/components/custom/moz-dock',
+          '/engine/toolkit/content',
+          FTL_SRC,
+          FTL_DEST,
+        ].includes(filePath)
+      )
+    );
+    vi.mocked(readdir).mockResolvedValue([] as never);
+    vi.mocked(readText).mockResolvedValue('same-ftl-body');
+
+    await expect(
+      checkRegistrationConsistency('/project', 'moz-dock', LOCALIZED_CONFIG)
+    ).resolves.toEqual(
+      expect.objectContaining({
+        filesInSync: true,
+        driftedFiles: [],
+        missingTargetFiles: [],
+      })
+    );
+  });
+
+  it('ignores .ftl presence entirely for non-localized components', async () => {
+    // A stray .ftl alongside a non-localized component's sources must not
+    // cause the drift oracle to look for it in the Fluent tree.
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        ['/project/components/custom/moz-dock', '/engine/toolkit/content', FTL_SRC].includes(
+          filePath
+        )
+      )
+    );
+    vi.mocked(readdir).mockResolvedValue([] as never);
+
+    await expect(
+      checkRegistrationConsistency('/project', 'moz-dock', COMPONENT_CONFIG)
+    ).resolves.toEqual(
+      expect.objectContaining({
+        filesInSync: true,
+        driftedFiles: [],
+        missingTargetFiles: [],
+      })
+    );
+  });
+
   it('warns when tokenized component CSS is not linked from browser.xhtml', async () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
@@ -190,6 +301,266 @@ describe('furnace registration validation helpers', () => {
         severity: 'warning',
       }),
     ]);
+  });
+
+  describe('validateJarMnEntries', () => {
+    const baseConfig: FurnaceConfig = {
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-dock': {
+          description: 'Dock',
+          targetPath: 'toolkit/content',
+          register: true,
+          localized: false,
+        },
+      },
+    };
+
+    it('does not warn about missing CSS entry when the source has no CSS file', async () => {
+      // Regression for the false positive that warned for every registered
+      // custom component regardless of whether the component had a .css file.
+      vi.mocked(pathExists).mockImplementation((filePath: string) => {
+        // jar.mn exists; component CSS source does NOT.
+        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
+        return Promise.resolve(false);
+      });
+      vi.mocked(readText).mockResolvedValue('content/global/elements/moz-dock.mjs');
+
+      const issues = await validateJarMnEntries('/project', baseConfig);
+
+      expect(issues.some((i) => i.check === 'missing-jar-mn-css')).toBe(false);
+      expect(issues.some((i) => i.check === 'missing-jar-mn-mjs')).toBe(false);
+    });
+
+    it('still warns about missing CSS entry when the source has a CSS file', async () => {
+      vi.mocked(pathExists).mockImplementation((filePath: string) => {
+        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
+        if (filePath === '/project/components/custom/moz-dock/moz-dock.css') {
+          return Promise.resolve(true);
+        }
+        return Promise.resolve(false);
+      });
+      vi.mocked(readText).mockResolvedValue('content/global/elements/moz-dock.mjs');
+
+      const issues = await validateJarMnEntries('/project', baseConfig);
+
+      const cssWarning = issues.find((i) => i.check === 'missing-jar-mn-css');
+      expect(cssWarning).toBeDefined();
+      expect(cssWarning?.severity).toBe('warning');
+    });
+
+    it('errors when the .mjs entry is missing regardless of CSS presence', async () => {
+      vi.mocked(pathExists).mockImplementation((filePath: string) => {
+        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
+        return Promise.resolve(false);
+      });
+      vi.mocked(readText).mockResolvedValue('# empty jar');
+
+      const issues = await validateJarMnEntries('/project', baseConfig);
+
+      const mjsError = issues.find((i) => i.check === 'missing-jar-mn-mjs');
+      expect(mjsError).toBeDefined();
+      expect(mjsError?.severity).toBe('error');
+    });
+  });
+
+  it('reports filesInSync false when source exists but target does not', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(filePath === '/project/components/custom/moz-dock')
+    );
+    vi.mocked(readdir).mockResolvedValue([{ isFile: () => true, name: 'moz-dock.mjs' }] as never);
+
+    await expect(
+      checkRegistrationConsistency('/project', 'moz-dock', COMPONENT_CONFIG)
+    ).resolves.toEqual(
+      expect.objectContaining({
+        sourceExists: true,
+        targetExists: false,
+        filesInSync: false,
+      })
+    );
+  });
+
+  describe('validateRegistrationPatterns', () => {
+    const baseConfig: FurnaceConfig = {
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-dock': {
+          description: 'Dock',
+          targetPath: 'toolkit/content',
+          register: true,
+          localized: false,
+        },
+      },
+    };
+
+    it('returns empty when customElements.js does not exist', async () => {
+      vi.mocked(pathExists).mockResolvedValue(false);
+
+      const issues = await validateRegistrationPatterns('/project', baseConfig);
+      expect(issues).toEqual([]);
+    });
+
+    it('returns empty when no DOMContentLoaded match exists in content', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue('// no DCL listener here');
+
+      const issues = await validateRegistrationPatterns('/project', baseConfig);
+      expect(issues).toEqual([]);
+    });
+
+    it('finds a component registered in the wrong (before-DCL) block', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(
+        `customElements.setElementCreationCallback("moz-dock", () => {});\n` +
+          `document.addEventListener("DOMContentLoaded", () => {\n` +
+          `  // lazy components here\n` +
+          `});\n`
+      );
+
+      const issues = await validateRegistrationPatterns('/project', baseConfig);
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toEqual(
+        expect.objectContaining({
+          component: 'moz-dock',
+          check: 'wrong-registration-pattern',
+          severity: 'error',
+        })
+      );
+    });
+  });
+
+  describe('runPostApplyConsistencyChecks', () => {
+    const customConfig: Record<string, CustomComponentConfig> = {
+      'moz-dock': {
+        description: 'Dock',
+        targetPath: 'toolkit/content',
+        register: true,
+        localized: false,
+      },
+    };
+
+    it('adds step error when customElements registration is missing', async () => {
+      // Source exists, target exists, jar.mn has .mjs entry, but customElements.js has no mention
+      vi.mocked(pathExists).mockImplementation((filePath: string) =>
+        Promise.resolve(
+          [
+            '/project/components/custom/moz-dock',
+            '/engine/toolkit/content',
+            '/engine/toolkit/content/jar.mn',
+          ].includes(filePath)
+        )
+      );
+      vi.mocked(readdir).mockResolvedValue([] as never);
+      vi.mocked(readText).mockImplementation((filePath: string) => {
+        if (filePath.endsWith('jar.mn')) {
+          return Promise.resolve('content/global/elements/moz-dock.mjs');
+        }
+        return Promise.resolve('');
+      });
+
+      const result: { applied: Array<{ name: string; stepErrors?: StepError[] }> } = {
+        applied: [{ name: 'moz-dock' }],
+      };
+      await runPostApplyConsistencyChecks(
+        '/project',
+        { custom: customConfig },
+        result,
+        'toolkit/locales/en-US/toolkit/global'
+      );
+
+      expect(result.applied[0]).toHaveProperty('stepErrors');
+      expect(result.applied[0]?.stepErrors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            step: 'post-apply consistency',
+            error: expect.stringContaining('missing customElements.js registration') as string,
+          }),
+        ])
+      );
+    });
+
+    it('adds step error when jar.mn .mjs entry is missing', async () => {
+      // Source exists, target exists, customElements.js has the tag, but jar.mn does not have .mjs
+      vi.mocked(pathExists).mockImplementation((filePath: string) =>
+        Promise.resolve(
+          [
+            '/project/components/custom/moz-dock',
+            '/engine/toolkit/content',
+            '/engine/toolkit/content/customElements.js',
+          ].includes(filePath)
+        )
+      );
+      vi.mocked(readdir).mockResolvedValue([] as never);
+      vi.mocked(readText).mockImplementation((filePath: string) => {
+        if (filePath.endsWith('customElements.js')) {
+          return Promise.resolve(
+            `document.addEventListener("DOMContentLoaded", () => {\n` +
+              `  customElements.setElementCreationCallback("moz-dock", () => {});\n` +
+              `});\n`
+          );
+        }
+        return Promise.resolve('');
+      });
+
+      const result: { applied: Array<{ name: string; stepErrors?: StepError[] }> } = {
+        applied: [{ name: 'moz-dock' }],
+      };
+      await runPostApplyConsistencyChecks(
+        '/project',
+        { custom: customConfig },
+        result,
+        'toolkit/locales/en-US/toolkit/global'
+      );
+
+      expect(result.applied[0]?.stepErrors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            step: 'post-apply consistency',
+            error: expect.stringContaining('missing jar.mn .mjs entry') as string,
+          }),
+        ])
+      );
+    });
+
+    it('skips components not in the applied list', async () => {
+      vi.mocked(pathExists).mockResolvedValue(false);
+
+      const result = { applied: [{ name: 'moz-other' }] };
+      await runPostApplyConsistencyChecks(
+        '/project',
+        { custom: customConfig },
+        result,
+        'toolkit/locales/en-US/toolkit/global'
+      );
+
+      expect(result.applied[0]).not.toHaveProperty('stepErrors');
+    });
+
+    it('silently catches errors thrown by checkRegistrationConsistency', async () => {
+      // Force pathExists to throw on the source-exists check
+      vi.mocked(pathExists).mockRejectedValue(new Error('disk failure'));
+
+      const result = { applied: [{ name: 'moz-dock' }] };
+
+      // Should not throw
+      await expect(
+        runPostApplyConsistencyChecks(
+          '/project',
+          { custom: customConfig },
+          result,
+          'toolkit/locales/en-US/toolkit/global'
+        )
+      ).resolves.toBeUndefined();
+
+      expect(result.applied[0]).not.toHaveProperty('stepErrors');
+    });
   });
 
   it('returns no token-link issues when config lookup fails or prerequisites are absent', async () => {

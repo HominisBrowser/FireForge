@@ -32,7 +32,7 @@ describe('commitExportedPatch', () => {
         description: 'first patch',
         diff: 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -0,0 +1 @@\n+first\n',
         filesAffected: ['a.js'],
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
       }),
       commitExportedPatch({
         patchesDir,
@@ -41,7 +41,7 @@ describe('commitExportedPatch', () => {
         description: 'second patch',
         diff: 'diff --git a/b.js b/b.js\n--- a/b.js\n+++ b/b.js\n@@ -0,0 +1 @@\n+second\n',
         filesAffected: ['b.js'],
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
       }),
     ]);
 

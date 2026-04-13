@@ -16,12 +16,23 @@ vi.mock('../../core/config.js', () => ({
     componentsDir: '/project/components',
   })),
   loadConfig: vi.fn(() => ({
-    firefox: { version: '146.0', product: 'firefox' },
+    firefox: { version: '140.9.0', product: 'firefox' },
   })),
+  loadState: vi.fn(() => Promise.resolve({ baseCommit: 'state-base-sha' })),
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
-  ensureFurnaceConfig: vi.fn(() => ({
+  furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
+  loadFurnaceConfig: vi.fn(() =>
+    Promise.resolve({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+    })
+  ),
+  createDefaultFurnaceConfig: vi.fn(() => ({
     version: 1,
     componentPrefix: 'moz-',
     stock: [],
@@ -30,11 +41,43 @@ vi.mock('../../core/furnace-config.js', () => ({
   })),
   writeFurnaceConfig: vi.fn(),
   getFurnacePaths: vi.fn(() => ({
-    configPath: '/project/furnace.json',
+    furnaceConfig: '/project/furnace.json',
     componentsDir: '/project/components',
     customDir: '/project/components/custom',
     overridesDir: '/project/components/overrides',
+    furnaceState: '/project/.fireforge/furnace-state.json',
   })),
+}));
+
+// The rollback journal touches the filesystem directly via node:fs/promises.
+// These tests mock those filesystem helpers, so stub the journal here to keep
+// the unit tests focused on the command's own logic. End-to-end rollback
+// behavior is covered by furnace-authoring-rollback.integration.test.ts.
+vi.mock('../../core/furnace-rollback.js', () => ({
+  createRollbackJournal: vi.fn(() => ({
+    files: new Map(),
+    createdDirs: new Set(),
+    skippedSymlinks: new Set(),
+  })),
+  recordCreatedDir: vi.fn(),
+  snapshotFile: vi.fn(),
+  snapshotDir: vi.fn(),
+  restoreRollbackJournalOrThrow: vi.fn(),
+}));
+
+vi.mock('../../core/furnace-operation.js', () => ({
+  runFurnaceMutation: vi.fn(
+    async (
+      _root: string,
+      _kind: string,
+      body: (ctx: { registerJournal: () => void; registerCleanup: () => void }) => Promise<unknown>
+    ) =>
+      body({
+        registerJournal: () => undefined,
+        registerCleanup: () => undefined,
+      })
+  ),
+  recordFurnaceRollbackFailure: vi.fn(),
 }));
 
 vi.mock('../../core/furnace-scanner.js', () => ({
@@ -86,7 +129,12 @@ import { readdir } from 'node:fs/promises';
 
 import * as p from '@clack/prompts';
 
-import { ensureFurnaceConfig, writeFurnaceConfig } from '../../core/furnace-config.js';
+import {
+  furnaceConfigExists,
+  loadFurnaceConfig,
+  writeFurnaceConfig,
+} from '../../core/furnace-config.js';
+import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
 import { getComponentDetails, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
 import { copyFile, ensureDir, pathExists, writeJson } from '../../utils/fs.js';
 import { cancel, isCancel } from '../../utils/logger.js';
@@ -108,13 +156,14 @@ describe('furnaceOverrideCommand', () => {
       hasFTL: false,
       isRegistered: true,
     });
-    vi.mocked(ensureFurnaceConfig).mockResolvedValue({
+    vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
       overrides: {},
       custom: {},
-    } as Awaited<ReturnType<typeof ensureFurnaceConfig>>);
+    });
   });
 
   it('fails before writing when css-only override is requested for a component without CSS', async () => {
@@ -153,6 +202,47 @@ describe('furnaceOverrideCommand', () => {
     expect(writtenConfig?.overrides['moz-button']?.description).toBe('Full restyle of button');
     expect(writtenConfig?.overrides['moz-button']?.basePath).toBe(
       'toolkit/content/widgets/moz-button'
+    );
+  });
+
+  it('stores baseCommit from state in override config', async () => {
+    vi.mocked(getComponentDetails).mockResolvedValue({
+      tagName: 'moz-button',
+      sourcePath: 'toolkit/content/widgets/moz-button',
+      hasCSS: true,
+      hasFTL: false,
+      isRegistered: true,
+    });
+
+    await furnaceOverrideCommand('/project', 'moz-button', {
+      type: 'full',
+      description: 'Full restyle',
+    });
+
+    const writtenConfig = vi.mocked(writeFurnaceConfig).mock.calls[0]?.[1];
+    expect(writtenConfig?.overrides['moz-button']).toHaveProperty('baseCommit', 'state-base-sha');
+
+    const writtenJson = vi.mocked(writeJson).mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(writtenJson).toHaveProperty('baseCommit', 'state-base-sha');
+  });
+
+  it('copies the shared Fluent file for full localized overrides', async () => {
+    vi.mocked(getComponentDetails).mockResolvedValue({
+      tagName: 'moz-button',
+      sourcePath: 'toolkit/content/widgets/moz-button',
+      hasCSS: true,
+      hasFTL: true,
+      isRegistered: true,
+    });
+
+    await furnaceOverrideCommand('/project', 'moz-button', {
+      type: 'full',
+      description: 'Localized full override',
+    });
+
+    expect(vi.mocked(copyFile)).toHaveBeenCalledWith(
+      '/project/engine/toolkit/locales/en-US/toolkit/global/moz-button.ftl',
+      '/project/components/overrides/moz-button/moz-button.ftl'
     );
   });
 
@@ -219,13 +309,14 @@ describe('furnaceOverrideCommand', () => {
   });
 
   it('throws when override already exists in config', async () => {
-    vi.mocked(ensureFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(furnaceConfigExists).mockResolvedValueOnce(true);
+    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
       overrides: { 'moz-button': { type: 'full', description: '', basePath: '', baseVersion: '' } },
       custom: {},
-    } as Awaited<ReturnType<typeof ensureFurnaceConfig>>);
+    });
 
     await expect(
       furnaceOverrideCommand('/project', 'moz-button', {
@@ -337,6 +428,33 @@ describe('furnaceOverrideCommand', () => {
     expect(copyFile).toHaveBeenCalledWith(
       expect.stringContaining('moz-button.css'),
       expect.stringContaining('moz-button.css')
+    );
+  });
+
+  it('records a pending repair marker when rollback itself fails', async () => {
+    vi.mocked(getComponentDetails).mockResolvedValue({
+      tagName: 'moz-button',
+      sourcePath: 'toolkit/content/widgets/moz-button',
+      hasCSS: true,
+      hasFTL: false,
+      isRegistered: true,
+    });
+    vi.mocked(copyFile).mockRejectedValueOnce(new Error('copy failed'));
+
+    const { restoreRollbackJournalOrThrow } = await import('../../core/furnace-rollback.js');
+    vi.mocked(restoreRollbackJournalOrThrow).mockRejectedValueOnce(new Error('rollback failed'));
+
+    await expect(
+      furnaceOverrideCommand('/project', 'moz-button', {
+        type: 'full',
+        description: 'Broken override',
+      })
+    ).rejects.toThrow(/rollback failed/);
+
+    expect(vi.mocked(recordFurnaceRollbackFailure)).toHaveBeenCalledWith(
+      '/project',
+      'override-rollback',
+      'rollback failed'
     );
   });
 

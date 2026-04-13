@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readdir } from 'node:fs/promises';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { pathExists, readJson, readText } from '../../utils/fs.js';
 import {
   bootstrap,
   bootstrapWithOutput,
   build,
   buildArtifactMismatchMessage,
+  buildUI,
   ensureMach,
   ensurePython,
   hasBuildArtifacts,
@@ -40,10 +44,6 @@ vi.mock('../../utils/process.js', () => ({
   execStream: vi.fn(),
   executableExists: vi.fn(),
 }));
-
-import { readdir } from 'node:fs/promises';
-
-import { pathExists, readJson, readText } from '../../utils/fs.js';
 
 describe('hasBuildArtifacts', () => {
   beforeEach(() => {
@@ -403,6 +403,31 @@ describe('mach command execution', () => {
     stderrSpy.mockRestore();
   });
 
+  it('truncates captured stream tails when mach output exceeds the retention limit', async () => {
+    const { execStream } = await import('../../utils/process.js');
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await primePythonResolution();
+
+    const oversizedStdout = 'a'.repeat(2 * 1024 * 1024 + 11);
+    const oversizedStderr = 'b'.repeat(2 * 1024 * 1024 + 17);
+
+    vi.mocked(execStream).mockImplementationOnce((_cmd, _args, options) => {
+      options?.onStdout?.(oversizedStdout);
+      options?.onStderr?.(oversizedStderr);
+      return Promise.resolve(9);
+    });
+
+    await expect(runMachCapture(['build'], '/engine')).resolves.toEqual({
+      stdout: oversizedStdout.slice(-(2 * 1024 * 1024)),
+      stderr: oversizedStderr.slice(-(2 * 1024 * 1024)),
+      exitCode: 9,
+    });
+
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
   it('captures inherited mach output', async () => {
     const { execInheritCapture } = await import('../../utils/process.js');
     await primePythonResolution();
@@ -440,6 +465,7 @@ describe('mach command execution', () => {
     });
     await expect(build('/engine', 4)).resolves.toBe(0);
     await expect(build('/engine')).resolves.toBe(0);
+    await expect(buildUI('/engine')).resolves.toBe(0);
     await expect(runBrowser('/engine', ['--safe-mode'])).resolves.toBe(0);
     await expect(machPackage('/engine')).resolves.toBe(0);
     await expect(watch('/engine')).resolves.toBe(0);
@@ -468,6 +494,11 @@ describe('mach command execution', () => {
     expect(execInherit).toHaveBeenCalledWith(
       'python3.12',
       ['/engine/mach', 'build'],
+      expect.any(Object)
+    );
+    expect(execInherit).toHaveBeenCalledWith(
+      'python3.12',
+      ['/engine/mach', 'build', 'faster'],
       expect.any(Object)
     );
     expect(execInherit).toHaveBeenCalledWith(

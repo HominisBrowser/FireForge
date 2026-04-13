@@ -2,7 +2,12 @@
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { PatchCategory, PatchInfo, PatchMetadata } from '../types/commands/index.js';
+import type {
+  PatchCategory,
+  PatchesManifest,
+  PatchInfo,
+  PatchMetadata,
+} from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
@@ -81,37 +86,31 @@ export interface CommitExportedPatchResult {
 }
 
 /**
- * Commits a freshly generated patch file and manifest update under an exclusive
- * patch directory lock so concurrent exports cannot allocate the same number.
+ * Commits a freshly generated patch file and manifest update under an
+ * exclusive patch directory lock so concurrent exports cannot allocate the
+ * same number. Shares {@link computeExportPlanUnderLock} with
+ * {@link planExport} so the dry-run preview cannot drift from the real
+ * write: both paths go through the same planning helper, and any bug fix
+ * to filename allocation or supersede detection lands in both automatically.
  */
 export async function commitExportedPatch(
   input: CommitExportedPatchInput
 ): Promise<CommitExportedPatchResult> {
   return withPatchDirectoryLock(input.patchesDir, async () => {
-    const patchFilename = await getNextPatchFilename(input.patchesDir, input.category, input.name);
-    const patchPath = join(input.patchesDir, patchFilename);
-    const metadata: PatchMetadata = {
-      filename: patchFilename,
-      order: parseInt(patchFilename.split('-')[0] ?? '0', 10),
+    const plan = await computeExportPlanUnderLock({
+      patchesDir: input.patchesDir,
       category: input.category,
       name: input.name,
       description: input.description,
-      createdAt: new Date().toISOString(),
-      sourceEsrVersion: input.sourceEsrVersion,
       filesAffected: input.filesAffected,
-    };
+      sourceEsrVersion: input.sourceEsrVersion,
+    });
 
-    const superseded = await findAllPatchesForFiles(
-      input.patchesDir,
-      input.filesAffected,
-      patchFilename
-    );
-    const supersededFilenames = superseded.map((patch) => patch.filename);
-    const originalManifest = await loadPatchesManifest(input.patchesDir);
+    const patchPath = plan.patchPath;
     const originalPatchContent = (await pathExists(patchPath)) ? await readText(patchPath) : null;
     const removedPatchContents = new Map<string, string>();
 
-    for (const oldPatch of superseded) {
+    for (const oldPatch of plan.supersededPatches) {
       if (await pathExists(oldPatch.path)) {
         removedPatchContents.set(oldPatch.path, await readText(oldPatch.path));
       }
@@ -120,9 +119,13 @@ export async function commitExportedPatch(
     try {
       await writeText(patchPath, input.diff);
 
-      await addPatchToManifest(input.patchesDir, metadata, supersededFilenames);
+      await addPatchToManifest(
+        input.patchesDir,
+        plan.metadata,
+        plan.supersededPatches.map((p) => p.filename)
+      );
 
-      for (const oldPatch of superseded) {
+      for (const oldPatch of plan.supersededPatches) {
         await removeFile(oldPatch.path);
       }
     } catch (error: unknown) {
@@ -147,8 +150,8 @@ export async function commitExportedPatch(
       }
 
       try {
-        if (originalManifest) {
-          await savePatchesManifest(input.patchesDir, originalManifest);
+        if (plan.manifestBefore) {
+          await savePatchesManifest(input.patchesDir, plan.manifestBefore);
         } else {
           await removeFile(join(input.patchesDir, PATCHES_MANIFEST));
         }
@@ -160,9 +163,9 @@ export async function commitExportedPatch(
     }
 
     return {
-      patchFilename,
-      metadata,
-      superseded,
+      patchFilename: plan.patchFilename,
+      metadata: plan.metadata,
+      superseded: plan.supersededPatches,
     };
   });
 }
@@ -233,6 +236,90 @@ export async function findExistingPatchForFile(
  */
 export async function updatePatch(patchPath: string, newContent: string): Promise<void> {
   await writeText(patchPath, newContent);
+}
+
+/**
+ * Optional post-commit hook for {@link updatePatchAndMetadata}. Runs inside
+ * the patch directory lock after the mutation has succeeded but before the
+ * lock is released. Intended for history-log appends so the audit record
+ * lands atomically with the mutation. Hook failures are warned but never
+ * re-thrown: by the time the hook runs the mutation is already committed,
+ * so there is nothing meaningful to roll back.
+ */
+export type UpdatePatchCommittedHook = () => Promise<void>;
+
+/**
+ * Updates a patch file body and its manifest row under the same patch
+ * directory lock. Intended for commands like `re-export --files` where the
+ * file body and `filesAffected` metadata must move together.
+ *
+ * If the manifest write fails after the patch body has been rewritten, the
+ * original patch content is restored best-effort before the error is
+ * re-thrown.
+ *
+ * @param patchesDir - Path to the patches directory
+ * @param filename - Target patch filename
+ * @param newContent - New patch body
+ * @param updates - Metadata fields to merge into the existing row
+ * @param onCommitted - Optional hook that runs inside the same lock after
+ *   the mutation succeeds. See {@link UpdatePatchCommittedHook}.
+ */
+export async function updatePatchAndMetadata(
+  patchesDir: string,
+  filename: string,
+  newContent: string,
+  updates: Partial<PatchMetadata>,
+  onCommitted?: UpdatePatchCommittedHook
+): Promise<void> {
+  await withPatchDirectoryLock(patchesDir, async () => {
+    const manifest = await loadPatchesManifest(patchesDir);
+    if (!manifest) {
+      throw new Error('Cannot update patch metadata: patches.json is missing.');
+    }
+
+    const patchIndex = manifest.patches.findIndex((p) => p.filename === filename);
+    if (patchIndex === -1) {
+      throw new Error(`Cannot update patch metadata: ${filename} not found in patches.json.`);
+    }
+
+    const patchPath = join(patchesDir, filename);
+    if (!(await pathExists(patchPath))) {
+      throw new Error(`Cannot update patch: patch file is missing on disk: ${filename}`);
+    }
+
+    const originalContent = await readText(patchPath);
+    const existingPatch = manifest.patches[patchIndex] as PatchMetadata;
+    manifest.patches[patchIndex] = { ...existingPatch, ...updates };
+
+    let patchWritten = false;
+    try {
+      await writeText(patchPath, newContent);
+      patchWritten = true;
+      await savePatchesManifest(patchesDir, manifest);
+    } catch (error: unknown) {
+      if (patchWritten) {
+        try {
+          await writeText(patchPath, originalContent);
+        } catch (rollbackError: unknown) {
+          warn(
+            `Rollback warning: could not restore ${filename} after metadata write failed: ${toError(rollbackError).message}`
+          );
+        }
+      }
+      throw error;
+    }
+
+    if (onCommitted) {
+      try {
+        await onCommitted();
+      } catch (hookError: unknown) {
+        warn(
+          `History log append failed after updatePatchAndMetadata committed (${filename}): ` +
+            toError(hookError).message
+        );
+      }
+    }
+  });
 }
 
 /**
@@ -345,19 +432,38 @@ export async function deletePatch(patchesDir: string, filename: string): Promise
 }
 
 /**
+ * Report whether a patch is fully covered by a new export, and which of its
+ * files caused the coverage.
+ *
+ * Widened from a bare boolean to `{covered, byFiles}` so that `export
+ * --supersede --dry-run` can tell the operator which files in each existing
+ * patch triggered its supersession — the opaque "this export would
+ * supersede N patches" message was the primary reason `--supersede` was
+ * unsafe before this change.
+ */
+export interface PatchCoverage {
+  covered: boolean;
+  byFiles: string[];
+}
+
+/**
  * Checks whether a patch is fully covered by a new export.
  * A patch is fully covered when every file it affects is present in the new export.
  * @param patchFiles - Files affected by the existing patch
  * @param targetFiles - Files affected by the new export
- * @returns True when the existing patch is fully covered
+ * @returns Coverage report with the triggering file list when `covered` is true
  */
-export function isPatchFullyCovered(patchFiles: string[], targetFiles: string[]): boolean {
+export function isPatchFullyCovered(patchFiles: string[], targetFiles: string[]): PatchCoverage {
   if (patchFiles.length === 0) {
-    return false;
+    return { covered: false, byFiles: [] };
   }
 
   const targetFileSet = new Set(targetFiles);
-  return patchFiles.every((file) => targetFileSet.has(file));
+  const covered = patchFiles.every((file) => targetFileSet.has(file));
+  return {
+    covered,
+    byFiles: covered ? [...patchFiles] : [],
+  };
 }
 
 /**
@@ -383,7 +489,7 @@ export async function findAllPatchesForFiles(
     // Skip the new patch itself
     if (excludeFilename && metadata.filename === excludeFilename) continue;
 
-    if (isPatchFullyCovered(metadata.filesAffected, targetFiles)) {
+    if (isPatchFullyCovered(metadata.filesAffected, targetFiles).covered) {
       const patch = patches.find((p) => p.filename === metadata.filename);
       if (patch) {
         superseded.push(patch);
@@ -392,4 +498,180 @@ export async function findAllPatchesForFiles(
   }
 
   return superseded;
+}
+
+/**
+ * Describes which files in a covered patch triggered its supersession.
+ * Returned from {@link planExport} so dry-run previews can render a
+ * complete "moved / removed" picture rather than a bare patch count.
+ */
+export interface SupersedeCoverageDetail {
+  /** Existing patch filename. */
+  filename: string;
+  /** Files the existing patch claimed that the new export also claims. */
+  coveredByFiles: string[];
+}
+
+/**
+ * Resolves coverage details for every existing patch that the new export
+ * would fully cover. Mirrors {@link findAllPatchesForFiles} but returns the
+ * widened {@link PatchCoverage.byFiles} list per match so callers can render
+ * a per-patch breakdown.
+ */
+export async function findAllPatchesForFilesWithDetails(
+  patchesDir: string,
+  targetFiles: string[],
+  excludeFilename?: string
+): Promise<{ patch: PatchInfo; coverage: PatchCoverage; metadata: PatchMetadata }[]> {
+  const manifest = await loadPatchesManifest(patchesDir);
+  if (!manifest) return [];
+
+  const patches = await discoverPatches(patchesDir);
+  const results: { patch: PatchInfo; coverage: PatchCoverage; metadata: PatchMetadata }[] = [];
+
+  for (const metadata of manifest.patches) {
+    if (excludeFilename && metadata.filename === excludeFilename) continue;
+    const coverage = isPatchFullyCovered(metadata.filesAffected, targetFiles);
+    if (!coverage.covered) continue;
+    const patch = patches.find((p) => p.filename === metadata.filename);
+    if (!patch) continue;
+    results.push({ patch, coverage, metadata });
+  }
+
+  return results;
+}
+
+/**
+ * Fully computed plan for a pending export. Returned from
+ * {@link planExport} so that `--dry-run` previews can render the full
+ * outcome of the hypothetical write without touching disk.
+ *
+ * Dry-run and the real write both go through {@link computeExportPlanUnderLock}
+ * so their filename allocation, supersede detection, and projected
+ * post-write manifest cannot drift. `planExport` exposes the rich coverage
+ * form for preview rendering; {@link commitExportedPatch} consumes the bare
+ * `PatchInfo[]` form of the same underlying data.
+ */
+export interface ExportPlan {
+  /** Allocated patch filename (e.g. `005-ui-sidebar.patch`). */
+  patchFilename: string;
+  /** Full metadata row that would be written to the manifest. */
+  metadata: PatchMetadata;
+  /** Existing patches that would be superseded by this export. */
+  superseded: SupersedeCoverageDetail[];
+  /** Manifest state as it existed when the plan was computed. */
+  manifestBefore: PatchesManifest | null;
+  /**
+   * Manifest state the plan would write. Always includes the new patch
+   * metadata and excludes any superseded filenames.
+   */
+  manifestAfter: PatchesManifest;
+}
+
+export interface PlanExportInput {
+  patchesDir: string;
+  category: PatchCategory;
+  name: string;
+  description: string;
+  filesAffected: string[];
+  sourceEsrVersion: string;
+}
+
+/**
+ * Internal shape shared by {@link planExport} (dry-run) and
+ * {@link commitExportedPatch} (real write). Carries both the rich coverage
+ * form (for dry-run rendering) and the bare `PatchInfo[]` form (for the
+ * writer to delete superseded files), so neither caller has to recompute
+ * the supersede set from the other.
+ */
+interface ComputedExportPlan {
+  patchFilename: string;
+  patchPath: string;
+  metadata: PatchMetadata;
+  supersededDetails: SupersedeCoverageDetail[];
+  supersededPatches: PatchInfo[];
+  manifestBefore: PatchesManifest | null;
+  manifestAfter: PatchesManifest;
+}
+
+/**
+ * Internal planning helper. Does NOT take the patch directory lock — the
+ * caller must already hold it — because the two public entry points
+ * ({@link planExport} and {@link commitExportedPatch}) each take their own
+ * lock for the full operation. Sharing this single pure computation is how
+ * dry-run previews and real writes stay in lockstep by construction
+ * instead of by parallel implementations that can drift.
+ */
+async function computeExportPlanUnderLock(input: PlanExportInput): Promise<ComputedExportPlan> {
+  const patchFilename = await getNextPatchFilename(input.patchesDir, input.category, input.name);
+  const patchPath = join(input.patchesDir, patchFilename);
+
+  const metadata: PatchMetadata = {
+    filename: patchFilename,
+    order: parseInt(patchFilename.split('-')[0] ?? '0', 10),
+    category: input.category,
+    name: input.name,
+    description: input.description,
+    createdAt: new Date().toISOString(),
+    sourceEsrVersion: input.sourceEsrVersion,
+    filesAffected: input.filesAffected,
+  };
+
+  const supersedeMatches = await findAllPatchesForFilesWithDetails(
+    input.patchesDir,
+    input.filesAffected,
+    patchFilename
+  );
+  const supersededDetails: SupersedeCoverageDetail[] = supersedeMatches.map((m) => ({
+    filename: m.patch.filename,
+    coveredByFiles: m.coverage.byFiles,
+  }));
+  const supersededPatches: PatchInfo[] = supersedeMatches.map((m) => m.patch);
+
+  const manifestBefore = await loadPatchesManifest(input.patchesDir);
+  const supersededSet = new Set(supersededDetails.map((s) => s.filename));
+  const afterPatches = (manifestBefore?.patches ?? []).filter(
+    (p) => !supersededSet.has(p.filename) && p.filename !== patchFilename
+  );
+  afterPatches.push(metadata);
+  afterPatches.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
+
+  return {
+    patchFilename,
+    patchPath,
+    metadata,
+    supersededDetails,
+    supersededPatches,
+    manifestBefore: manifestBefore ?? null,
+    manifestAfter: {
+      version: 1,
+      patches: afterPatches,
+    },
+  };
+}
+
+/**
+ * Read-only planning function — computes everything a real export would
+ * do without writing anything to disk. Takes the patch directory lock
+ * briefly, runs {@link computeExportPlanUnderLock}, releases the lock,
+ * and returns the plan for preview rendering.
+ *
+ * Shares {@link computeExportPlanUnderLock} with {@link commitExportedPatch}
+ * so the dry-run preview cannot drift from the real write. The real write
+ * path does NOT reuse a prior plan object (another export may have landed
+ * between dry-run and commit, which would stale the filename allocation);
+ * it re-runs the same helper under a fresh lock. The guarantee is "same
+ * code, possibly different data," not "same plan object."
+ */
+export async function planExport(input: PlanExportInput): Promise<ExportPlan> {
+  return withPatchDirectoryLock(input.patchesDir, async () => {
+    const plan = await computeExportPlanUnderLock(input);
+    return {
+      patchFilename: plan.patchFilename,
+      metadata: plan.metadata,
+      superseded: plan.supersededDetails,
+      manifestBefore: plan.manifestBefore,
+      manifestAfter: plan.manifestAfter,
+    };
+  });
 }

@@ -36,7 +36,11 @@ export {
   isNewFileInPatch,
   parseHunksForFile,
 } from './patch-parse.js';
-export { applyPatchToContent, extractNewFileContent } from './patch-transform.js';
+export {
+  applyPatchToContent,
+  extractNewFileContent,
+  extractNewFileContentFromDiff,
+} from './patch-transform.js';
 
 /**
  * Applies a single patch.
@@ -200,25 +204,126 @@ function validatePatchTargets(patch: PatchInfo, affectedFiles: string[]): void {
 }
 
 /**
+ * Options for {@link applyPatchesWithContinue}.
+ */
+export interface ApplyPatchesOptions {
+  /** Continue applying patches even after one fails. */
+  continueOnFailure?: boolean;
+  /**
+   * Stop applying patches after this filename has been processed
+   * (successfully or not). Any patches after it in apply order are left
+   * untouched. Accepts either the bare filename (with or without .patch)
+   * or the numeric ordinal as a string. Unknown identifiers throw.
+   */
+  untilFilename?: string | undefined;
+}
+
+/**
+ * Decides whether a patch filename matches an `--until` identifier.
+ *
+ * The identifier is one of three shapes and the three shapes must stay
+ * disjoint so the operator can reason about which patch they picked:
+ *
+ *   1. **Exact filename** — `005-foo.patch`. Matches only that filename.
+ *   2. **Filename without extension** — `005-foo`. Matches `005-foo.patch`.
+ *   3. **Bare numeric ordinal** — `5` or `005`. Matches the patch whose
+ *      order prefix parses to the same integer (so `5` and `005` both
+ *      match `005-foo.patch`, and `05` matches too because parseInt
+ *      normalizes leading zeros).
+ *
+ * A purely-numeric identifier is treated **only** as an ordinal: it does
+ * not also match a filename that happens to literally equal the digits.
+ * That would require a patch literally named `5` or `005` — which would
+ * collide with the filename prefix anyway — and we prefer the explicit
+ * ordinal interpretation. The earlier form's `patchFilename === needle`
+ * short-circuit was kept behind the numeric gate so the match stays
+ * single-meaning per identifier.
+ */
+function matchesUntilFilename(patchFilename: string, needle: string): boolean {
+  const isNumeric = /^\d+$/.test(needle);
+  if (isNumeric) {
+    const order = parseInt(needle, 10);
+    const prefixMatch = /^(\d+)-/.exec(patchFilename);
+    return prefixMatch !== null && parseInt(prefixMatch[1] ?? '0', 10) === order;
+  }
+  if (patchFilename === needle) return true;
+  if (patchFilename === `${needle}.patch`) return true;
+  return false;
+}
+
+/**
  * Enhanced patch application with continue mode.
  * When continueOnFailure is false, rolls back all previously applied patches
  * on the first failure to keep the engine directory in a clean state.
  * @param patchesDir - Path to the patches directory
  * @param engineDir - Path to the engine directory
- * @param continueOnFailure - Whether to continue after failures
+ * @param optionsOrContinue - Options object, or the legacy continueOnFailure boolean
  * @returns Import summary with all results
  */
 export async function applyPatchesWithContinue(
   patchesDir: string,
   engineDir: string,
-  continueOnFailure: boolean = false
+  optionsOrContinue: ApplyPatchesOptions | boolean = false
 ): Promise<ImportSummary> {
+  // Accept both the legacy boolean positional and the new options object so
+  // existing call sites (tests and rebase) keep working without a rewrite.
+  const options: ApplyPatchesOptions =
+    typeof optionsOrContinue === 'boolean'
+      ? { continueOnFailure: optionsOrContinue }
+      : optionsOrContinue;
+  const continueOnFailure = options.continueOnFailure ?? false;
+  const untilFilename = options.untilFilename;
+
   const patches = await discoverPatches(patchesDir);
+
+  // Resolve the --until stop index up front so callers get an immediate
+  // error on an unknown identifier instead of a silent no-op. Detect
+  // ambiguity (two patches matching the same needle — should never happen
+  // in a well-formed manifest but surfaces queue corruption loudly
+  // instead of silently picking the first match).
+  let stopIndex = patches.length - 1;
+  if (untilFilename !== undefined) {
+    const matchingIndexes: number[] = [];
+    for (let i = 0; i < patches.length; i++) {
+      const patch = patches[i];
+      if (patch && matchesUntilFilename(patch.filename, untilFilename)) {
+        matchingIndexes.push(i);
+      }
+    }
+    if (matchingIndexes.length === 0) {
+      throw new PatchError(
+        `--until identifier "${untilFilename}" does not match any patch. ` +
+          `Available: ${patches.map((p) => p.filename).join(', ')}`
+      );
+    }
+    if (matchingIndexes.length > 1) {
+      const matches = matchingIndexes
+        .map((idx) => patches[idx]?.filename ?? '<unknown>')
+        .join(', ');
+      throw new PatchError(
+        `--until identifier "${untilFilename}" is ambiguous: matches ${matchingIndexes.length} ` +
+          `patches (${matches}). Use the full filename to disambiguate.`
+      );
+    }
+    stopIndex = matchingIndexes[0] ?? patches.length - 1;
+  }
+
   const succeeded: PatchResult[] = [];
   const failed: PatchResult[] = [];
   const skipped: PatchInfo[] = [];
 
-  for (const patch of patches) {
+  for (let i = 0; i < patches.length; i++) {
+    const patch = patches[i];
+    if (!patch) continue;
+
+    if (i > stopIndex) {
+      // Patches beyond the --until cutoff are intentionally skipped. They
+      // are not failures — record them in `skipped` so the summary still
+      // reflects what the full queue contained.
+      skipped.push(patch);
+      continue;
+    }
+
     const result = await applySinglePatch(patch, engineDir);
 
     if (result.success) {
@@ -235,10 +340,10 @@ export async function applyPatchesWithContinue(
           await rollbackPatches(succeeded, engineDir);
         }
 
-        // Mark remaining patches as skipped
-        const currentIndex = patches.indexOf(patch);
-        for (let i = currentIndex + 1; i < patches.length; i++) {
-          const remainingPatch = patches[i];
+        // Mark remaining patches as skipped (including anything that was
+        // already past the --until cutoff, which stays skipped).
+        for (let j = i + 1; j < patches.length; j++) {
+          const remainingPatch = patches[j];
           if (remainingPatch) {
             skipped.push(remainingPatch);
           }

@@ -46,6 +46,34 @@ export class GeneralError extends FireForgeError {
 }
 
 /**
+ * Raised when a legacy regex/brace-depth fallback parser decides it
+ * cannot safely perform its mutation — e.g. because a block it expected
+ * to walk never closes, because the inserted result fails a round-trip
+ * brace balance check, or because an expected pattern is missing.
+ *
+ * Dedicated subclass (rather than raw GeneralError) so callers and tests
+ * can distinguish "the fallback refused to corrupt this file" from other
+ * failure modes, and so {@link withParserFallback} callers can opt into
+ * re-throwing fallback refusals instead of silently swallowing them.
+ */
+export class ParserFallbackError extends FireForgeError {
+  readonly code = ExitCode.GENERAL_ERROR;
+
+  constructor(
+    message: string,
+    /** Filename or logical context where the fallback ran (e.g. `browser-init.js`). */
+    public readonly context?: string,
+    cause?: unknown
+  ) {
+    super(message, cause);
+  }
+
+  override get userMessage(): string {
+    return this.context ? `${this.message} (in ${this.context})` : this.message;
+  }
+}
+
+/**
  * Error thrown when a command-line argument is invalid.
  */
 export class InvalidArgumentError extends FireForgeError {

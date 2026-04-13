@@ -1,9 +1,23 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { existsSync } from 'node:fs';
+import { dirname } from 'node:path';
+
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, existsSync: vi.fn(actual.existsSync) };
+});
+
+vi.mock('node:path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:path')>();
+  return { ...actual, dirname: vi.fn(actual.dirname) };
+});
+
 import {
   createProgram,
+  getProjectRoot,
   installBrokenPipeHandler,
   main,
   resetBrokenPipeHandlerForTests,
@@ -146,5 +160,61 @@ describe('main', () => {
     }
 
     expect(parseAsyncSpy).toHaveBeenCalledWith(['node', 'fireforge', 'status']);
+  });
+});
+
+describe('getProjectRoot', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('throws when the walk depth limit is exhausted without finding fireforge.json', () => {
+    const fakeStart = '/a/b/c/d/e';
+    vi.spyOn(process, 'cwd').mockReturnValue(fakeStart);
+    vi.mocked(existsSync).mockReturnValue(false);
+
+    let counter = 0;
+    vi.mocked(dirname).mockImplementation(() => `/synthetic/${counter++}`);
+
+    expect(() => getProjectRoot()).toThrow('Could not find fireforge.json');
+  });
+});
+
+describe('buildGroupedHelpFormatter', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns unsplit lines when the description area is too narrow for wrapping', () => {
+    const program = createProgram();
+    const helper = program.createHelp();
+    helper.helpWidth = 30;
+
+    const result = helper.formatHelp(program, helper);
+
+    expect(typeof result).toBe('string');
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it('defaults to 80 columns when helpWidth is undefined', () => {
+    const program = createProgram();
+    const helper = program.createHelp();
+    helper.helpWidth = undefined as unknown as number;
+
+    const result = helper.formatHelp(program, helper);
+
+    expect(typeof result).toBe('string');
+    expect(result).toContain('Usage:');
+  });
+
+  it('wraps long descriptions at moderate widths', () => {
+    const program = createProgram();
+    const helper = program.createHelp();
+    helper.helpWidth = 50;
+
+    const result = helper.formatHelp(program, helper);
+
+    expect(typeof result).toBe('string');
+    expect(result).toContain('\n');
   });
 });

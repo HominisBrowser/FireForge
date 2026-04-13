@@ -93,7 +93,7 @@ describe('rebase integration', () => {
     // Verify patches are at current version
     const manifestBefore = await loadPatchesManifest(join(projectRoot, 'patches'));
     expect(manifestBefore?.patches).toHaveLength(2);
-    expect(manifestBefore?.patches[0]?.sourceEsrVersion).toBe('140.0esr');
+    expect(manifestBefore?.patches[0]?.sourceEsrVersion).toBe('140.9.0esr');
 
     // "Upgrade" to new version by changing config
     await writeFireForgeConfig(projectRoot, {
@@ -101,7 +101,7 @@ describe('rebase integration', () => {
     });
 
     // Run rebase — patches should apply cleanly since engine is at post-patch state
-    await rebaseCommand(projectRoot, { force: true });
+    await rebaseCommand(projectRoot, { yes: true });
 
     // Verify version stamps updated
     const manifestAfter = await loadPatchesManifest(join(projectRoot, 'patches'));
@@ -145,7 +145,7 @@ describe('rebase integration', () => {
     });
 
     // Rebase — should fail on the patch (context doesn't match)
-    await rebaseCommand(projectRoot, { force: true });
+    await rebaseCommand(projectRoot, { yes: true });
 
     // Session should exist with failed patch
     const session = await loadRebaseSession(projectRoot);
@@ -177,7 +177,7 @@ describe('rebase integration', () => {
     expect(manifest?.patches[0]?.sourceEsrVersion).toBe('141.0esr');
   });
 
-  it('aborts a rebase with --abort --force and restores engine state', async () => {
+  it('aborts a rebase with --abort --yes and restores engine state', async () => {
     const engineDir = join(projectRoot, 'engine');
     await initCommittedRepo(engineDir, {
       'browser/base/content/browser.js': 'export const title = "baseline";\n',
@@ -206,11 +206,11 @@ describe('rebase integration', () => {
     });
 
     // Start rebase — fails on conflict
-    await rebaseCommand(projectRoot, { force: true });
+    await rebaseCommand(projectRoot, { yes: true });
     expect(await hasActiveRebaseSession(projectRoot)).toBe(true);
 
     // Abort
-    await rebaseCommand(projectRoot, { abort: true, force: true });
+    await rebaseCommand(projectRoot, { abort: true, yes: true });
 
     // Session should be cleared
     expect(await hasActiveRebaseSession(projectRoot)).toBe(false);
@@ -236,7 +236,7 @@ describe('rebase integration', () => {
     });
 
     // DON'T change the version — rebase should say "not needed"
-    await rebaseCommand(projectRoot, { force: true });
+    await rebaseCommand(projectRoot, { yes: true });
 
     // No session should be created
     expect(await hasActiveRebaseSession(projectRoot)).toBe(false);

@@ -15,6 +15,7 @@ import { escapeRegex } from '../utils/regex.js';
 import { type AcornESTreeNode, detectIndent, getNodeSource, parseScript } from './ast-utils.js';
 import { withParserFallback } from './parser-fallback.js';
 import {
+  assertBraceBalancePreserved,
   extractNameFromExpression,
   findInsertionAfterFireforgeBlocks,
   findMethodBody,
@@ -127,7 +128,7 @@ export function legacyAddInit(content: string, expression: string, after?: strin
   const lines = content.split('\n');
 
   const onLoadRegex = /\b(?:async\s+)?onLoad\s*[(:]/;
-  const found = findMethodBraceIndex(lines, onLoadRegex);
+  const found = findMethodBraceIndex(lines, onLoadRegex, { requireBrace: true });
 
   if (!found) {
     throw new GeneralError(
@@ -157,7 +158,10 @@ export function legacyAddInit(content: string, expression: string, after?: strin
             break;
           }
         }
-        insertIndex = walkToTryBlockEnd(lines, tryStart);
+        insertIndex = walkToTryBlockEnd(lines, tryStart, {
+          strict: true,
+          context: BROWSER_INIT_JS,
+        });
         located = true;
         break;
       }
@@ -224,11 +228,15 @@ export async function addInitToBrowserInit(
     return false;
   }
 
-  const { value } = withParserFallback(
+  const { value, usedFallback } = withParserFallback(
     () => addInitAST(content, expression, after),
     () => legacyAddInit(content, expression, after),
     BROWSER_INIT_JS
   );
+
+  if (usedFallback) {
+    assertBraceBalancePreserved(content, value, BROWSER_INIT_JS);
+  }
 
   await writeText(filePath, value);
   return true;

@@ -15,6 +15,7 @@ import { escapeRegex } from '../utils/regex.js';
 import { type AcornESTreeNode, detectIndent, parseScript } from './ast-utils.js';
 import { withParserFallback } from './parser-fallback.js';
 import {
+  assertBraceBalancePreserved,
   extractNameFromExpression,
   findMethodBody,
   findMethodBraceIndex,
@@ -74,7 +75,7 @@ export function legacyAddDestroy(content: string, expression: string): string {
   const lines = content.split('\n');
 
   const destroyRegex = /\b(?:async\s+)?(onUnload|uninit)\s*[(:]/;
-  const found = findMethodBraceIndex(lines, destroyRegex);
+  const found = findMethodBraceIndex(lines, destroyRegex, { requireBrace: true });
 
   if (!found) {
     throw new GeneralError(
@@ -127,11 +128,15 @@ export async function addDestroyToBrowserInit(
     return false;
   }
 
-  const { value } = withParserFallback(
+  const { value, usedFallback } = withParserFallback(
     () => addDestroyAST(content, expression),
     () => legacyAddDestroy(content, expression),
     BROWSER_INIT_JS
   );
+
+  if (usedFallback) {
+    assertBraceBalancePreserved(content, value, BROWSER_INIT_JS);
+  }
 
   await writeText(filePath, value);
   return true;

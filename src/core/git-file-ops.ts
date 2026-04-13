@@ -110,6 +110,37 @@ export async function fileExistsInHead(repoDir: string, filePath: string): Promi
 }
 
 /**
+ * Gets the content of a file at a specific git ref (HEAD by default).
+ * @param repoDir - Repository directory
+ * @param filePath - Path to the file (relative to repo)
+ * @param ref - Git ref to read from (commit hash, branch, tag). Defaults to HEAD.
+ * @returns File content or null if file doesn't exist at that ref
+ */
+export async function getFileContentAtRef(
+  repoDir: string,
+  filePath: string,
+  ref = 'HEAD'
+): Promise<string | null> {
+  await ensureGit();
+  const result = await exec('git', ['show', `${ref}:${filePath}`], { cwd: repoDir });
+  if (result.exitCode !== 0) {
+    const stderr = result.stderr.trim();
+    // Recognise the "file does not exist at this ref" variants across git versions.
+    // The ref name in quotes varies with what was passed (HEAD, a SHA, a tag), so
+    // match loosely rather than interpolating ref into a regex.
+    if (
+      /exists on disk, but not in '[^']*'|path '[^']*' exists, but not '[^']*'|path '[^']*' does not exist in '[^']*'/i.test(
+        stderr
+      )
+    ) {
+      return null;
+    }
+    throw new GitError(stderr || 'Git command failed', `show ${ref}:${filePath}`);
+  }
+  return result.stdout;
+}
+
+/**
  * Gets the content of a file from HEAD commit.
  * @param repoDir - Repository directory
  * @param filePath - Path to the file (relative to repo)
@@ -119,20 +150,7 @@ export async function getFileContentFromHead(
   repoDir: string,
   filePath: string
 ): Promise<string | null> {
-  await ensureGit();
-  const result = await exec('git', ['show', `HEAD:${filePath}`], { cwd: repoDir });
-  if (result.exitCode !== 0) {
-    const stderr = result.stderr.trim();
-    if (
-      /exists on disk, but not in 'HEAD'|path '.*' exists, but not '.*'|path '.*' does not exist in 'HEAD'/i.test(
-        stderr
-      )
-    ) {
-      return null;
-    }
-    throw new GitError(stderr || 'Git command failed', `show HEAD:${filePath}`);
-  }
-  return result.stdout;
+  return getFileContentAtRef(repoDir, filePath, 'HEAD');
 }
 
 /**

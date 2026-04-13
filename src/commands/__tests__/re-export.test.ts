@@ -18,7 +18,7 @@ vi.mock('../../core/config.js', () => ({
     vendor: 'Test',
     appId: 'org.test.browser',
     binaryName: 'testbrowser',
-    firefox: { version: '140.0esr', product: 'firefox-esr' },
+    firefox: { version: '140.9.0esr', product: 'firefox-esr' },
     license: 'MPL-2.0',
   }),
 }));
@@ -96,7 +96,7 @@ function makePatch(filename: string, filesAffected: string[]): PatchMetadata {
     name: 'test',
     description: '',
     createdAt: new Date().toISOString(),
-    sourceEsrVersion: '140.0esr',
+    sourceEsrVersion: '140.9.0esr',
     filesAffected,
   };
 }

@@ -2,101 +2,69 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { getProjectPaths } from '../../core/config.js';
+import { getProjectPaths, loadState } from '../../core/config.js';
+import { diffLines, renderHunks } from '../../core/diff-hunks.js';
+import { getOverrideEngineTargetPath } from '../../core/furnace-apply-helpers.js';
 import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
+import { isComponentSourceFile, resolveFtlDir } from '../../core/furnace-constants.js';
+import { getFileContentAtRef } from '../../core/git-file-ops.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import type { FurnaceConfig } from '../../types/furnace.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { formatErrorText, formatSuccessText, info, intro, outro } from '../../utils/logger.js';
 
 /**
- * Computes a simplified line-level diff between two strings.
- * Note: Uses a prefix/suffix matching algorithm that may combine
- * multiple scattered changes into a single change region.
- * For complex diffs with interleaved changes, the output may not
- * be optimal.
+ * Renders a multi-hunk unified diff between the two strings and returns a
+ * flat list of display-ready lines. Each line has already had its marker
+ * prefix and color applied by this function; the caller just emits them.
+ *
+ * Pure delegation to the `diff-hunks` module — kept here as a thin wrapper
+ * so the command file does not need to care about the hunk data shape.
  */
-function lineDiff(original: string, modified: string): string[] {
-  const oldLines = original.split('\n');
-  const newLines = modified.split('\n');
-
-  // Remove trailing empty element from trailing newline
-  if (oldLines[oldLines.length - 1] === '') oldLines.pop();
-  if (newLines[newLines.length - 1] === '') newLines.pop();
-
-  const output: string[] = [];
-
-  // Simple diff: find common prefix, common suffix, then show changed region
-  let firstDiff = 0;
-  while (firstDiff < oldLines.length && firstDiff < newLines.length) {
-    if (oldLines[firstDiff] !== newLines[firstDiff]) break;
-    firstDiff++;
-  }
-
-  let lastOldDiff = oldLines.length - 1;
-  let lastNewDiff = newLines.length - 1;
-  while (lastOldDiff > firstDiff && lastNewDiff > firstDiff) {
-    if (oldLines[lastOldDiff] !== newLines[lastNewDiff]) break;
-    lastOldDiff--;
-    lastNewDiff--;
-  }
-
-  // Context lines before the change
-  const contextLines = 3;
-  const contextStart = Math.max(0, firstDiff - contextLines);
-  const contextEndOld = Math.min(oldLines.length - 1, lastOldDiff + contextLines);
-  const contextEndNew = Math.min(newLines.length - 1, lastNewDiff + contextLines);
-
-  // Leading context
-  for (let i = contextStart; i < firstDiff; i++) {
-    output.push(`  ${oldLines[i]}`);
-  }
-
-  // Removed lines
-  for (let i = firstDiff; i <= lastOldDiff; i++) {
-    output.push(formatErrorText(`- ${oldLines[i]}`));
-  }
-
-  // Added lines
-  for (let i = firstDiff; i <= lastNewDiff; i++) {
-    output.push(formatSuccessText(`+ ${newLines[i]}`));
-  }
-
-  // Trailing context
-  const trailingStart = Math.max(lastOldDiff + 1, lastNewDiff + 1);
-  const trailingEnd = Math.max(contextEndOld, contextEndNew);
-  // Use the new lines for trailing context (they should match old lines here)
-  for (let i = trailingStart; i <= trailingEnd && i < newLines.length; i++) {
-    output.push(`  ${newLines[i]}`);
-  }
-
-  return output;
+function formatUnifiedDiff(original: string, modified: string): string[] {
+  const hunks = diffLines(original, modified, 3);
+  return renderHunks(hunks).map((line) => {
+    switch (line.kind) {
+      case 'removed':
+        return formatErrorText(line.text);
+      case 'added':
+        return formatSuccessText(line.text);
+      default:
+        return line.text;
+    }
+  });
 }
 
 /**
- * Runs the furnace diff command to show changes vs the Firefox original.
- * Only works for override components.
- * @param projectRoot - Root directory of the project
- * @param name - Component name to diff
+ * Diffs an override component against its Firefox baseline at baseCommit.
  */
-export async function furnaceDiffCommand(projectRoot: string, name: string): Promise<void> {
-  intro('Furnace Diff');
-
-  const config = await loadFurnaceConfig(projectRoot);
-  const paths = getProjectPaths(projectRoot);
-  const furnacePaths = getFurnacePaths(projectRoot);
-
-  // Verify the component is an override
+async function diffOverride(
+  name: string,
+  projectRoot: string,
+  config: FurnaceConfig
+): Promise<void> {
   const overrideConfig = config.overrides[name];
   if (!overrideConfig) {
-    throw new FurnaceError(
-      `"${name}" is not an override component. The diff command only works for overrides.`,
-      name
-    );
+    throw new FurnaceError(`Override "${name}" not found in furnace.json.`, name);
   }
+  const paths = getProjectPaths(projectRoot);
+  const furnacePaths = getFurnacePaths(projectRoot);
+  const ftlDir = resolveFtlDir(config.ftlBasePath);
 
   const overrideDir = join(furnacePaths.overridesDir, name);
   if (!(await pathExists(overrideDir))) {
     throw new FurnaceError(`Override directory not found: components/overrides/${name}`, name);
+  }
+
+  // Prefer the per-override baseCommit (survives download --force); fall back
+  // to the project-wide value for overrides created before this field existed.
+  const state = await loadState(projectRoot);
+  const baseCommit = overrideConfig.baseCommit ?? state.baseCommit;
+  if (!baseCommit) {
+    throw new FurnaceError(
+      'Cannot diff: baseCommit not found. Re-run "fireforge download" to establish a baseline.',
+      name
+    );
   }
 
   const entries = await readdir(overrideDir, { withFileTypes: true });
@@ -104,18 +72,36 @@ export async function furnaceDiffCommand(projectRoot: string, name: string): Pro
 
   for (const entry of entries) {
     if (!entry.isFile()) continue;
-    if (!entry.name.endsWith('.mjs') && !entry.name.endsWith('.css')) continue;
+    if (!isComponentSourceFile(entry.name)) continue;
 
-    const originalPath = join(paths.engine, overrideConfig.basePath, entry.name);
+    // git show takes a repo-relative path. paths.engine IS the repo root.
+    const enginePath = getOverrideEngineTargetPath(
+      paths.engine,
+      overrideConfig,
+      entry.name,
+      ftlDir
+    ).slice(paths.engine.length + 1);
     const modifiedPath = join(overrideDir, entry.name);
+    const baselineDisplayPath = enginePath;
 
-    if (!(await pathExists(originalPath))) {
+    let originalContent: string | null;
+    try {
+      originalContent = await getFileContentAtRef(paths.engine, enginePath, baseCommit);
+    } catch (error: unknown) {
+      throw new FurnaceError(
+        `Cannot read baseline for "${entry.name}" at commit ${baseCommit.slice(0, 8)}: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          `The commit may no longer exist in the engine history (e.g. after a re-download). ` +
+          `Run "fireforge furnace refresh --reset-base ${name}" to establish a new baseline.`,
+        name
+      );
+    }
+    if (originalContent === null) {
       info(`${entry.name}: original not found in engine (new file)`);
       hasDifferences = true;
       continue;
     }
 
-    const originalContent = await readText(originalPath);
     const modifiedContent = await readText(modifiedPath);
 
     if (originalContent === modifiedContent) {
@@ -123,11 +109,10 @@ export async function furnaceDiffCommand(projectRoot: string, name: string): Pro
     }
 
     hasDifferences = true;
-    info(`--- ${overrideConfig.basePath}/${entry.name}`);
+    info(`--- ${baselineDisplayPath}`);
     info(`+++ components/overrides/${name}/${entry.name}`);
 
-    const diffLines = lineDiff(originalContent, modifiedContent);
-    for (const line of diffLines) {
+    for (const line of formatUnifiedDiff(originalContent, modifiedContent)) {
       info(line);
     }
 
@@ -136,6 +121,112 @@ export async function furnaceDiffCommand(projectRoot: string, name: string): Pro
 
   if (!hasDifferences) {
     info('No modifications found');
+  }
+}
+
+/**
+ * Diffs a custom component's workspace files against the engine-deployed copy.
+ * Shows what would change (or has changed) on the next `furnace apply`.
+ */
+async function diffCustom(name: string, projectRoot: string, config: FurnaceConfig): Promise<void> {
+  const customConfig = config.custom[name];
+  if (!customConfig) {
+    throw new FurnaceError(`Custom component "${name}" not found in furnace.json.`, name);
+  }
+  const paths = getProjectPaths(projectRoot);
+  const furnacePaths = getFurnacePaths(projectRoot);
+
+  const customDir = join(furnacePaths.customDir, name);
+  if (!(await pathExists(customDir))) {
+    throw new FurnaceError(`Custom component directory not found: components/custom/${name}`, name);
+  }
+
+  const engineDir = join(paths.engine, customConfig.targetPath);
+
+  const entries = await readdir(customDir, { withFileTypes: true });
+  let hasDifferences = false;
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!isComponentSourceFile(entry.name)) continue;
+
+    const workspacePath = join(customDir, entry.name);
+    const deployedPath = join(engineDir, entry.name);
+    const workspaceContent = await readText(workspacePath);
+
+    if (!(await pathExists(deployedPath))) {
+      info(`${entry.name}: not yet deployed to engine (new file)`);
+      hasDifferences = true;
+      continue;
+    }
+
+    const deployedContent = await readText(deployedPath);
+
+    if (workspaceContent === deployedContent) {
+      continue;
+    }
+
+    hasDifferences = true;
+    info(`--- engine/${customConfig.targetPath}/${entry.name}`);
+    info(`+++ components/custom/${name}/${entry.name}`);
+
+    for (const line of formatUnifiedDiff(deployedContent, workspaceContent)) {
+      info(line);
+    }
+
+    info('');
+  }
+
+  if (!hasDifferences) {
+    info('No differences between workspace and engine');
+  }
+}
+
+/**
+ * Runs the furnace diff command.
+ *
+ * For overrides: shows changes vs the Firefox original at baseCommit.
+ * For custom components: shows workspace vs engine-deployed copy.
+ * When no name is provided, diffs all override and custom components.
+ *
+ * @param projectRoot - Root directory of the project
+ * @param name - Optional component name to diff (diffs all when omitted)
+ */
+export async function furnaceDiffCommand(projectRoot: string, name?: string): Promise<void> {
+  intro('Furnace Diff');
+
+  const config = await loadFurnaceConfig(projectRoot);
+
+  if (name) {
+    if (name in config.overrides) {
+      await diffOverride(name, projectRoot, config);
+    } else if (name in config.custom) {
+      await diffCustom(name, projectRoot, config);
+    } else {
+      throw new FurnaceError(
+        `"${name}" is not found in furnace.json. Run "fireforge furnace list" to see registered components.`,
+        name
+      );
+    }
+  } else {
+    const overrideNames = Object.keys(config.overrides);
+    const customNames = Object.keys(config.custom);
+
+    if (overrideNames.length === 0 && customNames.length === 0) {
+      info('No components to diff.');
+      outro('Diff complete');
+      return;
+    }
+
+    for (const overrideName of overrideNames) {
+      info(`\n── ${overrideName} (override) ──`);
+      await diffOverride(overrideName, projectRoot, config);
+    }
+
+    for (const customName of customNames) {
+      info(`\n── ${customName} (custom) ──`);
+      await diffCustom(customName, projectRoot, config);
+    }
   }
 
   outro('Diff complete');

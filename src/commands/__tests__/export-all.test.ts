@@ -15,7 +15,7 @@ vi.mock('../../core/config.js', () => ({
   }),
   loadConfig: vi.fn().mockResolvedValue({
     binaryName: 'mybrowser',
-    firefox: { version: '140.0esr' },
+    firefox: { version: '140.9.0esr' },
   }),
 }));
 
@@ -46,7 +46,7 @@ vi.mock('../../core/patch-export.js', () => ({
       name: 'all-changes',
       description: 'test',
       createdAt: '2026-01-01T00:00:00.000Z',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
       filesAffected: ['a.js'],
     },
     superseded: [],
@@ -63,6 +63,10 @@ vi.mock('../../core/patch-lint.js', () => ({
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn().mockResolvedValue(true),
   ensureDir: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../core/furnace-config.js', () => ({
+  collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set())),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -88,6 +92,7 @@ vi.mock('@clack/prompts', () => ({
 
 import * as prompts from '@clack/prompts';
 
+import { collectFurnaceManagedPrefixes } from '../../core/furnace-config.js';
 import { hasChanges } from '../../core/git.js';
 import { getAllDiff } from '../../core/git-diff.js';
 import { getWorkingTreeStatus } from '../../core/git-status.js';
@@ -192,7 +197,7 @@ describe('exportAllCommand', () => {
         name: 'all-changes',
         description: 'test',
         createdAt: '2026-01-02T00:00:00.000Z',
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
         filesAffected: ['a.css'],
       },
       superseded: [{ filename: '001-ui-old.patch', order: 1, path: '/fake/patches/001.patch' }],
@@ -251,7 +256,7 @@ describe('exportAllCommand', () => {
       description: 'test',
       diff: 'diff --git a/a.js b/a.js\n+content a\n\ndiff --git a/c.js b/c.js\n+content c\n',
       filesAffected: ['a.js', 'c.js'],
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
     });
   });
 
@@ -370,5 +375,65 @@ describe('exportAllCommand', () => {
         description: 'test',
       })
     ).rejects.toThrow('Refusing to supersede 1 patch');
+  });
+
+  it('refuses to export Furnace-managed component changes via export-all', async () => {
+    vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(
+      new Set(['toolkit/content/widgets/moz-button/'])
+    );
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      {
+        status: ' M',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        file: 'toolkit/content/widgets/moz-button/moz-button.css',
+        isUntracked: false,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+      {
+        status: ' M',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        file: 'toolkit/modules/AppConstants.sys.mjs',
+        isUntracked: false,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+    ]);
+
+    await expect(
+      exportAllCommand('/fake/root', {
+        name: 'all-changes',
+        category: 'ui',
+        description: 'test',
+      })
+    ).rejects.toThrow(/refuses to capture Furnace-managed/i);
+
+    expect(getAllDiff).not.toHaveBeenCalled();
+    expect(commitExportedPatch).not.toHaveBeenCalled();
+  });
+
+  it('does not refuse Furnace-managed files when no furnace config exists', async () => {
+    vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(new Set());
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      {
+        status: ' M',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        file: 'toolkit/content/widgets/moz-button/moz-button.css',
+        isUntracked: false,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+    ]);
+
+    await exportAllCommand('/fake/root', {
+      name: 'all-changes',
+      category: 'ui',
+      description: 'test',
+    });
+
+    expect(commitExportedPatch).toHaveBeenCalled();
   });
 });

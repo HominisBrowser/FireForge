@@ -8,7 +8,7 @@ export type FirefoxProduct = 'firefox' | 'firefox-esr' | 'firefox-beta';
  * Firefox version configuration.
  */
 export interface FirefoxConfig {
-  /** Firefox release version (e.g., "140.0esr") */
+  /** Firefox release version (e.g., "140.9.0esr") */
   version: string;
   /** Firefox product type */
   product: FirefoxProduct;

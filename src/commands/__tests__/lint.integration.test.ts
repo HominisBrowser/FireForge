@@ -76,7 +76,7 @@ describe('lint integration', () => {
     await expect(lintCommand(projectRoot, [fixture.exportPath])).resolves.toBeUndefined();
   });
 
-  it('lint detects raw CSS color values as warning', async () => {
+  it('lint detects raw CSS color values as error', async () => {
     const fixture = FIREFOX_WORKFLOW_FIXTURES.cssRawColorViolation;
     await initCommittedRepo(join(projectRoot, 'engine'), {
       'browser/themes/shared/.gitkeep': '',
@@ -86,7 +86,7 @@ describe('lint integration', () => {
     const issues = await getLintIssues(join(projectRoot, 'engine'));
     const colorIssues = issues.filter((i) => i.check === 'raw-color-value');
     expect(colorIssues.length).toBeGreaterThanOrEqual(1);
-    expect(colorIssues[0]?.severity).toBe('warning');
+    expect(colorIssues[0]?.severity).toBe('error');
   });
 
   it('lint detects CSS token-prefix violation as error', async () => {
@@ -228,7 +228,7 @@ describe('lint integration', () => {
     await expect(lintCommand(projectRoot, [fixture.exportPath])).resolves.toBeUndefined();
   });
 
-  it('lint warns on CSS with proper header but raw colors in light-dark()', async () => {
+  it('lint errors on CSS with proper header but raw colors in light-dark()', async () => {
     const fixture = FIREFOX_WORKFLOW_FIXTURES.cssTokensWithRawColors;
     await initCommittedRepo(join(projectRoot, 'engine'), {
       'browser/themes/shared/.gitkeep': '',
@@ -237,17 +237,16 @@ describe('lint integration', () => {
 
     const issues = await getLintIssues(join(projectRoot, 'engine'));
 
-    // Should have raw-color-value warning (light-dark(#hex) contains hex)
+    // Should have raw-color-value error (light-dark(#hex) contains hex)
     const colorIssues = issues.filter((i) => i.check === 'raw-color-value');
     expect(colorIssues.length).toBeGreaterThanOrEqual(1);
-    expect(colorIssues[0]?.severity).toBe('warning');
+    expect(colorIssues[0]?.severity).toBe('error');
 
     // Should NOT have missing-license-header (header is present)
     const headerIssues = issues.filter((i) => i.check === 'missing-license-header');
     expect(headerIssues).toHaveLength(0);
 
-    // lintCommand should NOT throw (warnings only, no errors)
-    await expect(lintCommand(projectRoot, [fixture.exportPath])).resolves.toBeUndefined();
+    await expect(lintCommand(projectRoot, [fixture.exportPath])).rejects.toThrow('error');
   });
 
   it('lint scoped to one file ignores violations in other files', async () => {

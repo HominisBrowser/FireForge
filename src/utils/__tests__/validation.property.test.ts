@@ -20,7 +20,7 @@ import {
 
 /** Generates a valid stable/ESR/beta Firefox version string. */
 const validFirefoxVersion = fc.oneof(
-  // stable: "146.0", "146.0.1"
+  // stable: "140.9.0", "140.9.1"
   fc
     .tuple(fc.integer({ min: 1, max: 999 }), fc.integer({ min: 0, max: 99 }))
     .map(([maj, min]) => `${maj}.${min}`),
@@ -31,7 +31,7 @@ const validFirefoxVersion = fc.oneof(
       fc.integer({ min: 0, max: 99 })
     )
     .map(([maj, min, patch]) => `${maj}.${min}.${patch}`),
-  // ESR: "140.0esr", "128.0.1esr"
+  // ESR: "140.9.0esr", "128.0.1esr"
   fc
     .tuple(fc.integer({ min: 1, max: 999 }), fc.integer({ min: 0, max: 99 }))
     .map(([maj, min]) => `${maj}.${min}esr`),

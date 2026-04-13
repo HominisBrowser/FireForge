@@ -15,7 +15,7 @@ vi.mock('../../core/config.js', () => ({
     componentsDir: '/fake/root/src/components',
   }),
   loadConfig: vi.fn().mockResolvedValue({
-    firefox: { version: '140.0esr' },
+    firefox: { version: '140.9.0esr' },
   }),
 }));
 
@@ -53,7 +53,7 @@ vi.mock('../../core/patch-export.js', () => ({
       name: 'test',
       description: '',
       createdAt: '2026-01-01T00:00:00.000Z',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
       filesAffected: [],
     },
     superseded: [],
@@ -270,7 +270,7 @@ describe('exportCommand - directory support', () => {
       name: 'test-dir',
       description: 'test',
       filesAffected: ['dir/a.js'],
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
     });
     expect(directoryCommit?.diff).toContain('diff --git a/dir/a.js b/dir/a.js');
   });
@@ -441,7 +441,7 @@ describe('exportCommand - multi-path support', () => {
         name: 'combined',
         description: 'test',
         createdAt: '2026-01-01T00:00:00.000Z',
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
         filesAffected: ['a.js', 'b.js'],
       },
       superseded: [
@@ -463,7 +463,7 @@ describe('exportCommand - multi-path support', () => {
       name: 'combined',
       description: 'test',
       filesAffected: ['a.js', 'b.js'],
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '140.9.0esr',
     });
     expect(combinedCommit?.diff).toContain('diff --git a/a.js b/a.js');
   });
@@ -488,7 +488,7 @@ describe('exportCommand - multi-path support', () => {
         name: 'combined',
         description: 'test',
         createdAt: '2026-01-01T00:00:00.000Z',
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
         filesAffected: ['a.js', 'b.js'],
       },
       superseded: [
@@ -600,7 +600,7 @@ describe('registerExport', () => {
         name: 'cli-export',
         category: 'ui',
         description: 'CLI description',
-        sourceEsrVersion: '140.0esr',
+        sourceEsrVersion: '140.9.0esr',
       })
     );
   });

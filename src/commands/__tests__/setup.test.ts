@@ -27,6 +27,7 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn().mockResolvedValue(false),
   readText: vi.fn().mockResolvedValue(''),
   writeText: vi.fn().mockResolvedValue(undefined),
+  writeJson: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -81,7 +82,7 @@ describe('setupCommand interactive defaults', () => {
         appId: 'org.auditfox.browser',
         binaryName: 'auditfox',
         firefox: {
-          version: '140.0esr',
+          version: '140.9.0esr',
           product: 'firefox-esr',
         },
       })
@@ -109,7 +110,7 @@ describe('setupCommand non-interactive', () => {
       vendor: 'TestCorp',
       appId: 'org.testcorp.browser',
       binaryName: 'testbrowser',
-      firefoxVersion: '140.0esr',
+      firefoxVersion: '140.9.0esr',
       product: 'firefox-esr',
       license: 'MPL-2.0',
     });
@@ -131,7 +132,7 @@ describe('setupCommand non-interactive', () => {
       vendor: 'TestCorp',
       appId: 'org.testcorp.browser',
       binaryName: 'testbrowser',
-      firefoxVersion: '140.0esr',
+      firefoxVersion: '140.9.0esr',
       product: 'firefox-esr',
       license: 'EUPL-1.2',
     });
@@ -151,7 +152,7 @@ describe('setupCommand non-interactive', () => {
       vendor: 'TestCorp',
       appId: 'org.testcorp.browser',
       binaryName: 'testbrowser',
-      firefoxVersion: '140.0esr',
+      firefoxVersion: '140.9.0esr',
       license: 'EUPL-1.2',
     });
 
@@ -200,7 +201,7 @@ describe('setupCommand non-interactive', () => {
         vendor: 'TestCorp',
         appId: 'org.testcorp.browser',
         binaryName: 'testbrowser',
-        firefoxVersion: '140.0esr',
+        firefoxVersion: '140.9.0esr',
       })
     ).rejects.toThrow('Use --force to overwrite');
   });
@@ -216,7 +217,7 @@ describe('setupCommand non-interactive', () => {
         vendor: 'TestCorp',
         appId: 'org.testcorp.browser',
         binaryName: 'testbrowser',
-        firefoxVersion: '140.0esr',
+        firefoxVersion: '140.9.0esr',
       })
     ).rejects.toThrow('disk full');
 

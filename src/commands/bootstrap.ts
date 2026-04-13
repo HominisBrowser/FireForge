@@ -74,12 +74,18 @@ export async function bootstrapCommand(projectRoot: string): Promise<void> {
   }
 
   // mach bootstrap may exit 0 even when sub-downloads fail (e.g. HTTP 403).
-  // Scan output for known failure patterns and surface them as warnings.
+  // Scan output for known failure patterns and surface them prominently.
   const softFailure = buildBootstrapFailureMessage(`${result.stdout}\n${result.stderr}`);
   if (softFailure) {
     info('');
+    error('Bootstrap completed with issues:');
     info(softFailure);
-    info('Bootstrap exited successfully but the issues above may cause build failures.');
+    info(
+      'Run "fireforge doctor" to verify your build environment. ' +
+        'These issues may cause build failures if not resolved.'
+    );
+    outro('Build dependencies installed with warnings');
+    return;
   }
 
   outro('Build dependencies installed successfully!');

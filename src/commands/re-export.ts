@@ -9,7 +9,6 @@ import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
 import { updatePatch, updatePatchMetadata } from '../core/patch-export.js';
-import { lintExportedPatch } from '../core/patch-lint.js';
 import { getClaimedFiles, loadPatchesManifest } from '../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -19,6 +18,8 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
+import { runPatchLint } from './export-shared.js';
+import { reExportFilesInPlace } from './re-export-files.js';
 
 /**
  * Resolves patch identifiers (numbers or filenames) to manifest entries.
@@ -117,6 +118,21 @@ async function reExportSinglePatch(
     );
   }
 
+  // --- Explicit file-subset path ---
+  // When --files is given, the target filesAffected is authoritative — drop
+  // anything not in the list, add anything new. This is the surgical repair
+  // primitive that replaces hand-editing patches.json; the user has already
+  // acknowledged via confirmDestructive (done in the caller) that any drop
+  // is intentional.
+  if (options.files !== undefined) {
+    const requested = [...new Set(options.files)].sort();
+    currentFilesAffected = requested;
+    const removed = patch.filesAffected.filter((f) => !requested.includes(f));
+    const added = requested.filter((f) => !patch.filesAffected.includes(f));
+    for (const f of added) info(`  + ${f}`);
+    for (const f of removed) info(`  - ${f}`);
+  }
+
   const missingFiles: string[] = [];
   for (const file of currentFilesAffected) {
     const filePath = join(paths.engine, file);
@@ -145,6 +161,8 @@ async function reExportSinglePatch(
     return false;
   }
 
+  await runPatchLint(paths.engine, existingFiles, diffContent, config, options.skipLint);
+
   if (isDryRun) {
     info(`[dry-run] ${patch.filename}: ${existingFiles.length} file(s)`);
   } else {
@@ -164,16 +182,6 @@ async function reExportSinglePatch(
           filesAffected: currentFilesAffected,
         };
       }
-    }
-
-    const lintIssues = await lintExportedPatch(paths.engine, existingFiles, diffContent, config);
-    for (const issue of lintIssues) {
-      const prefix = issue.severity === 'error' && !options.skipLint ? 'ERROR ' : '';
-      warn(`${prefix}[${issue.check}] ${issue.file}: ${issue.message}`);
-    }
-    const lintErrors = lintIssues.filter((i) => i.severity === 'error');
-    if (lintErrors.length > 0 && !options.skipLint) {
-      warn(`${patch.filename}: ${lintErrors.length} lint error(s). Use --skip-lint to bypass.`);
     }
 
     success(`Re-exported ${patch.filename}`);
@@ -248,6 +256,20 @@ export async function reExportCommand(
   const isDryRun = options.dryRun === true;
   intro(isDryRun ? 'FireForge Re-export (dry run)' : 'FireForge Re-export');
 
+  // --files is mutually exclusive with --scan and --all: they select
+  // different scope contracts.
+  if (options.files !== undefined) {
+    if (options.all || options.scan) {
+      throw new InvalidArgumentError('--files cannot be combined with --scan or --all.', '--files');
+    }
+    if (patches.length !== 1) {
+      throw new InvalidArgumentError(
+        '--files operates on exactly one target patch. Pass a single patch identifier.',
+        '--files'
+      );
+    }
+  }
+
   const paths = getProjectPaths(projectRoot);
 
   // Check if engine exists
@@ -277,6 +299,18 @@ export async function reExportCommand(
   if (selectedPatches.length === 0) {
     warn('No patches selected');
     outro('Nothing to re-export');
+    return;
+  }
+
+  // --files path: handled end-to-end here so we can lint the *projected*
+  // shrunken state (not the current queue) and skip the generic re-export
+  // loop. The projection substitutes the target patch's diff and newFiles
+  // with the freshly computed content, then runs lintPatchQueue so any
+  // forward-import introduced or uncovered by the shrink is caught before
+  // we write anything.
+  if (options.files !== undefined) {
+    const filesConfig = await loadConfig(projectRoot);
+    await reExportFilesInPlace(paths, selectedPatches, options, filesConfig);
     return;
   }
 
@@ -322,13 +356,32 @@ export function registerReExport(
     .description('Re-export existing patches from current engine state')
     .option('-a, --all', 'Re-export all patches')
     .option('-s, --scan', 'Scan directories for new/removed files and update filesAffected')
+    .option(
+      '--files <paths>',
+      'Restrict the re-exported filesAffected to this comma-separated list (single target patch only)',
+      (value: string) =>
+        value
+          .split(',')
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0)
+    )
     .option('--dry-run', 'Show what would change without writing')
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
+    .option('-y, --yes', 'Skip confirmation when --files shrinks a patch (required for non-TTY)')
+    .option('--force-unsafe', 'Bypass cross-patch lint refusal when --files shrinks a patch')
     .action(
       withErrorHandling(
         async (
           patches: string[],
-          options: { all?: boolean; scan?: boolean; dryRun?: boolean; skipLint?: boolean }
+          options: {
+            all?: boolean;
+            scan?: boolean;
+            files?: string[];
+            dryRun?: boolean;
+            skipLint?: boolean;
+            yes?: boolean;
+            forceUnsafe?: boolean;
+          }
         ) => {
           await reExportCommand(getProjectRoot(), patches, pickDefined(options));
         }

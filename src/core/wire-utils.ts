@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import type * as estree from 'estree';
 
-import { GeneralError } from '../errors/base.js';
+import { GeneralError, ParserFallbackError } from '../errors/base.js';
 import { type AcornESTreeNode, walkAST } from './ast-utils.js';
 
 /**
@@ -177,11 +177,21 @@ export function tokenizeXhtml(lines: string[]): XhtmlToken[] {
  * Finds the line index of a method signature matching `pattern`, then
  * advances to the line containing the opening brace.
  *
- * @returns `{ methodLine, braceIndex }`, or `null` if the pattern is not found.
+ * By default this helper is tolerant: when no `{` is found anywhere after
+ * the signature, it still returns `braceIndex: methodLine` — which is the
+ * correct answer when the signature and body brace live on the same line,
+ * but is ambiguous when the method is abstract or truncated. Opt into
+ * stricter behaviour by passing `requireBrace: true`; the function will
+ * return `null` instead of guessing, letting the caller surface a clean
+ * {@link ParserFallbackError} rather than inserting into a wrong offset.
+ *
+ * @returns `{ methodLine, braceIndex }`, or `null` if the pattern is not
+ *   found (or, under `requireBrace`, no brace follows the signature).
  */
 export function findMethodBraceIndex(
   lines: string[],
-  pattern: RegExp
+  pattern: RegExp,
+  options?: { requireBrace?: boolean }
 ): { methodLine: number; braceIndex: number } | null {
   let methodLine = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -193,12 +203,19 @@ export function findMethodBraceIndex(
   if (methodLine === -1) return null;
 
   let braceIndex = methodLine;
+  let braceFound = false;
   for (let i = methodLine; i < lines.length; i++) {
     if (lines[i]?.includes('{')) {
       braceIndex = i;
+      braceFound = true;
       break;
     }
   }
+
+  if (!braceFound && options?.requireBrace) {
+    return null;
+  }
+
   return { methodLine, braceIndex };
 }
 
@@ -206,10 +223,23 @@ export function findMethodBraceIndex(
  * Starting from `startLine`, walks lines using {@link countBraceDepth}
  * until the brace depth returns to zero (i.e., the enclosing block closes).
  *
- * @returns The line index *after* the closing brace, or `startLine + 1` if
- *   the block never closes (defensive).
+ * Default behaviour is defensive — if the block never closes, the helper
+ * returns `startLine + 1` so a single malformed file does not stop the
+ * entire fallback path. Pass `{ strict: true }` to opt into failing loudly
+ * with a {@link ParserFallbackError} instead; new callers should prefer
+ * strict mode so silent mis-insertions surface as the fallback refusing
+ * to touch the file.
+ *
+ * @param lines - The full file split by newline
+ * @param startLine - Line index of the `try {` (or other block opener) to walk
+ * @param options - Pass `{ strict: true }` to throw when the block never closes
+ * @returns The line index *after* the closing brace
  */
-export function walkToTryBlockEnd(lines: string[], startLine: number): number {
+export function walkToTryBlockEnd(
+  lines: string[],
+  startLine: number,
+  options?: { strict?: boolean; context?: string }
+): number {
   let depth = 0;
   let inBlock = false;
   for (let j = startLine; j < lines.length; j++) {
@@ -220,7 +250,57 @@ export function walkToTryBlockEnd(lines: string[], startLine: number): number {
       return j + 1;
     }
   }
+
+  if (options?.strict) {
+    throw new ParserFallbackError(
+      `Block starting at line ${startLine + 1} never closes — fallback parser refuses to insert`,
+      options.context
+    );
+  }
+
   return startLine + 1;
+}
+
+/**
+ * Scans the entire file and returns the net brace balance so callers can
+ * assert that a legacy fallback mutation did not silently introduce or
+ * drop a `{` / `}`. The helper reuses {@link countBraceDepth} so strings,
+ * comments, and regex literals are handled consistently with the walker.
+ *
+ * @param content - Full file contents (will be split by newline)
+ * @returns The net depth across the file (`opens - closes`) and a
+ *   convenience `balanced` flag equal to `depth === 0`.
+ */
+export function computeFileBraceBalance(content: string): { depth: number; balanced: boolean } {
+  const lines = content.split('\n');
+  let depth = 0;
+  let inBlock = false;
+  for (const line of lines) {
+    const r = countBraceDepth(line, inBlock);
+    depth += r.depth;
+    inBlock = r.inBlockComment;
+  }
+  return { depth, balanced: depth === 0 };
+}
+
+/**
+ * Round-trip guard used after a legacy fallback mutation: if the file's
+ * net brace balance drifts between `before` and `after`, something went
+ * wrong and the fallback is refusing to write a corrupted file. Expects
+ * the delta to be exactly zero — wire fallbacks only insert whole
+ * try/catch blocks, which always contribute equal opens and closes.
+ *
+ * @throws {@link ParserFallbackError} when the balance delta is non-zero.
+ */
+export function assertBraceBalancePreserved(before: string, after: string, context: string): void {
+  const beforeDepth = computeFileBraceBalance(before).depth;
+  const afterDepth = computeFileBraceBalance(after).depth;
+  if (beforeDepth !== afterDepth) {
+    throw new ParserFallbackError(
+      `Brace balance drifted from ${beforeDepth} to ${afterDepth} after fallback mutation; refusing to write`,
+      context
+    );
+  }
 }
 
 /**

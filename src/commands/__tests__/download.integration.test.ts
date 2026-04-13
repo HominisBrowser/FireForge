@@ -48,8 +48,8 @@ describe('downloadCommand integration', () => {
     const stableArchive = await makeTarXzArchive(projectRoot, 'stable.tar.xz', 'firefox-140.0', {
       'browser/config/version.txt': '140.0\n',
     });
-    const esrArchive = await makeTarXzArchive(projectRoot, 'esr.tar.xz', 'firefox-140.0esr', {
-      'browser/config/version.txt': '140.0esr\n',
+    const esrArchive = await makeTarXzArchive(projectRoot, 'esr.tar.xz', 'firefox-140.9.0esr', {
+      'browser/config/version.txt': '140.9.0esr\n',
     });
 
     const stableBody = await readFile(stableArchive);
@@ -75,7 +75,7 @@ describe('downloadCommand integration', () => {
     await downloadCommand(projectRoot, {});
 
     await writeFireForgeConfig(projectRoot, {
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
     });
     await downloadCommand(projectRoot, { force: true });
 
@@ -87,7 +87,7 @@ describe('downloadCommand integration', () => {
     const esrCache = join(
       projectRoot,
       '.fireforge/cache',
-      getTarballFilename('140.0esr', 'firefox-esr')
+      getTarballFilename('140.9.0esr', 'firefox-esr')
     );
 
     await expect(readFile(stableCache)).resolves.toBeTruthy();
@@ -101,15 +101,15 @@ describe('downloadCommand integration', () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      getDownloadUrl('140.0esr', 'firefox-esr'),
+      getDownloadUrl('140.9.0esr', 'firefox-esr'),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matcher
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
   });
 
   it('replaces stale partial downloads atomically', async () => {
-    const archivePath = await makeTarXzArchive(projectRoot, 'esr.tar.xz', 'firefox-140.0esr', {
-      'browser/config/version.txt': '140.0esr\n',
+    const archivePath = await makeTarXzArchive(projectRoot, 'esr.tar.xz', 'firefox-140.9.0esr', {
+      'browser/config/version.txt': '140.9.0esr\n',
     });
     const archiveBody = await readFile(archivePath);
 
@@ -125,10 +125,10 @@ describe('downloadCommand integration', () => {
     const cacheFile = join(
       projectRoot,
       '.fireforge/cache',
-      `${getTarballFilename('140.0esr', 'firefox-esr')}.part`
+      `${getTarballFilename('140.9.0esr', 'firefox-esr')}.part`
     );
     await writeFiles(projectRoot, {
-      [join('.fireforge/cache', `${getTarballFilename('140.0esr', 'firefox-esr')}.part`)]:
+      [join('.fireforge/cache', `${getTarballFilename('140.9.0esr', 'firefox-esr')}.part`)]:
         'partial',
     });
 
@@ -136,23 +136,23 @@ describe('downloadCommand integration', () => {
 
     await expect(readFile(cacheFile)).rejects.toThrow();
     await expect(
-      readText(projectRoot, '.fireforge/cache/firefox-firefox-esr-140.0esr.source.tar.xz.json')
-    ).resolves.toContain('"archiveVersion": "140.0esr"');
+      readText(projectRoot, '.fireforge/cache/firefox-firefox-esr-140.9.0esr.source.tar.xz.json')
+    ).resolves.toContain('"archiveVersion": "140.9.0esr"');
     expect(vi.mocked(step).mock.calls.some(([message]) => /git add -A/i.test(message))).toBe(true);
   });
 
   it('invalidates corrupted cached archives after extraction failure and recovers on retry', async () => {
     await writeFireForgeConfig(projectRoot);
 
-    const tarballName = getTarballFilename('140.0esr', 'firefox-esr');
+    const tarballName = getTarballFilename('140.9.0esr', 'firefox-esr');
     await writeFiles(projectRoot, {
       [join('.fireforge/cache', tarballName)]: 'not a real tarball',
       [join('.fireforge/cache', `${tarballName}.json`)]: JSON.stringify(
         {
-          requestedVersion: '140.0esr',
+          requestedVersion: '140.9.0esr',
           product: 'firefox-esr',
-          archiveVersion: '140.0esr',
-          url: getDownloadUrl('140.0esr', 'firefox-esr'),
+          archiveVersion: '140.9.0esr',
+          url: getDownloadUrl('140.9.0esr', 'firefox-esr'),
           contentLength: 'not a real tarball'.length,
           downloadedAt: new Date().toISOString(),
         },
@@ -164,8 +164,8 @@ describe('downloadCommand integration', () => {
     await expect(downloadCommand(projectRoot, {})).rejects.toThrow();
     await expect(readFile(join(projectRoot, '.fireforge/cache', tarballName))).rejects.toThrow();
 
-    const archivePath = await makeTarXzArchive(projectRoot, 'retry.tar.xz', 'firefox-140.0esr', {
-      'browser/config/version.txt': '140.0esr\n',
+    const archivePath = await makeTarXzArchive(projectRoot, 'retry.tar.xz', 'firefox-140.9.0esr', {
+      'browser/config/version.txt': '140.9.0esr\n',
     });
     const archiveBody = await readFile(archivePath);
     fetchMock.mockResolvedValue(
@@ -178,7 +178,7 @@ describe('downloadCommand integration', () => {
     await downloadCommand(projectRoot, {});
 
     const versionFile = await readText(projectRoot, 'engine/browser/config/version.txt');
-    expect(versionFile).toBe('140.0esr\n');
+    expect(versionFile).toBe('140.9.0esr\n');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

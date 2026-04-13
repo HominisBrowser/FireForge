@@ -13,9 +13,10 @@ import {
   getUntrackedFilesInDir,
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
-import { lintExportedPatch } from '../core/patch-lint.js';
+import { buildPatchQueueContext, lintExportedPatch, lintPatchQueue } from '../core/patch-lint.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
+import type { PatchLintIssue } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 
@@ -105,7 +106,17 @@ export async function lintCommand(projectRoot: string, files: string[]): Promise
 
   const config = await loadConfig(projectRoot);
   const filesAffected = extractAffectedFiles(diff);
-  const issues = await lintExportedPatch(paths.engine, filesAffected, diff, config);
+  const issues: PatchLintIssue[] = [
+    ...(await lintExportedPatch(paths.engine, filesAffected, diff, config)),
+  ];
+
+  // Cross-patch rules operate over the whole queue, so run them whenever a
+  // patches directory exists — they surface duplicate /dev/null creations
+  // and forward-import chains that the per-patch orchestrator cannot see.
+  if (await pathExists(paths.patches)) {
+    const ctx = await buildPatchQueueContext(paths.patches);
+    issues.push(...lintPatchQueue(ctx));
+  }
 
   if (issues.length === 0) {
     success('No lint issues found.');

@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readdir } from 'node:fs/promises';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { pathExists, readJson, readText } from '../../utils/fs.js';
 import {
   bootstrap,
   bootstrapWithOutput,
   build,
   buildArtifactMismatchMessage,
+  buildUI,
   ensureMach,
   ensurePython,
   hasBuildArtifacts,
@@ -40,10 +44,6 @@ vi.mock('../../utils/process.js', () => ({
   execStream: vi.fn(),
   executableExists: vi.fn(),
 }));
-
-import { readdir } from 'node:fs/promises';
-
-import { pathExists, readJson, readText } from '../../utils/fs.js';
 
 describe('hasBuildArtifacts', () => {
   beforeEach(() => {
@@ -251,6 +251,24 @@ describe('ensurePython / resetResolvedPython', () => {
     await expect(ensurePython()).rejects.toThrow();
   });
 
+  it('skips a too-new Python and selects a compatible lower version', async () => {
+    const { executableExists, exec } = await import('../../utils/process.js');
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readText).mockResolvedValue(
+      'MIN_PYTHON_VERSION = (3, 8)\nMAX_PYTHON_VERSION_TO_CONSIDER = (3, 12)\n'
+    );
+    // python3.12 exists, python3.11 exists, etc. — all candidates "exist"
+    vi.mocked(executableExists).mockResolvedValue(true);
+    // First candidate (python3.12) reports 3.14.3 (too new, e.g. symlink),
+    // second candidate (python3.11) reports 3.11.9 (in range)
+    vi.mocked(exec)
+      .mockResolvedValueOnce({ stdout: '3.14.3\n', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '3.11.9\n', stderr: '', exitCode: 0 });
+
+    await expect(ensurePython('/engine')).resolves.toBeUndefined();
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+
   it('clears cached resolution via resetResolvedPython', async () => {
     const { executableExists, exec } = await import('../../utils/process.js');
     vi.mocked(executableExists).mockResolvedValue(true);
@@ -403,6 +421,31 @@ describe('mach command execution', () => {
     stderrSpy.mockRestore();
   });
 
+  it('truncates captured stream tails when mach output exceeds the retention limit', async () => {
+    const { execStream } = await import('../../utils/process.js');
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await primePythonResolution();
+
+    const oversizedStdout = 'a'.repeat(2 * 1024 * 1024 + 11);
+    const oversizedStderr = 'b'.repeat(2 * 1024 * 1024 + 17);
+
+    vi.mocked(execStream).mockImplementationOnce((_cmd, _args, options) => {
+      options?.onStdout?.(oversizedStdout);
+      options?.onStderr?.(oversizedStderr);
+      return Promise.resolve(9);
+    });
+
+    await expect(runMachCapture(['build'], '/engine')).resolves.toEqual({
+      stdout: oversizedStdout.slice(-(2 * 1024 * 1024)),
+      stderr: oversizedStderr.slice(-(2 * 1024 * 1024)),
+      exitCode: 9,
+    });
+
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
   it('captures inherited mach output', async () => {
     const { execInheritCapture } = await import('../../utils/process.js');
     await primePythonResolution();
@@ -440,6 +483,7 @@ describe('mach command execution', () => {
     });
     await expect(build('/engine', 4)).resolves.toBe(0);
     await expect(build('/engine')).resolves.toBe(0);
+    await expect(buildUI('/engine')).resolves.toBe(0);
     await expect(runBrowser('/engine', ['--safe-mode'])).resolves.toBe(0);
     await expect(machPackage('/engine')).resolves.toBe(0);
     await expect(watch('/engine')).resolves.toBe(0);
@@ -468,6 +512,11 @@ describe('mach command execution', () => {
     expect(execInherit).toHaveBeenCalledWith(
       'python3.12',
       ['/engine/mach', 'build'],
+      expect.any(Object)
+    );
+    expect(execInherit).toHaveBeenCalledWith(
+      'python3.12',
+      ['/engine/mach', 'build', 'faster'],
       expect.any(Object)
     );
     expect(execInherit).toHaveBeenCalledWith(

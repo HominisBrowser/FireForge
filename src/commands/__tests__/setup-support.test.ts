@@ -38,6 +38,7 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn().mockResolvedValue(false),
   readText: vi.fn().mockResolvedValue(''),
   writeText: vi.fn().mockResolvedValue(undefined),
+  writeJson: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -59,7 +60,7 @@ vi.mock('../../utils/validation.js', async (importOriginal) => {
 import { cpus } from 'node:os';
 
 import { loadConfig, writeConfig } from '../../core/config.js';
-import { pathExists, readText, writeText } from '../../utils/fs.js';
+import { pathExists, readText, writeJson, writeText } from '../../utils/fs.js';
 import { cancel } from '../../utils/logger.js';
 import { inferProductFromVersion } from '../../utils/validation.js';
 import {
@@ -202,7 +203,7 @@ describe('setup-support', () => {
       finalVendor: 'Audit Corp',
       finalAppId: 'org.auditfox.browser',
       finalBinaryName: 'auditfox',
-      finalFirefoxVersion: '140.0esr',
+      finalFirefoxVersion: '140.9.0esr',
       finalProduct: 'firefox-beta',
       finalLicense: '0BSD',
     });
@@ -232,7 +233,7 @@ describe('setup-support', () => {
       vendor: 'Audit Corp',
       appId: undefined,
       binaryName: undefined,
-      firefoxVersion: '140.0esr',
+      firefoxVersion: '140.9.0esr',
       product: 'firefox-esr',
       license: 'EUPL-1.2',
     });
@@ -296,7 +297,7 @@ describe('setup-support', () => {
         finalVendor: 'Audit Corp',
         finalAppId: 'org.auditfox.browser',
         finalBinaryName: 'auditfox',
-        finalFirefoxVersion: '140.0esr',
+        finalFirefoxVersion: '140.9.0esr',
         finalProduct: 'firefox-esr',
         finalLicense: 'EUPL-1.2',
       })
@@ -342,7 +343,7 @@ describe('setup-support', () => {
       appId: 'org.auditfox.browser',
       binaryName: 'auditfox',
       license: '0BSD',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
       build: { jobs: 4 },
     });
 
@@ -373,7 +374,7 @@ describe('setup-support', () => {
       appId: 'org.auditfox.browser',
       binaryName: 'auditfox',
       license: 'EUPL-1.2',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
       build: { jobs: 4 },
     });
 
@@ -381,5 +382,42 @@ describe('setup-support', () => {
       '/project/.gitignore',
       'node_modules/\ndist/\nengine/\n.fireforge/\n'
     );
+  });
+
+  it('creates patches.json with version 1 when manifest does not exist', async () => {
+    vi.mocked(pathExists).mockResolvedValue(false);
+
+    await writeSetupProjectFiles('/project', {
+      name: 'Audit Fox',
+      vendor: 'Audit Corp',
+      appId: 'org.auditfox.browser',
+      binaryName: 'auditfox',
+      license: 'EUPL-1.2',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      build: { jobs: 4 },
+    });
+
+    expect(writeJson).toHaveBeenCalledWith('/project/patches/patches.json', {
+      version: 1,
+      patches: [],
+    });
+  });
+
+  it('does not overwrite an existing patches.json', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(filePath === '/project/patches/patches.json')
+    );
+
+    await writeSetupProjectFiles('/project', {
+      name: 'Audit Fox',
+      vendor: 'Audit Corp',
+      appId: 'org.auditfox.browser',
+      binaryName: 'auditfox',
+      license: 'EUPL-1.2',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      build: { jobs: 4 },
+    });
+
+    expect(writeJson).not.toHaveBeenCalled();
   });
 });

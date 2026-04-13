@@ -177,7 +177,7 @@ describe('connected Firefox workflow integration', () => {
       'Uncommitted changes in patch-touched files. Commit or stash them first, or use --force.'
     );
 
-    await discardCommand(projectRoot, SYNTHETIC_FIREFOX_PATHS.browserScript, { force: true });
+    await discardCommand(projectRoot, SYNTHETIC_FIREFOX_PATHS.browserScript, { yes: true });
 
     const recoveredStatus = await git(join(projectRoot, 'engine'), ['status', '--short']);
     expect(recoveredStatus).toContain(' M browser/moz.configure');
@@ -248,7 +248,7 @@ describe('connected Firefox workflow integration', () => {
       '+export const browserTitle = "patched";'
     );
 
-    await resetCommand(projectRoot, { force: true });
+    await resetCommand(projectRoot, { yes: true });
     await importCommand(projectRoot, { force: true });
 
     await expect(

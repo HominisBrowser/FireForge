@@ -6,8 +6,22 @@
 
 import { FurnaceError } from '../errors/furnace.js';
 
-/** Regex for valid custom element tag names. */
-export const CUSTOM_ELEMENT_TAG_PATTERN = /^[a-z][a-z0-9]*-[a-z0-9-]*$/;
+/**
+ * Regex for valid custom element tag names. A valid name is lowercase, starts
+ * with a letter, and contains one or more hyphen-separated groups where each
+ * group is a non-empty alphanumeric run. Consecutive hyphens and trailing
+ * hyphens are both rejected. Kept in sync with the HTML custom element spec
+ * requirement that a name contain at least one hyphen.
+ *
+ * A single shared constant is used by every furnace authoring path
+ * (`furnace create`, `furnace override`, and the AST registration helper) so
+ * that a name accepted by one command cannot be rejected by another.
+ */
+export const CUSTOM_ELEMENT_TAG_PATTERN = /^[a-z][a-z0-9]*(-[a-z0-9]+)+$/;
+
+/** Human-readable description of the tag-name rules, for CLI error messages. */
+export const CUSTOM_ELEMENT_TAG_RULES =
+  'must be lowercase, start with a letter, and use hyphens to separate non-empty alphanumeric groups (e.g., "my-widget")';
 
 /**
  * Validates that a tag name conforms to custom element naming requirements.
@@ -15,10 +29,7 @@ export const CUSTOM_ELEMENT_TAG_PATTERN = /^[a-z][a-z0-9]*-[a-z0-9-]*$/;
  */
 export function validateTagName(tagName: string): void {
   if (!CUSTOM_ELEMENT_TAG_PATTERN.test(tagName)) {
-    throw new FurnaceError(
-      `Invalid tag name "${tagName}": must contain a hyphen and match /^[a-z][a-z0-9]*-[a-z0-9-]*$/`,
-      tagName
-    );
+    throw new FurnaceError(`Invalid tag name "${tagName}": ${CUSTOM_ELEMENT_TAG_RULES}`, tagName);
   }
 }
 

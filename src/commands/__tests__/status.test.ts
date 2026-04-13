@@ -2,11 +2,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { collectFurnaceManagedPrefixes } from '../../core/furnace-config.js';
 import { getStatusWithCodes, isGitRepository } from '../../core/git.js';
 import { getUntrackedFilesInDir } from '../../core/git-status.js';
 import { isFileRegistered, matchesRegistrablePattern } from '../../core/manifest-rules.js';
 import { computePatchedContent } from '../../core/patch-apply.js';
+import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../../core/patch-lint.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
+import { GeneralError } from '../../errors/base.js';
 import { DEFAULT_CONFIG } from '../../test-utils/index.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
@@ -25,6 +28,10 @@ vi.mock('../../core/config.js', () => ({
     componentsDir: '/fake/root/components',
   }),
   loadConfig: vi.fn(),
+}));
+
+vi.mock('../../core/furnace-config.js', () => ({
+  collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set())),
 }));
 
 vi.mock('../../core/git.js', () => ({
@@ -47,6 +54,11 @@ vi.mock('../../core/patch-apply.js', () => ({
 
 vi.mock('../../core/patch-manifest.js', () => ({
   loadPatchesManifest: vi.fn(),
+}));
+
+vi.mock('../../core/patch-lint.js', () => ({
+  buildPatchQueueContext: vi.fn(),
+  collectNewFileCreatorsByPath: vi.fn(),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -94,6 +106,8 @@ describe('statusCommand', () => {
     vi.mocked(loadPatchesManifest).mockResolvedValue(null);
     vi.mocked(computePatchedContent).mockResolvedValue(null);
     vi.mocked(readText).mockResolvedValue('');
+    vi.mocked(buildPatchQueueContext).mockResolvedValue({ entries: [] });
+    vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(new Map());
   });
 
   describe('default mode (patch-aware)', () => {
@@ -211,7 +225,7 @@ describe('statusCommand', () => {
             name: 'sidebar',
             description: 'Sidebar changes',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['toolkit/foo.cpp'],
           },
         ],
@@ -240,7 +254,7 @@ describe('statusCommand', () => {
             name: 'flush-manager',
             description: 'Flush manager with helper',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['modules/FlushManager.sys.mjs', 'modules/FlushHelper.sys.mjs'],
           },
         ],
@@ -273,7 +287,7 @@ describe('statusCommand', () => {
             name: 'sidebar',
             description: 'Sidebar changes',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['toolkit/foo.cpp'],
           },
         ],
@@ -302,7 +316,7 @@ describe('statusCommand', () => {
             name: 'sidebar',
             description: 'Sidebar changes',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['toolkit/patched.cpp'],
           },
         ],
@@ -335,7 +349,7 @@ describe('statusCommand', () => {
             name: 'cleanup',
             description: 'Remove old file',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['toolkit/old.cpp'],
           },
         ],
@@ -362,7 +376,7 @@ describe('statusCommand', () => {
             name: 'change',
             description: 'Modify file',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['toolkit/modified.cpp'],
           },
         ],
@@ -391,7 +405,7 @@ describe('statusCommand', () => {
             name: 'sidebar',
             description: 'Sidebar changes',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['toolkit/foo.cpp'],
           },
         ],
@@ -406,6 +420,75 @@ describe('statusCommand', () => {
       expect(warnMessages()).not.toContain('Unmanaged changes:');
       expect(warnMessages()).toContain('Patch-backed materialized changes:');
       expect(warnMessages()).not.toContain('Tool-managed branding changes:');
+    });
+
+    it('classifies furnace-managed files in their own bucket', async () => {
+      vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(
+        new Set(['toolkit/content/widgets/moz-button/'])
+      );
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: 'M', file: 'toolkit/content/widgets/moz-button/moz-button.css' },
+        { status: 'M', file: 'toolkit/components/example.cpp' },
+      ]);
+
+      await statusCommand(projectRoot);
+
+      expect(warnMessages()).toContain('Furnace-managed component changes:');
+      expect(warnMessages()).toContain('Unmanaged changes:');
+      expect(infoMessages()).toContain('  toolkit/content/widgets/moz-button/moz-button.css');
+      expect(infoMessages()).toContain('  toolkit/components/example.cpp');
+      expect(outro).toHaveBeenCalledWith('1 unmanaged, 1 furnace');
+    });
+
+    it('does not classify files as furnace-managed when no furnace config exists', async () => {
+      vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(new Set());
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: 'M', file: 'toolkit/content/widgets/moz-button/moz-button.css' },
+      ]);
+
+      await statusCommand(projectRoot);
+
+      expect(warnMessages()).not.toContain('Furnace-managed component changes:');
+      expect(warnMessages()).toContain('Unmanaged changes:');
+      expect(outro).toHaveBeenCalledWith('1 unmanaged');
+    });
+
+    it('shows all four buckets when files span all categories', async () => {
+      vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(
+        new Set(['toolkit/content/widgets/moz-panel/'])
+      );
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-sidebar.patch',
+            order: 1,
+            category: 'ui',
+            name: 'sidebar',
+            description: 'Sidebar changes',
+            createdAt: '2025-01-01T00:00:00Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['toolkit/patched.cpp'],
+          },
+        ],
+      });
+      vi.mocked(computePatchedContent).mockResolvedValue('matched content');
+      vi.mocked(readText).mockResolvedValue('matched content');
+
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: 'M', file: 'toolkit/unmanaged.cpp' },
+        { status: 'M', file: 'toolkit/patched.cpp' },
+        { status: 'M', file: 'browser/moz.configure' },
+        { status: 'M', file: 'toolkit/content/widgets/moz-panel/moz-panel.mjs' },
+      ]);
+
+      await statusCommand(projectRoot);
+
+      expect(warnMessages()).toContain('Unmanaged changes:');
+      expect(warnMessages()).toContain('Patch-backed materialized changes:');
+      expect(warnMessages()).toContain('Tool-managed branding changes:');
+      expect(warnMessages()).toContain('Furnace-managed component changes:');
+      expect(outro).toHaveBeenCalledWith('1 unmanaged, 1 patch-backed, 1 branding, 1 furnace');
     });
   });
 
@@ -466,7 +549,7 @@ describe('statusCommand', () => {
             name: 'sidebar',
             description: 'Sidebar changes',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['toolkit/patched.cpp'],
           },
         ],
@@ -510,8 +593,133 @@ describe('statusCommand', () => {
   describe('flag validation', () => {
     it('throws when both --raw and --unmanaged are provided', async () => {
       await expect(statusCommand(projectRoot, { raw: true, unmanaged: true })).rejects.toThrow(
-        'Cannot use --raw and --unmanaged together.'
+        'Cannot use --raw, --unmanaged, --ownership, and --json together'
       );
+    });
+
+    it('throws when --raw and --ownership are combined', async () => {
+      await expect(statusCommand(projectRoot, { raw: true, ownership: true })).rejects.toThrow(
+        'Cannot use --raw, --unmanaged, --ownership, and --json together'
+      );
+    });
+
+    it('throws when --unmanaged and --ownership are combined', async () => {
+      await expect(
+        statusCommand(projectRoot, { unmanaged: true, ownership: true })
+      ).rejects.toThrow('Cannot use --raw, --unmanaged, --ownership, and --json together');
+    });
+  });
+
+  describe('--ownership mode', () => {
+    it('exits non-zero when two patches share a filesAffected entry', async () => {
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-a.patch',
+            order: 1,
+            category: 'ui',
+            name: 'a',
+            description: '',
+            createdAt: '2025-01-01T00:00:00Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/content/browser.js'],
+          },
+          {
+            filename: '002-ui-b.patch',
+            order: 2,
+            category: 'ui',
+            name: 'b',
+            description: '',
+            createdAt: '2025-01-01T00:00:00Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/content/browser.js'],
+          },
+        ],
+      });
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+
+      await expect(statusCommand(projectRoot, { ownership: true })).rejects.toBeInstanceOf(
+        GeneralError
+      );
+    });
+
+    it('flags a duplicate-new-file-creation conflict that verify would catch', async () => {
+      // Alignment fix regression: two patches both hit `/dev/null →
+      // b/foo.js` in their bodies but only one lists the path in its
+      // `filesAffected` row. Previously status --ownership walked
+      // only filesAffected and reported the queue clean, while
+      // verify correctly rejected it. Now status --ownership
+      // consumes the same structured map verify does and agrees.
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-a.patch',
+            order: 1,
+            category: 'ui',
+            name: 'a',
+            description: '',
+            createdAt: '2025-01-01T00:00:00Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['foo/A.sys.mjs'],
+          },
+          {
+            filename: '002-ui-b.patch',
+            order: 2,
+            category: 'ui',
+            name: 'b',
+            description: '',
+            createdAt: '2025-01-01T00:00:00Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['foo/B.sys.mjs'],
+          },
+        ],
+      });
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+      vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(
+        new Map([['foo/Shared.sys.mjs', ['001-ui-a.patch', '002-ui-b.patch']]])
+      );
+
+      const err = await statusCommand(projectRoot, { ownership: true }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(GeneralError);
+      if (err instanceof GeneralError) {
+        expect(err.message).toContain('claimed by more than one patch');
+      }
+      // The rendered table should name the dup-create conflict type
+      // alongside the two creators so the operator sees which fix
+      // applies.
+      const rendered = [...infoMessages(), ...warnMessages()].join('\n');
+      expect(rendered).toContain('foo/Shared.sys.mjs');
+      expect(rendered).toContain('001-ui-a.patch');
+      expect(rendered).toContain('002-ui-b.patch');
+      expect(rendered).toContain('CONFLICT');
+    });
+
+    it('returns cleanly when the queue has no conflicts', async () => {
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-a.patch',
+            order: 1,
+            category: 'ui',
+            name: 'a',
+            description: '',
+            createdAt: '2025-01-01T00:00:00Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['foo/A.sys.mjs'],
+          },
+        ],
+      });
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+      vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(
+        new Map([['foo/A.sys.mjs', ['001-ui-a.patch']]])
+      );
+
+      await statusCommand(projectRoot, { ownership: true });
+
+      expect(outro).toHaveBeenCalledWith('1 managed');
     });
   });
 
@@ -578,7 +786,7 @@ describe('statusCommand', () => {
             name: 'storage-facade',
             description: 'Storage facade',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['browser/modules/mybrowser/MybrowserFacade.sys.mjs'],
           },
           {
@@ -588,7 +796,7 @@ describe('statusCommand', () => {
             name: 'storage-facade-tests',
             description: 'Storage facade tests',
             createdAt: '2025-01-01T00:00:00Z',
-            sourceEsrVersion: '140.0esr',
+            sourceEsrVersion: '140.9.0esr',
             filesAffected: ['browser/modules/mybrowser/test/browser_mybrowser_facade_init.js'],
           },
         ],

@@ -5,10 +5,13 @@ import { Command } from 'commander';
 
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getStatusWithCodes, isGitRepository } from '../core/git.js';
 import { getUntrackedFilesInDir } from '../core/git-status.js';
 import { isFileRegistered, matchesRegistrablePattern } from '../core/manifest-rules.js';
+import { buildOwnershipTable, renderOwnershipTable } from '../core/ownership-table.js';
 import { computePatchedContent } from '../core/patch-apply.js';
+import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../core/patch-lint.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -53,7 +56,7 @@ interface StatusFile {
  * has additional local edits lands in `unmanaged` because its content diverges
  * from the expected patch result.
  */
-type FileClassification = 'patch-backed' | 'unmanaged' | 'branding';
+type FileClassification = 'patch-backed' | 'unmanaged' | 'branding' | 'furnace';
 
 interface ClassifiedFile extends StatusFile {
   classification: FileClassification;
@@ -168,7 +171,8 @@ async function classifyFiles(
   files: StatusFile[],
   engineDir: string,
   patchesDir: string,
-  binaryName: string
+  binaryName: string,
+  furnacePrefixes: Set<string>
 ): Promise<ClassifiedFile[]> {
   const manifest = await loadPatchesManifest(patchesDir);
 
@@ -189,6 +193,21 @@ async function classifyFiles(
     if (isBrandingManagedPath(entry.file, binaryName)) {
       results.push({ ...entry, classification: 'branding' });
       continue;
+    }
+
+    // Furnace-managed component paths
+    if (furnacePrefixes.size > 0) {
+      let isFurnace = false;
+      for (const prefix of furnacePrefixes) {
+        if (entry.file.startsWith(prefix)) {
+          isFurnace = true;
+          break;
+        }
+      }
+      if (isFurnace) {
+        results.push({ ...entry, classification: 'furnace' });
+        continue;
+      }
     }
 
     // Not in any patch → unmanaged
@@ -234,6 +253,31 @@ async function classifyFiles(
 }
 
 /**
+ * Renders classified file status as machine-readable JSON to stdout.
+ */
+async function renderJsonStatus(
+  files: StatusFile[],
+  paths: ReturnType<typeof getProjectPaths>,
+  projectRoot: string,
+  binaryName: string
+): Promise<void> {
+  const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
+  const classified = await classifyFiles(
+    files,
+    paths.engine,
+    paths.patches,
+    binaryName,
+    furnacePrefixes
+  );
+  const output = classified.map((f) => ({
+    file: f.file,
+    status: f.status.trim(),
+    classification: f.classification,
+  }));
+  process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+}
+
+/**
  * Runs the status command to show modified files.
  * @param projectRoot - Root directory of the project
  * @param options - Status display options
@@ -242,16 +286,71 @@ export async function statusCommand(
   projectRoot: string,
   options: StatusOptions = {}
 ): Promise<void> {
-  if (options.raw && options.unmanaged) {
-    throw new GeneralError('Cannot use --raw and --unmanaged together.');
+  const modeCount = [options.raw, options.unmanaged, options.ownership, options.json].filter(
+    (v) => v === true
+  ).length;
+  if (modeCount > 1) {
+    throw new GeneralError(
+      'Cannot use --raw, --unmanaged, --ownership, and --json together. Pick at most one.'
+    );
   }
 
-  if (!options.raw) {
+  if (!options.raw && !options.json) {
     intro('FireForge Status');
   }
 
   const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
+
+  // Ownership mode is a flat file→patch table; sources are the manifest's
+  // filesAffected, any worktree drift, and the cross-patch
+  // duplicate-new-file-creation map produced by walking each patch
+  // body. The latter is the alignment fix between `status --ownership`
+  // and `fireforge verify` — see buildOwnershipTable's header comment.
+  // Runs before the default classify path so we can short-circuit
+  // without computing patch-backed state.
+  if (options.ownership) {
+    if (!(await pathExists(paths.engine))) {
+      throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
+    }
+    const manifest = await loadPatchesManifest(paths.patches);
+    const rawFilesOwnership = (await isGitRepository(paths.engine))
+      ? await expandDirectoryEntries(await getStatusWithCodes(paths.engine), paths.engine)
+      : [];
+
+    // Only walk the patch bodies when the directory actually exists.
+    // Fresh projects with no patch queue yet pass through with an empty
+    // creators map, which degrades to the old filesAffected-only
+    // behavior for the empty case.
+    const newFileCreatorsByPath = (await pathExists(paths.patches))
+      ? collectNewFileCreatorsByPath(await buildPatchQueueContext(paths.patches))
+      : new Map<string, string[]>();
+
+    const rows = buildOwnershipTable(
+      manifest?.patches ?? [],
+      rawFilesOwnership,
+      newFileCreatorsByPath
+    );
+    renderOwnershipTable(rows);
+
+    const conflictCount = rows.filter((r) => r.conflict).length;
+    const unmanagedCount = rows.filter((r) => r.unmanaged).length;
+    const managedCount = rows.filter((r) => !r.unmanaged).length;
+
+    const parts: string[] = [`${managedCount} managed`];
+    if (conflictCount > 0) parts.push(`${conflictCount} conflict${conflictCount === 1 ? '' : 's'}`);
+    if (unmanagedCount > 0) parts.push(`${unmanagedCount} unmanaged`);
+    outro(parts.join(', '));
+
+    if (conflictCount > 0) {
+      throw new GeneralError(
+        `${conflictCount} path(s) are claimed by more than one patch. ` +
+          'Run "fireforge verify" for full details, then use "re-export --files" or ' +
+          '"patch delete" to resolve.'
+      );
+    }
+    return;
+  }
 
   // Check if engine exists
   if (!(await pathExists(paths.engine))) {
@@ -280,12 +379,26 @@ export async function statusCommand(
     return;
   }
 
+  // JSON mode and default mode both need classification
+  if (options.json) {
+    await renderJsonStatus(files, paths, projectRoot, config.binaryName);
+    return;
+  }
+
   // Patch-aware classification
-  const classified = await classifyFiles(files, paths.engine, paths.patches, config.binaryName);
+  const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
+  const classified = await classifyFiles(
+    files,
+    paths.engine,
+    paths.patches,
+    config.binaryName,
+    furnacePrefixes
+  );
 
   const unmanagedFiles = classified.filter((f) => f.classification === 'unmanaged');
   const patchBackedFiles = classified.filter((f) => f.classification === 'patch-backed');
   const brandingFiles = classified.filter((f) => f.classification === 'branding');
+  const furnaceFiles = classified.filter((f) => f.classification === 'furnace');
 
   // --unmanaged mode: only show unmanaged
   if (options.unmanaged) {
@@ -327,7 +440,19 @@ export async function statusCommand(
     printStatusGroups(brandingFiles);
   }
 
-  if (unmanagedFiles.length === 0 && patchBackedFiles.length === 0 && brandingFiles.length === 0) {
+  if (furnaceFiles.length > 0) {
+    if (unmanagedFiles.length > 0 || patchBackedFiles.length > 0 || brandingFiles.length > 0)
+      info('');
+    warn('Furnace-managed component changes:');
+    printStatusGroups(furnaceFiles);
+  }
+
+  if (
+    unmanagedFiles.length === 0 &&
+    patchBackedFiles.length === 0 &&
+    brandingFiles.length === 0 &&
+    furnaceFiles.length === 0
+  ) {
     info('No changes');
   }
 
@@ -335,6 +460,7 @@ export async function statusCommand(
   if (unmanagedFiles.length > 0) parts.push(`${unmanagedFiles.length} unmanaged`);
   if (patchBackedFiles.length > 0) parts.push(`${patchBackedFiles.length} patch-backed`);
   if (brandingFiles.length > 0) parts.push(`${brandingFiles.length} branding`);
+  if (furnaceFiles.length > 0) parts.push(`${furnaceFiles.length} furnace`);
   outro(parts.join(', '));
 }
 
@@ -348,9 +474,21 @@ export function registerStatus(
     .description('Show modified files in engine/')
     .option('--raw', 'Show raw worktree status without patch classification')
     .option('--unmanaged', 'Show only unmanaged changes (not covered by patches or tools)')
+    .option(
+      '--ownership',
+      'Show a flat path → owning patch table (flags files claimed by multiple patches)'
+    )
+    .option('--json', 'Output classified file status as JSON')
     .action(
-      withErrorHandling(async (options: { raw?: boolean; unmanaged?: boolean }) => {
-        await statusCommand(getProjectRoot(), options);
-      })
+      withErrorHandling(
+        async (options: {
+          raw?: boolean;
+          unmanaged?: boolean;
+          ownership?: boolean;
+          json?: boolean;
+        }) => {
+          await statusCommand(getProjectRoot(), options);
+        }
+      )
     );
 }

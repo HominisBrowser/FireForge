@@ -1,4 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    rm: vi.fn(actual.rm),
+  };
+});
+
 import { access, mkdir, mkdtemp, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -92,5 +100,59 @@ describe('file-lock', () => {
         onTimeoutMessage: 'lock still held',
       })
     ).rejects.toThrow('lock still held');
+  });
+
+  it('serialises concurrent lock attempts on the same path', async () => {
+    const tempDir = await makeTempDir('fireforge-contention-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    const order: string[] = [];
+
+    const first = withFileLock(
+      lockPath,
+      async () => {
+        order.push('first-start');
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        order.push('first-end');
+        return 'a';
+      },
+      { timeoutMs: 500, pollMs: 10 }
+    );
+
+    // Small delay so the first call wins the mkdir race.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const second = withFileLock(
+      lockPath,
+      () => {
+        order.push('second-start');
+        return Promise.resolve('b');
+      },
+      { timeoutMs: 500, pollMs: 10, staleMs: 60_000 }
+    );
+
+    const [resultA, resultB] = await Promise.all([first, second]);
+
+    expect(resultA).toBe('a');
+    expect(resultB).toBe('b');
+    // The second operation must not start until the first has finished.
+    expect(order).toEqual(['first-start', 'first-end', 'second-start']);
+  });
+
+  it('surfaces stale-lock cleanup failures that are not disappearance races', async () => {
+    const tempDir = await makeTempDir('fireforge-stale-lock-error-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+    const staleTime = new Date(Date.now() - 1_000);
+    await utimes(lockPath, staleTime, staleTime);
+
+    vi.mocked(rm).mockRejectedValueOnce(
+      Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    );
+
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+        staleMs: 10,
+      })
+    ).rejects.toThrow('permission denied');
   });
 });

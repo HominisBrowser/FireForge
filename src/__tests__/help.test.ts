@@ -24,4 +24,47 @@ describe('CLI help output', () => {
     expect(exportHelp).toContain('--category <category>');
     expect(exportHelp).toContain('"infra"');
   });
+
+  it('exposes stable help text for every furnace subcommand', () => {
+    // Snapshot each `furnace <sub> --help` output so accidental CLI surface
+    // changes (renamed flags, dropped descriptions, reshuffled options)
+    // break the snapshot instead of silently shipping. The root `furnace`
+    // help is covered by `rootHelp` above via the parent program's command
+    // list, so we only snapshot the subcommands here.
+    const program = createProgram();
+    const furnace = program.commands.find((command) => command.name() === 'furnace');
+    expect(furnace).toBeDefined();
+
+    // Sort subcommands by name so a reordering inside `registerFurnace`
+    // does not churn the snapshot file.
+    const subcommands = [...(furnace?.commands ?? [])].sort((left, right) =>
+      left.name().localeCompare(right.name())
+    );
+
+    // Sanity check: catch the case where a new subcommand is added without
+    // also adding a help snapshot by asserting the expected set explicitly.
+    const subcommandNames = subcommands.map((command) => command.name());
+    expect(subcommandNames).toEqual([
+      'apply',
+      'create',
+      'deploy',
+      'diff',
+      'init',
+      'list',
+      'override',
+      'preview',
+      'refresh',
+      'remove',
+      'rename',
+      'scan',
+      'status',
+      'sync',
+      'validate',
+    ]);
+
+    for (const subcommand of subcommands) {
+      const help = subcommand.helpInformation();
+      expect(help).toMatchSnapshot(`furnace ${subcommand.name()} --help`);
+    }
+  });
 });

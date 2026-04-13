@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { exec } from '../utils/process.js';
 import type { GitStatusEntry } from './git-base.js';
-import { ensureGit } from './git-base.js';
+import { ensureGit, git } from './git-base.js';
 
 /**
  * Parses NUL-delimited porcelain status output.
@@ -51,8 +50,7 @@ export function parsePorcelainStatus(output: string): GitStatusEntry[] {
 export async function getWorkingTreeStatus(repoDir: string): Promise<GitStatusEntry[]> {
   await ensureGit();
 
-  const result = await exec('git', ['status', '--porcelain=v1', '-z'], { cwd: repoDir });
-  return parsePorcelainStatus(result.stdout);
+  return parsePorcelainStatus(await git(['status', '--porcelain=v1', '-z'], repoDir));
 }
 
 /**
@@ -110,11 +108,8 @@ export async function getUntrackedFiles(repoDir: string): Promise<string[]> {
   await ensureGit();
 
   // Use git ls-files to get all untracked files, which properly expands directories
-  const result = await exec('git', ['ls-files', '--others', '--exclude-standard'], {
-    cwd: repoDir,
-  });
-
-  return result.stdout.split('\n').filter((line) => line.trim().length > 0);
+  const output = await git(['ls-files', '--others', '--exclude-standard'], repoDir);
+  return output.split('\n').filter((line) => line.trim().length > 0);
 }
 
 /**
@@ -126,10 +121,8 @@ export async function getUntrackedFiles(repoDir: string): Promise<string[]> {
  */
 export async function getUntrackedFilesInDir(repoDir: string, dir: string): Promise<string[]> {
   await ensureGit();
-  const result = await exec('git', ['ls-files', '--others', '--exclude-standard', '--', dir], {
-    cwd: repoDir,
-  });
-  return result.stdout.split('\n').filter((line) => line.trim().length > 0);
+  const output = await git(['ls-files', '--others', '--exclude-standard', '--', dir], repoDir);
+  return output.split('\n').filter((line) => line.trim().length > 0);
 }
 
 /**
@@ -141,8 +134,8 @@ export async function getUntrackedFilesInDir(repoDir: string, dir: string): Prom
  */
 export async function getModifiedFilesInDir(repoDir: string, dir: string): Promise<string[]> {
   await ensureGit();
-  const result = await exec('git', ['diff', '--name-only', 'HEAD', '--', dir], { cwd: repoDir });
-  return result.stdout.split('\n').filter((line) => line.trim().length > 0);
+  const output = await git(['diff', '--name-only', 'HEAD', '--', dir], repoDir);
+  return output.split('\n').filter((line) => line.trim().length > 0);
 }
 
 /**
@@ -156,18 +149,15 @@ export async function getDirtyFiles(repoDir: string, files: string[]): Promise<s
   await ensureGit();
 
   // Check both staged and unstaged changes for the given files
-  const result = await exec('git', ['diff', '--name-only', 'HEAD', '--', ...files], {
-    cwd: repoDir,
-  });
-  const tracked = result.stdout.split('\n').filter((line) => line.trim().length > 0);
+  const trackedOutput = await git(['diff', '--name-only', 'HEAD', '--', ...files], repoDir);
+  const tracked = trackedOutput.split('\n').filter((line) => line.trim().length > 0);
 
   // Also check for untracked files
-  const untrackedResult = await exec(
-    'git',
+  const untrackedOutput = await git(
     ['ls-files', '--others', '--exclude-standard', '--', ...files],
-    { cwd: repoDir }
+    repoDir
   );
-  const untracked = untrackedResult.stdout.split('\n').filter((line) => line.trim().length > 0);
+  const untracked = untrackedOutput.split('\n').filter((line) => line.trim().length > 0);
 
   return [...new Set([...tracked, ...untracked])].sort();
 }
@@ -182,13 +172,14 @@ export async function getDirtyFiles(repoDir: string, files: string[]): Promise<s
 export async function listAllFilesInDir(repoDir: string, dir: string): Promise<string[]> {
   await ensureGit();
 
-  const tracked = await exec('git', ['ls-files', '--', dir], { cwd: repoDir });
-  const trackedFiles = tracked.stdout.split('\n').filter((line) => line.trim().length > 0);
+  const trackedOutput = await git(['ls-files', '--', dir], repoDir);
+  const trackedFiles = trackedOutput.split('\n').filter((line) => line.trim().length > 0);
 
-  const untracked = await exec('git', ['ls-files', '--others', '--exclude-standard', '--', dir], {
-    cwd: repoDir,
-  });
-  const untrackedFiles = untracked.stdout.split('\n').filter((line) => line.trim().length > 0);
+  const untrackedOutput = await git(
+    ['ls-files', '--others', '--exclude-standard', '--', dir],
+    repoDir
+  );
+  const untrackedFiles = untrackedOutput.split('\n').filter((line) => line.trim().length > 0);
 
   return [...new Set([...trackedFiles, ...untrackedFiles])].sort();
 }

@@ -6,6 +6,7 @@ import type { ComponentType, SyncResult } from '../types/furnace.js';
 import { ensureDir, pathExists, removeDir, removeFile, writeText } from '../utils/fs.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { loadFurnaceConfig } from './furnace-config.js';
+import { stripComponentPrefix } from './furnace-constants.js';
 import { DEFAULT_LICENSE, getLicenseHeader } from './license-headers.js';
 
 /** MPL-2.0 license header used in generated story files for Firefox-derived components */
@@ -31,8 +32,8 @@ const TITLE_CATEGORIES: Record<ComponentType, string> = {
  * @param tagName - Component tag name (e.g. "moz-button")
  * @returns Display name (e.g. "Button")
  */
-function generateDisplayName(tagName: string): string {
-  const withoutPrefix = tagName.replace(/^moz-/, '');
+function generateDisplayName(tagName: string, componentPrefix: string): string {
+  const withoutPrefix = stripComponentPrefix(tagName, componentPrefix);
   return withoutPrefix
     .split('-')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
@@ -122,6 +123,7 @@ export async function syncStories(root: string): Promise<SyncResult> {
 
   const result: SyncResult = { created: [], updated: [], removed: [] };
   const expectedFiles = new Set<string>();
+  const componentPrefix = config.componentPrefix;
 
   // --- Stock components (only create if missing) ---
   for (const tagName of config.stock) {
@@ -133,7 +135,7 @@ export async function syncStories(root: string): Promise<SyncResult> {
       continue;
     }
 
-    const displayName = generateDisplayName(tagName);
+    const displayName = generateDisplayName(tagName, componentPrefix);
     const content = generateStoryContent(tagName, displayName, 'stock');
     await writeText(filePath, content);
     result.created.push(filename);
@@ -147,7 +149,7 @@ export async function syncStories(root: string): Promise<SyncResult> {
     const filePath = join(storiesDir, filename);
     const existed = await pathExists(filePath);
 
-    const displayName = generateDisplayName(name);
+    const displayName = generateDisplayName(name, componentPrefix);
     const content = generateStoryContent(name, displayName, 'override', customLicenseHeader);
     await writeText(filePath, content);
 
@@ -166,7 +168,7 @@ export async function syncStories(root: string): Promise<SyncResult> {
     const filePath = join(storiesDir, filename);
     const existed = await pathExists(filePath);
 
-    const displayName = generateDisplayName(name);
+    const displayName = generateDisplayName(name, componentPrefix);
     const content = generateStoryContent(name, displayName, 'custom', customLicenseHeader);
     await writeText(filePath, content);
 

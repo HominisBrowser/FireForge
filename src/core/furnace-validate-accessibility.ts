@@ -8,8 +8,11 @@ import {
   createIssue,
   hasAriaRole,
   hasDelegatesFocusEnabled,
+  hasGenericInteractiveElement,
+  hasPositiveTabindex,
   hasTemplateClickHandler,
   hasTemplateKeyboardHandler,
+  hasUnlabelledFormInput,
 } from './furnace-validate-helpers.js';
 
 /**
@@ -26,13 +29,13 @@ export async function validateAccessibility(
   const content = await readText(mjsPath);
   const issues: ValidationIssue[] = [];
 
-  if (!hasAriaRole(content)) {
+  if (!hasAriaRole(content) && hasGenericInteractiveElement(content)) {
     issues.push(
       createIssue(
         tagName,
         'warning',
         'no-aria-role',
-        'No ARIA role attribute found. Consider adding role= for screen reader support.'
+        'Generic interactive markup has no native semantics. Prefer native elements, or add role= when native markup cannot provide the semantics.'
       )
     );
   }
@@ -69,6 +72,28 @@ export async function validateAccessibility(
         'warning',
         'no-delegates-focus',
         'Interactive component without delegatesFocus in shadowRootOptions. Focus may not delegate to inner elements.'
+      )
+    );
+  }
+
+  if (hasPositiveTabindex(content)) {
+    issues.push(
+      createIssue(
+        tagName,
+        'warning',
+        'positive-tabindex',
+        'Positive tabindex disrupts natural tab order. Use tabindex="0" for focusable elements or tabindex="-1" for programmatic focus only.'
+      )
+    );
+  }
+
+  if (hasUnlabelledFormInput(content)) {
+    issues.push(
+      createIssue(
+        tagName,
+        'warning',
+        'unlabelled-form-input',
+        'Form input without an accessible label. Add aria-label, aria-labelledby, or an associated <label> element.'
       )
     );
   }

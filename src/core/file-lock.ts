@@ -24,6 +24,19 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function getNodeErrorCode(error: unknown): string | undefined {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string'
+  ) {
+    return error.code;
+  }
+
+  return undefined;
+}
+
 /** Derives the sibling lock-directory path used to guard a file-based resource. */
 export function createSiblingLockPath(filePath: string, suffix = '.fireforge.lock'): string {
   return `${filePath}${suffix}`;
@@ -49,8 +62,14 @@ async function removeIfStaleLock(
     await rm(lockPath, { recursive: true, force: true });
     return true;
   } catch (error: unknown) {
+    const code = getNodeErrorCode(error);
+    if (code === 'ENOENT') {
+      verbose(`Stale lock disappeared before cleanup completed: ${lockPath}`);
+      return true;
+    }
+
     verbose(`Stale lock check failed for ${lockPath}: ${toError(error).message}`);
-    return true;
+    throw toError(error);
   }
 }
 

@@ -88,7 +88,7 @@ function makeMockWriteStream(): Writable {
 function stubDownloadFs(): void {
   mockCreateWriteStream.mockReturnValue(makeMockWriteStream());
   mockCreateReadStream.mockReturnValue(Readable.from([Buffer.from('data')]));
-  mockReaddir.mockResolvedValue([{ name: 'firefox-146.0', isDirectory: () => true }]);
+  mockReaddir.mockResolvedValue([{ name: 'firefox-140.9.0', isDirectory: () => true }]);
 }
 
 // ---------------------------------------------------------------------------
@@ -97,15 +97,15 @@ function stubDownloadFs(): void {
 
 describe('resolveArchive', () => {
   it('resolves a standard firefox version', () => {
-    const result = resolveArchive('146.0', 'firefox');
-    expect(result.url).toContain('/146.0/source/firefox-146.0.source.tar.xz');
-    expect(result.filename).toBe('firefox-firefox-146.0.source.tar.xz');
+    const result = resolveArchive('140.9.0', 'firefox');
+    expect(result.url).toContain('/140.9.0/source/firefox-140.9.0.source.tar.xz');
+    expect(result.filename).toBe('firefox-firefox-140.9.0.source.tar.xz');
   });
 
   it('resolves an ESR version', () => {
-    const result = resolveArchive('140.0esr', 'firefox-esr');
-    expect(result.archiveVersion).toBe('140.0esr');
-    expect(result.url).toContain('/140.0esr/source/');
+    const result = resolveArchive('140.9.0esr', 'firefox-esr');
+    expect(result.archiveVersion).toBe('140.9.0esr');
+    expect(result.url).toContain('/140.9.0esr/source/');
   });
 
   it('rejects path traversal in version', () => {
@@ -114,12 +114,12 @@ describe('resolveArchive', () => {
 
   it('derives archiveVersion from product alone, not version string', () => {
     // ESR product with ESR version: should produce ESR archive
-    const esr = resolveArchive('140.0esr', 'firefox-esr');
-    expect(esr.archiveVersion).toBe('140.0esr');
+    const esr = resolveArchive('140.9.0esr', 'firefox-esr');
+    expect(esr.archiveVersion).toBe('140.9.0esr');
 
     // Stable product with stable version: no esr suffix
-    const stable = resolveArchive('146.0', 'firefox');
-    expect(stable.archiveVersion).toBe('146.0');
+    const stable = resolveArchive('140.9.0', 'firefox');
+    expect(stable.archiveVersion).toBe('140.9.0');
 
     // Beta product with beta version
     const beta = resolveArchive('147.0b1', 'firefox-beta');
@@ -135,13 +135,13 @@ describe('resolveArchive', () => {
 
 describe('getDownloadUrl', () => {
   it('returns a mozilla archive URL', () => {
-    expect(getDownloadUrl('146.0')).toContain('archive.mozilla.org');
+    expect(getDownloadUrl('140.9.0')).toContain('archive.mozilla.org');
   });
 });
 
 describe('getTarballFilename', () => {
   it('returns a filename with product prefix', () => {
-    expect(getTarballFilename('140.0esr', 'firefox-esr')).toContain('firefox-esr');
+    expect(getTarballFilename('140.9.0esr', 'firefox-esr')).toContain('firefox-esr');
   });
 });
 
@@ -198,7 +198,7 @@ describe('download retry and timeout behavior', () => {
     stubDownloadFs();
 
     const { downloadFirefoxSource } = await import('../firefox.js');
-    await downloadFirefoxSource('146.0', 'firefox', '/tmp/dest', '/tmp/cache');
+    await downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache');
 
     // 500 + 200 = 2 calls
     expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -214,7 +214,7 @@ describe('download retry and timeout behavior', () => {
     const { downloadFirefoxSource } = await import('../firefox.js');
 
     await expect(
-      downloadFirefoxSource('146.0', 'firefox', '/tmp/dest', '/tmp/cache')
+      downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache')
     ).rejects.toThrow(DownloadError);
 
     // 3 attempts
@@ -229,10 +229,10 @@ describe('checksum-based cache validation', () => {
     // Simulate a cached archive that exists
     vi.mocked(fsMod.pathExists).mockResolvedValue(true);
     vi.mocked(fsMod.readJson).mockResolvedValue({
-      requestedVersion: '146.0',
+      requestedVersion: '140.9.0',
       product: 'firefox',
-      archiveVersion: '146.0',
-      url: 'https://archive.mozilla.org/pub/firefox/releases/146.0/source/firefox-146.0.source.tar.xz',
+      archiveVersion: '140.9.0',
+      url: 'https://archive.mozilla.org/pub/firefox/releases/140.9.0/source/firefox-140.9.0.source.tar.xz',
       contentLength: 100,
       sha256: 'expected-hash-that-will-not-match',
       downloadedAt: '2025-01-01T00:00:00.000Z',
@@ -261,10 +261,10 @@ describe('checksum-based cache validation', () => {
     });
 
     mockCreateWriteStream.mockReturnValue(makeMockWriteStream());
-    mockReaddir.mockResolvedValue([{ name: 'firefox-146.0', isDirectory: () => true }]);
+    mockReaddir.mockResolvedValue([{ name: 'firefox-140.9.0', isDirectory: () => true }]);
 
     const { downloadFirefoxSource } = await import('../firefox.js');
-    await downloadFirefoxSource('146.0', 'firefox', '/tmp/dest', '/tmp/cache');
+    await downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache');
 
     // Should have called removeFile to invalidate cache, then fetched fresh
     expect(fsMod.removeFile).toHaveBeenCalled();
@@ -276,10 +276,10 @@ describe('checksum-based cache validation', () => {
 
     vi.mocked(fsMod.pathExists).mockResolvedValue(true);
     vi.mocked(fsMod.readJson).mockResolvedValue({
-      requestedVersion: '146.0',
+      requestedVersion: '140.9.0',
       product: 'firefox',
-      archiveVersion: '146.0',
-      url: 'https://archive.mozilla.org/pub/firefox/releases/146.0/source/firefox-146.0.source.tar.xz',
+      archiveVersion: '140.9.0',
+      url: 'https://archive.mozilla.org/pub/firefox/releases/140.9.0/source/firefox-140.9.0.source.tar.xz',
       contentLength: '100',
       downloadedAt: '2025-01-01T00:00:00.000Z',
     });
@@ -301,10 +301,10 @@ describe('checksum-based cache validation', () => {
 
     mockCreateWriteStream.mockReturnValue(makeMockWriteStream());
     mockCreateReadStream.mockReturnValue(Readable.from([Buffer.from('fresh')]));
-    mockReaddir.mockResolvedValue([{ name: 'firefox-146.0', isDirectory: () => true }]);
+    mockReaddir.mockResolvedValue([{ name: 'firefox-140.9.0', isDirectory: () => true }]);
 
     const { downloadFirefoxSource } = await import('../firefox.js');
-    await downloadFirefoxSource('146.0', 'firefox', '/tmp/dest', '/tmp/cache');
+    await downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache');
 
     expect(fsMod.removeFile).toHaveBeenCalled();
     expect(mockFetch).toHaveBeenCalled();
@@ -314,10 +314,10 @@ describe('checksum-based cache validation', () => {
     const fsMod = await import('../../utils/fs.js');
     vi.mocked(fsMod.pathExists).mockResolvedValue(true);
     vi.mocked(fsMod.readJson).mockResolvedValue({
-      requestedVersion: '146.0',
+      requestedVersion: '140.9.0',
       product: 'firefox',
-      archiveVersion: '146.0',
-      url: 'https://archive.mozilla.org/pub/firefox/releases/146.0/source/firefox-146.0.source.tar.xz',
+      archiveVersion: '140.9.0',
+      url: 'https://archive.mozilla.org/pub/firefox/releases/140.9.0/source/firefox-140.9.0.source.tar.xz',
       downloadedAt: new Date().toISOString(),
       contentLength: 999,
     });
@@ -340,9 +340,9 @@ describe('checksum-based cache validation', () => {
 
     mockCreateWriteStream.mockReturnValue(makeMockWriteStream());
     mockCreateReadStream.mockReturnValue(Readable.from([Buffer.from('fresh')]));
-    mockReaddir.mockResolvedValue([{ name: 'firefox-146.0', isDirectory: () => true }]);
+    mockReaddir.mockResolvedValue([{ name: 'firefox-140.9.0', isDirectory: () => true }]);
 
-    await downloadFirefoxSource('146.0', 'firefox', '/tmp/dest', '/tmp/cache');
+    await downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache');
 
     expect(fsMod.removeFile).toHaveBeenCalled();
     expect(mockFetch).toHaveBeenCalled();
@@ -374,12 +374,14 @@ describe('download extraction behavior', () => {
     });
 
     await expect(
-      downloadFirefoxSource('146.0', 'firefox', '/tmp/dest', '/tmp/cache')
+      downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache')
     ).rejects.toThrow(ExtractionError);
 
-    expect(fsMod.removeFile).toHaveBeenCalledWith('/tmp/cache/firefox-firefox-146.0.source.tar.xz');
     expect(fsMod.removeFile).toHaveBeenCalledWith(
-      '/tmp/cache/firefox-firefox-146.0.source.tar.xz.json'
+      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz'
+    );
+    expect(fsMod.removeFile).toHaveBeenCalledWith(
+      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json'
     );
   });
 
@@ -400,7 +402,7 @@ describe('download extraction behavior', () => {
     vi.mocked(fsMod.pathExists).mockResolvedValue(false);
     mockReaddir.mockResolvedValue([{ name: 'tooling', isDirectory: () => true }]);
 
-    await downloadFirefoxSource('146.0', 'firefox', '/tmp/dest', '/tmp/cache');
+    await downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache');
 
     // Temp dir now includes a UUID suffix for concurrency safety
     const renameArgs = mockRename.mock.calls.map((c) => c as unknown as [string, string]);
@@ -418,7 +420,7 @@ describe('download response validation', () => {
     mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
 
     await expect(
-      downloadFirefoxSource('146.0', 'firefox', '/tmp/dest', '/tmp/cache')
+      downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache')
     ).rejects.toThrow(/No response body received/);
   });
 });
@@ -453,7 +455,7 @@ describe('download stall detection', () => {
       // Start the download and immediately begin waiting for rejection
       let caught: Error | undefined;
       const downloadPromise = downloadFirefoxSource(
-        '146.0',
+        '140.9.0',
         'firefox',
         '/tmp/dest',
         '/tmp/cache'
@@ -487,11 +489,11 @@ describe('download stall detection', () => {
     stubDownloadFs();
     const fsMod = await import('../../utils/fs.js');
     vi.mocked(fsMod.pathExists).mockResolvedValue(false);
-    mockReaddir.mockResolvedValue([{ name: 'firefox-146.0', isDirectory: () => true }]);
+    mockReaddir.mockResolvedValue([{ name: 'firefox-140.9.0', isDirectory: () => true }]);
 
     const { downloadFirefoxSource } = await import('../firefox.js');
     await expect(
-      downloadFirefoxSource('146.0', 'firefox', '/tmp/dest', '/tmp/cache')
+      downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache')
     ).resolves.toBeUndefined();
   });
 });
@@ -507,8 +509,8 @@ describe('getFirefoxVersion', () => {
   it('trims the version file contents when version.txt exists', async () => {
     const fsMod = await import('../../utils/fs.js');
     vi.mocked(fsMod.pathExists).mockResolvedValue(true);
-    vi.mocked(fsMod.readText).mockResolvedValue('146.0esr\n');
+    vi.mocked(fsMod.readText).mockResolvedValue('140.9.0esr\n');
 
-    await expect(getFirefoxVersion('/tmp/engine')).resolves.toBe('146.0esr');
+    await expect(getFirefoxVersion('/tmp/engine')).resolves.toBe('140.9.0esr');
   });
 });

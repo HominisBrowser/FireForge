@@ -2,32 +2,9 @@
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
-import { Command } from 'commander';
+import { Command, Help } from 'commander';
 
-import { registerBootstrap } from './commands/bootstrap.js';
-import { registerBuild } from './commands/build.js';
-import { registerConfig } from './commands/config.js';
-import { registerDiscard } from './commands/discard.js';
-import { registerDoctor } from './commands/doctor.js';
-import { registerDownload } from './commands/download.js';
-import { registerExport } from './commands/export.js';
-import { registerExportAll } from './commands/export-all.js';
-import { registerFurnace } from './commands/furnace/index.js';
-import { registerImport } from './commands/import.js';
-import { registerLint } from './commands/lint.js';
-import { registerPackage } from './commands/package.js';
-import { registerReExport } from './commands/re-export.js';
-import { registerRebase } from './commands/rebase.js';
-import { registerRegister } from './commands/register.js';
-import { registerReset } from './commands/reset.js';
-import { registerResolve } from './commands/resolve.js';
-import { registerRun } from './commands/run.js';
-import { registerSetup } from './commands/setup.js';
-import { registerStatus } from './commands/status.js';
-import { registerTest } from './commands/test.js';
-import { registerToken } from './commands/token.js';
-import { registerWatch } from './commands/watch.js';
-import { registerWire } from './commands/wire.js';
+import { COMMAND_MANIFEST, type CommandManifestEntry } from './commands/manifest.js';
 import { CancellationError, CommandError, FireForgeError } from './errors/base.js';
 import { ExitCode } from './errors/codes.js';
 import type { CommandContext } from './types/cli.js';
@@ -99,24 +76,36 @@ export function resetBrokenPipeHandlerForTests(): void {
 }
 
 /**
+ * Maximum number of directory levels to walk when searching for
+ * `fireforge.json`. Guards against symlink cycles and pathologically
+ * deep trees.
+ */
+const MAX_PROJECT_ROOT_WALK_DEPTH = 50;
+
+/**
  * Gets the project root directory.
  * Walks up from the current working directory until a fireforge.json is found.
- * Falls back to the current working directory when no project root is found.
+ * Throws when no fireforge.json is found within the walk depth limit.
  */
 export function getProjectRoot(): string {
   const start = resolve(process.cwd());
   let current = start;
 
-  for (;;) {
+  for (let depth = 0; depth < MAX_PROJECT_ROOT_WALK_DEPTH; depth++) {
     if (existsSync(join(current, 'fireforge.json'))) {
       return current;
     }
 
     const parent = dirname(current);
-    if (parent === current) return start;
+    if (parent === current) break;
 
     current = parent;
   }
+
+  throw new Error(
+    'Could not find fireforge.json in any parent directory. ' +
+      'Are you inside a FireForge project?'
+  );
 }
 
 /**
@@ -154,6 +143,144 @@ export function withErrorHandling<T extends unknown[]>(
   };
 }
 
+/** Human-readable labels for command groups, in display order. */
+const GROUP_LABELS: ReadonlyMap<CommandManifestEntry['group'], string> = new Map([
+  ['project', 'Project'],
+  ['engine', 'Engine'],
+  ['workflow', 'Workflow'],
+  ['components', 'Components'],
+  ['diagnostics', 'Diagnostics'],
+]);
+
+/**
+ * Builds a grouped help formatter that replaces Commander's flat command
+ * list with sections labelled by manifest group.
+ */
+function buildGroupedHelpFormatter(
+  manifest: readonly CommandManifestEntry[]
+): (cmd: Command, helper: Help) => string {
+  const commandGroupMap = new Map<string, CommandManifestEntry['group']>();
+  for (const entry of manifest) {
+    commandGroupMap.set(entry.name, entry.group);
+  }
+
+  return (cmd: Command, helper: Help): string => {
+    // For subcommands (e.g. `furnace --help`), fall back to Commander's
+    // default formatting by calling the prototype method directly.
+    if (cmd.parent) {
+      return Help.prototype.formatHelp.call(helper, cmd, helper);
+    }
+
+    const termWidth = helper.padWidth(cmd, helper);
+    const helpWidth = helper.helpWidth ?? 80;
+
+    const output: string[] = [];
+
+    // Usage
+    output.push(`Usage: ${helper.commandUsage(cmd)}`, '');
+
+    // Description
+    const desc = helper.commandDescription(cmd);
+    if (desc) {
+      output.push(desc, '');
+    }
+
+    // Options
+    const optionLines = helper.visibleOptions(cmd).map((opt) => {
+      const term = helper.optionTerm(opt);
+      const desc = helper.optionDescription(opt);
+      return formatHelpLine(term, desc, termWidth, helpWidth);
+    });
+    if (optionLines.length > 0) {
+      output.push('Options:');
+      output.push(...optionLines);
+      output.push('');
+    }
+
+    // Grouped commands
+    const visibleCommands = helper.visibleCommands(cmd);
+    const grouped = new Map<string, string[]>();
+
+    const otherLines: string[] = [];
+
+    for (const sub of visibleCommands) {
+      const name = sub.name();
+      const group = commandGroupMap.get(name);
+      const term = helper.subcommandTerm(sub);
+      const desc = helper.subcommandDescription(sub);
+      const line = formatHelpLine(term, desc, termWidth, helpWidth);
+
+      if (!group) {
+        // Built-in commands (e.g. "help") go to the end
+        otherLines.push(line);
+        continue;
+      }
+
+      const label = GROUP_LABELS.get(group) ?? group;
+      const lines = grouped.get(label) ?? [];
+      lines.push(line);
+      grouped.set(label, lines);
+    }
+
+    for (const [, displayLabel] of GROUP_LABELS) {
+      const lines = grouped.get(displayLabel);
+      if (!lines || lines.length === 0) continue;
+      output.push(`${displayLabel}:`);
+      output.push(...lines);
+      output.push('');
+    }
+
+    if (otherLines.length > 0) {
+      output.push(...otherLines);
+      output.push('');
+    }
+
+    return output.join('\n');
+  };
+}
+
+/** Formats a single help line with term and description, wrapping as needed. */
+function formatHelpLine(
+  term: string,
+  description: string,
+  termWidth: number,
+  helpWidth: number
+): string {
+  const padding = ' '.repeat(termWidth - term.length);
+  const fullLine = `  ${term}${padding}  ${description}`;
+  if (fullLine.length <= helpWidth || !description) {
+    return fullLine;
+  }
+
+  // Wrap long descriptions
+  const descWidth = helpWidth - termWidth - 4;
+  if (descWidth < 20) {
+    return fullLine;
+  }
+
+  const words = description.split(' ');
+  const lines: string[] = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    if (currentLine.length + word.length + 1 > descWidth && currentLine.length > 0) {
+      lines.push(currentLine);
+      currentLine = word;
+    } else {
+      currentLine = currentLine.length > 0 ? `${currentLine} ${word}` : word;
+    }
+  }
+  if (currentLine.length > 0) {
+    lines.push(currentLine);
+  }
+
+  const indent = ' '.repeat(termWidth + 4);
+  const first = lines[0] ?? '';
+  const rest = lines.slice(1).map((l) => `${indent}${l}`);
+
+  return [`  ${term}${padding}  ${first}`, ...rest].join('\n');
+}
+
 /**
  * Creates and configures the CLI program.
  */
@@ -172,32 +299,16 @@ export function createProgram(): Command {
       }
     });
 
+  const groupedFormatter = buildGroupedHelpFormatter(COMMAND_MANIFEST);
+  program.configureHelp({
+    formatHelp: groupedFormatter,
+  });
+
   const ctx: CommandContext = { getProjectRoot, withErrorHandling };
 
-  registerSetup(program, ctx);
-  registerDownload(program, ctx);
-  registerBootstrap(program, ctx);
-  registerImport(program, ctx);
-  registerResolve(program, ctx);
-  registerBuild(program, ctx);
-  registerRun(program, ctx);
-  registerStatus(program, ctx);
-  registerReset(program, ctx);
-  registerDiscard(program, ctx);
-  registerExport(program, ctx);
-  registerExportAll(program, ctx);
-  registerReExport(program, ctx);
-  registerRebase(program, ctx);
-  registerPackage(program, ctx);
-  registerWatch(program, ctx);
-  registerTest(program, ctx);
-  registerConfig(program, ctx);
-  registerDoctor(program, ctx);
-  registerRegister(program, ctx);
-  registerWire(program, ctx);
-  registerToken(program, ctx);
-  registerLint(program, ctx);
-  registerFurnace(program, ctx);
+  for (const entry of COMMAND_MANIFEST) {
+    entry.register(program, ctx);
+  }
 
   return program;
 }

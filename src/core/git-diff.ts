@@ -3,13 +3,27 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
+import { GitError } from '../errors/git.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
-import { ensureGit } from './git-base.js';
+import { ensureGit, git } from './git-base.js';
 import { fileExistsInHead } from './git-file-ops.js';
 import { getUntrackedFiles } from './git-status.js';
+
+async function execGitWithAllowedExitCodes(
+  repoDir: string,
+  args: string[],
+  allowedExitCodes: number[] = [0]
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const result = await exec('git', args, { cwd: repoDir });
+  if (allowedExitCodes.includes(result.exitCode)) {
+    return result;
+  }
+
+  throw new GitError(result.stderr.trim() || 'Git command failed', args.join(' '));
+}
 
 /**
  * Gets the diff for a specific file.
@@ -19,9 +33,7 @@ import { getUntrackedFiles } from './git-status.js';
  */
 export async function getFileDiff(repoDir: string, filePath: string): Promise<string> {
   await ensureGit();
-
-  const result = await exec('git', ['diff', 'HEAD', '--', filePath], { cwd: repoDir });
-  return result.stdout;
+  return git(['diff', 'HEAD', '--', filePath], repoDir);
 }
 
 /**
@@ -37,8 +49,7 @@ export async function generateNewFileDiff(repoDir: string, filePath: string): Pr
   // Compute the abbreviated git blob hash for the index line
   let blobHash = '0000000000';
   try {
-    const hashResult = await exec('git', ['hash-object', fullPath], { cwd: repoDir });
-    const fullHash = hashResult.stdout.trim();
+    const fullHash = (await git(['hash-object', fullPath], repoDir)).trim();
     if (fullHash.length >= 10) {
       blobHash = fullHash.slice(0, 10);
     }
@@ -138,9 +149,11 @@ export async function generateModificationDiff(
     await writeFile(tempFile, baseContent);
 
     // git diff --no-index exits code 1 when files differ — that's normal
-    const result = await exec('git', ['diff', '--no-index', '--', tempFile, fullPath], {
-      cwd: repoDir,
-    });
+    const result = await execGitWithAllowedExitCodes(
+      repoDir,
+      ['diff', '--no-index', '--', tempFile, fullPath],
+      [0, 1]
+    );
 
     const output = result.stdout;
     if (!output) {
@@ -183,8 +196,7 @@ export async function getAllDiff(repoDir: string): Promise<string> {
   await ensureGit();
 
   // Get diff for tracked files
-  const result = await exec('git', ['diff', 'HEAD'], { cwd: repoDir });
-  const trackedDiff = result.stdout;
+  const trackedDiff = await git(['diff', 'HEAD'], repoDir);
 
   // Get untracked files (properly expanded, not directories)
   const untrackedFiles = await getUntrackedFiles(repoDir);
@@ -258,8 +270,7 @@ export async function getDiffForFilesAgainstHead(
  */
 export async function getStagedDiffForFiles(repoDir: string, files: string[]): Promise<string> {
   await ensureGit();
-  const result = await exec('git', ['diff', '--cached', 'HEAD', '--', ...files], { cwd: repoDir });
-  return result.stdout;
+  return git(['diff', '--cached', 'HEAD', '--', ...files], repoDir);
 }
 
 /**
@@ -274,16 +285,27 @@ export async function generateBinaryFilePatch(repoDir: string, filePath: string)
   await ensureGit();
 
   // Try tracked file diff first
-  const result = await exec('git', ['diff', '--binary', 'HEAD', '--', filePath], { cwd: repoDir });
+  const result = await execGitWithAllowedExitCodes(repoDir, [
+    'diff',
+    '--binary',
+    'HEAD',
+    '--',
+    filePath,
+  ]);
   if (result.stdout.trim()) return result.stdout;
 
   // For untracked files, stage temporarily to produce a binary diff
   try {
-    await exec('git', ['add', '--intent-to-add', '--', filePath], { cwd: repoDir });
-    const diffResult = await exec('git', ['diff', '--binary', '--', filePath], { cwd: repoDir });
+    await execGitWithAllowedExitCodes(repoDir, ['add', '--intent-to-add', '--', filePath]);
+    const diffResult = await execGitWithAllowedExitCodes(repoDir, [
+      'diff',
+      '--binary',
+      '--',
+      filePath,
+    ]);
     return diffResult.stdout;
   } finally {
     // Always unstage, even if diff fails
-    await exec('git', ['reset', 'HEAD', '--', filePath], { cwd: repoDir });
+    await execGitWithAllowedExitCodes(repoDir, ['reset', 'HEAD', '--', filePath]);
   }
 }

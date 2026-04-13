@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { FireForgeError } from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
-import { copyDir, pathExists, readText, writeText } from '../utils/fs.js';
+import { copyDir, pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 
 /**
@@ -73,7 +73,7 @@ export async function setupBranding(engineDir: string, config: BrandingConfig): 
  */
 async function createConfigureScript(brandingDir: string, config: BrandingConfig): Promise<void> {
   const configureShPath = join(brandingDir, 'configure.sh');
-  await writeText(configureShPath, buildConfigureScriptContent(config));
+  await writeTextIfChanged(configureShPath, buildConfigureScriptContent(config));
 }
 
 function buildConfigureScriptContent(config: BrandingConfig): string {
@@ -97,7 +97,7 @@ async function updateBrandProperties(brandingDir: string, config: BrandingConfig
     return;
   }
 
-  await writeText(propsPath, buildBrandPropertiesContent(config));
+  await writeTextIfChanged(propsPath, buildBrandPropertiesContent(config));
 }
 
 function buildBrandPropertiesContent(config: BrandingConfig): string {
@@ -122,7 +122,7 @@ async function updateBrandFtl(brandingDir: string, config: BrandingConfig): Prom
     return;
   }
 
-  await writeText(ftlPath, buildBrandFtlContent(config));
+  await writeTextIfChanged(ftlPath, buildBrandFtlContent(config));
 }
 
 function buildBrandFtlContent(config: BrandingConfig): string {
@@ -166,7 +166,7 @@ async function patchMozConfigure(engineDir: string, config: BrandingConfig): Pro
   }
   content = content.replace(vendorRegex, buildMozConfigureVendorLine(config));
 
-  await writeText(mozConfigurePath, content);
+  await writeTextIfChanged(mozConfigurePath, content);
 }
 
 function buildMozConfigureVendorLine(config: BrandingConfig): string {

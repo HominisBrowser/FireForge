@@ -552,7 +552,7 @@ describe('Firefox workflow fixtures', () => {
   });
 
   it('imports two overlapping patches modifying the same file in sequence', async () => {
-    // This tests the scenario from real Hominis: patches 3 and 17 both touch moz.build.
+    // This tests a real-world scenario where two patches both touch moz.build.
     // Patch 1 adds to DIRS, patch 2 (superseding patch 1's entry for that file) adds to EXTRA_JS_MODULES.
     // After import, both changes should be present.
     const engineDir = join(projectRoot, 'engine');
@@ -619,5 +619,61 @@ describe('Firefox workflow fixtures', () => {
     expect(mozbuild).toContain('"mybrowser"');
     const store = await readText(engineDir, 'browser/modules/mybrowser/Store.sys.mjs');
     expect(store).toContain('return true;');
+  });
+
+  it('export --dry-run --order <N> prints the placement summary for single-rename runs', async () => {
+    // Regression: the placement dry-run preview used to fire only when
+    // renameCount > 1, silently exiting with "Dry run complete" otherwise.
+    // A single-renumber dry-run now routes through confirmDestructive and
+    // prints the new filename, order, and rename row.
+    const engineDir = join(projectRoot, 'engine');
+    await initCommittedRepo(engineDir, {
+      'browser/a.js': 'const a = 1;\n',
+      'browser/b.js': 'const b = 1;\n',
+    });
+
+    // First export: lands at order 1.
+    await writeFiles(engineDir, { 'browser/a.js': 'const a = 2;\n' });
+    await exportCommand(projectRoot, ['browser/a.js'], {
+      name: 'first',
+      category: 'infra',
+      description: '',
+    });
+
+    // Second export: a modification of b.js that we will try to place at
+    // order 1 in dry-run mode. This forces a single rename of the existing
+    // first patch, which is the previously-silent case.
+    await writeFiles(engineDir, { 'browser/b.js': 'const b = 2;\n' });
+
+    const logger = await import('../../utils/logger.js');
+    vi.mocked(logger.info).mockClear();
+    vi.mocked(logger.warn).mockClear();
+
+    await exportCommand(projectRoot, ['browser/b.js'], {
+      name: 'second',
+      category: 'infra',
+      description: '',
+      dryRun: true,
+      order: 1,
+      yes: true,
+    });
+
+    // Manifest must not have changed — dry-run is a no-op.
+    const manifest = await loadPatchesManifest(join(projectRoot, 'patches'));
+    expect(manifest?.patches).toHaveLength(1);
+    expect(manifest?.patches[0]?.name).toBe('first');
+
+    // The placement summary must have been printed. `info` receives lines
+    // like `  place new patch as 001-infra-second.patch (order 1)` and
+    // `    001-infra-first.patch  →  002-infra-first.patch`.
+    const infoCalls = vi
+      .mocked(logger.info)
+      .mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : ''));
+    const joined = infoCalls.join('\n');
+    expect(joined).toContain('place new patch as');
+    expect(joined).toContain('001-infra-second.patch');
+    expect(joined).toContain('order 1');
+    expect(joined).toContain('001-infra-first.patch');
+    expect(joined).toContain('002-infra-first.patch');
   });
 });

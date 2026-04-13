@@ -9,6 +9,7 @@ import {
   readFile,
   rename,
   rm,
+  statfs,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
@@ -138,6 +139,24 @@ export async function writeText(path: string, content: string): Promise<void> {
 }
 
 /**
+ * Writes text to a file only when the content has actually changed.
+ * Prevents unnecessary mtime bumps that can trigger downstream rebuilds.
+ * @param path - Path to text file
+ * @param content - Content to write
+ * @returns true if the file was written, false if content was already up to date
+ */
+export async function writeTextIfChanged(path: string, content: string): Promise<boolean> {
+  if (await pathExists(path)) {
+    const existing = await readText(path);
+    if (existing === content) {
+      return false;
+    }
+  }
+  await writeText(path, content);
+  return true;
+}
+
+/**
  * Writes content atomically using a temp-file-and-rename strategy.
  * Temp files are created in the destination directory so rename stays atomic.
  * @param path - Destination file path
@@ -207,4 +226,39 @@ function createAtomicTempPath(path: string): string {
   const directory = dirname(path);
   const filename = path.slice(directory.length + 1);
   return join(directory, `.${filename}.fireforge-tmp-${process.pid}-${randomUUID()}`);
+}
+
+/**
+ * Checks available disk space at a path and warns via the provided
+ * callback when it falls below `minBytes`.
+ *
+ * @param path - Directory to check (must exist)
+ * @param minBytes - Minimum free bytes before emitting a warning
+ * @param onLowSpace - Callback invoked with a human-readable message
+ *   when available space is below the threshold
+ * @returns The available bytes, or `undefined` when the check could not
+ *   be performed (unsupported platform, permission error, etc.)
+ */
+export async function checkDiskSpace(
+  path: string,
+  minBytes: number,
+  onLowSpace: (message: string) => void
+): Promise<number | undefined> {
+  try {
+    const stats = await statfs(path);
+    const availableBytes = stats.bfree * stats.bsize;
+    if (availableBytes < minBytes) {
+      const availableGB = (availableBytes / (1024 * 1024 * 1024)).toFixed(1);
+      const requiredGB = (minBytes / (1024 * 1024 * 1024)).toFixed(1);
+      onLowSpace(
+        `Low disk space: ${availableGB} GB available, ${requiredGB} GB recommended. ` +
+          'The operation may fail if the disk fills up.'
+      );
+    }
+    return availableBytes;
+  } catch {
+    // statfs may not be available on all platforms or the path may
+    // not exist yet — silently degrade rather than blocking the operation.
+    return undefined;
+  }
 }

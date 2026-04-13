@@ -2,17 +2,26 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { ComponentType, ValidationIssue } from '../types/furnace.js';
-import { pathExists } from '../utils/fs.js';
+import type { ComponentType, CustomComponentConfig, ValidationIssue } from '../types/furnace.js';
+import { pathExists, readText } from '../utils/fs.js';
 
 /**
  * Validates the file structure of a component directory.
  * Checks for required files and naming conventions.
+ *
+ * @param componentDir - Component source directory
+ * @param tagName - Component tag name
+ * @param type - Component type (stock, override, custom)
+ * @param customConfig - When `type === 'custom'`, the matching config from
+ *   furnace.json. Used to derive `localized`, which gates the `.ftl`
+ *   requirement. Optional so existing callers without config in scope (e.g.
+ *   the structure-only test fixtures) can keep calling without changes.
  */
 export async function validateStructure(
   componentDir: string,
   tagName: string,
-  type: ComponentType
+  type: ComponentType,
+  customConfig?: CustomComponentConfig
 ): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
   const mjsPath = join(componentDir, `${tagName}.mjs`);
@@ -38,8 +47,46 @@ export async function validateStructure(
     });
   }
 
+  // Localized custom components must have a {tag}.ftl file. Without one,
+  // apply silently deploys nothing for the locale and the runtime
+  // localization payload is empty, which is hard to spot in review.
+  if (type === 'custom' && customConfig?.localized) {
+    const ftlPath = join(componentDir, `${tagName}.ftl`);
+    if (!(await pathExists(ftlPath))) {
+      issues.push({
+        component: tagName,
+        severity: 'error',
+        check: 'missing-ftl',
+        message: `Component is marked localized: true but ${tagName}.ftl is missing. Create the file or set localized: false in furnace.json.`,
+      });
+    }
+  }
+
+  // Conflict markers left by furnace refresh (three-way merge) must be
+  // resolved before the component can be applied or deployed.
+  const dirEntries = await readdir(componentDir, { withFileTypes: true });
+  for (const entry of dirEntries) {
+    if (!entry.isFile()) continue;
+    if (
+      !entry.name.endsWith('.mjs') &&
+      !entry.name.endsWith('.css') &&
+      !entry.name.endsWith('.ftl')
+    )
+      continue;
+
+    const content = await readText(join(componentDir, entry.name));
+    if (/^<{7}\s/m.test(content) || /^>{7}\s/m.test(content) || /^={7}$/m.test(content)) {
+      issues.push({
+        component: tagName,
+        severity: 'error',
+        check: 'conflict-markers',
+        message: `File "${entry.name}" contains unresolved merge conflict markers. Resolve conflicts before applying.`,
+      });
+    }
+  }
+
   // File names should match tag name
-  const entries = await readdir(componentDir, { withFileTypes: true });
+  const entries = dirEntries;
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     if (!entry.name.endsWith('.mjs') && !entry.name.endsWith('.css')) continue;

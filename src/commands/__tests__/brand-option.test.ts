@@ -8,7 +8,7 @@ vi.mock('../../core/config.js', () => ({
       vendor: 'My Company',
       appId: 'org.example.mybrowser',
       binaryName: 'mybrowser',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
       license: 'EUPL-1.2',
       build: { jobs: 8 },
     })
@@ -52,10 +52,15 @@ vi.mock('../../core/furnace-config.js', () => ({
       custom: {},
     })
   ),
+  loadFurnaceState: vi.fn(() => Promise.resolve({})),
+  getFurnacePaths: vi.fn(() => ({
+    furnaceState: '/project/.fireforge/furnace-state.json',
+  })),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
+  checkDiskSpace: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../utils/logger.js', () => ({

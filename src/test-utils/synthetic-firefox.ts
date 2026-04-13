@@ -140,7 +140,7 @@ const SYNTHETIC_FIREFOX_FILES: Record<string, string | Buffer> = {
 /** Creates a synthetic Firefox source archive for integration tests. */
 export async function makeSyntheticFirefoxArchive(
   root: string,
-  version: string = '140.0esr'
+  version: string = '140.9.0esr'
 ): Promise<string> {
   return makeTarXzArchive(
     root,

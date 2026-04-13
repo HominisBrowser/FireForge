@@ -5,6 +5,8 @@ import { FurnaceError } from '../errors/furnace.js';
 import type {
   CustomComponentConfig,
   FurnaceConfig,
+  FurnacePendingRepair,
+  FurnacePendingRepairOperation,
   FurnaceState,
   OverrideComponentConfig,
 } from '../types/furnace.js';
@@ -13,7 +15,11 @@ import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { isArray, isBoolean, isObject, isString } from '../utils/validation.js';
 import { FIREFORGE_DIR } from './config.js';
+import { resolveFtlDir } from './furnace-constants.js';
+import { detectComposesCycles, validateComposesReferences } from './furnace-graph-utils.js';
 import { quarantineStateFile, withStateFileLock } from './state-file.js';
+
+export { detectComposesCycles };
 
 /** Name of the furnace configuration file */
 export const FURNACE_CONFIG_FILENAME = 'furnace.json';
@@ -120,6 +126,7 @@ function parseOverrideConfig(data: Record<string, unknown>, name: string): Overr
     description: data['description'],
     basePath: data['basePath'],
     baseVersion: data['baseVersion'],
+    ...(isString(data['baseCommit']) ? { baseCommit: data['baseCommit'] } : {}),
   };
 }
 
@@ -161,6 +168,46 @@ function parseCustomConfig(data: Record<string, unknown>, name: string): CustomC
   };
 }
 
+/** The current (and only) config schema version. */
+const CURRENT_CONFIG_VERSION = 1;
+
+/**
+ * Migrates a furnace config from an older schema version to the current one.
+ * Returns the data unchanged if it is already at the current version.
+ *
+ * When a future version 2 is introduced, add a `case 1:` that transforms
+ * v1 data into v2 shape and falls through to validation. The pattern is:
+ *
+ * ```
+ * case 1:
+ *   data = migrateV1ToV2(data);
+ *   // fallthrough
+ * case 2:
+ *   break;
+ * ```
+ */
+export function migrateFurnaceConfig(data: Record<string, unknown>): Record<string, unknown> {
+  const version = data['version'];
+
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
+    throw new FurnaceError(
+      `Furnace config: "version" must be a positive integer (got ${JSON.stringify(version)}). ` +
+        `Current schema version is ${CURRENT_CONFIG_VERSION}.`
+    );
+  }
+
+  if (version > CURRENT_CONFIG_VERSION) {
+    throw new FurnaceError(
+      `Furnace config: version ${version} is newer than what this version of FireForge supports (${CURRENT_CONFIG_VERSION}). ` +
+        'Upgrade FireForge to read this config.'
+    );
+  }
+
+  // Today only version 1 exists, so no migration is needed. When future
+  // versions are added, migration steps will be chained here.
+  return data;
+}
+
 /**
  * Validates a raw config object and returns a typed FurnaceConfig.
  * @param data - Raw data to validate
@@ -172,33 +219,50 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
     throw new FurnaceError('Furnace config must be an object');
   }
 
-  if (data['version'] !== 1) {
-    throw new FurnaceError('Furnace config: "version" must be 1');
+  // Run migration before validation so older configs are transparently upgraded.
+  const migrated = migrateFurnaceConfig(data);
+
+  if (migrated['version'] !== CURRENT_CONFIG_VERSION) {
+    throw new FurnaceError(
+      `Furnace config: "version" must be ${CURRENT_CONFIG_VERSION} after migration`
+    );
   }
 
-  if (!isString(data['componentPrefix'])) {
+  if (!isString(migrated['componentPrefix'])) {
     throw new FurnaceError('Furnace config: "componentPrefix" must be a string');
   }
 
   // Validate optional tokenPrefix
-  if (data['tokenPrefix'] !== undefined && !isString(data['tokenPrefix'])) {
+  if (migrated['tokenPrefix'] !== undefined && !isString(migrated['tokenPrefix'])) {
     throw new FurnaceError('Furnace config: "tokenPrefix" must be a string if provided');
   }
 
   // Validate optional tokenAllowlist
-  if (data['tokenAllowlist'] !== undefined) {
-    parseStringArray(data['tokenAllowlist'], 'tokenAllowlist');
+  if (migrated['tokenAllowlist'] !== undefined) {
+    parseStringArray(migrated['tokenAllowlist'], 'tokenAllowlist');
   }
 
-  const stock = parseStringArray(data['stock'], 'stock');
+  const stock = parseStringArray(migrated['stock'], 'stock');
+  const stockSet = new Set<string>();
+  for (const name of stock) {
+    if (!/^[a-z][a-z0-9-]*$/.test(name)) {
+      throw new FurnaceError(
+        `Furnace config: stock entry "${name}" must match /^[a-z][a-z0-9-]*$/ (lowercase, no path separators)`
+      );
+    }
+    if (stockSet.has(name)) {
+      throw new FurnaceError(`Furnace config: duplicate stock entry "${name}"`);
+    }
+    stockSet.add(name);
+  }
 
   // Validate overrides
-  if (!isObject(data['overrides'])) {
+  if (!isObject(migrated['overrides'])) {
     throw new FurnaceError('Furnace config: "overrides" must be an object');
   }
 
   const overrides: FurnaceConfig['overrides'] = {};
-  for (const [name, value] of Object.entries(data['overrides'])) {
+  for (const [name, value] of Object.entries(migrated['overrides'])) {
     if (!/^[a-z][a-z0-9-]*$/.test(name)) {
       throw new FurnaceError(
         `Furnace config: override name "${name}" must match /^[a-z][a-z0-9-]*$/ (lowercase, no path separators)`
@@ -211,12 +275,12 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
   }
 
   // Validate custom
-  if (!isObject(data['custom'])) {
+  if (!isObject(migrated['custom'])) {
     throw new FurnaceError('Furnace config: "custom" must be an object');
   }
 
   const custom: FurnaceConfig['custom'] = {};
-  for (const [name, value] of Object.entries(data['custom'])) {
+  for (const [name, value] of Object.entries(migrated['custom'])) {
     if (!/^[a-z][a-z0-9-]*$/.test(name)) {
       throw new FurnaceError(
         `Furnace config: custom name "${name}" must match /^[a-z][a-z0-9-]*$/ (lowercase, no path separators)`
@@ -228,20 +292,52 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
     custom[name] = parseCustomConfig(value, name);
   }
 
+  // Detect circular composes references among custom components.
+  detectComposesCycles(custom);
+
+  // Validate that every composes reference points to a known component.
+  validateComposesReferences(stock, overrides, custom);
+
   const config: FurnaceConfig = {
-    version: 1,
-    componentPrefix: data['componentPrefix'],
+    version: CURRENT_CONFIG_VERSION,
+    componentPrefix: migrated['componentPrefix'],
     stock,
     overrides,
     custom,
   };
 
-  if (data['tokenPrefix'] !== undefined) {
-    config.tokenPrefix = data['tokenPrefix'];
+  if (migrated['tokenPrefix'] !== undefined) {
+    config.tokenPrefix = migrated['tokenPrefix'];
   }
 
-  if (data['tokenAllowlist'] !== undefined) {
-    config.tokenAllowlist = parseStringArray(data['tokenAllowlist'], 'tokenAllowlist');
+  if (migrated['tokenAllowlist'] !== undefined) {
+    config.tokenAllowlist = parseStringArray(migrated['tokenAllowlist'], 'tokenAllowlist');
+  }
+
+  // Validate optional ftlBasePath
+  if (migrated['ftlBasePath'] !== undefined) {
+    if (!isString(migrated['ftlBasePath'])) {
+      throw new FurnaceError('Furnace config: "ftlBasePath" must be a string if provided');
+    }
+    if (migrated['ftlBasePath'].includes('..')) {
+      throw new FurnaceError(
+        'Furnace config: "ftlBasePath" must not contain ".." (path traversal)'
+      );
+    }
+    config.ftlBasePath = migrated['ftlBasePath'];
+  }
+
+  // Validate optional scanPaths
+  if (migrated['scanPaths'] !== undefined) {
+    const paths = parseStringArray(migrated['scanPaths'], 'scanPaths');
+    for (const p of paths) {
+      if (p.includes('..')) {
+        throw new FurnaceError(
+          'Furnace config: "scanPaths" entries must not contain ".." (path traversal)'
+        );
+      }
+    }
+    config.scanPaths = paths;
   }
 
   return config;
@@ -264,6 +360,43 @@ export function validateFurnaceState(data: unknown): FurnaceState {
     throw new FurnaceError(`Invalid furnace state: ${result.issues.join('; ')}`);
   }
   return result.state;
+}
+
+const PENDING_REPAIR_OPERATIONS: readonly FurnacePendingRepairOperation[] = [
+  'preview-teardown',
+  'apply-rollback',
+  'deploy-rollback',
+  'remove-rollback',
+  'create-rollback',
+  'override-rollback',
+  'scan-rollback',
+  'rename-rollback',
+  'refresh-rollback',
+];
+
+function parsePendingRepair(data: unknown): FurnacePendingRepair | { error: string } {
+  if (!isObject(data)) {
+    return { error: 'field "pendingRepair" must be an object' };
+  }
+  if (
+    !isString(data['operation']) ||
+    !PENDING_REPAIR_OPERATIONS.includes(data['operation'] as FurnacePendingRepairOperation)
+  ) {
+    return {
+      error: `pendingRepair.operation must be one of: ${PENDING_REPAIR_OPERATIONS.join(', ')}`,
+    };
+  }
+  if (!isString(data['timestamp'])) {
+    return { error: 'pendingRepair.timestamp must be a string' };
+  }
+  if (!isString(data['reason'])) {
+    return { error: 'pendingRepair.reason must be a string' };
+  }
+  return {
+    operation: data['operation'] as FurnacePendingRepairOperation,
+    timestamp: data['timestamp'],
+    reason: data['reason'],
+  };
 }
 
 function sanitizeFurnaceState(data: unknown): FurnaceStateValidationResult {
@@ -307,6 +440,33 @@ function sanitizeFurnaceState(data: unknown): FurnaceStateValidationResult {
         state.appliedChecksums = appliedChecksums;
         recoveredFields.push('appliedChecksums');
       }
+    }
+  }
+
+  if (data['engineChecksums'] !== undefined) {
+    if (!isObject(data['engineChecksums'])) {
+      issues.push('field "engineChecksums" must be an object of string checksum values');
+    } else {
+      const engineChecksums: Record<string, string> = {};
+      for (const [filePath, checksum] of Object.entries(data['engineChecksums'])) {
+        if (isString(checksum)) {
+          engineChecksums[filePath] = checksum;
+        }
+      }
+      if (Object.keys(engineChecksums).length > 0) {
+        state.engineChecksums = engineChecksums;
+        recoveredFields.push('engineChecksums');
+      }
+    }
+  }
+
+  if (data['pendingRepair'] !== undefined) {
+    const parsed = parsePendingRepair(data['pendingRepair']);
+    if ('error' in parsed) {
+      issues.push(parsed.error);
+    } else {
+      state.pendingRepair = parsed;
+      recoveredFields.push('pendingRepair');
     }
   }
 
@@ -478,4 +638,39 @@ export async function updateFurnaceState(
     const nextState = typeof updates === 'function' ? updates(current) : { ...current, ...updates };
     await writeJson(paths.furnaceState, validateFurnaceState(nextState));
   });
+}
+
+/**
+ * Collects engine-relative path prefixes that are managed by the Furnace
+ * component system (overrides, custom components, and their Fluent l10n
+ * files). Used by `status` and `export-all` to classify engine changes
+ * as Furnace-managed rather than unmanaged drift.
+ *
+ * Returns an empty set when no furnace config exists (opt-in subsystem).
+ * Prefixes always end with `/` so callers can use `startsWith()`.
+ */
+export async function collectFurnaceManagedPrefixes(root: string): Promise<Set<string>> {
+  if (!(await furnaceConfigExists(root))) return new Set();
+  const config = await loadFurnaceConfig(root);
+  const ftlDir = resolveFtlDir(config.ftlBasePath);
+  const prefixes = new Set<string>();
+
+  for (const [, overrideCfg] of Object.entries(config.overrides)) {
+    const base = overrideCfg.basePath.endsWith('/')
+      ? overrideCfg.basePath
+      : overrideCfg.basePath + '/';
+    prefixes.add(base);
+  }
+
+  for (const [, customCfg] of Object.entries(config.custom)) {
+    const target = customCfg.targetPath.endsWith('/')
+      ? customCfg.targetPath
+      : customCfg.targetPath + '/';
+    prefixes.add(target);
+    if (customCfg.localized) {
+      prefixes.add(ftlDir.endsWith('/') ? ftlDir : ftlDir + '/');
+    }
+  }
+
+  return prefixes;
 }

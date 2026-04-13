@@ -27,11 +27,11 @@ describe('getProjectRoot', () => {
     expect(getProjectRoot()).toBe(root);
   });
 
-  it('falls back to cwd when no fireforge.json exists in any ancestor', async () => {
+  it('throws when no fireforge.json exists in any ancestor', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'fireforge-nonroot-'));
     tempDirs.push(cwd);
     cwdSpy.mockReturnValue(cwd);
 
-    expect(getProjectRoot()).toBe(cwd);
+    expect(() => getProjectRoot()).toThrow('Could not find fireforge.json');
   });
 });

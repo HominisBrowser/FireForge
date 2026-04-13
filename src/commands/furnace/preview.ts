@@ -2,13 +2,95 @@
 import { join } from 'node:path';
 
 import { getProjectPaths } from '../../core/config.js';
-import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
+import { applyAllComponents } from '../../core/furnace-apply.js';
+import {
+  furnaceConfigExists,
+  loadFurnaceConfig,
+  updateFurnaceState,
+} from '../../core/furnace-config.js';
+import { runFurnaceMutation } from '../../core/furnace-operation.js';
+import { restoreRollbackJournal, type RollbackJournal } from '../../core/furnace-rollback.js';
 import { cleanStories, syncStories } from '../../core/furnace-stories.js';
 import { runMach, runMachCapture } from '../../core/mach.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnacePreviewOptions } from '../../types/commands/index.js';
+import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
-import { info, intro, outro, spinner } from '../../utils/logger.js';
+import { info, intro, outro, spinner, warn } from '../../utils/logger.js';
+
+/**
+ * Runs the two teardown steps — `cleanStories` and the rollback-journal
+ * restore — independently, collecting whatever errors either step throws.
+ * Both steps must run regardless of the other's outcome, because each
+ * operates on a different part of engine state and skipping one leaves
+ * the engine in a worse position than a single-step failure.
+ *
+ * Extracted from `furnacePreviewCommand` so the main function stays
+ * under the `max-lines-per-function` threshold and so the teardown
+ * contract is explicit in one place.
+ *
+ * @returns Collected teardown errors, or an empty array if both steps
+ *          succeeded (or no journal was ever created).
+ */
+async function runPreviewTeardown(
+  engineDir: string,
+  storiesCleanupRequired: boolean,
+  journal: RollbackJournal | undefined
+): Promise<Error[]> {
+  const errors: Error[] = [];
+
+  if (storiesCleanupRequired) {
+    try {
+      await cleanStories(engineDir);
+    } catch (error: unknown) {
+      const wrapped = toError(error);
+      errors.push(new Error(`Story cleanup: ${wrapped.message}`));
+    }
+  }
+
+  if (journal) {
+    try {
+      await restoreRollbackJournal(journal);
+    } catch (error: unknown) {
+      const wrapped = toError(error);
+      errors.push(new Error(`Journal restore: ${wrapped.message}`));
+    }
+  }
+
+  return errors;
+}
+
+/**
+ * Reports staging failures (component-level errors and per-step errors) to the
+ * user and throws a single FurnaceError summarising the failure count.
+ * Extracted from `furnacePreviewCommand` to keep that function under the
+ * `max-lines-per-function` threshold and to colocate the failure-reporting
+ * contract in one place.
+ *
+ * @returns The total failure count if there were any (always non-zero when
+ *          this returns; the function throws after logging).
+ */
+function reportPreviewStagingFailures(
+  stageResult: Awaited<ReturnType<typeof applyAllComponents>>
+): never {
+  for (const err of stageResult.errors) {
+    warn(`Furnace: ${err.name} — ${err.error}`);
+  }
+  for (const applied of stageResult.applied) {
+    if (applied.stepErrors && applied.stepErrors.length > 0) {
+      for (const stepErr of applied.stepErrors) {
+        warn(`Furnace: ${applied.name} [${stepErr.step}] ${stepErr.error}`);
+      }
+    }
+  }
+  const appliedWithStepErrorsCount = stageResult.applied.filter(
+    (entry) => (entry.stepErrors?.length ?? 0) > 0
+  ).length;
+  const totalFailures = stageResult.errors.length + appliedWithStepErrorsCount;
+  throw new FurnaceError(
+    `${totalFailures} component${totalFailures === 1 ? '' : 's'} failed to stage for preview`
+  );
+}
 
 /**
  * Builds a targeted Storybook failure message from captured mach output.
@@ -85,43 +167,150 @@ export async function furnacePreviewCommand(
         exitCode: number;
       }
     | undefined;
-  let storiesSynced = false;
+  // True once we are about to (or have) written to engine/.../stories/furnace.
+  // Intentionally set BEFORE `syncStories` is awaited so a mid-sync failure
+  // still triggers `cleanStories` during teardown. `cleanStories` is a
+  // full-directory wipe, so it is correct to run against partial state —
+  // including state with zero files, where it is a cheap no-op.
+  let storiesCleanupRequired = false;
+  let previewJournal: RollbackJournal | undefined;
+  let primaryError: unknown;
 
-  try {
-    // Sync story files
-    const syncSpinner = spinner('Syncing component stories...');
-    const result = await syncStories(projectRoot);
-    storiesSynced = true;
-    const created = result.created.length;
-    const updated = result.updated.length;
-    const total = created + updated;
-    syncSpinner.stop(`Synced ${total} stories (${created} new, ${updated} updated)`);
+  // The preview command runs under runFurnaceMutation so a SIGINT during
+  // Storybook still triggers cleanStories + journal restore via the CLI
+  // entrypoint's global signal handlers consulting the lifecycle registry.
+  // The body's own try/catch + teardown path handles the normal exit case
+  // (mach storybook returns or throws).
+  await runFurnaceMutation(projectRoot, 'preview-teardown', async (ctx) => {
+    // Register the stories cleanup as an extra teardown hook so the signal
+    // handler can wipe the staged stories directory in addition to the
+    // journal restore.
+    ctx.registerCleanup(async () => {
+      if (storiesCleanupRequired) {
+        await cleanStories(paths.engine);
+      }
+    });
 
-    // Force-reinstall Storybook dependencies if requested
-    if (options.install) {
-      const installSpinner = spinner('Reinstalling Storybook dependencies...');
-      const installCode = await runMach(['storybook', 'upgrade'], paths.engine);
-      if (installCode !== 0) {
-        installSpinner.stop('Failed to reinstall Storybook dependencies');
-        throw new FurnaceError(
-          'Storybook dependency reinstallation failed. Try running "python3 ./mach storybook upgrade" manually in the engine directory.'
+    try {
+      // Stage workspace override/custom files into engine/ so Storybook can
+      // resolve freshly edited chrome:// imports. Stock-only projects skip
+      // this step because stock components are never written from workspace
+      // sources.
+      if (overrideCount + customCount > 0) {
+        const stageSpinner = spinner('Staging components for preview...');
+        let stageResult: Awaited<ReturnType<typeof applyAllComponents>>;
+        try {
+          stageResult = await applyAllComponents(projectRoot, false, {
+            persistState: false,
+            operationContext: ctx,
+          });
+        } catch (error: unknown) {
+          stageSpinner.error('Failed to stage components');
+          throw error;
+        }
+        previewJournal = stageResult.rollbackJournal;
+        if (previewJournal) {
+          ctx.registerJournal(previewJournal);
+        }
+
+        const appliedWithStepErrorsCount = stageResult.applied.filter(
+          (entry) => (entry.stepErrors?.length ?? 0) > 0
+        ).length;
+        const totalFailures = stageResult.errors.length + appliedWithStepErrorsCount;
+        if (totalFailures > 0) {
+          stageSpinner.error('Failed to stage components');
+          reportPreviewStagingFailures(stageResult);
+        }
+
+        stageSpinner.stop(
+          `Staged ${stageResult.applied.length} component${stageResult.applied.length === 1 ? '' : 's'} for preview`
         );
       }
-      installSpinner.stop('Storybook dependencies reinstalled');
+
+      // Sync story files. Set the cleanup flag before the await so a partial
+      // write failure still triggers the teardown wipe — `syncStories` writes
+      // files incrementally with no internal cleanup of its own.
+      const syncSpinner = spinner('Syncing component stories...');
+      storiesCleanupRequired = true;
+      const result = await syncStories(projectRoot);
+      const created = result.created.length;
+      const updated = result.updated.length;
+      const total = created + updated;
+      syncSpinner.stop(`Synced ${total} stories (${created} new, ${updated} updated)`);
+
+      // Force-reinstall Storybook dependencies if requested
+      if (options.install) {
+        const installSpinner = spinner('Reinstalling Storybook dependencies...');
+        const installCode = await runMach(['storybook', 'upgrade'], paths.engine);
+        if (installCode !== 0) {
+          installSpinner.stop('Failed to reinstall Storybook dependencies');
+          throw new FurnaceError(
+            'Storybook dependency reinstallation failed. Try running "python3 ./mach storybook upgrade" manually in the engine directory.'
+          );
+        }
+        installSpinner.stop('Storybook dependencies reinstalled');
+      }
+
+      // Start Storybook
+      info('Starting Storybook...');
+      info('Press Ctrl+C to stop\n');
+
+      previewResult = await runMachCapture(['storybook'], paths.engine);
+    } catch (error: unknown) {
+      primaryError = error;
     }
 
-    // Start Storybook
-    info('Starting Storybook...');
-    info('Press Ctrl+C to stop\n');
+    // Teardown runs unconditionally and never short-circuits: a failure in
+    // cleanStories must not prevent the journal restore, and vice versa. The
+    // previous implementation ran teardown in a `finally` block that called
+    // `restoreRollbackJournalOrThrow`, which threw synchronously — that throw
+    // bypassed the primary error and, worse, skipped downstream handling so
+    // the engine was left with staged files and the user got a teardown
+    // message with no guidance. We now collect both failures and, if anything
+    // went wrong, persist a `pendingRepair` marker that `fireforge doctor`
+    // consumes to finish the reconciliation.
+    const teardownErrors = await runPreviewTeardown(
+      paths.engine,
+      storiesCleanupRequired,
+      previewJournal
+    );
 
-    previewResult = await runMachCapture(['storybook'], paths.engine);
-  } finally {
-    if (storiesSynced) {
-      await cleanStories(paths.engine);
+    if (teardownErrors.length > 0) {
+      const teardownSummary = teardownErrors.map((err) => err.message).join('; ');
+      try {
+        await updateFurnaceState(projectRoot, (state) => ({
+          ...state,
+          pendingRepair: {
+            operation: 'preview-teardown',
+            timestamp: new Date().toISOString(),
+            reason: teardownSummary,
+          },
+        }));
+      } catch (markError: unknown) {
+        warn(
+          `Could not record pending-repair marker in .fireforge/furnace-state.json — ${toError(markError).message}. Engine may still be in a staged state; run "fireforge furnace apply" manually to reconcile.`
+        );
+      }
+
+      const primarySuffix = primaryError
+        ? ` (original error: ${toError(primaryError).message})`
+        : '';
+      throw new FurnaceError(
+        `Preview teardown could not restore the engine cleanly: ${teardownSummary}. The engine may contain staged workspace files. Run "fireforge doctor --repair-furnace" to reconcile, or run "fireforge furnace apply" manually.${primarySuffix}`
+      );
     }
-  }
+
+    if (primaryError) {
+      // Re-throwing the captured error preserves its original shape. The
+      // `toError` wrap normalises non-Error throws (strings, plain objects)
+      // into real Error instances so the eslint `only-throw-error` rule
+      // holds and downstream formatters always see a message/stack pair.
+      throw toError(primaryError);
+    }
+  });
 
   if (
+    previewResult &&
     previewResult.exitCode !== 0 &&
     previewResult.exitCode !== 130 &&
     previewResult.exitCode !== 143

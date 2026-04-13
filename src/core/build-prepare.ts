@@ -4,11 +4,19 @@
  * story cleanup, branding setup, Furnace component application, and mozconfig generation.
  */
 
+import { FurnaceError } from '../errors/furnace.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
+import { pathExists } from '../utils/fs.js';
 import { spinner, warn } from '../utils/logger.js';
 import { isBrandingSetup, setupBranding } from './branding.js';
 import { applyAllComponents } from './furnace-apply.js';
-import { furnaceConfigExists, loadFurnaceConfig } from './furnace-config.js';
+import {
+  furnaceConfigExists,
+  getFurnacePaths,
+  loadFurnaceConfig,
+  loadFurnaceState,
+} from './furnace-config.js';
+import { runFurnaceMutation } from './furnace-operation.js';
 import { cleanStories } from './furnace-stories.js';
 import { generateMozconfig } from './mach.js';
 
@@ -37,6 +45,20 @@ export async function prepareBuildEnvironment(
   paths: ProjectPaths,
   config: FireForgeConfig
 ): Promise<BuildPreparation> {
+  // Block the build if Furnace has an unresolved repair marker. This prevents
+  // building against an engine that may be in an inconsistent state after a
+  // failed rollback.
+  const furnaceStatePath = getFurnacePaths(projectRoot).furnaceState;
+  if (await pathExists(furnaceStatePath)) {
+    const furnaceState = await loadFurnaceState(projectRoot);
+    if (furnaceState.pendingRepair) {
+      throw new FurnaceError(
+        `Furnace has an unresolved repair marker (from ${furnaceState.pendingRepair.operation}). ` +
+          'Run "fireforge doctor --repair-furnace" to reconcile engine state before building.'
+      );
+    }
+  }
+
   // Clean stories before build to ensure they don't leak into production binary
   await cleanStories(paths.engine);
 
@@ -68,20 +90,31 @@ export async function prepareBuildEnvironment(
 
     if (hasComponents) {
       const furnaceSpinner = spinner('Applying Furnace components...');
+      let result: Awaited<ReturnType<typeof applyAllComponents>>;
       try {
-        const result = await applyAllComponents(projectRoot);
-        furnaceApplied = result.applied.length;
-        if (furnaceApplied > 0) {
-          furnaceSpinner.stop(
-            `Applied ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'}`
-          );
-        } else {
-          furnaceSpinner.stop('Components up to date');
-        }
-        if (result.errors.length > 0) {
-          for (const err of result.errors) {
-            warn(`Furnace: ${err.name} — ${err.error}`);
-          }
+        result = await runFurnaceMutation(projectRoot, 'apply-rollback', (ctx) =>
+          applyAllComponents(projectRoot, false, { operationContext: ctx })
+        );
+      } catch (error: unknown) {
+        furnaceSpinner.error('Failed to apply Furnace components');
+        throw error;
+      }
+
+      furnaceApplied = result.applied.length;
+      // Count entries that were "applied" but recorded step-level errors
+      // mid-apply (e.g. a post-step failure after file writes succeeded).
+      // These are distinct from `result.errors`, which captures
+      // components that failed before reaching the applied list at all.
+      // The sum of the two is the total count of failed components.
+      const appliedWithStepErrorsCount = result.applied.filter(
+        (entry) => (entry.stepErrors?.length ?? 0) > 0
+      ).length;
+      const totalApplyFailures = result.errors.length + appliedWithStepErrorsCount;
+
+      if (totalApplyFailures > 0) {
+        furnaceSpinner.error('Failed to apply Furnace components');
+        for (const err of result.errors) {
+          warn(`Furnace: ${err.name} — ${err.error}`);
         }
         for (const applied of result.applied) {
           if (applied.stepErrors && applied.stepErrors.length > 0) {
@@ -90,9 +123,17 @@ export async function prepareBuildEnvironment(
             }
           }
         }
-      } catch (error: unknown) {
-        furnaceSpinner.error('Failed to apply Furnace components');
-        throw error;
+        throw new FurnaceError(
+          `${totalApplyFailures} component${totalApplyFailures === 1 ? '' : 's'} failed to apply cleanly`
+        );
+      }
+
+      if (furnaceApplied > 0) {
+        furnaceSpinner.stop(
+          `Applied ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'}`
+        );
+      } else {
+        furnaceSpinner.stop('Components up to date');
       }
     }
   }

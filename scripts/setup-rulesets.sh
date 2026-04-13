@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-REPO="topfi/fireforge"
+REPO="HominisBrowser/FireForge"
 
 echo "Applying rulesets to $REPO..."
 

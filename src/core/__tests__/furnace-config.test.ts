@@ -135,6 +135,38 @@ describe('furnace-config helpers', () => {
     ).toThrow('array must contain only strings');
   });
 
+  it('rejects stock entries that would escape the stories directory', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: ['../evil'],
+        overrides: {},
+        custom: {},
+      })
+    ).toThrow(/stock entry ".*" must match/);
+
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: ['Moz-Button'],
+        overrides: {},
+        custom: {},
+      })
+    ).toThrow(FurnaceError);
+
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: ['moz-button'],
+        overrides: {},
+        custom: {},
+      })
+    ).not.toThrow();
+  });
+
   it('checks whether furnace.json exists', async () => {
     vi.mocked(pathExists).mockResolvedValue(true);
 
@@ -253,7 +285,44 @@ describe('furnace-config helpers', () => {
         overrides: {},
         custom: {},
       })
-    ).toThrow('"version" must be 1');
+    ).toThrow('newer than what this version of FireForge supports');
+  });
+
+  it('rejects config with non-integer version', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 'one',
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+      })
+    ).toThrow('"version" must be a positive integer');
+  });
+
+  it('accepts a valid ftlBasePath', () => {
+    const config = validateFurnaceConfig({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+      ftlBasePath: 'browser/locales/en-US/browser',
+    });
+    expect(config.ftlBasePath).toBe('browser/locales/en-US/browser');
+  });
+
+  it('rejects ftlBasePath with path traversal', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+        ftlBasePath: '../../etc',
+      })
+    ).toThrow('must not contain ".."');
   });
 
   it('rejects config with non-string componentPrefix', () => {
@@ -376,6 +445,174 @@ describe('furnace-config helpers', () => {
     ).toThrow('tokenPrefix');
   });
 
+  it('rejects circular composes dependencies between custom components', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-a': {
+            description: 'A',
+            targetPath: 'browser/a',
+            register: false,
+            localized: false,
+            composes: ['moz-b'],
+          },
+          'moz-b': {
+            description: 'B',
+            targetPath: 'browser/b',
+            register: false,
+            localized: false,
+            composes: ['moz-a'],
+          },
+        },
+      })
+    ).toThrow(/circular composes dependency.*moz-a → moz-b → moz-a/);
+  });
+
+  it('rejects self-referencing composes dependency', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-loop': {
+            description: 'Loop',
+            targetPath: 'browser/loop',
+            register: false,
+            localized: false,
+            composes: ['moz-loop'],
+          },
+        },
+      })
+    ).toThrow(/circular composes dependency.*moz-loop → moz-loop/);
+  });
+
+  it('allows composes references to stock or override components without cycles', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: ['moz-button'],
+        overrides: {},
+        custom: {
+          'moz-panel': {
+            description: 'Panel',
+            targetPath: 'browser/panel',
+            register: false,
+            localized: false,
+            composes: ['moz-button'],
+          },
+        },
+      })
+    ).not.toThrow();
+  });
+
+  it('detects cycles in longer composes chains (A→B→C→A)', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-a': {
+            description: 'A',
+            targetPath: 'browser/a',
+            register: false,
+            localized: false,
+            composes: ['moz-b'],
+          },
+          'moz-b': {
+            description: 'B',
+            targetPath: 'browser/b',
+            register: false,
+            localized: false,
+            composes: ['moz-c'],
+          },
+          'moz-c': {
+            description: 'C',
+            targetPath: 'browser/c',
+            register: false,
+            localized: false,
+            composes: ['moz-a'],
+          },
+        },
+      })
+    ).toThrow(/circular composes dependency/);
+  });
+
+  it('rejects composes references to unknown components', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-panel': {
+            description: 'Panel',
+            targetPath: 'browser/panel',
+            register: false,
+            localized: false,
+            composes: ['moz-nonexistent'],
+          },
+        },
+      })
+    ).toThrow(/composes unknown component "moz-nonexistent"/);
+  });
+
+  it('accepts composes references to override components', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {
+          'moz-button': {
+            type: 'css-only',
+            description: 'Button override',
+            basePath: 'toolkit/content/widgets/moz-button',
+            baseVersion: '130.0',
+          },
+        },
+        custom: {
+          'moz-panel': {
+            description: 'Panel',
+            targetPath: 'browser/panel',
+            register: false,
+            localized: false,
+            composes: ['moz-button'],
+          },
+        },
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects composes when one ref is known and another is not', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: ['moz-button'],
+        overrides: {},
+        custom: {
+          'moz-panel': {
+            description: 'Panel',
+            targetPath: 'browser/panel',
+            register: false,
+            localized: false,
+            composes: ['moz-button', 'moz-ghost'],
+          },
+        },
+      })
+    ).toThrow(/composes unknown component "moz-ghost"/);
+  });
+
   it('wraps non-FurnaceError from readJson in a FurnaceError', async () => {
     vi.mocked(pathExists).mockResolvedValueOnce(true);
     vi.mocked(readJson).mockRejectedValueOnce(new TypeError('bad JSON'));
@@ -424,5 +661,56 @@ describe('furnace-config helpers', () => {
 
     const state = await loadFurnaceState('/project');
     expect(state.appliedChecksums?.['valid.css']).toBe('hash-ok');
+  });
+
+  it('parses a well-formed pendingRepair marker into the state', async () => {
+    vi.mocked(pathExists).mockResolvedValueOnce(true);
+    vi.mocked(readJson).mockResolvedValueOnce({
+      pendingRepair: {
+        operation: 'preview-teardown',
+        timestamp: '2026-04-11T12:00:00.000Z',
+        reason: 'cleanStories failed with EACCES',
+      },
+    });
+
+    const state = await loadFurnaceState('/project');
+    expect(state.pendingRepair).toEqual({
+      operation: 'preview-teardown',
+      timestamp: '2026-04-11T12:00:00.000Z',
+      reason: 'cleanStories failed with EACCES',
+    });
+  });
+
+  it('quarantines state with an unknown pendingRepair.operation value', async () => {
+    vi.mocked(pathExists).mockResolvedValueOnce(true);
+    vi.mocked(readJson).mockResolvedValueOnce({
+      pendingRepair: {
+        operation: 'made-up-operation',
+        timestamp: '2026-04-11T12:00:00.000Z',
+        reason: 'nope',
+      },
+    });
+    mockQuarantineStateFile.mockResolvedValueOnce('furnace-state.json.invalid-x');
+
+    const state = await loadFurnaceState('/project');
+    // The marker is dropped but no other valid fields were present, so
+    // state is empty. Parsing issues are reported via the warn path.
+    expect(state.pendingRepair).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pendingRepair.operation'));
+  });
+
+  it('quarantines state when pendingRepair is missing required fields', async () => {
+    vi.mocked(pathExists).mockResolvedValueOnce(true);
+    vi.mocked(readJson).mockResolvedValueOnce({
+      pendingRepair: {
+        operation: 'preview-teardown',
+        // timestamp and reason missing
+      },
+    });
+    mockQuarantineStateFile.mockResolvedValueOnce('furnace-state.json.invalid-y');
+
+    const state = await loadFurnaceState('/project');
+    expect(state.pendingRepair).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pendingRepair.timestamp'));
   });
 });

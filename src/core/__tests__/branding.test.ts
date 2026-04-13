@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isBrandingSetup } from '../branding.js';
+import { isBrandingSetup, setupBranding } from '../branding.js';
 
 vi.mock('../../utils/fs.js', () => ({
   readText: vi.fn(),
   writeText: vi.fn(),
+  writeTextIfChanged: vi.fn(),
   pathExists: vi.fn(),
   copyDir: vi.fn(),
 }));
@@ -14,7 +15,7 @@ vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
-import { pathExists, readText } from '../../utils/fs.js';
+import { pathExists, readText, writeTextIfChanged } from '../../utils/fs.js';
 
 const config = {
   name: 'MyBrowser',
@@ -136,5 +137,56 @@ trademarkInfo = { " " }
     });
 
     await expect(isBrandingSetup('/engine', config)).resolves.toBe(false);
+  });
+});
+
+describe('setupBranding', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('skips writes when branding files already match the config', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('moz.configure')) {
+        return Promise.resolve(
+          'some preamble\nimply_option("MOZ_APP_VENDOR", "My Company")\nsome trailer\n'
+        );
+      }
+      return Promise.resolve('');
+    });
+    vi.mocked(writeTextIfChanged).mockResolvedValue(false);
+
+    await setupBranding('/engine', config);
+
+    for (const call of vi.mocked(writeTextIfChanged).mock.calls) {
+      expect(call[0]).toBeDefined();
+    }
+    expect(vi.mocked(writeTextIfChanged)).toHaveBeenCalledTimes(4);
+  });
+
+  it('writes all files when branding directory and locale files exist', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('unofficial')) return Promise.resolve(true);
+      if (filePath.endsWith('mybrowser')) return Promise.resolve(false);
+      if (filePath.endsWith('brand.properties')) return Promise.resolve(true);
+      if (filePath.endsWith('brand.ftl')) return Promise.resolve(true);
+      if (filePath.endsWith('moz.configure')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('moz.configure')) {
+        return Promise.resolve('imply_option("MOZ_APP_VENDOR", "Mozilla")\n');
+      }
+      return Promise.resolve('');
+    });
+    vi.mocked(writeTextIfChanged).mockResolvedValue(true);
+
+    await setupBranding('/engine', config);
+
+    const calls = vi.mocked(writeTextIfChanged).mock.calls;
+    expect(calls).toHaveLength(4);
+    expect(calls[0]?.[0]).toContain('configure.sh');
+    expect(calls[3]?.[0]).toContain('moz.configure');
   });
 });

@@ -12,6 +12,7 @@ import MagicString from 'magic-string';
 import { FurnaceError } from '../errors/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
+import { verbose, warn } from '../utils/logger.js';
 import {
   type AcornESTreeNode,
   detectIndent,
@@ -243,6 +244,79 @@ function addRegistrationAST(
 }
 
 /**
+ * Regex-based fallback for inserting a registration entry when the AST parser
+ * fails. Finds the last existing `["tag", "path"],` line in the appropriate
+ * block and inserts the new entry after it in alphabetical order.
+ *
+ * This is intentionally less precise than the AST approach — it does not
+ * validate indentation or multi-line format — but it is robust against
+ * upstream syntax changes that break the parser.
+ */
+function addRegistrationRegexFallback(
+  content: string,
+  tagName: string,
+  modulePath: string,
+  isESModule: boolean
+): string {
+  // Find all registration entries: ["tag", "path"],
+  const entryPattern = /^(\s*)\["([^"]+)",\s*"[^"]+"\],?\s*$/gm;
+  let lastMatch: RegExpExecArray | null = null;
+  let insertAfterMatch: RegExpExecArray | null = null;
+  const allMatches: RegExpExecArray[] = [];
+  let match: RegExpExecArray | null;
+
+  // For ESM modules, only consider entries inside a DOMContentLoaded block.
+  // For non-ESM, consider entries outside DOMContentLoaded.
+  const dclStart = content.search(/document\.addEventListener\s*\(\s*["']DOMContentLoaded["']/);
+  const dclBlockStart = dclStart >= 0 ? content.indexOf('{', dclStart) : -1;
+
+  while ((match = entryPattern.exec(content)) !== null) {
+    const isInDCL = dclBlockStart >= 0 && match.index > dclBlockStart;
+    if (isESModule ? isInDCL : !isInDCL) {
+      allMatches.push(match);
+    }
+  }
+
+  // Find alphabetical insertion point
+  for (const m of allMatches) {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- capture group [2] always present when regex matches
+    const existingTag = m[2]!;
+    if (existingTag < tagName) {
+      insertAfterMatch = m;
+    }
+    lastMatch = m;
+  }
+
+  // If we found no entries in the target block, give up
+  if (!lastMatch) {
+    throw new FurnaceError(
+      `Regex fallback could not find any registration entries in the ${isESModule ? 'DOMContentLoaded' : 'non-DOMContentLoaded'} block of ${CUSTOM_ELEMENTS_JS}.`,
+      tagName
+    );
+  }
+
+  const indent = lastMatch[1] ?? '    ';
+  const newEntry = `${indent}["${tagName}", "${modulePath}"],`;
+
+  if (insertAfterMatch) {
+    // Insert after the last entry that sorts before tagName
+    const insertPos = insertAfterMatch.index + insertAfterMatch[0].length;
+    return content.slice(0, insertPos) + '\n' + newEntry + content.slice(insertPos);
+  }
+
+  // Insert before the first entry (tagName sorts before all existing)
+  const firstMatch = allMatches[0];
+  if (!firstMatch) {
+    throw new FurnaceError(
+      `Regex fallback found no entries in the target block of ${CUSTOM_ELEMENTS_JS}.`,
+      tagName
+    );
+  }
+  const insertPos = firstMatch.index;
+  return content.slice(0, insertPos) + newEntry + '\n' + content.slice(insertPos);
+}
+
+/**
  * Adds a custom element registration entry to customElements.js.
  *
  * The entry is inserted into the array literal inside the `for...of` loop
@@ -273,33 +347,138 @@ export async function addCustomElementRegistration(
   const content = await readText(filePath);
 
   // Idempotency: already registered (standalone block or array entry).
+  // Check both double-quote and single-quote variants — upstream Firefox
+  // sources may use either style.
   if (
     content.includes(`setElementCreationCallback("${tagName}"`) ||
+    content.includes(`setElementCreationCallback('${tagName}'`) ||
     content.includes(`["${tagName}",`) ||
-    new RegExp(`^\\s*"${tagName}",\\s*$`, 'm').test(content)
+    content.includes(`['${tagName}',`) ||
+    new RegExp(`^\\s*["']${tagName}["'],\\s*$`, 'm').test(content)
   ) {
     return;
   }
 
+  // Validate upfront — tag name errors must not fall through to the regex fallback.
+  validateTagName(tagName);
+
   const isESModule = modulePath.endsWith('.mjs');
+
+  // Cheap pre-flight: the AST walker assumes the file contains at least one
+  // destructuring `for (... of [...])` loop with an array literal on the
+  // right-hand side, and (for ESM tags) at least one such loop inside a
+  // `document.addEventListener("DOMContentLoaded", ...)` block. If either
+  // assumption is violated the AST path errors with a confusing
+  // "Could not find DOMContentLoaded block" message — fail fast here with
+  // actionable guidance instead.
+  if (!/for\s*\(\s*(?:let|const|var)\s*\[/.test(content)) {
+    throw new FurnaceError(
+      `${CUSTOM_ELEMENTS_JS} does not contain a recognizable registration loop; refusing to mutate. ` +
+        'Run "fireforge reset --force" to restore the engine, or inspect the file manually.',
+      tagName
+    );
+  }
+  if (isESModule && !/document\.addEventListener\s*\(\s*["']DOMContentLoaded["']/.test(content)) {
+    throw new FurnaceError(
+      `${CUSTOM_ELEMENTS_JS} has no DOMContentLoaded block; cannot register ESM element ${tagName}. ` +
+        'The file may be corrupt — run "fireforge reset --force" to restore.',
+      tagName
+    );
+  }
 
   let nextContent: string;
   try {
     nextContent = addRegistrationAST(content, tagName, modulePath, isESModule);
   } catch (error: unknown) {
     if (error instanceof FurnaceError) {
-      throw error;
+      // AST structural errors (missing DOMContentLoaded block, etc.) — try regex fallback
+      warn(
+        `AST-based registration failed for ${tagName}: ${error.message}. ` +
+          'Falling back to regex-based insertion. Please report this so the AST parser can be updated.'
+      );
+      try {
+        nextContent = addRegistrationRegexFallback(content, tagName, modulePath, isESModule);
+        verbose(
+          `Regex fallback succeeded for ${tagName}. The registration may be less precise than the AST approach.`
+        );
+      } catch {
+        // If regex fallback also fails, throw the original AST error
+        throw error;
+      }
+    } else {
+      const parserError = toError(error);
+      warn(
+        `AST parser threw an unexpected error for ${tagName}: ${parserError.message}. ` +
+          'Falling back to regex-based insertion.'
+      );
+      try {
+        nextContent = addRegistrationRegexFallback(content, tagName, modulePath, isESModule);
+        verbose(
+          `Regex fallback succeeded for ${tagName}. The registration may be less precise than the AST approach.`
+        );
+      } catch {
+        throw new FurnaceError(
+          `Failed to update ${CUSTOM_ELEMENTS_JS} using both AST and regex fallback: ${parserError.message}`,
+          tagName,
+          parserError
+        );
+      }
     }
-
-    const parserError = toError(error);
-    throw new FurnaceError(
-      `Failed to update ${CUSTOM_ELEMENTS_JS} using AST registration parsing: ${parserError.message}`,
-      tagName,
-      parserError
-    );
   }
 
   validateRegistrationPlacement(nextContent, tagName, isESModule);
 
   await writeText(filePath, nextContent);
+}
+
+/**
+ * Validates that a custom element registration *would* succeed without
+ * writing anything. Used by dry-run to surface registration errors early.
+ */
+export async function validateCustomElementRegistration(
+  engineDir: string,
+  tagName: string,
+  modulePath: string
+): Promise<void> {
+  const filePath = join(engineDir, CUSTOM_ELEMENTS_JS);
+
+  if (!(await pathExists(filePath))) {
+    throw new FurnaceError('customElements.js not found in engine', tagName);
+  }
+
+  const content = await readText(filePath);
+
+  if (
+    content.includes(`setElementCreationCallback("${tagName}"`) ||
+    content.includes(`setElementCreationCallback('${tagName}'`) ||
+    content.includes(`["${tagName}",`) ||
+    content.includes(`['${tagName}',`) ||
+    new RegExp(`^\\s*["']${tagName}["'],\\s*$`, 'm').test(content)
+  ) {
+    return;
+  }
+
+  const isESModule = modulePath.endsWith('.mjs');
+
+  if (!/for\s*\(\s*(?:let|const|var)\s*\[/.test(content)) {
+    throw new FurnaceError(
+      `${CUSTOM_ELEMENTS_JS} does not contain a recognizable registration loop; refusing to mutate. ` +
+        'Run "fireforge reset --force" to restore the engine, or inspect the file manually.',
+      tagName
+    );
+  }
+  if (isESModule && !/document\.addEventListener\s*\(\s*["']DOMContentLoaded["']/.test(content)) {
+    throw new FurnaceError(
+      `${CUSTOM_ELEMENTS_JS} has no DOMContentLoaded block; cannot register ESM element ${tagName}. ` +
+        'The file may be corrupt — run "fireforge reset --force" to restore.',
+      tagName
+    );
+  }
+
+  try {
+    addRegistrationAST(content, tagName, modulePath, isESModule);
+  } catch {
+    // Validation only — if AST fails, try regex to see if the entry could be placed
+    addRegistrationRegexFallback(content, tagName, modulePath, isESModule);
+  }
 }

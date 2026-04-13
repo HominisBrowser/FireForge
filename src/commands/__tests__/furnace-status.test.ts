@@ -13,6 +13,15 @@ vi.mock('../../core/config.js', () => ({
     src: '/project/src',
     componentsDir: '/project/components',
   })),
+  loadConfig: vi.fn(() =>
+    Promise.resolve({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+    })
+  ),
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
@@ -27,7 +36,7 @@ vi.mock('../../core/furnace-config.js', () => ({
           type: 'css-only',
           description: 'Override button',
           basePath: 'toolkit/content/widgets/moz-button',
-          baseVersion: '140.0esr',
+          baseVersion: '140.9.0esr',
         },
       },
       custom: {},
@@ -46,6 +55,8 @@ vi.mock('../../core/furnace-config.js', () => ({
 vi.mock('../../core/furnace-apply.js', () => ({
   extractComponentChecksums: vi.fn(() => ({})),
   hasComponentChanged: vi.fn(() => Promise.resolve(false)),
+  hasOverrideEngineDrift: vi.fn(() => Promise.resolve(false)),
+  hasCustomEngineDrift: vi.fn(() => Promise.resolve(false)),
 }));
 
 vi.mock('../../core/furnace-validate-checks.js', () => ({
@@ -64,7 +75,11 @@ vi.mock('../../utils/logger.js', () => ({
   note: vi.fn(),
 }));
 
-import { hasComponentChanged } from '../../core/furnace-apply.js';
+import {
+  hasComponentChanged,
+  hasCustomEngineDrift,
+  hasOverrideEngineDrift,
+} from '../../core/furnace-apply.js';
 import {
   furnaceConfigExists,
   loadFurnaceConfig,
@@ -90,7 +105,7 @@ describe('furnaceStatusCommand', () => {
           type: 'css-only',
           description: 'Override button',
           basePath: 'toolkit/content/widgets/moz-button',
-          baseVersion: '140.0esr',
+          baseVersion: '140.9.0esr',
         },
       },
       custom: {},
@@ -106,6 +121,10 @@ describe('furnaceStatusCommand', () => {
     expect(vi.mocked(info)).toHaveBeenCalledWith(
       '"moz-button" is an override component (css-only).'
     );
+    expect(vi.mocked(note)).toHaveBeenCalledWith(
+      expect.stringContaining('Workspace unchanged since last apply'),
+      'moz-button Override Status'
+    );
     expect(
       vi
         .mocked(info)
@@ -113,6 +132,57 @@ describe('furnaceStatusCommand', () => {
           message.includes('stock component. No local registration to check')
         )
     ).toBe(false);
+  });
+
+  it('reports detailed override drift and workspace changes', async () => {
+    vi.mocked(loadFurnaceState).mockResolvedValue({
+      appliedChecksums: { 'override/moz-button/moz-button.css': 'abc' },
+    });
+    vi.mocked(hasComponentChanged).mockResolvedValue(true);
+    vi.mocked(hasOverrideEngineDrift).mockResolvedValue(true);
+
+    await furnaceStatusCommand('/project', 'moz-button');
+
+    expect(vi.mocked(note)).toHaveBeenCalledWith(
+      expect.stringContaining('\u2717 Workspace unchanged since last apply'),
+      'moz-button Override Status'
+    );
+    expect(vi.mocked(note)).toHaveBeenCalledWith(
+      expect.stringContaining('\u2717 Engine matches override workspace'),
+      'moz-button Override Status'
+    );
+  });
+
+  it('does not report a green override status when the override directory is missing', async () => {
+    vi.mocked(pathExists).mockResolvedValueOnce(false);
+
+    await furnaceStatusCommand('/project', 'moz-button');
+
+    expect(vi.mocked(hasComponentChanged)).not.toHaveBeenCalled();
+    expect(vi.mocked(hasOverrideEngineDrift)).not.toHaveBeenCalled();
+    expect(vi.mocked(note)).toHaveBeenCalledWith(
+      expect.stringContaining('\u2717 Workspace status unavailable (override directory missing)'),
+      'moz-button Override Status'
+    );
+    expect(vi.mocked(note)).toHaveBeenCalledWith(
+      expect.stringContaining('\u2717 Engine comparison unavailable (override directory missing)'),
+      'moz-button Override Status'
+    );
+  });
+
+  it('does not report a green engine match when the engine directory is missing', async () => {
+    vi.mocked(pathExists)
+      .mockResolvedValueOnce(true) // override directory
+      .mockResolvedValueOnce(false); // engine directory
+
+    await furnaceStatusCommand('/project', 'moz-button');
+
+    expect(vi.mocked(hasComponentChanged)).toHaveBeenCalled();
+    expect(vi.mocked(hasOverrideEngineDrift)).not.toHaveBeenCalled();
+    expect(vi.mocked(note)).toHaveBeenCalledWith(
+      expect.stringContaining('\u2717 Engine comparison unavailable (engine directory missing)'),
+      'moz-button Override Status'
+    );
   });
 
   it('shows info message when furnace is not configured', async () => {
@@ -135,7 +205,7 @@ describe('furnaceStatusCommand', () => {
           type: 'css-only',
           description: 'Override button',
           basePath: 'toolkit/content/widgets/moz-button',
-          baseVersion: '140.0esr',
+          baseVersion: '140.9.0esr',
         },
       },
       custom: {
@@ -288,6 +358,85 @@ describe('furnaceStatusCommand', () => {
     expect(vi.mocked(warn)).not.toHaveBeenCalled();
   });
 
+  it('warns about pendingRepair before the normal summary', async () => {
+    vi.mocked(loadFurnaceState).mockResolvedValue({
+      appliedChecksums: {},
+      pendingRepair: {
+        operation: 'apply-rollback',
+        timestamp: '2026-04-12T10:00:00.000Z',
+        reason: 'rollback failed mid-flight',
+      },
+    });
+
+    await furnaceStatusCommand('/project');
+
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(
+      expect.stringContaining('pending-repair state from apply-rollback')
+    );
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(
+      expect.stringContaining('doctor --repair-furnace')
+    );
+  });
+
+  it('warns about engine drift when workspace is unchanged but engine has been mutated', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-button': {
+          type: 'css-only',
+          description: 'Override button',
+          basePath: 'toolkit/content/widgets/moz-button',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(hasComponentChanged).mockResolvedValue(false);
+    vi.mocked(hasOverrideEngineDrift).mockResolvedValue(true);
+
+    await furnaceStatusCommand('/project');
+
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(expect.stringContaining('Engine drift detected'));
+  });
+
+  it('warns about workspace changes and engine drift independently', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-button': {
+          type: 'css-only',
+          description: 'Override button',
+          basePath: 'toolkit/content/widgets/moz-button',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {
+        'moz-sidebar': {
+          description: 'Custom sidebar',
+          targetPath: 'browser/components/sidebar',
+          register: true,
+          localized: false,
+        },
+      },
+    });
+    // Override is unchanged but engine drifted; custom workspace was edited.
+    vi.mocked(hasComponentChanged)
+      .mockResolvedValueOnce(false) // override
+      .mockResolvedValueOnce(true); // custom
+    vi.mocked(hasOverrideEngineDrift).mockResolvedValue(true);
+    vi.mocked(hasCustomEngineDrift).mockResolvedValue(false);
+
+    await furnaceStatusCommand('/project');
+
+    const warnCalls = vi.mocked(warn).mock.calls.map((c) => c[0]);
+    expect(warnCalls.some((m) => m.includes('modified since last apply'))).toBe(true);
+    expect(warnCalls.some((m) => m.includes('Engine drift detected'))).toBe(true);
+  });
+
   it('detects changes in custom components when overrides have none', async () => {
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
@@ -298,7 +447,7 @@ describe('furnaceStatusCommand', () => {
           type: 'css-only',
           description: 'Override button',
           basePath: 'toolkit/content/widgets/moz-button',
-          baseVersion: '140.0esr',
+          baseVersion: '140.9.0esr',
         },
       },
       custom: {

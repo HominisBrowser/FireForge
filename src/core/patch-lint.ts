@@ -9,6 +9,34 @@ import { verbose } from '../utils/logger.js';
 import { hasRawCssColors, stripJsComments } from '../utils/regex.js';
 import { loadFurnaceConfig } from './furnace-config.js';
 import { type CommentStyle, getLicenseHeader, hasAnyLicenseHeader } from './license-headers.js';
+import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
+
+// ---------------------------------------------------------------------------
+// Cross-patch lint re-exports
+// ---------------------------------------------------------------------------
+//
+// The cross-patch lint infrastructure (queue context builder, duplicate-
+// creation and forward-import rules, ignore marker) lives in
+// `patch-lint-cross.ts` so the per-patch and cross-patch rule bodies can
+// each stay within the project's per-file line budget. Re-export the
+// public surface so callers continue to import from a single module.
+
+export {
+  buildPatchQueueContext,
+  collectNewFileCreatorsByPath,
+  type ExtractedSpecifier,
+  extractImportSpecifiers,
+  extractImportSpecifiersWithLines,
+  findForwardImportIgnoreLines,
+  FORWARD_IMPORT_IGNORE_MARKER,
+  isForwardImportableFile,
+  lintPatchQueue,
+  lintPatchQueueDuplicateCreations,
+  lintPatchQueueForwardImports,
+  type PatchQueueContext,
+  type PatchQueueEntry,
+} from './patch-lint-cross.js';
+export { buildModifiedFileAdditionsFromDiff, detectNewFilesInDiff } from './patch-lint-diff.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,79 +62,23 @@ export function commentStyleForFile(file: string): CommentStyle | null {
   return null;
 }
 
-/**
- * Extracts new-file paths from a unified diff by scanning for `new file mode` markers.
- */
-export function detectNewFilesInDiff(diffContent: string): Set<string> {
-  const newFiles = new Set<string>();
-  const lines = diffContent.split('\n');
-  let currentFile: string | null = null;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      const match = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-      currentFile = match?.[1] ?? null;
-      continue;
-    }
-
-    if (line.startsWith('new file mode') && currentFile) {
-      newFiles.add(currentFile);
-    }
-  }
-
-  return newFiles;
-}
-
-/**
- * Extracts added lines per file from a unified diff.
- * Returns a map of file path → array of added line contents (without the leading `+`).
- */
-function extractAddedLinesPerFile(diffContent: string): Map<string, string[]> {
-  const result = new Map<string, string[]>();
-  const lines = diffContent.split('\n');
-  let currentFile: string | null = null;
-  let inHunk = false;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      const match = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-      currentFile = match?.[1] ?? null;
-      inHunk = false;
-      continue;
-    }
-
-    if (line.startsWith('@@')) {
-      inHunk = true;
-      continue;
-    }
-
-    if (inHunk && currentFile && line.startsWith('+') && !line.startsWith('+++')) {
-      let arr = result.get(currentFile);
-      if (!arr) {
-        arr = [];
-        result.set(currentFile, arr);
-      }
-      arr.push(line.slice(1));
-    }
-  }
-
-  return result;
-}
-
 // ---------------------------------------------------------------------------
-// CSS lint (existing — now with severity)
+// CSS lint
 // ---------------------------------------------------------------------------
 
 /**
- * Lints patched CSS files for raw color values and non-tokenized custom properties.
+ * Lints patched CSS files for introduced raw color values and non-tokenized
+ * custom properties.
  *
  * @param repoDir - Absolute path to the engine (repository) directory
  * @param affectedFiles - File paths (relative to repoDir) affected by the patch
+ * @param diffContent - Optional unified diff used to scope raw color checks to introduced lines
  * @returns Array of lint issues found
  */
 export async function lintPatchedCss(
   repoDir: string,
-  affectedFiles: string[]
+  affectedFiles: string[],
+  diffContent?: string
 ): Promise<PatchLintIssue[]> {
   const cssFiles = affectedFiles.filter((f) => f.endsWith('.css'));
   if (cssFiles.length === 0) return [];
@@ -128,6 +100,7 @@ export async function lintPatchedCss(
   }
 
   const issues: PatchLintIssue[] = [];
+  const addedLinesByFile = diffContent ? extractAddedLinesPerFile(diffContent) : undefined;
 
   for (const file of cssFiles) {
     const filePath = join(repoDir, file);
@@ -136,15 +109,18 @@ export async function lintPatchedCss(
     const rawCss = await readText(filePath);
     // Strip block comments before scanning
     const cssContent = rawCss.replace(/\/\*[\s\S]*?\*\//g, '');
+    const rawColorContent = addedLinesByFile
+      ? (addedLinesByFile.get(file) ?? []).join('\n').replace(/\/\*[\s\S]*?\*\//g, '')
+      : cssContent;
 
-    // Check for raw color values
-    if (hasRawCssColors(cssContent)) {
+    // Check only introduced raw color values when diff context is available.
+    if (hasRawCssColors(rawColorContent)) {
       issues.push({
         file,
         check: 'raw-color-value',
         message:
           'Raw color value found. Use CSS custom properties (var(--...)) for design token consistency.',
-        severity: 'warning',
+        severity: 'error',
       });
     }
 
@@ -460,7 +436,7 @@ export async function lintExportedPatch(
   const lineCount = diffContent.split('\n').length;
 
   const [cssIssues, headerIssues, jsIssues, modifiedHeaderIssues] = await Promise.all([
-    lintPatchedCss(repoDir, affectedFiles),
+    lintPatchedCss(repoDir, affectedFiles, diffContent),
     lintNewFileHeaders(repoDir, [...newFiles], config),
     lintPatchedJs(repoDir, affectedFiles, newFiles, config),
     lintModifiedFileHeaders(repoDir, affectedFiles, newFiles),

@@ -24,6 +24,44 @@ export function hasAriaRole(content: string): boolean {
   );
 }
 
+/** Detects generic elements being used as custom interactive controls. */
+export function hasGenericInteractiveElement(content: string): boolean {
+  return /<(div|span)\b(?=[^>]*(?:@click|@key(?:down|press|up)|\btabindex\s*=|\.onclick\s*=))/i.test(
+    content
+  );
+}
+
+/** Detects a positive tabindex value, which disrupts natural tab order. */
+export function hasPositiveTabindex(content: string): boolean {
+  const match = content.match(/tabindex\s*=\s*["']?(\d+)/g);
+  if (!match) return false;
+  return match.some((m) => {
+    const value = /(\d+)/.exec(m)?.[1];
+    return value !== undefined && parseInt(value, 10) > 0;
+  });
+}
+
+/** Detects form inputs without associated labels. */
+export function hasUnlabelledFormInput(content: string): boolean {
+  // Look for <input> or <select> or <textarea> without aria-label, aria-labelledby, or id
+  // (id implies an external <label for="..."> could exist)
+  const inputPattern = /<(input|select|textarea)\b([^>]*)>/gi;
+  let inputMatch: RegExpExecArray | null;
+  while ((inputMatch = inputPattern.exec(content)) !== null) {
+    const attrs = inputMatch[2] ?? '';
+    if (
+      /aria-label\s*=/.test(attrs) ||
+      /aria-labelledby\s*=/.test(attrs) ||
+      /\bid\s*=/.test(attrs) ||
+      /type\s*=\s*["']hidden["']/i.test(attrs)
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 /** Detects Lit-style template click handlers. */
 export function hasTemplateClickHandler(content: string): boolean {
   return /@click\s*=\s*\$\{/.test(content);
@@ -111,6 +149,9 @@ export function hasCustomElementDefineCall(mjsContent: string): boolean {
 export function classExtendsMozLitElement(mjsContent: string): boolean {
   const hasClassDeclaration = /class\s+\w+\s+extends\s+/.test(mjsContent);
   if (!hasClassDeclaration) {
+    // No class declaration — skip this check since the component may use a
+    // different pattern (e.g. function-based). Other validators will catch
+    // structural issues.
     return true;
   }
 

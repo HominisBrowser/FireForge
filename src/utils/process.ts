@@ -57,6 +57,11 @@ export interface ExecOptions {
   timeout?: number;
 }
 
+function buildSignalFromTimeout(timeout: number | undefined): AbortSignal | undefined {
+  if (timeout === undefined) return undefined;
+  return AbortSignal.timeout(timeout);
+}
+
 function exitCodeFromClose(code: number | null, signal: NodeJS.Signals | null): number {
   if (code !== null) {
     return code;
@@ -89,7 +94,7 @@ export async function exec(
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: options.timeout,
+      signal: buildSignalFromTimeout(options.timeout),
     });
 
     const out = createStreamCollector();
@@ -143,7 +148,7 @@ export async function execStream(
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: options.timeout,
+      signal: buildSignalFromTimeout(options.timeout),
     });
 
     child.stdout.on('data', (data: Buffer) => {
@@ -181,7 +186,7 @@ export async function execInherit(
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: 'inherit',
-      timeout: options.timeout,
+      signal: buildSignalFromTimeout(options.timeout),
     });
 
     child.on('error', (error) => {
@@ -212,7 +217,7 @@ export async function execInheritCapture(
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: ['inherit', 'pipe', 'pipe'],
-      timeout: options.timeout,
+      signal: buildSignalFromTimeout(options.timeout),
     });
 
     const out = createStreamCollector(process.stdout);

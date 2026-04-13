@@ -6,11 +6,11 @@ import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { build, buildArtifactMismatchMessage, buildUI, hasBuildArtifacts } from '../core/mach.js';
 import { GeneralError } from '../errors/base.js';
-import { BuildError } from '../errors/build.js';
+import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { BuildOptions } from '../types/commands/index.js';
-import { pathExists } from '../utils/fs.js';
-import { error, info, intro, outro, verbose } from '../utils/logger.js';
+import { checkDiskSpace, pathExists } from '../utils/fs.js';
+import { error, info, intro, outro, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { isPositiveInteger } from '../utils/validation.js';
 
@@ -54,12 +54,18 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   const paths = getProjectPaths(projectRoot);
   validateBrandOverride(config.binaryName, options.brand);
 
+  // Disk space pre-flight: a full Firefox build can be ~20 GB
+  await checkDiskSpace(projectRoot, 20 * 1024 * 1024 * 1024, warn);
+
   // Check if engine exists
   if (!(await pathExists(paths.engine))) {
     throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
   }
 
   const buildCheck = await hasBuildArtifacts(paths.engine);
+  if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
+    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
+  }
   const mismatchMessage = buildArtifactMismatchMessage(paths.engine, buildCheck, 'Build');
   if (mismatchMessage) {
     throw new GeneralError(mismatchMessage);

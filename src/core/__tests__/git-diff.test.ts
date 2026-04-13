@@ -17,6 +17,7 @@ vi.mock('../../utils/fs.js', () => ({
 
 vi.mock('../git-base.js', () => ({
   ensureGit: vi.fn(),
+  git: vi.fn(),
 }));
 
 vi.mock('../git-file-ops.js', () => ({
@@ -31,6 +32,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 
 import { pathExists, readText } from '../../utils/fs.js';
 import { exec } from '../../utils/process.js';
+import { git } from '../git-base.js';
 import {
   generateBinaryFilePatch,
   generateFullFilePatch,
@@ -45,6 +47,7 @@ import { fileExistsInHead } from '../git-file-ops.js';
 import { getUntrackedFiles } from '../git-status.js';
 
 const mockExec = vi.mocked(exec);
+const mockGit = vi.mocked(git);
 const mockPathExists = vi.mocked(pathExists);
 const mockReadText = vi.mocked(readText);
 const mockFileExistsInHead = vi.mocked(fileExistsInHead);
@@ -59,20 +62,24 @@ beforeEach(() => {
 
 describe('getFileDiff', () => {
   it('calls ensureGit and returns git diff HEAD stdout', async () => {
-    mockExec.mockResolvedValue({ stdout: 'diff --git a/f b/f\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('diff --git a/f b/f\n');
 
     const result = await getFileDiff('/repo', 'file.txt');
     expect(result).toBe('diff --git a/f b/f\n');
-    expect(mockExec).toHaveBeenCalledWith('git', ['diff', 'HEAD', '--', 'file.txt'], {
-      cwd: '/repo',
-    });
+    expect(mockGit).toHaveBeenCalledWith(['diff', 'HEAD', '--', 'file.txt'], '/repo');
+  });
+
+  it('throws when git diff fails', async () => {
+    mockGit.mockRejectedValue(new Error('fatal: invalid object name HEAD'));
+
+    await expect(getFileDiff('/repo', 'file.txt')).rejects.toThrow('invalid object name HEAD');
   });
 });
 
 describe('generateNewFileDiff', () => {
   it('generates diff for empty file', async () => {
     mockReadText.mockResolvedValue('');
-    mockExec.mockResolvedValue({ stdout: 'abcdef1234567890\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('abcdef1234567890\n');
 
     const result = await generateNewFileDiff('/repo', 'empty.txt');
     expect(result).toContain('new file mode 100644');
@@ -82,7 +89,7 @@ describe('generateNewFileDiff', () => {
 
   it('generates diff for file with trailing newline', async () => {
     mockReadText.mockResolvedValue('line1\nline2\n');
-    mockExec.mockResolvedValue({ stdout: 'abcdef1234567890\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('abcdef1234567890\n');
 
     const result = await generateNewFileDiff('/repo', 'test.txt');
     expect(result).toContain('@@ -0,0 +1,2 @@');
@@ -93,7 +100,7 @@ describe('generateNewFileDiff', () => {
 
   it('adds no-newline marker for file without trailing newline', async () => {
     mockReadText.mockResolvedValue('line1\nline2');
-    mockExec.mockResolvedValue({ stdout: 'abcdef1234567890\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('abcdef1234567890\n');
 
     const result = await generateNewFileDiff('/repo', 'test.txt');
     expect(result).toContain('\\ No newline at end of file');
@@ -101,7 +108,7 @@ describe('generateNewFileDiff', () => {
 
   it('falls back to zeroes when hash-object fails', async () => {
     mockReadText.mockResolvedValue('content\n');
-    mockExec.mockRejectedValue(new Error('hash-object failed'));
+    mockGit.mockRejectedValue(new Error('hash-object failed'));
 
     const result = await generateNewFileDiff('/repo', 'test.txt');
     expect(result).toContain('index 0000000000..0000000000');
@@ -111,7 +118,7 @@ describe('generateNewFileDiff', () => {
 describe('generateFullFilePatch', () => {
   it('uses getFileDiff for tracked files', async () => {
     mockFileExistsInHead.mockResolvedValue(true);
-    mockExec.mockResolvedValue({ stdout: 'tracked diff\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('tracked diff\n');
 
     const result = await generateFullFilePatch('/repo', 'tracked.txt');
     expect(result).toBe('tracked diff\n');
@@ -120,7 +127,7 @@ describe('generateFullFilePatch', () => {
   it('uses generateNewFileDiff for untracked files', async () => {
     mockFileExistsInHead.mockResolvedValue(false);
     mockReadText.mockResolvedValue('new content\n');
-    mockExec.mockResolvedValue({ stdout: 'abc1234567\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('abc1234567\n');
 
     const result = await generateFullFilePatch('/repo', 'new.txt');
     expect(result).toContain('new file mode 100644');
@@ -176,11 +183,26 @@ describe('generateModificationDiff', () => {
     const result = await generateModificationDiff('/repo', 'file.txt', 'old content');
     expect(result).toBe('');
   });
+
+  it('throws when git diff --no-index fails unexpectedly', async () => {
+    mockReadText.mockResolvedValue('new content');
+    mockMkdtemp.mockResolvedValue('/tmp/fireforge-diff-xxx');
+    mockWriteFile.mockResolvedValue(undefined);
+    mockExec.mockResolvedValue({
+      stdout: '',
+      stderr: 'fatal: not a git repository',
+      exitCode: 128,
+    });
+
+    await expect(generateModificationDiff('/repo', 'file.txt', 'old content')).rejects.toThrow(
+      'not a git repository'
+    );
+  });
 });
 
 describe('getAllDiff', () => {
   it('combines tracked and untracked diffs', async () => {
-    mockExec.mockResolvedValue({ stdout: 'tracked diff\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('tracked diff\n');
     mockGetUntrackedFiles.mockResolvedValue(['new.txt']);
     mockReadText.mockResolvedValue('new content\n');
 
@@ -190,7 +212,7 @@ describe('getAllDiff', () => {
   });
 
   it('handles no untracked files', async () => {
-    mockExec.mockResolvedValue({ stdout: 'tracked diff\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('tracked diff\n');
     mockGetUntrackedFiles.mockResolvedValue([]);
 
     const result = await getAllDiff('/repo');
@@ -198,18 +220,24 @@ describe('getAllDiff', () => {
   });
 
   it('handles empty tracked diff', async () => {
-    mockExec.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('');
     mockGetUntrackedFiles.mockResolvedValue([]);
 
     const result = await getAllDiff('/repo');
     expect(result).toBe('\n');
+  });
+
+  it('throws when the tracked diff command fails', async () => {
+    mockGit.mockRejectedValue(new Error('fatal: bad revision HEAD'));
+
+    await expect(getAllDiff('/repo')).rejects.toThrow('bad revision HEAD');
   });
 });
 
 describe('getDiffForFilesAgainstHead', () => {
   it('uses getFileDiff for tracked files', async () => {
     mockFileExistsInHead.mockResolvedValue(true);
-    mockExec.mockResolvedValue({ stdout: 'tracked diff\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('tracked diff\n');
 
     const result = await getDiffForFilesAgainstHead('/repo', ['file.txt']);
     expect(result).toBe('tracked diff\n');
@@ -219,7 +247,7 @@ describe('getDiffForFilesAgainstHead', () => {
     mockFileExistsInHead.mockResolvedValue(false);
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('content\n');
-    mockExec.mockResolvedValue({ stdout: 'abc1234567\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('abc1234567\n');
 
     const result = await getDiffForFilesAgainstHead('/repo', ['new.txt']);
     expect(result).toContain('new file mode 100644');
@@ -235,25 +263,29 @@ describe('getDiffForFilesAgainstHead', () => {
 
   it('deduplicates files', async () => {
     mockFileExistsInHead.mockResolvedValue(true);
-    mockExec.mockResolvedValue({ stdout: 'diff\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('diff\n');
 
     await getDiffForFilesAgainstHead('/repo', ['a.txt', 'a.txt']);
-    // ensureGit + one getFileDiff call
-    expect(mockExec).toHaveBeenCalledTimes(1);
+    expect(mockGit).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('getStagedDiffForFiles', () => {
   it('runs git diff --cached HEAD for provided files', async () => {
-    mockExec.mockResolvedValue({ stdout: 'staged diff\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('staged diff\n');
 
     const result = await getStagedDiffForFiles('/repo', ['a.txt', 'b.txt']);
     expect(result).toBe('staged diff\n');
-    expect(mockExec).toHaveBeenCalledWith(
-      'git',
+    expect(mockGit).toHaveBeenCalledWith(
       ['diff', '--cached', 'HEAD', '--', 'a.txt', 'b.txt'],
-      { cwd: '/repo' }
+      '/repo'
     );
+  });
+
+  it('throws when staged diff generation fails', async () => {
+    mockGit.mockRejectedValue(new Error('fatal: bad revision HEAD'));
+
+    await expect(getStagedDiffForFiles('/repo', ['a.txt'])).rejects.toThrow('bad revision HEAD');
   });
 });
 

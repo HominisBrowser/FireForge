@@ -62,6 +62,70 @@ describe('furnace-scanner helpers', () => {
     );
   });
 
+  it('parses array-driven custom element registrations from modern customElements.js', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readText).mockResolvedValue(
+      [
+        'for (let [tag, script] of [',
+        '  ["findbar", "chrome://global/content/elements/findbar.js"],',
+        ']) {',
+        '  customElements.setElementCreationCallback(tag, () => {',
+        '    Services.scriptloader.loadSubScript(script, window);',
+        '  });',
+        '}',
+        '',
+        'document.addEventListener("DOMContentLoaded", () => {',
+        '  for (let [tag, script] of [',
+        '    ["moz-button", "chrome://global/content/elements/moz-button.mjs"],',
+        '    ["moz-card", "chrome://global/content/elements/moz-card.mjs"],',
+        '  ]) {',
+        '    customElements.setElementCreationCallback(tag, () => {',
+        '      ChromeUtils.importESModule(script);',
+        '    });',
+        '  }',
+        '});',
+      ].join('\n')
+    );
+
+    await expect(scanCustomElementsRegistrations('/engine')).resolves.toEqual(
+      new Map([
+        ['findbar', 'chrome://global/content/elements/findbar.js'],
+        ['moz-button', 'chrome://global/content/elements/moz-button.mjs'],
+        ['moz-card', 'chrome://global/content/elements/moz-card.mjs'],
+      ])
+    );
+  });
+
+  it('finds imports up to 14 lines after setElementCreationCallback in fallback mode', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    // Intentionally broken JS so the AST parser falls back to line-by-line scanning
+    vi.mocked(readText).mockResolvedValue(
+      [
+        '/* syntax error to force fallback */',
+        'const broken = {;',
+        'lazy.customElements.setElementCreationCallback("moz-deep", () => {',
+        '  // line 1',
+        '  // line 2',
+        '  // line 3',
+        '  // line 4',
+        '  // line 5',
+        '  // line 6',
+        '  // line 7',
+        '  // line 8',
+        '  // line 9',
+        '  // line 10',
+        '  // line 11',
+        '  // line 12',
+        '  import("chrome://global/content/elements/moz-deep.mjs");',
+        '});',
+        '',
+      ].join('\n')
+    );
+
+    const result = await scanCustomElementsRegistrations('/engine');
+    expect(result.get('moz-deep')).toBe('chrome://global/content/elements/moz-deep.mjs');
+  });
+
   it('returns no scanned components when the widgets directory is missing', async () => {
     vi.mocked(pathExists).mockResolvedValue(false);
 

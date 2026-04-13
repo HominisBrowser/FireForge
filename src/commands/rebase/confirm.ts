@@ -12,7 +12,7 @@ import { cancel, isCancel, warn } from '../../utils/logger.js';
 /** Options for the dirty-engine confirmation prompt. */
 export interface DirtyEngineConfirmationOptions {
   engineDir: string;
-  force: boolean;
+  yes: boolean;
   nonInteractiveHint: string;
   warningMessage: string;
   promptMessage: string;
@@ -22,24 +22,24 @@ export interface DirtyEngineConfirmationOptions {
 /**
  * Checks if the engine has uncommitted changes and prompts for confirmation.
  * Returns true if safe to proceed, false if the user cancelled.
- * Throws in non-interactive mode without --force.
+ * Throws in non-interactive mode without --yes.
  */
 export async function confirmDirtyEngineReset({
   engineDir,
-  force,
+  yes,
   nonInteractiveHint,
   warningMessage,
   promptMessage,
   cancelMessage,
 }: DirtyEngineConfirmationOptions): Promise<boolean> {
-  if (!(await hasChanges(engineDir)) || force) {
+  if (!(await hasChanges(engineDir)) || yes) {
     return true;
   }
 
   const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
   if (!isInteractive) {
     throw new InvalidArgumentError(
-      'Engine has uncommitted changes and interactive confirmation is not available. Use --force to proceed.',
+      'Engine has uncommitted changes and interactive confirmation is not available. Use --yes to proceed.',
       nonInteractiveHint
     );
   }

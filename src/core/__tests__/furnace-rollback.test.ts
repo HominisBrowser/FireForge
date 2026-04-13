@@ -11,6 +11,7 @@ import {
   recordCreatedDir,
   restoreRollbackJournal,
   restoreRollbackJournalOrThrow,
+  snapshotDir,
   snapshotFile,
 } from '../furnace-rollback.js';
 
@@ -106,5 +107,99 @@ describe('furnace rollback journal helpers', () => {
     await expect(
       restoreRollbackJournalOrThrow(journal, 'Rolling back furnace apply')
     ).rejects.toThrow(/Rolling back furnace apply; automatic rollback failed:/);
+  });
+
+  it('restores files whose snapshot has no mode', async () => {
+    const tempDir = await makeTempDir('fireforge-furnace-rollback-nomode-');
+    const filePath = join(tempDir, 'plain.txt');
+    const journal = createRollbackJournal();
+
+    journal.files.set(filePath, {
+      existed: true,
+      content: new Uint8Array(Buffer.from('original\n')),
+    });
+
+    await writeFile(filePath, 'mutated\n');
+
+    await restoreRollbackJournal(journal);
+
+    await expect(readFile(filePath, 'utf8')).resolves.toBe('original\n');
+  });
+
+  it('cleans up the temp file when the atomic rename fails', async () => {
+    const tempDir = await makeTempDir('fireforge-furnace-rollback-rename-');
+    const filePath = join(tempDir, 'nested', 'deep', 'file.txt');
+    const journal = createRollbackJournal();
+
+    journal.files.set(filePath, {
+      existed: true,
+      content: new Uint8Array(Buffer.from('original\n')),
+      mode: 0o644,
+    });
+
+    // Make the parent directory read-only so the temp file write fails with EACCES.
+    await mkdir(join(tempDir, 'nested', 'deep'), { recursive: true });
+    await writeFile(filePath, 'mutated\n');
+    await chmod(join(tempDir, 'nested', 'deep'), 0o444);
+
+    await expect(restoreRollbackJournal(journal)).rejects.toThrow();
+
+    // Restore permissions for cleanup.
+    await chmod(join(tempDir, 'nested', 'deep'), 0o755);
+  });
+
+  it('restores an empty journal without errors', async () => {
+    const journal = createRollbackJournal();
+
+    await expect(restoreRollbackJournal(journal)).resolves.toBeUndefined();
+  });
+});
+
+describe('snapshotDir', () => {
+  it('recursively snapshots files and restores them after mutation', async () => {
+    const tempDir = await makeTempDir('fireforge-furnace-rollback-dir-');
+    const nested = join(tempDir, 'widgets', 'moz-button');
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(nested, 'moz-button.mjs'), 'export class MozButton {}');
+    await writeFile(join(nested, 'moz-button.css'), ':host { display: block; }');
+
+    const journal = createRollbackJournal();
+    await snapshotDir(journal, join(tempDir, 'widgets'));
+
+    // Mutate files.
+    await writeFile(join(nested, 'moz-button.mjs'), 'CORRUPTED');
+    await writeFile(join(nested, 'moz-button.css'), 'CORRUPTED');
+
+    await restoreRollbackJournal(journal);
+
+    await expect(readFile(join(nested, 'moz-button.mjs'), 'utf8')).resolves.toBe(
+      'export class MozButton {}'
+    );
+    await expect(readFile(join(nested, 'moz-button.css'), 'utf8')).resolves.toBe(
+      ':host { display: block; }'
+    );
+  });
+
+  it('skips symlinks within the directory tree', async () => {
+    const { symlink } = await import('node:fs/promises');
+    const tempDir = await makeTempDir('fireforge-furnace-rollback-symlink-');
+    const nested = join(tempDir, 'widgets');
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(nested, 'real.txt'), 'real content');
+    await symlink(join(nested, 'real.txt'), join(nested, 'link.txt'));
+
+    const journal = createRollbackJournal();
+    await snapshotDir(journal, nested);
+
+    expect(journal.files.has(join(nested, 'real.txt'))).toBe(true);
+    expect(journal.files.has(join(nested, 'link.txt'))).toBe(false);
+    expect(journal.skippedSymlinks.has(join(nested, 'link.txt'))).toBe(true);
+  });
+
+  it('returns without recording anything when the path does not exist', async () => {
+    const journal = createRollbackJournal();
+    await snapshotDir(journal, '/nonexistent/path/that/does/not/exist');
+
+    expect(journal.files.size).toBe(0);
   });
 });

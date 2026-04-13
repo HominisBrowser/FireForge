@@ -19,7 +19,12 @@ import {
   walkAST,
 } from './ast-utils.js';
 import { withParserFallback } from './parser-fallback.js';
-import { findNearestTryLine, validateWireName, walkToTryBlockEnd } from './wire-utils.js';
+import {
+  assertBraceBalancePreserved,
+  findNearestTryLine,
+  validateWireName,
+  walkToTryBlockEnd,
+} from './wire-utils.js';
 
 const BROWSER_MAIN_JS = 'browser/base/content/browser-main.js';
 
@@ -100,7 +105,10 @@ export function legacyAddSubscript(content: string, name: string): string {
   let insertIndex: number;
   if (lastSubScriptLine !== -1) {
     const tryStart = findNearestTryLine(lines, lastSubScriptLine - 1, -1);
-    insertIndex = tryStart !== -1 ? walkToTryBlockEnd(lines, tryStart) : lastSubScriptLine + 1;
+    insertIndex =
+      tryStart !== -1
+        ? walkToTryBlockEnd(lines, tryStart, { strict: true, context: BROWSER_MAIN_JS })
+        : lastSubScriptLine + 1;
   } else {
     insertIndex = lines.length;
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -153,11 +161,15 @@ export async function addSubscriptToBrowserMain(engineDir: string, name: string)
     return false;
   }
 
-  const { value } = withParserFallback(
+  const { value, usedFallback } = withParserFallback(
     () => addSubscriptAST(content, name),
     () => legacyAddSubscript(content, name),
     BROWSER_MAIN_JS
   );
+
+  if (usedFallback) {
+    assertBraceBalancePreserved(content, value, BROWSER_MAIN_JS);
+  }
 
   await writeText(filePath, value);
   return true;

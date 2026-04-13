@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
+import { ParserFallbackError } from '../../errors/base.js';
 import { parseScript } from '../ast-utils.js';
 import {
+  assertBraceBalancePreserved,
+  computeFileBraceBalance,
   countBraceDepth,
   extractNameFromExpression,
   findInsertionAfterFireforgeBlocks,
@@ -35,6 +38,18 @@ describe('findMethodBraceIndex', () => {
   it('falls back to the method line when no opening brace is found later', () => {
     const lines = ['  async onLoad()', '    init();'];
     const result = findMethodBraceIndex(lines, /\bonLoad\s*\(/);
+    expect(result).toEqual({ methodLine: 0, braceIndex: 0 });
+  });
+
+  it('returns null under requireBrace when no brace follows the signature', () => {
+    const lines = ['  async onLoad()', '    init();'];
+    const result = findMethodBraceIndex(lines, /\bonLoad\s*\(/, { requireBrace: true });
+    expect(result).toBeNull();
+  });
+
+  it('still returns braceIndex under requireBrace when the brace is on the same line', () => {
+    const lines = ['  async onLoad() { init(); }'];
+    const result = findMethodBraceIndex(lines, /\bonLoad\s*\(/, { requireBrace: true });
     expect(result).toEqual({ methodLine: 0, braceIndex: 0 });
   });
 });
@@ -172,6 +187,53 @@ describe('tokenizeXhtml', () => {
       { type: 'macro', raw: '  #include widgets.inc' },
       { type: 'xml', raw: '  <box id="main" />' },
     ]);
+  });
+});
+
+describe('walkToTryBlockEnd strict mode', () => {
+  it('throws ParserFallbackError when the block never closes under strict mode', () => {
+    const lines = ['    try {', '      doStuff();']; // missing closing brace
+    expect(() => walkToTryBlockEnd(lines, 0, { strict: true, context: 'test.js' })).toThrow(
+      ParserFallbackError
+    );
+  });
+
+  it('preserves the defensive return when strict mode is off', () => {
+    const lines = ['    try {', '      doStuff();'];
+    expect(walkToTryBlockEnd(lines, 0)).toBe(1);
+  });
+});
+
+describe('computeFileBraceBalance', () => {
+  it('reports a balanced file as depth 0', () => {
+    expect(computeFileBraceBalance('function a() { return 1; }').balanced).toBe(true);
+  });
+
+  it('reports an unbalanced file', () => {
+    expect(computeFileBraceBalance('function a() { return 1;').balanced).toBe(false);
+  });
+
+  it('ignores braces inside strings and comments', () => {
+    const content = 'const s = "{"; /* } */ { foo(); }';
+    expect(computeFileBraceBalance(content).depth).toBe(0);
+  });
+});
+
+describe('assertBraceBalancePreserved', () => {
+  it('passes when before and after have identical net balance', () => {
+    const before = 'function a() { }';
+    const after = 'function a() { foo(); }';
+    expect(() => {
+      assertBraceBalancePreserved(before, after, 'file.js');
+    }).not.toThrow();
+  });
+
+  it('throws ParserFallbackError with context when the balance drifts', () => {
+    const before = 'function a() { }';
+    const after = 'function a() { foo()'; // dropped closing brace
+    expect(() => {
+      assertBraceBalancePreserved(before, after, 'file.js');
+    }).toThrow(ParserFallbackError);
   });
 });
 

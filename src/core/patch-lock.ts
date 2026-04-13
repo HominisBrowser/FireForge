@@ -5,6 +5,7 @@
 
 import { join } from 'node:path';
 
+import { FireForgeError } from '../errors/base.js';
 import { PatchError } from '../errors/patch.js';
 import { toError } from '../utils/errors.js';
 import { withFileLock } from './file-lock.js';
@@ -29,7 +30,7 @@ export async function withPatchDirectoryLock<T>(
       `Removing stale patch lock (age: ${Math.round(ageMs / 1000)}s). ` +
       'A previous fireforge process may have crashed.',
   }).catch((error: unknown) => {
-    if (error instanceof PatchError) {
+    if (error instanceof FireForgeError) {
       throw error;
     }
 

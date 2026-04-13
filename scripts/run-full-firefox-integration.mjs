@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = process.env.FIREFORGE_FULL_PROJECT_ROOT;
 const buildMode = process.env.FIREFORGE_FULL_BUILD_MODE === 'full' ? 'full' : 'ui';
 const targetFileOverride = process.env.FIREFORGE_FULL_TARGET_FILE;
+const firefoxVersionOverride = process.env.FIREFORGE_FULL_FIREFOX_VERSION;
 const keepPatch = process.env.FIREFORGE_FULL_KEEP_PATCH === '1';
 const skipSetup = process.env.FIREFORGE_FULL_SKIP_SETUP === '1';
 
@@ -35,6 +36,7 @@ const report = {
   startedAt: new Date().toISOString(),
   projectRoot,
   buildMode,
+  firefoxVersionOverride: firefoxVersionOverride ?? null,
   targetFile: null,
   patchFilename: null,
   keptPatch: keepPatch,
@@ -65,7 +67,7 @@ const setupManagedFiles = [
   'configs/common.mozconfig',
   'configs/linux.mozconfig',
   'configs/darwin.mozconfig',
-  'configs/windows.mozconfig',
+  'configs/win32.mozconfig',
   '.fireforge/state.json',
   'patches/patches.json',
 ];
@@ -510,6 +512,7 @@ async function main() {
     }
   }
 
+  const effectiveFirefoxVersion = firefoxVersionOverride ?? config.firefox.version;
   const setupArgs = [
     'setup',
     '--force',
@@ -522,7 +525,7 @@ async function main() {
     '--binary-name',
     config.binaryName,
     '--firefox-version',
-    config.firefox.version,
+    effectiveFirefoxVersion,
     '--product',
     config.firefox.product,
   ];
@@ -545,6 +548,19 @@ async function main() {
   await runFireforge('status-before', ['status']);
   await runFireforge('bootstrap', ['bootstrap']);
   await runFireforge('build', buildMode === 'full' ? ['build'] : ['build', '--ui']);
+
+  const objDirs = runCapture('ls', ['-d', join(engineDir, 'obj-*')], {
+    allowFailure: true,
+  });
+  if (objDirs.exitCode === 0) {
+    const firstObjDir = objDirs.stdout.trim().split('\n')[0];
+    const distBinPath = join(firstObjDir, 'dist', 'bin');
+    if (!(await pathExists(distBinPath))) {
+      report.observations.buildArtifactWarning =
+        `Build exited successfully but ${distBinPath} does not exist. ` +
+        'mach may have masked a build failure with exit code 0.';
+    }
+  }
 
   await writeFile(targetAbsolutePath, appendMarker(originalTargetContent, patchMarker), 'utf8');
   await writeArtifact(
@@ -594,7 +610,7 @@ async function main() {
   });
   report.observations.dirtyGuardPreview = dirtyImport.preview;
 
-  await runFireforge('discard-target', ['discard', targetFile, '--force']);
+  await runFireforge('discard-target', ['discard', targetFile, '--yes']);
   await runFireforge('import-after-discard', ['import']);
 
   const recoveredContent = await readFile(targetAbsolutePath, 'utf8');
@@ -638,19 +654,31 @@ try {
       );
 
       for (const file of introducedPaths) {
-        const result = runCapture(
-          process.execPath,
-          getFireforgeArgs(['discard', file, '--force']),
-          {
+        const absPath = join(engineDir, file);
+        const isTracked =
+          runCapture('git', ['-C', engineDir, 'ls-files', '--error-unmatch', '--', file], {
             allowFailure: true,
-          }
-        );
+          }).exitCode === 0;
+
+        const result = isTracked
+          ? runCapture('git', ['-C', engineDir, 'checkout', '--', file], { allowFailure: true })
+          : runCapture('git', ['-C', engineDir, 'clean', '-f', '--', file], {
+              allowFailure: true,
+            });
+
         if (result.exitCode === 0) {
-          report.cleanup.actions.push(`Discarded introduced engine path ${file}`);
-        } else {
-          report.cleanup.errors.push(
-            `Failed to discard introduced engine path ${file} (exit ${result.exitCode})`
+          report.cleanup.actions.push(
+            `Cleaned introduced engine path ${file} (${isTracked ? 'checkout' : 'clean'})`
           );
+        } else {
+          try {
+            await rm(absPath, { recursive: true, force: true });
+            report.cleanup.actions.push(`Removed introduced engine path ${file} (fallback rm)`);
+          } catch (rmError) {
+            report.cleanup.errors.push(
+              `Failed to clean introduced engine path ${file}: ${toError(rmError).message}`
+            );
+          }
         }
       }
 

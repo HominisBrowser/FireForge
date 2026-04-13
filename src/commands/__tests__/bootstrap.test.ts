@@ -59,7 +59,7 @@ describe('bootstrapCommand', () => {
     expect(error).toHaveBeenCalledWith('Bootstrap failed');
   });
 
-  it('succeeds when exit code is 0 even with non-fatal warnings in output', async () => {
+  it('succeeds when exit code is 0 but surfaces soft failures prominently', async () => {
     vi.mocked(bootstrapWithOutput).mockResolvedValue({
       stdout: 'abort: no such remote origin',
       stderr: 'Traceback (most recent call last):\nHTTP Error 403: Forbidden',
@@ -67,7 +67,8 @@ describe('bootstrapCommand', () => {
     });
 
     await expect(bootstrapCommand('/project')).resolves.toBeUndefined();
-    expect(outro).toHaveBeenCalledWith('Build dependencies installed successfully!');
+    expect(error).toHaveBeenCalledWith('Bootstrap completed with issues:');
+    expect(outro).toHaveBeenCalledWith('Build dependencies installed with warnings');
   });
 
   it('includes diagnostic details when exit code is non-zero and output has known patterns', async () => {
@@ -81,5 +82,30 @@ describe('bootstrapCommand', () => {
       /Bootstrap did not complete successfully/i
     );
     expect(error).toHaveBeenCalledWith('Bootstrap failed');
+  });
+
+  it('throws a plain BootstrapError when exit code is non-zero but output has no known patterns', async () => {
+    vi.mocked(bootstrapWithOutput).mockResolvedValue({
+      stdout: 'some random noise\n',
+      stderr: 'unknown failure\n',
+      exitCode: 1,
+    });
+
+    await expect(bootstrapCommand('/project')).rejects.toThrow(/Bootstrap failed/i);
+    expect(error).toHaveBeenCalledWith('Bootstrap failed');
+  });
+
+  it('detects the Python urllib HTTP 403 pattern from real mach bootstrap output', async () => {
+    vi.mocked(bootstrapWithOutput).mockResolvedValue({
+      stdout:
+        'urllib.error.HTTPError: HTTP Error 403: Forbidden\n' +
+        'Your system should be ready to build Firefox for Desktop!\n',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    await expect(bootstrapCommand('/project')).resolves.toBeUndefined();
+    expect(error).toHaveBeenCalledWith('Bootstrap completed with issues:');
+    expect(outro).toHaveBeenCalledWith('Build dependencies installed with warnings');
   });
 });

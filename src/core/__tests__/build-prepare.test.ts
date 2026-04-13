@@ -26,18 +26,38 @@ vi.mock('../../utils/logger.js', () => ({
 vi.mock('../furnace-config.js', () => ({
   furnaceConfigExists: vi.fn(),
   loadFurnaceConfig: vi.fn(),
+  loadFurnaceState: vi.fn(),
+  getFurnacePaths: vi.fn(() => ({
+    furnaceState: '/project/.fireforge/furnace-state.json',
+  })),
+}));
+
+vi.mock('../../utils/fs.js', () => ({
+  pathExists: vi.fn(),
 }));
 
 vi.mock('../furnace-apply.js', () => ({
   applyAllComponents: vi.fn(),
 }));
 
+vi.mock('../furnace-operation.js', () => ({
+  runFurnaceMutation: vi.fn(
+    async (_root: string, _kind: string, body: (ctx: unknown) => Promise<unknown>) =>
+      body({
+        registerJournal: vi.fn(),
+        registerCleanup: vi.fn(),
+      })
+  ),
+}));
+
 import type { FireForgeConfig, ProjectPaths } from '../../types/config.js';
+import { pathExists } from '../../utils/fs.js';
 import { spinner, warn } from '../../utils/logger.js';
 import { isBrandingSetup, setupBranding } from '../branding.js';
 import { prepareBuildEnvironment } from '../build-prepare.js';
 import { applyAllComponents } from '../furnace-apply.js';
-import { furnaceConfigExists, loadFurnaceConfig } from '../furnace-config.js';
+import { furnaceConfigExists, loadFurnaceConfig, loadFurnaceState } from '../furnace-config.js';
+import { runFurnaceMutation } from '../furnace-operation.js';
 import { cleanStories } from '../furnace-stories.js';
 import { generateMozconfig } from '../mach.js';
 
@@ -47,7 +67,10 @@ const mockSetupBranding = vi.mocked(setupBranding);
 const mockGenerateMozconfig = vi.mocked(generateMozconfig);
 const mockFurnaceConfigExists = vi.mocked(furnaceConfigExists);
 const mockLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
+const mockLoadFurnaceState = vi.mocked(loadFurnaceState);
 const mockApplyAllComponents = vi.mocked(applyAllComponents);
+const mockRunFurnaceMutation = vi.mocked(runFurnaceMutation);
+const mockPathExists = vi.mocked(pathExists);
 const mockWarn = vi.mocked(warn);
 const mockSpinner = vi.mocked(spinner);
 
@@ -76,6 +99,8 @@ beforeEach(() => {
   mockFurnaceConfigExists.mockResolvedValue(false);
   mockGenerateMozconfig.mockResolvedValue(undefined);
   mockCleanStories.mockResolvedValue(0);
+  mockPathExists.mockResolvedValue(false);
+  mockLoadFurnaceState.mockResolvedValue({} as never);
   mockSpinner.mockReturnValue({
     message: vi.fn(),
     stop: vi.fn(),
@@ -84,6 +109,28 @@ beforeEach(() => {
 });
 
 describe('prepareBuildEnvironment', () => {
+  it('blocks build when pendingRepair marker exists', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockLoadFurnaceState.mockResolvedValue({
+      pendingRepair: {
+        operation: 'preview-teardown',
+        timestamp: '2025-01-01T00:00:00Z',
+        reason: 'rollback failed',
+      },
+    } as never);
+
+    await expect(prepareBuildEnvironment('/project', paths, config)).rejects.toThrow(
+      /unresolved repair marker.*preview-teardown/
+    );
+  });
+
+  it('proceeds when furnace state has no pendingRepair', async () => {
+    mockPathExists.mockResolvedValue(false);
+
+    await prepareBuildEnvironment('/project', paths, config);
+    expect(mockCleanStories).toHaveBeenCalledWith('/project/engine');
+  });
+
   it('calls cleanStories first', async () => {
     await prepareBuildEnvironment('/project', paths, config);
     expect(mockCleanStories).toHaveBeenCalledWith('/project/engine');
@@ -123,7 +170,28 @@ describe('prepareBuildEnvironment', () => {
 
     const result = await prepareBuildEnvironment('/project', paths, config);
     expect(result.furnaceApplied).toBe(1);
-    expect(mockApplyAllComponents).toHaveBeenCalledWith('/project');
+    expect(mockRunFurnaceMutation).toHaveBeenCalledWith(
+      '/project',
+      'apply-rollback',
+      expect.any(Function)
+    );
+    expect(mockApplyAllComponents.mock.calls.at(-1)?.[0]).toBe('/project');
+    expect(mockApplyAllComponents.mock.calls.at(-1)?.[1]).toBe(false);
+    const options: unknown = mockApplyAllComponents.mock.calls.at(-1)?.[2];
+    expect(options).toBeDefined();
+    if (!options || typeof options !== 'object' || !('operationContext' in options)) {
+      throw new Error('expected apply options with operationContext');
+    }
+    const operationContext = (
+      options as {
+        operationContext: {
+          registerJournal: unknown;
+          registerCleanup: unknown;
+        };
+      }
+    ).operationContext;
+    expect(typeof operationContext.registerJournal).toBe('function');
+    expect(typeof operationContext.registerCleanup).toBe('function');
   });
 
   it('skips Furnace when furnace.json does not exist', async () => {
@@ -199,7 +267,7 @@ describe('prepareBuildEnvironment', () => {
     expect(furnaceSpinner?.stop).toHaveBeenCalledWith('Components up to date');
   });
 
-  it('warns for each error in applyAllComponents result', async () => {
+  it('throws when applyAllComponents returns errors, logging each one', async () => {
     mockFurnaceConfigExists.mockResolvedValue(true);
     mockLoadFurnaceConfig.mockResolvedValue({
       overrides: { 'moz-button': {} },
@@ -215,12 +283,14 @@ describe('prepareBuildEnvironment', () => {
       skipped: [],
     } as never);
 
-    await prepareBuildEnvironment('/project', paths, config);
+    await expect(prepareBuildEnvironment('/project', paths, config)).rejects.toThrow(
+      /2 components failed to apply cleanly/
+    );
     expect(mockWarn).toHaveBeenCalledWith('Furnace: comp-a \u2014 copy failed');
     expect(mockWarn).toHaveBeenCalledWith('Furnace: comp-b \u2014 missing dir');
   });
 
-  it('warns for stepErrors on applied components', async () => {
+  it('throws when an applied component has stepErrors, logging each one', async () => {
     mockFurnaceConfigExists.mockResolvedValue(true);
     mockLoadFurnaceConfig.mockResolvedValue({
       overrides: { 'moz-button': {} },
@@ -238,7 +308,9 @@ describe('prepareBuildEnvironment', () => {
       skipped: [],
     } as never);
 
-    await prepareBuildEnvironment('/project', paths, config);
+    await expect(prepareBuildEnvironment('/project', paths, config)).rejects.toThrow(
+      /1 component failed to apply cleanly/
+    );
     expect(mockWarn).toHaveBeenCalledWith('Furnace: moz-button [register] pattern mismatch');
   });
 });

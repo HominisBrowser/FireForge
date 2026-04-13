@@ -16,7 +16,8 @@ import {
   resumeRepository,
   stageAllFiles,
 } from '../git.js';
-import { parsePorcelainStatus } from '../git-status.js';
+import { getFileContentAtRef, getFileContentFromHead } from '../git-file-ops.js';
+import { getDirtyFiles, getWorkingTreeStatus, parsePorcelainStatus } from '../git-status.js';
 
 describe('parsePorcelainStatus', () => {
   it('returns empty array for empty output', () => {
@@ -141,6 +142,28 @@ describe('resetChanges', () => {
   });
 });
 
+describe('git status helpers', () => {
+  it('throws when git status is requested outside a repository', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-status-error-'));
+
+    try {
+      await expect(getWorkingTreeStatus(repoDir)).rejects.toThrow(/git|repository/i);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when dirty-file checks run outside a repository', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-dirty-error-'));
+
+    try {
+      await expect(getDirtyFiles(repoDir, ['file.txt'])).rejects.toThrow(/git|repository|head/i);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('initRepository', () => {
   it('fails fast with a targeted error when a stale index.lock is present', async () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-lock-test-'));
@@ -254,6 +277,60 @@ describe('commit', () => {
 
       const log = await git(repoDir, ['log', '--oneline']);
       expect(log).toContain('add new file');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('getFileContentAtRef', () => {
+  it('reads file content from an arbitrary commit, not just HEAD', async () => {
+    // Regression guard for the furnace diff fix: when an override has been
+    // applied to the working tree, reading from HEAD would return the
+    // override content. Reading from the original baseCommit must still
+    // return the pre-override content.
+    const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-show-ref-'));
+
+    try {
+      await git(repoDir, ['init']);
+      await git(repoDir, ['config', 'user.email', 'test@example.test']);
+      await git(repoDir, ['config', 'user.name', 'Test']);
+      await writeFile(join(repoDir, 'widget.css'), '.root { color: blue; }\n', 'utf8');
+      await git(repoDir, ['add', '.']);
+      await git(repoDir, ['commit', '-m', 'initial']);
+      const baseCommit = (await git(repoDir, ['rev-parse', 'HEAD'])).trim();
+
+      // Simulate an override applied to the engine worktree and committed.
+      await writeFile(join(repoDir, 'widget.css'), '.root { color: red; }\n', 'utf8');
+      await git(repoDir, ['add', '.']);
+      await git(repoDir, ['commit', '-m', 'override']);
+
+      const pristine = await getFileContentAtRef(repoDir, 'widget.css', baseCommit);
+      const head = await getFileContentAtRef(repoDir, 'widget.css');
+
+      expect(pristine).toBe('.root { color: blue; }\n');
+      expect(head).toBe('.root { color: red; }\n');
+      // Backwards-compat wrapper still points at HEAD.
+      expect(await getFileContentFromHead(repoDir, 'widget.css')).toBe(head);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a file that does not exist at the requested ref', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-show-missing-'));
+
+    try {
+      await git(repoDir, ['init']);
+      await git(repoDir, ['config', 'user.email', 'test@example.test']);
+      await git(repoDir, ['config', 'user.name', 'Test']);
+      await writeFile(join(repoDir, 'existing.txt'), 'x\n', 'utf8');
+      await git(repoDir, ['add', '.']);
+      await git(repoDir, ['commit', '-m', 'initial']);
+      const baseCommit = (await git(repoDir, ['rev-parse', 'HEAD'])).trim();
+
+      const content = await getFileContentAtRef(repoDir, 'not-there.txt', baseCommit);
+      expect(content).toBeNull();
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }

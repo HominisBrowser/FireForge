@@ -55,7 +55,7 @@ function makeValidConfig(overrides: Partial<FireForgeConfig> = {}): FireForgeCon
     appId: 'org.acme.browser',
     binaryName: 'mybrowser',
     firefox: {
-      version: '140.0esr',
+      version: '140.9.0esr',
       product: 'firefox-esr',
       ...(firefox ?? {}),
     },
@@ -157,7 +157,7 @@ describe('validateConfig', () => {
     expect(() =>
       validateConfig({
         ...makeValidConfig(),
-        firefox: { version: '140.0esr', product: 'fennec' as never },
+        firefox: { version: '140.9.0esr', product: 'fennec' as never },
       })
     ).toThrow('Config field "firefox.product" must be one of: firefox, firefox-esr, firefox-beta');
   });

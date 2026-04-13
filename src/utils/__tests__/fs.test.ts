@@ -15,7 +15,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { rm } from 'node:fs/promises';
 
-import { removeDir, writeFileAtomic } from '../fs.js';
+import { removeDir, writeFileAtomic, writeTextIfChanged } from '../fs.js';
 
 describe('removeDir', () => {
   beforeEach(() => {
@@ -72,5 +72,48 @@ describe('writeFileAtomic concurrency', () => {
 
     const content = await readFile(filePath, 'utf-8');
     expect(content).toBe('hello world');
+  });
+});
+
+describe('writeTextIfChanged', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    tempDir = await mkdtemp(join(tmpdir(), 'fireforge-fs-test-'));
+  });
+
+  afterEach(async () => {
+    await fsRm(tempDir, { recursive: true, force: true });
+  });
+
+  it('writes and returns true when file does not exist', async () => {
+    const filePath = join(tempDir, 'new-file.txt');
+    const result = await writeTextIfChanged(filePath, 'hello');
+
+    expect(result).toBe(true);
+    expect(await readFile(filePath, 'utf-8')).toBe('hello');
+  });
+
+  it('writes and returns true when content differs', async () => {
+    const filePath = join(tempDir, 'existing.txt');
+    await writeFileAtomic(filePath, 'old content');
+
+    const result = await writeTextIfChanged(filePath, 'new content');
+
+    expect(result).toBe(true);
+    expect(await readFile(filePath, 'utf-8')).toBe('new content');
+  });
+
+  it('skips write and returns false when content matches', async () => {
+    const filePath = join(tempDir, 'unchanged.txt');
+    await writeFileAtomic(filePath, 'same content');
+    const { mtimeMs: before } = await import('node:fs/promises').then((fs) => fs.stat(filePath));
+
+    const result = await writeTextIfChanged(filePath, 'same content');
+
+    expect(result).toBe(false);
+    const { mtimeMs: after } = await import('node:fs/promises').then((fs) => fs.stat(filePath));
+    expect(after).toBe(before);
   });
 });

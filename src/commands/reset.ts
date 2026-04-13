@@ -3,6 +3,7 @@ import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
+import { getFurnacePaths, updateFurnaceState } from '../core/furnace-config.js';
 import { hasChanges, isGitRepository, resetChanges } from '../core/git.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -58,15 +59,15 @@ export async function resetCommand(projectRoot: string, options: ResetOptions): 
     return;
   }
 
-  // Confirm reset unless --force is specified
-  if (!options.force) {
+  // Confirm reset unless --yes is specified
+  if (!options.yes) {
     // Check for non-interactive mode
     const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
 
     if (!isInteractive) {
       throw new InvalidArgumentError(
-        'Interactive confirmation not available. Use --force flag to reset without confirmation.',
-        'Use: fireforge reset --force'
+        'Interactive confirmation not available. Use --yes flag to reset without confirmation.',
+        'Use: fireforge reset --yes'
       );
     }
 
@@ -89,6 +90,23 @@ export async function resetCommand(projectRoot: string, options: ResetOptions): 
 
   try {
     await resetChanges(paths.engine);
+
+    // Clearing furnace-state.json is the honest representation of what just
+    // happened: any previously deployed Furnace files have been discarded
+    // with the engine reset. Without this, a subsequent `furnace apply`
+    // would match on workspace checksums and report "up to date" against
+    // an engine that no longer contains the deployed copies. (The drift
+    // check in apply also catches this, but clearing here keeps state
+    // consistent regardless of the drift oracle.) Preserve pendingRepair:
+    // authoring-side rollback markers are about the workspace/component
+    // tree, not the engine checkout, so reset must not silently forget them.
+    const furnacePaths = getFurnacePaths(projectRoot);
+    if (await pathExists(furnacePaths.furnaceState)) {
+      await updateFurnaceState(projectRoot, (current) => ({
+        ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
+      }));
+    }
+
     s.stop('Changes reset');
     outro('Working tree restored to clean state');
   } catch (error: unknown) {
@@ -105,10 +123,10 @@ export function registerReset(
   program
     .command('reset')
     .description('Reset engine/ to clean state')
-    .option('-f, --force', 'Skip confirmation prompt (required for scripts/CI)')
+    .option('-y, --yes', 'Skip confirmation prompt (required for scripts/CI)')
     .option('--dry-run', 'Show what would be reset without doing it')
     .action(
-      withErrorHandling(async (options: { force?: boolean; dryRun?: boolean }) => {
+      withErrorHandling(async (options: { yes?: boolean; dryRun?: boolean }) => {
         await resetCommand(getProjectRoot(), pickDefined(options));
       })
     );

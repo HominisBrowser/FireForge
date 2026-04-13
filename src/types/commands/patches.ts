@@ -52,7 +52,7 @@ export interface PatchMetadata {
   description: string;
   /** ISO timestamp of when the patch was created */
   createdAt: string;
-  /** ESR version the patch was created against (e.g., "140.0esr") */
+  /** ESR version the patch was created against (e.g., "146.0esr") */
   sourceEsrVersion: string;
   /** Array of file paths affected by this patch */
   filesAffected: string[];
@@ -90,6 +90,16 @@ export interface PatchLintIssue {
   file: string;
   /** Check identifier (e.g. "raw-color-value", "token-prefix-violation") */
   check: string;
+  /**
+   * Stable machine-readable identity for this finding.
+   *
+   * Use when the human-readable `message` may drift between otherwise
+   * equivalent runs (for example because a rule embeds line numbers,
+   * rename-sensitive patch filenames, or other contextual detail).
+   * Consumers that diff lint outputs should prefer this over `message`
+   * when it is present.
+   */
+  fingerprint?: string;
   /** Human-readable description of the issue */
   message: string;
   /** Severity: errors block export, warnings are advisory */

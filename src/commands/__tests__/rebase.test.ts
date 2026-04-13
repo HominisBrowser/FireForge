@@ -31,6 +31,8 @@ const {
   updatePatchMock,
   updatePatchMetadataMock,
   confirmMock,
+  getFurnacePathsMock,
+  updateFurnaceStateMock,
 } = vi.hoisted(() => ({
   loadConfigMock: vi.fn(),
   loadStateMock: vi.fn(() => Promise.resolve({})),
@@ -40,7 +42,7 @@ const {
   isGitRepositoryMock: vi.fn(() => Promise.resolve(true)),
   resetChangesMock: vi.fn(() => Promise.resolve()),
   hasChangesMock: vi.fn(() => Promise.resolve(false)),
-  pathExistsMock: vi.fn(() => Promise.resolve(true)),
+  pathExistsMock: vi.fn<(path: string) => Promise<boolean>>(() => Promise.resolve(true)),
   loadPatchesManifestMock: vi.fn(),
   stampPatchVersionsMock: vi.fn(() => Promise.resolve()),
   discoverPatchesMock: vi.fn<(patchesDir: string) => Promise<PatchInfo[]>>(() =>
@@ -60,6 +62,19 @@ const {
   updatePatchMock: vi.fn(() => Promise.resolve()),
   updatePatchMetadataMock: vi.fn(() => Promise.resolve()),
   confirmMock: vi.fn(() => Promise.resolve(true)),
+  getFurnacePathsMock: vi.fn((root: string) => ({
+    furnaceConfig: `${root}/furnace.json`,
+    componentsDir: `${root}/components`,
+    overridesDir: `${root}/components/overrides`,
+    customDir: `${root}/components/custom`,
+    furnaceState: `${root}/.fireforge/furnace-state.json`,
+  })),
+  updateFurnaceStateMock: vi.fn<
+    (
+      root: string,
+      updater: (current: Record<string, unknown>) => Record<string, unknown>
+    ) => Promise<void>
+  >(() => Promise.resolve()),
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -67,6 +82,11 @@ vi.mock('../../core/config.js', () => ({
   loadState: loadStateMock,
   saveState: saveStateMock,
   getProjectPaths: getProjectPathsMock,
+}));
+
+vi.mock('../../core/furnace-config.js', () => ({
+  getFurnacePaths: getFurnacePathsMock,
+  updateFurnaceState: updateFurnaceStateMock,
 }));
 
 vi.mock('../../core/git.js', () => ({
@@ -157,9 +177,10 @@ const defaultPaths = {
 
 function setupDefaults(): void {
   getProjectPathsMock.mockReturnValue(defaultPaths);
-  loadConfigMock.mockResolvedValue({ firefox: { version: '140.0esr', product: 'firefox-esr' } });
+  loadConfigMock.mockResolvedValue({ firefox: { version: '146.0esr', product: 'firefox-esr' } });
   pathExistsMock.mockResolvedValue(true);
   isGitRepositoryMock.mockResolvedValue(true);
+  hasChangesMock.mockResolvedValue(false);
   getHeadMock.mockResolvedValue('abc123');
   loadStateMock.mockResolvedValue({});
 }
@@ -168,7 +189,7 @@ function makeSession(patches: RebaseSession['patches']): RebaseSession {
   return {
     startedAt: '2026-01-01T00:00:00.000Z',
     fromVersion: '128.0esr',
-    toVersion: '140.0esr',
+    toVersion: '146.0esr',
     preRebaseCommit: 'abc123',
     currentIndex: 0,
     patches,
@@ -204,7 +225,7 @@ describe('fireforge rebase', () => {
           name: 'branding',
           description: 'test',
           createdAt: '2025-01-01',
-          sourceEsrVersion: '140.0esr',
+          sourceEsrVersion: '146.0esr',
           filesAffected: ['file.txt'],
         },
       ],
@@ -246,7 +267,7 @@ describe('fireforge rebase', () => {
     expect(stampPatchVersionsMock).toHaveBeenCalledWith(
       '/project/patches',
       ['001-branding.patch'],
-      '140.0esr'
+      '146.0esr'
     );
   });
 
@@ -273,6 +294,128 @@ describe('fireforge rebase', () => {
     expect(resetChangesMock).not.toHaveBeenCalled();
     expect(saveRebaseSessionMock).not.toHaveBeenCalled();
   });
+
+  it('clears furnace state after engine reset on fresh start', async () => {
+    hasActiveRebaseSessionMock.mockResolvedValue(false);
+    loadPatchesManifestMock.mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-branding.patch',
+          order: 1,
+          category: 'branding',
+          name: 'branding',
+          description: 'test',
+          createdAt: '2025-01-01',
+          sourceEsrVersion: '128.0esr',
+          filesAffected: ['file.txt'],
+        },
+      ],
+    });
+    discoverPatchesMock.mockResolvedValue([
+      { path: '/project/patches/001-branding.patch', filename: '001-branding.patch', order: 1 },
+    ] as never);
+    applyPatchWithFuzzMock.mockResolvedValue({ success: true, fuzzFactor: 0 });
+    getDiffForFilesAgainstHeadMock.mockResolvedValue('diff --git a/file.txt b/file.txt\n');
+
+    await rebaseCommand('/project');
+
+    expect(updateFurnaceStateMock).toHaveBeenCalledTimes(1);
+    const call = updateFurnaceStateMock.mock.calls[0];
+    expect(call).toBeDefined();
+    const updater = call?.[1];
+    expect(typeof updater).toBe('function');
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
+    expect(updater!({ appliedChecksums: { 'override/x/x.css': 'abc' } })).toEqual({});
+  });
+
+  it('preserves pendingRepair when clearing furnace state after rebase', async () => {
+    hasActiveRebaseSessionMock.mockResolvedValue(false);
+    loadPatchesManifestMock.mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-branding.patch',
+          order: 1,
+          category: 'branding',
+          name: 'branding',
+          description: 'test',
+          createdAt: '2025-01-01',
+          sourceEsrVersion: '128.0esr',
+          filesAffected: ['file.txt'],
+        },
+      ],
+    });
+    discoverPatchesMock.mockResolvedValue([
+      { path: '/project/patches/001-branding.patch', filename: '001-branding.patch', order: 1 },
+    ] as never);
+    applyPatchWithFuzzMock.mockResolvedValue({ success: true, fuzzFactor: 0 });
+    getDiffForFilesAgainstHeadMock.mockResolvedValue('diff --git a/file.txt b/file.txt\n');
+
+    await rebaseCommand('/project');
+
+    const updater = updateFurnaceStateMock.mock.calls[0]?.[1];
+    const repair = { operation: 'apply-rollback' as const, reason: 'test', timestamp: 'now' };
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by preceding mock access
+    expect(updater!({ appliedChecksums: { x: 'a' }, pendingRepair: repair })).toEqual({
+      pendingRepair: repair,
+    });
+  });
+
+  it('does not clear furnace state when furnace-state.json is missing', async () => {
+    hasActiveRebaseSessionMock.mockResolvedValue(false);
+    pathExistsMock.mockImplementation((path: string) =>
+      Promise.resolve(!path.includes('furnace-state.json'))
+    );
+    loadPatchesManifestMock.mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-branding.patch',
+          order: 1,
+          category: 'branding',
+          name: 'branding',
+          description: 'test',
+          createdAt: '2025-01-01',
+          sourceEsrVersion: '128.0esr',
+          filesAffected: ['file.txt'],
+        },
+      ],
+    });
+    discoverPatchesMock.mockResolvedValue([
+      { path: '/project/patches/001-branding.patch', filename: '001-branding.patch', order: 1 },
+    ] as never);
+    applyPatchWithFuzzMock.mockResolvedValue({ success: true, fuzzFactor: 0 });
+    getDiffForFilesAgainstHeadMock.mockResolvedValue('diff --git a/file.txt b/file.txt\n');
+
+    await rebaseCommand('/project');
+
+    expect(resetChangesMock).toHaveBeenCalled();
+    expect(updateFurnaceStateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not clear furnace state during dry-run', async () => {
+    hasActiveRebaseSessionMock.mockResolvedValue(false);
+    loadPatchesManifestMock.mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-branding.patch',
+          order: 1,
+          category: 'branding',
+          name: 'branding',
+          description: 'test',
+          createdAt: '2025-01-01',
+          sourceEsrVersion: '128.0esr',
+          filesAffected: [],
+        },
+      ],
+    });
+
+    await rebaseCommand('/project', { dryRun: true });
+
+    expect(updateFurnaceStateMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('fireforge rebase --abort', () => {
@@ -292,7 +435,7 @@ describe('fireforge rebase --abort', () => {
     loadRebaseSessionMock.mockResolvedValue({
       startedAt: '2026-01-01',
       fromVersion: '128.0esr',
-      toVersion: '140.0esr',
+      toVersion: '146.0esr',
       preRebaseCommit: 'abc123',
       patches: [],
       currentIndex: 0,
@@ -313,7 +456,7 @@ describe('fireforge rebase --abort', () => {
     loadRebaseSessionMock.mockResolvedValue({
       startedAt: '2026-01-01',
       fromVersion: '128.0esr',
-      toVersion: '140.0esr',
+      toVersion: '146.0esr',
       preRebaseCommit: 'abc123',
       patches: [],
       currentIndex: 0,
@@ -329,23 +472,23 @@ describe('fireforge rebase --abort', () => {
     }
   });
 
-  it('skips confirmation with --force when engine is dirty', async () => {
+  it('skips confirmation with --yes when engine is dirty', async () => {
     hasChangesMock.mockResolvedValue(true);
     loadRebaseSessionMock.mockResolvedValue({
       startedAt: '2026-01-01',
       fromVersion: '128.0esr',
-      toVersion: '140.0esr',
+      toVersion: '146.0esr',
       preRebaseCommit: 'abc123',
       patches: [],
       currentIndex: 0,
     } as never);
 
-    await rebaseCommand('/project', { abort: true, force: true });
+    await rebaseCommand('/project', { abort: true, yes: true });
     expect(confirmMock).not.toHaveBeenCalled();
     expect(resetChangesMock).toHaveBeenCalled();
   });
 
-  it('throws in non-interactive mode without --force when engine is dirty', async () => {
+  it('throws in non-interactive mode without --yes when engine is dirty', async () => {
     hasChangesMock.mockResolvedValue(true);
     const origStdin = process.stdin.isTTY;
     const origStdout = process.stdout.isTTY;
@@ -355,7 +498,7 @@ describe('fireforge rebase --abort', () => {
     loadRebaseSessionMock.mockResolvedValue({
       startedAt: '2026-01-01',
       fromVersion: '128.0esr',
-      toVersion: '140.0esr',
+      toVersion: '146.0esr',
       preRebaseCommit: 'abc123',
       patches: [],
       currentIndex: 0,
@@ -369,6 +512,26 @@ describe('fireforge rebase --abort', () => {
       process.stdin.isTTY = origStdin as never;
       process.stdout.isTTY = origStdout as never;
     }
+  });
+
+  it('clears furnace state after abort resets the engine', async () => {
+    loadRebaseSessionMock.mockResolvedValue({
+      startedAt: '2026-01-01',
+      fromVersion: '128.0esr',
+      toVersion: '146.0esr',
+      preRebaseCommit: 'abc123',
+      patches: [],
+      currentIndex: 0,
+    } as never);
+
+    await rebaseCommand('/project', { abort: true });
+
+    expect(resetChangesMock).toHaveBeenCalled();
+    expect(updateFurnaceStateMock).toHaveBeenCalledTimes(1);
+    const updater = updateFurnaceStateMock.mock.calls[0]?.[1];
+    expect(typeof updater).toBe('function');
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
+    expect(updater!({ appliedChecksums: { 'custom/x/x.mjs': 'abc' } })).toEqual({});
   });
 });
 
@@ -412,7 +575,7 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
     }
   });
 
-  it('proceeds without confirmation when --force is specified', async () => {
+  it('proceeds without confirmation when --yes is specified', async () => {
     hasChangesMock.mockResolvedValue(true);
     hasActiveRebaseSessionMock.mockResolvedValue(false);
     loadPatchesManifestMock.mockResolvedValue({
@@ -436,12 +599,12 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
     applyPatchWithFuzzMock.mockResolvedValue({ success: true, fuzzFactor: 0 });
     getDiffForFilesAgainstHeadMock.mockResolvedValue('diff --git a/file.txt b/file.txt\n');
 
-    await rebaseCommand('/project', { force: true });
+    await rebaseCommand('/project', { yes: true });
     expect(confirmMock).not.toHaveBeenCalled();
     expect(resetChangesMock).toHaveBeenCalled();
   });
 
-  it('throws in non-interactive mode with dirty engine and no --force', async () => {
+  it('throws in non-interactive mode with dirty engine and no --yes', async () => {
     hasChangesMock.mockResolvedValue(true);
     hasActiveRebaseSessionMock.mockResolvedValue(false);
     loadPatchesManifestMock.mockResolvedValue({
@@ -590,7 +753,7 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
       'diff --git a/browser/file.txt b/browser/file.txt\n'
     );
     expect(updatePatchMetadataMock).toHaveBeenCalledWith('/project/patches', '001-branding.patch', {
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '146.0esr',
     });
     expect(applyPatchWithFuzzMock).toHaveBeenCalledWith(
       '/project/patches/002-ui.patch',
@@ -601,7 +764,7 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
     expect(stampPatchVersionsMock).toHaveBeenCalledWith(
       '/project/patches',
       ['001-branding.patch', '002-ui.patch'],
-      '140.0esr'
+      '146.0esr'
     );
     expect(clearRebaseSessionMock).toHaveBeenCalled();
   });

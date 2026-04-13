@@ -10,6 +10,13 @@ import { escapeRegex } from '../utils/regex.js';
 import { validateTokenName } from '../utils/validation.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { loadFurnaceConfig } from './furnace-config.js';
+import {
+  findTableAfterHeading,
+  findTableByColumns,
+  insertRow,
+  rewriteTableRows,
+  updateCellByKey,
+} from './markdown-table.js';
 
 /**
  * Dark mode behavior for a token.
@@ -398,7 +405,28 @@ async function addTokenToCSS(
 }
 
 /**
- * Adds a token to the documentation markdown file.
+ * Strips surrounding backticks from a cell, if present. Token cells are
+ * usually wrapped in inline code fences (`` `--foo` ``) and the parser
+ * returns them verbatim.
+ */
+function stripInlineCode(cell: string): string {
+  const trimmed = cell.trim();
+  if (trimmed.startsWith('`') && trimmed.endsWith('`') && trimmed.length >= 2) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+/**
+ * Adds a token row to the main token table, the unmapped table (for
+ * literal values), and bumps the mode count table. Each sub-update runs
+ * against a freshly parsed view of the document so that splice indices
+ * stay valid as rewrites are layered.
+ *
+ * The old implementation walked `split('\n')` by hand, detected rows by
+ * literal `|`-prefix, and used a whitespace-sensitive regex to increment
+ * the mode count. Switching to {@link findTableByColumns} and
+ * {@link updateCellByKey} removes those formatting traps.
  */
 async function addTokenToDocs(
   engineDir: string,
@@ -411,8 +439,8 @@ async function addTokenToDocs(
     return { docsAdded: false, unmappedAdded: false, countUpdated: false };
   }
 
-  let content = await readText(filePath);
-  const lines = content.split('\n');
+  const originalContent = await readText(filePath);
+  let lines = originalContent.split('\n');
 
   let docsAdded = false;
   let unmappedAdded = false;
@@ -420,89 +448,76 @@ async function addTokenToDocs(
 
   const annotation = getModeAnnotation(options.mode, options.value);
   const isLiteral = !options.value.startsWith('var(');
+  const mapsTo = isLiteral ? '—' : options.value.replace(/var\(([^)]+)\)/, '$1');
+  const tokenCell = `\`${options.tokenName}\``;
+  const valueCell = `\`${options.value}\``;
 
-  // Find the category group in the token table
-  // Look for a row containing the category name, then find the last row in that group
-  let categoryRowStart = -1;
-  let lastRowInCategory = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    // Table rows start with |
-    if (line.startsWith('|') && line.includes(options.category)) {
-      categoryRowStart = i;
-      lastRowInCategory = i;
-    } else if (
-      categoryRowStart !== -1 &&
-      line.startsWith('|') &&
-      !line.startsWith('|--') &&
-      !line.startsWith('| Token')
-    ) {
-      // Check if this row still belongs to the same category (no category cell or empty category)
-      const cells = line.split('|').map((c) => c.trim());
-      // If the first data cell (after leading empty) is empty, it belongs to same category
-      if (cells[1] === '' || !cells[1]) {
-        lastRowInCategory = i;
-      } else {
-        break;
+  // --- Main token table: Category | Token | Value | Maps to | Mode ---
+  const mainTable = findTableByColumns(lines, ['Category', 'Token', 'Value', 'Mode']);
+  if (mainTable) {
+    // The doc convention allows the Category cell to be blank on
+    // continuation rows that belong to the previous category. Group rows
+    // by carrying the last non-empty Category value forward.
+    let lastGroupRowIndex = -1;
+    let currentCategory = '';
+    for (let i = 0; i < mainTable.rows.length; i++) {
+      const row = mainTable.rows[i];
+      if (!row) continue;
+      const cell = row[0]?.trim() ?? '';
+      if (cell) {
+        currentCategory = cell;
       }
-    } else if (categoryRowStart !== -1 && !line.startsWith('|')) {
-      break;
+      if (currentCategory === options.category) {
+        lastGroupRowIndex = i;
+      }
+    }
+
+    if (lastGroupRowIndex !== -1) {
+      insertRow(mainTable, ['', tokenCell, valueCell, mapsTo, annotation], lastGroupRowIndex + 1);
+      lines = rewriteTableRows(lines, mainTable);
+      docsAdded = true;
     }
   }
 
-  if (lastRowInCategory !== -1) {
-    // Insert a new row after the last row in this category
-    const mapsTo = isLiteral ? '—' : options.value.replace(/var\(([^)]+)\)/, '$1');
-    const newRow = `| | \`${options.tokenName}\` | \`${options.value}\` | ${mapsTo} | ${annotation} |`;
-    lines.splice(lastRowInCategory + 1, 0, newRow);
-    docsAdded = true;
-  }
-
-  // If the value is a literal (not a var() reference), add to unmapped table
+  // --- Unmapped table: populated for literal (non-var()) values only ---
   if (isLiteral) {
-    let unmappedTableStart = -1;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] ?? '';
-      if (/not yet mapped/i.test(line) || /unmapped/i.test(line)) {
-        unmappedTableStart = i;
-        break;
-      }
-    }
-
-    if (unmappedTableStart !== -1) {
-      // Find the last row of the unmapped table
-      let lastUnmappedRow = unmappedTableStart;
-      for (let i = unmappedTableStart + 1; i < lines.length; i++) {
-        const line = lines[i] ?? '';
-        if (line.startsWith('|') && !line.startsWith('|--') && !line.startsWith('| Token')) {
-          lastUnmappedRow = i;
-        } else if (!line.startsWith('|')) {
-          break;
-        }
-      }
-
-      const unmappedRow = `| \`${options.tokenName}\` | \`${options.value}\` | ${options.description ?? ''} |`;
-      lines.splice(lastUnmappedRow + 1, 0, unmappedRow);
+    const unmappedTable = findTableAfterHeading(lines, /not yet mapped|unmapped/i);
+    if (unmappedTable) {
+      insertRow(
+        unmappedTable,
+        [tokenCell, valueCell, options.description ?? ''],
+        unmappedTable.rows.length
+      );
+      lines = rewriteTableRows(lines, unmappedTable);
       unmappedAdded = true;
     }
   }
 
-  // Update dark/light mode behavior count table
-  const modeCountPattern = new RegExp(`\\|\\s*${options.mode}\\s*\\|\\s*(\\d+)\\s*\\|`);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const match = modeCountPattern.exec(line);
-    if (match) {
-      const oldCount = parseInt(match[1] ?? '0', 10);
-      lines[i] = line.replace(modeCountPattern, `| ${options.mode} | ${oldCount + 1} |`);
-      countUpdated = true;
-      break;
+  // --- Mode behavior count table: Mode | Count ---
+  const modeTable = findTableByColumns(lines, ['Mode', 'Count']);
+  if (modeTable) {
+    const modeIndex = modeTable.headers.indexOf('Mode');
+    const countIndex = modeTable.headers.indexOf('Count');
+    const existing = modeTable.rows.find(
+      (row) => stripInlineCode(row[modeIndex] ?? '') === options.mode
+    );
+    if (existing) {
+      const oldCount = parseInt(existing[countIndex] ?? '0', 10);
+      const updated = updateCellByKey(
+        modeTable,
+        'Mode',
+        existing[modeIndex] ?? options.mode,
+        'Count',
+        String((Number.isNaN(oldCount) ? 0 : oldCount) + 1)
+      );
+      if (updated) {
+        lines = rewriteTableRows(lines, modeTable);
+        countUpdated = true;
+      }
     }
   }
 
-  content = lines.join('\n');
-  await writeText(filePath, content);
+  await writeText(filePath, lines.join('\n'));
 
   return { docsAdded, unmappedAdded, countUpdated };
 }

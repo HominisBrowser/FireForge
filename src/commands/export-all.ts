@@ -3,6 +3,7 @@ import { Command, Option } from 'commander';
 
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { hasChanges, isGitRepository } from '../core/git.js';
 import { getAllDiff } from '../core/git-diff.js';
 import { getWorkingTreeStatus } from '../core/git-status.js';
@@ -41,6 +42,28 @@ async function checkBrandingManagedFiles(
   }
 }
 
+async function checkFurnaceManagedFiles(
+  paths: ReturnType<typeof getProjectPaths>,
+  projectRoot: string
+): Promise<void> {
+  const prefixes = await collectFurnaceManagedPrefixes(projectRoot);
+  if (prefixes.size === 0) return;
+
+  const changedFiles = await getWorkingTreeStatus(paths.engine);
+  const furnaceManagedFiles = changedFiles
+    .flatMap((entry) =>
+      [entry.file, entry.originalPath].filter((value): value is string => !!value)
+    )
+    .filter((file) => [...prefixes].some((prefix) => file.startsWith(prefix)));
+
+  if (furnaceManagedFiles.length > 0) {
+    throw new GeneralError(
+      'Export-all refuses to capture Furnace-managed component changes.\n\n' +
+        'These files are deployed by "fireforge furnace apply" and should be managed through the Furnace workflow. Review them with "fireforge status" or "fireforge furnace status".'
+    );
+  }
+}
+
 /**
  * Runs the export-all command to export all changes as a patch.
  * @param projectRoot - Root directory of the project
@@ -75,6 +98,7 @@ export async function exportAllCommand(
 
   const config = await loadConfig(projectRoot);
   await checkBrandingManagedFiles(paths, config);
+  await checkFurnaceManagedFiles(paths, projectRoot);
 
   // Get the full diff
   let diff = await getAllDiff(paths.engine);

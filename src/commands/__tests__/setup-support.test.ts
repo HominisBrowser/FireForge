@@ -202,7 +202,7 @@ describe('setup-support', () => {
       finalVendor: 'Audit Corp',
       finalAppId: 'org.auditfox.browser',
       finalBinaryName: 'auditfox',
-      finalFirefoxVersion: '140.0esr',
+      finalFirefoxVersion: '146.0esr',
       finalProduct: 'firefox-beta',
       finalLicense: '0BSD',
     });
@@ -232,7 +232,7 @@ describe('setup-support', () => {
       vendor: 'Audit Corp',
       appId: undefined,
       binaryName: undefined,
-      firefoxVersion: '140.0esr',
+      firefoxVersion: '146.0esr',
       product: 'firefox-esr',
       license: 'EUPL-1.2',
     });
@@ -296,7 +296,7 @@ describe('setup-support', () => {
         finalVendor: 'Audit Corp',
         finalAppId: 'org.auditfox.browser',
         finalBinaryName: 'auditfox',
-        finalFirefoxVersion: '140.0esr',
+        finalFirefoxVersion: '146.0esr',
         finalProduct: 'firefox-esr',
         finalLicense: 'EUPL-1.2',
       })
@@ -342,7 +342,7 @@ describe('setup-support', () => {
       appId: 'org.auditfox.browser',
       binaryName: 'auditfox',
       license: '0BSD',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '146.0esr', product: 'firefox-esr' },
       build: { jobs: 4 },
     });
 
@@ -373,7 +373,7 @@ describe('setup-support', () => {
       appId: 'org.auditfox.browser',
       binaryName: 'auditfox',
       license: 'EUPL-1.2',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '146.0esr', product: 'firefox-esr' },
       build: { jobs: 4 },
     });
 

@@ -42,7 +42,7 @@ function makeManifest(): string {
           name: 'test',
           description: '',
           createdAt: '2026-01-01T00:00:00.000Z',
-          sourceEsrVersion: '140.0esr',
+          sourceEsrVersion: '146.0esr',
           filesAffected: ['tracked.txt'],
         },
       ],

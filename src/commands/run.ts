@@ -5,13 +5,20 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
+import { extractComponentChecksums, hasComponentChanged } from '../core/furnace-apply-helpers.js';
+import {
+  furnaceConfigExists,
+  getFurnacePaths,
+  loadFurnaceConfig,
+  loadFurnaceState,
+} from '../core/furnace-config.js';
 import { buildArtifactMismatchMessage, hasBuildArtifacts, run } from '../core/mach.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, removeDir, removeFile } from '../utils/fs.js';
-import { info, intro, verbose } from '../utils/logger.js';
+import { info, intro, verbose, warn } from '../utils/logger.js';
 
 /**
  * Cleans the dev profile to prevent stale-state startup failures.
@@ -54,6 +61,47 @@ async function cleanDevProfile(engineDir: string): Promise<void> {
 }
 
 /**
+ * Checks whether any Furnace component has changed since the last apply
+ * and warns the user. The build command auto-applies, but run does not,
+ * so this advisory message prevents the common "forgot to apply" mistake.
+ */
+async function warnIfFurnaceStale(projectRoot: string): Promise<void> {
+  try {
+    if (!(await furnaceConfigExists(projectRoot))) return;
+
+    const config = await loadFurnaceConfig(projectRoot);
+    const state = await loadFurnaceState(projectRoot);
+    const furnacePaths = getFurnacePaths(projectRoot);
+
+    if (!state.appliedChecksums) return;
+
+    const stale: string[] = [];
+    for (const name of Object.keys(config.overrides)) {
+      const dir = `${furnacePaths.overridesDir}/${name}`;
+      if (!(await pathExists(dir))) continue;
+      const prev = extractComponentChecksums(state.appliedChecksums, 'override', name);
+      if (await hasComponentChanged(dir, prev)) stale.push(name);
+    }
+    for (const name of Object.keys(config.custom)) {
+      const dir = `${furnacePaths.customDir}/${name}`;
+      if (!(await pathExists(dir))) continue;
+      const prev = extractComponentChecksums(state.appliedChecksums, 'custom', name);
+      if (await hasComponentChanged(dir, prev)) stale.push(name);
+    }
+
+    if (stale.length > 0) {
+      warn(
+        `Furnace component${stale.length === 1 ? '' : 's'} modified since last apply: ${stale.join(', ')}. ` +
+          'Run "fireforge furnace apply" (or "fireforge build" which auto-applies) to update the engine.'
+      );
+    }
+  } catch {
+    // Non-fatal: a broken furnace config should not block run.
+    verbose('Furnace staleness check skipped due to an error.');
+  }
+}
+
+/**
  * Runs the run command to launch the built browser.
  * @param projectRoot - Root directory of the project
  */
@@ -84,6 +132,9 @@ export async function runCommand(projectRoot: string): Promise<void> {
         "Run 'fireforge build' first, then rerun 'fireforge run'."
     );
   }
+
+  // Warn if Furnace components changed since the last apply
+  await warnIfFurnaceStale(projectRoot);
 
   // Clean stale profile state to prevent silent startup failures
   await cleanDevProfile(paths.engine);

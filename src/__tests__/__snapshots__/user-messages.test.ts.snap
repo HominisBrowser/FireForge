@@ -127,13 +127,19 @@ To fix this:
 exports[`userMessage snapshots > FurnaceError with component 1`] = `
 "Furnace Error (my-button): registration failed
 
-Run "fireforge furnace validate" to diagnose issues."
+To fix this:
+  1. Check the error message above for specifics
+  2. Run "fireforge furnace validate" to diagnose issues
+  3. Use "fireforge doctor --repair-furnace" if state is inconsistent"
 `;
 
 exports[`userMessage snapshots > FurnaceError without component 1`] = `
 "Furnace Error: config invalid
 
-Run "fireforge furnace validate" to diagnose issues."
+To fix this:
+  1. Check the error message above for specifics
+  2. Run "fireforge furnace validate" to diagnose issues
+  3. Use "fireforge doctor --repair-furnace" if state is inconsistent"
 `;
 
 exports[`userMessage snapshots > GeneralError 1`] = `"unexpected failure"`;

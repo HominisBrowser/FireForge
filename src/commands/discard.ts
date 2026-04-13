@@ -3,6 +3,7 @@ import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
+import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { isGitRepository } from '../core/git.js';
 import { discardStatusEntry } from '../core/git-file-ops.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
@@ -11,7 +12,7 @@ import { GitError } from '../errors/git.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DiscardOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, isCancel, outro, spinner } from '../utils/logger.js';
+import { info, intro, isCancel, outro, spinner, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 
 /**
@@ -54,12 +55,12 @@ export async function discardCommand(
     throw new GeneralError(`File "${file}" has no changes to discard.`);
   }
 
-  if (!options.force && !options.dryRun) {
+  if (!options.yes && !options.dryRun) {
     const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
     if (!isInteractive) {
       throw new InvalidArgumentError(
-        'Interactive confirmation not available. Use --force flag to discard without confirmation.',
-        'Use: fireforge discard <file> --force'
+        'Interactive confirmation not available. Use --yes flag to discard without confirmation.',
+        'Use: fireforge discard <file> --yes'
       );
     }
     const confirmed = await confirm({
@@ -87,6 +88,18 @@ export async function discardCommand(
   try {
     await discardStatusEntry(paths.engine, statusEntry);
     s.stop(`Discarded changes to ${file}`);
+
+    // Warn when the discarded file is managed by Furnace so the user knows
+    // to re-apply if they want the component's deployed state back.
+    try {
+      const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
+      if ([...furnacePrefixes].some((prefix) => file.startsWith(prefix))) {
+        warn('This file is managed by Furnace. Run "fireforge furnace apply" to restore it.');
+      }
+    } catch {
+      // Furnace config may not exist — skip silently
+    }
+
     outro('File restored to original state');
   } catch (error: unknown) {
     s.error('Discard failed');
@@ -112,9 +125,9 @@ export function registerDiscard(
     .command('discard <file>')
     .description('Discard changes to a specific file (deletes untracked files)')
     .option('--dry-run', 'Show what would be discarded without doing it')
-    .option('--force', 'Skip confirmation prompt')
+    .option('-y, --yes', 'Skip confirmation prompt')
     .action(
-      withErrorHandling(async (file: string, options: { dryRun?: boolean; force?: boolean }) => {
+      withErrorHandling(async (file: string, options: { dryRun?: boolean; yes?: boolean }) => {
         await discardCommand(getProjectRoot(), file, pickDefined(options));
       })
     );

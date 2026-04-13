@@ -44,7 +44,7 @@ describe('setupCommand integration', () => {
       vendor: 'My Company',
       appId: 'org.example.mybrowser',
       binaryName: 'mybrowser',
-      firefoxVersion: '140.0esr',
+      firefoxVersion: '146.0esr',
       product: 'firefox-esr',
       license: 'EUPL-1.2',
     });
@@ -71,7 +71,7 @@ describe('setupCommand integration', () => {
       vendor: 'Second Company',
       appId: 'org.example.secondbrowser',
       binaryName: 'secondbrowser',
-      firefoxVersion: '140.0esr',
+      firefoxVersion: '146.0esr',
       product: 'firefox-esr',
       force: true,
     });
@@ -100,7 +100,7 @@ describe('setupCommand integration', () => {
       vendor: 'My Company',
       appId: 'org.example.mybrowser',
       binaryName: 'mybrowser',
-      firefoxVersion: '140.0esr',
+      firefoxVersion: '146.0esr',
       product: 'firefox-esr',
       license,
     });

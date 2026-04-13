@@ -142,7 +142,7 @@ export async function validatePatchIntegrity(
  * manifest read-modify-write cycle.
  * @param patchesDir - Path to the patches directory
  * @param filenames - Patch filenames to update
- * @param newVersion - Version string to set (e.g. "140.0esr")
+ * @param newVersion - Version string to set (e.g. "146.0esr")
  */
 export async function stampPatchVersions(
   patchesDir: string,

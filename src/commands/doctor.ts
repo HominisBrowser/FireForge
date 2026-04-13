@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 
 import { configExists, getProjectPaths, loadConfig, loadState } from '../core/config.js';
+import { furnaceConfigExists as checkFurnaceConfigExists } from '../core/furnace-config.js';
 import { getCurrentBranch, getHead, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { ensureGit } from '../core/git-base.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
@@ -15,29 +16,155 @@ import {
 import { ExitCode } from '../errors/codes.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DoctorCheck, DoctorOptions } from '../types/commands/index.js';
-import type { FireForgeState, ProjectPaths } from '../types/config.js';
+import type { FireForgeConfig, FireForgeState, ProjectPaths } from '../types/config.js';
+import type { FurnaceConfig } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, success, warn } from '../utils/logger.js';
+import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 
 /**
- * Runs a doctor check and returns the result.
+ * Shared state available to every doctor check during a single run.
+ *
+ * The context is populated lazily by the doctor runner. Individual checks
+ * can record side-observations (e.g. the parsed `fireforge.json`) into the
+ * context for later checks to consume without re-parsing.
+ *
+ * Exported so sibling modules (e.g. `doctor-furnace.ts`) can declare
+ * `DoctorCheckDefinition` entries against the same shared context.
  */
-async function runCheck(
-  name: string,
-  check: () => void | Promise<void>,
-  fix?: string
-): Promise<DoctorCheck> {
+export interface DoctorCheckContext {
+  projectRoot: string;
+  paths: ProjectPaths;
+  state: FireForgeState;
+  options: DoctorOptions;
+  /**
+   * Whether the engine/ directory exists on disk. Populated before checks
+   * run so downstream checks can skip git/mach inspections cheaply.
+   */
+  engineExists: boolean;
+  /**
+   * The loaded project config, set by the "fireforge.json is valid" check
+   * when it succeeds. Undefined before that check runs and whenever loading
+   * failed.
+   */
+  config: FireForgeConfig | undefined;
+  /**
+   * Whether `furnace.json` exists on disk. Populated before checks run so
+   * the furnace group can skipIf cheaply when the subsystem is not in use.
+   * A missing furnace.json is not an error — plenty of projects never touch
+   * the subsystem — so the doctor stays silent rather than failing.
+   */
+  furnaceConfigExists: boolean;
+  /**
+   * The parsed furnace config, set by the "Furnace configuration" check
+   * when it succeeds. Later furnace checks read from this so they do not
+   * re-parse the file; undefined when the config could not be loaded.
+   */
+  furnaceConfig: FurnaceConfig | undefined;
+}
+
+/**
+ * Result a check may return. A single object is the common case; an array
+ * lets a single check emit multiple related rows (e.g. the engine branch
+ * check which may report on branch + detached state together).
+ */
+export type CheckResult = DoctorCheck | DoctorCheck[];
+
+/**
+ * Declarative definition of a single doctor check.
+ *
+ * Every check opts into the shared execution/reporting pipeline by
+ * implementing only its inspection logic in `run`. Cross-cutting concerns
+ * (result aggregation, summary, exit codes) live in the runner instead of
+ * being duplicated at each call site.
+ *
+ * Exported so sibling modules (e.g. `doctor-furnace.ts`) can declare
+ * new checks without re-deriving the shape.
+ */
+export interface DoctorCheckDefinition {
+  /**
+   * Human-readable name surfaced in the check report (e.g. "Git installed").
+   * Not required to be unique, but tests assert on it.
+   */
+  name: string;
+  /**
+   * When `true`, the check is silently skipped. Used for checks that only
+   * apply when the engine is present, or only when specific state flags
+   * are set. Skipped checks contribute nothing to the final report.
+   */
+  skipIf?: (ctx: DoctorCheckContext) => boolean;
+  /**
+   * Names of checks that must appear earlier in the registry and run before
+   * this check. Enforced at startup via {@link validateCheckDependencies} so
+   * accidental reorders surface immediately instead of producing subtle
+   * context-population bugs at runtime.
+   */
+  dependsOn?: readonly string[];
+  /**
+   * Runs the inspection. Throwing is shorthand for "this check failed with
+   * severity 'error'" — the runner converts the exception message into a
+   * DoctorCheck. Returning a DoctorCheck (or array) lets the check control
+   * severity, warnings, and fix hints directly.
+   */
+  run: (ctx: DoctorCheckContext) => CheckResult | Promise<CheckResult>;
+  /**
+   * Optional recovery hint attached to the auto-generated failure result
+   * when `run` throws. Ignored when `run` returns a DoctorCheck explicitly.
+   */
+  fix?: string;
+}
+
+/**
+ * Builds a DoctorCheck object representing a successful "OK" check.
+ * Exported for sibling check modules that declare `DoctorCheckDefinition`
+ * entries out-of-file (e.g. `doctor-furnace.ts`).
+ */
+export function ok(name: string): DoctorCheck {
+  return { name, passed: true, severity: 'ok', message: 'OK' };
+}
+
+/**
+ * Builds a DoctorCheck object representing a warning result.
+ * Exported for sibling check modules — see {@link ok}.
+ */
+export function warning(name: string, message: string, fix?: string): DoctorCheck {
+  return {
+    name,
+    passed: true,
+    severity: 'warning',
+    warning: true,
+    message,
+    ...(fix ? { fix } : {}),
+  };
+}
+
+/**
+ * Builds a DoctorCheck object representing a failure result.
+ * Exported for sibling check modules — see {@link ok}.
+ */
+export function failure(name: string, message: string, fix?: string): DoctorCheck {
+  return { name, passed: false, severity: 'error', message, ...(fix ? { fix } : {}) };
+}
+
+/**
+ * Runs a single check definition, converting thrown errors into
+ * DoctorCheck failure rows. Always returns an array so the caller can
+ * flatten results uniformly.
+ */
+async function executeCheck(
+  definition: DoctorCheckDefinition,
+  ctx: DoctorCheckContext
+): Promise<DoctorCheck[]> {
+  if (definition.skipIf?.(ctx)) {
+    return [];
+  }
+
   try {
-    await check();
-    return { name, passed: true, severity: 'ok', message: 'OK' };
-  } catch (error: unknown) {
-    const message = toError(error).message;
-    const result: DoctorCheck = { name, passed: false, severity: 'error', message };
-    if (fix !== undefined) {
-      result.fix = fix;
-    }
-    return result;
+    const result = await definition.run(ctx);
+    return Array.isArray(result) ? result : [result];
+  } catch (err: unknown) {
+    return [failure(definition.name, toError(err).message, definition.fix)];
   }
 }
 
@@ -45,169 +172,365 @@ function summarizeWorkingTreeChangeCount(changeCount: number): string {
   return `Engine working tree has ${changeCount} local change${changeCount === 1 ? '' : 's'}. Some FireForge commands assume a clean baseline and may behave differently until these are exported, discarded, or committed.`;
 }
 
-async function collectEngineChecks(
-  paths: ProjectPaths,
-  state: FireForgeState,
-  engineExists: boolean
-): Promise<DoctorCheck[]> {
-  const checks: DoctorCheck[] = [];
+/**
+ * Runs the subset of engine checks that depend on a healthy git repository
+ * and HEAD. This group shares mutable state (currentHead, canValidateBranch),
+ * so it lives as a single definition returning multiple rows.
+ */
+async function runEngineGitChecks(ctx: DoctorCheckContext): Promise<DoctorCheck[]> {
+  const { paths, state } = ctx;
+  const rows: DoctorCheck[] = [];
 
-  if (!engineExists) {
-    return checks;
-  }
+  let currentHead: string | undefined;
+  let canValidateBranch = true;
 
-  // Check 6: Engine is a git repository
-  const isGitRepo = await isGitRepository(paths.engine);
-  checks.push({
-    name: 'Engine is git repository',
-    passed: isGitRepo,
-    severity: isGitRepo ? 'ok' : 'error',
-    message: isGitRepo ? 'OK' : 'engine/ is not a git repository',
-    ...(!isGitRepo ? { fix: 'Run "fireforge download --force" to reinitialize' } : {}),
-  });
-
-  // Only run git-dependent checks if the engine is actually a git repo
-  if (isGitRepo) {
-    let currentHead: string | undefined;
-    let canValidateBranch = true;
-
-    // Engine consistency checks
-    if (state.baseCommit) {
-      try {
-        currentHead = await getHead(paths.engine);
-      } catch (error: unknown) {
-        if (!isMissingHeadError(error)) {
-          throw error;
-        }
-
-        canValidateBranch = false;
-        checks.push({
-          name: 'Engine state consistency',
-          passed: false,
-          severity: 'error',
-          message:
-            'Engine repository has no baseline commit yet. A previous "fireforge download" likely stopped after git init but before the initial Firefox commit was created.',
-          fix: 'Re-run "fireforge download --force" to recreate the baseline repository cleanly.',
-        });
+  if (state.baseCommit) {
+    try {
+      currentHead = await getHead(paths.engine);
+    } catch (err: unknown) {
+      if (!isMissingHeadError(err)) {
+        throw err;
       }
 
-      if (canValidateBranch && currentHead !== state.baseCommit) {
-        checks.push({
-          name: 'Engine state consistency',
-          passed: false,
-          severity: 'error',
-          message:
-            'HEAD differs from baseCommit. FireForge expects the engine repository to remain at the downloaded baseline commit; branch switches or commits inside engine/ can break import, resolve, and patch regeneration workflows.',
-          fix: 'Reset engine/ to the baseline commit or re-run "fireforge download --force".',
-        });
-      } else if (canValidateBranch) {
-        checks.push({
-          name: 'Engine state consistency',
-          passed: true,
-          severity: 'ok',
-          message: 'OK',
-        });
-      }
+      canValidateBranch = false;
+      rows.push(
+        failure(
+          'Engine state consistency',
+          'Engine repository has no baseline commit yet. A previous "fireforge download" likely stopped after git init but before the initial Firefox commit was created.',
+          'Re-run "fireforge download --force" to recreate the baseline repository cleanly.'
+        )
+      );
     }
 
-    const rawStatus = await getWorkingTreeStatus(paths.engine);
-    const workingTreeStatus = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
-    if (workingTreeStatus.length > 0) {
-      checks.push({
-        name: 'Engine working tree',
-        passed: true,
-        severity: 'warning',
-        warning: true,
-        message: summarizeWorkingTreeChangeCount(workingTreeStatus.length),
-        fix: 'Use "fireforge status" to review changes, then export, discard, or reset them as appropriate.',
-      });
-    } else {
-      checks.push({
-        name: 'Engine working tree',
-        passed: true,
-        severity: 'ok',
-        message: 'OK',
-      });
-    }
-
-    let branch: string | undefined;
-    if (canValidateBranch) {
-      try {
-        branch = await getCurrentBranch(paths.engine);
-      } catch (error: unknown) {
-        if (!isMissingHeadError(error)) {
-          throw error;
-        }
-
-        canValidateBranch = false;
-        checks.push({
-          name: 'Engine branch',
-          passed: false,
-          severity: 'error',
-          message:
-            'Engine repository has no baseline commit yet. A previous "fireforge download" likely stopped before git created the initial Firefox commit.',
-          fix: 'Re-run "fireforge download --force" to recreate the baseline repository cleanly.',
-        });
-      }
-    }
-
-    if (
-      !canValidateBranch &&
-      branch === undefined &&
-      currentHead === undefined &&
-      !state.baseCommit
-    ) {
-      // An unborn repository can fail branch detection before state.json records baseCommit.
-      // The error above already explains the recovery path, so avoid adding extra noise here.
-    } else if (!canValidateBranch) {
-      checks.push({
-        name: 'Engine branch',
-        passed: true,
-        severity: 'warning',
-        warning: true,
-        message: 'Skipped branch validation because the baseline commit is missing.',
-        fix: 'Finish recreating the engine baseline with "fireforge download --force".',
-      });
-    } else if (branch === 'firefox') {
-      checks.push({
-        name: 'Engine branch',
-        passed: true,
-        severity: 'ok',
-        message: 'OK',
-      });
-    } else if (branch === 'HEAD' && state.baseCommit && currentHead === state.baseCommit) {
-      checks.push({
-        name: 'Engine branch',
-        passed: true,
-        severity: 'warning',
-        warning: true,
-        message:
-          'Engine is detached at the recorded base commit. This is acceptable for disposable worktrees and audit clones.',
-        fix: 'If this is your primary workspace, checkout the "firefox" branch to match FireForge defaults.',
-      });
-    } else {
-      checks.push({
-        name: 'Engine branch',
-        passed: false,
-        severity: 'error',
-        message: `Engine is on branch "${branch}", but expected "firefox".`,
-      });
+    if (canValidateBranch && currentHead !== state.baseCommit) {
+      rows.push(
+        failure(
+          'Engine state consistency',
+          'HEAD differs from baseCommit. FireForge expects the engine repository to remain at the downloaded baseline commit; branch switches or commits inside engine/ can break import, resolve, and patch regeneration workflows.',
+          'Reset engine/ to the baseline commit or re-run "fireforge download --force".'
+        )
+      );
+    } else if (canValidateBranch) {
+      rows.push(ok('Engine state consistency'));
     }
   }
 
-  // Check 7: mach available
-  checks.push(
-    await runCheck(
-      'mach available',
-      async () => {
-        await ensureMach(paths.engine);
-      },
-      'Firefox source may be corrupted. Re-download with "fireforge download --force"'
-    )
-  );
+  const rawStatus = await getWorkingTreeStatus(paths.engine);
+  const workingTreeStatus = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
+  if (workingTreeStatus.length > 0) {
+    rows.push(
+      warning(
+        'Engine working tree',
+        summarizeWorkingTreeChangeCount(workingTreeStatus.length),
+        'Use "fireforge status" to review changes, then export, discard, or reset them as appropriate.'
+      )
+    );
+  } else {
+    rows.push(ok('Engine working tree'));
+  }
 
-  return checks;
+  let branch: string | undefined;
+  if (canValidateBranch) {
+    try {
+      branch = await getCurrentBranch(paths.engine);
+    } catch (err: unknown) {
+      if (!isMissingHeadError(err)) {
+        throw err;
+      }
+
+      canValidateBranch = false;
+      rows.push(
+        failure(
+          'Engine branch',
+          'Engine repository has no baseline commit yet. A previous "fireforge download" likely stopped before git created the initial Firefox commit.',
+          'Re-run "fireforge download --force" to recreate the baseline repository cleanly.'
+        )
+      );
+    }
+  }
+
+  if (
+    !canValidateBranch &&
+    branch === undefined &&
+    currentHead === undefined &&
+    !state.baseCommit
+  ) {
+    // Unborn repository with no recorded baseline — the earlier failure row
+    // explains recovery; avoid adding a second near-identical row.
+  } else if (!canValidateBranch) {
+    rows.push(
+      warning(
+        'Engine branch',
+        'Skipped branch validation because the baseline commit is missing.',
+        'Finish recreating the engine baseline with "fireforge download --force".'
+      )
+    );
+  } else if (branch === 'firefox') {
+    rows.push(ok('Engine branch'));
+  } else if (branch === 'HEAD' && state.baseCommit && currentHead === state.baseCommit) {
+    rows.push(
+      warning(
+        'Engine branch',
+        'Engine is detached at the recorded base commit. This is acceptable for disposable worktrees and audit clones.',
+        'If this is your primary workspace, checkout the "firefox" branch to match FireForge defaults.'
+      )
+    );
+  } else {
+    rows.push(failure('Engine branch', `Engine is on branch "${branch}", but expected "firefox".`));
+  }
+
+  return rows;
 }
+
+/**
+ * Validates that every check's `dependsOn` entries appear earlier in the
+ * registry. Called once at module load time so a broken reorder surfaces
+ * immediately as a thrown error rather than producing a subtle
+ * context-population bug at runtime.
+ */
+function validateCheckDependencies(checks: readonly DoctorCheckDefinition[]): void {
+  const seen = new Set<string>();
+  for (const check of checks) {
+    if (check.dependsOn) {
+      for (const dep of check.dependsOn) {
+        if (!seen.has(dep)) {
+          throw new Error(
+            `Doctor check "${check.name}" declares dependsOn "${dep}", ` +
+              `but "${dep}" does not appear earlier in the registry. ` +
+              'Fix the ordering in DOCTOR_CHECKS.'
+          );
+        }
+      }
+    }
+    seen.add(check.name);
+  }
+}
+
+/**
+ * The declarative doctor check registry. The order of entries here is the
+ * order checks appear in the report. Adding a new check is a one-entry
+ * edit; each check only contains its own inspection logic.
+ *
+ * ## Ordering dependency chain
+ *
+ * Later checks may read state populated by earlier ones via the shared
+ * {@link DoctorCheckContext}. Dependencies are declared via the
+ * `dependsOn` field and enforced by {@link validateCheckDependencies}
+ * at module load time.
+ *
+ * {@link DOCTOR_CHECK_ORDER} is exported so tests can pin the sequence.
+ */
+const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
+  {
+    name: 'Git installed',
+    run: async () => {
+      await ensureGit();
+      return ok('Git installed');
+    },
+    fix: 'Install git from https://git-scm.com/',
+  },
+  {
+    name: 'Python supported by mach',
+    run: async (ctx) => {
+      await ensurePython(ctx.paths.engine);
+      return ok('Python supported by mach');
+    },
+    fix: 'Install a Python version supported by engine/mach, then re-run "fireforge doctor".',
+  },
+  {
+    name: 'fireforge.json exists',
+    run: async (ctx) => {
+      if (!(await configExists(ctx.projectRoot))) {
+        throw new Error('fireforge.json not found');
+      }
+      return ok('fireforge.json exists');
+    },
+    fix: 'Run "fireforge setup" to create a project',
+  },
+  {
+    name: 'fireforge.json is valid',
+    run: async (ctx) => {
+      ctx.config = await loadConfig(ctx.projectRoot);
+      return ok('fireforge.json is valid');
+    },
+    fix: 'Check fireforge.json for syntax errors or missing fields',
+  },
+  {
+    name: 'Engine directory exists',
+    run: (ctx) => {
+      if (!ctx.engineExists) {
+        throw new Error('engine/ directory not found');
+      }
+      return ok('Engine directory exists');
+    },
+    fix: 'Run "fireforge download" to download Firefox source',
+  },
+  {
+    name: 'Pending Resolution',
+    skipIf: (ctx) => !ctx.state.pendingResolution,
+    run: (ctx) => {
+      const patchFilename = ctx.state.pendingResolution?.patchFilename ?? 'unknown';
+      return failure(
+        'Pending Resolution',
+        `You are currently resolving a conflict for patch ${patchFilename}.`,
+        'Build and Export commands may behave unexpectedly until "fireforge resolve" is completed.'
+      );
+    },
+  },
+  {
+    name: 'Engine is git repository',
+    skipIf: (ctx) => !ctx.engineExists,
+    run: async (ctx) => {
+      const isRepo = await isGitRepository(ctx.paths.engine);
+      if (!isRepo) {
+        return failure(
+          'Engine is git repository',
+          'engine/ is not a git repository',
+          'Run "fireforge download --force" to reinitialize'
+        );
+      }
+
+      // Git-dependent follow-up checks share mutable currentHead/branch
+      // state, so they live in a helper that returns all rows at once.
+      return [ok('Engine is git repository'), ...(await runEngineGitChecks(ctx))];
+    },
+  },
+  {
+    name: 'mach available',
+    skipIf: (ctx) => !ctx.engineExists,
+    run: async (ctx) => {
+      await ensureMach(ctx.paths.engine);
+      return ok('mach available');
+    },
+    fix: 'Firefox source may be corrupted. Re-download with "fireforge download --force"',
+  },
+  {
+    name: 'Patches directory exists',
+    run: async (ctx) => {
+      const patchesExist = await pathExists(ctx.paths.patches);
+      return {
+        name: 'Patches directory exists',
+        passed: true,
+        severity: 'ok',
+        message: patchesExist ? 'OK' : 'No patches/ directory (optional)',
+      };
+    },
+  },
+  {
+    name: 'Patches found',
+    run: async (ctx) => {
+      if (!(await pathExists(ctx.paths.patches))) {
+        return [];
+      }
+      const patchCount = await countPatches(ctx.paths.patches);
+      return {
+        name: 'Patches found',
+        passed: true,
+        severity: 'ok',
+        message: `${patchCount} patch${patchCount === 1 ? '' : 'es'} found`,
+      };
+    },
+  },
+  {
+    name: 'Patch manifest consistency',
+    dependsOn: ['fireforge.json is valid'],
+    run: async (ctx) => {
+      if (!(await pathExists(ctx.paths.patches))) {
+        return [];
+      }
+
+      const manifestConsistencyIssues = await validatePatchesManifestConsistency(ctx.paths.patches);
+      if (manifestConsistencyIssues.length === 0) {
+        return ok('Patch manifest consistency');
+      }
+
+      if (!ctx.options.repairPatchesManifest) {
+        return failure(
+          'Patch manifest consistency',
+          manifestConsistencyIssues.map((issue) => issue.message).join(' '),
+          'Run "fireforge doctor --repair-patches-manifest" to rebuild patches.json from patch files.'
+        );
+      }
+
+      // Repair stamps sourceEsrVersion into every recovered entry. If the
+      // earlier "fireforge.json is valid" check failed, ctx.config is
+      // undefined and we must refuse rather than fabricate a fallback —
+      // persisting 'unknown' into manifest metadata is hard to reverse
+      // and would mislead every later command that reads it.
+      if (!ctx.config) {
+        return failure(
+          'Patch manifest consistency',
+          'Cannot repair patches.json: fireforge.json could not be loaded, so the Firefox version to stamp into recovered manifest entries is unknown.',
+          'Fix the fireforge.json errors reported above and re-run "fireforge doctor --repair-patches-manifest".'
+        );
+      }
+
+      try {
+        const repaired = await rebuildPatchesManifest(
+          ctx.paths.patches,
+          ctx.config.firefox.version
+        );
+        return warning(
+          'Patch manifest consistency',
+          `Rebuilt patches.json from ${repaired.patches.length} patch${repaired.patches.length === 1 ? '' : 'es'}. Review recovered metadata before release.`
+        );
+      } catch (err: unknown) {
+        return failure(
+          'Patch manifest consistency',
+          toError(err).message,
+          'Repair failed. Fix the underlying patch metadata issue and retry the doctor command.'
+        );
+      }
+    },
+  },
+  {
+    name: 'Patch integrity',
+    skipIf: (ctx) => !ctx.engineExists,
+    run: async (ctx) => {
+      if (!(await pathExists(ctx.paths.patches))) {
+        return [];
+      }
+      const issues = await validatePatchIntegrity(ctx.paths.patches, ctx.paths.engine);
+      if (issues.length === 0) {
+        return ok('Patch integrity');
+      }
+      const fileList = issues.map((issue) => issue.targetFile).filter(Boolean);
+      throw new Error(
+        `${issues.length} patch(es) are modification patches for non-existent files: ${fileList.join(', ')}`
+      );
+    },
+    fix: 'Re-export affected files with "fireforge export <paths...>" to create full-file patches',
+  },
+  // Furnace checks live in a sibling module so this file stays under the
+  // max-lines threshold. Splicing them in as an array preserves the
+  // declarative registry contract — each entry remains a single
+  // `DoctorCheckDefinition` with its own skipIf/run/fix, and the order
+  // here is the order they appear in the report.
+  ...FURNACE_DOCTOR_CHECKS,
+  {
+    name: 'Configs directory exists',
+    run: async (ctx) => {
+      if (!(await pathExists(ctx.paths.configs))) {
+        throw new Error('configs/ directory not found');
+      }
+      return ok('Configs directory exists');
+    },
+    fix: 'Run "fireforge setup" to create configs',
+  },
+];
+
+// Validate dependency ordering at module load time so broken reorders
+// fail immediately instead of producing subtle runtime bugs.
+validateCheckDependencies(DOCTOR_CHECKS);
+
+/**
+ * Ordered list of the doctor check names, exported for tests. Pinning
+ * the order here is intentional: any reorder that breaks the
+ * context-population dependency chain (see {@link DOCTOR_CHECKS}) must
+ * also update this list, which gives us a single place to notice and
+ * think through the consequences.
+ */
+export const DOCTOR_CHECK_ORDER: readonly string[] = DOCTOR_CHECKS.map((check) => check.name);
 
 function reportDoctorResults(checks: DoctorCheck[]): ExitCode {
   info('');
@@ -263,110 +586,6 @@ export interface DoctorResult {
   exitCode: number;
 }
 
-async function collectProjectChecks(
-  paths: ProjectPaths,
-  engineExists: boolean,
-  firefoxVersion: string | undefined,
-  options: DoctorOptions
-): Promise<DoctorCheck[]> {
-  const checks: DoctorCheck[] = [];
-
-  const patchesExist = await pathExists(paths.patches);
-  checks.push({
-    name: 'Patches directory exists',
-    passed: true,
-    severity: 'ok',
-    message: patchesExist ? 'OK' : 'No patches/ directory (optional)',
-  });
-
-  if (patchesExist) {
-    const patchCount = await countPatches(paths.patches);
-    checks.push({
-      name: 'Patches found',
-      passed: true,
-      severity: 'ok',
-      message: `${patchCount} patch${patchCount === 1 ? '' : 'es'} found`,
-    });
-
-    const manifestConsistencyIssues = await validatePatchesManifestConsistency(paths.patches);
-    if (manifestConsistencyIssues.length > 0) {
-      if (options.repairPatchesManifest) {
-        try {
-          const repairedManifest = await rebuildPatchesManifest(
-            paths.patches,
-            firefoxVersion ?? 'unknown'
-          );
-          checks.push({
-            name: 'Patch manifest consistency',
-            passed: true,
-            severity: 'warning',
-            warning: true,
-            message:
-              `Rebuilt patches.json from ${repairedManifest.patches.length} patch` +
-              `${repairedManifest.patches.length === 1 ? '' : 'es'}. Review recovered metadata before release.`,
-          });
-        } catch (error: unknown) {
-          checks.push({
-            name: 'Patch manifest consistency',
-            passed: false,
-            severity: 'error',
-            message: toError(error).message,
-            fix: 'Repair failed. Fix the underlying patch metadata issue and retry the doctor command.',
-          });
-        }
-      } else {
-        checks.push({
-          name: 'Patch manifest consistency',
-          passed: false,
-          severity: 'error',
-          message: manifestConsistencyIssues.map((issue) => issue.message).join(' '),
-          fix: 'Run "fireforge doctor --repair-patches-manifest" to rebuild patches.json from patch files.',
-        });
-      }
-    } else {
-      checks.push({
-        name: 'Patch manifest consistency',
-        passed: true,
-        severity: 'ok',
-        message: 'OK',
-      });
-    }
-
-    if (engineExists) {
-      checks.push(
-        await runCheck(
-          'Patch integrity',
-          async () => {
-            const issues = await validatePatchIntegrity(paths.patches, paths.engine);
-            if (issues.length > 0) {
-              const fileList = issues.map((issue) => issue.targetFile).filter(Boolean);
-              throw new Error(
-                `${issues.length} patch(es) are modification patches for non-existent files: ${fileList.join(', ')}`
-              );
-            }
-          },
-          'Re-export affected files with "fireforge export <paths...>" to create full-file patches'
-        )
-      );
-    }
-  }
-
-  const configsExist = await pathExists(paths.configs);
-  checks.push(
-    await runCheck(
-      'Configs directory exists',
-      () => {
-        if (!configsExist) {
-          throw new Error('configs/ directory not found');
-        }
-      },
-      'Run "fireforge setup" to create configs'
-    )
-  );
-
-  return checks;
-}
-
 /**
  * Runs the doctor command to diagnose issues.
  * @param projectRoot - Root directory of the project
@@ -377,89 +596,27 @@ export async function doctorCommand(
 ): Promise<DoctorResult> {
   intro('FireForge Doctor');
 
-  const checks: DoctorCheck[] = [];
   const paths = getProjectPaths(projectRoot);
   const state = await loadState(projectRoot);
-  let config: Awaited<ReturnType<typeof loadConfig>> | undefined;
-
-  // Check 1: Git installed
-  checks.push(
-    await runCheck(
-      'Git installed',
-      async () => {
-        await ensureGit();
-      },
-      'Install git from https://git-scm.com/'
-    )
-  );
-
-  // Check 2: Python supported by mach
-  checks.push(
-    await runCheck(
-      'Python supported by mach',
-      async () => {
-        await ensurePython(paths.engine);
-      },
-      'Install a Python version supported by engine/mach, then re-run "fireforge doctor".'
-    )
-  );
-
-  // Check 3: fireforge.json exists
-  checks.push(
-    await runCheck(
-      'fireforge.json exists',
-      async () => {
-        if (!(await configExists(projectRoot))) {
-          throw new Error('fireforge.json not found');
-        }
-      },
-      'Run "fireforge setup" to create a project'
-    )
-  );
-
-  // Check 4: fireforge.json is valid
-  checks.push(
-    await runCheck(
-      'fireforge.json is valid',
-      async () => {
-        config = await loadConfig(projectRoot);
-      },
-      'Check fireforge.json for syntax errors or missing fields'
-    )
-  );
-
-  // Check 5: Engine directory exists
   const engineExists = await pathExists(paths.engine);
-  checks.push(
-    await runCheck(
-      'Engine directory exists',
-      () => {
-        if (!engineExists) {
-          throw new Error('engine/ directory not found');
-        }
-      },
-      'Run "fireforge download" to download Firefox source'
-    )
-  );
+  const furnaceConfigExistsFlag = await checkFurnaceConfigExists(projectRoot);
 
-  // Check: Pending Resolution
-  if (state.pendingResolution) {
-    checks.push({
-      name: 'Pending Resolution',
-      passed: false,
-      severity: 'error',
-      message: `You are currently resolving a conflict for patch ${state.pendingResolution.patchFilename}.`,
-      fix: 'Build and Export commands may behave unexpectedly until "fireforge resolve" is completed.',
-    });
+  const ctx: DoctorCheckContext = {
+    projectRoot,
+    paths,
+    state,
+    options,
+    engineExists,
+    config: undefined,
+    furnaceConfigExists: furnaceConfigExistsFlag,
+    furnaceConfig: undefined,
+  };
+
+  const checks: DoctorCheck[] = [];
+  for (const definition of DOCTOR_CHECKS) {
+    checks.push(...(await executeCheck(definition, ctx)));
   }
 
-  // Engine checks (git repo, state consistency, working tree, branch, mach)
-  checks.push(...(await collectEngineChecks(paths, state, engineExists)));
-  checks.push(
-    ...(await collectProjectChecks(paths, engineExists, config?.firefox.version, options))
-  );
-
-  // Display results and return
   const exitCode = reportDoctorResults(checks);
   return { checks, exitCode };
 }
@@ -475,6 +632,10 @@ export function registerDoctor(
     .option(
       '--repair-patches-manifest',
       'Rebuild patches/patches.json from the current patch files before reporting results'
+    )
+    .option(
+      '--repair-furnace',
+      'Reconcile furnace state: clear stale furnace-state.json entries, re-run furnace apply to fix engine drift, and clear the pending-repair marker set by a failed preview teardown'
     )
     .action(
       withErrorHandling(async (options: DoctorOptions) => {

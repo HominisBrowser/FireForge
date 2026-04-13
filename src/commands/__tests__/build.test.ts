@@ -18,6 +18,7 @@ vi.mock('../../core/mach.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
+  checkDiskSpace: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -26,6 +27,7 @@ vi.mock('../../utils/logger.js', () => ({
   info: vi.fn(),
   error: vi.fn(),
   verbose: vi.fn(),
+  warn: vi.fn(),
 }));
 
 vi.mock('../../core/brand-validation.js', () => ({
@@ -67,7 +69,7 @@ describe('buildCommand', () => {
     vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
     vi.mocked(loadConfig).mockResolvedValue({
       binaryName: 'mybrowser',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '146.0esr', product: 'firefox-esr' },
     } as never);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
@@ -120,7 +122,7 @@ describe('buildCommand', () => {
   it('uses build.jobs from config when the CLI does not override it', async () => {
     vi.mocked(loadConfig).mockResolvedValue({
       binaryName: 'mybrowser',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '146.0esr', product: 'firefox-esr' },
       build: { jobs: 12 },
     } as never);
 
@@ -133,7 +135,7 @@ describe('buildCommand', () => {
   it('prefers the CLI jobs value over build.jobs from config', async () => {
     vi.mocked(loadConfig).mockResolvedValue({
       binaryName: 'mybrowser',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '146.0esr', product: 'firefox-esr' },
       build: { jobs: 12 },
     } as never);
 
@@ -171,6 +173,32 @@ describe('buildCommand', () => {
 
     expect(error).not.toHaveBeenCalled();
   });
+
+  it('halts before mach build when Furnace apply fails during preflight', async () => {
+    // Pins the user-facing guarantee in the v0.11.0 CHANGELOG: "fireforge
+    // build now halts when Furnace apply fails instead of warning and
+    // continuing to mach build." Building a browser that silently dropped
+    // requested component changes is worse than failing early, so a
+    // regression here would be a real correctness bug even though the
+    // underlying prepareBuildEnvironment unit tests still pass.
+    const { FurnaceError } = await import('../../errors/furnace.js');
+    vi.mocked(prepareBuildEnvironment).mockRejectedValue(
+      new FurnaceError('2 components failed to apply cleanly')
+    );
+
+    await expect(buildCommand('/project', {})).rejects.toThrow(
+      '2 components failed to apply cleanly'
+    );
+
+    // mach must never run. Neither the headless build nor the UI-only
+    // fast path is allowed to continue past a furnace apply failure.
+    expect(build).not.toHaveBeenCalled();
+    expect(buildUI).not.toHaveBeenCalled();
+
+    // The success banner must not have been emitted either — a user
+    // reading only the trailing output should not see "Build completed".
+    expect(outro).not.toHaveBeenCalled();
+  });
 });
 
 describe('registerBuild', () => {
@@ -179,7 +207,7 @@ describe('registerBuild', () => {
     vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
     vi.mocked(loadConfig).mockResolvedValue({
       binaryName: 'mybrowser',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '146.0esr', product: 'firefox-esr' },
     } as never);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });

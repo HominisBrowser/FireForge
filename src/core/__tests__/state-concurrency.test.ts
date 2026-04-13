@@ -28,13 +28,13 @@ describe('project state persistence', () => {
 
     await Promise.all([
       updateState(projectRoot, { buildMode: 'debug' }),
-      updateState(projectRoot, { downloadedVersion: '140.0esr' }),
+      updateState(projectRoot, { downloadedVersion: '146.0esr' }),
     ]);
 
     await expect(loadState(projectRoot)).resolves.toEqual({
       baseCommit: 'abc123',
       buildMode: 'debug',
-      downloadedVersion: '140.0esr',
+      downloadedVersion: '146.0esr',
     });
   });
 

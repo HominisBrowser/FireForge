@@ -104,12 +104,12 @@ describe('discardCommand', () => {
     );
   });
 
-  it('requires --force in non-interactive mode', async () => {
+  it('requires --yes in non-interactive mode', async () => {
     restoreTTY = setInteractiveMode(false);
     vi.mocked(getWorkingTreeStatus).mockResolvedValue([makeGitStatusEntry()]);
 
     await expect(discardCommand('/project', 'tracked.txt')).rejects.toThrow(
-      'Interactive confirmation not available. Use --force flag to discard without confirmation.'
+      'Interactive confirmation not available. Use --yes flag to discard without confirmation.'
     );
 
     expect(discardStatusEntry).not.toHaveBeenCalled();
@@ -149,7 +149,7 @@ describe('discardCommand', () => {
     vi.mocked(getWorkingTreeStatus).mockResolvedValue([makeGitStatusEntry()]);
     vi.mocked(discardStatusEntry).mockRejectedValue(expected);
 
-    await expect(discardCommand('/project', 'tracked.txt', { force: true })).rejects.toBe(expected);
+    await expect(discardCommand('/project', 'tracked.txt', { yes: true })).rejects.toBe(expected);
 
     expect(loggerState.spinnerError).toHaveBeenCalledWith('Discard failed');
   });
@@ -158,7 +158,7 @@ describe('discardCommand', () => {
     vi.mocked(getWorkingTreeStatus).mockResolvedValue([makeGitStatusEntry()]);
     vi.mocked(discardStatusEntry).mockRejectedValue(new Error('disk full'));
 
-    await expect(discardCommand('/project', 'tracked.txt', { force: true })).rejects.toMatchObject({
+    await expect(discardCommand('/project', 'tracked.txt', { yes: true })).rejects.toMatchObject({
       message: 'Failed to discard tracked.txt',
       command: 'restore --source HEAD --staged --worktree -- tracked.txt',
     });
@@ -176,7 +176,7 @@ describe('discardCommand', () => {
     ]);
     vi.mocked(discardStatusEntry).mockRejectedValue(new Error('permission denied'));
 
-    await expect(discardCommand('/project', 'new.txt', { force: true })).rejects.toMatchObject({
+    await expect(discardCommand('/project', 'new.txt', { yes: true })).rejects.toMatchObject({
       message: 'Failed to discard new.txt',
       command: 'rm new.txt',
     });
@@ -185,9 +185,7 @@ describe('discardCommand', () => {
   it('reports successful discards through the spinner and outro', async () => {
     vi.mocked(getWorkingTreeStatus).mockResolvedValue([makeGitStatusEntry()]);
 
-    await expect(
-      discardCommand('/project', 'tracked.txt', { force: true })
-    ).resolves.toBeUndefined();
+    await expect(discardCommand('/project', 'tracked.txt', { yes: true })).resolves.toBeUndefined();
 
     expect(spinner).toHaveBeenCalledWith('Discarding changes to tracked.txt...');
     expect(loggerState.spinnerStop).toHaveBeenCalledWith('Discarded changes to tracked.txt');

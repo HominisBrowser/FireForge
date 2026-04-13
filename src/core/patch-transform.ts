@@ -9,19 +9,18 @@ import { readText } from '../utils/fs.js';
 import { isNewFileInPatch, parseHunksForFile } from './patch-parse.js';
 
 /**
- * Extracts the complete file content from a "new file" patch.
- * When targetFile is provided, only extracts content for that file
- * (required for multi-file patches).
- * @param patchPath - Path to the patch file
+ * Extracts the complete file content from a "new file" patch given a raw
+ * diff string already in memory. Callers with a patch file path should
+ * prefer {@link extractNewFileContent}; this helper exists for code paths
+ * that already hold the diff (e.g. the in-flight export planner) and do
+ * not want to round-trip through the filesystem.
+ *
+ * @param diff - Raw unified-diff content
  * @param targetFile - Optional target file to scope extraction to
  * @returns The file content that the patch would create
  */
-export async function extractNewFileContent(
-  patchPath: string,
-  targetFile?: string
-): Promise<string> {
-  const content = await readText(patchPath);
-  const lines = content.split('\n');
+export function extractNewFileContentFromDiff(diff: string, targetFile?: string): string {
+  const lines = diff.split('\n');
 
   const contentLines: string[] = [];
   let inHunk = false;
@@ -69,6 +68,22 @@ export async function extractNewFileContent(
   // Join lines and handle trailing newline
   const result = contentLines.join('\n');
   return hasNoNewlineMarker ? result : result + '\n';
+}
+
+/**
+ * Extracts the complete file content from a "new file" patch.
+ * When targetFile is provided, only extracts content for that file
+ * (required for multi-file patches).
+ * @param patchPath - Path to the patch file
+ * @param targetFile - Optional target file to scope extraction to
+ * @returns The file content that the patch would create
+ */
+export async function extractNewFileContent(
+  patchPath: string,
+  targetFile?: string
+): Promise<string> {
+  const content = await readText(patchPath);
+  return extractNewFileContentFromDiff(content, targetFile);
 }
 
 /**

@@ -32,7 +32,7 @@ function makeSession(overrides: Partial<RebaseSession> = {}): RebaseSession {
   return {
     startedAt: '2026-01-01T00:00:00Z',
     fromVersion: '128.0esr',
-    toVersion: '140.0esr',
+    toVersion: '146.0esr',
     preRebaseCommit: 'abc123',
     patches: [
       { filename: '001-branding.patch', status: 'pending' },

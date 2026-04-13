@@ -27,17 +27,11 @@ vi.mock('../../core/mach.js', () => ({
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
   buildArtifactMismatchMessage: vi.fn(() => undefined),
   buildUI: vi.fn(),
-  generateMozconfig: vi.fn(),
   testWithOutput: vi.fn(),
 }));
 
-vi.mock('../../core/branding.js', () => ({
-  isBrandingSetup: vi.fn(() => Promise.resolve(true)),
-  setupBranding: vi.fn(),
-}));
-
-vi.mock('../../core/furnace-stories.js', () => ({
-  cleanStories: vi.fn(() => Promise.resolve(0)),
+vi.mock('../../core/build-prepare.js', () => ({
+  prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0 })),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -53,12 +47,10 @@ vi.mock('../../utils/logger.js', () => ({
   })),
 }));
 
-import { isBrandingSetup, setupBranding } from '../../core/branding.js';
-import { cleanStories } from '../../core/furnace-stories.js';
+import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import {
   buildArtifactMismatchMessage,
   buildUI,
-  generateMozconfig,
   hasBuildArtifacts,
   testWithOutput,
 } from '../../core/mach.js';
@@ -127,8 +119,7 @@ describe('testCommand', () => {
     ).rejects.toThrow(/stale build artifacts/i);
   });
 
-  it('runs branding and mozconfig prep before an incremental test rebuild', async () => {
-    vi.mocked(isBrandingSetup).mockResolvedValue(false);
+  it('calls prepareBuildEnvironment before an incremental test rebuild', async () => {
     vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
 
     await expect(
@@ -137,9 +128,11 @@ describe('testCommand', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(setupBranding).toHaveBeenCalled();
-    expect(generateMozconfig).toHaveBeenCalled();
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(prepareBuildEnvironment).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({ engine: '/project/engine' }),
+      expect.objectContaining({ binaryName: 'mybrowser' })
+    );
     expect(buildUI).toHaveBeenCalledWith('/project/engine');
   });
 

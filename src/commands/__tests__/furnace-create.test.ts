@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import { furnaceCreateCommand } from '../furnace/create.js';
+
+vi.mock('@clack/prompts', () => ({
+  text: vi.fn(),
+  multiselect: vi.fn(),
+}));
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
@@ -35,7 +40,18 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
-  ensureFurnaceConfig: vi.fn(() => ({
+  furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
+  detectComposesCycles: vi.fn(),
+  loadFurnaceConfig: vi.fn(() =>
+    Promise.resolve({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+    })
+  ),
+  createDefaultFurnaceConfig: vi.fn(() => ({
     version: 1,
     componentPrefix: 'moz-',
     stock: [],
@@ -44,11 +60,43 @@ vi.mock('../../core/furnace-config.js', () => ({
   })),
   writeFurnaceConfig: vi.fn(),
   getFurnacePaths: vi.fn(() => ({
-    configPath: '/project/furnace.json',
+    furnaceConfig: '/project/furnace.json',
     componentsDir: '/project/components',
     customDir: '/project/components/custom',
     overridesDir: '/project/components/overrides',
+    furnaceState: '/project/.fireforge/furnace-state.json',
   })),
+}));
+
+// The rollback journal touches the filesystem directly via node:fs/promises.
+// These tests mock those filesystem helpers, so stub the journal here to keep
+// the unit tests focused on the command's own logic. End-to-end rollback
+// behavior is covered by furnace-authoring-rollback.integration.test.ts.
+vi.mock('../../core/furnace-rollback.js', () => ({
+  createRollbackJournal: vi.fn(() => ({
+    files: new Map(),
+    createdDirs: new Set(),
+    skippedSymlinks: new Set(),
+  })),
+  recordCreatedDir: vi.fn(),
+  snapshotFile: vi.fn(),
+  snapshotDir: vi.fn(),
+  restoreRollbackJournalOrThrow: vi.fn(),
+}));
+
+vi.mock('../../core/furnace-operation.js', () => ({
+  runFurnaceMutation: vi.fn(
+    async (
+      _root: string,
+      _kind: string,
+      body: (ctx: { registerJournal: () => void; registerCleanup: () => void }) => Promise<unknown>
+    ) =>
+      body({
+        registerJournal: () => undefined,
+        registerCleanup: () => undefined,
+      })
+  ),
+  recordFurnaceRollbackFailure: vi.fn(),
 }));
 
 vi.mock('../../core/furnace-scanner.js', () => ({
@@ -73,7 +121,12 @@ vi.mock('../../utils/logger.js', () => ({
   success: vi.fn(),
 }));
 
-import { ensureFurnaceConfig, writeFurnaceConfig } from '../../core/furnace-config.js';
+import {
+  createDefaultFurnaceConfig,
+  furnaceConfigExists,
+  loadFurnaceConfig,
+  writeFurnaceConfig,
+} from '../../core/furnace-config.js';
 import { isComponentInEngine } from '../../core/furnace-scanner.js';
 import { registerTestManifest } from '../../core/manifest-register.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
@@ -85,13 +138,22 @@ const mockWriteText = vi.mocked(writeText);
 const mockEnsureDir = vi.mocked(ensureDir);
 const mockRegisterTestManifest = vi.mocked(registerTestManifest);
 const mockWriteFurnaceConfig = vi.mocked(writeFurnaceConfig);
-const mockEnsureFurnaceConfig = vi.mocked(ensureFurnaceConfig);
+const mockFurnaceConfigExists = vi.mocked(furnaceConfigExists);
+const mockLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
 const mockIsComponentInEngine = vi.mocked(isComponentInEngine);
 const mockSuccess = vi.mocked(success);
 const mockWarn = vi.mocked(warn);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockFurnaceConfigExists.mockResolvedValue(false);
+  mockLoadFurnaceConfig.mockResolvedValue({
+    version: 1,
+    componentPrefix: 'moz-',
+    stock: [],
+    overrides: {},
+    custom: {},
+  });
   mockReadText.mockResolvedValue('');
   // Simulate: engine exists, component dir doesn't exist yet
   mockPathExists.mockImplementation((path: string) => {
@@ -192,6 +254,63 @@ describe('furnaceCreateCommand --with-tests', () => {
     expect(doublePrefix).toBeUndefined();
   });
 
+  it('throws when --with-tests is set and the engine directory does not exist', async () => {
+    // Regression guard: previously the command would unconditionally
+    // ensureDir under engine/browser/base/content/test/..., fabricating a
+    // partial engine tree. It now refuses.
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(false);
+      return Promise.resolve(false);
+    });
+
+    try {
+      await expect(
+        furnaceCreateCommand('/project', 'moz-test-widget', {
+          description: 'A test widget',
+          withTests: true,
+        })
+      ).rejects.toThrow(/Engine directory not found/i);
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+
+    // Crucially, nothing under engine/ should have been created.
+    const ensureDirCalls = mockEnsureDir.mock.calls.map((c) => c[0]);
+    expect(ensureDirCalls.find((p: string) => p.includes('content/test'))).toBeUndefined();
+    expect(mockRegisterTestManifest).not.toHaveBeenCalled();
+  });
+
+  it('allows create without --with-tests when the engine directory is missing', async () => {
+    // Regression guard for the offline workflow: scaffolding components
+    // without running download must still work, so long as --with-tests is
+    // not requested.
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(false);
+      return Promise.resolve(false);
+    });
+
+    try {
+      await furnaceCreateCommand('/project', 'moz-test-widget', {
+        description: 'A test widget',
+      });
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+
+    // Config should still be written for the component
+    expect(mockWriteFurnaceConfig).toHaveBeenCalled();
+    const configArg = mockWriteFurnaceConfig.mock.calls[0]?.[1];
+    expect(configArg?.custom['moz-test-widget']).toBeDefined();
+    // But no engine-side scaffolding
+    expect(mockRegisterTestManifest).not.toHaveBeenCalled();
+  });
+
   it('does not scaffold test files when --with-tests is not set', async () => {
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
@@ -257,6 +376,15 @@ describe('furnaceCreateCommand --with-tests', () => {
   it('stores composes array in furnace.json when --compose is provided', async () => {
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
+
+    // The compose targets must be known components for validation to pass.
+    vi.mocked(createDefaultFurnaceConfig).mockReturnValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: ['moz-button', 'moz-toggle'],
+      overrides: {},
+      custom: {},
+    });
 
     try {
       await furnaceCreateCommand('/project', 'moz-test-widget', {
@@ -325,7 +453,8 @@ describe('furnaceCreateCommand validation', () => {
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
 
-    mockEnsureFurnaceConfig.mockResolvedValueOnce({
+    mockFurnaceConfigExists.mockResolvedValueOnce(true);
+    mockLoadFurnaceConfig.mockResolvedValueOnce({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
@@ -353,7 +482,8 @@ describe('furnaceCreateCommand validation', () => {
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
 
-    mockEnsureFurnaceConfig.mockResolvedValueOnce({
+    mockFurnaceConfigExists.mockResolvedValueOnce(true);
+    mockLoadFurnaceConfig.mockResolvedValueOnce({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
@@ -480,19 +610,94 @@ describe('furnaceCreateCommand validation', () => {
     );
   });
 
-  it('warns about composed tags not in the stock array', async () => {
+  it('rejects compose targets not registered as stock, override, or custom', async () => {
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
 
     try {
-      await furnaceCreateCommand('/project', 'moz-test-widget', {
-        description: 'Composing widget',
-        compose: ['moz-nonexistent'],
-      });
+      await expect(
+        furnaceCreateCommand('/project', 'moz-test-widget', {
+          description: 'Composing widget',
+          compose: ['moz-nonexistent'],
+        })
+      ).rejects.toThrow(/unknown component "moz-nonexistent"/);
     } finally {
       process.stdin.isTTY = origTTY;
     }
+  });
+});
 
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('not in the stock array'));
+describe('interactive mode', () => {
+  const origStdinTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+  const origStdoutTTY = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+
+  function setTTY(stdin: boolean, stdout: boolean): void {
+    Object.defineProperty(process.stdin, 'isTTY', { value: stdin, configurable: true });
+    Object.defineProperty(process.stdout, 'isTTY', { value: stdout, configurable: true });
+  }
+
+  afterAll(() => {
+    if (origStdinTTY) Object.defineProperty(process.stdin, 'isTTY', origStdinTTY);
+    if (origStdoutTTY) Object.defineProperty(process.stdout, 'isTTY', origStdoutTTY);
+  });
+
+  beforeEach(() => {
+    setTTY(true, true);
+  });
+
+  it('prompts for name, description, and features interactively', async () => {
+    const { text, multiselect } = await import('@clack/prompts');
+    vi.mocked(text)
+      .mockResolvedValueOnce('moz-test-widget') // name
+      .mockResolvedValueOnce('A test widget'); // description
+    vi.mocked(multiselect).mockResolvedValueOnce(['register']); // features
+    mockIsComponentInEngine.mockResolvedValue(false);
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+
+    await furnaceCreateCommand('/project');
+
+    expect(text).toHaveBeenCalledWith(expect.objectContaining({ message: 'Component tag name:' }));
+    expect(text).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Description (optional):' })
+    );
+    expect(multiselect).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Component features:' })
+    );
+    expect(mockWriteFurnaceConfig).toHaveBeenCalled();
+  });
+
+  it('returns early when user cancels at the name prompt', async () => {
+    const { text } = await import('@clack/prompts');
+    const { isCancel, cancel } = await import('../../utils/logger.js');
+    const cancelSymbol = Symbol('cancel');
+    vi.mocked(text).mockResolvedValueOnce(cancelSymbol as never);
+    vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
+
+    await furnaceCreateCommand('/project');
+
+    expect(cancel).toHaveBeenCalledWith('Create cancelled');
+    expect(mockWriteFurnaceConfig).not.toHaveBeenCalled();
+  });
+
+  it('returns early when user cancels at the feature prompt', async () => {
+    const { text, multiselect } = await import('@clack/prompts');
+    const { isCancel, cancel } = await import('../../utils/logger.js');
+    vi.mocked(text).mockResolvedValueOnce('moz-test-widget').mockResolvedValueOnce('desc');
+    const cancelSymbol = Symbol('cancel');
+    vi.mocked(multiselect).mockResolvedValueOnce(cancelSymbol as never);
+    vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
+    mockIsComponentInEngine.mockResolvedValue(false);
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+
+    await furnaceCreateCommand('/project');
+
+    expect(cancel).toHaveBeenCalledWith('Create cancelled');
+    expect(mockWriteFurnaceConfig).not.toHaveBeenCalled();
   });
 });

@@ -23,10 +23,56 @@ vi.mock('../../core/furnace-config.js', () => ({
     })
   ),
   writeFurnaceConfig: vi.fn(() => Promise.resolve()),
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+  loadFurnaceState: vi.fn(() => Promise.resolve({})),
   getFurnacePaths: vi.fn(() => ({
+    furnaceConfig: '/project/furnace.json',
+    componentsDir: '/project/components',
     customDir: '/project/components/custom',
     overridesDir: '/project/components/overrides',
+    furnaceState: '/project/.fireforge/furnace-state.json',
   })),
+}));
+
+vi.mock('../../core/git.js', () => ({
+  isGitRepository: vi.fn(() => Promise.resolve(true)),
+}));
+
+vi.mock('../../core/git-file-ops.js', () => ({
+  fileExistsInHead: vi.fn(() => Promise.resolve(true)),
+  restoreTrackedPath: vi.fn(() => Promise.resolve()),
+}));
+
+// The rollback journal touches the filesystem directly via node:fs/promises.
+// These tests mock those filesystem helpers, so stub the journal here to keep
+// the unit tests focused on the command's own logic. End-to-end rollback
+// behavior is covered by furnace-authoring-rollback.integration.test.ts.
+vi.mock('../../core/furnace-rollback.js', () => ({
+  createRollbackJournal: vi.fn(() => ({
+    files: new Map(),
+    createdDirs: new Set(),
+    skippedSymlinks: new Set(),
+  })),
+  recordCreatedDir: vi.fn(),
+  snapshotFile: vi.fn(),
+  snapshotDir: vi.fn(),
+  restoreRollbackJournalOrThrow: vi.fn(),
+  restoreRollbackJournal: vi.fn(),
+}));
+
+vi.mock('../../core/furnace-operation.js', () => ({
+  runFurnaceMutation: vi.fn(
+    async (
+      _root: string,
+      _kind: string,
+      body: (ctx: { registerJournal: () => void; registerCleanup: () => void }) => Promise<unknown>
+    ) =>
+      body({
+        registerJournal: () => undefined,
+        registerCleanup: () => undefined,
+      })
+  ),
+  recordFurnaceRollbackFailure: vi.fn(),
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -65,6 +111,7 @@ vi.mock('node:fs/promises', () => ({
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(false)),
   removeDir: vi.fn(() => Promise.resolve()),
+  removeFile: vi.fn(() => Promise.resolve()),
   readText: vi.fn(() => Promise.resolve('')),
   writeText: vi.fn(() => Promise.resolve()),
 }));
@@ -82,14 +129,23 @@ import { readdir, unlink } from 'node:fs/promises';
 
 import * as clack from '@clack/prompts';
 
-import { loadFurnaceConfig, writeFurnaceConfig } from '../../core/furnace-config.js';
+import {
+  loadFurnaceConfig,
+  loadFurnaceState,
+  updateFurnaceState,
+  writeFurnaceConfig,
+} from '../../core/furnace-config.js';
 import {
   removeCustomElementRegistration,
   removeJarMnEntries,
 } from '../../core/furnace-registration.js';
+import { restoreRollbackJournalOrThrow, snapshotFile } from '../../core/furnace-rollback.js';
+import { isGitRepository } from '../../core/git.js';
+import { fileExistsInHead, restoreTrackedPath } from '../../core/git-file-ops.js';
 import { deregisterTestManifest } from '../../core/manifest-register.js';
 import { FurnaceError } from '../../errors/furnace.js';
-import { pathExists, readText, removeDir, writeText } from '../../utils/fs.js';
+import type { FurnaceState } from '../../types/furnace.js';
+import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { cancel as logCancel, info, isCancel, warn } from '../../utils/logger.js';
 import { furnaceRemoveCommand } from '../furnace/remove.js';
 
@@ -108,7 +164,7 @@ describe('furnaceRemoveCommand', () => {
       )
     );
 
-    await furnaceRemoveCommand('/project', 'moz-audit-widget', { force: true });
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(removeCustomElementRegistration).toHaveBeenCalledWith(
       '/project/engine',
@@ -129,20 +185,20 @@ describe('furnaceRemoveCommand', () => {
   });
 
   it('throws when component is not found in furnace.json', async () => {
-    await expect(furnaceRemoveCommand('/project', 'moz-unknown', { force: true })).rejects.toThrow(
+    await expect(furnaceRemoveCommand('/project', 'moz-unknown', { yes: true })).rejects.toThrow(
       FurnaceError
     );
-    await expect(furnaceRemoveCommand('/project', 'moz-unknown', { force: true })).rejects.toThrow(
+    await expect(furnaceRemoveCommand('/project', 'moz-unknown', { yes: true })).rejects.toThrow(
       'not found in furnace.json'
     );
   });
 
-  it('throws in non-interactive mode without --force', async () => {
+  it('throws in non-interactive mode without --yes', async () => {
     await expect(furnaceRemoveCommand('/project', 'moz-audit-widget')).rejects.toThrow(
       FurnaceError
     );
     await expect(furnaceRemoveCommand('/project', 'moz-audit-widget')).rejects.toThrow(
-      'without --force'
+      'without --yes'
     );
   });
 
@@ -155,7 +211,7 @@ describe('furnaceRemoveCommand', () => {
       custom: {},
     });
 
-    await furnaceRemoveCommand('/project', 'moz-button', { force: true });
+    await furnaceRemoveCommand('/project', 'moz-button', { yes: true });
 
     expect(writeFurnaceConfig).toHaveBeenCalledWith(
       '/project',
@@ -165,7 +221,7 @@ describe('furnaceRemoveCommand', () => {
     );
   });
 
-  it('removes an override component and its directory', async () => {
+  it('restores overridden engine files and deletes the override workspace', async () => {
     vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
       version: 1,
       componentPrefix: 'moz-',
@@ -180,21 +236,237 @@ describe('furnaceRemoveCommand', () => {
       },
       custom: {},
     });
-    vi.mocked(pathExists).mockImplementation((target: string) =>
-      Promise.resolve(
-        target === '/project/components/overrides/moz-card' ||
-          target === '/project/engine/toolkit/content/widgets/moz-card'
-      )
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'moz-card.css', isFile: () => true },
+      { name: 'override.json', isFile: () => true },
+      { name: 'nested', isFile: () => false },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+
+    await furnaceRemoveCommand('/project', 'moz-card', { yes: true });
+
+    // override.json must be excluded by isOverrideCopyCandidate; only the .css
+    // file is restored.
+    expect(restoreTrackedPath).toHaveBeenCalledWith(
+      '/project/engine',
+      'toolkit/content/widgets/moz-card/moz-card.css'
     );
-
-    await furnaceRemoveCommand('/project', 'moz-card', { force: true });
-
+    expect(restoreTrackedPath).toHaveBeenCalledTimes(1);
+    expect(removeFile).not.toHaveBeenCalled();
     expect(removeDir).toHaveBeenCalledWith('/project/components/overrides/moz-card');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Deployed files may remain'));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Deployed files may remain'));
     expect(writeFurnaceConfig).toHaveBeenCalledWith(
       '/project',
       expect.objectContaining({ overrides: {} })
     );
+  });
+
+  it('restores orphaned engine files recorded only in state, not the workspace', async () => {
+    // Regression for the audit's release-blocker: a developer deleted
+    // moz-card-partial.css from the workspace and ran apply (which
+    // historically did not undeploy). The state file still records the
+    // orphaned engine copy. furnace remove must consult the state file
+    // to find and restore that copy, even though the workspace no
+    // longer has the file.
+    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'full' as const,
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(loadFurnaceState).mockResolvedValueOnce({
+      appliedChecksums: {
+        'override/moz-card/moz-card.mjs': 'mjs-hash',
+        'override/moz-card/moz-card-partial.css': 'orphaned-css-hash',
+      },
+    } as FurnaceState);
+    vi.mocked(pathExists).mockResolvedValue(true);
+    // Workspace only has the .mjs now — the .css was deleted out of source.
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'moz-card.mjs', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    // The orphaned .css was introduced by the override (not in HEAD), the
+    // .mjs is an ordinary override (in HEAD).
+    vi.mocked(fileExistsInHead).mockImplementation((_repo: string, relPath: string) =>
+      Promise.resolve(relPath.endsWith('.mjs'))
+    );
+
+    await furnaceRemoveCommand('/project', 'moz-card', { yes: true });
+
+    // The workspace .mjs is restored from HEAD via git restore.
+    expect(restoreTrackedPath).toHaveBeenCalledWith(
+      '/project/engine',
+      'toolkit/content/widgets/moz-card/moz-card.mjs'
+    );
+    // The state-only orphan .css is hard-deleted from the engine, even
+    // though the workspace no longer references it.
+    expect(removeFile).toHaveBeenCalledWith(
+      '/project/engine/toolkit/content/widgets/moz-card/moz-card-partial.css'
+    );
+  });
+
+  it('deletes override-introduced files that do not exist in HEAD', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'full' as const,
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'moz-card.mjs', isFile: () => true },
+      { name: 'moz-card-partial.css', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    // The .mjs exists in HEAD (ordinary override of a Firefox file), the
+    // .css was introduced by this override and has no HEAD counterpart.
+    vi.mocked(fileExistsInHead).mockImplementation((_repo: string, relPath: string) =>
+      Promise.resolve(relPath.endsWith('.mjs'))
+    );
+
+    await furnaceRemoveCommand('/project', 'moz-card', { yes: true });
+
+    expect(restoreTrackedPath).toHaveBeenCalledWith(
+      '/project/engine',
+      'toolkit/content/widgets/moz-card/moz-card.mjs'
+    );
+    expect(removeFile).toHaveBeenCalledWith(
+      '/project/engine/toolkit/content/widgets/moz-card/moz-card-partial.css'
+    );
+  });
+
+  it('fails clearly when the engine is not a git repository', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only' as const,
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'moz-card.css', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    vi.mocked(isGitRepository).mockResolvedValueOnce(false);
+
+    await expect(furnaceRemoveCommand('/project', 'moz-card', { yes: true })).rejects.toThrow(
+      /engine is not a git repository/i
+    );
+
+    expect(restoreTrackedPath).not.toHaveBeenCalled();
+    // The workspace directory must NOT be deleted when restoration aborts —
+    // rollback restores whatever snapshots were taken before the failure.
+    expect(writeFurnaceConfig).not.toHaveBeenCalled();
+  });
+
+  it('snapshots the state file before clearing stale checksums so rollback can reverse it', async () => {
+    // Regression guard for B2: the state-file clear used to run post-commit
+    // as warn-and-continue, outside the transactional block. A failing
+    // update left furnace-state.json disagreeing with furnace.json. Now
+    // the state file is snapshotted into the journal BEFORE the update,
+    // and a failure triggers the full rollback.
+    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only' as const,
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'moz-card.css', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    vi.mocked(updateFurnaceState).mockRejectedValueOnce(new Error('EPERM: state file locked'));
+
+    await expect(furnaceRemoveCommand('/project', 'moz-card', { yes: true })).rejects.toThrow(
+      /EPERM: state file locked/
+    );
+
+    // The journal restore must have fired — remove is atomic end-to-end.
+    expect(restoreRollbackJournalOrThrow).toHaveBeenCalled();
+    // The state file path must have been snapshotted inside the
+    // transactional block before the update was attempted.
+    expect(snapshotFile).toHaveBeenCalledWith(
+      expect.anything(),
+      '/project/.fireforge/furnace-state.json'
+    );
+  });
+
+  it('clears stale appliedChecksums and engineChecksums for the removed override', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only' as const,
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'moz-card.css', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+
+    await furnaceRemoveCommand('/project', 'moz-card', { yes: true });
+
+    expect(updateFurnaceState).toHaveBeenCalledWith('/project', expect.any(Function));
+    const updaterArg = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1];
+    if (typeof updaterArg !== 'function') throw new Error('expected updater function');
+    const before: FurnaceState = {
+      appliedChecksums: {
+        'override/moz-card/moz-card.css': 'abc',
+        'override/moz-card/moz-card.mjs': 'def',
+        'override/moz-other/moz-other.css': 'ghi',
+        'custom/moz-widget/moz-widget.mjs': 'jkl',
+      },
+      engineChecksums: {
+        'override/moz-card/moz-card.css': 'abc',
+        'override/moz-card/moz-card.mjs': 'def',
+        'override/moz-other/moz-other.css': 'ghi',
+      },
+    } as FurnaceState;
+    const after = updaterArg(before);
+    expect(after.appliedChecksums).toEqual({
+      'override/moz-other/moz-other.css': 'ghi',
+      'custom/moz-widget/moz-widget.mjs': 'jkl',
+    });
+    expect(after.engineChecksums).toEqual({
+      'override/moz-other/moz-other.css': 'ghi',
+    });
   });
 
   it('cancels when interactive confirmation is declined', async () => {
@@ -223,7 +495,7 @@ describe('furnaceRemoveCommand', () => {
     vi.mocked(readText).mockResolvedValue('\n["browser_mybrowser_audit_widget.js"]\n');
     vi.mocked(readdir).mockResolvedValue([]);
 
-    await furnaceRemoveCommand('/project', 'moz-audit-widget', { force: true });
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(unlink).toHaveBeenCalledWith(
       '/project/engine/browser/base/content/test/mybrowser/browser_mybrowser_audit_widget.js'
@@ -242,7 +514,7 @@ describe('furnaceRemoveCommand', () => {
     vi.mocked(readdir).mockResolvedValue([]);
     vi.mocked(deregisterTestManifest).mockResolvedValue(true);
 
-    await furnaceRemoveCommand('/project', 'moz-audit-widget', { force: true });
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(deregisterTestManifest).toHaveBeenCalledWith('/project/engine', 'mybrowser');
     expect(info).toHaveBeenCalledWith('Deregistered test manifest from browser/base/moz.build');
@@ -254,12 +526,59 @@ describe('furnaceRemoveCommand', () => {
     );
     vi.mocked(readdir).mockRejectedValue(new Error('EPERM'));
 
-    await furnaceRemoveCommand('/project', 'moz-audit-widget', { force: true });
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not clean up test files'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not clean up test directory'));
   });
 
-  it('confirms interactively when TTY is available and --force is not set', async () => {
+  it('removes the deployed .ftl for localized custom components', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-audit-widget': {
+          description: 'Audit widget',
+          targetPath: 'toolkit/content/widgets/moz-audit-widget',
+          register: true,
+          localized: true,
+        },
+      },
+    });
+    const ftlPath = '/project/engine/toolkit/locales/en-US/toolkit/global/moz-audit-widget.ftl';
+    vi.mocked(pathExists).mockImplementation((target: string) =>
+      Promise.resolve(
+        target === '/project/components/custom/moz-audit-widget' ||
+          target === '/project/engine/toolkit/content/widgets/moz-audit-widget' ||
+          target === ftlPath
+      )
+    );
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(removeFile).toHaveBeenCalledWith(ftlPath);
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('engine/toolkit/locales/en-US/toolkit/global/moz-audit-widget.ftl')
+    );
+  });
+
+  it('does not touch the Fluent tree for non-localized custom components', async () => {
+    vi.mocked(pathExists).mockImplementation((target: string) =>
+      Promise.resolve(
+        target === '/project/components/custom/moz-audit-widget' ||
+          target === '/project/engine/toolkit/content/widgets/moz-audit-widget'
+      )
+    );
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(removeFile).not.toHaveBeenCalledWith(
+      expect.stringContaining('toolkit/locales/en-US/toolkit/global/')
+    );
+  });
+
+  it('confirms interactively when TTY is available and --yes is not set', async () => {
     Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
     Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
 

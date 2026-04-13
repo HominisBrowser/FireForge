@@ -30,14 +30,23 @@ function readPackageMetadata(filePath: string): PackageMetadata {
   return validatePackageMetadata(JSON.parse(raw), filePath);
 }
 
+let cachedPackageRoot: string | undefined;
+
 /**
  * Finds the fireforge package root by walking up from the current module.
  *
  * Works from both the source tree (`src/utils/`) and the compiled
  * tree (`dist/src/utils/`) by looking for a `package.json` that exposes
  * the `fireforge` CLI entrypoint, regardless of the npm package scope.
+ *
+ * The result is cached after the first call since it is deterministic
+ * within a process.
  */
 export function getPackageRoot(): string {
+  if (cachedPackageRoot !== undefined) {
+    return cachedPackageRoot;
+  }
+
   let current = dirname(fileURLToPath(import.meta.url));
 
   for (;;) {
@@ -45,6 +54,7 @@ export function getPackageRoot(): string {
       const packagePath = join(current, 'package.json');
       const pkg = readPackageMetadata(packagePath);
       if (isFireForgePackageMetadata(pkg)) {
+        cachedPackageRoot = current;
         return current;
       }
     } catch (error: unknown) {
@@ -58,6 +68,11 @@ export function getPackageRoot(): string {
     }
     current = parent;
   }
+}
+
+/** Clears the cached package root for testing. */
+export function resetPackageRootCacheForTests(): void {
+  cachedPackageRoot = undefined;
 }
 
 /** @internal */

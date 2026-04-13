@@ -1,0 +1,499 @@
+// SPDX-License-Identifier: EUPL-1.2
+/**
+ * Cross-patch lint tests — duplicate /dev/null creation and forward-import
+ * detection. These exercise the rule bodies directly against synthetic
+ * PatchQueueContext instances so the tests do not need a temp patch
+ * directory on disk.
+ */
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  collectNewFileCreatorsByPath,
+  extractImportSpecifiers,
+  FORWARD_IMPORT_IGNORE_MARKER,
+  lintPatchQueue,
+  lintPatchQueueDuplicateCreations,
+  lintPatchQueueForwardImports,
+  type PatchQueueContext,
+  type PatchQueueEntry,
+} from '../patch-lint.js';
+
+function makeEntry(
+  filename: string,
+  order: number,
+  diff: string,
+  newFiles: Record<string, string> = {},
+  modifiedFileAdditions: Record<string, string> = {}
+): PatchQueueEntry {
+  return {
+    filename,
+    order,
+    metadata: null,
+    diff,
+    newFiles: new Map(Object.entries(newFiles)),
+    modifiedFileAdditions: new Map(Object.entries(modifiedFileAdditions)),
+  };
+}
+
+const CREATE_A_DIFF = [
+  'diff --git a/foo/A.sys.mjs b/foo/A.sys.mjs',
+  'new file mode 100644',
+  'index 0000000..1111111',
+  '--- /dev/null',
+  '+++ b/foo/A.sys.mjs',
+  '@@ -0,0 +1,1 @@',
+  '+export const A = 1;',
+].join('\n');
+
+const CREATE_A_DUPLICATE_DIFF = [
+  'diff --git a/foo/A.sys.mjs b/foo/A.sys.mjs',
+  'new file mode 100644',
+  'index 0000000..2222222',
+  '--- /dev/null',
+  '+++ b/foo/A.sys.mjs',
+  '@@ -0,0 +1,1 @@',
+  '+export const A = 2;',
+].join('\n');
+
+describe('lintPatchQueueDuplicateCreations', () => {
+  it('flags the same path created by two patches', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DUPLICATE_DIFF),
+      ],
+    };
+    const issues = lintPatchQueueDuplicateCreations(ctx);
+    expect(issues).toHaveLength(1);
+    const issue = issues[0];
+    expect(issue).toBeDefined();
+    expect(issue?.check).toBe('duplicate-new-file-creation');
+    expect(issue?.file).toBe('foo/A.sys.mjs');
+    expect(issue?.message).toContain('001-infra-a.patch');
+    expect(issue?.message).toContain('002-infra-b.patch');
+    expect(issue?.severity).toBe('error');
+  });
+
+  it('does not flag the same path being modified in two patches', () => {
+    const modifyDiff = [
+      'diff --git a/foo/A.sys.mjs b/foo/A.sys.mjs',
+      'index aaaaaaa..bbbbbbb 100644',
+      '--- a/foo/A.sys.mjs',
+      '+++ b/foo/A.sys.mjs',
+      '@@ -1,1 +1,1 @@',
+      '-old',
+      '+new',
+    ].join('\n');
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, modifyDiff),
+        makeEntry('002-infra-b.patch', 2, modifyDiff),
+      ],
+    };
+    expect(lintPatchQueueDuplicateCreations(ctx)).toHaveLength(0);
+  });
+
+  it('returns no issues for a clean queue', () => {
+    const createBDiff = [
+      'diff --git a/foo/B.sys.mjs b/foo/B.sys.mjs',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/foo/B.sys.mjs',
+      '@@ -0,0 +1,1 @@',
+      '+export const B = 1;',
+    ].join('\n');
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF),
+        makeEntry('002-infra-b.patch', 2, createBDiff),
+      ],
+    };
+    expect(lintPatchQueueDuplicateCreations(ctx)).toHaveLength(0);
+  });
+});
+
+describe('lintPatchQueueForwardImports', () => {
+  it('flags an import pointing to a file created by a later patch', () => {
+    const importerContent = `import { B } from "resource:///modules/B.sys.mjs";\nexport const A = B;\n`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, { 'foo/A.sys.mjs': importerContent }),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;\n',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues.length).toBeGreaterThan(0);
+    const issue = issues[0];
+    expect(issue?.check).toBe('forward-import');
+    expect(issue?.file).toBe('foo/A.sys.mjs');
+    expect(issue?.message).toContain('002-infra-b.patch');
+    expect(issue?.severity).toBe('error');
+  });
+
+  it('does not flag an import pointing to a file created by the same patch', () => {
+    const importerContent = `import { B } from "resource:///modules/B.sys.mjs";`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
+          'foo/A.sys.mjs': importerContent,
+          'foo/B.sys.mjs': 'export const B = 1;',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('does not flag an import pointing to a file created by an earlier patch', () => {
+    const importerContent = `import { A } from "resource:///modules/A.sys.mjs";`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
+          'foo/A.sys.mjs': 'export const A = 1;',
+        }),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, { 'foo/B.sys.mjs': importerContent }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('does not flag imports resolving to pre-existing engine files (not in new-file index)', () => {
+    const importerContent = `import { Existing } from "resource:///modules/Existing.sys.mjs";`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, { 'foo/A.sys.mjs': importerContent }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('flags an import ADDED into a pre-existing file that a later patch creates', () => {
+    // Fix 1: before this change the rule only scanned `newFiles`, so a
+    // patch that modifies browser.js to add `import "./B.sys.mjs"` was
+    // silently waved through even if the matching file was created by a
+    // later patch. This is the exact shape of bug the review flagged.
+    const modifyBrowserDiff = [
+      'diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js',
+      'index aaaaaaa..bbbbbbb 100644',
+      '--- a/browser/base/content/browser.js',
+      '+++ b/browser/base/content/browser.js',
+      '@@ -1,1 +1,2 @@',
+      ' existing;',
+      '+import { B } from "resource:///modules/B.sys.mjs";',
+    ].join('\n');
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-modifier.patch',
+          1,
+          modifyBrowserDiff,
+          {},
+          {
+            'browser/base/content/browser.js': 'import { B } from "resource:///modules/B.sys.mjs";',
+          }
+        ),
+        makeEntry('002-infra-create-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues.length).toBe(1);
+    const issue = issues[0];
+    expect(issue?.check).toBe('forward-import');
+    expect(issue?.file).toBe('browser/base/content/browser.js');
+    expect(issue?.message).toContain('001-infra-modifier.patch');
+    expect(issue?.message).toContain('002-infra-create-b.patch');
+  });
+
+  it('does not flag modifications whose added lines reference a file created earlier', () => {
+    // Sibling to the test above: the *direction* matters. If the
+    // creator is earlier, this is a perfectly fine import and should not
+    // trip the rule.
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-create-b.patch', 1, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;',
+        }),
+        makeEntry(
+          '002-infra-modifier.patch',
+          2,
+          '',
+          {},
+          {
+            'browser/base/content/browser.js': 'import { B } from "resource:///modules/B.sys.mjs";',
+          }
+        ),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('catches ChromeUtils.defineESModuleGetters forward references', () => {
+    const importerContent = `
+      ChromeUtils.defineESModuleGetters(globalThis, {
+        B: "resource:///modules/B.sys.mjs",
+      });
+    `;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, { 'foo/A.sys.mjs': importerContent }),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues[0]?.check).toBe('forward-import');
+    expect(issues[0]?.fingerprint).toContain(
+      'forward-import|foo/A.sys.mjs|resource:///modules/B.sys.mjs|002-infra-b.patch:foo/B.sys.mjs'
+    );
+  });
+});
+
+describe('lintPatchQueue orchestrator', () => {
+  it('concatenates duplicate-creation and forward-import issues', () => {
+    const importerContent = `import { B } from "resource:///modules/B.sys.mjs";`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, { 'foo/A.sys.mjs': importerContent }),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DUPLICATE_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;',
+        }),
+      ],
+    };
+    const issues = lintPatchQueue(ctx);
+    const checks = issues.map((i) => i.check);
+    expect(checks).toContain('duplicate-new-file-creation');
+    expect(checks).toContain('forward-import');
+  });
+});
+
+describe('collectNewFileCreatorsByPath', () => {
+  it('returns every new-file path with its creators, including single-creator entries', () => {
+    // status --ownership consumes this map and needs to see every
+    // creation, not just duplicates, so `.length > 1` can be filtered
+    // at the call site rather than recomputed.
+    const createBDiff = [
+      'diff --git a/foo/B.sys.mjs b/foo/B.sys.mjs',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/foo/B.sys.mjs',
+      '@@ -0,0 +1,1 @@',
+      '+export const B = 1;',
+    ].join('\n');
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF),
+        makeEntry('002-infra-b.patch', 2, createBDiff),
+      ],
+    };
+    const map = collectNewFileCreatorsByPath(ctx);
+    expect(map.get('foo/A.sys.mjs')).toEqual(['001-infra-a.patch']);
+    expect(map.get('foo/B.sys.mjs')).toEqual(['002-infra-b.patch']);
+  });
+
+  it('records both creators when the same path is created by two patches', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DUPLICATE_DIFF),
+      ],
+    };
+    const map = collectNewFileCreatorsByPath(ctx);
+    expect(map.get('foo/A.sys.mjs')).toEqual(['001-infra-a.patch', '002-infra-b.patch']);
+  });
+});
+
+describe('extractImportSpecifiers — adversarial shapes', () => {
+  it('captures side-effect imports (`import "..."` with no `from` clause)', () => {
+    // Side-effect imports are a valid ES module form Firefox uses for
+    // observer-registration modules. The optional `from` group in the
+    // regex means this matches, but the review pointed out the lack
+    // of an explicit test — add one so a future regression is caught.
+    const source = `import "resource:///modules/Side.sys.mjs";\nexport const X = 1;`;
+    expect(extractImportSpecifiers(source)).toContain('resource:///modules/Side.sys.mjs');
+  });
+
+  it('captures defineESModuleGetters spanning multiple lines with trailing commas', () => {
+    // The old regex used `[^}]*` for the getter-map body, which would
+    // mismatch when the object spans lines or has trailing commas in
+    // unusual places. The new brace-balanced walker should handle
+    // either shape.
+    const source = `
+      ChromeUtils.defineESModuleGetters(
+        lazy,
+        {
+          A: "resource:///modules/A.sys.mjs",
+          B: "resource:///modules/B.sys.mjs",
+        },
+      );
+    `;
+    const specifiers = extractImportSpecifiers(source);
+    expect(specifiers).toContain('resource:///modules/A.sys.mjs');
+    expect(specifiers).toContain('resource:///modules/B.sys.mjs');
+  });
+
+  it('handles defineESModuleGetters whose values contain nested object literals', () => {
+    // Rare in practice but the old `[^}]*` body regex would terminate
+    // at the first `}` inside the nested literal and miss the second
+    // string. The new brace-balanced walker keeps parsing past it.
+    const source = `
+      ChromeUtils.defineESModuleGetters(lazy, {
+        A: (() => { return "resource:///modules/A.sys.mjs"; })(),
+        B: "resource:///modules/B.sys.mjs",
+      });
+    `;
+    const specifiers = extractImportSpecifiers(source);
+    expect(specifiers).toContain('resource:///modules/A.sys.mjs');
+    expect(specifiers).toContain('resource:///modules/B.sys.mjs');
+  });
+});
+
+describe('lintPatchQueueForwardImports — suppression marker', () => {
+  it('skips matches whose line carries the ignore marker', () => {
+    const importerContent =
+      `import { B } from "resource:///modules/B.sys.mjs"; // ${FORWARD_IMPORT_IGNORE_MARKER}\n` +
+      `export const A = B;\n`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, { 'foo/A.sys.mjs': importerContent }),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('skips matches on the line immediately after the ignore marker', () => {
+    const importerContent =
+      `// ${FORWARD_IMPORT_IGNORE_MARKER}\n` +
+      `import { B } from "resource:///modules/B.sys.mjs";\n` +
+      `export const A = B;\n`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, { 'foo/A.sys.mjs': importerContent }),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('does not suppress unrelated forward-import matches on other lines', () => {
+    // Ensures the suppression is line-scoped: a marker on one line
+    // must not silently waive a different forward-import a few lines
+    // later.
+    const importerContent =
+      `// ${FORWARD_IMPORT_IGNORE_MARKER}\n` +
+      `import { B } from "resource:///modules/B.sys.mjs";\n` +
+      `\n` +
+      `import { C } from "resource:///modules/C.sys.mjs";\n`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, { 'foo/A.sys.mjs': importerContent }),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;',
+        }),
+        makeEntry('003-infra-c.patch', 3, CREATE_A_DIFF, {
+          'foo/C.sys.mjs': 'export const C = 1;',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain('003-infra-c.patch');
+  });
+});
+
+describe('lintPatchQueueForwardImports — same-patch self-imports', () => {
+  it('does not flag a patch that both creates a module and imports it from another file in the same patch', () => {
+    // Intentional non-case: a single patch may legitimately create a
+    // new `.sys.mjs` module AND, in the same body, modify a pre-existing
+    // file to add an import targeting that module. Both sites belong to
+    // the same patch, so there is no forward reference across patch
+    // boundaries — the creator and the importer commit atomically. The
+    // forward-import rule's filter (`owner.order > entry.order ||
+    // (owner.order === entry.order && owner.filename > entry.filename)`)
+    // excludes the entry from being its own later owner; this test pins
+    // that behaviour so a future refactor of the filter cannot regress
+    // same-patch self-imports into false positives.
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-self.patch',
+          1,
+          CREATE_A_DIFF,
+          { 'foo/A.sys.mjs': 'export const A = 1;' },
+          {
+            'browser/base/content/browser.js': 'import { A } from "resource:///modules/A.sys.mjs";',
+          }
+        ),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('still flags a same-order import when the owner is lexicographically later', () => {
+    // Tiebreaker case: two patches happen to share an order but have
+    // different filenames. The rule breaks the tie by filename so the
+    // forward direction is unambiguous. A patch with the lexicographically
+    // earlier filename importing from the lexicographically later one
+    // is a forward-import; the reverse is not. This pins the tiebreaker
+    // direction so the self-import fix does not accidentally exempt
+    // genuine same-order cross-patch forward references.
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-early.patch', 1, CREATE_A_DIFF, {
+          'foo/A.sys.mjs': 'import { B } from "resource:///modules/B.sys.mjs";',
+        }),
+        makeEntry('001-infra-later.patch', 1, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain('001-infra-later.patch');
+  });
+});
+
+describe('lintPatchQueueDuplicateCreations — delete/recreate in same patch', () => {
+  it('still flags the path when a second patch deletes and re-creates it', () => {
+    // A patch that deletes an existing file AND creates a new one at
+    // the same path emits both `deleted file mode` and
+    // `new file mode` markers — the duplicate-creation rule should
+    // still see the `new file mode` marker and count the patch as a
+    // creator, so two patches both doing this still collide.
+    const deleteAndRecreateDiff = [
+      'diff --git a/foo/A.sys.mjs b/foo/A.sys.mjs',
+      'deleted file mode 100644',
+      'index aaaaaaa..0000000',
+      '--- a/foo/A.sys.mjs',
+      '+++ /dev/null',
+      '@@ -1,1 +0,0 @@',
+      '-old',
+      'diff --git a/foo/A.sys.mjs b/foo/A.sys.mjs',
+      'new file mode 100644',
+      'index 0000000..2222222',
+      '--- /dev/null',
+      '+++ b/foo/A.sys.mjs',
+      '@@ -0,0 +1,1 @@',
+      '+export const A = 2;',
+    ].join('\n');
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF),
+        makeEntry('002-infra-b.patch', 2, deleteAndRecreateDiff),
+      ],
+    };
+    const issues = lintPatchQueueDuplicateCreations(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.file).toBe('foo/A.sys.mjs');
+  });
+});

@@ -79,8 +79,18 @@ export async function runMach(
 }
 
 /**
- * Runs a mach command while streaming output to the terminal and capturing it
- * for post-run diagnostics.
+ * Maximum bytes retained per stream in `runMachCapture`. Only the tail of
+ * output is kept so long-lived processes (Storybook, `mach build`) do not
+ * grow the Node heap without bound. 2 MB is enough for post-run error
+ * diagnosis while staying well below the 50 MB cap in `createStreamCollector`.
+ */
+const CAPTURE_TAIL_LIMIT = 2 * 1024 * 1024;
+
+/**
+ * Runs a mach command while streaming output to the terminal and capturing
+ * the tail of stdout/stderr for post-run diagnostics. Output beyond
+ * {@link CAPTURE_TAIL_LIMIT} is discarded from the head to prevent unbounded
+ * memory growth during long-lived processes like Storybook.
  */
 export async function runMachCapture(
   args: string[],
@@ -99,10 +109,16 @@ export async function runMachCapture(
     ...(options.env ? { env: options.env } : {}),
     onStdout: (data) => {
       stdout += data;
+      if (stdout.length > CAPTURE_TAIL_LIMIT) {
+        stdout = stdout.slice(-CAPTURE_TAIL_LIMIT);
+      }
       process.stdout.write(data);
     },
     onStderr: (data) => {
       stderr += data;
+      if (stderr.length > CAPTURE_TAIL_LIMIT) {
+        stderr = stderr.slice(-CAPTURE_TAIL_LIMIT);
+      }
       process.stderr.write(data);
     },
   });

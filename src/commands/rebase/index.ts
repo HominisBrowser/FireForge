@@ -14,6 +14,7 @@
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { getFurnacePaths, updateFurnaceState } from '../../core/furnace-config.js';
 import { getHead, isGitRepository, resetChanges } from '../../core/git.js';
 import { discoverPatches } from '../../core/patch-files.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
@@ -87,8 +88,8 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
   if (
     !(await confirmDirtyEngineReset({
       engineDir: paths.engine,
-      force: options.force ?? false,
-      nonInteractiveHint: 'Use: fireforge rebase --force',
+      yes: options.yes ?? false,
+      nonInteractiveHint: 'Use: fireforge rebase --yes',
       warningMessage:
         'The engine directory has uncommitted changes that will be lost by the rebase.',
       promptMessage: 'Discard uncommitted changes and start rebase?',
@@ -105,6 +106,15 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
   const resetSpinner = spinner('Resetting engine to baseline...');
   await resetChanges(paths.engine);
   resetSpinner.stop('Engine reset to baseline');
+
+  // Clear Furnace state — the engine no longer contains deployed components.
+  // Preserve pendingRepair since that tracks authoring-side rollback issues.
+  const furnacePaths = getFurnacePaths(projectRoot);
+  if (await pathExists(furnacePaths.furnaceState)) {
+    await updateFurnaceState(projectRoot, (current) => ({
+      ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
+    }));
+  }
 
   // Create rebase session
   const allPatches = await discoverPatches(paths.patches);
@@ -137,7 +147,7 @@ export async function rebaseCommand(
   options: RebaseOptions = {}
 ): Promise<void> {
   if (options.abort) {
-    return handleAbort(projectRoot, options.force);
+    return handleAbort(projectRoot, options.yes);
   }
 
   if (options.continue) {
@@ -159,7 +169,7 @@ export function registerRebase(
     .option('--abort', 'Cancel the rebase and restore engine to pre-rebase state')
     .option('--dry-run', 'Show what would happen without modifying anything')
     .option('--max-fuzz <n>', 'Maximum fuzz factor for git apply (default: 3)', parseInt)
-    .option('-f, --force', 'Skip dirty-tree confirmation prompt')
+    .option('-y, --yes', 'Skip dirty-tree confirmation prompt')
     .action(
       withErrorHandling(
         async (options: {
@@ -167,7 +177,7 @@ export function registerRebase(
           abort?: boolean;
           dryRun?: boolean;
           maxFuzz?: number;
-          force?: boolean;
+          yes?: boolean;
         }) => {
           await rebaseCommand(getProjectRoot(), pickDefined(options));
         }

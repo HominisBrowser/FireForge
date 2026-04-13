@@ -103,9 +103,9 @@ describe('resolveArchive', () => {
   });
 
   it('resolves an ESR version', () => {
-    const result = resolveArchive('140.0esr', 'firefox-esr');
-    expect(result.archiveVersion).toBe('140.0esr');
-    expect(result.url).toContain('/140.0esr/source/');
+    const result = resolveArchive('146.0esr', 'firefox-esr');
+    expect(result.archiveVersion).toBe('146.0esr');
+    expect(result.url).toContain('/146.0esr/source/');
   });
 
   it('rejects path traversal in version', () => {
@@ -114,8 +114,8 @@ describe('resolveArchive', () => {
 
   it('derives archiveVersion from product alone, not version string', () => {
     // ESR product with ESR version: should produce ESR archive
-    const esr = resolveArchive('140.0esr', 'firefox-esr');
-    expect(esr.archiveVersion).toBe('140.0esr');
+    const esr = resolveArchive('146.0esr', 'firefox-esr');
+    expect(esr.archiveVersion).toBe('146.0esr');
 
     // Stable product with stable version: no esr suffix
     const stable = resolveArchive('146.0', 'firefox');
@@ -141,7 +141,7 @@ describe('getDownloadUrl', () => {
 
 describe('getTarballFilename', () => {
   it('returns a filename with product prefix', () => {
-    expect(getTarballFilename('140.0esr', 'firefox-esr')).toContain('firefox-esr');
+    expect(getTarballFilename('146.0esr', 'firefox-esr')).toContain('firefox-esr');
   });
 });
 

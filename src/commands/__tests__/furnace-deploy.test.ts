@@ -13,6 +13,15 @@ vi.mock('../../core/config.js', () => ({
     src: '/project/src',
     componentsDir: '/project/components',
   })),
+  loadConfig: vi.fn(() =>
+    Promise.resolve({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '145.0', product: 'firefox' },
+    })
+  ),
 }));
 
 vi.mock('../../core/furnace-apply.js', () => ({
@@ -57,8 +66,24 @@ vi.mock('../../core/furnace-rollback.js', () => ({
   createRollbackJournal: vi.fn(() => ({
     files: new Map(),
     createdDirs: new Set(),
+    skippedSymlinks: new Set(),
   })),
   restoreRollbackJournalOrThrow: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock('../../core/furnace-operation.js', () => ({
+  runFurnaceMutation: vi.fn(
+    async (
+      _root: string,
+      _kind: string,
+      body: (ctx: { registerJournal: () => void; registerCleanup: () => void }) => Promise<unknown>
+    ) =>
+      body({
+        registerJournal: () => undefined,
+        registerCleanup: () => undefined,
+      })
+  ),
+  recordFurnaceRollbackFailure: vi.fn(),
 }));
 
 vi.mock('../../core/furnace-validate.js', () => ({
@@ -84,6 +109,7 @@ vi.mock('../../utils/logger.js', () => ({
   })),
 }));
 
+import { loadConfig } from '../../core/config.js';
 import {
   applyAllComponents,
   applyCustomComponent,
@@ -95,7 +121,7 @@ import { loadFurnaceConfig, updateFurnaceState } from '../../core/furnace-config
 import { restoreRollbackJournalOrThrow } from '../../core/furnace-rollback.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import { pathExists } from '../../utils/fs.js';
-import { info, success, warn } from '../../utils/logger.js';
+import { success, warn } from '../../utils/logger.js';
 import { furnaceDeployCommand } from '../furnace/deploy.js';
 
 describe('furnaceDeployCommand', () => {
@@ -129,7 +155,18 @@ describe('furnaceDeployCommand', () => {
 
     await expect(furnaceDeployCommand('/project')).resolves.toBeUndefined();
 
-    expect(applyAllComponents).toHaveBeenCalledWith('/project', false);
+    /* eslint-disable @typescript-eslint/no-unsafe-assignment --
+     * vitest's `expect.objectContaining` returns `any`. */
+    expect(applyAllComponents).toHaveBeenCalledWith(
+      '/project',
+      false,
+      expect.objectContaining({
+        operationContext: expect.objectContaining({
+          registerJournal: expect.any(Function),
+        }),
+      })
+    );
+    /* eslint-enable @typescript-eslint/no-unsafe-assignment */
     expect(validateAllComponents).toHaveBeenCalledWith('/project');
     expect(vi.mocked(success)).toHaveBeenCalled();
   });
@@ -141,12 +178,54 @@ describe('furnaceDeployCommand', () => {
     });
     vi.mocked(validateComponent).mockResolvedValue([]);
     vi.mocked(computeComponentChecksums).mockResolvedValue({ 'a.css': 'abc' });
-    vi.mocked(prefixChecksums).mockReturnValue({ 'override:moz-card:a.css': 'abc' });
+    vi.mocked(prefixChecksums).mockReturnValue({ 'override/moz-card/a.css': 'abc' });
 
     await expect(furnaceDeployCommand('/project', 'moz-card')).resolves.toBeUndefined();
 
     expect(applyOverrideComponent).toHaveBeenCalled();
     expect(updateFurnaceState).toHaveBeenCalled();
+  });
+
+  it('replaces stale checksum entries for the selected component during named deploy', async () => {
+    vi.mocked(applyOverrideComponent).mockResolvedValue({
+      affectedPaths: ['toolkit/content/widgets/moz-card/moz-card.css'],
+      actions: [],
+    });
+    vi.mocked(validateComponent).mockResolvedValue([]);
+    vi.mocked(computeComponentChecksums).mockResolvedValue({ 'new.css': 'abc' });
+    vi.mocked(prefixChecksums).mockReturnValue({ 'override/moz-card/new.css': 'abc' });
+
+    await furnaceDeployCommand('/project', 'moz-card');
+
+    const updater = vi.mocked(updateFurnaceState).mock.calls[0]?.[1];
+    expect(updater).toBeTypeOf('function');
+    const next = (
+      updater as (state: {
+        appliedChecksums?: Record<string, string>;
+        engineChecksums?: Record<string, string>;
+      }) => {
+        appliedChecksums?: Record<string, string>;
+        engineChecksums?: Record<string, string>;
+      }
+    )({
+      appliedChecksums: {
+        'override/moz-card/old.css': 'stale',
+        'custom/moz-sidebar/sidebar.css': 'keep',
+      },
+      engineChecksums: {
+        'override/moz-card/old.css': 'stale',
+        'custom/moz-sidebar/sidebar.css': 'keep',
+      },
+    });
+
+    expect(next.appliedChecksums).toEqual({
+      'custom/moz-sidebar/sidebar.css': 'keep',
+      'override/moz-card/new.css': 'abc',
+    });
+    expect(next.engineChecksums).toEqual({
+      'custom/moz-sidebar/sidebar.css': 'keep',
+      'override/moz-card/new.css': 'abc',
+    });
   });
 
   it('deploys a single custom component', async () => {
@@ -198,6 +277,35 @@ describe('furnaceDeployCommand', () => {
       stepErrors: [{ step: 'register', error: 'customElements.js missing' }],
       actions: [],
     });
+
+    await expect(furnaceDeployCommand('/project', 'moz-sidebar')).rejects.toThrow(
+      /apply error\(s\)/i
+    );
+
+    expect(restoreRollbackJournalOrThrow).toHaveBeenCalledWith(
+      expect.any(Object),
+      'Furnace deploy failed for "moz-sidebar"'
+    );
+    expect(updateFurnaceState).not.toHaveBeenCalled();
+    expect(validateComponent).not.toHaveBeenCalled();
+  });
+
+  it('rolls back and skips validation when a single custom deploy throws during apply', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-sidebar': {
+          description: 'Custom sidebar',
+          targetPath: 'browser/components/sidebar',
+          register: true,
+          localized: false,
+        },
+      },
+    });
+    vi.mocked(applyCustomComponent).mockRejectedValue(new Error('copy failed'));
 
     await expect(furnaceDeployCommand('/project', 'moz-sidebar')).rejects.toThrow(
       /apply error\(s\)/i
@@ -264,7 +372,7 @@ describe('furnaceDeployCommand', () => {
     expect(applyOverrideComponent).not.toHaveBeenCalled();
     expect(applyCustomComponent).not.toHaveBeenCalled();
     expect(validateComponent).not.toHaveBeenCalled();
-    expect(vi.mocked(info)).toHaveBeenCalledWith(
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(
       '"moz-stock-card" is a stock component. Stock components are not applied locally.'
     );
   });
@@ -352,5 +460,192 @@ describe('furnaceDeployCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(updateFurnaceState).not.toHaveBeenCalled();
+  });
+
+  it('refuses named deploy on baseVersion drift scoped to the selected component', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only',
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+        'moz-panel': {
+          type: 'full',
+          description: 'Override panel',
+          basePath: 'toolkit/content/widgets/moz-panel',
+          baseVersion: '144.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '147.0', product: 'firefox' },
+    });
+    vi.mocked(applyOverrideComponent).mockResolvedValue({
+      affectedPaths: ['moz-card.css'],
+      actions: [],
+    });
+    vi.mocked(validateComponent).mockResolvedValue([]);
+    vi.mocked(computeComponentChecksums).mockResolvedValue({});
+    vi.mocked(prefixChecksums).mockReturnValue({});
+
+    await expect(furnaceDeployCommand('/project', 'moz-card')).rejects.toThrow(
+      /stale against the Firefox version/i
+    );
+
+    const driftWarnings = vi
+      .mocked(warn)
+      .mock.calls.map(([msg]) => msg)
+      .filter(
+        (msg): msg is string =>
+          typeof msg === 'string' && msg.includes('was created against Firefox')
+      );
+    expect(driftWarnings).toHaveLength(1);
+    expect(driftWarnings[0]).toContain('moz-card');
+    expect(driftWarnings[0]).not.toContain('moz-panel');
+    expect(applyOverrideComponent).not.toHaveBeenCalled();
+  });
+
+  it('blocks deploy when the selected component has baseVersion drift without --force', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only',
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '147.0', product: 'firefox' },
+    });
+
+    await expect(furnaceDeployCommand('/project', 'moz-card', { dryRun: true })).rejects.toThrow(
+      /stale/i
+    );
+
+    expect(applyOverrideComponent).not.toHaveBeenCalled();
+  });
+
+  it('allows deploy with --force despite baseVersion drift', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only',
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '147.0', product: 'firefox' },
+    });
+    vi.mocked(applyOverrideComponent).mockResolvedValue({
+      affectedPaths: ['moz-card.css'],
+      actions: [],
+    });
+    vi.mocked(validateComponent).mockResolvedValue([]);
+
+    await expect(
+      furnaceDeployCommand('/project', 'moz-card', { dryRun: true, force: true })
+    ).resolves.toBeUndefined();
+
+    expect(applyOverrideComponent).toHaveBeenCalled();
+  });
+
+  it('refuses all-components deploy when overrides have baseVersion drift without --force', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only',
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '147.0', product: 'firefox' },
+    });
+
+    await expect(furnaceDeployCommand('/project')).rejects.toThrow(/stale/i);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('was created against Firefox'));
+    expect(applyAllComponents).not.toHaveBeenCalled();
+  });
+
+  it('allows all-components deploy with --force despite baseVersion drift', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only',
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '147.0', product: 'firefox' },
+    });
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [{ name: 'moz-card', type: 'override', filesAffected: [] }],
+      skipped: [],
+      errors: [],
+      actions: [],
+    });
+    vi.mocked(validateAllComponents).mockResolvedValue(new Map());
+    vi.mocked(computeComponentChecksums).mockResolvedValue({});
+    vi.mocked(prefixChecksums).mockReturnValue({});
+
+    await expect(
+      furnaceDeployCommand('/project', undefined, { force: true })
+    ).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('was created against Firefox'));
+    expect(applyAllComponents).toHaveBeenCalled();
   });
 });

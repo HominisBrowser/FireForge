@@ -11,24 +11,43 @@ import type {
   StepError,
 } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
-import { copyFile, ensureDir, pathExists, readText } from '../utils/fs.js';
+import { copyFile, ensureDir, pathExists, readText, removeFile } from '../utils/fs.js';
+import { verbose } from '../utils/logger.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
-import { addCustomElementRegistration, addJarMnEntries } from './furnace-registration.js';
+import {
+  addCustomElementRegistration,
+  addJarMnEntries,
+  validateCustomElementRegistration,
+  validateJarMnEntries,
+} from './furnace-registration.js';
 import { recordCreatedDir, type RollbackJournal, snapshotFile } from './furnace-rollback.js';
+import { checkRegistrationConsistency } from './furnace-validate-registration.js';
+import { isGitRepository } from './git.js';
+import { fileExistsInHead, restoreTrackedPath } from './git-file-ops.js';
 
 interface DirectoryEntry {
   isFile(): boolean;
+  isSymbolicLink?(): boolean;
   name: string;
 }
 
-/** Path to the Fluent localization directory for toolkit global components */
-const FTL_DIR = 'toolkit/locales/en-US/toolkit/global';
+function isRegularFile(entry: DirectoryEntry): boolean {
+  if (!entry.isFile()) return false;
+  if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) return false;
+  return true;
+}
 
 function isChecksummedComponentFile(name: string): boolean {
   return name.endsWith('.mjs') || name.endsWith('.css') || name.endsWith('.ftl');
 }
 
-function isOverrideCopyCandidate(
+/**
+ * Filter deciding which files in an override workspace directory are candidates
+ * for copying into the engine. Exported so `furnace remove` can invert apply
+ * using the exact same file set — the "files to restore" set is defined as the
+ * inverse of the "files apply would have written" set.
+ */
+export function isOverrideCopyCandidate(
   entryName: string,
   type: OverrideComponentConfig['type']
 ): boolean {
@@ -40,7 +59,63 @@ function isOverrideCopyCandidate(
     return entryName.endsWith('.css');
   }
 
-  return entryName.endsWith('.mjs') || entryName.endsWith('.css');
+  return entryName.endsWith('.mjs') || entryName.endsWith('.css') || entryName.endsWith('.ftl');
+}
+
+/** Resolves the engine destination path for a single override-managed file. */
+export function getOverrideEngineTargetPath(
+  engineDir: string,
+  config: OverrideComponentConfig,
+  fileName: string,
+  ftlDir: string
+): string {
+  return fileName.endsWith('.ftl')
+    ? join(engineDir, ftlDir, fileName)
+    : join(engineDir, config.basePath, fileName);
+}
+
+/**
+ * Restores a single override-deployed engine file to its pristine HEAD state,
+ * inverting whatever apply wrote into that path.
+ *
+ * Behaviour matches the per-file branch of `restoreOverrideEngineFiles` in
+ * `furnace remove`: snapshot first, then either `git restore` (if the file
+ * exists in HEAD) or hard-delete (if the override introduced the file). The
+ * caller MUST guarantee `engineDir` is a git repository — this helper does
+ * not re-check, because both `furnace remove` and `furnace apply` already
+ * own the precondition check at their entry points and re-checking on every
+ * file would balloon git invocations.
+ *
+ * Returns the action taken so the caller can produce accurate user-facing
+ * counts (`restored` vs `removed`). `noop` means the file was neither in HEAD
+ * nor on disk, which can happen when the engine was reset out-of-band — the
+ * caller should treat that as a successful no-op rather than an error.
+ */
+export async function restoreOverrideFileToBaseline(
+  engineDir: string,
+  enginePath: string,
+  journal: RollbackJournal
+): Promise<'restored' | 'removed' | 'noop'> {
+  const relPath = relative(engineDir, enginePath);
+
+  // Snapshot before mutation so a later rollback can undo both restoration
+  // (writes whatever content we removed back) and deletion (recreates the
+  // file). Snapshotting a missing path records `{ existed: false }`, which
+  // restoreFile turns into a delete — exactly the inverse of "we just
+  // wrote a file here", which is correct for the noop case too.
+  await snapshotFile(journal, enginePath);
+
+  if (await fileExistsInHead(engineDir, relPath)) {
+    await restoreTrackedPath(engineDir, relPath);
+    return 'restored';
+  }
+
+  if (await pathExists(enginePath)) {
+    await removeFile(enginePath);
+    return 'removed';
+  }
+
+  return 'noop';
 }
 
 /** Computes stable checksums for the source files that define a component. */
@@ -51,7 +126,7 @@ export async function computeComponentChecksums(
   const entries = await readdir(componentDir, { withFileTypes: true, encoding: 'utf8' });
 
   for (const entry of entries) {
-    if (!entry.isFile()) continue;
+    if (!isRegularFile(entry)) continue;
     if (entry.name === 'override.json') continue;
     if (!isChecksummedComponentFile(entry.name)) continue;
 
@@ -62,6 +137,117 @@ export async function computeComponentChecksums(
   }
 
   return checksums;
+}
+
+/**
+ * Returns the filenames present in `previous` that are absent from `current`
+ * — i.e. files we know we deployed last time but the workspace has since
+ * deleted. The order of returned names is intentionally stable
+ * (sorted alphabetically) so test snapshots and CLI output are deterministic.
+ */
+export function diffDeletedFiles(
+  previous: Record<string, string>,
+  current: Record<string, string>
+): string[] {
+  const deleted: string[] = [];
+  for (const key of Object.keys(previous)) {
+    if (!(key in current)) {
+      deleted.push(key);
+    }
+  }
+  return deleted.sort();
+}
+
+/**
+ * Removes engine copies of files that the developer has deleted from a custom
+ * component's workspace since the last apply. `.ftl` files live under the
+ * shared Fluent tree (`engine/${FTL_DIR}`); everything else lives under
+ * `engine/${config.targetPath}`. Snapshots each removal into the journal so a
+ * mid-apply failure can roll the engine back to its pre-undeploy state. Files
+ * that are already missing from the engine are silently no-op (the engine
+ * may have been reset out-of-band — refusing here would surface a confusing
+ * error in a recovery path).
+ *
+ * Does **not** touch jar.mn or customElements.js: registration churn is the
+ * caller's responsibility, since it must coordinate with the new file list
+ * computed by the regular apply step that follows.
+ */
+export async function undeployCustomFiles(
+  engineDir: string,
+  config: CustomComponentConfig,
+  deletedFiles: string[],
+  ftlDir: string,
+  rollbackJournal?: RollbackJournal
+): Promise<string[]> {
+  const removed: string[] = [];
+  for (const fileName of deletedFiles) {
+    const enginePath = fileName.endsWith('.ftl')
+      ? join(engineDir, ftlDir, fileName)
+      : join(engineDir, config.targetPath, fileName);
+
+    if (rollbackJournal) {
+      await snapshotFile(rollbackJournal, enginePath);
+    }
+
+    if (await pathExists(enginePath)) {
+      await removeFile(enginePath);
+      removed.push(relative(engineDir, enginePath));
+    }
+  }
+  return removed;
+}
+
+/**
+ * Restores or removes engine copies of files that the developer has deleted
+ * from an override component's workspace since the last apply. Each file is
+ * routed through `restoreOverrideFileToBaseline`, which restores it from
+ * HEAD if it was a Firefox baseline file or hard-deletes it if the override
+ * had introduced it.
+ *
+ * Requires `engineDir` to be a git repository — overrides cannot be inverted
+ * without git HEAD as the source of truth. The caller is expected to have
+ * already validated this precondition for the apply path; we re-check here
+ * so unit tests that exercise this helper directly cannot accidentally
+ * silent-fail on a non-git fixture.
+ */
+export async function undeployOverrideFiles(
+  engineDir: string,
+  config: OverrideComponentConfig,
+  deletedFiles: string[],
+  ftlDir: string,
+  rollbackJournal?: RollbackJournal
+): Promise<{ restored: string[]; removed: string[] }> {
+  if (deletedFiles.length === 0) {
+    return { restored: [], removed: [] };
+  }
+
+  if (!rollbackJournal) {
+    throw new FurnaceError(
+      'Internal: undeployOverrideFiles requires a rollback journal so deletions can be undone on failure.'
+    );
+  }
+
+  if (!(await isGitRepository(engineDir))) {
+    throw new FurnaceError(
+      'Cannot undeploy override files: engine is not a git repository. Run "fireforge download" to initialise it.'
+    );
+  }
+
+  // Note: we deliberately do not re-filter `deletedFiles` through
+  // `isOverrideCopyCandidate(fileName, config.type)`. A file recorded in
+  // `previous` was already a valid copy candidate when it was deployed, and
+  // re-filtering would block cleanup if the override type later flipped
+  // from `full` to `css-only` — exactly the case we need cleanup for.
+  const restored: string[] = [];
+  const removed: string[] = [];
+  for (const fileName of deletedFiles) {
+    const enginePath = getOverrideEngineTargetPath(engineDir, config, fileName, ftlDir);
+    const action = await restoreOverrideFileToBaseline(engineDir, enginePath, rollbackJournal);
+    const relPath = relative(engineDir, enginePath);
+    if (action === 'restored') restored.push(relPath);
+    else if (action === 'removed') removed.push(relPath);
+  }
+  return { restored, removed };
 }
 
 /** Compares current component file checksums against the previously recorded state. */
@@ -86,18 +272,124 @@ export async function hasComponentChanged(
   return false;
 }
 
+function normalizeForChecksum(content: string): string {
+  return content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+}
+
+/**
+ * Detects whether an override component's deployed files are missing from the
+ * engine or differ from the source. Used as a guard before skipping apply on a
+ * checksum match, so that reset/download/manual engine edits do not leave the
+ * caller with a stale "up to date" report.
+ *
+ * When `cachedEngineChecksums` is provided (populated on last successful apply),
+ * the function computes a SHA-256 hash of the engine file and compares it
+ * against the cached value. This avoids reading the full workspace source for
+ * the comparison when the engine hash still matches, which is the common case
+ * for projects with many components.
+ */
+export async function hasOverrideEngineDrift(
+  engineDir: string,
+  componentDir: string,
+  config: OverrideComponentConfig,
+  ftlDir: string,
+  cachedEngineChecksums?: Record<string, string>
+): Promise<boolean> {
+  const entries = await readdir(componentDir, { withFileTypes: true, encoding: 'utf8' });
+  for (const entry of entries) {
+    if (!isRegularFile(entry)) continue;
+    if (!isOverrideCopyCandidate(entry.name, config.type)) continue;
+
+    const enginePath = getOverrideEngineTargetPath(engineDir, config, entry.name, ftlDir);
+    if (!(await pathExists(enginePath))) {
+      return true;
+    }
+
+    const engineContent = normalizeForChecksum(await readText(enginePath));
+
+    // Fast path: compare engine content hash against cached value from last apply
+    if (cachedEngineChecksums) {
+      const engineHash = createHash('sha256').update(engineContent).digest('hex');
+      const cachedHash = cachedEngineChecksums[entry.name];
+      if (cachedHash && engineHash !== cachedHash) {
+        return true;
+      }
+      if (cachedHash) continue; // Hash match — skip full source comparison
+    }
+
+    // Slow path: byte-compare engine content against workspace source
+    const srcContent = normalizeForChecksum(await readText(join(componentDir, entry.name)));
+    if (srcContent !== engineContent) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Detects whether a custom component's deployed copies, jar.mn entries, or
+ * customElements.js registration are missing from the engine or out of sync.
+ * Delegates to `checkRegistrationConsistency` so the oracle stays aligned with
+ * the validate command.
+ */
+export async function hasCustomEngineDrift(
+  root: string,
+  name: string,
+  componentDir: string,
+  config: CustomComponentConfig,
+  ftlDir: string
+): Promise<boolean> {
+  const status = await checkRegistrationConsistency(root, name, config, ftlDir);
+  if (!status.targetExists || !status.filesInSync) {
+    return true;
+  }
+  if (status.missingTargetFiles.length > 0 || status.driftedFiles.length > 0) {
+    return true;
+  }
+  if (!config.register) {
+    return false;
+  }
+
+  // Registration drift: only check jar.mn entries for the file types that
+  // actually exist in source. jarMn{Mjs,Css} are substring checks, so a
+  // component with only .mjs (no .css) should not be flagged when jarMnCss
+  // is false — that is the expected post-apply state, not drift.
+  const entries = await readdir(componentDir, { withFileTypes: true, encoding: 'utf8' });
+  let hasMjs = false;
+  let hasCss = false;
+  for (const entry of entries) {
+    if (!isRegularFile(entry)) continue;
+    if (entry.name.endsWith('.mjs')) hasMjs = true;
+    else if (entry.name.endsWith('.css')) hasCss = true;
+  }
+
+  if (!status.customElementsPresent || !status.customElementsCorrectBlock) {
+    return true;
+  }
+  if (hasMjs && !status.jarMnMjs) {
+    return true;
+  }
+  if (hasCss && !status.jarMnCss) {
+    return true;
+  }
+
+  return false;
+}
+
 async function buildCustomDryRunActions(
   name: string,
   componentDir: string,
   engineDir: string,
   config: CustomComponentConfig,
   targetDir: string,
-  entries: DirectoryEntry[]
-): Promise<DryRunAction[]> {
+  entries: DirectoryEntry[],
+  ftlDir: string
+): Promise<{ actions: DryRunAction[]; stepErrors: StepError[] }> {
   const actions: DryRunAction[] = [];
+  const stepErrors: StepError[] = [];
 
   for (const entry of entries) {
-    if (!entry.isFile()) continue;
+    if (!isRegularFile(entry)) continue;
     if (!entry.name.endsWith('.mjs') && !entry.name.endsWith('.css')) continue;
     actions.push({
       component: name,
@@ -116,13 +408,22 @@ async function buildCustomDryRunActions(
         component: name,
         action: 'copy-ftl',
         source: ftlSrc,
-        target: join(engineDir, FTL_DIR, ftlFile),
-        description: `Copy ${ftlFile} to ${FTL_DIR}`,
+        target: join(engineDir, ftlDir, ftlFile),
+        description: `Copy ${ftlFile} to ${ftlDir}`,
       });
     }
   }
 
   if (config.register) {
+    try {
+      const modulePath = `chrome://global/content/elements/${name}.mjs`;
+      await validateCustomElementRegistration(engineDir, name, modulePath);
+    } catch (error: unknown) {
+      stepErrors.push({
+        step: 'customElements.js registration',
+        error: toError(error).message,
+      });
+    }
     actions.push({
       component: name,
       action: 'register-ce',
@@ -132,11 +433,20 @@ async function buildCustomDryRunActions(
 
   const copiedFileNames = entries
     .filter(
-      (entry) => entry.isFile() && (entry.name.endsWith('.mjs') || entry.name.endsWith('.css'))
+      (entry) =>
+        isRegularFile(entry) && (entry.name.endsWith('.mjs') || entry.name.endsWith('.css'))
     )
     .map((entry) => entry.name);
 
   if (copiedFileNames.length > 0) {
+    try {
+      await validateJarMnEntries(engineDir, name, copiedFileNames);
+    } catch (error: unknown) {
+      stepErrors.push({
+        step: 'jar.mn registration',
+        error: toError(error).message,
+      });
+    }
     actions.push({
       component: name,
       action: 'register-jar',
@@ -144,7 +454,7 @@ async function buildCustomDryRunActions(
     });
   }
 
-  return actions;
+  return { actions, stepErrors };
 }
 
 /** Applies a custom component into the engine tree and captures registration step errors. */
@@ -153,6 +463,7 @@ export async function applyCustomComponent(
   name: string,
   componentDir: string,
   config: CustomComponentConfig,
+  ftlDir: string,
   dryRun = false,
   rollbackJournal?: RollbackJournal
 ): Promise<{ affectedPaths: string[]; stepErrors: StepError[]; actions?: DryRunAction[] }> {
@@ -163,16 +474,26 @@ export async function applyCustomComponent(
   const targetDir = join(engineDir, config.targetPath);
   const entries = await readdir(componentDir, { withFileTypes: true, encoding: 'utf8' });
 
+  const customSymlinks = entries.filter(
+    (e) => typeof e.isSymbolicLink === 'function' && e.isSymbolicLink()
+  );
+  if (customSymlinks.length > 0) {
+    verbose(
+      `Skipped ${customSymlinks.length} symlink(s) in "${name}": ${customSymlinks.map((e) => e.name).join(', ')}`
+    );
+  }
+
   if (dryRun) {
-    const actions = await buildCustomDryRunActions(
+    const { actions, stepErrors } = await buildCustomDryRunActions(
       name,
       componentDir,
       engineDir,
       config,
       targetDir,
-      entries
+      entries,
+      ftlDir
     );
-    return { affectedPaths: [], stepErrors: [], actions };
+    return { affectedPaths: [], stepErrors, actions };
   }
 
   if (rollbackJournal && !(await pathExists(targetDir))) {
@@ -184,25 +505,37 @@ export async function applyCustomComponent(
   const stepErrors: StepError[] = [];
   const copiedFileNames: string[] = [];
 
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    if (!entry.name.endsWith('.mjs') && !entry.name.endsWith('.css')) continue;
+  // Collect copy candidates, then snapshot + copy in parallel. Snapshots
+  // must complete before any copy (they read the original content), but
+  // independent files can be processed concurrently.
+  const filesToCopy = entries.filter(
+    (entry) => isRegularFile(entry) && (entry.name.endsWith('.mjs') || entry.name.endsWith('.css'))
+  );
 
-    const src = join(componentDir, entry.name);
+  // Snapshot phase (serial — journal is not concurrent-safe for the same path)
+  for (const entry of filesToCopy) {
     const dest = join(targetDir, entry.name);
     if (rollbackJournal) {
       await snapshotFile(rollbackJournal, dest);
     }
-    await copyFile(src, dest);
-    affectedPaths.push(relative(engineDir, dest));
-    copiedFileNames.push(entry.name);
   }
+
+  // Copy phase (parallel — independent file writes to different paths)
+  await Promise.all(
+    filesToCopy.map(async (entry) => {
+      const src = join(componentDir, entry.name);
+      const dest = join(targetDir, entry.name);
+      await copyFile(src, dest);
+      affectedPaths.push(relative(engineDir, dest));
+      copiedFileNames.push(entry.name);
+    })
+  );
 
   if (config.localized) {
     const ftlFile = `${name}.ftl`;
     const ftlSrc = join(componentDir, ftlFile);
     if (await pathExists(ftlSrc)) {
-      const ftlDest = join(engineDir, FTL_DIR, ftlFile);
+      const ftlDest = join(engineDir, ftlDir, ftlFile);
       if (rollbackJournal) {
         await snapshotFile(rollbackJournal, ftlDest);
       }
@@ -251,6 +584,7 @@ export async function applyOverrideComponent(
   name: string,
   componentDir: string,
   config: OverrideComponentConfig,
+  ftlDir: string,
   dryRun = false,
   rollbackJournal?: RollbackJournal
 ): Promise<{ affectedPaths: string[]; actions?: DryRunAction[] }> {
@@ -262,15 +596,26 @@ export async function applyOverrideComponent(
 
   const entries = await readdir(componentDir, { withFileTypes: true, encoding: 'utf8' });
 
+  const overrideSymlinks = entries.filter(
+    (e) => typeof e.isSymbolicLink === 'function' && e.isSymbolicLink()
+  );
+  if (overrideSymlinks.length > 0) {
+    verbose(
+      `Skipped ${overrideSymlinks.length} symlink(s) in "${name}": ${overrideSymlinks.map((e) => e.name).join(', ')}`
+    );
+  }
+
   if (dryRun) {
     const actions = entries
-      .filter((entry) => entry.isFile() && isOverrideCopyCandidate(entry.name, config.type))
+      .filter((entry) => isRegularFile(entry) && isOverrideCopyCandidate(entry.name, config.type))
       .map<DryRunAction>((entry) => ({
         component: name,
         action: 'copy',
         source: join(componentDir, entry.name),
-        target: join(targetDir, entry.name),
-        description: `Override ${entry.name} in ${config.basePath}`,
+        target: getOverrideEngineTargetPath(engineDir, config, entry.name, ftlDir),
+        description: `Override ${entry.name} in ${
+          entry.name.endsWith('.ftl') ? ftlDir : config.basePath
+        }`,
       }));
 
     if (actions.length === 0) {
@@ -281,19 +626,27 @@ export async function applyOverrideComponent(
   }
 
   const affectedPaths: string[] = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !isOverrideCopyCandidate(entry.name, config.type)) {
-      continue;
-    }
+  const candidateEntries = entries.filter(
+    (entry) => isRegularFile(entry) && isOverrideCopyCandidate(entry.name, config.type)
+  );
 
-    const src = join(componentDir, entry.name);
-    const dest = join(targetDir, entry.name);
+  // Snapshot phase (serial)
+  for (const entry of candidateEntries) {
+    const dest = getOverrideEngineTargetPath(engineDir, config, entry.name, ftlDir);
     if (rollbackJournal) {
       await snapshotFile(rollbackJournal, dest);
     }
-    await copyFile(src, dest);
-    affectedPaths.push(relative(engineDir, dest));
   }
+
+  // Copy phase (parallel)
+  await Promise.all(
+    candidateEntries.map(async (entry) => {
+      const src = join(componentDir, entry.name);
+      const dest = getOverrideEngineTargetPath(engineDir, config, entry.name, ftlDir);
+      await copyFile(src, dest);
+      affectedPaths.push(relative(engineDir, dest));
+    })
+  );
 
   if (affectedPaths.length === 0) {
     throw new FurnaceError(`No matching files found in override directory for "${name}"`, name);
@@ -302,36 +655,4 @@ export async function applyOverrideComponent(
   return { affectedPaths };
 }
 
-/** Extracts per-component checksums from the flattened state-file checksum map. */
-export function extractComponentChecksums(
-  allChecksums: Record<string, string> | undefined,
-  type: string,
-  name: string
-): Record<string, string> {
-  if (!allChecksums) return {};
-
-  const prefix = `${type}/${name}/`;
-  const result: Record<string, string> = {};
-  for (const [key, value] of Object.entries(allChecksums)) {
-    if (key.startsWith(prefix)) {
-      result[key.slice(prefix.length)] = value;
-    }
-  }
-
-  return result;
-}
-
-/** Prefixes component checksums so they can be stored in the flattened state format. */
-export function prefixChecksums(
-  checksums: Record<string, string>,
-  type: string,
-  name: string
-): Record<string, string> {
-  const prefix = `${type}/${name}/`;
-  const result: Record<string, string> = {};
-  for (const [key, value] of Object.entries(checksums)) {
-    result[`${prefix}${key}`] = value;
-  }
-
-  return result;
-}
+export { extractComponentChecksums, prefixChecksums } from './furnace-checksum-utils.js';

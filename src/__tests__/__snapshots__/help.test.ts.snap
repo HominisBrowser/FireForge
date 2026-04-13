@@ -10,10 +10,15 @@ Options:
   -v, --verbose                     Enable debug output
   -h, --help                        display help for command
 
-Commands:
+Project:
   setup [options]                   Initialize a new FireForge project
+  config [options] <key> [value]    Get or set configuration values
+
+Engine:
   download [options]                Download Firefox source
   bootstrap                         Install Firefox build dependencies
+
+Workflow:
   import [options]                  Apply patches from the patches directory
   resolve                           Update a broken patch with manual fixes and
                                     continue
@@ -28,20 +33,221 @@ Commands:
   export-all [options]              Export all changes as a patch
   re-export [options] [patches...]  Re-export existing patches from current
                                     engine state
+  patch                             Manage individual patches in the queue
+                                    (delete, reorder)
   rebase [options]                  Semi-automated ESR version upgrade — apply
                                     patches with fuzz and re-export
   package [options]                 Create distribution package
   watch                             Watch for changes and auto-rebuild
   test [options] [paths...]         Run tests via mach test
-  config [options] <key> [value]    Get or set configuration values
-  doctor [options]                  Diagnose project issues
   register [options] <path>         Register a file in the appropriate build
                                     manifest
   wire [options] <name>             Wire a chrome subscript into the browser
+
+Components:
   token                             Design token management
+  furnace                           Component management — create, override,
+                                    apply, deploy, diff, validate, sync (run
+                                    furnace --help for all subcommands)
+
+Diagnostics:
+  doctor [options]                  Diagnose project issues
   lint [paths...]                   Lint engine changes against patch quality
                                     rules
-  furnace                           Component management (Furnace)
+  verify                            Read-only fsck for the patch queue (manifest
+                                    + cross-patch lint)
+
   help [command]                    display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace apply --help 1`] = `
+"Usage: fireforge furnace apply [options] [name]
+
+Apply components to the engine (optionally a single component)
+
+Options:
+  --dry-run    Show what would be changed without writing (reads may overlap
+               concurrent mutations)
+  --force      Proceed despite baseVersion drift (stale overrides)
+  -w, --watch  Watch component directories and re-apply on changes
+  -h, --help   display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace create --help 1`] = `
+"Usage: fireforge furnace create [options] [name]
+
+Create a new custom component
+
+Options:
+  -d, --description <desc>  Component description
+  --localized               Include Fluent l10n support
+  --no-register             Skip customElements.js registration
+  --with-tests              Scaffold Mochitest directory and register in
+                            moz.build
+  --compose <tags>          Record stock tags composed internally (metadata
+                            only, comma-separated)
+  -h, --help                display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace deploy --help 1`] = `
+"Usage: fireforge furnace deploy [options] [name]
+
+Apply components and validate in one step
+
+Options:
+  --dry-run        Show what would be changed without writing (reads may overlap
+                   concurrent mutations)
+  --force          Proceed despite baseVersion drift (stale overrides)
+  --skip-validate  Skip the validation step (apply only)
+  -h, --help       display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace diff --help 1`] = `
+"Usage: fireforge furnace diff [options] [name]
+
+Show changes vs baseline (overrides: vs Firefox original, custom: vs engine).
+Shows all components when name is omitted.
+
+Options:
+  -h, --help  display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace init --help 1`] = `
+"Usage: fireforge furnace init [options]
+
+Initialize furnace.json with project settings
+
+Options:
+  -p, --prefix <prefix>   Component prefix (e.g. "moz-", "ff-")
+  --ftl-base-path <path>  Fluent l10n base path
+  --force                 Overwrite existing furnace.json
+  -h, --help              display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace list --help 1`] = `
+"Usage: fireforge furnace list [options]
+
+List all registered components
+
+Options:
+  -v, --verbose  Show per-component health indicators (clean/modified/not
+                 applied)
+  -h, --help     display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace override --help 1`] = `
+"Usage: fireforge furnace override [options] [names...]
+
+Fork one or more existing components for modification
+
+Options:
+  -t, --type <type>         Override type (choices: "css-only", "full")
+  -d, --description <desc>  Description
+  -h, --help                display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace preview --help 1`] = `
+"Usage: fireforge furnace preview [options]
+
+Start component preview (Storybook)
+
+Options:
+  --install   Force reinstall Storybook dependencies
+  -h, --help  display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace refresh --help 1`] = `
+"Usage: fireforge furnace refresh [options] [name]
+
+Merge upstream Firefox changes into overrides (three-way merge)
+
+Options:
+  --dry-run                  Show what would change without modifying files
+  -a, --all                  Refresh all overrides in a single batch
+  -s, --strategy <strategy>  Auto-resolve conflicts (ours = keep local, theirs =
+                             accept upstream) (choices: "ours", "theirs")
+  --reset-base               Reset baseline to current engine HEAD (skips
+                             three-way merge, recovers from missing baseCommit)
+  -h, --help                 display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace remove --help 1`] = `
+"Usage: fireforge furnace remove [options] <name>
+
+Remove a component from the workspace
+
+Options:
+  -y, --yes   Skip confirmation
+  -h, --help  display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace rename --help 1`] = `
+"Usage: fireforge furnace rename [options] <old-name> <new-name>
+
+Rename a component (updates files, config, and registrations)
+
+Options:
+  -h, --help  display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace scan --help 1`] = `
+"Usage: fireforge furnace scan [options]
+
+Scan engine for available components
+
+Options:
+  --deep      Search additional Firefox directories beyond the default widgets
+              path
+  -h, --help  display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace status --help 1`] = `
+"Usage: fireforge furnace status [options] [name]
+
+Show component status and registration details
+
+Options:
+  -h, --help  display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace sync --help 1`] = `
+"Usage: fireforge furnace sync [options]
+
+Refresh drifted overrides and re-apply all components (recommended after
+fireforge download)
+
+Options:
+  --dry-run                  Show what would change without modifying files
+                             (reads may overlap concurrent mutations)
+  -s, --strategy <strategy>  Auto-resolve merge conflicts (ours = keep local,
+                             theirs = accept upstream) (choices: "ours",
+                             "theirs")
+  -h, --help                 display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace validate --help 1`] = `
+"Usage: fireforge furnace validate [options] [name]
+
+Run accessibility and compatibility checks
+
+Options:
+  --fix       Auto-fix registration issues (missing jar.mn entries,
+              customElements.js)
+  -h, --help  display help for command
 "
 `;

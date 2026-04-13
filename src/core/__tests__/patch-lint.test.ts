@@ -34,7 +34,7 @@ const mockConfig: FireForgeConfig = {
   vendor: 'Test',
   appId: 'org.test.browser',
   binaryName: 'testbrowser',
-  firefox: { version: '140.0esr', product: 'firefox-esr' },
+  firefox: { version: '146.0esr', product: 'firefox-esr' },
   license: 'MPL-2.0',
 };
 

@@ -18,6 +18,18 @@ vi.mock('../furnace-config.js', () => ({
   loadFurnaceConfig: vi.fn(),
 }));
 
+vi.mock('../config.js', () => ({
+  loadConfig: vi.fn(() =>
+    Promise.resolve({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '145.0', product: 'firefox' },
+    })
+  ),
+}));
+
 vi.mock('../furnace-validate-checks.js', () => ({
   validateStructure: vi.fn(() => []),
   validateAccessibility: vi.fn(() => []),
@@ -29,6 +41,7 @@ vi.mock('../furnace-validate-checks.js', () => ({
 
 import type { FurnaceConfig } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
+import { loadConfig } from '../config.js';
 import { loadFurnaceConfig } from '../furnace-config.js';
 import {
   validateAccessibility,
@@ -40,6 +53,7 @@ import {
 } from '../furnace-validate-checks.js';
 
 const mockPathExists = vi.mocked(pathExists);
+const mockLoadConfig = vi.mocked(loadConfig);
 const mockLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
 const mockValidateStructure = vi.mocked(validateStructure);
 const mockValidateAccessibility = vi.mocked(validateAccessibility);
@@ -50,6 +64,13 @@ const mockValidateJarMnEntries = vi.mocked(validateJarMnEntries);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockLoadConfig.mockResolvedValue({
+    name: 'Test Browser',
+    vendor: 'Test Vendor',
+    appId: 'org.example.test',
+    binaryName: 'testbrowser',
+    firefox: { version: '145.0', product: 'firefox' },
+  });
 });
 
 const baseConfig: FurnaceConfig = {
@@ -66,7 +87,15 @@ describe('validateComponent', () => {
   it('runs structure, accessibility, and compatibility checks', async () => {
     await validateComponent('/comp/my-btn', 'my-btn', 'custom');
 
-    expect(mockValidateStructure).toHaveBeenCalledWith('/comp/my-btn', 'my-btn', 'custom');
+    // The fourth argument is the optional CustomComponentConfig used to
+    // gate the .ftl-when-localized check; without a config in scope this
+    // call site forwards undefined.
+    expect(mockValidateStructure).toHaveBeenCalledWith(
+      '/comp/my-btn',
+      'my-btn',
+      'custom',
+      undefined
+    );
     expect(mockValidateAccessibility).toHaveBeenCalledWith('/comp/my-btn', 'my-btn');
     expect(mockValidateCompatibility).toHaveBeenCalledWith(
       '/comp/my-btn',
@@ -118,6 +147,37 @@ describe('validateComponent', () => {
 
     expect(mockValidateRegistrationPatterns).not.toHaveBeenCalled();
     expect(mockValidateJarMnEntries).not.toHaveBeenCalled();
+  });
+
+  it('reports override baseVersion drift as a validation error', async () => {
+    const config: FurnaceConfig = {
+      ...baseConfig,
+      overrides: {
+        'moz-card': {
+          type: 'full',
+          description: 'Card override',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '146.0esr',
+        },
+      },
+    };
+    mockLoadConfig.mockResolvedValueOnce({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '145.0', product: 'firefox' },
+    });
+
+    const issues = await validateComponent(
+      '/comp/moz-card',
+      'moz-card',
+      'override',
+      config,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'override-base-version-drift')).toBe(true);
   });
 
   it('aggregates issues from all checks', async () => {
@@ -269,5 +329,38 @@ describe('validateAllComponents', () => {
 
     expect(results.has('phantom')).toBe(true);
     expect(results.get('phantom')?.[0]?.check).toBe('missing-jar-mn-mjs');
+  });
+
+  it('reports each registration and jar.mn issue exactly once for custom components', async () => {
+    const config: FurnaceConfig = {
+      ...baseConfig,
+      custom: {
+        'my-btn': {
+          description: 'Button',
+          targetPath: 'toolkit/content/widgets/my-btn',
+          register: true,
+          localized: false,
+        },
+      },
+    };
+    mockLoadFurnaceConfig.mockResolvedValueOnce(config);
+    mockPathExists.mockResolvedValue(true);
+    // Mock every call (not just Once) so that if the old double-call path
+    // resurfaces we would see two identical issues instead of one.
+    mockValidateRegistrationPatterns.mockResolvedValue([
+      { component: 'my-btn', severity: 'error', check: 'wrong-pattern', message: 'Wrong block' },
+    ]);
+    mockValidateJarMnEntries.mockResolvedValue([
+      { component: 'my-btn', severity: 'error', check: 'missing-jar-mn-mjs', message: 'No mjs' },
+    ]);
+
+    const results = await validateAllComponents('/project');
+    const issues = results.get('my-btn') ?? [];
+
+    expect(issues.filter((i) => i.check === 'wrong-pattern')).toHaveLength(1);
+    expect(issues.filter((i) => i.check === 'missing-jar-mn-mjs')).toHaveLength(1);
+    // Aggregate validators run exactly once per type.
+    expect(mockValidateRegistrationPatterns).toHaveBeenCalledTimes(1);
+    expect(mockValidateJarMnEntries).toHaveBeenCalledTimes(1);
   });
 });

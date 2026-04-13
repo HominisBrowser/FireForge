@@ -14,7 +14,13 @@ describe('RebaseError', () => {
   it('prefixes userMessage with "Rebase Error:"', () => {
     const error = new RebaseError('something went wrong');
 
-    expect(error.userMessage).toBe('Rebase Error: something went wrong');
+    expect(error.userMessage).toBe(
+      'Rebase Error: something went wrong\n\n' +
+        'To fix this:\n' +
+        '  1. Check the error message above for specifics\n' +
+        '  2. Use "fireforge rebase --continue" to resume an interrupted rebase\n' +
+        '  3. Use "fireforge rebase --abort" to cancel and restore engine state'
+    );
   });
 
   it('preserves name and message', () => {

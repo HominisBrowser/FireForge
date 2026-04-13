@@ -9,6 +9,7 @@ import {
   readFile,
   rename,
   rm,
+  statfs,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
@@ -207,4 +208,39 @@ function createAtomicTempPath(path: string): string {
   const directory = dirname(path);
   const filename = path.slice(directory.length + 1);
   return join(directory, `.${filename}.fireforge-tmp-${process.pid}-${randomUUID()}`);
+}
+
+/**
+ * Checks available disk space at a path and warns via the provided
+ * callback when it falls below `minBytes`.
+ *
+ * @param path - Directory to check (must exist)
+ * @param minBytes - Minimum free bytes before emitting a warning
+ * @param onLowSpace - Callback invoked with a human-readable message
+ *   when available space is below the threshold
+ * @returns The available bytes, or `undefined` when the check could not
+ *   be performed (unsupported platform, permission error, etc.)
+ */
+export async function checkDiskSpace(
+  path: string,
+  minBytes: number,
+  onLowSpace: (message: string) => void
+): Promise<number | undefined> {
+  try {
+    const stats = await statfs(path);
+    const availableBytes = stats.bfree * stats.bsize;
+    if (availableBytes < minBytes) {
+      const availableGB = (availableBytes / (1024 * 1024 * 1024)).toFixed(1);
+      const requiredGB = (minBytes / (1024 * 1024 * 1024)).toFixed(1);
+      onLowSpace(
+        `Low disk space: ${availableGB} GB available, ${requiredGB} GB recommended. ` +
+          'The operation may fail if the disk fills up.'
+      );
+    }
+    return availableBytes;
+  } catch {
+    // statfs may not be available on all platforms or the path may
+    // not exist yet — silently degrade rather than blocking the operation.
+    return undefined;
+  }
 }

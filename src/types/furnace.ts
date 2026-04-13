@@ -37,6 +37,8 @@ export interface OverrideComponentConfig {
   basePath: string;
   /** Firefox version this override was based on */
   baseVersion: string;
+  /** Git commit SHA the override was based on. Older overrides may lack this field. */
+  baseCommit?: string;
 }
 
 /**
@@ -67,12 +69,55 @@ export interface FurnaceConfig {
   tokenPrefix?: string;
   /** Custom properties allowed even though they don't match tokenPrefix (e.g. ["--background-color-box"]) */
   tokenAllowlist?: string[];
+  /**
+   * Override the default Fluent (.ftl) base path within the engine.
+   * Defaults to `toolkit/locales/en-US/toolkit/global` when not set.
+   */
+  ftlBasePath?: string;
+  /**
+   * Additional directories to scan for components (relative to engine root).
+   * Always includes `toolkit/content/widgets` by default.
+   */
+  scanPaths?: string[];
   /** Stock components tracked for preview */
   stock: string[];
   /** Override components */
   overrides: Record<string, OverrideComponentConfig>;
   /** Custom components */
   custom: Record<string, CustomComponentConfig>;
+}
+
+/**
+ * Operations that can leave a pending-repair marker when they fail to roll
+ * back cleanly. The marker is consumed by `fireforge doctor`, which either
+ * re-runs apply for engine-side failures or validates the current authoring
+ * state before clearing authoring markers. The string is surfaced in doctor's
+ * failure message verbatim, so new entries should be self-explanatory.
+ */
+export type FurnacePendingRepairOperation =
+  | 'preview-teardown'
+  | 'apply-rollback'
+  | 'deploy-rollback'
+  | 'remove-rollback'
+  | 'create-rollback'
+  | 'override-rollback'
+  | 'scan-rollback'
+  | 'rename-rollback'
+  | 'refresh-rollback';
+
+/**
+ * Marker persisted into `.fireforge/furnace-state.json` when a furnace
+ * mutation failed to roll back cleanly. Its presence tells the next
+ * `fireforge doctor` run that the engine and workspace may have drifted
+ * out-of-band from what the state file records.
+ */
+export interface FurnacePendingRepair {
+  /** The operation that failed to clean up; used by doctor to route the fix. */
+  operation: FurnacePendingRepairOperation;
+  /** ISO timestamp of when the repair marker was written. */
+  timestamp: string;
+  /** Human-readable summary of the failure; shown by doctor. */
+  reason: string;
 }
 
 /**
@@ -83,6 +128,20 @@ export interface FurnaceState {
   lastApply?: string;
   /** Checksums of component files at last apply, keyed by relative path */
   appliedChecksums?: Record<string, string>;
+  /**
+   * SHA-256 hashes of engine-side files written during the last apply, keyed
+   * by engine-relative path. Used by drift detection to avoid byte-comparing
+   * engine files against workspace sources when the cached hash still matches
+   * the on-disk content. Populated alongside `appliedChecksums` on successful
+   * apply.
+   */
+  engineChecksums?: Record<string, string>;
+  /**
+   * Set when a furnace mutation failed to roll back cleanly and the engine
+   * may be in an inconsistent state. Cleared by `fireforge doctor` after
+   * reconciliation. See {@link FurnacePendingRepair}.
+   */
+  pendingRepair?: FurnacePendingRepair;
 }
 
 /**
@@ -110,6 +169,12 @@ export interface ApplyResult {
   skipped: Array<{ name: string; reason: string }>;
   /** Components that failed to apply */
   errors: Array<{ name: string; error: string }>;
+  /**
+   * Set to true when the rollback journal was restored after a partial failure.
+   * When true, entries in `applied` reflect what was attempted, not what
+   * persisted — the engine has been restored to its pre-apply state.
+   */
+  rolledBack?: boolean;
 }
 
 /**
@@ -117,7 +182,15 @@ export interface ApplyResult {
  */
 export interface DryRunAction {
   component: string;
-  action: 'copy' | 'register-ce' | 'register-jar' | 'copy-ftl';
+  action:
+    | 'copy'
+    | 'register-ce'
+    | 'register-jar'
+    | 'copy-ftl'
+    | 'undeploy-remove'
+    | 'undeploy-restore'
+    | 'unregister-ce'
+    | 'unregister-jar';
   source?: string;
   target?: string;
   description: string;

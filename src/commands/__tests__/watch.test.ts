@@ -59,7 +59,7 @@ describe('watchCommand', () => {
     vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
     vi.mocked(loadConfig).mockResolvedValue({
       binaryName: 'mybrowser',
-      firefox: { version: '140.0esr', product: 'firefox-esr' },
+      firefox: { version: '146.0esr', product: 'firefox-esr' },
     } as never);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(executableExists).mockResolvedValue(true);

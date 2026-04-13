@@ -31,7 +31,7 @@ const validFirefoxVersion = fc.oneof(
       fc.integer({ min: 0, max: 99 })
     )
     .map(([maj, min, patch]) => `${maj}.${min}.${patch}`),
-  // ESR: "140.0esr", "128.0.1esr"
+  // ESR: "146.0esr", "128.0.1esr"
   fc
     .tuple(fc.integer({ min: 1, max: 999 }), fc.integer({ min: 0, max: 99 }))
     .map(([maj, min]) => `${maj}.${min}esr`),

@@ -33,6 +33,33 @@ export function isPositiveInteger(value: unknown): value is number {
 }
 
 /**
+ * Parses a CLI flag value as a positive integer. Throws
+ * {@link InvalidArgumentError} on NaN, non-integer, or non-positive input.
+ *
+ * Intended for use inside Commander `argParser` bodies where the raw
+ * input arrives as a string. Without this wrapper the default pattern
+ * (`parseInt(v, 10)`) silently hands NaN to downstream planners, which
+ * then embed it into filenames / orders instead of failing fast.
+ *
+ * Rejects leading-zero forms ("01"), decimals ("1.5"), whitespace, and
+ * non-numeric garbage via a strict regex — we only accept the canonical
+ * representation so there is no ambiguity between what the user typed
+ * and what the value becomes on disk.
+ *
+ * @param flagName - Flag name to include in the error (e.g. `--order`)
+ * @param rawValue - Raw string value from Commander
+ */
+export function parsePositiveIntegerFlag(flagName: string, rawValue: string): number {
+  if (!/^[1-9]\d*$/.test(rawValue)) {
+    throw new InvalidArgumentError(
+      `${flagName} must be a positive integer, got "${rawValue}".`,
+      flagName
+    );
+  }
+  return Number.parseInt(rawValue, 10);
+}
+
+/**
  * Checks whether a value is a boolean.
  * @param value - Value to check
  * @returns True if value is a boolean
@@ -86,10 +113,10 @@ export function assertObject(
 
 /**
  * Validates a Firefox version string.
- * Accepts formats like "146.0", "146.0.1", "140.0esr", "147.0b1"
+ * Accepts formats like "146.0", "146.0.1", "146.0esr", "147.0b1"
  */
 export function isValidFirefoxVersion(version: string): boolean {
-  // Stable/ESR: 146.0, 146.0.1, 140.0esr, 128.0.1esr
+  // Stable/ESR: 146.0, 146.0.1, 146.0esr, 128.0.1esr
   // Beta: 147.0b1, 147.0b2
   return /^[1-9]\d{0,2}\.\d+(?:b[1-9]\d*|\.\d+(?:esr)?|esr)?$/.test(version);
 }
@@ -164,7 +191,7 @@ export function inferProductFromVersion(
  * Validates that a Firefox product and version are compatible.
  *
  * Rules:
- * - `firefox-esr` requires an ESR version (e.g. "140.0esr", "128.0.1esr").
+ * - `firefox-esr` requires an ESR version (e.g. "146.0esr", "128.0.1esr").
  * - `firefox-beta` requires a beta version (e.g. "147.0b1").
  * - `firefox` (stable) rejects both ESR and beta version strings.
  *

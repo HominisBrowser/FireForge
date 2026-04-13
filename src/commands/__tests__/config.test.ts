@@ -58,12 +58,12 @@ describe('configCommand', () => {
   });
 
   it('keeps string-typed Firefox versions as strings without requiring JSON quoting', async () => {
-    await configCommand(projectRoot, 'firefox.version', '140.0esr');
+    await configCommand(projectRoot, 'firefox.version', '146.0esr');
 
     const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
       firefox?: { version?: string };
     };
-    expect(config.firefox?.version).toBe('140.0esr');
+    expect(config.firefox?.version).toBe('146.0esr');
   });
 
   it('warns when JSON parsing would coerce the stored value to a non-string type', async () => {

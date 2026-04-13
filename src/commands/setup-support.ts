@@ -112,7 +112,7 @@ export function validateSetupOptions(options: SetupOptions): void {
   }
   if (options.firefoxVersion !== undefined && !isValidFirefoxVersion(options.firefoxVersion)) {
     throw new InvalidArgumentError(
-      'Invalid Firefox version format (e.g., 146.0, 140.0esr, or 147.0b1)',
+      'Invalid Firefox version format (e.g., 146.0, 146.0esr, or 147.0b1)',
       '--firefox-version'
     );
   }
@@ -186,10 +186,10 @@ async function promptSetupInputs(options: SetupOptions): Promise<ResolvedSetupIn
           ? Promise.resolve(options.firefoxVersion)
           : text({
               message: 'Firefox version to base on',
-              placeholder: '140.0esr',
+              placeholder: '146.0esr',
               validate: (value) => {
                 if (value && !isValidFirefoxVersion(value)) {
-                  return 'Invalid Firefox version format (e.g., 146.0, 140.0esr, or 147.0b1)';
+                  return 'Invalid Firefox version format (e.g., 146.0, 146.0esr, or 147.0b1)';
                 }
                 return undefined;
               },
@@ -203,7 +203,7 @@ async function promptSetupInputs(options: SetupOptions): Promise<ResolvedSetupIn
         const effectiveVersion =
           (typeof results.firefoxVersion === 'string' && results.firefoxVersion.trim()) ||
           options.firefoxVersion ||
-          '140.0esr';
+          '146.0esr';
         const inferredProduct = inferProductFromVersion(effectiveVersion);
         if (inferredProduct) {
           return Promise.resolve(inferredProduct);
@@ -254,7 +254,7 @@ async function promptSetupInputs(options: SetupOptions): Promise<ResolvedSetupIn
   const finalBinaryName =
     (typeof project.binaryName === 'string' ? project.binaryName.trim() : '') || sanitizedName;
   const finalFirefoxVersion =
-    (typeof project.firefoxVersion === 'string' ? project.firefoxVersion.trim() : '') || '140.0esr';
+    (typeof project.firefoxVersion === 'string' ? project.firefoxVersion.trim() : '') || '146.0esr';
 
   if (!isValidAppId(finalAppId)) {
     throw new InvalidArgumentError(`Derived appId "${finalAppId}" is invalid.`, 'appId');

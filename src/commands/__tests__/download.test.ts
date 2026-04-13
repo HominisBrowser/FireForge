@@ -5,7 +5,7 @@ import { makeProjectPaths } from '../../test-utils/index.js';
 
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn().mockResolvedValue({
-    firefox: { version: '140.0esr', product: 'firefox-esr' },
+    firefox: { version: '146.0esr', product: 'firefox-esr' },
   }),
   getProjectPaths: vi.fn(),
   updateState: vi.fn().mockResolvedValue(undefined),
@@ -14,6 +14,17 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/firefox.js', () => ({
   downloadFirefoxSource: vi.fn().mockResolvedValue(undefined),
   formatBytes: vi.fn((value: number) => `${value} B`),
+}));
+
+vi.mock('../../core/furnace-config.js', () => ({
+  getFurnacePaths: vi.fn((root: string) => ({
+    furnaceConfig: `${root}/furnace.json`,
+    componentsDir: `${root}/components`,
+    overridesDir: `${root}/components/overrides`,
+    customDir: `${root}/components/custom`,
+    furnaceState: `${root}/.fireforge/furnace-state.json`,
+  })),
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../core/git.js', async (importOriginal) => {
@@ -31,6 +42,7 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn((path: string) => Promise.resolve(path === '/project/engine')),
   removeDir: vi.fn().mockResolvedValue(undefined),
   ensureDir: vi.fn().mockResolvedValue(undefined),
+  checkDiskSpace: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -48,6 +60,7 @@ vi.mock('../../utils/logger.js', () => ({
 
 import { getProjectPaths } from '../../core/config.js';
 import { downloadFirefoxSource } from '../../core/firefox.js';
+import { updateFurnaceState } from '../../core/furnace-config.js';
 import { getHead, initRepository, resumeRepository } from '../../core/git.js';
 import { EngineExistsError } from '../../errors/download.js';
 import { pathExists, removeDir } from '../../utils/fs.js';
@@ -146,6 +159,78 @@ describe('downloadCommand', () => {
     expect(initRepository).not.toHaveBeenCalled();
   });
 
+  it('clears furnace state when --force removes an existing engine', async () => {
+    // Engine exists AND furnace-state.json exists → force branch should clear it.
+    vi.mocked(pathExists).mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === '/project/.fireforge/furnace-state.json') return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', { force: true });
+
+    expect(removeDir).toHaveBeenCalledWith('/project/engine');
+    expect(updateFurnaceState).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(updateFurnaceState).mock.calls[0];
+    expect(call).toBeDefined();
+    const updater = call?.[1];
+    expect(typeof updater).toBe('function');
+    if (typeof updater === 'function') {
+      expect(updater({ appliedChecksums: { 'custom|foo/bar': 'hash' } })).toEqual({});
+    }
+  });
+
+  it('preserves pendingRepair when --force clears stale furnace apply state', async () => {
+    vi.mocked(pathExists).mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === '/project/.fireforge/furnace-state.json') return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', { force: true });
+
+    const call = vi.mocked(updateFurnaceState).mock.calls[0];
+    expect(call).toBeDefined();
+    const updater = call?.[1];
+    expect(typeof updater).toBe('function');
+    if (typeof updater === 'function') {
+      expect(
+        updater({
+          lastApply: '2026-04-12T00:00:00.000Z',
+          appliedChecksums: { 'custom|foo/bar': 'hash' },
+          pendingRepair: {
+            operation: 'override-rollback',
+            timestamp: '2026-04-12T01:02:03.000Z',
+            reason: 'workspace authoring incomplete',
+          },
+        })
+      ).toEqual({
+        pendingRepair: {
+          operation: 'override-rollback',
+          timestamp: '2026-04-12T01:02:03.000Z',
+          reason: 'workspace authoring incomplete',
+        },
+      });
+    }
+  });
+
+  it('does not try to clear furnace state when it does not exist', async () => {
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === '/project/engine')
+    );
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', { force: true });
+
+    expect(removeDir).toHaveBeenCalled();
+    expect(updateFurnaceState).not.toHaveBeenCalled();
+  });
+
   it('emits download progress only for new 5 percent boundaries', async () => {
     const downloadSpinner = createSpinnerMock();
     const gitSpinner = createSpinnerMock();
@@ -170,11 +255,11 @@ describe('downloadCommand', () => {
     expect(downloadSpinner.messageMock).toHaveBeenCalledTimes(2);
     expect(downloadSpinner.messageMock).toHaveBeenNthCalledWith(
       1,
-      'Downloading Firefox 140.0esr... 5% (5 B / 100 B)'
+      'Downloading Firefox 146.0esr... 5% (5 B / 100 B)'
     );
     expect(downloadSpinner.messageMock).toHaveBeenNthCalledWith(
       2,
-      'Downloading Firefox 140.0esr... 10% (10 B / 100 B)'
+      'Downloading Firefox 146.0esr... 10% (10 B / 100 B)'
     );
   });
 });

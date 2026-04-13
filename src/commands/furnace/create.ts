@@ -5,10 +5,30 @@ import { multiselect, text } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import {
-  ensureFurnaceConfig,
+  createDefaultFurnaceConfig,
+  detectComposesCycles,
+  furnaceConfigExists,
   getFurnacePaths,
+  loadFurnaceConfig,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
+import { tagNameToClassName } from '../../core/furnace-constants.js';
+import {
+  type FurnaceOperationContext,
+  recordFurnaceRollbackFailure,
+  runFurnaceMutation,
+} from '../../core/furnace-operation.js';
+import {
+  CUSTOM_ELEMENT_TAG_PATTERN,
+  CUSTOM_ELEMENT_TAG_RULES,
+} from '../../core/furnace-registration-validate.js';
+import {
+  createRollbackJournal,
+  recordCreatedDir,
+  restoreRollbackJournalOrThrow,
+  type RollbackJournal,
+  snapshotFile,
+} from '../../core/furnace-rollback.js';
 import { isComponentInEngine } from '../../core/furnace-scanner.js';
 import { DEFAULT_LICENSE, getLicenseHeader } from '../../core/license-headers.js';
 import { registerTestManifest } from '../../core/manifest-register.js';
@@ -21,15 +41,12 @@ import { toError } from '../../utils/errors.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { cancel, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
 
-/**
- * Converts a kebab-case tag name to PascalCase class name.
- * e.g. "moz-sidebar-panel" → "MozSidebarPanel"
- */
-function tagNameToClassName(tagName: string): string {
-  return tagName
-    .split('-')
-    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-    .join('');
+async function loadAuthoringFurnaceConfig(projectRoot: string): Promise<FurnaceConfig> {
+  if (await furnaceConfigExists(projectRoot)) {
+    return loadFurnaceConfig(projectRoot);
+  }
+
+  return createDefaultFurnaceConfig();
 }
 
 /**
@@ -39,8 +56,7 @@ function tagNameToClassName(tagName: string): string {
 function validateTagName(name: string): string | undefined {
   if (!name.trim()) return 'Name is required';
   if (!name.includes('-')) return 'Custom element names must contain a hyphen (e.g., "my-widget")';
-  if (!/^[a-z][a-z0-9]*(-[a-z0-9]+)+$/.test(name))
-    return 'Name must be lowercase, start with a letter, and use hyphens to separate words (e.g., "my-widget")';
+  if (!CUSTOM_ELEMENT_TAG_PATTERN.test(name)) return `Name ${CUSTOM_ELEMENT_TAG_RULES}`;
   return undefined;
 }
 
@@ -132,13 +148,15 @@ function generateFtlContent(name: string, header: string): string {
  * @param license - Project license used for generated headers
  * @param forgeConfig - Project config fields needed for test naming
  * @param paths - Resolved project paths used to place test files
+ * @param journal - Optional rollback journal that snapshots files before writes
  * @returns Relative test filenames created or updated for the component
  */
 async function scaffoldTestFiles(
   componentName: string,
   license: ProjectLicense,
   forgeConfig: { binaryName: string },
-  paths: { engine: string }
+  paths: { engine: string },
+  journal?: RollbackJournal
 ): Promise<string[]> {
   const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;
   // Avoid double-prefixing: strip binaryName prefix since testDirName already uses it
@@ -149,6 +167,9 @@ async function scaffoldTestFiles(
   const underscored = withoutBinaryPrefix.replace(/-/g, '_');
   const testFileName = `browser_${testDirName}_${underscored}.js`;
   const testDir = join(paths.engine, 'browser/base/content/test', testDirName);
+  if (journal && !(await pathExists(testDir))) {
+    recordCreatedDir(journal, testDir);
+  }
   await ensureDir(testDir);
 
   const jsHeader = getLicenseHeader(license, 'js');
@@ -161,9 +182,11 @@ async function scaffoldTestFiles(
     // Append the new test entry if not already present
     const existingToml = await readText(tomlPath);
     if (!existingToml.includes(`["${testFileName}"]`)) {
+      if (journal) await snapshotFile(journal, tomlPath);
       await writeText(tomlPath, existingToml.trimEnd() + `\n\n["${testFileName}"]\n`);
     }
   } else {
+    if (journal) await snapshotFile(journal, tomlPath);
     const browserToml = `${hashHeader}
 
 [DEFAULT]
@@ -178,6 +201,7 @@ support-files = ["head.js"]
   // head.js — only create if it doesn't exist (shared across components)
   const headPath = join(testDir, 'head.js');
   if (!(await pathExists(headPath))) {
+    if (journal) await snapshotFile(journal, headPath);
     const headJs = `${jsHeader}
 
 "use strict";
@@ -206,11 +230,17 @@ add_task(async function test_${underscored}_defined() {
   Assert.equal(typeof ctor, "function", "Constructor should be a function");
 });
 `;
-  await writeText(join(testDir, testFileName), testJs);
+  const testFilePath = join(testDir, testFileName);
+  if (journal) await snapshotFile(journal, testFilePath);
+  await writeText(testFilePath, testJs);
   testFiles.push(testFileName);
 
-  // Register in moz.build
+  // Register in moz.build. The registration helper edits browser/base/moz.build,
+  // so snapshot it first when a journal is supplied. The existing warn-and-continue
+  // contract is preserved so a missing/unparseable moz.build never trips rollback.
   try {
+    const mozBuildPath = join(paths.engine, 'browser/base/moz.build');
+    if (journal) await snapshotFile(journal, mozBuildPath);
     const registerResult = await registerTestManifest(paths.engine, testDirName);
     if (!registerResult.skipped) {
       success(`Registered test manifest in ${registerResult.manifest}`);
@@ -274,6 +304,7 @@ async function resolveCreateFeatures(
  * @param description - Human-readable component description
  * @param localized - Whether to include a Fluent file
  * @param license - Project license used for generated headers
+ * @param journal - Optional rollback journal that snapshots files before writes
  * @returns Relative filenames written for the component
  */
 async function writeComponentFiles(
@@ -282,12 +313,15 @@ async function writeComponentFiles(
   className: string,
   description: string,
   localized: boolean,
-  license: ProjectLicense
+  license: ProjectLicense,
+  journal?: RollbackJournal
 ): Promise<string[]> {
   await ensureDir(componentDir);
 
   const files = [`${componentName}.mjs`, `${componentName}.css`];
 
+  const mjsPath = join(componentDir, `${componentName}.mjs`);
+  if (journal) await snapshotFile(journal, mjsPath);
   const mjsContent = generateMjsContent(
     componentName,
     className,
@@ -295,18 +329,109 @@ async function writeComponentFiles(
     localized,
     getLicenseHeader(license, 'js')
   );
-  await writeText(join(componentDir, `${componentName}.mjs`), mjsContent);
+  await writeText(mjsPath, mjsContent);
 
+  const cssPath = join(componentDir, `${componentName}.css`);
+  if (journal) await snapshotFile(journal, cssPath);
   const cssContent = generateCssContent(getLicenseHeader(license, 'css'));
-  await writeText(join(componentDir, `${componentName}.css`), cssContent);
+  await writeText(cssPath, cssContent);
 
   if (localized) {
+    const ftlPath = join(componentDir, `${componentName}.ftl`);
+    if (journal) await snapshotFile(journal, ftlPath);
     const ftlContent = generateFtlContent(componentName, getLicenseHeader(license, 'hash'));
-    await writeText(join(componentDir, `${componentName}.ftl`), ftlContent);
+    await writeText(ftlPath, ftlContent);
     files.push(`${componentName}.ftl`);
   }
 
   return files;
+}
+
+/**
+ * Performs the transactional mutation phase of furnace create. All file
+ * writes and the config update are recorded in a rollback journal so a
+ * failure mid-phase restores the workspace and engine to their pre-command
+ * state.
+ */
+async function performCreateMutations(args: {
+  projectRoot: string;
+  componentName: string;
+  className: string;
+  description: string;
+  localized: boolean;
+  register: boolean;
+  composes: string[] | undefined;
+  componentDir: string;
+  furnacePaths: { furnaceConfig: string };
+  config: FurnaceConfig;
+  forgeConfig: { binaryName: string };
+  paths: { engine: string };
+  license: ProjectLicense;
+  withTests: boolean;
+  operationContext?: FurnaceOperationContext;
+}): Promise<{ files: string[]; testFiles: string[] }> {
+  const journal = createRollbackJournal();
+  if (args.operationContext) {
+    args.operationContext.registerJournal(journal);
+  }
+  recordCreatedDir(journal, args.componentDir);
+
+  const testFiles: string[] = [];
+  let files: string[];
+
+  try {
+    files = await writeComponentFiles(
+      args.componentDir,
+      args.componentName,
+      args.className,
+      args.description,
+      args.localized,
+      args.license,
+      journal
+    );
+
+    const customEntry: import('../../types/furnace.js').CustomComponentConfig = {
+      description: args.description,
+      targetPath: `toolkit/content/widgets/${args.componentName}`,
+      register: args.register,
+      localized: args.localized,
+    };
+    if (args.composes && args.composes.length > 0) {
+      customEntry.composes = args.composes;
+    }
+    args.config.custom[args.componentName] = customEntry;
+
+    await snapshotFile(journal, args.furnacePaths.furnaceConfig);
+    await writeFurnaceConfig(args.projectRoot, args.config);
+
+    if (args.withTests) {
+      const scafFiles = await scaffoldTestFiles(
+        args.componentName,
+        args.license,
+        args.forgeConfig,
+        args.paths,
+        journal
+      );
+      testFiles.push(...scafFiles);
+    }
+  } catch (error: unknown) {
+    try {
+      await restoreRollbackJournalOrThrow(
+        journal,
+        `Failed to create custom component "${args.componentName}"`
+      );
+    } catch (rollbackError) {
+      await recordFurnaceRollbackFailure(
+        args.projectRoot,
+        'create-rollback',
+        toError(rollbackError).message
+      );
+      throw rollbackError;
+    }
+    throw error;
+  }
+
+  return { files, testFiles };
 }
 
 /**
@@ -324,23 +449,32 @@ export async function furnaceCreateCommand(
 
   intro('Furnace Create');
 
-  // Load or create furnace.json
-  const config = await ensureFurnaceConfig(projectRoot);
+  // --- Resolve component name ---
+  // Validation runs before we load/create any persisted furnace config so a
+  // failed authoring command never auto-creates furnace.json in a fresh
+  // directory.
+  let componentName = name;
+
+  if (componentName) {
+    const validationError = validateTagName(componentName);
+    if (validationError) {
+      throw new InvalidArgumentError(validationError, 'name');
+    }
+  } else if (!isInteractive) {
+    throw new InvalidArgumentError(
+      'Component name is required in non-interactive mode.\n' +
+        'Usage: fireforge furnace create <name> -d "description"',
+      'name'
+    );
+  }
+
   const paths = getProjectPaths(projectRoot);
   const forgeConfig = await loadConfig(projectRoot);
   const license = forgeConfig.license ?? DEFAULT_LICENSE;
   const furnacePaths = getFurnacePaths(projectRoot);
 
-  // --- Resolve component name ---
-  let componentName = name;
-
-  if (componentName) {
-    // Validate CLI-provided name
-    const validationError = validateTagName(componentName);
-    if (validationError) {
-      throw new InvalidArgumentError(validationError, 'name');
-    }
-  } else if (isInteractive) {
+  if (!componentName) {
+    // Interactive prompt path; non-interactive missing-name was rejected above.
     const nameResult = await text({
       message: 'Component tag name:',
       placeholder: 'moz-my-widget',
@@ -353,13 +487,12 @@ export async function furnaceCreateCommand(
     }
 
     componentName = String(nameResult);
-  } else {
-    throw new InvalidArgumentError(
-      'Component name is required in non-interactive mode.\n' +
-        'Usage: fireforge furnace create <name> -d "description"',
-      'name'
-    );
   }
+
+  // Load the current furnace config only after the interactive name prompt
+  // succeeds so a cancelled create in a fresh project does not strand a new
+  // furnace.json behind.
+  const config = await loadAuthoringFurnaceConfig(projectRoot);
 
   // Check for conflicts
   const conflict = checkNameConflict(config, componentName);
@@ -404,6 +537,18 @@ export async function furnaceCreateCommand(
   }
   const { localized, register } = featureSelection;
 
+  // --with-tests writes files under engine/browser/base/content/test/ and
+  // registers them in moz.build. Guard against a missing engine now rather
+  // than letting scaffoldTestFiles fabricate a partial engine tree with
+  // ensureDir.
+  const withTests = options.withTests ?? false;
+  if (withTests && !(await pathExists(paths.engine))) {
+    throw new FurnaceError(
+      'Engine directory not found. Run "fireforge download" first to use --with-tests.',
+      componentName
+    );
+  }
+
   // --- Generate component files ---
   const className = tagNameToClassName(componentName);
   const componentDir = join(furnacePaths.customDir, componentName);
@@ -416,47 +561,65 @@ export async function furnaceCreateCommand(
     );
   }
 
-  const files = await writeComponentFiles(
-    componentDir,
-    componentName,
-    className,
-    description,
-    localized,
-    license
-  );
-
-  // --- Validate and process --compose ---
+  // --- Validate --compose targets BEFORE any writes so a failed validation
+  // does not strand component files behind.
   const composes = options.compose;
   if (composes && composes.length > 0) {
+    const known = new Set([
+      ...config.stock,
+      ...Object.keys(config.overrides),
+      ...Object.keys(config.custom),
+    ]);
     for (const tag of composes) {
-      if (!config.stock.includes(tag)) {
-        warn(`Composed tag "${tag}" is not in the stock array of furnace.json.`);
+      if (tag === componentName) {
+        throw new FurnaceError(`Component "${componentName}" cannot compose itself.`);
+      }
+      if (!known.has(tag)) {
+        throw new FurnaceError(
+          `Cannot compose unknown component "${tag}". ` +
+            'The referenced component must be registered as stock, override, or custom.'
+        );
       }
     }
+
+    // Check for cycles that would be introduced by adding this component.
+    const tempCustom: FurnaceConfig['custom'] = {
+      ...config.custom,
+      [componentName]: {
+        description: '',
+        targetPath: `toolkit/content/widgets/${componentName}`,
+        register: true,
+        localized: false,
+        composes,
+      },
+    };
+    detectComposesCycles(tempCustom);
   }
 
-  // --- Update furnace.json ---
-  const customEntry: import('../../types/furnace.js').CustomComponentConfig = {
-    description,
-    targetPath: `toolkit/content/widgets/${componentName}`,
-    register,
-    localized,
-  };
-  if (composes && composes.length > 0) {
-    customEntry.composes = composes;
-  }
-  config.custom[componentName] = customEntry;
-
-  await writeFurnaceConfig(projectRoot, config);
-
-  // --- Scaffold tests if requested ---
-  const withTests = options.withTests ?? false;
-  const testFiles: string[] = [];
-
-  if (withTests) {
-    const scafFiles = await scaffoldTestFiles(componentName, license, forgeConfig, paths);
-    testFiles.push(...scafFiles);
-  }
+  // All validation is done. Hand off to the transactional mutation helper
+  // so any failure restores the workspace and engine to their pre-command
+  // state via the shared rollback journal. The mutation runs under the
+  // furnace-wide lock and is registered with the global SIGINT/SIGTERM
+  // rollback pathway.
+  const { files, testFiles } = await runFurnaceMutation(projectRoot, 'create-rollback', (ctx) =>
+    performCreateMutations({
+      projectRoot,
+      componentName,
+      className,
+      description,
+      localized,
+      register,
+      composes,
+      componentDir,
+      furnacePaths,
+      config,
+      forgeConfig,
+      paths,
+      license,
+      withTests,
+      operationContext: ctx,
+    })
+  );
 
   // --- Success ---
   let noteParts =

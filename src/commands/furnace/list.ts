@@ -1,12 +1,56 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
-import { info, intro, note, outro } from '../../utils/logger.js';
+import { join } from 'node:path';
+
+import {
+  extractComponentChecksums,
+  hasComponentChanged,
+} from '../../core/furnace-apply-helpers.js';
+import {
+  furnaceConfigExists,
+  getFurnacePaths,
+  loadFurnaceConfig,
+  loadFurnaceState,
+} from '../../core/furnace-config.js';
+import { pathExists } from '../../utils/fs.js';
+import {
+  formatErrorText,
+  formatSuccessText,
+  info,
+  intro,
+  note,
+  outro,
+} from '../../utils/logger.js';
+
+/**
+ * Returns a short health indicator for a component directory based on whether
+ * its workspace checksums have changed since the last apply.
+ */
+async function getHealthIndicator(
+  componentDir: string,
+  type: 'override' | 'custom',
+  name: string,
+  appliedChecksums: Record<string, string> | undefined
+): Promise<string> {
+  if (!(await pathExists(componentDir))) {
+    return formatErrorText('missing');
+  }
+  const previous = extractComponentChecksums(appliedChecksums, type, name);
+  if (Object.keys(previous).length === 0) {
+    return formatErrorText('not applied');
+  }
+  const changed = await hasComponentChanged(componentDir, previous);
+  return changed ? formatErrorText('modified') : formatSuccessText('clean');
+}
 
 /**
  * Runs the furnace list command to display all registered components.
  * @param projectRoot - Root directory of the project
+ * @param options - List options
  */
-export async function furnaceListCommand(projectRoot: string): Promise<void> {
+export async function furnaceListCommand(
+  projectRoot: string,
+  options: { verbose?: boolean } = {}
+): Promise<void> {
   intro('Furnace List');
 
   if (!(await furnaceConfigExists(projectRoot))) {
@@ -32,6 +76,10 @@ export async function furnaceListCommand(projectRoot: string): Promise<void> {
     return;
   }
 
+  const showHealth = options.verbose ?? false;
+  const furnacePaths = showHealth ? getFurnacePaths(projectRoot) : undefined;
+  const state = showHealth ? await loadFurnaceState(projectRoot) : undefined;
+
   // --- Stock ---
   if (stockCount > 0) {
     info('Stock:');
@@ -47,6 +95,16 @@ export async function furnaceListCommand(projectRoot: string): Promise<void> {
       let line = `  ${name} (${entry.type})`;
       if (entry.description) {
         line += ` — ${entry.description}`;
+      }
+      if (showHealth && furnacePaths && state) {
+        const componentDir = join(furnacePaths.overridesDir, name);
+        const health = await getHealthIndicator(
+          componentDir,
+          'override',
+          name,
+          state.appliedChecksums
+        );
+        line += ` [${health}]`;
       }
       info(line);
     }
@@ -66,6 +124,16 @@ export async function furnaceListCommand(projectRoot: string): Promise<void> {
       }
       if (flags.length > 0) {
         line += ` [${flags.join(', ')}]`;
+      }
+      if (showHealth && furnacePaths && state) {
+        const componentDir = join(furnacePaths.customDir, name);
+        const health = await getHealthIndicator(
+          componentDir,
+          'custom',
+          name,
+          state.appliedChecksums
+        );
+        line += ` [${health}]`;
       }
       info(line);
     }

@@ -9,6 +9,34 @@ import { verbose } from '../utils/logger.js';
 import { hasRawCssColors, stripJsComments } from '../utils/regex.js';
 import { loadFurnaceConfig } from './furnace-config.js';
 import { type CommentStyle, getLicenseHeader, hasAnyLicenseHeader } from './license-headers.js';
+import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
+
+// ---------------------------------------------------------------------------
+// Cross-patch lint re-exports
+// ---------------------------------------------------------------------------
+//
+// The cross-patch lint infrastructure (queue context builder, duplicate-
+// creation and forward-import rules, ignore marker) lives in
+// `patch-lint-cross.ts` so the per-patch and cross-patch rule bodies can
+// each stay within the project's per-file line budget. Re-export the
+// public surface so callers continue to import from a single module.
+
+export {
+  buildPatchQueueContext,
+  collectNewFileCreatorsByPath,
+  type ExtractedSpecifier,
+  extractImportSpecifiers,
+  extractImportSpecifiersWithLines,
+  findForwardImportIgnoreLines,
+  FORWARD_IMPORT_IGNORE_MARKER,
+  isForwardImportableFile,
+  lintPatchQueue,
+  lintPatchQueueDuplicateCreations,
+  lintPatchQueueForwardImports,
+  type PatchQueueContext,
+  type PatchQueueEntry,
+} from './patch-lint-cross.js';
+export { buildModifiedFileAdditionsFromDiff, detectNewFilesInDiff } from './patch-lint-diff.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,65 +60,6 @@ export function commentStyleForFile(file: string): CommentStyle | null {
   if (file.endsWith('.ftl')) return 'hash';
   if (isJsFile(file)) return 'js';
   return null;
-}
-
-/**
- * Extracts new-file paths from a unified diff by scanning for `new file mode` markers.
- */
-export function detectNewFilesInDiff(diffContent: string): Set<string> {
-  const newFiles = new Set<string>();
-  const lines = diffContent.split('\n');
-  let currentFile: string | null = null;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      const match = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-      currentFile = match?.[1] ?? null;
-      continue;
-    }
-
-    if (line.startsWith('new file mode') && currentFile) {
-      newFiles.add(currentFile);
-    }
-  }
-
-  return newFiles;
-}
-
-/**
- * Extracts added lines per file from a unified diff.
- * Returns a map of file path → array of added line contents (without the leading `+`).
- */
-function extractAddedLinesPerFile(diffContent: string): Map<string, string[]> {
-  const result = new Map<string, string[]>();
-  const lines = diffContent.split('\n');
-  let currentFile: string | null = null;
-  let inHunk = false;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      const match = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-      currentFile = match?.[1] ?? null;
-      inHunk = false;
-      continue;
-    }
-
-    if (line.startsWith('@@')) {
-      inHunk = true;
-      continue;
-    }
-
-    if (inHunk && currentFile && line.startsWith('+') && !line.startsWith('+++')) {
-      let arr = result.get(currentFile);
-      if (!arr) {
-        arr = [];
-        result.set(currentFile, arr);
-      }
-      arr.push(line.slice(1));
-    }
-  }
-
-  return result;
 }
 
 // ---------------------------------------------------------------------------

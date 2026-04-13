@@ -75,7 +75,7 @@ function makePatch(filename: string, filesAffected: string[]): PatchMetadata {
     name: 'test',
     description: '',
     createdAt: '',
-    sourceEsrVersion: '140.0esr',
+    sourceEsrVersion: '146.0esr',
     filesAffected,
   };
 }
@@ -233,32 +233,38 @@ describe('extractNewFileContent', () => {
 });
 
 describe('isPatchFullyCovered', () => {
-  it('returns true when a new export exactly matches an existing patch', () => {
-    expect(isPatchFullyCovered(['a.js', 'b.js'], ['a.js', 'b.js'])).toBe(true);
+  it('returns covered with byFiles when a new export exactly matches an existing patch', () => {
+    const result = isPatchFullyCovered(['a.js', 'b.js'], ['a.js', 'b.js']);
+    expect(result.covered).toBe(true);
+    expect(result.byFiles).toEqual(['a.js', 'b.js']);
   });
 
-  it('returns false when a new export only partially overlaps an existing patch', () => {
-    expect(isPatchFullyCovered(['a.js', 'b.js'], ['a.js'])).toBe(false);
+  it('returns not covered when a new export only partially overlaps an existing patch', () => {
+    const result = isPatchFullyCovered(['a.js', 'b.js'], ['a.js']);
+    expect(result.covered).toBe(false);
+    expect(result.byFiles).toEqual([]);
   });
 
-  it('returns true when target is a superset of the patch files', () => {
-    expect(isPatchFullyCovered(['a.js'], ['a.js', 'b.js'])).toBe(true);
+  it('returns covered when target is a superset of the patch files', () => {
+    const result = isPatchFullyCovered(['a.js'], ['a.js', 'b.js']);
+    expect(result.covered).toBe(true);
+    expect(result.byFiles).toEqual(['a.js']);
   });
 
-  it('returns true for a single-file patch covered by target', () => {
-    expect(isPatchFullyCovered(['a.js'], ['a.js'])).toBe(true);
+  it('returns covered for a single-file patch covered by target', () => {
+    expect(isPatchFullyCovered(['a.js'], ['a.js']).covered).toBe(true);
   });
 
-  it('returns false when patch files is empty', () => {
-    expect(isPatchFullyCovered([], ['a.js'])).toBe(false);
+  it('returns not covered when patch files is empty', () => {
+    expect(isPatchFullyCovered([], ['a.js']).covered).toBe(false);
   });
 
-  it('returns false when target files is empty', () => {
-    expect(isPatchFullyCovered(['a.js'], [])).toBe(false);
+  it('returns not covered when target files is empty', () => {
+    expect(isPatchFullyCovered(['a.js'], []).covered).toBe(false);
   });
 
-  it('returns false when both arrays are empty', () => {
-    expect(isPatchFullyCovered([], [])).toBe(false);
+  it('returns not covered when both arrays are empty', () => {
+    expect(isPatchFullyCovered([], []).covered).toBe(false);
   });
 });
 

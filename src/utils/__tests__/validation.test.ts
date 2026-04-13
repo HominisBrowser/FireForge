@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
+import { InvalidArgumentError } from '../../errors/base.js';
 import {
   assertObject,
   assertString,
@@ -17,6 +18,7 @@ import {
   isValidPatchCategory,
   isValidProjectLicense,
   normalizeTokenName,
+  parsePositiveIntegerFlag,
   validateFirefoxProductVersionCompatibility,
   validatePatchName,
   validateTokenName,
@@ -59,11 +61,37 @@ describe('assertions', () => {
   });
 });
 
+describe('parsePositiveIntegerFlag', () => {
+  it('accepts canonical positive integer strings', () => {
+    expect(parsePositiveIntegerFlag('--order', '1')).toBe(1);
+    expect(parsePositiveIntegerFlag('--order', '42')).toBe(42);
+    expect(parsePositiveIntegerFlag('--to', '1000')).toBe(1000);
+  });
+
+  it('rejects NaN, zero, negative, decimal, and leading-zero inputs', () => {
+    for (const bad of ['foo', '', '0', '-1', '1.5', ' 1', '1 ', '01', '+1']) {
+      expect(() => parsePositiveIntegerFlag('--order', bad)).toThrow(InvalidArgumentError);
+    }
+  });
+
+  it('includes the flag name and the offending value in the error message', () => {
+    try {
+      parsePositiveIntegerFlag('--to', 'garbage');
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(InvalidArgumentError);
+      expect((error as InvalidArgumentError).message).toContain('--to');
+      expect((error as InvalidArgumentError).message).toContain('garbage');
+      return;
+    }
+    throw new Error('expected parsePositiveIntegerFlag to throw');
+  });
+});
+
 describe('firefox metadata validation', () => {
   it('accepts valid Firefox versions and rejects invalid ones', () => {
     expect(isValidFirefoxVersion('146.0')).toBe(true);
     expect(isValidFirefoxVersion('146.0.1')).toBe(true);
-    expect(isValidFirefoxVersion('140.0esr')).toBe(true);
+    expect(isValidFirefoxVersion('146.0esr')).toBe(true);
     expect(isValidFirefoxVersion('147.0b2')).toBe(true);
     expect(isValidFirefoxVersion('0.0')).toBe(false);
     expect(isValidFirefoxVersion('firefox')).toBe(false);
@@ -75,7 +103,7 @@ describe('firefox metadata validation', () => {
     expect(isValidFirefoxProduct('firefox-beta')).toBe(true);
     expect(isValidFirefoxProduct('fennec')).toBe(false);
 
-    expect(inferProductFromVersion('140.0esr')).toBe('firefox-esr');
+    expect(inferProductFromVersion('146.0esr')).toBe('firefox-esr');
     expect(inferProductFromVersion('147.0b1')).toBe('firefox-beta');
     expect(inferProductFromVersion('146.0')).toBeUndefined();
   });
@@ -131,7 +159,7 @@ describe('validatePatchName', () => {
 
 describe('validateFirefoxProductVersionCompatibility', () => {
   it('accepts ESR product with ESR version', () => {
-    expect(validateFirefoxProductVersionCompatibility('140.0esr', 'firefox-esr')).toBeUndefined();
+    expect(validateFirefoxProductVersionCompatibility('146.0esr', 'firefox-esr')).toBeUndefined();
     expect(validateFirefoxProductVersionCompatibility('128.0.1esr', 'firefox-esr')).toBeUndefined();
   });
 
@@ -158,7 +186,7 @@ describe('validateFirefoxProductVersionCompatibility', () => {
   });
 
   it('rejects stable product with ESR version', () => {
-    const result = validateFirefoxProductVersionCompatibility('140.0esr', 'firefox');
+    const result = validateFirefoxProductVersionCompatibility('146.0esr', 'firefox');
     expect(result).toContain('firefox-esr');
   });
 
@@ -168,7 +196,7 @@ describe('validateFirefoxProductVersionCompatibility', () => {
   });
 
   it('rejects beta product with ESR version', () => {
-    const result = validateFirefoxProductVersionCompatibility('140.0esr', 'firefox-beta');
+    const result = validateFirefoxProductVersionCompatibility('146.0esr', 'firefox-beta');
     expect(result).toBeDefined();
     expect(result).toContain('beta version');
   });

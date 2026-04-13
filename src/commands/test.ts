@@ -3,13 +3,11 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
-import { isBrandingSetup, setupBranding } from '../core/branding.js';
+import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import { cleanStories } from '../core/furnace-stories.js';
 import {
   buildArtifactMismatchMessage,
   buildUI,
-  generateMozconfig,
   hasBuildArtifacts,
   testWithOutput,
 } from '../core/mach.js';
@@ -81,43 +79,6 @@ function hasStaleBuildArtifactsSignal(output: string): boolean {
   );
 }
 
-async function prepareIncrementalTestBuild(projectRoot: string): Promise<{
-  engineDir: string;
-}> {
-  const config = await loadConfig(projectRoot);
-  const paths = getProjectPaths(projectRoot);
-  const brandingConfig = {
-    name: config.name,
-    vendor: config.vendor,
-    appId: config.appId,
-    binaryName: config.binaryName,
-  };
-
-  if (!(await isBrandingSetup(paths.engine, brandingConfig))) {
-    const brandingSpinner = spinner('Setting up branding...');
-    try {
-      await setupBranding(paths.engine, brandingConfig);
-      brandingSpinner.stop('Branding configured');
-    } catch (error: unknown) {
-      brandingSpinner.error('Failed to set up branding');
-      throw error;
-    }
-  }
-
-  const mozconfigSpinner = spinner('Generating mozconfig...');
-  try {
-    await generateMozconfig(paths.configs, paths.engine, config);
-    mozconfigSpinner.stop('mozconfig generated');
-  } catch (error: unknown) {
-    mozconfigSpinner.error('Failed to generate mozconfig');
-    throw error;
-  }
-
-  await cleanStories(paths.engine);
-
-  return { engineDir: paths.engine };
-}
-
 function handleNonZeroTestExit(
   result: { stdout: string; stderr: string; exitCode: number },
   normalizedPaths: string[]
@@ -184,9 +145,10 @@ export async function testCommand(
 
   // Run incremental build if requested
   if (options.build) {
-    const { engineDir } = await prepareIncrementalTestBuild(projectRoot);
+    const config = await loadConfig(projectRoot);
+    await prepareBuildEnvironment(projectRoot, paths, config);
     const s = spinner('Running incremental build...');
-    const buildExitCode = await buildUI(engineDir);
+    const buildExitCode = await buildUI(paths.engine);
     if (buildExitCode !== 0) {
       s.error('Pre-test build failed');
       throw new BuildError('Pre-test build failed', 'mach build faster');

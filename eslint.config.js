@@ -11,9 +11,9 @@ const sharedRules = {
   'no-throw-literal': 'error',
   'prefer-const': 'error',
   'no-var': 'error',
-  'max-lines': ['warn', { max: 500, skipBlankLines: true, skipComments: true }],
+  'max-lines': ['error', { max: 500, skipBlankLines: true, skipComments: true }],
   'max-lines-per-function': [
-    'warn',
+    'error',
     {
       max: 150,
       skipBlankLines: true,
@@ -34,7 +34,17 @@ const jsdocSourceFiles = ['src/**/*.ts'];
 
 export default tseslint.config(
   {
-    ignores: ['coverage/', 'dist/', 'node_modules/'],
+    ignores: [
+      'coverage/',
+      'dist/',
+      'node_modules/',
+      // Test fixtures: real-shape Firefox engine files copied verbatim into
+      // the suite. They are not part of the project's TypeScript graph and
+      // do not follow project lint rules (BSD/MPL header style, var/let mix,
+      // unused parameters, etc.). The tests that consume them assert
+      // behavior, not style.
+      'src/core/__tests__/__fixtures__/',
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,

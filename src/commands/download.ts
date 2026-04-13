@@ -5,6 +5,7 @@ import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig, updateState } from '../core/config.js';
 import { downloadFirefoxSource, formatBytes } from '../core/firefox.js';
+import { getFurnacePaths, updateFurnaceState } from '../core/furnace-config.js';
 import {
   getHead,
   initRepository,
@@ -15,7 +16,7 @@ import {
 import { EngineExistsError, PartialEngineExistsError } from '../errors/download.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DownloadOptions } from '../types/commands/index.js';
-import { ensureDir, pathExists, removeDir } from '../utils/fs.js';
+import { checkDiskSpace, ensureDir, pathExists, removeDir } from '../utils/fs.js';
 import { info, intro, outro, spinner, step, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 
@@ -36,6 +37,9 @@ export async function downloadCommand(
   const version = config.firefox.version;
 
   info(`Firefox version: ${version}`);
+
+  // Disk space pre-flight: Firefox source is ~5 GB
+  await checkDiskSpace(projectRoot, 5 * 1024 * 1024 * 1024, warn);
 
   // Check if engine already exists
   if (await pathExists(paths.engine)) {
@@ -84,6 +88,19 @@ export async function downloadCommand(
 
     warn('Removing existing engine directory...');
     await removeDir(paths.engine);
+
+    // --force installs a new baseCommit, which invalidates every applied
+    // checksum in furnace-state.json. Clearing the state now prevents a
+    // subsequent `furnace apply` from reporting "up to date" against an
+    // engine that no longer contains any of the deployed files. Preserve
+    // pendingRepair: authoring-side rollback markers describe unresolved
+    // component workspace state and should survive an engine refresh.
+    const furnacePaths = getFurnacePaths(projectRoot);
+    if (await pathExists(furnacePaths.furnaceState)) {
+      await updateFurnaceState(projectRoot, (current) => ({
+        ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
+      }));
+    }
   }
 
   // Ensure cache directory exists

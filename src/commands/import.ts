@@ -217,7 +217,8 @@ export async function importCommand(
   projectRoot: string,
   options: ImportOptions = {}
 ): Promise<void> {
-  intro('FireForge Import');
+  const isDryRun = options.dryRun === true;
+  intro(isDryRun ? 'FireForge Import (dry run)' : 'FireForge Import');
 
   const continueOnFailure = options.continue ?? false;
   const forceImport = options.force ?? false;
@@ -231,7 +232,7 @@ export async function importCommand(
 
   // Engine consistency check before applying patches
   const state = await loadState(projectRoot);
-  if (state.baseCommit) {
+  if (state.baseCommit && !isDryRun) {
     const shouldContinue = await checkEngineDrift(paths.engine, state.baseCommit, forceImport);
     if (!shouldContinue) return;
   }
@@ -288,12 +289,40 @@ export async function importCommand(
     info('Run "fireforge doctor" for more details.\n');
   }
 
+  // Dry-run: list patches that would be applied and exit
+  if (isDryRun) {
+    if (manifest) {
+      const patches = options.until
+        ? manifest.patches.filter((p) => {
+            const untilPatch = manifest.patches.find(
+              (u) => u.filename === options.until || u.filename === `${options.until}.patch`
+            );
+            return untilPatch ? p.order <= untilPatch.order : true;
+          })
+        : manifest.patches;
+
+      info(`\n[dry-run] Would apply ${patches.length} patch(es) in order:`);
+      for (const patch of patches) {
+        info(
+          `  ${patch.filename} (${patch.filesAffected.length} file${patch.filesAffected.length === 1 ? '' : 's'})`
+        );
+      }
+    } else {
+      info(`\n[dry-run] Would apply ${patchCount} patch(es)`);
+    }
+    outro('Dry run complete — no changes made');
+    return;
+  }
+
   await checkUncommittedPatchFiles(paths.engine, paths.patches, forceImport);
 
   const s = spinner('Applying patches...');
 
   try {
-    const summary = await applyPatchesWithContinue(paths.patches, paths.engine, continueOnFailure);
+    const summary = await applyPatchesWithContinue(paths.patches, paths.engine, {
+      continueOnFailure,
+      untilFilename: options.until,
+    });
 
     // Handle failures
     if (summary.failed.length > 0) {
@@ -340,9 +369,29 @@ export function registerImport(
       '-f, --force',
       'Proceed despite engine drift and overwrite unmanaged changes in patch-touched files'
     )
+    .option(
+      '--until <patch>',
+      'Apply patches only up to and including this patch (alias: --stop-at)'
+    )
+    .option('--stop-at <patch>', 'Alias for --until')
+    .option('--dry-run', 'Preview which patches would be applied without modifying the engine')
     .action(
-      withErrorHandling(async (options: { continue?: boolean; force?: boolean }) => {
-        await importCommand(getProjectRoot(), pickDefined(options));
-      })
+      withErrorHandling(
+        async (options: {
+          continue?: boolean;
+          force?: boolean;
+          until?: string;
+          stopAt?: string;
+          dryRun?: boolean;
+        }) => {
+          // Accept both spellings; --until wins when both are passed.
+          const merged: typeof options = { ...options };
+          if (merged.until === undefined && merged.stopAt !== undefined) {
+            merged.until = merged.stopAt;
+          }
+          delete merged.stopAt;
+          await importCommand(getProjectRoot(), pickDefined(merged));
+        }
+      )
     );
 }

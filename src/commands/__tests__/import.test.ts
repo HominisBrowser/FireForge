@@ -14,7 +14,7 @@ vi.mock('../../core/config.js', () => ({
     componentsDir: '/fake/root/src/components',
   }),
   loadConfig: vi.fn().mockResolvedValue({
-    firefox: { version: '140.0esr' },
+    firefox: { version: '146.0esr' },
   }),
   loadState: vi.fn(),
   saveState: vi.fn(),
@@ -171,7 +171,10 @@ describe('importCommand drift handling', () => {
     }
 
     expect(confirm).not.toHaveBeenCalled();
-    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', false);
+    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', {
+      continueOnFailure: false,
+      untilFilename: undefined,
+    });
     expect(warn).toHaveBeenCalledWith(
       'Engine HEAD has drifted from base commit. Continuing because --force was provided in non-interactive mode.'
     );
@@ -187,7 +190,10 @@ describe('importCommand drift handling', () => {
     }
 
     expect(confirm).not.toHaveBeenCalled();
-    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', true);
+    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', {
+      continueOnFailure: true,
+      untilFilename: undefined,
+    });
   });
 
   it('still prompts in interactive mode when drift is detected', async () => {
@@ -215,7 +221,10 @@ describe('importCommand drift handling', () => {
     }
 
     expect(confirm).not.toHaveBeenCalled();
-    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', false);
+    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', {
+      continueOnFailure: false,
+      untilFilename: undefined,
+    });
     expect(warn).toHaveBeenCalledWith(
       'Engine HEAD has drifted from base commit. Continuing because --force was provided.'
     );
@@ -237,7 +246,10 @@ describe('importCommand drift handling', () => {
 
     await importCommand('/fake/root');
 
-    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', false);
+    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', {
+      continueOnFailure: false,
+      untilFilename: undefined,
+    });
     expect(info).toHaveBeenCalledWith(
       'Patch-backed materialized files already match the stored patch stack.'
     );
@@ -350,7 +362,10 @@ describe('importCommand drift handling', () => {
     expect(warn).toHaveBeenCalledWith(
       '  001-ui-test.patch: references a file that is no longer present in HEAD'
     );
-    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', false);
+    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', {
+      continueOnFailure: false,
+      untilFilename: undefined,
+    });
   });
 
   it('reports auto-resolved patches and successful import summaries', async () => {

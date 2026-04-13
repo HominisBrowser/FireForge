@@ -62,6 +62,28 @@ export interface ExportOptions {
   supersede?: boolean;
   /** Skip patch lint checks (downgrade errors to warnings) */
   skipLint?: boolean;
+  /**
+   * Print the computed export plan without writing anything. With
+   * `--supersede`, the dry-run output includes which existing patches would
+   * be superseded and which files caused the coverage.
+   */
+  dryRun?: boolean;
+  /** Place the new patch at a specific ordinal, shifting subsequent patches. */
+  order?: number;
+  /** Place the new patch immediately before the named patch. */
+  before?: string;
+  /** Place the new patch immediately after the named patch. */
+  after?: string;
+  /**
+   * Skip the confirmation prompt when placement forces a renumber of more
+   * than one existing patch. Required for non-TTY runs that use placement
+   * flags.
+   */
+  yes?: boolean;
+  /** Bypass cross-patch lint refusal for projected placement state. */
+  forceUnsafe?: boolean;
+  /** Exclude furnace-managed file paths from the export. */
+  excludeFurnace?: boolean;
 }
 
 /**
@@ -69,7 +91,7 @@ export interface ExportOptions {
  */
 export interface ResetOptions {
   /** Skip confirmation prompt */
-  force?: boolean;
+  yes?: boolean;
   /** Show what would be reset without doing it */
   dryRun?: boolean;
 }
@@ -81,7 +103,7 @@ export interface DiscardOptions {
   /** Show what would be discarded without doing it */
   dryRun?: boolean;
   /** Skip confirmation prompt */
-  force?: boolean;
+  yes?: boolean;
 }
 
 /**
@@ -102,6 +124,14 @@ export interface ImportOptions {
   continue?: boolean;
   /** Force import even when engine HEAD has drifted from base commit */
   force?: boolean;
+  /**
+   * Apply patches only up to and including this patch (by name or ordinal).
+   * Subsequent patches are left unapplied. Useful for bisection and curated
+   * rebuild workflows.
+   */
+  until?: string;
+  /** Preview which patches would be applied without modifying the engine */
+  dryRun?: boolean;
 }
 
 /**
@@ -112,10 +142,22 @@ export interface ReExportOptions {
   all?: boolean;
   /** Scan directories for new/removed files and update filesAffected */
   scan?: boolean;
+  /**
+   * Restrict the re-exported patch's filesAffected to this explicit list.
+   * Files currently in the patch but not in this list are dropped (shrink);
+   * files in this list but not currently in the patch are added. Mutually
+   * exclusive with `--scan` and `--all`; applies to a single target patch
+   * at a time.
+   */
+  files?: string[];
   /** Show what would change without writing */
   dryRun?: boolean;
   /** Skip patch lint checks (downgrade errors to warnings) */
   skipLint?: boolean;
+  /** Skip confirmation prompt on shrink (required for non-TTY) */
+  yes?: boolean;
+  /** Bypass cross-patch lint refusal on projected shrink state */
+  forceUnsafe?: boolean;
 }
 
 /**
@@ -131,7 +173,7 @@ export interface RebaseOptions {
   /** Maximum fuzz factor for git apply (default 3) */
   maxFuzz?: number;
   /** Skip dirty-tree confirmation prompt */
-  force?: boolean;
+  yes?: boolean;
 }
 
 /**
@@ -158,6 +200,10 @@ export interface TestOptions {
 export interface FurnaceApplyOptions {
   /** Show what would be changed without writing */
   dryRun?: boolean;
+  /** Proceed despite baseVersion drift (stale overrides) */
+  force?: boolean;
+  /** Watch component directories and re-apply on changes */
+  watch?: boolean;
 }
 
 /**
@@ -174,6 +220,42 @@ export interface FurnacePreviewOptions {
 export interface FurnaceDeployOptions {
   /** Show what would be changed without writing */
   dryRun?: boolean;
+  /** Proceed despite baseVersion drift (stale overrides) */
+  force?: boolean;
+  /** Skip the validation step (apply only, no accessibility/compatibility checks) */
+  skipValidate?: boolean;
+}
+
+/**
+ * Options for the furnace refresh command.
+ */
+export interface FurnaceRefreshOptions {
+  /** Show what would change without modifying files */
+  dryRun?: boolean;
+  /** Refresh all overrides in a single batch */
+  all?: boolean;
+  /** Conflict resolution strategy for automated use (ours = keep local, theirs = accept upstream) */
+  strategy?: 'ours' | 'theirs';
+  /** Reset the override's baseline to the current engine HEAD, skipping three-way merge */
+  resetBase?: boolean;
+}
+
+/**
+ * Options for the furnace sync command.
+ */
+export interface FurnaceSyncOptions {
+  /** Show what would change without modifying files */
+  dryRun?: boolean;
+  /** Conflict resolution strategy for three-way merge (ours = keep local, theirs = accept upstream) */
+  strategy?: 'ours' | 'theirs';
+}
+
+/**
+ * Options for the furnace validate command.
+ */
+export interface FurnaceValidateOptions {
+  /** Auto-fix registration issues (missing jar.mn entries, customElements.js registration) */
+  fix?: boolean;
 }
 
 /**
@@ -191,7 +273,7 @@ export interface FurnaceOverrideOptions {
  */
 export interface FurnaceRemoveOptions {
   /** Skip confirmation prompt */
-  force?: boolean;
+  yes?: boolean;
 }
 
 /**
@@ -231,11 +313,44 @@ export interface RegisterOptions {
 }
 
 /**
+ * Options for the patch delete command.
+ */
+export interface PatchDeleteOptions {
+  /** Skip confirmation prompt; required for non-TTY runs. */
+  yes?: boolean;
+  /** Print what would happen without writing anything. */
+  dryRun?: boolean;
+  /** Bypass the hard refusal when later patches depend on the target. */
+  forceUnsafe?: boolean;
+}
+
+/**
+ * Options for the patch reorder command.
+ */
+export interface PatchReorderOptions {
+  to?: number;
+  before?: string;
+  after?: string;
+  yes?: boolean;
+  dryRun?: boolean;
+  forceUnsafe?: boolean;
+}
+
+/**
  * Options for the status command.
  */
 export interface StatusOptions {
   raw?: boolean;
   unmanaged?: boolean;
+  /**
+   * Render a flat file→owning-patch ownership table instead of the three-
+   * bucket classification. Sources the path list from the manifest's
+   * `filesAffected` per patch and flags any path claimed by more than one
+   * patch as an ownership conflict.
+   */
+  ownership?: boolean;
+  /** Output machine-readable JSON instead of human-readable text. */
+  json?: boolean;
 }
 
 /**
@@ -254,6 +369,17 @@ export interface TokenAddOptions {
  */
 export interface DoctorOptions {
   repairPatchesManifest?: boolean;
+  /**
+   * Opt-in repair path for furnace-specific checks. When true, doctor will:
+   * - clear stale `.fireforge/furnace-state.json` entries whose component is
+   *   no longer in `furnace.json`,
+   * - run `applyAllComponents` to reconcile any engine drift,
+   * - clear the `pendingRepair` marker on success.
+   * Mirrors `repairPatchesManifest` in that the repair is only attempted when
+   * the caller explicitly asks for it, so a read-only `doctor` run stays cheap
+   * and side-effect-free.
+   */
+  repairFurnace?: boolean;
 }
 
 /**

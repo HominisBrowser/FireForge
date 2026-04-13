@@ -90,7 +90,7 @@ describe('patch manifest recovery paths', () => {
       'patches.json': '{"version": 1, "patches": [\n',
     });
 
-    const rebuilt = await rebuildPatchesManifest(patchesDir, '140.0esr');
+    const rebuilt = await rebuildPatchesManifest(patchesDir, '146.0esr');
     const loaded = await loadPatchesManifest(patchesDir);
 
     expect(rebuilt).toEqual(loaded);
@@ -103,21 +103,21 @@ describe('patch manifest recovery paths', () => {
       filename: '001-ui-toolbar.patch',
       category: 'ui',
       name: 'toolbar',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '146.0esr',
       filesAffected: ['browser/toolbar.js'],
     });
     expect(rebuilt.patches[1]).toMatchObject({
       filename: '002-sidebar.patch',
       category: 'infra',
       name: 'sidebar',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '146.0esr',
       filesAffected: ['browser/sidebar.js'],
     });
     expect(rebuilt.patches[2]).toMatchObject({
       filename: 'plain.patch',
       category: 'infra',
       name: 'plain',
-      sourceEsrVersion: '140.0esr',
+      sourceEsrVersion: '146.0esr',
       filesAffected: ['browser/panel.js'],
     });
     expect(

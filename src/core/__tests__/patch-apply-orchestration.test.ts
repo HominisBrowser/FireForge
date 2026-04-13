@@ -414,7 +414,7 @@ describe('patch orchestration helpers', () => {
           name: 'alpha',
           description: '',
           createdAt: '',
-          sourceEsrVersion: '140.0esr',
+          sourceEsrVersion: '146.0esr',
           filesAffected: ['browser/app.css'],
         },
       },
@@ -427,7 +427,7 @@ describe('patch orchestration helpers', () => {
           name: 'beta',
           description: '',
           createdAt: '',
-          sourceEsrVersion: '140.0esr',
+          sourceEsrVersion: '146.0esr',
           filesAffected: ['browser/app.css'],
         },
       },
@@ -542,6 +542,110 @@ describe('patch orchestration helpers', () => {
 
     // No rollback in continue mode
     expect(reversePatch).not.toHaveBeenCalled();
+  });
+
+  it('stops applying after the --until patch when untilFilename is a bare ordinal', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: '001-alpha.patch', isFile: () => true },
+      { name: '002-beta.patch', isFile: () => true },
+      { name: '003-gamma.patch', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    vi.mocked(readText).mockResolvedValue('diff --git a/a.js b/a.js\n+++ b/a.js\n');
+    vi.mocked(extractAffectedFiles).mockReturnValue([]);
+    vi.mocked(applyPatchIdempotent).mockResolvedValue(undefined);
+
+    const summary = await applyPatchesWithContinue('/patches', '/engine', {
+      untilFilename: '2',
+    });
+
+    expect(summary.succeeded.map((r) => r.patch.filename)).toEqual([
+      '001-alpha.patch',
+      '002-beta.patch',
+    ]);
+    expect(summary.skipped.map((p) => p.filename)).toEqual(['003-gamma.patch']);
+    expect(summary.failed).toEqual([]);
+    // The numeric form normalizes leading zeros, so '2' and '002' pick the
+    // same patch.
+    expect(applyPatchIdempotent).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops applying after the --until patch when untilFilename is a padded ordinal', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: '001-alpha.patch', isFile: () => true },
+      { name: '002-beta.patch', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    vi.mocked(readText).mockResolvedValue('diff --git a/a.js b/a.js\n+++ b/a.js\n');
+    vi.mocked(extractAffectedFiles).mockReturnValue([]);
+    vi.mocked(applyPatchIdempotent).mockResolvedValue(undefined);
+
+    const summary = await applyPatchesWithContinue('/patches', '/engine', {
+      untilFilename: '001',
+    });
+
+    expect(summary.succeeded.map((r) => r.patch.filename)).toEqual(['001-alpha.patch']);
+    expect(summary.skipped.map((p) => p.filename)).toEqual(['002-beta.patch']);
+  });
+
+  it('stops applying after the --until patch when untilFilename is an exact filename', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: '001-alpha.patch', isFile: () => true },
+      { name: '002-beta.patch', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    vi.mocked(readText).mockResolvedValue('diff --git a/a.js b/a.js\n+++ b/a.js\n');
+    vi.mocked(extractAffectedFiles).mockReturnValue([]);
+    vi.mocked(applyPatchIdempotent).mockResolvedValue(undefined);
+
+    const summary = await applyPatchesWithContinue('/patches', '/engine', {
+      untilFilename: '001-alpha.patch',
+    });
+
+    expect(summary.succeeded.map((r) => r.patch.filename)).toEqual(['001-alpha.patch']);
+    expect(summary.skipped.map((p) => p.filename)).toEqual(['002-beta.patch']);
+  });
+
+  it('stops applying after the --until patch when untilFilename omits the .patch suffix', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: '001-alpha.patch', isFile: () => true },
+      { name: '002-beta.patch', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    vi.mocked(readText).mockResolvedValue('diff --git a/a.js b/a.js\n+++ b/a.js\n');
+    vi.mocked(extractAffectedFiles).mockReturnValue([]);
+    vi.mocked(applyPatchIdempotent).mockResolvedValue(undefined);
+
+    const summary = await applyPatchesWithContinue('/patches', '/engine', {
+      untilFilename: '001-alpha',
+    });
+
+    expect(summary.succeeded.map((r) => r.patch.filename)).toEqual(['001-alpha.patch']);
+  });
+
+  it('throws with an ambiguity error when --until matches multiple patches by ordinal', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    // Two files share ordinal "001" — a corrupted queue, but --until
+    // should surface it instead of silently picking the first.
+    vi.mocked(readdir).mockResolvedValue([
+      { name: '001-alpha.patch', isFile: () => true },
+      { name: '001-bravo.patch', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+
+    await expect(
+      applyPatchesWithContinue('/patches', '/engine', { untilFilename: '1' })
+    ).rejects.toThrow(/ambiguous/);
+  });
+
+  it('throws when --until identifier does not match any patch', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: '001-alpha.patch', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+
+    await expect(
+      applyPatchesWithContinue('/patches', '/engine', { untilFilename: '999' })
+    ).rejects.toThrow(/does not match any patch/);
   });
 
   it('continues rolling back even if one reversePatch fails', async () => {

@@ -194,7 +194,7 @@ async function restoreNamedDeployRollback(
       await recordFurnaceRollbackFailure(
         projectRoot,
         'deploy-rollback',
-        toError(rollbackError).message
+        `component "${name}": ${toError(rollbackError).message}`
       );
     }
     throw rollbackError;

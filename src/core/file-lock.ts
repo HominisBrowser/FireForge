@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { mkdir, rm, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
 import { toError } from '../utils/errors.js';
 import { ensureDir } from '../utils/fs.js';
@@ -42,6 +42,21 @@ export function createSiblingLockPath(filePath: string, suffix = '.fireforge.loc
   return `${filePath}${suffix}`;
 }
 
+const LOCK_PID_FILE = 'pid';
+
+/**
+ * Checks whether a process with the given PID is still running.
+ * Uses `kill(pid, 0)` which sends no signal but checks existence.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function removeIfStaleLock(
   lockPath: string,
   staleMs: number,
@@ -52,6 +67,23 @@ async function removeIfStaleLock(
     const ageMs = Date.now() - lockStat.mtimeMs;
     if (ageMs <= staleMs) {
       return false;
+    }
+
+    // If the lock directory contains a PID file, check whether the owning
+    // process is still running before removing. This prevents premature
+    // removal when a slow operation (e.g. mach build) legitimately holds
+    // the lock past the stale threshold.
+    try {
+      const pidContent = await readFile(join(lockPath, LOCK_PID_FILE), 'utf-8');
+      const pid = parseInt(pidContent.trim(), 10);
+      if (Number.isFinite(pid) && isProcessAlive(pid)) {
+        verbose(
+          `Lock at ${lockPath} is ${Math.round(ageMs / 1000)}s old but PID ${pid} is still running — not removing`
+        );
+        return false;
+      }
+    } catch {
+      // No PID file or unreadable — fall through to stale removal
     }
 
     const staleMessage = onStaleLockMessage?.(ageMs);
@@ -120,6 +152,14 @@ export async function withFileLock<T>(
 
       await sleep(pollMs);
     }
+  }
+
+  // Write PID into the lock directory so stale-lock recovery can check
+  // whether the owning process is still alive before removing.
+  try {
+    await writeFile(join(lockPath, LOCK_PID_FILE), String(process.pid), 'utf-8');
+  } catch {
+    // Non-fatal: stale recovery falls back to age-only heuristic
   }
 
   try {

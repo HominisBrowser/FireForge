@@ -196,12 +196,20 @@ If the manifest drifts after an interrupted export or manual edits, `fireforge i
 | `raw-color-value`              | Introduced CSS color values           | error    |
 | `duplicate-new-file-creation`  | Same path created by multiple patches | error    |
 | `forward-import`               | Patch imports from a later-patch file | error    |
+| `missing-jsdoc`                | Exports in patch-owned `.sys.mjs`     | error    |
+| `jsdoc-param-mismatch`         | Exports in patch-owned `.sys.mjs`     | error    |
+| `jsdoc-missing-returns`        | Exports in patch-owned `.sys.mjs`     | error    |
+| `checkjs-type-error`           | Patch-owned `.sys.mjs` (opt-in)       | error    |
 | `missing-modification-comment` | Modified upstream JS/MJS              | warning  |
+| `modified-file-missing-header` | Modified upstream files (JS/CSS/FTL)  | warning  |
 | `file-too-large`               | New files >650 lines                  | warning  |
-| `missing-jsdoc`                | Exports in new `.sys.mjs`             | warning  |
 | `observer-topic-naming`        | Observer topics with binaryName       | warning  |
 | `large-patch-files`            | Patches affecting >5 files            | warning  |
 | `large-patch-lines`            | Patches >300 lines                    | warning  |
+
+**JSDoc validation** uses AST-based analysis (Acorn) to validate exported APIs in patch-owned `.sys.mjs` files. A file is "patch-owned" if it was newly created by the current diff or by an existing patch in the queue. Functions must document every `@param` (names must match) and include `@returns` when the function returns a value. Exported constants and classes require a JSDoc block.
+
+**Optional `checkJs` pass.** Enable TypeScript-based type checking for patch-owned `.sys.mjs` files by adding `"patchLint": { "checkJs": true }` to `fireforge.json`. This uses the TypeScript compiler API with `allowJs + checkJs + noEmit`, scoped only to patch-owned files. Firefox globals (`Services`, `ChromeUtils`, `lazy`, etc.) are shimmed automatically. Module-resolution errors from Firefox's `resource://` and `chrome://` URL schemes are suppressed since TypeScript cannot follow these — the pass focuses on type errors within the patch-owned code itself (mismatched JSDoc types, wrong argument counts, unreachable code, etc.).
 
 The two cross-patch rules (`duplicate-new-file-creation` and `forward-import`) run over the whole patch queue rather than a single diff, catching ordering issues that only surface during `import`. Forward-import detection compares leaf filenames, so a false positive is theoretically possible when two patches create files with the same basename in different directories. Suppress with an inline `// fireforge-ignore: forward-import` comment on or above the import line. This is currently the only lint rule that supports inline suppression.
 
@@ -290,6 +298,51 @@ fireforge furnace diff moz-button                  # unified diff against baseli
 ```
 
 `furnace deploy` validates components before applying — errors block, warnings are advisory. `fireforge build` and `fireforge test --build` run apply automatically. Use `fireforge doctor --repair-furnace` if the engine gets out of sync.
+
+## Additional Commands
+
+The commands below cover project configuration, patch queue management, build packaging, and development utilities. Run `fireforge <command> --help` for full option details.
+
+### Configuration
+
+```bash
+# Read a config value
+fireforge config firefox.version
+
+# Set a config value
+fireforge config firefox.version 145.0.0esr
+
+# Set a value at a non-standard path (requires --force)
+fireforge config customKey "value" --force
+```
+
+### Patch queue management
+
+```bash
+# Delete a patch from the queue
+fireforge patch delete 003-ui-sidebar-tweaks.patch
+
+# Reorder a patch to a new position
+fireforge patch reorder 003-ui-sidebar-tweaks.patch --to 1
+
+# Move a patch before or after another
+fireforge patch reorder 003-ui-sidebar.patch --before 001-branding-logo.patch
+```
+
+Both subcommands support `--dry-run` and `--yes`.
+
+### Additional workflow commands
+
+```bash
+# Package the built browser for distribution
+fireforge package
+
+# Watch for file changes and auto-rebuild
+fireforge watch
+
+# Add a CSS design token
+fireforge token --name "--my-color" --value "light-dark(#fff, #000)"
+```
 
 ## Configuration
 

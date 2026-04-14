@@ -266,7 +266,7 @@ async function performRenameMutations(args: {
         await recordFurnaceRollbackFailure(
           projectRoot,
           'rename-rollback',
-          toError(rollbackError).message
+          `rename "${oldName}" → "${newName}": ${toError(rollbackError).message}`
         );
         throw rollbackError;
       }

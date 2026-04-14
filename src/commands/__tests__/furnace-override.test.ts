@@ -454,7 +454,7 @@ describe('furnaceOverrideCommand', () => {
     expect(vi.mocked(recordFurnaceRollbackFailure)).toHaveBeenCalledWith(
       '/project',
       'override-rollback',
-      'rollback failed'
+      'component "moz-button": rollback failed'
     );
   });
 

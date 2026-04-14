@@ -106,15 +106,22 @@ export async function lintCommand(projectRoot: string, files: string[]): Promise
 
   const config = await loadConfig(projectRoot);
   const filesAffected = extractAffectedFiles(diff);
+
+  // Build patch queue context once so it can be shared between the
+  // per-patch ownership resolver and the cross-patch rules.
+  let ctx: import('../core/patch-lint.js').PatchQueueContext | undefined;
+  if (await pathExists(paths.patches)) {
+    ctx = await buildPatchQueueContext(paths.patches);
+  }
+
   const issues: PatchLintIssue[] = [
-    ...(await lintExportedPatch(paths.engine, filesAffected, diff, config)),
+    ...(await lintExportedPatch(paths.engine, filesAffected, diff, config, ctx)),
   ];
 
   // Cross-patch rules operate over the whole queue, so run them whenever a
   // patches directory exists — they surface duplicate /dev/null creations
   // and forward-import chains that the per-patch orchestrator cannot see.
-  if (await pathExists(paths.patches)) {
-    const ctx = await buildPatchQueueContext(paths.patches);
+  if (ctx) {
     issues.push(...lintPatchQueue(ctx));
   }
 

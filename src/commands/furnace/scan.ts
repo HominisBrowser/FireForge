@@ -97,7 +97,7 @@ async function promptAddComponents(
         await recordFurnaceRollbackFailure(
           projectRoot,
           'scan-rollback',
-          toError(rollbackError).message
+          `furnace.json update during scan: ${toError(rollbackError).message}`
         );
         throw rollbackError;
       }

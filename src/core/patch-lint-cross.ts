@@ -221,6 +221,7 @@ export function isForwardImportableFile(path: string): boolean {
  * - `import "specifier"`            (side-effect imports — the `from`
  *                                   clause is optional in the regex)
  * - `import("specifier")`           (dynamic imports)
+ * - ChromeUtils.importESModule("specifier")
  * - ChromeUtils.defineESModuleGetters(obj, { Name: "specifier", ... })
  *
  * Returns the raw specifier strings — callers should take the leaf basename
@@ -358,6 +359,12 @@ export function extractImportSpecifiersWithLines(source: string): ExtractedSpeci
 
   const dynamicImportPattern = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
   while ((match = dynamicImportPattern.exec(stripped)) !== null) {
+    if (match[1]) results.push({ specifier: match[1], line: offsetToLine(match.index) });
+  }
+
+  // ChromeUtils.importESModule("resource://...") — Firefox single-module import
+  const chromeUtilsPattern = /ChromeUtils\.importESModule\s*\(\s*["']([^"']+)["']/g;
+  while ((match = chromeUtilsPattern.exec(stripped)) !== null) {
     if (match[1]) results.push({ specifier: match[1], line: offsetToLine(match.index) });
   }
 

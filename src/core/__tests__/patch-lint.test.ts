@@ -289,7 +289,7 @@ describe('lintPatchedJs', () => {
     expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
   });
 
-  it('warns about missing JSDoc on exports in new .sys.mjs files', async () => {
+  it('flags missing JSDoc on exports in new .sys.mjs files as error', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('export function doSomething() {\n  return 1;\n}\n');
 
@@ -301,10 +301,10 @@ describe('lintPatchedJs', () => {
     );
 
     expect(issues.some((i) => i.check === 'missing-jsdoc')).toBe(true);
-    expect(issues.find((i) => i.check === 'missing-jsdoc')?.severity).toBe('warning');
+    expect(issues.find((i) => i.check === 'missing-jsdoc')?.severity).toBe('error');
   });
 
-  it('does not flag JSDoc check on non-new files', async () => {
+  it('does not flag JSDoc check on non-owned files', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('export function doSomething() {\n  return 1;\n}\n');
 
@@ -318,10 +318,10 @@ describe('lintPatchedJs', () => {
     expect(issues.some((i) => i.check === 'missing-jsdoc')).toBe(false);
   });
 
-  it('passes exports with JSDoc', async () => {
+  it('passes exports with complete JSDoc', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
-      '/** Does something. */\nexport function doSomething() {\n  return 1;\n}\n'
+      '/**\n * Does something.\n * @returns {number} The result\n */\nexport function doSomething() {\n  return 1;\n}\n'
     );
 
     const issues = await lintPatchedJs(
@@ -331,7 +331,26 @@ describe('lintPatchedJs', () => {
       mockConfig
     );
 
-    expect(issues.some((i) => i.check === 'missing-jsdoc')).toBe(false);
+    const jsdocChecks = ['missing-jsdoc', 'jsdoc-param-mismatch', 'jsdoc-missing-returns'];
+    expect(issues.some((i) => jsdocChecks.includes(i.check))).toBe(false);
+  });
+
+  it('flags JSDoc issues for patch-owned files via patchOwnedFiles param', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('export function doWork() {\n  return 1;\n}\n');
+
+    // File is not in newFiles but IS in patchOwnedFiles (owned by queue)
+    const patchOwned = new Set(['MyModule.sys.mjs']);
+    const issues = await lintPatchedJs(
+      '/engine',
+      ['MyModule.sys.mjs'],
+      new Set<string>(),
+      mockConfig,
+      patchOwned
+    );
+
+    expect(issues.some((i) => i.check === 'missing-jsdoc')).toBe(true);
+    expect(issues.find((i) => i.check === 'missing-jsdoc')?.severity).toBe('error');
   });
 
   it('warns about observer topics with binaryName that do not follow convention', async () => {

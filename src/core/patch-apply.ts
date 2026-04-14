@@ -4,7 +4,8 @@
  * Pure parsing, content transformation, and lock management are in separate modules.
  */
 
-import { join } from 'node:path';
+import { lstat } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 
 import { PatchError } from '../errors/patch.js';
 import type { ImportSummary, PatchInfo, PatchResult } from '../types/commands/index.js';
@@ -55,7 +56,7 @@ async function applySinglePatch(patch: PatchInfo, engineDir: string): Promise<Pa
   try {
     patchContent = await readText(patch.path);
     affectedFiles = extractAffectedFiles(patchContent);
-    validatePatchTargets(patch, affectedFiles);
+    await validatePatchTargets(patch, affectedFiles, engineDir);
 
     await applyPatchIdempotent(patch.path, engineDir);
     return { patch, success: true };
@@ -179,7 +180,7 @@ export async function validatePatches(
   for (const patch of patches) {
     try {
       const patchContent = await readText(patch.path);
-      validatePatchTargets(patch, extractAffectedFiles(patchContent));
+      await validatePatchTargets(patch, extractAffectedFiles(patchContent), engineDir);
     } catch (error: unknown) {
       errors.push(`${patch.filename}: ${toError(error).message}`);
       continue;
@@ -195,10 +196,37 @@ export async function validatePatches(
   return { valid: errors.length === 0, errors };
 }
 
-function validatePatchTargets(patch: PatchInfo, affectedFiles: string[]): void {
+async function validatePatchTargets(
+  patch: PatchInfo,
+  affectedFiles: string[],
+  engineDir?: string
+): Promise<void> {
   for (const file of affectedFiles) {
     if (!isContainedRelativePath(file)) {
       throw new PatchError(`Patch targets a path outside engine/: ${file}`, patch.filename);
+    }
+
+    // When the engine directory is known, verify that existing target paths
+    // are not symlinks pointing outside the engine tree. A crafted patch
+    // could otherwise write through a symlink to an arbitrary location.
+    if (engineDir) {
+      const targetPath = join(engineDir, file);
+      try {
+        const stats = await lstat(targetPath);
+        if (stats.isSymbolicLink()) {
+          const realPath = resolve(engineDir, file);
+          const resolvedEngine = resolve(engineDir);
+          if (!realPath.startsWith(resolvedEngine + '/') && realPath !== resolvedEngine) {
+            throw new PatchError(
+              `Patch targets a symlink that resolves outside engine/: ${file}`,
+              patch.filename
+            );
+          }
+        }
+      } catch (error: unknown) {
+        // File doesn't exist yet (new file) or stat fails — skip check
+        if (error instanceof PatchError) throw error;
+      }
     }
   }
 }

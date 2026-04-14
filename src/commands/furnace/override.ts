@@ -212,7 +212,7 @@ async function performOverrideMutations(args: {
           await recordFurnaceRollbackFailure(
             args.projectRoot,
             'override-rollback',
-            toError(rollbackError).message
+            `component "${args.componentName}": ${toError(rollbackError).message}`
           );
           throw rollbackError;
         }

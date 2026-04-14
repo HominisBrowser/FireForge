@@ -16,6 +16,7 @@ export function isExplicitAbsolutePath(path: string): boolean {
 
 /** Resolves a candidate path and returns whether it stays within the given root. */
 export function isPathInsideRoot(root: string, candidate: string): boolean {
+  if (candidate.includes('\0')) return false;
   const resolvedRoot = resolve(root);
   const resolvedCandidate = isExplicitAbsolutePath(candidate)
     ? resolve(candidate)
@@ -32,7 +33,7 @@ export function isPathInsideRoot(root: string, candidate: string): boolean {
 
 /** Checks whether a relative path stays contained within an arbitrary root. */
 export function isContainedRelativePath(path: string): boolean {
-  if (isExplicitAbsolutePath(path)) {
+  if (isExplicitAbsolutePath(path) || path.includes('\0')) {
     return false;
   }
 

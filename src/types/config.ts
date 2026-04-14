@@ -47,6 +47,8 @@ export interface FireForgeConfig {
   license?: ProjectLicense;
   /** Wire command configuration */
   wire?: WireConfig;
+  /** Patch lint configuration */
+  patchLint?: PatchLintConfig;
 }
 
 /**
@@ -55,6 +57,14 @@ export interface FireForgeConfig {
 export interface WireConfig {
   /** Subscript directory relative to engine/. Default: "browser/base/content" */
   subscriptDir?: string;
+}
+
+/**
+ * Configuration for patch lint rules.
+ */
+export interface PatchLintConfig {
+  /** Enable TypeScript checkJs pass on patch-owned .sys.mjs files */
+  checkJs?: boolean;
 }
 
 /**

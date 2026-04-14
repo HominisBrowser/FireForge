@@ -584,10 +584,11 @@ export async function applyAllComponents(
           // Rollback itself failed: the engine is in a partially restored
           // state. Persist a pending-repair marker so the next `fireforge
           // doctor --repair-furnace` run knows to reconcile.
+          const failedComponents = result.errors.map((e) => e.name).join(', ');
           await recordFurnaceRollbackFailure(
             root,
             'apply-rollback',
-            toError(rollbackError).message
+            `failed component(s): ${failedComponents || '(unknown)'}: ${toError(rollbackError).message}`
           );
           throw rollbackError;
         }

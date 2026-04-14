@@ -445,7 +445,7 @@ export async function furnaceRemoveCommand(
         await recordFurnaceRollbackFailure(
           projectRoot,
           'remove-rollback',
-          toError(rollbackError).message
+          `component "${name}": ${toError(rollbackError).message}`
         );
         throw rollbackError;
       }

@@ -159,7 +159,7 @@ describe('lint integration', () => {
     const issues = await getLintIssues(join(projectRoot, 'engine'));
     const jsdocIssues = issues.filter((i) => i.check === 'missing-jsdoc');
     expect(jsdocIssues.length).toBeGreaterThanOrEqual(1);
-    expect(jsdocIssues[0]?.severity).toBe('warning');
+    expect(jsdocIssues[0]?.severity).toBe('error');
   });
 
   it('lint detects observer topic naming violation', async () => {

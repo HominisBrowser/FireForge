@@ -636,7 +636,7 @@ describe('furnaceRenameCommand rollback', () => {
     expect(mockRecordFurnaceRollbackFailure).toHaveBeenCalledWith(
       '/project',
       'rename-rollback',
-      'Rollback failed'
+      'rename "moz-sidebar" → "moz-nav": Rollback failed'
     );
   });
 });

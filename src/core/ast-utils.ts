@@ -27,6 +27,27 @@ export function parseScript(content: string): AcornESTreeNode<estree.Program> {
 }
 
 /**
+ * Parse JavaScript source as an **ES module**.
+ * Used for `.sys.mjs` files which use static import/export syntax.
+ *
+ * @param content - Source text to parse
+ * @param onComment - Optional array that acorn fills with comment nodes
+ * @returns Parsed program AST with character-offset positions
+ */
+export function parseModule(
+  content: string,
+  onComment?: acorn.Comment[]
+): AcornESTreeNode<estree.Program> {
+  const opts: acorn.Options = {
+    sourceType: 'module',
+    ecmaVersion: 'latest',
+    locations: true,
+  };
+  if (onComment) opts.onComment = onComment;
+  return acorn.parse(content, opts) as unknown as AcornESTreeNode<estree.Program>;
+}
+
+/**
  * Convenience cast from `acorn.Node` (or the generic ESTree union returned
  * by estree-walker callbacks) to a positioned, narrowly-typed node.
  */

@@ -424,7 +424,7 @@ async function performCreateMutations(args: {
       await recordFurnaceRollbackFailure(
         args.projectRoot,
         'create-rollback',
-        toError(rollbackError).message
+        `component "${args.componentName}": ${toError(rollbackError).message}`
       );
       throw rollbackError;
     }

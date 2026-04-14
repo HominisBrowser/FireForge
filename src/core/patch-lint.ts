@@ -9,7 +9,10 @@ import { verbose } from '../utils/logger.js';
 import { hasRawCssColors, stripJsComments } from '../utils/regex.js';
 import { loadFurnaceConfig } from './furnace-config.js';
 import { type CommentStyle, getLicenseHeader, hasAnyLicenseHeader } from './license-headers.js';
+import { runCheckJs } from './patch-lint-checkjs.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
+import { validateExportJsDoc } from './patch-lint-jsdoc.js';
+import { resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
 
 // ---------------------------------------------------------------------------
 // Cross-patch lint re-exports
@@ -21,6 +24,7 @@ import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-dif
 // each stay within the project's per-file line budget. Re-export the
 // public surface so callers continue to import from a single module.
 
+export { runCheckJs } from './patch-lint-checkjs.js';
 export {
   buildPatchQueueContext,
   collectNewFileCreatorsByPath,
@@ -37,6 +41,8 @@ export {
   type PatchQueueEntry,
 } from './patch-lint-cross.js';
 export { buildModifiedFileAdditionsFromDiff, detectNewFilesInDiff } from './patch-lint-diff.js';
+export { type JsDocCheck, type JsDocIssue, validateExportJsDoc } from './patch-lint-jsdoc.js';
+export { resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -200,13 +206,15 @@ export async function lintNewFileHeaders(
  * @param affectedFiles - File paths (relative to repoDir)
  * @param newFiles - Set of files that are newly created in this patch
  * @param config - Project configuration
+ * @param patchOwnedFiles - Optional set of patch-owned `.sys.mjs` paths for scoped JSDoc enforcement
  * @returns Array of lint issues
  */
 export async function lintPatchedJs(
   repoDir: string,
   affectedFiles: string[],
   newFiles: Set<string>,
-  config: FireForgeConfig
+  config: FireForgeConfig,
+  patchOwnedFiles?: Set<string>
 ): Promise<PatchLintIssue[]> {
   const jsFiles = affectedFiles.filter(isJsFile);
   if (jsFiles.length === 0) return [];
@@ -250,31 +258,17 @@ export async function lintPatchedJs(
       }
     }
 
-    // 3. JSDoc on exports (new .sys.mjs files only)
-    if (isNew && isSysMjs) {
-      const lines = content.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i] ?? '';
-        if (/^export\s+(function|class|const|let|var)\s/.test(line)) {
-          // Walk backwards to find JSDoc
-          let hasJsDoc = false;
-          for (let j = i - 1; j >= 0; j--) {
-            const prev = (lines[j] ?? '').trim();
-            if (prev === '') continue;
-            if (prev.endsWith('*/')) {
-              hasJsDoc = true;
-            }
-            break;
-          }
-          if (!hasJsDoc) {
-            issues.push({
-              file,
-              check: 'missing-jsdoc',
-              message: `Export at line ${i + 1} is missing a JSDoc comment with @param/@returns.`,
-              severity: 'warning',
-            });
-          }
-        }
+    // 3. JSDoc on exports (patch-owned .sys.mjs files)
+    const isOwned = patchOwnedFiles ? patchOwnedFiles.has(file) : isNew;
+    if (isOwned && isSysMjs) {
+      const jsdocIssues = validateExportJsDoc(content);
+      for (const jsdocIssue of jsdocIssues) {
+        issues.push({
+          file,
+          check: jsdocIssue.check,
+          message: jsdocIssue.message,
+          severity: 'error',
+        });
       }
     }
 
@@ -424,28 +418,31 @@ export async function lintModifiedFileHeaders(
  * @param affectedFiles - File paths (relative to repoDir) affected by the patch
  * @param diffContent - Raw unified diff string
  * @param config - Project configuration
+ * @param patchQueueCtx - Optional cross-patch context for ownership resolution
  * @returns Array of all lint issues found
  */
 export async function lintExportedPatch(
   repoDir: string,
   affectedFiles: string[],
   diffContent: string,
-  config: FireForgeConfig
+  config: FireForgeConfig,
+  patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext
 ): Promise<PatchLintIssue[]> {
   const newFiles = detectNewFilesInDiff(diffContent);
   const lineCount = diffContent.split('\n').length;
+  const patchOwnedFiles = resolvePatchOwnedSysMjs(newFiles, patchQueueCtx);
 
   const [cssIssues, headerIssues, jsIssues, modifiedHeaderIssues] = await Promise.all([
     lintPatchedCss(repoDir, affectedFiles, diffContent),
     lintNewFileHeaders(repoDir, [...newFiles], config),
-    lintPatchedJs(repoDir, affectedFiles, newFiles, config),
+    lintPatchedJs(repoDir, affectedFiles, newFiles, config, patchOwnedFiles),
     lintModifiedFileHeaders(repoDir, affectedFiles, newFiles),
   ]);
 
   const modCommentIssues = lintModificationComments(diffContent, config);
   const sizeIssues = lintPatchSize(affectedFiles, lineCount);
 
-  return [
+  const issues = [
     ...sizeIssues,
     ...cssIssues,
     ...headerIssues,
@@ -453,4 +450,12 @@ export async function lintExportedPatch(
     ...jsIssues,
     ...modCommentIssues,
   ];
+
+  // Optional checkJs pass — only when explicitly enabled in config
+  if (config.patchLint?.checkJs) {
+    const checkJsIssues = await runCheckJs(repoDir, patchOwnedFiles);
+    issues.push(...checkJsIssues);
+  }
+
+  return issues;
 }

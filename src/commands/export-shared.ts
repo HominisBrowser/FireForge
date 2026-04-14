@@ -27,15 +27,23 @@ import { isValidPatchCategory, PATCH_CATEGORIES, validatePatchName } from '../ut
  * @param diffContent - Raw unified diff string
  * @param config - Project configuration
  * @param skipLint - If true, downgrade errors to warnings
+ * @param patchQueueCtx - Optional cross-patch context for ownership resolution
  */
 export async function runPatchLint(
   engineDir: string,
   filesAffected: string[],
   diffContent: string,
   config: FireForgeConfig,
-  skipLint?: boolean
+  skipLint?: boolean,
+  patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext
 ): Promise<void> {
-  const issues = await lintExportedPatch(engineDir, filesAffected, diffContent, config);
+  const issues = await lintExportedPatch(
+    engineDir,
+    filesAffected,
+    diffContent,
+    config,
+    patchQueueCtx
+  );
   if (issues.length === 0) return;
 
   const errors = issues.filter((i) => i.severity === 'error');

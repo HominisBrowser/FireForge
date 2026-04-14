@@ -131,7 +131,21 @@ describe('validateConfig', () => {
 
   it('rejects binaryName path traversal and separators', () => {
     expect(() => validateConfig(makeValidConfig({ binaryName: '../bad/browser' }))).toThrow(
-      'Config field "binaryName" must not contain path separators or ".."'
+      'Config field "binaryName" must not contain path separators, "..", or null bytes'
+    );
+  });
+
+  it('rejects binaryName with null bytes', () => {
+    expect(() => validateConfig(makeValidConfig({ binaryName: 'bad\0browser' }))).toThrow(
+      'must not contain path separators, "..", or null bytes'
+    );
+  });
+
+  it('rejects binaryName that is an absolute path', () => {
+    // Windows-style absolute path bypasses the separator check but must
+    // still be caught by the isExplicitAbsolutePath guard.
+    expect(() => validateConfig(makeValidConfig({ binaryName: 'C:\\browser' }))).toThrow(
+      'must not contain path separators'
     );
   });
 

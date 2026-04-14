@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.12.0
+
+### JSDoc validation (breaking)
+
+- **JSDoc enforcement is now AST-based and severity `error`.** The previous heuristic (walk backwards from `export` to find `*/`) has been replaced with Acorn-based AST analysis. Exported functions must have a JSDoc block with `@param` for each parameter (names must match) and `@returns` when returning a value. Exported classes require a JSDoc block. Exported constants require `@type`. This is a breaking change: projects that previously passed with incomplete JSDoc will now see lint errors.
+- **Patch-owned scope.** JSDoc enforcement now applies to all patch-owned `.sys.mjs` files, not just files new in the current diff. A file is patch-owned if it was created by the current diff or by any existing patch in the queue.
+- New check: **`jsdoc-param-mismatch`** (error) — flags `@param` tags that are missing or have the wrong name.
+- New check: **`jsdoc-missing-returns`** (error) — flags functions that return a value but lack `@returns`.
+- Exported constants and classes require a JSDoc block but do not require specific tags like `@type`.
+
+### Optional checkJs pass
+
+- **`patchLint.checkJs`** — new opt-in config field in `fireforge.json`. When enabled, runs TypeScript's `checkJs` pass (`allowJs + checkJs + noEmit`) on patch-owned `.sys.mjs` files only. Firefox globals are shimmed automatically. Diagnostics are filtered to patch-owned files so upstream noise is suppressed.
+- New check: **`checkjs-type-error`** (error/warning) — surfaces type errors from the TypeScript compiler.
+
+### Hardening
+
+- **Path validation.** `binaryName` in `fireforge.json` now rejects null bytes and absolute paths (including Windows drive letters). `isContainedRelativePath` and `isPathInsideRoot` reject null bytes. Furnace custom component `targetPath` rejects null bytes and absolute paths.
+- **Symlink traversal protection.** Patch target validation now checks whether existing paths are symlinks resolving outside the engine tree before applying.
+- **PID-aware stale lock recovery.** The file lock writes the owning PID into the lock directory. Stale lock recovery checks whether the PID is still alive before removing, preventing premature removal when a slow operation legitimately holds the lock.
+- **Forward-import detection** now catches `ChromeUtils.importESModule()` calls in addition to static/dynamic ES imports and `defineESModuleGetters`.
+- **Furnace rollback failure markers** now include the component name and operation context, improving diagnostics in `fireforge doctor`.
+- New lint check in README: **`modified-file-missing-header`** (warning) was implemented but not documented; now listed in the lint checks table.
+
 ## 0.11.0
 
 ### New commands

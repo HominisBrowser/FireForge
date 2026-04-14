@@ -227,7 +227,7 @@ async function refreshSingleOverride(
             await recordFurnaceRollbackFailure(
               projectRoot,
               'refresh-rollback',
-              toError(rollbackError).message
+              `override "${name}": ${toError(rollbackError).message}`
             );
             throw rollbackError;
           }

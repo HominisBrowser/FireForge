@@ -13,6 +13,7 @@ import type {
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
+import { isExplicitAbsolutePath } from '../utils/paths.js';
 import { isArray, isBoolean, isObject, isString } from '../utils/validation.js';
 import { FIREFORGE_DIR } from './config.js';
 import { resolveFtlDir } from './furnace-constants.js';
@@ -142,9 +143,14 @@ function parseCustomConfig(data: Record<string, unknown>, name: string): CustomC
   if (!isString(data['targetPath'])) {
     throw new FurnaceError(`Furnace config: custom "${name}.targetPath" must be a string`);
   }
-  if (data['targetPath'].includes('..')) {
+  if (data['targetPath'].includes('..') || data['targetPath'].includes('\0')) {
     throw new FurnaceError(
-      `Furnace config: custom "${name}.targetPath" must not contain ".." (path traversal)`
+      `Furnace config: custom "${name}.targetPath" must not contain ".." or null bytes (path traversal)`
+    );
+  }
+  if (isExplicitAbsolutePath(data['targetPath'])) {
+    throw new FurnaceError(
+      `Furnace config: custom "${name}.targetPath" must not be an absolute path`
     );
   }
   if (!isBoolean(data['register'])) {

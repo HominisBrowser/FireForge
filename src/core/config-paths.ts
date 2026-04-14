@@ -38,6 +38,7 @@ export const SUPPORTED_CONFIG_ROOT_KEYS = [
   'build',
   'license',
   'wire',
+  'patchLint',
 ] as const;
 
 /** Supported config paths that can be read or set without --force. */
@@ -54,6 +55,8 @@ export const SUPPORTED_CONFIG_PATHS = [
   'build.jobs',
   'wire',
   'wire.subscriptDir',
+  'patchLint',
+  'patchLint.checkJs',
 ] as const;
 
 /**

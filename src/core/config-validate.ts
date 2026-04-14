@@ -7,7 +7,7 @@ import { ConfigError } from '../errors/config.js';
 import type { FireForgeConfig, ProjectLicense } from '../types/config.js';
 import { verbose } from '../utils/logger.js';
 import { parseObject } from '../utils/parse.js';
-import { isContainedRelativePath } from '../utils/paths.js';
+import { isContainedRelativePath, isExplicitAbsolutePath } from '../utils/paths.js';
 import {
   isValidAppId,
   isValidFirefoxVersion,
@@ -37,8 +37,19 @@ export function validateConfig(data: unknown): FireForgeConfig {
   const appId = requireConfigString(rec, 'appId');
   const binaryName = requireConfigString(rec, 'binaryName');
 
-  if (binaryName.includes('..') || binaryName.includes('/') || binaryName.includes('\\')) {
-    throw new ConfigError('Config field "binaryName" must not contain path separators or ".."');
+  if (
+    binaryName.includes('..') ||
+    binaryName.includes('/') ||
+    binaryName.includes('\\') ||
+    binaryName.includes('\0')
+  ) {
+    throw new ConfigError(
+      'Config field "binaryName" must not contain path separators, "..", or null bytes'
+    );
+  }
+
+  if (isExplicitAbsolutePath(binaryName)) {
+    throw new ConfigError('Config field "binaryName" must not be an absolute path');
   }
 
   if (!isValidAppId(appId)) {
@@ -126,6 +137,19 @@ export function validateConfig(data: unknown): FireForgeConfig {
       );
     }
     config.license = licenseRaw as ProjectLicense;
+  }
+
+  // PatchLint
+  const patchLintRec = optionalConfigObject(rec, 'patchLint');
+  if (patchLintRec) {
+    config.patchLint = {};
+    const checkJs = patchLintRec.raw('checkJs');
+    if (checkJs !== undefined) {
+      if (typeof checkJs !== 'boolean') {
+        throw new ConfigError('Config field "patchLint.checkJs" must be a boolean');
+      }
+      config.patchLint.checkJs = checkJs;
+    }
   }
 
   // Warn on unknown root keys

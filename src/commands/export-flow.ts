@@ -24,6 +24,7 @@ import {
   loadPatchesManifest,
   type PatchRenameEntry,
   renumberPatchesInManifest,
+  resolvePatchIdentifier,
   savePatchesManifest,
 } from '../core/patch-manifest.js';
 import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
@@ -53,18 +54,6 @@ function buildFilenameForPlacement(
 ): string {
   const padded = String(order).padStart(Math.max(3, width), '0');
   return `${padded}-${category}-${sanitizeExportName(name)}.patch`;
-}
-
-function resolvePatchByIdentifier(
-  identifier: string,
-  patches: PatchMetadata[]
-): PatchMetadata | null {
-  if (/^\d+$/.test(identifier)) {
-    const order = parseInt(identifier, 10);
-    return patches.find((p) => p.order === order) ?? null;
-  }
-  const normalized = identifier.endsWith('.patch') ? identifier : `${identifier}.patch`;
-  return patches.find((p) => p.filename === normalized) ?? null;
 }
 
 /**
@@ -185,7 +174,7 @@ export async function resolvePlacementPlan(
     }
     targetOrder = options.order;
   } else if (options.before !== undefined) {
-    const anchor = resolvePatchByIdentifier(options.before, existingPatches);
+    const anchor = resolvePatchIdentifier(options.before, existingPatches);
     if (!anchor) {
       throw new InvalidArgumentError(`--before anchor "${options.before}" not found.`, '--before');
     }
@@ -198,7 +187,7 @@ export async function resolvePlacementPlan(
         '--after'
       );
     }
-    const anchor = resolvePatchByIdentifier(afterAnchorId, existingPatches);
+    const anchor = resolvePatchIdentifier(afterAnchorId, existingPatches);
     if (!anchor) {
       throw new InvalidArgumentError(`--after anchor "${afterAnchorId}" not found.`, '--after');
     }

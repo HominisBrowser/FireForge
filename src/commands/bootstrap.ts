@@ -8,8 +8,14 @@ import { GeneralError } from '../errors/base.js';
 import { BootstrapError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import { pathExists } from '../utils/fs.js';
-import { error, info, intro, outro } from '../utils/logger.js';
+import { error, info, intro, outro, warn } from '../utils/logger.js';
+import { detectBootstrapIssues, runPostBootstrapChecks } from './bootstrap-checks.js';
+import { reportDoctorResults } from './doctor.js';
 
+/**
+ * Builds a human-readable failure message for hard failures (non-zero exit).
+ * Used only when mach bootstrap itself reports failure.
+ */
 function buildBootstrapFailureMessage(output: string): string | undefined {
   const normalized = output.replace(/\r\n/g, '\n');
   const issues: string[] = [];
@@ -74,17 +80,29 @@ export async function bootstrapCommand(projectRoot: string): Promise<void> {
   }
 
   // mach bootstrap may exit 0 even when sub-downloads fail (e.g. HTTP 403).
-  // Scan output for known failure patterns and surface them prominently.
-  const softFailure = buildBootstrapFailureMessage(`${result.stdout}\n${result.stderr}`);
-  if (softFailure) {
+  // Instead of guessing from output text, detect what went wrong and run
+  // targeted checks to determine whether the issues are actually actionable.
+  const output = `${result.stdout}\n${result.stderr}`;
+  const issues = detectBootstrapIssues(output);
+
+  if (issues.length > 0) {
+    const checks = await runPostBootstrapChecks(issues);
+    const hasErrors = checks.some((c) => c.severity === 'error' || (!c.passed && !c.warning));
+
     info('');
-    error('Bootstrap completed with issues:');
-    info(softFailure);
-    info(
-      'Run "fireforge doctor" to verify your build environment. ' +
-        'These issues may cause build failures if not resolved.'
-    );
-    outro('Build dependencies installed with warnings');
+    if (hasErrors) {
+      warn('Bootstrap completed with issues:');
+    } else {
+      warn('Bootstrap completed with warnings:');
+    }
+
+    reportDoctorResults(checks);
+
+    if (hasErrors) {
+      outro('Build dependencies installed with errors');
+    } else {
+      outro('Build dependencies installed with warnings');
+    }
     return;
   }
 

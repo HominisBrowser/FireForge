@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.13.0
+
+### Setup
+
+- **`fireforge bootstrap` now runs targeted post-bootstrap checks** instead of pattern-matching output text. When `mach bootstrap` exits successfully but sub-downloads fail (e.g. HTTP 403 from Apple's CDN), FireForge validates actual system state — checking whether a macOS SDK is available via Xcode — and reports actionable results using the same `✓`/`!`/`✗` severity rendering as `fireforge doctor`. Non-critical issues (SDK download failed but Xcode provides one) are reported as warnings rather than alarming "did not complete successfully" errors.
+
+### Lint fixes
+
+- **`file-too-large` now uses tiered severity thresholds.** The old single 650-line warning is replaced with a three-tier system (notice / warning / error) that distinguishes general files from test files. General files: 500–749 lines notice, 750–899 warning, 900+ error. Test files (paths containing `/test/`, or filenames matching `browser_*.js`, `test_*.js`, `xpcshell_*.js`): 1200–1399 notice, 1400–1599 warning, 1600+ error. Messages include the applicable thresholds so users know where they stand. The new `notice` severity is displayed but does not count toward warning or error totals and does not block export.
+- **`observer-topic-naming` no longer matches across newlines.** The regex that extracts topic strings from `notifyObservers`/`addObserver`/`removeObserver` calls now anchors to a single line, preventing false positives when the call spans multiple lines and an unrelated string literal appears later.
+- **`raw-color-value` now supports a file allowlist and inline suppression.** New `patchLint.rawColorAllowlist` config array in `fireforge.json` exempts file paths (exact or basename match) from the raw-color check — intended for design token files that must contain raw color values. Individual declarations can also be suppressed with an inline `/* fireforge-ignore: raw-color-value */` comment.
+
+### General Improvements
+
+- **Minor Refactor**
+
 ## 0.12.0
 
 ### JSDoc validation (breaking)

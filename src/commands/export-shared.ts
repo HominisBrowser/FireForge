@@ -48,7 +48,11 @@ export async function runPatchLint(
 
   const errors = issues.filter((i) => i.severity === 'error');
   const warnings = issues.filter((i) => i.severity === 'warning');
+  const notices = issues.filter((i) => i.severity === 'notice');
 
+  for (const issue of notices) {
+    info(`NOTICE [${issue.check}] ${issue.file}: ${issue.message}`);
+  }
   for (const issue of warnings) {
     warn(`[${issue.check}] ${issue.file}: ${issue.message}`);
   }

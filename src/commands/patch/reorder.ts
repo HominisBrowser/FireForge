@@ -29,6 +29,7 @@ import {
   loadPatchesManifest,
   type PatchRenameEntry,
   renumberPatchesInManifest,
+  resolvePatchIdentifier,
 } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
@@ -38,18 +39,6 @@ import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { pickDefined } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
-
-function resolvePatchIdentifier(
-  identifier: string,
-  patches: PatchMetadata[]
-): PatchMetadata | null {
-  if (/^\d+$/.test(identifier)) {
-    const order = parseInt(identifier, 10);
-    return patches.find((p) => p.order === order) ?? null;
-  }
-  const normalized = identifier.endsWith('.patch') ? identifier : `${identifier}.patch`;
-  return patches.find((p) => p.filename === normalized) ?? null;
-}
 
 function padOrder(value: number, width: number): string {
   return String(value).padStart(width, '0');

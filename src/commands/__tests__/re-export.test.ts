@@ -41,10 +41,14 @@ vi.mock('../../core/patch-export.js', () => ({
   updatePatch: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../core/patch-manifest.js', () => ({
-  loadPatchesManifest: vi.fn(),
-  getClaimedFiles: vi.fn().mockReturnValue(new Set<string>()),
-}));
+vi.mock('../../core/patch-manifest.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/patch-manifest.js')>();
+  return {
+    ...actual,
+    loadPatchesManifest: vi.fn(),
+    getClaimedFiles: vi.fn().mockReturnValue(new Set<string>()),
+  };
+});
 
 vi.mock('../../core/patch-lint.js', () => ({
   lintExportedPatch: vi.fn().mockResolvedValue([]),

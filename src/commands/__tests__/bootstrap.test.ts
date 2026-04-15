@@ -32,11 +32,23 @@ vi.mock('../../utils/logger.js', () => ({
   outro: vi.fn(),
   info: vi.fn(),
   error: vi.fn(),
+  warn: vi.fn(),
+  success: vi.fn(),
+}));
+
+vi.mock('../bootstrap-checks.js', () => ({
+  detectBootstrapIssues: vi.fn(() => []),
+  runPostBootstrapChecks: vi.fn(() => Promise.resolve([])),
+}));
+
+vi.mock('../doctor.js', () => ({
+  reportDoctorResults: vi.fn(() => 0),
 }));
 
 import { bootstrapWithOutput } from '../../core/mach.js';
-import { error, outro } from '../../utils/logger.js';
+import { error, outro, warn } from '../../utils/logger.js';
 import { bootstrapCommand } from '../bootstrap.js';
+import { detectBootstrapIssues, runPostBootstrapChecks } from '../bootstrap-checks.js';
 
 describe('bootstrapCommand', () => {
   beforeEach(() => {
@@ -59,15 +71,50 @@ describe('bootstrapCommand', () => {
     expect(error).toHaveBeenCalledWith('Bootstrap failed');
   });
 
-  it('succeeds when exit code is 0 but surfaces soft failures prominently', async () => {
+  it('runs post-bootstrap checks on soft failures and reports warnings', async () => {
     vi.mocked(bootstrapWithOutput).mockResolvedValue({
       stdout: 'abort: no such remote origin',
       stderr: 'Traceback (most recent call last):\nHTTP Error 403: Forbidden',
       exitCode: 0,
     });
 
+    vi.mocked(detectBootstrapIssues).mockReturnValue(['sdk-fetch-403', 'missing-origin-remote']);
+    vi.mocked(runPostBootstrapChecks).mockResolvedValue([
+      {
+        name: 'macOS SDK download',
+        passed: true,
+        severity: 'warning',
+        warning: true,
+        message: 'safe to ignore',
+      },
+      { name: 'Git remote', passed: false, severity: 'error', message: 'missing origin' },
+    ]);
+
     await expect(bootstrapCommand('/project')).resolves.toBeUndefined();
-    expect(error).toHaveBeenCalledWith('Bootstrap completed with issues:');
+    expect(warn).toHaveBeenCalledWith('Bootstrap completed with issues:');
+    expect(outro).toHaveBeenCalledWith('Build dependencies installed with errors');
+  });
+
+  it('reports warnings-only when all post-bootstrap checks are non-critical', async () => {
+    vi.mocked(bootstrapWithOutput).mockResolvedValue({
+      stdout: 'urllib.error.HTTPError: HTTP Error 403: Forbidden\n',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    vi.mocked(detectBootstrapIssues).mockReturnValue(['sdk-fetch-403']);
+    vi.mocked(runPostBootstrapChecks).mockResolvedValue([
+      {
+        name: 'macOS SDK download',
+        passed: true,
+        severity: 'warning',
+        warning: true,
+        message: 'safe to ignore',
+      },
+    ]);
+
+    await expect(bootstrapCommand('/project')).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith('Bootstrap completed with warnings:');
     expect(outro).toHaveBeenCalledWith('Build dependencies installed with warnings');
   });
 
@@ -93,19 +140,5 @@ describe('bootstrapCommand', () => {
 
     await expect(bootstrapCommand('/project')).rejects.toThrow(/Bootstrap failed/i);
     expect(error).toHaveBeenCalledWith('Bootstrap failed');
-  });
-
-  it('detects the Python urllib HTTP 403 pattern from real mach bootstrap output', async () => {
-    vi.mocked(bootstrapWithOutput).mockResolvedValue({
-      stdout:
-        'urllib.error.HTTPError: HTTP Error 403: Forbidden\n' +
-        'Your system should be ready to build Firefox for Desktop!\n',
-      stderr: '',
-      exitCode: 0,
-    });
-
-    await expect(bootstrapCommand('/project')).resolves.toBeUndefined();
-    expect(error).toHaveBeenCalledWith('Bootstrap completed with issues:');
-    expect(outro).toHaveBeenCalledWith('Build dependencies installed with warnings');
   });
 });

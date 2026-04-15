@@ -188,24 +188,24 @@ If the manifest drifts after an interrupted export or manual edits, `fireforge i
 
 `fireforge lint` runs automatically during export, export-all and re-export. Use `--skip-lint` to downgrade errors to warnings. Errors block the export; warnings are printed but do not block.
 
-| Check                          | Scope                                                        | Severity                 |
-| ------------------------------ | ------------------------------------------------------------ | ------------------------ |
-| `missing-license-header`       | New files (JS/CSS/FTL)                                       | error                    |
-| `relative-import`              | JS/MJS files                                                 | error                    |
-| `token-prefix-violation`       | CSS files (with furnace)                                     | error                    |
-| `raw-color-value`              | Introduced CSS color values                                  | error                    |
-| `duplicate-new-file-creation`  | Same path created by multiple patches                        | error                    |
-| `forward-import`               | Patch imports from a later-patch file                        | error                    |
-| `missing-jsdoc`                | Exports in patch-owned `.sys.mjs`                            | error                    |
-| `jsdoc-param-mismatch`         | Exports in patch-owned `.sys.mjs`                            | error                    |
-| `jsdoc-missing-returns`        | Exports in patch-owned `.sys.mjs`                            | error                    |
-| `checkjs-type-error`           | Patch-owned `.sys.mjs` (opt-in)                              | error                    |
-| `missing-modification-comment` | Modified upstream JS/MJS                                     | warning                  |
-| `modified-file-missing-header` | Modified upstream files (JS/CSS/FTL)                         | warning                  |
-| `file-too-large`               | New files (tiered: 500/750/900 general, 1200/1400/1600 test) | notice / warning / error |
-| `observer-topic-naming`        | Observer topics with binaryName                              | warning                  |
-| `large-patch-files`            | Patches affecting >5 files                                   | warning                  |
-| `large-patch-lines`            | Patches >300 lines                                           | warning                  |
+| Check                          | Scope                                                                 | Severity                 |
+| ------------------------------ | --------------------------------------------------------------------- | ------------------------ |
+| `missing-license-header`       | New files (JS/CSS/FTL)                                                | error                    |
+| `relative-import`              | JS/MJS files                                                          | error                    |
+| `token-prefix-violation`       | CSS files (with furnace)                                              | error                    |
+| `raw-color-value`              | Introduced CSS color values                                           | error                    |
+| `duplicate-new-file-creation`  | Same path created by multiple patches                                 | error                    |
+| `forward-import`               | Patch imports from a later-patch file                                 | error                    |
+| `missing-jsdoc`                | Exports in patch-owned `.sys.mjs`                                     | error                    |
+| `jsdoc-param-mismatch`         | Exports in patch-owned `.sys.mjs`                                     | error                    |
+| `jsdoc-missing-returns`        | Exports in patch-owned `.sys.mjs`                                     | error                    |
+| `checkjs-type-error`           | Patch-owned `.sys.mjs` (opt-in)                                       | error                    |
+| `missing-modification-comment` | Modified upstream JS/MJS                                              | warning                  |
+| `modified-file-missing-header` | Modified upstream files (JS/CSS/FTL)                                  | warning                  |
+| `file-too-large`               | New files (tiered: 500/750/900 general, 1200/1400/1600 test)          | notice / warning / error |
+| `observer-topic-naming`        | Observer topics with binaryName                                       | warning                  |
+| `large-patch-files`            | Patches affecting >5 files                                            | warning                  |
+| `large-patch-lines`            | Patch line count (tiered: 800/1500/3000 general, 1500/3000/6000 test) | notice / warning / error |
 
 **JSDoc validation** uses AST-based analysis (Acorn) to validate exported APIs in patch-owned `.sys.mjs` files. A file is "patch-owned" if it was newly created by the current diff or by an existing patch in the queue. Functions must document every `@param` (names must match) and include `@returns` when the function returns a value. Exported constants and classes require a JSDoc block.
 

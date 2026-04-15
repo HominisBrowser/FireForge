@@ -55,6 +55,11 @@ const FILE_SIZE_THRESHOLDS = {
   test: { notice: 1200, warning: 1400, error: 1600 },
 } as const;
 
+const PATCH_LINE_THRESHOLDS = {
+  general: { notice: 800, warning: 1500, error: 3000 },
+  test: { notice: 1500, warning: 3000, error: 6000 },
+} as const;
+
 /**
  * Returns true if the filename looks like a JS/MJS/JSM file.
  * Handles `.sys.mjs` as well.
@@ -403,12 +408,29 @@ export function lintPatchSize(filesAffected: string[], lineCount: number): Patch
     });
   }
 
-  if (lineCount > 300) {
+  const allTests = filesAffected.length > 0 && filesAffected.every(isTestFile);
+  const thresholds = allTests ? PATCH_LINE_THRESHOLDS.test : PATCH_LINE_THRESHOLDS.general;
+
+  if (lineCount >= thresholds.error) {
     issues.push({
       file: '(patch)',
       check: 'large-patch-lines',
-      message: `Patch is ${lineCount} lines (recommended: ≤300). Consider splitting into smaller, focused patches.`,
+      message: `Patch is ${lineCount} lines (hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
+      severity: 'error',
+    });
+  } else if (lineCount >= thresholds.warning) {
+    issues.push({
+      file: '(patch)',
+      check: 'large-patch-lines',
+      message: `Patch is ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
       severity: 'warning',
+    });
+  } else if (lineCount >= thresholds.notice) {
+    issues.push({
+      file: '(patch)',
+      check: 'large-patch-lines',
+      message: `Patch is ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
+      severity: 'notice',
     });
   }
 

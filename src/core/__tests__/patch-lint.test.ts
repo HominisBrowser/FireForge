@@ -675,16 +675,57 @@ describe('lintPatchSize', () => {
     expect(issues.find((i) => i.check === 'large-patch-files')?.severity).toBe('warning');
   });
 
-  it('warns when patch exceeds 300 lines', () => {
-    const issues = lintPatchSize(['a.js'], 500);
+  it('returns notice when patch reaches 800 lines', () => {
+    const issues = lintPatchSize(['a.js'], 800);
 
-    expect(issues.some((i) => i.check === 'large-patch-lines')).toBe(true);
+    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('notice');
+  });
+
+  it('returns warning when patch reaches 1500 lines', () => {
+    const issues = lintPatchSize(['a.js'], 1500);
+
+    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('warning');
+  });
+
+  it('returns error when patch reaches 3000 lines', () => {
+    const issues = lintPatchSize(['a.js'], 3000);
+
+    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('error');
+  });
+
+  it('returns no line-count issue below 800 lines', () => {
+    const issues = lintPatchSize(['a.js'], 799);
+
+    expect(issues.some((i) => i.check === 'large-patch-lines')).toBe(false);
   });
 
   it('returns empty for small patches', () => {
     const issues = lintPatchSize(['a.js'], 50);
 
     expect(issues).toEqual([]);
+  });
+
+  it('uses higher thresholds for test-only patches', () => {
+    const testFiles = ['test/test_foo.js', 'test/test_bar.js'];
+
+    expect(lintPatchSize(testFiles, 800).some((i) => i.check === 'large-patch-lines')).toBe(false);
+    expect(
+      lintPatchSize(testFiles, 1500).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('notice');
+    expect(
+      lintPatchSize(testFiles, 3000).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('warning');
+    expect(
+      lintPatchSize(testFiles, 6000).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('error');
+  });
+
+  it('uses general thresholds for mixed test and non-test patches', () => {
+    const mixedFiles = ['a.js', 'test/test_foo.js'];
+
+    expect(
+      lintPatchSize(mixedFiles, 800).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('notice');
   });
 });
 

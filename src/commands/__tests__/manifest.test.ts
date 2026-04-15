@@ -49,6 +49,9 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   'export-shared.ts',
   'setup-support.ts',
   'token-coverage.ts',
+  // Post-bootstrap validation checks consumed by bootstrap.ts. Exports
+  // check helpers, not a top-level registrar.
+  'bootstrap-checks.ts',
   // Furnace doctor checks split out of doctor.ts so the main file stays
   // under the max-lines threshold. The file exports a typed array of
   // DoctorCheckDefinition values that doctor.ts splices into its

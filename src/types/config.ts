@@ -65,6 +65,8 @@ export interface WireConfig {
 export interface PatchLintConfig {
   /** Enable TypeScript checkJs pass on patch-owned .sys.mjs files */
   checkJs?: boolean;
+  /** File paths exempt from the raw-color-value check (exact or basename match) */
+  rawColorAllowlist?: string[];
 }
 
 /**

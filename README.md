@@ -8,7 +8,7 @@
 
 **Build and maintain your own Firefox-based browser with a patch-first workflow**
 
-FireForge gives you a toolkit for forking Firefox: download a specific ESR release, manage your customisations as a series of patches, survive version upgrades with semi-automated rebase, wire custom code into Mozilla's startup paths, and build the result. It also ships **Furnace**, a component system for creating and overriding Firefox custom elements under `toolkit/content/widgets`.
+FireForge gives you a toolkit for forking Firefox: download a specific ESR release, manage your customisations as a series of patches, survive version upgrades with semi-automated rebase, wire custom code into Mozilla's startup paths and build the result. It also ships **Furnace**, a component system for creating and overriding Firefox custom elements under `toolkit/content/widgets`.
 
 Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon](https://github.com/dothq/melon).
 
@@ -18,7 +18,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 
 - **Semi-automated ESR rebase** `fireforge rebase` replays your patch stack onto new Firefox source with escalating fuzz matching. When a patch fails, you fix it manually and `--continue`. The full stack gets re-exported with updated version stamps.
 
-- **Wiring and registration** `fireforge wire` and `fireforge register` inject your code into Mozilla's startup paths, build manifests, and JAR files with a single command. The injection is AST-based (via Acorn), so it survives formatting changes applied between versions.
+- **Wiring and registration** `fireforge wire` and `fireforge register` inject your code into Mozilla's startup paths, build manifests and JAR files with a single command. The injection is AST-based (via Acorn), so it survives formatting changes applied between versions.
 
 - **Furnace component system** Override existing Firefox custom elements or create new ones under `toolkit/content/widgets` (CSS-only restyles, full behavioural forks, or entirely new widgets).
 
@@ -26,7 +26,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 
 - **Quality checks** `fireforge lint` catches fork-specific issues (raw colours, missing licence headers, relative imports, large patches, cross-patch ordering problems) before you export. `fireforge verify` runs a read-only integrity check over the whole patch queue. `fireforge doctor` diagnoses project health including Furnace component validation.
 
-- **Built and validated against real Firefox code** Developed by editing a real Firefox ESR codebase, learning from existing patch tools, observing the breakages and edge cases that surfaced, and turning those findings into a realistic test suite. In-repo tests are thus grounded in actual development scenarios. Yes, we mock quite a bit, but when building a tool that modifies a separate code base, I think it's a solid compromise for the time being. Full end-to-end runs are currently run locally, as they require about 30 GB of disk and significant compute for multiple full builds. Full end-to-end via Github Actions will be added soonishlyTM.
+- **Built and validated against real Firefox code** Developed by editing a real Firefox ESR codebase, learning from existing patch tools, observing the breakages and edge cases that surfaced and turning those findings into a realistic test suite. In-repo tests are thus grounded in actual development scenarios. Yes, we mock quite a bit, but when building a tool that modifies a separate code base, I think it's a solid compromise for the time being. Full end-to-end runs are currently run locally, as they require about 30 GB of disk and significant compute for multiple full builds. Full end-to-end via Github Actions will be added soonishlyTM.
 
 ## Quick Start
 
@@ -52,7 +52,7 @@ npx fireforge build               # build the browser
 npx fireforge run                 # launch it
 ```
 
-Your project now has `fireforge.json`, an `engine/` directory with Firefox source, and a `patches/` directory with an empty `patches.json` manifest ready for your first customisation.
+Your project now has `fireforge.json`, an `engine/` directory with Firefox source and a `patches/` directory with an empty `patches.json` manifest ready for your first customisation.
 
 ### Workflow Overview
 
@@ -71,14 +71,14 @@ npx fireforge export browser/base/content/browser.js \
 npx fireforge reset --yes
 npx fireforge import              # --dry-run to preview without applying
 
-# 5. When Firefox releases a new ESR, update fireforge.json, re-download, and rebase
+# 5. When Firefox releases a new ESR, update fireforge.json, re-download and rebase
 npx fireforge download --force
 npx fireforge rebase
 ```
 
 ## Patch Workflow
 
-Patches live in `patches/`, applied by numeric filename prefix, and tracked in `patches/patches.json`:
+Patches live in `patches/`, applied by numeric filename prefix and tracked in `patches/patches.json`:
 
 ```
 patches/
@@ -186,38 +186,38 @@ If the manifest drifts after an interrupted export or manual edits, `fireforge i
 <details>
 <summary>Patch lint checks</summary>
 
-`fireforge lint` runs automatically during export, export-all, and re-export. Use `--skip-lint` to downgrade errors to warnings. Errors block the export; warnings are printed but do not block.
+`fireforge lint` runs automatically during export, export-all and re-export. Use `--skip-lint` to downgrade errors to warnings. Errors block the export; warnings are printed but do not block.
 
-| Check                          | Scope                                 | Severity |
-| ------------------------------ | ------------------------------------- | -------- |
-| `missing-license-header`       | New files (JS/CSS/FTL)                | error    |
-| `relative-import`              | JS/MJS files                          | error    |
-| `token-prefix-violation`       | CSS files (with furnace)              | error    |
-| `raw-color-value`              | Introduced CSS color values           | error    |
-| `duplicate-new-file-creation`  | Same path created by multiple patches | error    |
-| `forward-import`               | Patch imports from a later-patch file | error    |
-| `missing-jsdoc`                | Exports in patch-owned `.sys.mjs`     | error    |
-| `jsdoc-param-mismatch`         | Exports in patch-owned `.sys.mjs`     | error    |
-| `jsdoc-missing-returns`        | Exports in patch-owned `.sys.mjs`     | error    |
-| `checkjs-type-error`           | Patch-owned `.sys.mjs` (opt-in)       | error    |
-| `missing-modification-comment` | Modified upstream JS/MJS              | warning  |
-| `modified-file-missing-header` | Modified upstream files (JS/CSS/FTL)  | warning  |
-| `file-too-large`               | New files >650 lines                  | warning  |
-| `observer-topic-naming`        | Observer topics with binaryName       | warning  |
-| `large-patch-files`            | Patches affecting >5 files            | warning  |
-| `large-patch-lines`            | Patches >300 lines                    | warning  |
+| Check                          | Scope                                                                     | Severity                 |
+| ------------------------------ | ------------------------------------------------------------------------- | ------------------------ |
+| `missing-license-header`       | New files (JS/CSS/FTL)                                                    | error                    |
+| `relative-import`              | JS/MJS files                                                              | error                    |
+| `token-prefix-violation`       | CSS files (with furnace)                                                  | error                    |
+| `raw-color-value`              | Introduced CSS color values (allowlist via `patchLint.rawColorAllowlist`) | error                    |
+| `duplicate-new-file-creation`  | Same path created by multiple patches                                     | error                    |
+| `forward-import`               | Patch imports from a later-patch file                                     | error                    |
+| `missing-jsdoc`                | Exports in patch-owned `.sys.mjs`                                         | error                    |
+| `jsdoc-param-mismatch`         | Exports in patch-owned `.sys.mjs`                                         | error                    |
+| `jsdoc-missing-returns`        | Exports in patch-owned `.sys.mjs`                                         | error                    |
+| `checkjs-type-error`           | Patch-owned `.sys.mjs` (opt-in)                                           | error                    |
+| `missing-modification-comment` | Modified upstream JS/MJS                                                  | warning                  |
+| `modified-file-missing-header` | Modified upstream files (JS/CSS/FTL)                                      | warning                  |
+| `file-too-large`               | New files (tiered: 500/750/900 general, 1200/1400/1600 test)              | notice / warning / error |
+| `observer-topic-naming`        | Observer topics with binaryName                                           | warning                  |
+| `large-patch-files`            | Patches affecting >5 files                                                | warning                  |
+| `large-patch-lines`            | Patch line count (tiered: 800/1500/3000 general, 1500/3000/6000 test)     | notice / warning / error |
 
 **JSDoc validation** uses AST-based analysis (Acorn) to validate exported APIs in patch-owned `.sys.mjs` files. A file is "patch-owned" if it was newly created by the current diff or by an existing patch in the queue. Functions must document every `@param` (names must match) and include `@returns` when the function returns a value. Exported constants and classes require a JSDoc block.
 
-**Optional `checkJs` pass.** Enable TypeScript-based type checking for patch-owned `.sys.mjs` files by adding `"patchLint": { "checkJs": true }` to `fireforge.json`. This uses the TypeScript compiler API with `allowJs + checkJs + noEmit`, scoped only to patch-owned files. Firefox globals (`Services`, `ChromeUtils`, `lazy`, etc.) are shimmed automatically. Module-resolution errors from Firefox's `resource://` and `chrome://` URL schemes are suppressed since TypeScript cannot follow these — the pass focuses on type errors within the patch-owned code itself (mismatched JSDoc types, wrong argument counts, unreachable code, etc.).
+**Optional `checkJs` pass.** Enable a TypeScript-esque bastardization of type checking for patch-owned `.sys.mjs` files by adding `"patchLint": { "checkJs": true }` to `fireforge.json`. This uses the TypeScript compiler API with `allowJs + checkJs + noEmit`, scoped only to patch-owned files. Firefox globals (`Services`, `ChromeUtils`, `lazy`, etc.) are shimmed automatically. Module-resolution errors from Firefox's `resource://` and `chrome://` URL schemes are suppressed since TypeScript cannot follow these. This pass solely focuses on type errors within the patch-owned code itself (mismatched JSDoc types, wrong argument counts, unreachable code, etc.).
 
-The two cross-patch rules (`duplicate-new-file-creation` and `forward-import`) run over the whole patch queue rather than a single diff, catching ordering issues that only surface during `import`. Forward-import detection compares leaf filenames, so a false positive is theoretically possible when two patches create files with the same basename in different directories. Suppress with an inline `// fireforge-ignore: forward-import` comment on or above the import line. This is currently the only lint rule that supports inline suppression.
+The two cross-patch rules (`duplicate-new-file-creation` and `forward-import`) run over the whole patch queue rather than a single diff, catching ordering issues that only surface during `import`. Forward-import detection compares leaf filenames, so a false positive is theoretically possible when two patches create files with the same basename in different directories. Suppress with an inline `// fireforge-ignore: forward-import` comment on or above the import line. Both `forward-import` and `raw-color-value` support inline suppression comments (`// fireforge-ignore: forward-import` and `/* fireforge-ignore: raw-color-value */` respectively).
 
 </details>
 
 ### Repairing a broken patch queue
 
-When a patch queue drifts — overlapping new-file creations, forward imports, manifest desync — start with diagnosis:
+When a patch queue drifts, e.g. due to overlapping new-file creations, forward imports, manifest desync, etc. start with diagnosing the root cause:
 
 ```bash
 fireforge verify                    # fsck: manifest + cross-patch lint
@@ -237,7 +237,7 @@ Then fix with the appropriate primitive:
 | Manifest references a missing patch file       | `fireforge doctor --repair-patches-manifest`                          |
 | Unmanaged changes you want to discard          | `fireforge discard <file>` or `fireforge reset`                       |
 
-Every destructive command defaults to an interactive confirmation with a change summary. `--dry-run` previews without writing; `--yes` skips the prompt for CI; `--force-unsafe` bypasses structural refusals when you have context the linter cannot see. Do not hand-edit `patches.json` — it is owned by FireForge.
+Every destructive command defaults to an interactive confirmation with a change summary. `--dry-run` previews without writing; `--yes` skips the prompt for CI; `--force-unsafe` bypasses structural refusals when you have context the linter cannot see. Do not hand-edit `patches.json` as the file is owned by FireForge.
 
 ## Wiring Custom Code
 
@@ -278,7 +278,7 @@ fireforge register browser/modules/mybrowser/MyStore.sys.mjs
 
 ## Furnace (UI Component System)
 
-Furnace manages Firefox custom elements (`MozLitElement`) under `toolkit/content/widgets`. You can override existing components or create new ones. Changes feed into the same patch workflow as everything else — Furnace is not a separate persistence layer.
+Furnace manages Firefox custom elements (`MozLitElement`) under `toolkit/content/widgets`. You can override existing components or create new ones. Changes feed into the same patch workflow as everything else, Furnace is not a separate persistence layer.
 
 There are three component types:
 
@@ -297,11 +297,11 @@ fireforge furnace status                           # workspace vs engine drift
 fireforge furnace diff moz-button                  # unified diff against baseline
 ```
 
-`furnace deploy` validates components before applying — errors block, warnings are advisory. `fireforge build` and `fireforge test --build` run apply automatically. Use `fireforge doctor --repair-furnace` if the engine gets out of sync.
+`furnace deploy` validates components before applying. As always, errors block, warnings are advisory. `fireforge build` and `fireforge test --build` run apply automatically. Use `fireforge doctor --repair-furnace` if the engine gets out of sync.
 
 ## Additional Commands
 
-The commands below cover project configuration, patch queue management, build packaging, and development utilities. Run `fireforge <command> --help` for full option details.
+The commands below cover project configuration, patch queue management, build packaging and development utilities. Run `fireforge <command> --help` for full option details.
 
 ### Configuration
 
@@ -360,7 +360,11 @@ fireforge token --name "--my-color" --value "light-dark(#fff, #000)"
     "product": "firefox-esr"
   },
   "build": { "jobs": 8 },
-  "wire": { "subscriptDir": "browser/components/mybrowser" }
+  "wire": { "subscriptDir": "browser/components/mybrowser" },
+  "patchLint": {
+    "checkJs": true,
+    "rawColorAllowlist": ["hominis-tokens.css"]
+  }
 }
 ```
 

@@ -196,7 +196,7 @@ describe('lint integration', () => {
     expect(markerIssues).toHaveLength(0);
   });
 
-  it('lint warns on large new file exceeding 650 lines', async () => {
+  it('lint emits notice on new file in the notice tier (500–749 lines)', async () => {
     await initCommittedRepo(join(projectRoot, 'engine'), {
       'browser/modules/mybrowser/.gitkeep': '',
     });
@@ -207,7 +207,7 @@ describe('lint integration', () => {
     const issues = await getLintIssues(join(projectRoot, 'engine'));
     const sizeIssues = issues.filter((i) => i.check === 'file-too-large');
     expect(sizeIssues.length).toBeGreaterThanOrEqual(1);
-    expect(sizeIssues[0]?.severity).toBe('warning');
+    expect(sizeIssues[0]?.severity).toBe('notice');
   });
 
   it('lint reports nothing when no changes exist', async () => {

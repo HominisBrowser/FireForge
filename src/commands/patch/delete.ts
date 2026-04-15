@@ -21,32 +21,18 @@ import {
   isForwardImportableFile,
 } from '../../core/patch-lint.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
-import { loadPatchesManifest, removePatchFileAndManifest } from '../../core/patch-manifest.js';
+import {
+  loadPatchesManifest,
+  removePatchFileAndManifest,
+  resolvePatchIdentifier,
+} from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
-import type { PatchDeleteOptions, PatchMetadata } from '../../types/commands/index.js';
+import type { PatchDeleteOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { pickDefined } from '../../utils/options.js';
-
-/**
- * Resolves `<name>` (ordinal number or filename) to a manifest entry.
- * Mirrors re-export's `resolvePatchIdentifier` so the two resolvers behave
- * consistently — future work can lift this into a shared helper once a
- * third consumer appears.
- */
-function resolvePatchIdentifier(
-  identifier: string,
-  patches: PatchMetadata[]
-): PatchMetadata | null {
-  if (/^\d+$/.test(identifier)) {
-    const order = parseInt(identifier, 10);
-    return patches.find((p) => p.order === order) ?? null;
-  }
-  const normalized = identifier.endsWith('.patch') ? identifier : `${identifier}.patch`;
-  return patches.find((p) => p.filename === normalized) ?? null;
-}
 
 /**
  * Runs the `patch delete` command: removes a patch file and its manifest

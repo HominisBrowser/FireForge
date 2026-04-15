@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   detectNewFilesInDiff,
+  isTestFile,
   lintExportedPatch,
   lintModificationComments,
   lintModifiedFileHeaders,
@@ -177,6 +178,104 @@ describe('lintPatchedCss', () => {
 
     expect(issues).toHaveLength(2);
   });
+
+  it('skips raw-color-value for files on rawColorAllowlist (exact path)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(':root { --brand-primary: #ff0000; }');
+
+    const configWithAllowlist = {
+      ...mockConfig,
+      patchLint: { rawColorAllowlist: ['themes/tokens.css'] },
+    };
+    const issues = await lintPatchedCss(
+      '/engine',
+      ['themes/tokens.css'],
+      undefined,
+      configWithAllowlist
+    );
+
+    expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(0);
+  });
+
+  it('skips raw-color-value for files on rawColorAllowlist (basename match)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(':root { --brand-primary: #ff0000; }');
+
+    const configWithAllowlist = {
+      ...mockConfig,
+      patchLint: { rawColorAllowlist: ['tokens.css'] },
+    };
+    const issues = await lintPatchedCss(
+      '/engine',
+      ['themes/tokens.css'],
+      undefined,
+      configWithAllowlist
+    );
+
+    expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(0);
+  });
+
+  it('rawColorAllowlist works when furnace config loads successfully', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(':root { --brand: #ff0000; }');
+    mockLoadFurnaceConfig.mockResolvedValue({
+      version: 1 as const,
+      componentPrefix: 'moz-',
+      tokenPrefix: 'ff',
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+
+    const configWithAllowlist = {
+      ...mockConfig,
+      patchLint: { rawColorAllowlist: ['tokens.css'] },
+    };
+    const issues = await lintPatchedCss('/engine', ['tokens.css'], undefined, configWithAllowlist);
+
+    expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(0);
+  });
+
+  it('still flags raw-color-value for files not on rawColorAllowlist', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('body { color: #ff0000; }');
+
+    const configWithAllowlist = {
+      ...mockConfig,
+      patchLint: { rawColorAllowlist: ['tokens.css'] },
+    };
+    const issues = await lintPatchedCss('/engine', ['style.css'], undefined, configWithAllowlist);
+
+    expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(1);
+  });
+
+  it('suppresses raw-color-value with inline fireforge-ignore comment', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      ':root {\n' +
+        '  --brand-primary: #ff0000; /* fireforge-ignore: raw-color-value */\n' +
+        '  --brand-bg: #333; /* fireforge-ignore: raw-color-value */\n' +
+        '}'
+    );
+
+    const issues = await lintPatchedCss('/engine', ['tokens.css']);
+
+    expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(0);
+  });
+
+  it('flags raw-color-value on lines without inline suppression', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      ':root {\n' +
+        '  --brand-primary: #ff0000; /* fireforge-ignore: raw-color-value */\n' +
+        '  color: #333;\n' +
+        '}'
+    );
+
+    const issues = await lintPatchedCss('/engine', ['style.css']);
+
+    expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(1);
+  });
 });
 
 describe('detectNewFilesInDiff', () => {
@@ -243,6 +342,32 @@ describe('lintNewFileHeaders', () => {
   });
 });
 
+describe('isTestFile', () => {
+  it('matches paths containing /test/', () => {
+    expect(isTestFile('browser/base/content/test/general/helper.js')).toBe(true);
+  });
+
+  it('matches browser_*.js filenames', () => {
+    expect(isTestFile('browser_sidebar.js')).toBe(true);
+  });
+
+  it('matches test_*.js filenames', () => {
+    expect(isTestFile('test_utils.js')).toBe(true);
+  });
+
+  it('matches xpcshell_*.js filenames', () => {
+    expect(isTestFile('xpcshell_worker.js')).toBe(true);
+  });
+
+  it('does not match regular module files', () => {
+    expect(isTestFile('modules/MyModule.sys.mjs')).toBe(false);
+  });
+
+  it('does not match non-test content paths', () => {
+    expect(isTestFile('browser/content/app.js')).toBe(false);
+  });
+});
+
 describe('lintPatchedJs', () => {
   it('detects relative imports', async () => {
     mockPathExists.mockResolvedValue(true);
@@ -263,23 +388,121 @@ describe('lintPatchedJs', () => {
     expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
   });
 
-  it('warns about large new files', async () => {
+  it('does not flag new files below the notice threshold', async () => {
     mockPathExists.mockResolvedValue(true);
-    const bigFile = Array.from({ length: 700 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(bigFile);
+    const smallFile = Array.from({ length: 400 }, (_, i) => `const x${i} = ${i};`).join('\n');
+    mockReadText.mockResolvedValue(smallFile);
+
+    const issues = await lintPatchedJs('/engine', ['small.js'], new Set(['small.js']), mockConfig);
+
+    expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
+  });
+
+  it('emits notice for new files in the notice tier (500–749 lines)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    const file = Array.from({ length: 550 }, (_, i) => `const x${i} = ${i};`).join('\n');
+    mockReadText.mockResolvedValue(file);
+
+    const issues = await lintPatchedJs('/engine', ['mid.js'], new Set(['mid.js']), mockConfig);
+
+    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
+    expect(sizeIssue).toBeDefined();
+    expect(sizeIssue?.severity).toBe('notice');
+  });
+
+  it('emits warning for new files in the warning tier (750–899 lines)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    const file = Array.from({ length: 800 }, (_, i) => `const x${i} = ${i};`).join('\n');
+    mockReadText.mockResolvedValue(file);
+
+    const issues = await lintPatchedJs('/engine', ['big.js'], new Set(['big.js']), mockConfig);
+
+    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
+    expect(sizeIssue).toBeDefined();
+    expect(sizeIssue?.severity).toBe('warning');
+  });
+
+  it('emits error for new files at or above the error tier (900+ lines)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    const file = Array.from({ length: 950 }, (_, i) => `const x${i} = ${i};`).join('\n');
+    mockReadText.mockResolvedValue(file);
+
+    const issues = await lintPatchedJs('/engine', ['huge.js'], new Set(['huge.js']), mockConfig);
+
+    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
+    expect(sizeIssue).toBeDefined();
+    expect(sizeIssue?.severity).toBe('error');
+  });
+
+  it('uses test-file thresholds for files in /test/ paths', async () => {
+    mockPathExists.mockResolvedValue(true);
+    const file = Array.from({ length: 1300 }, (_, i) => `const x${i} = ${i};`).join('\n');
+    mockReadText.mockResolvedValue(file);
 
     const issues = await lintPatchedJs(
       '/engine',
-      ['big-module.js'],
-      new Set(['big-module.js']),
+      ['browser/base/content/test/general/browser_foo.js'],
+      new Set(['browser/base/content/test/general/browser_foo.js']),
       mockConfig
     );
 
-    expect(issues.some((i) => i.check === 'file-too-large')).toBe(true);
-    expect(issues.find((i) => i.check === 'file-too-large')?.severity).toBe('warning');
+    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
+    expect(sizeIssue).toBeDefined();
+    expect(sizeIssue?.severity).toBe('notice');
+    expect(sizeIssue?.message).toContain('Test file');
   });
 
-  it('does not warn about large existing files', async () => {
+  it('emits warning for test files in the warning tier (1400–1599 lines)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    const file = Array.from({ length: 1500 }, (_, i) => `const x${i} = ${i};`).join('\n');
+    mockReadText.mockResolvedValue(file);
+
+    const issues = await lintPatchedJs(
+      '/engine',
+      ['browser/base/content/test/general/browser_bar.js'],
+      new Set(['browser/base/content/test/general/browser_bar.js']),
+      mockConfig
+    );
+
+    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
+    expect(sizeIssue).toBeDefined();
+    expect(sizeIssue?.severity).toBe('warning');
+    expect(sizeIssue?.message).toContain('splitting');
+  });
+
+  it('emits error for test files at or above 1600 lines', async () => {
+    mockPathExists.mockResolvedValue(true);
+    const file = Array.from({ length: 1700 }, (_, i) => `const x${i} = ${i};`).join('\n');
+    mockReadText.mockResolvedValue(file);
+
+    const issues = await lintPatchedJs(
+      '/engine',
+      ['test_utils.js'],
+      new Set(['test_utils.js']),
+      mockConfig
+    );
+
+    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
+    expect(sizeIssue).toBeDefined();
+    expect(sizeIssue?.severity).toBe('error');
+  });
+
+  it('does not flag test files below 1200 lines', async () => {
+    mockPathExists.mockResolvedValue(true);
+    const file = Array.from({ length: 1100 }, (_, i) => `const x${i} = ${i};`).join('\n');
+    mockReadText.mockResolvedValue(file);
+
+    const issues = await lintPatchedJs(
+      '/engine',
+      ['browser/base/content/test/general/browser_baz.js'],
+      new Set(['browser/base/content/test/general/browser_baz.js']),
+      mockConfig
+    );
+
+    expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
+  });
+
+  it('does not flag large existing files', async () => {
     mockPathExists.mockResolvedValue(true);
     const bigFile = Array.from({ length: 700 }, (_, i) => `const x${i} = ${i};`).join('\n');
     mockReadText.mockResolvedValue(bigFile);
@@ -361,6 +584,22 @@ describe('lintPatchedJs', () => {
 
     expect(issues.some((i) => i.check === 'observer-topic-naming')).toBe(true);
     expect(issues.find((i) => i.check === 'observer-topic-naming')?.severity).toBe('warning');
+  });
+
+  it('does not match observer topics across newlines (no false positive)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    // notifyObservers call with no string literal on the same line,
+    // followed by an unrelated string on a later line — must NOT be captured.
+    mockReadText.mockResolvedValue(
+      'Services.obs.notifyObservers(STORAGE_EVENTS.TILES_APPLET_NULLED, {\n' +
+        '  data: someValue,\n' +
+        '});\n' +
+        'lazy.assertAutomationOnly("testbrowser-automation-check");\n'
+    );
+
+    const issues = await lintPatchedJs('/engine', ['store.js'], new Set<string>(), mockConfig);
+
+    expect(issues.some((i) => i.check === 'observer-topic-naming')).toBe(false);
   });
 
   it('passes observer topics following convention', async () => {
@@ -457,16 +696,57 @@ describe('lintPatchSize', () => {
     expect(issues.find((i) => i.check === 'large-patch-files')?.severity).toBe('warning');
   });
 
-  it('warns when patch exceeds 300 lines', () => {
-    const issues = lintPatchSize(['a.js'], 500);
+  it('returns notice when patch reaches 800 lines', () => {
+    const issues = lintPatchSize(['a.js'], 800);
 
-    expect(issues.some((i) => i.check === 'large-patch-lines')).toBe(true);
+    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('notice');
+  });
+
+  it('returns warning when patch reaches 1500 lines', () => {
+    const issues = lintPatchSize(['a.js'], 1500);
+
+    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('warning');
+  });
+
+  it('returns error when patch reaches 3000 lines', () => {
+    const issues = lintPatchSize(['a.js'], 3000);
+
+    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('error');
+  });
+
+  it('returns no line-count issue below 800 lines', () => {
+    const issues = lintPatchSize(['a.js'], 799);
+
+    expect(issues.some((i) => i.check === 'large-patch-lines')).toBe(false);
   });
 
   it('returns empty for small patches', () => {
     const issues = lintPatchSize(['a.js'], 50);
 
     expect(issues).toEqual([]);
+  });
+
+  it('uses higher thresholds for test-only patches', () => {
+    const testFiles = ['test/test_foo.js', 'test/test_bar.js'];
+
+    expect(lintPatchSize(testFiles, 800).some((i) => i.check === 'large-patch-lines')).toBe(false);
+    expect(
+      lintPatchSize(testFiles, 1500).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('notice');
+    expect(
+      lintPatchSize(testFiles, 3000).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('warning');
+    expect(
+      lintPatchSize(testFiles, 6000).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('error');
+  });
+
+  it('uses general thresholds for mixed test and non-test patches', () => {
+    const mixedFiles = ['a.js', 'test/test_foo.js'];
+
+    expect(
+      lintPatchSize(mixedFiles, 800).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('notice');
   });
 });
 

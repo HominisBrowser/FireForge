@@ -102,6 +102,6 @@ export interface PatchLintIssue {
   fingerprint?: string;
   /** Human-readable description of the issue */
   message: string;
-  /** Severity: errors block export, warnings are advisory */
-  severity: 'error' | 'warning';
+  /** Severity: errors block export, warnings are advisory, notices are informational (not counted) */
+  severity: 'error' | 'warning' | 'notice';
 }

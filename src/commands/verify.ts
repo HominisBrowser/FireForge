@@ -102,10 +102,11 @@ export async function verifyCommand(projectRoot: string): Promise<void> {
   if (lintIssues.length > 0) {
     warn(`Cross-patch lint issues (${lintIssues.length}):`);
     for (const issue of lintIssues) {
-      const label = issue.severity === 'error' ? 'ERROR' : 'WARN';
+      const label =
+        issue.severity === 'error' ? 'ERROR' : issue.severity === 'warning' ? 'WARN' : 'NOTICE';
       warn(`  ${label} [${issue.check}] ${issue.file}: ${issue.message}`);
       if (issue.severity === 'error') errorCount += 1;
-      else warningCount += 1;
+      else if (issue.severity === 'warning') warningCount += 1;
     }
   }
 

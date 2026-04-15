@@ -8,7 +8,13 @@ import { pathExists, readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { hasRawCssColors, stripJsComments } from '../utils/regex.js';
 import { loadFurnaceConfig } from './furnace-config.js';
-import { type CommentStyle, getLicenseHeader, hasAnyLicenseHeader } from './license-headers.js';
+import {
+  type CommentStyle,
+  containsUpstreamLicenseText,
+  getLicenseHeader,
+  hasAnyLicenseHeader,
+  hasAnyLicenseHeaderAnyStyle,
+} from './license-headers.js';
 import { runCheckJs } from './patch-lint-checkjs.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
 import { validateExportJsDoc } from './patch-lint-jsdoc.js';
@@ -50,12 +56,63 @@ export { resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
 
 const JS_EXTENSIONS = ['.js', '.mjs', '.jsm'];
 
+const FILE_SIZE_THRESHOLDS = {
+  general: { notice: 500, warning: 750, error: 900 },
+  test: { notice: 1200, warning: 1400, error: 1600 },
+} as const;
+
+/**
+ * Counts the total lines in a unified diff and the number of non-binary
+ * text lines, so binary hunks do not inflate patch size checks.
+ *
+ * @param diffContent - Raw unified diff string
+ * @returns Object with `total` line count and `textLines` (total minus binary hunk lines)
+ */
+export function countNonBinaryDiffLines(diffContent: string): {
+  total: number;
+  textLines: number;
+} {
+  const lines = diffContent.split('\n');
+  const total = lines.length;
+  let binaryLines = 0;
+  let inBinaryHunk = false;
+
+  for (const line of lines) {
+    if (line === 'GIT binary patch' || line.startsWith('GIT binary patch')) {
+      inBinaryHunk = true;
+    } else if (line.startsWith('diff --git ')) {
+      inBinaryHunk = false;
+    }
+    if (inBinaryHunk) {
+      binaryLines++;
+    }
+  }
+
+  return { total, textLines: total - binaryLines };
+}
+
+const PATCH_LINE_THRESHOLDS = {
+  general: { notice: 800, warning: 1500, error: 3000 },
+  test: { notice: 1500, warning: 3000, error: 6000 },
+} as const;
+
 /**
  * Returns true if the filename looks like a JS/MJS/JSM file.
  * Handles `.sys.mjs` as well.
  */
 function isJsFile(file: string): boolean {
   return JS_EXTENSIONS.some((ext) => file.endsWith(ext));
+}
+
+/**
+ * Returns true if the file path looks like a test file.
+ * Matches paths containing `/test/` or filenames starting with
+ * `browser_`, `test_`, or `xpcshell_` (all `.js`).
+ */
+export function isTestFile(file: string): boolean {
+  if (file.includes('/test/')) return true;
+  const basename = file.split('/').pop() ?? '';
+  return /^(?:browser_|test_|xpcshell_).*\.js$/.test(basename);
 }
 
 /**
@@ -84,7 +141,8 @@ export function commentStyleForFile(file: string): CommentStyle | null {
 export async function lintPatchedCss(
   repoDir: string,
   affectedFiles: string[],
-  diffContent?: string
+  diffContent?: string,
+  config?: FireForgeConfig
 ): Promise<PatchLintIssue[]> {
   const cssFiles = affectedFiles.filter((f) => f.endsWith('.css'));
   if (cssFiles.length === 0) return [];
@@ -94,10 +152,10 @@ export async function lintPatchedCss(
   let tokenAllowlist: Set<string> | undefined;
   try {
     const root = join(repoDir, '..');
-    const config = await loadFurnaceConfig(root);
-    if (config.tokenPrefix) {
-      tokenPrefix = config.tokenPrefix;
-      tokenAllowlist = new Set(config.tokenAllowlist ?? []);
+    const furnaceConfig = await loadFurnaceConfig(root);
+    if (furnaceConfig.tokenPrefix) {
+      tokenPrefix = furnaceConfig.tokenPrefix;
+      tokenAllowlist = new Set(furnaceConfig.tokenAllowlist ?? []);
     }
   } catch (error: unknown) {
     verbose(
@@ -115,19 +173,33 @@ export async function lintPatchedCss(
     const rawCss = await readText(filePath);
     // Strip block comments before scanning
     const cssContent = rawCss.replace(/\/\*[\s\S]*?\*\//g, '');
-    const rawColorContent = addedLinesByFile
-      ? (addedLinesByFile.get(file) ?? []).join('\n').replace(/\/\*[\s\S]*?\*\//g, '')
-      : cssContent;
 
     // Check only introduced raw color values when diff context is available.
-    if (hasRawCssColors(rawColorContent)) {
-      issues.push({
-        file,
-        check: 'raw-color-value',
-        message:
-          'Raw color value found. Use CSS custom properties (var(--...)) for design token consistency.',
-        severity: 'error',
-      });
+    // Skip files on the raw-color allowlist (exact path or basename match).
+    const allowlist = config?.patchLint?.rawColorAllowlist;
+    const isAllowlisted = allowlist?.some((entry) => file === entry || file.endsWith('/' + entry));
+
+    if (!isAllowlisted) {
+      // Strip lines with inline fireforge-ignore: raw-color-value suppression.
+      // Check against rawCss (before comment stripping) so the CSS comment marker is still present.
+      const sourceForSuppression = addedLinesByFile
+        ? (addedLinesByFile.get(file) ?? []).join('\n')
+        : rawCss;
+      const suppressedContent = sourceForSuppression
+        .split('\n')
+        .filter((line) => !line.includes('fireforge-ignore: raw-color-value'))
+        .join('\n')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+
+      if (hasRawCssColors(suppressedContent)) {
+        issues.push({
+          file,
+          check: 'raw-color-value',
+          message:
+            'Raw color value found. Use CSS custom properties (var(--...)) for design token consistency.',
+          severity: 'error',
+        });
+      }
     }
 
     // Check for non-tokenized custom properties
@@ -248,12 +320,31 @@ export async function lintPatchedJs(
     // 2. File size check (new files only)
     if (isNew) {
       const lineCount = content.split('\n').length;
-      if (lineCount > 650) {
+      const isTest = isTestFile(file);
+      const thresholds = isTest ? FILE_SIZE_THRESHOLDS.test : FILE_SIZE_THRESHOLDS.general;
+      const label = isTest ? 'Test file' : 'New file';
+      const verb = isTest ? 'splitting' : 'decomposing';
+
+      if (lineCount >= thresholds.error) {
         issues.push({
           file,
           check: 'file-too-large',
-          message: `New file has ${lineCount} lines (recommended max: 650). Consider decomposing.`,
+          message: `${label} has ${lineCount} lines (hard limit: ${thresholds.error}). Consider ${verb}.`,
+          severity: 'error',
+        });
+      } else if (lineCount >= thresholds.warning) {
+        issues.push({
+          file,
+          check: 'file-too-large',
+          message: `${label} has ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider ${verb}.`,
           severity: 'warning',
+        });
+      } else if (lineCount >= thresholds.notice) {
+        issues.push({
+          file,
+          check: 'file-too-large',
+          message: `${label} has ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider ${verb}.`,
+          severity: 'notice',
         });
       }
     }
@@ -274,7 +365,7 @@ export async function lintPatchedJs(
 
     // 4. Observer topic naming
     const topicPattern =
-      /(?:addObserver|removeObserver|notifyObservers)\s*\([^)]*["']([^"']+)["']/g;
+      /(?:addObserver|removeObserver|notifyObservers)\s*\([^)\n]*["']([^"']+)["']/g;
     let topicMatch: RegExpExecArray | null;
     while ((topicMatch = topicPattern.exec(strippedContent)) !== null) {
       const topic = topicMatch[1];
@@ -353,12 +444,29 @@ export function lintPatchSize(filesAffected: string[], lineCount: number): Patch
     });
   }
 
-  if (lineCount > 300) {
+  const allTests = filesAffected.length > 0 && filesAffected.every(isTestFile);
+  const thresholds = allTests ? PATCH_LINE_THRESHOLDS.test : PATCH_LINE_THRESHOLDS.general;
+
+  if (lineCount >= thresholds.error) {
     issues.push({
       file: '(patch)',
       check: 'large-patch-lines',
-      message: `Patch is ${lineCount} lines (recommended: ≤300). Consider splitting into smaller, focused patches.`,
+      message: `Patch is ${lineCount} lines (hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
+      severity: 'error',
+    });
+  } else if (lineCount >= thresholds.warning) {
+    issues.push({
+      file: '(patch)',
+      check: 'large-patch-lines',
+      message: `Patch is ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
       severity: 'warning',
+    });
+  } else if (lineCount >= thresholds.notice) {
+    issues.push({
+      file: '(patch)',
+      check: 'large-patch-lines',
+      message: `Patch is ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
+      severity: 'notice',
     });
   }
 
@@ -394,7 +502,11 @@ export async function lintModifiedFileHeaders(
     if (!(await pathExists(filePath))) continue;
 
     const content = await readText(filePath);
-    if (!hasAnyLicenseHeader(content, style)) {
+    if (
+      !hasAnyLicenseHeader(content, style) &&
+      !hasAnyLicenseHeaderAnyStyle(content) &&
+      !containsUpstreamLicenseText(content)
+    ) {
       issues.push({
         file,
         check: 'modified-file-missing-header',
@@ -429,11 +541,11 @@ export async function lintExportedPatch(
   patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext
 ): Promise<PatchLintIssue[]> {
   const newFiles = detectNewFilesInDiff(diffContent);
-  const lineCount = diffContent.split('\n').length;
+  const { textLines: lineCount } = countNonBinaryDiffLines(diffContent);
   const patchOwnedFiles = resolvePatchOwnedSysMjs(newFiles, patchQueueCtx);
 
   const [cssIssues, headerIssues, jsIssues, modifiedHeaderIssues] = await Promise.all([
-    lintPatchedCss(repoDir, affectedFiles, diffContent),
+    lintPatchedCss(repoDir, affectedFiles, diffContent, config),
     lintNewFileHeaders(repoDir, [...newFiles], config),
     lintPatchedJs(repoDir, affectedFiles, newFiles, config, patchOwnedFiles),
     lintModifiedFileHeaders(repoDir, affectedFiles, newFiles),

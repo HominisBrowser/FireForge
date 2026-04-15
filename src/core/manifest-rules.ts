@@ -43,7 +43,7 @@ export function getRules(binaryName: string): PatternRule[] {
       extractArgs: (m) => [m[1] ?? ''],
     },
     {
-      pattern: /^browser\/base\/content\/(.+\.(?:js|mjs))$/,
+      pattern: /^browser\/base\/content\/(.+\.(?:js|mjs|xhtml|css))$/,
       isRegistered: (engineDir, fileName) => isBrowserContentRegistered(engineDir, fileName),
       register: (engineDir, after, dryRun, fileName) =>
         registerBrowserContent(engineDir, fileName, after, undefined, dryRun),
@@ -146,6 +146,24 @@ export function matchesRegistrablePattern(filePath: string, binaryName: string):
   return rules.some((rule) => rule.pattern.test(normalized));
 }
 
+/** Returns advice for files that cannot be registered, or null if no advice applies. */
+function getUnregistrableAdvice(filePath: string): string | null {
+  if (filePath.endsWith('.ftl')) {
+    return "FTL locale files are auto-discovered via jar.mn glob patterns and don't need manual registration.";
+  }
+
+  const testMatch = filePath.match(/^browser\/base\/content\/test\/([^/]+)\/(?!browser\.toml$).+$/);
+  if (testMatch) {
+    const dir = testMatch[1];
+    return (
+      'Individual test files should be added directly to the corresponding browser.toml manifest. ' +
+      `Use 'fireforge register browser/base/content/test/${dir}/browser.toml' to register new test directories.`
+    );
+  }
+
+  return null;
+}
+
 /**
  * Checks whether a supported registrable file is already present in its manifest.
  *
@@ -167,10 +185,15 @@ export async function isFileRegistered(root: string, filePath: string): Promise<
     }
   }
 
+  const advice = getUnregistrableAdvice(normalizedPath);
+  if (advice) {
+    throw new InvalidArgumentError(advice, 'path');
+  }
+
   throw new InvalidArgumentError(
     `Unknown file pattern: "${normalizedPath}". Supported patterns:\n` +
       '  browser/themes/shared/*.css\n' +
-      '  browser/base/content/*.js\n' +
+      '  browser/base/content/*.{js,mjs,xhtml,css}\n' +
       '  browser/base/content/test/*/browser.toml\n' +
       `  browser/modules/${config.binaryName}/*.sys.mjs\n` +
       '  toolkit/content/widgets/*/*.{mjs,css}',
@@ -208,10 +231,15 @@ export async function registerFile(
     }
   }
 
+  const advice = getUnregistrableAdvice(normalizedPath);
+  if (advice) {
+    throw new InvalidArgumentError(advice, 'path');
+  }
+
   throw new InvalidArgumentError(
     `Unknown file pattern: "${normalizedPath}". Supported patterns:\n` +
       '  browser/themes/shared/*.css\n' +
-      '  browser/base/content/*.js\n' +
+      '  browser/base/content/*.{js,mjs,xhtml,css}\n' +
       '  browser/base/content/test/*/browser.toml\n' +
       `  browser/modules/${config.binaryName}/*.sys.mjs\n` +
       '  toolkit/content/widgets/*/*.{mjs,css}',

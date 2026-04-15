@@ -29,6 +29,7 @@ import {
   loadPatchesManifest,
   type PatchRenameEntry,
   renumberPatchesInManifest,
+  resolvePatchIdentifier,
 } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
@@ -39,23 +40,13 @@ import { info, intro, outro, warn } from '../../utils/logger.js';
 import { pickDefined } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 
-function resolvePatchIdentifier(
-  identifier: string,
-  patches: PatchMetadata[]
-): PatchMetadata | null {
-  if (/^\d+$/.test(identifier)) {
-    const order = parseInt(identifier, 10);
-    return patches.find((p) => p.order === order) ?? null;
-  }
-  const normalized = identifier.endsWith('.patch') ? identifier : `${identifier}.patch`;
-  return patches.find((p) => p.filename === normalized) ?? null;
-}
-
-function padOrder(value: number, width: number): string {
+/** Zero-pads an ordinal number to the given width. */
+export function padOrder(value: number, width: number): string {
   return String(value).padStart(width, '0');
 }
 
-function rebuildFilenameForOrder(existing: PatchMetadata, newOrder: number): string {
+/** Builds a new patch filename by replacing the numeric prefix with `newOrder`. */
+export function rebuildFilenameForOrder(existing: PatchMetadata, newOrder: number): string {
   const currentPrefixMatch = /^(\d+)-/.exec(existing.filename);
   const currentPrefix = currentPrefixMatch?.[1] ?? '001';
   const width = Math.max(3, currentPrefix.length, String(newOrder).length);

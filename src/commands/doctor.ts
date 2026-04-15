@@ -532,7 +532,13 @@ validateCheckDependencies(DOCTOR_CHECKS);
  */
 export const DOCTOR_CHECK_ORDER: readonly string[] = DOCTOR_CHECKS.map((check) => check.name);
 
-function reportDoctorResults(checks: DoctorCheck[]): ExitCode {
+/**
+ * Renders a list of doctor checks to the console and returns the
+ * appropriate exit code (success when no errors, general error otherwise).
+ * @param checks - The check results to display
+ * @returns The exit code reflecting the overall result
+ */
+export function reportDoctorResults(checks: DoctorCheck[]): ExitCode {
   info('');
 
   let passedCount = 0;

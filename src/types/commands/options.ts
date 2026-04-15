@@ -337,6 +337,16 @@ export interface PatchReorderOptions {
 }
 
 /**
+ * Options for the patch compact command.
+ */
+export interface PatchCompactOptions {
+  /** Skip confirmation prompt; required for non-TTY runs. */
+  yes?: boolean;
+  /** Print what would happen without writing anything. */
+  dryRun?: boolean;
+}
+
+/**
  * Options for the status command.
  */
 export interface StatusOptions {

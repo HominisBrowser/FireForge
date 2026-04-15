@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   addLicenseHeaderToFile,
+  containsUpstreamLicenseText,
   getLicenseHeader,
   hasAnyLicenseHeader,
+  hasAnyLicenseHeaderAnyStyle,
 } from '../license-headers.js';
 
 vi.mock('../../utils/fs.js', () => ({
@@ -54,6 +56,48 @@ describe('hasAnyLicenseHeader', () => {
   it('returns false for wrong comment style', () => {
     const jsHeader = getLicenseHeader('MPL-2.0', 'js');
     expect(hasAnyLicenseHeader(jsHeader + '\n', 'css')).toBe(false);
+  });
+});
+
+describe('hasAnyLicenseHeaderAnyStyle', () => {
+  it('recognizes MPL in CSS block-comment style', () => {
+    const content = getLicenseHeader('MPL-2.0', 'css') + '\nbody {}\n';
+    expect(hasAnyLicenseHeaderAnyStyle(content)).toBe(true);
+  });
+
+  it('recognizes EUPL in hash-comment style', () => {
+    const content = getLicenseHeader('EUPL-1.2', 'hash') + '\nkey = value\n';
+    expect(hasAnyLicenseHeaderAnyStyle(content)).toBe(true);
+  });
+
+  it('returns false when no recognized header is present', () => {
+    expect(hasAnyLicenseHeaderAnyStyle('const x = 1;\n')).toBe(false);
+  });
+});
+
+describe('containsUpstreamLicenseText', () => {
+  it('finds Mozilla Public License text in leading lines', () => {
+    const content =
+      '/* This Source Code Form is subject to the terms of the Mozilla Public License,\n' +
+      ' * v. 2.0. */\n' +
+      'export class Foo {}\n';
+    expect(containsUpstreamLicenseText(content)).toBe(true);
+  });
+
+  it('finds SPDX-License-Identifier in leading lines', () => {
+    const content =
+      '// Copyright 2024 Someone\n' + '// SPDX-License-Identifier: MIT\n' + 'const x = 1;\n';
+    expect(containsUpstreamLicenseText(content)).toBe(true);
+  });
+
+  it('returns false when no license text in the first 10 lines', () => {
+    const lines = Array.from({ length: 15 }, (_, i) => `// line ${i}`);
+    lines[12] = '// Mozilla Public License';
+    expect(containsUpstreamLicenseText(lines.join('\n'))).toBe(false);
+  });
+
+  it('returns false for content with no license text at all', () => {
+    expect(containsUpstreamLicenseText('const x = 1;\nconst y = 2;\n')).toBe(false);
   });
 });
 

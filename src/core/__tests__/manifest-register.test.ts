@@ -434,6 +434,32 @@ describe('registerFile', () => {
       'Unknown file pattern'
     );
   });
+
+  it('dispatches browser/base/content/*.xhtml to registerBrowserContent', async () => {
+    mockReadText.mockResolvedValue('        content/browser/aaa.js    (content/aaa.js)\n');
+
+    const result = await registerFile('/project', 'browser/base/content/overlay.xhtml');
+    expect(result.manifest).toBe('browser/base/jar.mn');
+  });
+
+  it('dispatches browser/base/content/*.css to registerBrowserContent', async () => {
+    mockReadText.mockResolvedValue('        content/browser/aaa.js    (content/aaa.js)\n');
+
+    const result = await registerFile('/project', 'browser/base/content/overlay.css');
+    expect(result.manifest).toBe('browser/base/jar.mn');
+  });
+
+  it('throws helpful advice for .ftl locale files', async () => {
+    await expect(
+      registerFile('/project', 'browser/locales/en-US/browser/overlay.ftl')
+    ).rejects.toThrow('auto-discovered via jar.mn glob patterns');
+  });
+
+  it('throws helpful advice for individual test files', async () => {
+    await expect(
+      registerFile('/project', 'browser/base/content/test/sidebar/head.html')
+    ).rejects.toThrow('browser.toml');
+  });
 });
 
 describe('isFileRegistered', () => {
@@ -461,6 +487,20 @@ describe('isFileRegistered', () => {
     await expect(isFileRegistered('/project', 'docs/notes.txt')).rejects.toThrow(
       'Unknown file pattern'
     );
+  });
+
+  it('throws helpful advice for .ftl files instead of generic error', async () => {
+    await expect(
+      isFileRegistered('/project', 'browser/locales/en-US/browser/overlay.ftl')
+    ).rejects.toThrow('auto-discovered via jar.mn glob patterns');
+  });
+
+  it('throws helpful advice for individual test files instead of generic error', async () => {
+    // Note: .js files under test/ also match the browser/base/content/ rule,
+    // so we test with a non-JS test artifact (e.g. .html) that won't match.
+    await expect(
+      isFileRegistered('/project', 'browser/base/content/test/sidebar/head.html')
+    ).rejects.toThrow('browser.toml');
   });
 });
 

@@ -21,6 +21,7 @@ export type {
   GlobalOptions,
   ImportOptions,
   PackageOptions,
+  PatchCompactOptions,
   PatchDeleteOptions,
   PatchReorderOptions,
   RebaseOptions,

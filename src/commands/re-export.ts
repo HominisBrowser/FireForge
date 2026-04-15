@@ -9,7 +9,11 @@ import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
 import { updatePatch, updatePatchMetadata } from '../core/patch-export.js';
-import { getClaimedFiles, loadPatchesManifest } from '../core/patch-manifest.js';
+import {
+  getClaimedFiles,
+  loadPatchesManifest,
+  resolvePatchIdentifier,
+} from '../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
@@ -20,27 +24,6 @@ import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '..
 import { pickDefined } from '../utils/options.js';
 import { runPatchLint } from './export-shared.js';
 import { reExportFilesInPlace } from './re-export-files.js';
-
-/**
- * Resolves patch identifiers (numbers or filenames) to manifest entries.
- * @param identifier - Patch number (e.g. "005") or filename (e.g. "005-ui-storage-modules.patch")
- * @param patches - All patches from the manifest
- * @returns Matching patch metadata
- */
-function resolvePatchIdentifier(
-  identifier: string,
-  patches: PatchMetadata[]
-): PatchMetadata | null {
-  // If all digits, match by order number
-  if (/^\d+$/.test(identifier)) {
-    const order = parseInt(identifier, 10);
-    return patches.find((p) => p.order === order) ?? null;
-  }
-
-  // Match by filename (with or without .patch suffix)
-  const normalized = identifier.endsWith('.patch') ? identifier : `${identifier}.patch`;
-  return patches.find((p) => p.filename === normalized) ?? null;
-}
 
 async function scanPatchFiles(
   currentFilesAffected: string[],

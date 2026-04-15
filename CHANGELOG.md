@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.13.0
+
+### Setup
+
+- **`fireforge bootstrap` now runs targeted post-bootstrap checks** instead of pattern-matching output text. When `mach bootstrap` exits successfully but sub-downloads fail (e.g. HTTP 403 from Apple's CDN), FireForge validates actual system state — checking whether a macOS SDK is available via Xcode — and reports actionable results using the same `✓`/`!`/`✗` severity rendering as `fireforge doctor`. Non-critical issues (SDK download failed but Xcode provides one) are reported as warnings rather than alarming "did not complete successfully" errors.
+
+### Lint fixes
+
+- **`file-too-large` now uses tiered severity thresholds.** The old single 650-line warning is replaced with a three-tier system (notice / warning / error) that distinguishes general files from test files. General files: 500–749 lines notice, 750–899 warning, 900+ error. Test files (paths containing `/test/`, or filenames matching `browser_*.js`, `test_*.js`, `xpcshell_*.js`): 1200–1399 notice, 1400–1599 warning, 1600+ error. Messages include the applicable thresholds so users know where they stand. The new `notice` severity is displayed but does not count toward warning or error totals and does not block export.
+- **`observer-topic-naming` no longer matches across newlines.** The regex that extracts topic strings from `notifyObservers`/`addObserver`/`removeObserver` calls now anchors to a single line, preventing false positives when the call spans multiple lines and an unrelated string literal appears later.
+- **`raw-color-value` now supports a file allowlist and inline suppression.** New `patchLint.rawColorAllowlist` config array in `fireforge.json` exempts file paths (exact or basename match) from the raw-color check — intended for design token files that must contain raw color values. Individual declarations can also be suppressed with an inline `/* fireforge-ignore: raw-color-value */` comment.
+- **`large-patch-lines` now uses tiered severity thresholds.** The old single >300-line warning is replaced with a three-tier system matching the `file-too-large` pattern. General patches: 800+ lines notice, 1500+ warning, 3000+ error. Test-only patches (all files match test patterns): 1500+ notice, 3000+ warning, 6000+ error. The previous threshold was too restrictive relative to file LOC limits — creating a single new file at the `file-too-large` notice tier (500 LOC) already exceeded it. Messages now include the applicable soft and hard limits.
+- **`large-patch-lines` now ignores binary content.** Patches whose diff contains GIT binary patch hunks (PNG, ICO, ICNS, BMP, etc.) no longer count base85-encoded data toward the line limit. This removes the need for `--skip-lint` on branding asset patches that are predominantly binary.
+- **`modified-file-missing-header` no longer false-positives on upstream files.** Modified upstream files (e.g. `BrowserGlue.sys.mjs`) that carry an MPL-2.0 header in `/* */` block-comment style were incorrectly flagged because the check only tried the comment style inferred from the file extension. The check now cascades through all comment styles and falls back to scanning leading lines for raw license identifier strings (MPL, Apache, MIT, GPL, SPDX).
+
+### New commands
+
+- **`fireforge patch compact`** — closes ordinal gaps in the patch queue in a single atomic operation. After deletes or splits, patch ordinals may have gaps (e.g. 1, 3, 7); `compact` renumbers them sequentially (1, 2, 3). Previously this required N sequential `patch reorder` calls. Supports `--dry-run` and `--yes`.
+
+### Register improvements
+
+- **`register` now supports `.xhtml` and `.css` files in `browser/base/content/`.** Previously only `.js` and `.mjs` files were accepted; XHTML and CSS files required manual `jar.mn` edits.
+- **`register` now gives actionable advice for unregistrable file types.** Attempting to register a `.ftl` locale file explains that FTL files are auto-discovered via `jar.mn` glob patterns. Attempting to register an individual test file explains that it should be added to the corresponding `browser.toml` and suggests the correct `register` invocation for the test directory manifest.
+
+### General Improvements
+
+- **Minor Refactor**
+
 ## 0.12.0
 
 ### JSDoc validation (breaking)

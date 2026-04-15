@@ -9,9 +9,11 @@
 import { Command } from 'commander';
 
 import type { CommandContext } from '../../types/cli.js';
+import { registerPatchCompact } from './compact.js';
 import { registerPatchDelete } from './delete.js';
 import { registerPatchReorder } from './reorder.js';
 
+export { patchCompactCommand } from './compact.js';
 export { patchDeleteCommand } from './delete.js';
 export { patchReorderCommand } from './reorder.js';
 
@@ -24,8 +26,9 @@ export { patchReorderCommand } from './reorder.js';
 export function registerPatch(program: Command, context: CommandContext): void {
   const patch = program
     .command('patch')
-    .description('Manage individual patches in the queue (delete, reorder)');
+    .description('Manage individual patches in the queue (compact, delete, reorder)');
 
+  registerPatchCompact(patch, context);
   registerPatchDelete(patch, context);
   registerPatchReorder(patch, context);
 }

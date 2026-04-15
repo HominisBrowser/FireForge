@@ -150,6 +150,18 @@ export function validateConfig(data: unknown): FireForgeConfig {
       }
       config.patchLint.checkJs = checkJs;
     }
+    const rawColorAllowlist = patchLintRec.raw('rawColorAllowlist');
+    if (rawColorAllowlist !== undefined) {
+      if (
+        !Array.isArray(rawColorAllowlist) ||
+        rawColorAllowlist.some((v: unknown) => typeof v !== 'string')
+      ) {
+        throw new ConfigError(
+          'Config field "patchLint.rawColorAllowlist" must be an array of strings'
+        );
+      }
+      config.patchLint.rawColorAllowlist = rawColorAllowlist as string[];
+    }
   }
 
   // Warn on unknown root keys

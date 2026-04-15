@@ -29,4 +29,5 @@ export {
   stampPatchVersions,
   validatePatchIntegrity,
 } from './patch-manifest-query.js';
+export { resolvePatchIdentifier } from './patch-manifest-resolve.js';
 export { validatePatchesManifest } from './patch-manifest-validate.js';

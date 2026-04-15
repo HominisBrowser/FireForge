@@ -83,6 +83,36 @@ export function hasAnyLicenseHeader(content: string, style: CommentStyle): boole
 }
 
 /**
+ * Returns true if `content` starts with any known license header in any
+ * comment style (js, css, hash).
+ *
+ * @param content - File content to check
+ */
+export function hasAnyLicenseHeaderAnyStyle(content: string): boolean {
+  const styles: CommentStyle[] = ['js', 'css', 'hash'];
+  return styles.some((style) => hasAnyLicenseHeader(content, style));
+}
+
+/**
+ * Returns true if the first few lines of `content` contain a recognized
+ * upstream license identifier string.
+ *
+ * @param content  - File content to check
+ * @param maxLines - Number of leading lines to inspect (default 10)
+ */
+export function containsUpstreamLicenseText(content: string, maxLines = 10): boolean {
+  const head = content.split('\n').slice(0, maxLines).join('\n');
+  const markers = [
+    'Mozilla Public License',
+    'SPDX-License-Identifier',
+    'Apache License',
+    'MIT License',
+    'GNU General Public License',
+  ];
+  return markers.some((marker) => head.includes(marker));
+}
+
+/**
  * Prepends the license header to a file on disk if it is not already present.
  *
  * @param filePath - Absolute path to the file

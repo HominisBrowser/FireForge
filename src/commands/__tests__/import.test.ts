@@ -17,7 +17,7 @@ vi.mock('../../core/config.js', () => ({
     firefox: { version: '140.9.0esr' },
   }),
   loadState: vi.fn(),
-  saveState: vi.fn(),
+  updateState: vi.fn(),
 }));
 
 vi.mock('../../core/git.js', () => ({
@@ -69,7 +69,7 @@ vi.mock('@clack/prompts', () => ({
 
 import { confirm } from '@clack/prompts';
 
-import { loadState, saveState } from '../../core/config.js';
+import { loadState, updateState } from '../../core/config.js';
 import { getHead } from '../../core/git.js';
 import { getDirtyFiles } from '../../core/git-status.js';
 import {
@@ -346,7 +346,7 @@ describe('importCommand drift handling', () => {
     expect(applyPatchesWithContinue).not.toHaveBeenCalled();
   });
 
-  it('warns about patch integrity issues but still applies the patch stack', async () => {
+  it('warns about patch integrity issues and proceeds when --force is set', async () => {
     vi.mocked(getHead).mockResolvedValue('base-commit');
     vi.mocked(validatePatchIntegrity).mockResolvedValueOnce([
       {
@@ -356,7 +356,7 @@ describe('importCommand drift handling', () => {
       },
     ]);
 
-    await expect(importCommand('/fake/root')).resolves.toBeUndefined();
+    await expect(importCommand('/fake/root', { force: true })).resolves.toBeUndefined();
 
     expect(warn).toHaveBeenCalledWith('\nPatch integrity issues detected:');
     expect(warn).toHaveBeenCalledWith(
@@ -366,6 +366,23 @@ describe('importCommand drift handling', () => {
       continueOnFailure: false,
       untilFilename: undefined,
     });
+  });
+
+  it('refuses to import in non-interactive mode when integrity issues are detected and --force is not set', async () => {
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+    vi.mocked(validatePatchIntegrity).mockResolvedValueOnce([
+      {
+        filename: '001-ui-test.patch',
+        message: 'references a file that is no longer present in HEAD',
+        targetFile: null,
+      },
+    ]);
+
+    await expect(importCommand('/fake/root')).rejects.toThrow(
+      /Refusing to import while 1 patch integrity issue/
+    );
+
+    expect(applyPatchesWithContinue).not.toHaveBeenCalled();
   });
 
   it('reports auto-resolved patches and successful import summaries', async () => {
@@ -437,13 +454,25 @@ describe('importCommand drift handling', () => {
 
     await expect(importCommand('/fake/root')).rejects.toThrow('Failed to apply 1 patch(es)');
 
-    expect(saveState).toHaveBeenCalledWith('/fake/root', {
-      baseCommit: 'base-commit',
+    // updateState is called with a transactional updater function. Invoke it
+    // with a freshly-loaded state to verify the shape of the write, since the
+    // caller-captured state from line 261 of import.ts must NOT flow into the
+    // write path (Finding 1 in the concurrency audit).
+    expect(updateState).toHaveBeenCalledTimes(1);
+    const [root, updater] = vi.mocked(updateState).mock.calls[0] ?? [];
+    expect(root).toBe('/fake/root');
+    expect(typeof updater).toBe('function');
+    const applied = (updater as (current: typeof state) => typeof state)({
+      baseCommit: 'base-commit-refreshed',
+    } as typeof state);
+    expect(applied).toEqual({
+      baseCommit: 'base-commit-refreshed',
       pendingResolution: {
         patchFilename: '001-ui-test.patch',
         originalError: 'context mismatch',
       },
     });
+
     expect(error).toHaveBeenCalledWith('\nFailed: 001-ui-test.patch');
     expect(warn).toHaveBeenCalledWith('\n1 patch(es) were skipped:');
     expect(info).toHaveBeenCalledWith('\nResolution Instructions:');

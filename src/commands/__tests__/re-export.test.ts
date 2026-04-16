@@ -37,8 +37,7 @@ vi.mock('../../core/git-status.js', () => ({
 }));
 
 vi.mock('../../core/patch-export.js', () => ({
-  updatePatchMetadata: vi.fn().mockResolvedValue(undefined),
-  updatePatch: vi.fn().mockResolvedValue(undefined),
+  updatePatchAndMetadata: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../core/patch-manifest.js', async (importOriginal) => {
@@ -83,7 +82,7 @@ vi.mock('@clack/prompts', () => ({
 import { multiselect } from '@clack/prompts';
 
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-status.js';
-import { updatePatch, updatePatchMetadata } from '../../core/patch-export.js';
+import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { lintExportedPatch } from '../../core/patch-lint.js';
 import { getClaimedFiles, loadPatchesManifest } from '../../core/patch-manifest.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
@@ -120,8 +119,7 @@ describe('reExportCommand - --scan flag', () => {
     vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
     vi.mocked(getClaimedFiles).mockReturnValue(new Set<string>());
     vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(updatePatch).mockResolvedValue(undefined);
-    vi.mocked(updatePatchMetadata).mockResolvedValue(undefined);
+    vi.mocked(updatePatchAndMetadata).mockResolvedValue(undefined);
     vi.mocked(lintExportedPatch).mockResolvedValue([]);
     vi.mocked(isCancel).mockReturnValue(false);
     vi.mocked(multiselect).mockResolvedValue([]);
@@ -195,8 +193,7 @@ describe('reExportCommand - --scan flag', () => {
 
     await expect(reExportCommand('/fake/root', ['001', '002'], {})).resolves.toBeUndefined();
 
-    expect(updatePatch).toHaveBeenCalledTimes(1);
-    expect(updatePatchMetadata).toHaveBeenCalledTimes(1);
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith('Skipped 002-ui-missing.patch: all affected files missing');
     expect(success).toHaveBeenCalledWith('Re-exported 1 of 2 patch(es)');
     expect(outro).toHaveBeenCalledWith('Re-export complete');
@@ -213,9 +210,10 @@ describe('reExportCommand - --scan flag', () => {
     await reExportCommand('/fake/root', ['001'], { scan: true });
 
     expect(info).toHaveBeenCalledWith('  + browser/modules/foo/b.js');
-    expect(updatePatchMetadata).toHaveBeenCalledWith(
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
       '/fake/patches',
       '001-ui-test.patch',
+      expect.any(String),
       expect.objectContaining({
         filesAffected: expect.arrayContaining([
           'browser/modules/foo/a.js',
@@ -225,20 +223,22 @@ describe('reExportCommand - --scan flag', () => {
     );
   });
 
-  it('does not update the manifest ahead of a failed patch rewrite during scan', async () => {
+  it('surfaces an atomic write failure during scan without a partial commit', async () => {
     const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
     vi.mocked(getModifiedFilesInDir).mockResolvedValue(['browser/modules/foo/a.js']);
     vi.mocked(getUntrackedFilesInDir).mockResolvedValue(['browser/modules/foo/b.js']);
     vi.mocked(getClaimedFiles).mockReturnValue(new Set<string>());
     vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(updatePatch).mockRejectedValueOnce(new Error('write failed'));
+    vi.mocked(updatePatchAndMetadata).mockRejectedValueOnce(new Error('write failed'));
 
     await expect(reExportCommand('/fake/root', ['001'], { scan: true })).rejects.toThrow(
       'All selected patches failed to re-export'
     );
 
-    expect(updatePatchMetadata).not.toHaveBeenCalled();
+    // Exactly one write attempt — body and manifest move together under one
+    // lock, so a partial-commit state is not representable.
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
   });
 
   it('should remove files that no longer exist', async () => {
@@ -280,13 +280,15 @@ describe('reExportCommand - --scan flag', () => {
     // Should add new.js but NOT claimed.js
     expect(info).toHaveBeenCalledWith('  + browser/modules/foo/new.js');
 
-    const metadataCalls = vi.mocked(updatePatchMetadata).mock.calls;
-    // Find the scan update call (has filesAffected)
+    const metadataCalls = vi.mocked(updatePatchAndMetadata).mock.calls;
+    // Find the scan update call (has filesAffected). arg[3] is the updates
+    // object in updatePatchAndMetadata's (patchesDir, filename, body, updates)
+    // signature.
     const scanCall = metadataCalls.find(
-      (call) => 'filesAffected' in (call[2] as Record<string, unknown>)
+      (call) => 'filesAffected' in (call[3] as Record<string, unknown>)
     );
     expect(scanCall).toBeDefined();
-    const updatedFiles = (scanCall?.[2] as { filesAffected: string[] }).filesAffected;
+    const updatedFiles = (scanCall?.[3] as { filesAffected: string[] }).filesAffected;
     expect(updatedFiles).toContain('browser/modules/foo/new.js');
     expect(updatedFiles).not.toContain('browser/modules/foo/claimed.js');
   });
@@ -331,8 +333,7 @@ describe('reExportCommand - --scan flag', () => {
 
     await reExportCommand('/fake/root', ['001'], { dryRun: true });
 
-    expect(updatePatch).not.toHaveBeenCalled();
-    expect(updatePatchMetadata).not.toHaveBeenCalled();
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
   });
 
   it('fails and does not write artifacts when lint finds errors', async () => {
@@ -352,8 +353,7 @@ describe('reExportCommand - --scan flag', () => {
       'All selected patches failed to re-export'
     );
 
-    expect(updatePatch).not.toHaveBeenCalled();
-    expect(updatePatchMetadata).not.toHaveBeenCalled();
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       'ERROR [relative-import] browser/modules/foo/a.js: bad import'
     );
@@ -379,8 +379,7 @@ describe('reExportCommand - --scan flag', () => {
     );
 
     expect(info).toHaveBeenCalledWith('  + browser/modules/foo/new.js');
-    expect(updatePatch).not.toHaveBeenCalled();
-    expect(updatePatchMetadata).not.toHaveBeenCalled();
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
   });
 
   it('blocks only the lint-failing patch when re-exporting all patches', async () => {
@@ -401,15 +400,11 @@ describe('reExportCommand - --scan flag', () => {
 
     await expect(reExportCommand('/fake/root', [], { all: true })).resolves.toBeUndefined();
 
-    expect(updatePatch).toHaveBeenCalledTimes(1);
-    expect(updatePatch).toHaveBeenCalledWith(
-      '/fake/patches/002-ui-second.patch',
-      expect.any(String)
-    );
-    expect(updatePatchMetadata).toHaveBeenCalledTimes(1);
-    expect(updatePatchMetadata).toHaveBeenCalledWith(
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
       '/fake/patches',
       '002-ui-second.patch',
+      expect.any(String),
       expect.any(Object)
     );
     expect(success).toHaveBeenCalledWith('Re-exported 1 of 2 patch(es)');
@@ -432,13 +427,12 @@ describe('reExportCommand - --scan flag', () => {
       reExportCommand('/fake/root', ['001'], { skipLint: true })
     ).resolves.toBeUndefined();
 
-    expect(updatePatch).toHaveBeenCalledTimes(1);
-    expect(updatePatchMetadata).toHaveBeenCalledTimes(1);
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith('[relative-import] browser/modules/foo/a.js: bad import');
     expect(info).toHaveBeenCalledWith('Lint: 1 error(s) downgraded to warnings (--skip-lint)');
     const lintOrder = vi.mocked(lintExportedPatch).mock.invocationCallOrder[0] ?? 0;
     const updateOrder =
-      vi.mocked(updatePatch).mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
+      vi.mocked(updatePatchAndMetadata).mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
     expect(lintOrder).toBeLessThan(updateOrder);
   });
 
@@ -457,8 +451,7 @@ describe('reExportCommand - --scan flag', () => {
 
     await expect(reExportCommand('/fake/root', ['001'], {})).resolves.toBeUndefined();
 
-    expect(updatePatch).toHaveBeenCalledTimes(1);
-    expect(updatePatchMetadata).toHaveBeenCalledTimes(1);
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
       '[missing-modification-comment] browser/modules/foo/a.js: missing marker'
     );
@@ -480,8 +473,7 @@ describe('reExportCommand - --scan flag', () => {
     await expect(reExportCommand('/fake/root', ['001'], { dryRun: true })).resolves.toBeUndefined();
 
     expect(lintExportedPatch).toHaveBeenCalledTimes(1);
-    expect(updatePatch).not.toHaveBeenCalled();
-    expect(updatePatchMetadata).not.toHaveBeenCalled();
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
   });
 
   it('reuses a single spinner across multiple patches', async () => {

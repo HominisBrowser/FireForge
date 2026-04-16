@@ -11,6 +11,7 @@ import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { GitError } from '../errors/git.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DiscardOptions } from '../types/commands/index.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, isCancel, outro, spinner, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
@@ -111,7 +112,10 @@ export async function discardCommand(
       statusEntry.isUntracked
         ? `rm ${statusEntry.file}`
         : `restore --source HEAD --staged --worktree -- ${statusEntry.file}`,
-      error instanceof Error ? error : undefined
+      // Always attach the cause via toError so thrown primitives (strings,
+      // numbers) produced by poorly-behaved utilities still propagate as
+      // an Error, preserving stack traces for verbose-mode triage.
+      toError(error)
     );
   }
 }

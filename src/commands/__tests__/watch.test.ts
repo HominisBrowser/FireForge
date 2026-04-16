@@ -26,17 +26,27 @@ vi.mock('../../utils/fs.js', () => ({
 
 vi.mock('../../utils/process.js', () => ({
   executableExists: vi.fn(),
+  exec: vi.fn(),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
+  warn: vi.fn(),
+  verbose: vi.fn(),
   spinner: vi.fn(() => ({
     message: vi.fn(),
     stop: loggerState.spinnerStop,
     error: loggerState.spinnerError,
   })),
+}));
+
+// `fireforge watch` now runs a furnace staleness check before entering
+// the watch loop. Stub the helper out so the watch tests don't have to
+// mock the full furnace-config / apply-helpers dependency graph.
+vi.mock('../../core/furnace-staleness.js', () => ({
+  warnIfFurnaceStale: vi.fn(() => Promise.resolve()),
 }));
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
@@ -48,7 +58,7 @@ import {
 } from '../../core/mach.js';
 import { pathExists } from '../../utils/fs.js';
 import { outro } from '../../utils/logger.js';
-import { executableExists } from '../../utils/process.js';
+import { exec, executableExists } from '../../utils/process.js';
 import { watchCommand } from '../watch.js';
 
 describe('watchCommand', () => {
@@ -63,6 +73,11 @@ describe('watchCommand', () => {
     } as never);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(executableExists).mockResolvedValue(true);
+    vi.mocked(exec).mockResolvedValue({
+      stdout: '2024.01.15.00\n',
+      stderr: '',
+      exitCode: 0,
+    });
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
     vi.mocked(generateMozconfig).mockResolvedValue(undefined);
@@ -112,5 +127,39 @@ describe('watchCommand', () => {
     );
     expect(watchWithOutput).toHaveBeenCalledWith('/project/engine');
     expect(outro).toHaveBeenCalledWith('Watch mode stopped');
+  });
+
+  it('refuses to start when watchman is in PATH but does not respond', async () => {
+    vi.mocked(exec).mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+
+    await expect(watchCommand('/project')).rejects.toThrow(
+      /Watchman is installed but did not respond/
+    );
+
+    expect(watchWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('refuses to start when watchman exits non-zero on a probe call', async () => {
+    vi.mocked(exec).mockResolvedValueOnce({
+      stdout: '',
+      stderr: 'broken install',
+      exitCode: 1,
+    });
+
+    await expect(watchCommand('/project')).rejects.toThrow(/watchman --version" exited 1/);
+
+    expect(watchWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('refuses to start when watchman --version returns no output', async () => {
+    vi.mocked(exec).mockResolvedValueOnce({
+      stdout: '   \n',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    await expect(watchCommand('/project')).rejects.toThrow(/produced no output/);
+
+    expect(watchWithOutput).not.toHaveBeenCalled();
   });
 });

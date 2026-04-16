@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
 import {
   buildArtifactMismatchMessage,
   generateMozconfig,
@@ -11,9 +12,53 @@ import {
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner } from '../utils/logger.js';
-import { executableExists } from '../utils/process.js';
+import { exec, executableExists } from '../utils/process.js';
+
+const WATCHMAN_PROBE_TIMEOUT_MS = 5000;
+
+/**
+ * Probes watchman by running `watchman --version`. A binary that exists
+ * in PATH but cannot respond (corrupt install, server crashed mid-session,
+ * permission denied on the state directory) would otherwise surface as a
+ * confusing mid-watch failure. Returns the trimmed version string when
+ * the probe succeeds; throws a {@link GeneralError} with actionable
+ * remediation when it does not.
+ */
+async function probeWatchman(): Promise<string> {
+  try {
+    const result = await exec('watchman', ['--version'], {
+      timeout: WATCHMAN_PROBE_TIMEOUT_MS,
+    });
+    if (result.exitCode !== 0) {
+      throw new GeneralError(
+        `Watchman is installed but "watchman --version" exited ${result.exitCode}.\n\n` +
+          (result.stderr.trim() ? `Output:\n${result.stderr.trim()}\n\n` : '') +
+          'Re-install or repair watchman, then rerun "fireforge watch".'
+      );
+    }
+    const version = result.stdout.trim();
+    if (!version) {
+      throw new GeneralError(
+        'Watchman is installed but "watchman --version" produced no output. ' +
+          'Re-install or repair watchman, then rerun "fireforge watch".'
+      );
+    }
+    return version;
+  } catch (error: unknown) {
+    if (error instanceof GeneralError) throw error;
+    throw new GeneralError(
+      `Watchman is installed but did not respond within ${WATCHMAN_PROBE_TIMEOUT_MS}ms.\n\n` +
+        `Underlying cause: ${toError(error).message}\n\n` +
+        'Common fixes:\n' +
+        '  - Restart watchman: "watchman shutdown-server" then retry\n' +
+        "  - Check filesystem permissions on watchman's state directory\n" +
+        '  - Re-install watchman if the binary is corrupt'
+    );
+  }
+}
 
 /**
  * Builds remediation guidance for objdirs configured before watchman was available.
@@ -78,6 +123,12 @@ export async function watchCommand(projectRoot: string): Promise<void> {
     );
   }
 
+  // Verify watchman actually responds — a binary that is in PATH but
+  // unable to respond (broken install, crashed server, bad state dir
+  // permissions) would otherwise surface as a confusing mid-build failure
+  // instead of an actionable preflight error.
+  await probeWatchman();
+
   // Check for build artifacts before starting watch
   const buildCheck = await hasBuildArtifacts(paths.engine);
   if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
@@ -101,6 +152,13 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   }
 
   info(`Using build artifacts from ${buildCheck.objDir}/`);
+
+  // Advisory: warn when Furnace components have drifted since the last
+  // apply so the user doesn't launch watch-mode builds with stale
+  // components baked in. Mirrors the check in `fireforge run` — without
+  // it, users editing a component then running `watch` would see their
+  // change never surface in the rebuilt browser.
+  await warnIfFurnaceStale(projectRoot);
 
   // Generate mozconfig (in case it's not up to date)
   const mozconfigSpinner = spinner('Generating mozconfig...');

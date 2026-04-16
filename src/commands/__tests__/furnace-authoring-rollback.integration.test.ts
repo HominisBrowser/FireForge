@@ -62,6 +62,19 @@ vi.mock('../../core/furnace-registration-ast.js', () => ({
   removeCustomElementRegistration: vi.fn(async () => {}),
 }));
 
+// `furnace remove` requires the engine to be a git repository for both the
+// override and custom paths so deleted edits can be recovered. The temp
+// project here is a plain filesystem fixture; stub the git-detection
+// helper so the rollback test can focus on the journal contract rather
+// than the engine bootstrap precondition.
+vi.mock('../../core/git.js', async () => {
+  const actual = await vi.importActual<typeof import('../../core/git.js')>('../../core/git.js');
+  return {
+    ...actual,
+    isGitRepository: vi.fn(() => Promise.resolve(true)),
+  };
+});
+
 const VALID_FURNACE = {
   version: 1,
   componentPrefix: 'moz-',

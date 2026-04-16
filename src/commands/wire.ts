@@ -49,6 +49,25 @@ function printWireDryRun(
 }
 
 /**
+ * Validates a subscript name supplied on the command line. Subscripts are
+ * resolved into filenames under the subscript directory and registered in
+ * jar.mn by this name, so any path separator or `..` segment would let
+ * the caller write outside the intended directory or corrupt the manifest.
+ * Mirrors the validation already applied to setup's binaryName and furnace
+ * custom component targetPath.
+ */
+function validateWireName(name: string): void {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(name)) {
+    throw new InvalidArgumentError(
+      `Subscript name "${name}" is invalid. ` +
+        'Names must start with a letter or underscore and contain only letters, digits, underscores, or hyphens. ' +
+        'Path separators and parent-directory segments are not permitted.',
+      'name'
+    );
+  }
+}
+
+/**
  * Wires a chrome subscript into the browser.
  *
  * @param projectRoot - Root directory of the project
@@ -61,6 +80,14 @@ export async function wireCommand(
   options: WireOptions = {}
 ): Promise<void> {
   intro('Wire');
+  validateWireName(name);
+  if (options.after !== undefined) {
+    // --after references an existing init block by its subscript name, so
+    // it must follow the same naming rules as `name` itself. Without this
+    // check, a caller could sneak a path-traversal segment in through
+    // --after and have it forwarded unchanged to the lookup layer.
+    validateWireName(options.after);
+  }
   consumeParserFallbackEvents();
 
   // Resolve subscript directory: CLI flag > fireforge.json > default

@@ -149,7 +149,13 @@ import {
 import type { FurnaceState } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, outro, success, warn } from '../../utils/logger.js';
-import { DOCTOR_CHECK_ORDER, doctorCommand, registerDoctor } from '../doctor.js';
+import {
+  DOCTOR_CHECK_ORDER,
+  type DoctorCheckDefinition,
+  doctorCommand,
+  registerDoctor,
+  validateCheckDependencies,
+} from '../doctor.js';
 
 function createProgram(): Command {
   const program = new Command();
@@ -1056,5 +1062,47 @@ describe('DOCTOR_CHECK_ORDER', () => {
       expect(seen.has(name)).toBe(false);
       seen.add(name);
     }
+  });
+});
+
+describe('validateCheckDependencies', () => {
+  const stubCheck = (name: string, dependsOn?: string[]): DoctorCheckDefinition =>
+    ({
+      name,
+      section: 'Dependencies',
+      run: () => Promise.resolve([]),
+      ...(dependsOn !== undefined ? { dependsOn } : {}),
+    }) as DoctorCheckDefinition;
+
+  it('accepts a valid forward-only dependency chain', () => {
+    const checks: DoctorCheckDefinition[] = [
+      stubCheck('a'),
+      stubCheck('b', ['a']),
+      stubCheck('c', ['a', 'b']),
+    ];
+    expect(() => {
+      validateCheckDependencies(checks);
+    }).not.toThrow();
+  });
+
+  it('rejects a check that references a dependency that does not exist', () => {
+    const checks: DoctorCheckDefinition[] = [stubCheck('a'), stubCheck('b', ['missing'])];
+    expect(() => {
+      validateCheckDependencies(checks);
+    }).toThrow(/does not appear earlier/);
+  });
+
+  it('rejects a check that references a later dependency (forward ordering)', () => {
+    const checks: DoctorCheckDefinition[] = [stubCheck('a', ['b']), stubCheck('b')];
+    expect(() => {
+      validateCheckDependencies(checks);
+    }).toThrow(/does not appear earlier/);
+  });
+
+  it('rejects a self-referential dependency', () => {
+    const checks: DoctorCheckDefinition[] = [stubCheck('a', ['a'])];
+    expect(() => {
+      validateCheckDependencies(checks);
+    }).toThrow(/does not appear earlier/);
   });
 });

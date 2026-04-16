@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.14.0
+
+### Concurrency and atomicity
+
+- Patch body and manifest writes in `re-export`, `rebase --continue`, and the post-apply re-export loop in `rebase` are now atomic via `updatePatchAndMetadata`, so a concurrent `resolve` / `re-export` / `patch compact` / `patch reorder` cannot leave body and metadata disagreeing.
+- State writes in `import`, `resolve`, and `rebase` (abort, continue, patch loop) use transactional `updateState` so a concurrent command's unrelated keys are no longer clobbered.
+- `rebase` apply + session persist is guarded by a new `runInSignalCriticalSection` primitive in `src/core/signal-critical.ts`; SIGINT / SIGTERM between apply and persist (5 s ceiling) no longer leaves an applied patch marked pending, so `--continue` does not re-apply it.
+
+### Rebase
+
+- Per-patch re-export failures after apply are collected instead of silently dropped. The session stays on disk and `sourceEsrVersion` is not stamped until every re-export succeeds, so `--continue` can retry after the root cause is fixed.
+- `rebase --continue` retries the post-apply pipeline when the apply loop has already finished; the prior "session may be corrupt" rejection no longer blocks resumption.
+- `rebase --abort` splits into four sequenced steps (git reset, furnace state clear, `pendingResolution` clear, session clear) so failures get correctly-labelled errors and the session stays on disk for retry.
+
+### Download
+
+- `download` restores patch-touched files to baseline after the initial commit (or a resumed partial init), so extraction artefacts and line-ending normalisation no longer force `fireforge import --force` on a clean install. Pre-existing uncommitted edits are preserved and warned about.
+- `cleanPatchTouchedFiles` runs before stamping `state.downloadedVersion`, preserving the invariant that the stamped version matches a clean engine.
+- Resume preserves the original error cause (timeout, permission denied, corrupted git object, disk full) instead of discarding it behind a generic `PartialEngineExistsError`. Unexpected errors during the partial-engine probe are also wrapped rather than re-thrown bare.
+
+### Import
+
+- Classification no longer swallows structural errors as "unmanaged dirty file". Only pure-IO errors (`ENOENT`, `EACCES`, `EPERM`, `EISDIR`, `EBUSY`) fall through; `PatchError`, manifest corruption, and patch-parse failures re-throw with the original diagnostic.
+- Patch integrity issues prompt in interactive mode and error in non-interactive mode instead of warn-and-continue; `--force` still bypasses with an explicit warning.
+
+### Furnace
+
+- `furnace apply --watch` picks up newly-created component directories dynamically, remembers edits that arrive during an in-flight apply (a second cycle runs automatically), and classifies errors errno-aware (`EACCES`, `ENOSPC`, `EBUSY`, `ENOENT`, `ETIMEDOUT`) instead of collapsing into a generic "Apply failed".
+- `furnace override` rejects collisions with `config.stock` and `config.custom` in both single and batch paths, and wraps snapshot + copy pairs in per-file error context so a mid-copy failure names the failing file.
+- `furnace remove` requires a git engine for custom components (not just overrides) and hoists the precondition outside the lock and journal registration. A summary line surfaces when test-file cleanup fails partway.
+- `furnace rename` does prefix-only filename replacement; the prior substring replacement mangled names when `oldName` appeared more than once. Content regexes now escape every metacharacter.
+- `furnace deploy` asserts `applied[0].name` matches the requested component before persisting state; state-mismatch errors recommend `fireforge doctor --repair-furnace`.
+- `furnace validate --fix` reports the actual delta from re-validation instead of inflating the count on no-op fixes.
+- `furnace list -v` tolerates missing or unreadable component directories, rendering `unavailable` instead of terminating the listing.
+- `furnace diff` surfaces `--reset-base` recovery in the primary error rather than a secondary catch block.
+- `furnace init --ftl-base-path` traversal check uses path normalisation instead of substring match, rejecting absolute paths, null bytes, and `..` segments. Interactive detection checks both `stdin.isTTY` and `stdout.isTTY` to match every other interactive command.
+
+### Other commands
+
+- `setup` rejects project names whose sanitised slug is empty (emoji-only, pure punctuation, `---`). `validateConfig` similarly rejects empty `name`, `vendor`, `appId`, `binaryName`.
+- `config --force` no longer bypasses structural validation for known keys in `SUPPORTED_CONFIG_PATHS`; the flag is only an escape hatch for unknown keys.
+- `watch` probes `watchman --version` with a 5 s timeout before starting, and runs the furnace staleness check previously only in `run`. Both commands share a new `warnIfFurnaceStale` helper in `src/core/furnace-staleness.ts`.
+- `test` path normalisation is case-insensitive, accepts `\` as well as `/`, and trims whitespace, so `Engine/foo/bar` on macOS / Windows no longer reaches `mach` with the prefix intact.
+- `status` caps untracked-directory expansion at 5 000 files per directory (configurable via `FIREFORGE_MAX_UNTRACKED_FILES`) and renders a top-of-output banner when directories were truncated, so large outputs don't hide the warning in scrollback.
+- `export` empty-diff error distinguishes the `--skip-lint` case; `export-shared` always announces when `--skip-lint` is active.
+- `wire <name>` and `register --after <entry>` validate their inputs against strict regexes, rejecting path separators, parent-dir segments, control characters, and line terminators before any filesystem operation.
+- `token add --mode` uses Commander's `.choices()` so invalid modes fail with the built-in message and `--help` lists the valid options.
+- `run` whitelisted exit codes (0, 130 SIGINT, 143 SIGTERM) are documented inline; SIGKILL (137) and other abnormal signal codes surface as build errors.
+- `discard` wraps error causes via `toError` so thrown strings or numbers propagate as real Errors with stack traces.
+
+### Internal
+
+- New unit tests for `validateCheckDependencies` in `src/commands/doctor.ts` assert the forward-only dependency invariant so a regression cannot slip in when reordering checks.
+
 ## 0.13.0
 
 ### Setup

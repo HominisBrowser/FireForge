@@ -142,26 +142,99 @@ function renderRawStatus(files: StatusFile[]): void {
 }
 
 /**
+ * Default maximum number of files we will materialise from a single
+ * untracked directory. Pathological inputs (an accidental dump of build
+ * output, a symlink that resolves into a huge unrelated tree, etc.)
+ * should not be able to balloon `status` into multi-gigabyte memory or
+ * hang the CLI. Going over this cap surfaces a warning so the user knows
+ * the listing has been truncated, and it bounds the JSON / default
+ * rendering paths.
+ *
+ * Override via the `FIREFORGE_MAX_UNTRACKED_FILES` environment variable
+ * for monorepos or fixture-heavy projects with legitimately large
+ * untracked directories.
+ */
+const DEFAULT_MAX_UNTRACKED_FILES_PER_DIR = 5000;
+
+function resolveMaxUntrackedFilesPerDir(): number {
+  const raw = process.env['FIREFORGE_MAX_UNTRACKED_FILES'];
+  if (raw === undefined || raw.length === 0) return DEFAULT_MAX_UNTRACKED_FILES_PER_DIR;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    warn(
+      `Ignoring FIREFORGE_MAX_UNTRACKED_FILES="${raw}" — expected a positive integer. Falling back to ${DEFAULT_MAX_UNTRACKED_FILES_PER_DIR}.`
+    );
+    return DEFAULT_MAX_UNTRACKED_FILES_PER_DIR;
+  }
+  return parsed;
+}
+
+const MAX_UNTRACKED_FILES_PER_DIR = resolveMaxUntrackedFilesPerDir();
+
+/**
  * Expands collapsed untracked directory entries into individual file entries.
  * Git status may report an entire untracked directory as a single entry (e.g. "?? dir/").
  * This function expands those into individual file entries so each file can be classified.
+ *
+ * Per-directory expansion is capped at {@link MAX_UNTRACKED_FILES_PER_DIR}
+ * entries; any overflow is dropped with a warning. Git ls-files itself
+ * does not infinite-recurse on symlink loops, but a directory full of
+ * generated artefacts can still produce an arbitrarily large list, and
+ * truncating gives the user a recoverable signal instead of an OOM.
  */
+interface TruncationRecord {
+  dir: string;
+  total: number;
+  shown: number;
+}
+
+/**
+ * Emits a prominent top-of-output warning when one or more untracked
+ * directories were truncated during expansion. Individual per-dir warnings
+ * already fired inside expandDirectoryEntries but are easily lost in
+ * scrollback for large status outputs; this banner summarises the total
+ * hidden count so the user doesn't miss that an export based on this
+ * status would be incomplete.
+ */
+function renderTruncationBanner(truncations: TruncationRecord[]): void {
+  if (truncations.length === 0) return;
+  const hidden = truncations.reduce((sum, rec) => sum + (rec.total - rec.shown), 0);
+  const dirList = truncations.map((r) => `${r.dir} (${r.total - r.shown} hidden)`).join(', ');
+  warn(
+    `⚠ Status output is truncated: ${hidden.toLocaleString()} untracked file(s) across ${truncations.length} director(y/ies) are not shown. ` +
+      `Truncated: ${dirList}. ` +
+      `Add a .gitignore entry or clean the directory before exporting, otherwise the export will omit these files.`
+  );
+}
+
 async function expandDirectoryEntries(
   files: StatusFile[],
   engineDir: string
-): Promise<StatusFile[]> {
+): Promise<{ entries: StatusFile[]; truncations: TruncationRecord[] }> {
   const expanded: StatusFile[] = [];
+  const truncations: TruncationRecord[] = [];
   for (const entry of files) {
     if (entry.file.endsWith('/') && entry.status.includes('?')) {
       const individualFiles = await getUntrackedFilesInDir(engineDir, entry.file);
-      for (const f of individualFiles) {
+      if (individualFiles.length > MAX_UNTRACKED_FILES_PER_DIR) {
+        warn(
+          `Untracked directory ${entry.file} contains ${individualFiles.length} files — only the first ${MAX_UNTRACKED_FILES_PER_DIR} will be classified. Consider adding a .gitignore entry.`
+        );
+        truncations.push({
+          dir: entry.file,
+          total: individualFiles.length,
+          shown: MAX_UNTRACKED_FILES_PER_DIR,
+        });
+      }
+      const limited = individualFiles.slice(0, MAX_UNTRACKED_FILES_PER_DIR);
+      for (const f of limited) {
         expanded.push({ status: '??', file: f });
       }
     } else {
       expanded.push(entry);
     }
   }
-  return expanded;
+  return { entries: expanded, truncations };
 }
 
 /**
@@ -314,9 +387,11 @@ export async function statusCommand(
       throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
     }
     const manifest = await loadPatchesManifest(paths.patches);
-    const rawFilesOwnership = (await isGitRepository(paths.engine))
+    const ownershipExpansion = (await isGitRepository(paths.engine))
       ? await expandDirectoryEntries(await getStatusWithCodes(paths.engine), paths.engine)
-      : [];
+      : { entries: [], truncations: [] };
+    const rawFilesOwnership = ownershipExpansion.entries;
+    renderTruncationBanner(ownershipExpansion.truncations);
 
     // Only walk the patch bodies when the directory actually exists.
     // Fresh projects with no patch queue yet pass through with an empty
@@ -365,7 +440,8 @@ export async function statusCommand(
   }
 
   const rawFiles = await getStatusWithCodes(paths.engine);
-  const files = await expandDirectoryEntries(rawFiles, paths.engine);
+  const { entries: files, truncations } = await expandDirectoryEntries(rawFiles, paths.engine);
+  renderTruncationBanner(truncations);
 
   if (files.length === 0) {
     info('No modified files');

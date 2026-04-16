@@ -87,6 +87,14 @@ async function promptAddComponents(
 
     try {
       const config = await ensureFurnaceConfig(projectRoot);
+      // Defensive: `selected` is already filtered to exclude components
+      // currently in config.stock (see untrackedComponents above). This
+      // re-filter catches the edge case where the config on disk changed
+      // between the scan's read and the write (concurrent scan / manual
+      // edit). Without it a duplicate scan would introduce duplicate
+      // entries into stock; writeFurnaceConfig's validator would then
+      // reject the write, but the error would be less actionable than
+      // silently de-duplicating here.
       const toAdd = (selected as string[]).filter((s) => !config.stock.includes(s));
       config.stock.push(...toAdd);
       await writeFurnaceConfig(projectRoot, config);

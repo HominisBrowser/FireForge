@@ -381,6 +381,24 @@ describe('furnaceRemoveCommand', () => {
     expect(writeFurnaceConfig).not.toHaveBeenCalled();
   });
 
+  it('refuses to remove a custom component when the engine is not a git repository', async () => {
+    // Parity with the override path: custom-component removal mutates
+    // engine state (jar.mn, customElements.js, deployed widgets, optional
+    // .ftl) and the rollback journal is the only safety net while the
+    // command runs. Without git, those edits are unrecoverable after
+    // success — refuse rather than silently destroy them.
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(isGitRepository).mockResolvedValueOnce(false);
+
+    await expect(
+      furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true })
+    ).rejects.toThrow(/engine is not a git repository/i);
+
+    expect(removeCustomElementRegistration).not.toHaveBeenCalled();
+    expect(removeJarMnEntries).not.toHaveBeenCalled();
+    expect(writeFurnaceConfig).not.toHaveBeenCalled();
+  });
+
   it('snapshots the state file before clearing stale checksums so rollback can reverse it', async () => {
     // Regression guard for B2: the state-file clear used to run post-commit
     // as warn-and-continue, outside the transactional block. A failing

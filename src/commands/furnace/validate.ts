@@ -54,9 +54,16 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
   // Fix jar.mn entries
   for (const [componentName, files] of jarMnFixesByComponent) {
     try {
-      await addJarMnEntries(engineDir, componentName, files);
-      fixed += files.length;
-      info(`Fixed: added ${files.join(', ')} to jar.mn for ${componentName}`);
+      // addJarMnEntries is idempotent and reports how many entries it
+      // actually wrote. Only count + log the files that were added so the
+      // reported "fixed" number matches the on-disk change.
+      const added = await addJarMnEntries(engineDir, componentName, files);
+      fixed += added;
+      if (added > 0) {
+        info(`Fixed: added ${files.join(', ')} to jar.mn for ${componentName}`);
+      } else {
+        info(`No-op: jar.mn entries for ${componentName} were already present`);
+      }
     } catch (err: unknown) {
       warn(
         `Could not fix jar.mn for ${componentName}: ${err instanceof Error ? err.message : String(err)}`
@@ -190,13 +197,41 @@ export async function furnaceValidateCommand(
     }
   }
 
-  // Auto-fix fixable issues when --fix is passed
+  // Auto-fix fixable issues when --fix is passed. The auto-fix counter
+  // returned by `autoFixIssues` only counts function calls that did not
+  // throw — a write that succeeded but did not actually resolve the issue
+  // (e.g. addJarMnEntries appended to a file mach later ignores) would
+  // still bump the count. Re-validate the affected components and compute
+  // the *actual* drop in fixable issues so the reported number is honest.
   if (options.fix && allIssues.length > 0) {
     const fixableIssues = allIssues.filter((issue) => FIXABLE_CHECKS.has(issue.check));
     if (fixableIssues.length > 0) {
-      const fixedCount = await autoFixIssues(projectRoot, fixableIssues);
-      if (fixedCount > 0) {
-        info(`\nAuto-fixed ${fixedCount} issue(s). Re-run validate to confirm.`);
+      await autoFixIssues(projectRoot, fixableIssues);
+
+      const reValidated = await reValidateComponents(
+        projectRoot,
+        config,
+        furnacePaths,
+        new Set(fixableIssues.map((issue) => issue.component))
+      );
+
+      const fixableBefore = fixableIssues.length;
+      const fixableAfter = reValidated.issues.filter((issue) =>
+        FIXABLE_CHECKS.has(issue.check)
+      ).length;
+      const actuallyFixed = Math.max(0, fixableBefore - fixableAfter);
+
+      // Replace the pre-fix issue totals with the post-fix view so the
+      // summary reflects current reality. Issues that auto-fix could not
+      // address still count toward totalErrors / totalWarnings.
+      totalErrors = reValidated.totalErrors;
+      totalWarnings = reValidated.totalWarnings;
+
+      if (actuallyFixed > 0) {
+        info(`\nAuto-fixed ${actuallyFixed} issue(s).`);
+      }
+      if (fixableAfter > 0) {
+        warn(`${fixableAfter} fixable issue(s) remain after auto-fix — investigate manually.`);
       }
     } else {
       info('\nNo auto-fixable issues found. Remaining issues require manual resolution.');
@@ -216,4 +251,54 @@ export async function furnaceValidateCommand(
   }
 
   outro('Validation passed');
+}
+
+/**
+ * Re-validates a specific set of components after an auto-fix pass and
+ * returns the post-fix issue list with the recomputed error / warning
+ * totals. Used by the `--fix` path to honestly report what auto-fix
+ * actually accomplished.
+ */
+async function reValidateComponents(
+  projectRoot: string,
+  config: Awaited<ReturnType<typeof loadFurnaceConfig>>,
+  furnacePaths: ReturnType<typeof getFurnacePaths>,
+  componentNames: Set<string>
+): Promise<{ issues: ValidationIssue[]; totalErrors: number; totalWarnings: number }> {
+  const issues: ValidationIssue[] = [];
+  let totalErrors = 0;
+  let totalWarnings = 0;
+
+  for (const componentName of componentNames) {
+    let type: ComponentType;
+    let componentDir: string;
+
+    if (componentName in config.overrides) {
+      type = 'override';
+      componentDir = join(furnacePaths.overridesDir, componentName);
+    } else if (componentName in config.custom) {
+      type = 'custom';
+      componentDir = join(furnacePaths.customDir, componentName);
+    } else {
+      // Stock or removed components are not local-validated; skip silently.
+      continue;
+    }
+
+    if (!(await pathExists(componentDir))) continue;
+
+    const componentIssues = await validateComponent(
+      componentDir,
+      componentName,
+      type,
+      config,
+      projectRoot
+    );
+    issues.push(...componentIssues);
+    for (const issue of componentIssues) {
+      if (issue.severity === 'error') totalErrors += 1;
+      else totalWarnings += 1;
+    }
+  }
+
+  return { issues, totalErrors, totalWarnings };
 }

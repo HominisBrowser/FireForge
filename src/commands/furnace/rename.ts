@@ -47,6 +47,27 @@ import {
 } from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
 
+/** Escapes regex metacharacters so a user-supplied name is literal inside a RegExp. */
+function escapeRegex(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Applies the component rename to a filename. Only replaces the leading
+ * component name when it is followed by `.` (extension) or equals the
+ * filename exactly; every other filename is returned unchanged so stray
+ * assets, editor backups, or files whose name coincidentally contains the
+ * old component name in the middle or at the end are not accidentally
+ * renamed.
+ */
+function renameComponentFileName(fileName: string, oldName: string, newName: string): string {
+  if (fileName === oldName) return newName;
+  if (fileName.startsWith(oldName + '.')) {
+    return newName + fileName.slice(oldName.length);
+  }
+  return fileName;
+}
+
 function updateConfigForCustomRename(
   config: FurnaceConfig,
   oldName: string,
@@ -191,7 +212,15 @@ async function performRenameMutations(args: {
         if (!entry.isFile()) continue;
 
         const oldFileName = entry.name;
-        const newFileName = oldFileName.replace(oldName, newName);
+        // Rename only when the filename starts with the component name — the
+        // scaffolding convention for both create and override is `${name}.ext`.
+        // A plain `replace(oldName, newName)` produced wrong results when the
+        // old name occurred more than once (e.g. `foo-foo.mjs` renamed `foo` →
+        // `bar` became `bar-foo.mjs` instead of `bar-bar.mjs`) and also when
+        // the old name appeared inside a file that was not the component
+        // scaffold itself (e.g. a sibling helper). Unrelated files (stray
+        // assets, editor backups) are copied verbatim.
+        const newFileName = renameComponentFileName(oldFileName, oldName, newName);
         const oldPath = join(oldDir, oldFileName);
         const newPath = join(newDir, newFileName);
 
@@ -200,11 +229,8 @@ async function performRenameMutations(args: {
           // Use word-boundary-aware patterns so substrings in other
           // identifiers (e.g. "moz-panel" inside "moz-panel-group") are
           // not replaced.
-          const tagPattern = new RegExp(
-            `(?<![\\w-])${oldName.replace(/-/g, '\\-')}(?![\\w-])`,
-            'g'
-          );
-          const classPattern = new RegExp(`\\b${oldClassName}\\b`, 'g');
+          const tagPattern = new RegExp(`(?<![\\w-])${escapeRegex(oldName)}(?![\\w-])`, 'g');
+          const classPattern = new RegExp(`\\b${escapeRegex(oldClassName)}\\b`, 'g');
           content = content.replace(tagPattern, newName);
           content = content.replace(classPattern, newClassName);
           await writeText(newPath, content);

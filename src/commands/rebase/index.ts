@@ -89,7 +89,8 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
     !(await confirmDirtyEngineReset({
       engineDir: paths.engine,
       yes: options.yes ?? false,
-      nonInteractiveHint: 'Use: fireforge rebase --yes',
+      nonInteractiveCommand: 'fireforge rebase --yes',
+      argumentName: '--yes',
       warningMessage:
         'The engine directory has uncommitted changes that will be lost by the rebase.',
       promptMessage: 'Discard uncommitted changes and start rebase?',

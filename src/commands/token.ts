@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 
 import { loadConfig } from '../core/config.js';
 import { loadFurnaceConfig } from '../core/furnace-config.js';
@@ -127,7 +127,16 @@ export function registerToken(
     .command('add <token-name> <value>')
     .description('Add a design token to CSS and documentation')
     .requiredOption('--category <cat>', 'Token category (e.g., "Colors — Canvas", "Spacing")')
-    .requiredOption('--mode <mode>', 'Dark mode behavior: auto, static, or override')
+    .addOption(
+      // Use Commander's .choices() so invalid --mode values are rejected with
+      // the built-in "argument must be one of …" message and --help lists the
+      // valid choices up-front. The runtime check in tokenAddCommand remains
+      // as a defence-in-depth guard for programmatic callers that bypass
+      // Commander's argument parsing.
+      new Option('--mode <mode>', 'Dark mode behavior')
+        .choices(['auto', 'static', 'override'])
+        .makeOptionMandatory(true)
+    )
     .option('--description <desc>', 'Comment description for the CSS file')
     .option('--dark-value <val>', 'Dark mode value (required if mode is "override")')
     .option('--dry-run', 'Show what would be changed without writing')

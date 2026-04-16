@@ -194,6 +194,21 @@ describe('statusCommand', () => {
       expect(outro).toHaveBeenCalledWith('2 branding');
     });
 
+    it('caps a pathologically large untracked directory and warns the user', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([{ status: '??', file: 'build-output/' }]);
+      const HUGE = 6000;
+      const files = Array.from({ length: HUGE }, (_, i) => `build-output/file_${i}.tmp`);
+      vi.mocked(getUntrackedFilesInDir).mockResolvedValue(files);
+
+      await statusCommand(projectRoot);
+
+      // Warning message indicates truncation. The exact cap (5000) lives
+      // in MAX_UNTRACKED_FILES_PER_DIR; this test pins the contract that
+      // truncation surfaces, not the specific number.
+      expect(warnMessages().some((m) => m.includes('only the first'))).toBe(true);
+      expect(warnMessages().some((m) => m.includes('build-output/'))).toBe(true);
+    });
+
     it('always classifies browser/moz.configure as branding-managed', async () => {
       vi.mocked(matchesRegistrablePattern).mockImplementation(
         (file) => file === 'browser/base/content/example.js'

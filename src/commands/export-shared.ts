@@ -74,6 +74,12 @@ export async function runPatchLint(
     }
 
     info(`Lint: ${errors.length} error(s) downgraded to warnings (--skip-lint)`);
+  } else if (skipLint) {
+    // Always announce that --skip-lint was honoured, even when there were
+    // no errors to downgrade, so the operator can confirm the flag took
+    // effect. Without this, a clean `--skip-lint` run emitted nothing
+    // about the flag and looked identical to an unflagged run.
+    info('Lint: 0 error(s); --skip-lint is active (no effect on this run).');
   }
 
   const warnCount = warnings.length + (skipLint ? errors.length : 0);

@@ -227,7 +227,11 @@ describe('setup-support', () => {
     expect(versionPrompt?.validate('147.0b1')).toBeUndefined();
   });
 
-  it('rejects invalid derived app IDs from interactive defaults', async () => {
+  it('rejects names that sanitise to empty when neither appId nor binaryName is supplied', async () => {
+    // Names made entirely of non-alphanumeric characters collapse to an
+    // empty slug. Without explicit appId / binaryName values the derived
+    // defaults would be "org..browser" and "" respectively — both
+    // invalid downstream. The new precondition catches this up-front.
     promptMocks.group.mockResolvedValue({
       name: '!!!',
       vendor: 'Audit Corp',
@@ -238,7 +242,49 @@ describe('setup-support', () => {
       license: 'EUPL-1.2',
     });
 
-    await expect(resolveSetupInputs({}, true)).rejects.toThrow('Derived appId');
+    await expect(resolveSetupInputs({}, true)).rejects.toThrow(
+      /contains no characters that can be used to derive default appId \/ binaryName/
+    );
+  });
+
+  it('accepts an empty-sanitised name when explicit appId and binaryName are supplied', async () => {
+    promptMocks.group.mockResolvedValue({
+      name: '!!!',
+      vendor: 'Audit Corp',
+      appId: 'org.symbolic.browser',
+      binaryName: 'symbolic',
+      firefoxVersion: '140.9.0esr',
+      product: 'firefox-esr',
+      license: 'EUPL-1.2',
+    });
+
+    await expect(resolveSetupInputs({}, true)).resolves.toEqual(
+      expect.objectContaining({
+        finalName: '!!!',
+        finalAppId: 'org.symbolic.browser',
+        finalBinaryName: 'symbolic',
+      })
+    );
+  });
+
+  it('rejects empty-slug names with only binaryName supplied — the empty-slug precondition fires before isValidAppId', async () => {
+    // The new empty-slug check requires both appId and binaryName to be
+    // explicit; supplying just one is not enough. The previous behaviour
+    // would have hit the downstream "Derived appId" check instead — but
+    // the new precondition gives a more actionable message earlier.
+    promptMocks.group.mockResolvedValue({
+      name: '!!!',
+      vendor: 'Audit Corp',
+      appId: undefined,
+      binaryName: 'symbolic',
+      firefoxVersion: '140.9.0esr',
+      product: 'firefox-esr',
+      license: 'EUPL-1.2',
+    });
+
+    await expect(resolveSetupInputs({}, true)).rejects.toThrow(
+      /contains no characters that can be used to derive default appId \/ binaryName/
+    );
   });
 
   it('rejects invalid resolved Firefox versions from interactive defaults', async () => {

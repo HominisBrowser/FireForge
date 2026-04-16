@@ -10,6 +10,7 @@ const {
   loadConfigMock,
   loadStateMock,
   saveStateMock,
+  updateStateMock,
   getProjectPathsMock,
   getHeadMock,
   isGitRepositoryMock,
@@ -30,6 +31,7 @@ const {
   unstageFilesMock,
   updatePatchMock,
   updatePatchMetadataMock,
+  updatePatchAndMetadataMock,
   confirmMock,
   getFurnacePathsMock,
   updateFurnaceStateMock,
@@ -37,6 +39,14 @@ const {
   loadConfigMock: vi.fn(),
   loadStateMock: vi.fn(() => Promise.resolve({})),
   saveStateMock: vi.fn(() => Promise.resolve()),
+  updateStateMock: vi.fn<
+    (
+      root: string,
+      updates:
+        | Record<string, unknown>
+        | ((current: Record<string, unknown>) => Record<string, unknown>)
+    ) => Promise<void>
+  >(() => Promise.resolve()),
   getProjectPathsMock: vi.fn(),
   getHeadMock: vi.fn(() => Promise.resolve('abc123')),
   isGitRepositoryMock: vi.fn(() => Promise.resolve(true)),
@@ -61,6 +71,7 @@ const {
   unstageFilesMock: vi.fn(() => Promise.resolve()),
   updatePatchMock: vi.fn(() => Promise.resolve()),
   updatePatchMetadataMock: vi.fn(() => Promise.resolve()),
+  updatePatchAndMetadataMock: vi.fn(() => Promise.resolve()),
   confirmMock: vi.fn(() => Promise.resolve(true)),
   getFurnacePathsMock: vi.fn((root: string) => ({
     furnaceConfig: `${root}/furnace.json`,
@@ -81,6 +92,7 @@ vi.mock('../../core/config.js', () => ({
   loadConfig: loadConfigMock,
   loadState: loadStateMock,
   saveState: saveStateMock,
+  updateState: updateStateMock,
   getProjectPaths: getProjectPathsMock,
 }));
 
@@ -109,6 +121,13 @@ vi.mock('../../core/git-file-ops.js', () => ({
 vi.mock('../../core/patch-export.js', () => ({
   updatePatch: updatePatchMock,
   updatePatchMetadata: updatePatchMetadataMock,
+  updatePatchAndMetadata: updatePatchAndMetadataMock,
+}));
+
+vi.mock('../../core/patch-lock.js', () => ({
+  withPatchDirectoryLock: vi.fn(
+    <T>(_patchesDir: string, operation: () => Promise<T>): Promise<T> => operation()
+  ),
 }));
 
 vi.mock('../../core/patch-manifest.js', () => ({
@@ -133,6 +152,12 @@ vi.mock('../../core/rebase-session.js', () => ({
   saveRebaseSession: saveRebaseSessionMock,
   clearRebaseSession: clearRebaseSessionMock,
   hasActiveRebaseSession: hasActiveRebaseSessionMock,
+}));
+
+vi.mock('../../core/signal-critical.js', () => ({
+  runInSignalCriticalSection: vi.fn(
+    async <T>(_label: string, fn: () => Promise<T>): Promise<T> => fn()
+  ),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -748,22 +773,98 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
 
     await rebaseCommand('/project', { continue: true });
 
-    expect(updatePatchMock).toHaveBeenCalledWith(
-      '/project/patches/001-branding.patch',
-      'diff --git a/browser/file.txt b/browser/file.txt\n'
+    expect(updatePatchAndMetadataMock).toHaveBeenCalledWith(
+      '/project/patches',
+      '001-branding.patch',
+      'diff --git a/browser/file.txt b/browser/file.txt\n',
+      { sourceEsrVersion: '140.9.0esr' }
     );
-    expect(updatePatchMetadataMock).toHaveBeenCalledWith('/project/patches', '001-branding.patch', {
-      sourceEsrVersion: '140.9.0esr',
-    });
     expect(applyPatchWithFuzzMock).toHaveBeenCalledWith(
       '/project/patches/002-ui.patch',
       '/project/engine',
       3
     );
-    expect(saveStateMock).toHaveBeenCalledWith('/project', {});
+    // pendingResolution cleanup now uses the transactional updateState path.
+    expect(updateStateMock).toHaveBeenCalled();
     expect(stampPatchVersionsMock).toHaveBeenCalledWith(
       '/project/patches',
       ['001-branding.patch', '002-ui.patch'],
+      '140.9.0esr'
+    );
+    expect(clearRebaseSessionMock).toHaveBeenCalled();
+  });
+
+  it('refuses to claim success when a per-patch re-export fails after a clean apply loop', async () => {
+    // Apply succeeds for every patch; the post-apply re-export then fails
+    // for the only patch that was applied. The previous behaviour silently
+    // warn-and-continued through this, leaving the queue stamped with an
+    // honest version but a stale .patch file. The new contract is to
+    // throw a RebaseError, leave the session intact, and skip stamping.
+    hasActiveRebaseSessionMock.mockResolvedValue(false);
+    loadPatchesManifestMock.mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-branding.patch',
+          order: 1,
+          category: 'branding',
+          name: 'branding',
+          description: 'test',
+          createdAt: '2025-01-01',
+          sourceEsrVersion: '128.0esr',
+          filesAffected: ['file.txt'],
+        },
+      ],
+    });
+    discoverPatchesMock.mockResolvedValue([
+      { path: '/project/patches/001-branding.patch', filename: '001-branding.patch', order: 1 },
+    ] as never);
+    applyPatchWithFuzzMock.mockResolvedValue({ success: true, fuzzFactor: 0 });
+    getDiffForFilesAgainstHeadMock.mockRejectedValue(new Error('git diff exploded'));
+
+    await expect(rebaseCommand('/project')).rejects.toThrow(
+      /Apply succeeded but 1 patch\(es\) failed to re-export/
+    );
+
+    expect(stampPatchVersionsMock).not.toHaveBeenCalled();
+    expect(clearRebaseSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('replays the post-apply pipeline when --continue resumes a session whose apply loop already finished', async () => {
+    // currentIndex is already past the end → previous behaviour rejected
+    // this as a "corrupt session" because no patch was in 'failed'. The
+    // new branch routes straight back to runPatchLoop, which retries the
+    // re-export + stamp + clear-session pipeline.
+    loadRebaseSessionMock.mockResolvedValue({
+      ...makeSession([{ filename: '001-branding.patch', status: 'applied-clean' }]),
+      currentIndex: 1,
+    });
+    loadPatchesManifestMock.mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-branding.patch',
+          order: 1,
+          category: 'branding',
+          name: 'branding',
+          description: 'test',
+          createdAt: '2025-01-01',
+          sourceEsrVersion: '128.0esr',
+          filesAffected: ['file.txt'],
+        },
+      ],
+    });
+    discoverPatchesMock.mockResolvedValue([
+      { path: '/project/patches/001-branding.patch', filename: '001-branding.patch', order: 1 },
+    ] as never);
+    getDiffForFilesAgainstHeadMock.mockResolvedValue('diff --git a/file.txt b/file.txt\n');
+
+    await rebaseCommand('/project', { continue: true });
+
+    expect(applyPatchWithFuzzMock).not.toHaveBeenCalled();
+    expect(stampPatchVersionsMock).toHaveBeenCalledWith(
+      '/project/patches',
+      ['001-branding.patch'],
       '140.9.0esr'
     );
     expect(clearRebaseSessionMock).toHaveBeenCalled();
@@ -813,13 +914,35 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
 
     await rebaseCommand('/project', { continue: true });
 
-    expect(saveStateMock).toHaveBeenNthCalledWith(1, '/project', {});
-    expect(saveStateMock).toHaveBeenNthCalledWith(2, '/project', {
+    // --continue now uses transactional `updateState` for both writes: a
+    // clear of pendingResolution (after the previous resolve) and a set
+    // when the next patch fails mid-continue. Invoke the captured updaters
+    // with representative state to verify the effective payloads.
+    expect(updateStateMock).toHaveBeenCalled();
+    const calls = updateStateMock.mock.calls;
+    const clearCall = calls[0];
+    expect(clearCall).toBeDefined();
+    const clearUpdater = clearCall?.[1] as (
+      current: Record<string, unknown>
+    ) => Record<string, unknown>;
+    expect(
+      clearUpdater({
+        pendingResolution: { patchFilename: '001-branding.patch', originalError: 'x' },
+      })
+    ).toEqual({});
+
+    const setCall = calls[calls.length - 1];
+    expect(setCall).toBeDefined();
+    const setUpdater = setCall?.[1] as (
+      current: Record<string, unknown>
+    ) => Record<string, unknown>;
+    expect(setUpdater({})).toEqual({
       pendingResolution: {
         patchFilename: '002-ui.patch',
         originalError: 'patch failed again',
       },
     });
+
     expect(stampPatchVersionsMock).not.toHaveBeenCalled();
     expect(clearRebaseSessionMock).not.toHaveBeenCalled();
   });

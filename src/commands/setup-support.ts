@@ -246,20 +246,60 @@ async function promptSetupInputs(options: SetupOptions): Promise<ResolvedSetupIn
     }
   );
 
+  return finalizePromptedSetupInputs(project);
+}
+
+/**
+ * Shape of the raw object returned by `@clack/prompts`'s group helper for
+ * setup. Every field is `unknown` because `text()` and `select()` return
+ * `string | symbol`; `finalizePromptedSetupInputs` narrows each one before
+ * use.
+ */
+interface PromptedSetupValues {
+  name: string;
+  vendor: string;
+  appId?: unknown;
+  binaryName?: unknown;
+  firefoxVersion?: unknown;
+  product?: unknown;
+  license?: unknown;
+}
+
+/**
+ * Validates the raw prompt result and resolves the canonical
+ * {@link ResolvedSetupInputs}. Extracted from {@link promptSetupInputs} so
+ * the prompt body stays under the per-function line limit.
+ */
+function finalizePromptedSetupInputs(project: PromptedSetupValues): ResolvedSetupInputs {
   const sanitizedName = project.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const finalName = project.name;
-  const finalVendor = project.vendor;
-  const finalAppId =
-    (typeof project.appId === 'string' ? project.appId.trim() : '') ||
-    `org.${sanitizedName}.browser`;
-  const finalBinaryName =
-    (typeof project.binaryName === 'string' ? project.binaryName.trim() : '') || sanitizedName;
+  // Project names that contain no ASCII alphanumerics (e.g. "----", "漢字",
+  // emoji-only) collapse to an empty sanitised slug, which would silently
+  // produce an invalid `appId` ("org..browser") and an empty `binaryName`.
+  // Refuse to derive defaults from such names — the user must supply
+  // explicit appId / binaryName values instead.
+  const explicitAppId = typeof project.appId === 'string' ? project.appId.trim() : '';
+  const explicitBinaryName =
+    typeof project.binaryName === 'string' ? project.binaryName.trim() : '';
+  if (sanitizedName === '' && (explicitAppId === '' || explicitBinaryName === '')) {
+    throw new InvalidArgumentError(
+      `Project name "${project.name}" contains no characters that can be used to derive default appId / binaryName values. Re-run setup and supply --app-id and --binary-name explicitly.`,
+      'name'
+    );
+  }
+  const finalAppId = explicitAppId || `org.${sanitizedName}.browser`;
+  const finalBinaryName = explicitBinaryName || sanitizedName;
   const finalFirefoxVersion =
     (typeof project.firefoxVersion === 'string' ? project.firefoxVersion.trim() : '') ||
     '140.9.0esr';
 
   if (!isValidAppId(finalAppId)) {
     throw new InvalidArgumentError(`Derived appId "${finalAppId}" is invalid.`, 'appId');
+  }
+  if (finalBinaryName === '') {
+    throw new InvalidArgumentError(
+      'Derived binaryName is empty. Supply --binary-name explicitly.',
+      'binaryName'
+    );
   }
   if (!isValidFirefoxVersion(finalFirefoxVersion)) {
     throw new InvalidArgumentError(
@@ -269,8 +309,8 @@ async function promptSetupInputs(options: SetupOptions): Promise<ResolvedSetupIn
   }
 
   return {
-    finalName,
-    finalVendor,
+    finalName: project.name,
+    finalVendor: project.vendor,
     finalAppId,
     finalBinaryName,
     finalFirefoxVersion,

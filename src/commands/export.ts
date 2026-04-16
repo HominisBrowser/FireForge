@@ -197,6 +197,13 @@ export async function exportCommand(
   let diff = await generatePatchDiff(paths.engine, allFiles);
 
   if (!diff.trim()) {
+    if (options.skipLint) {
+      throw new GeneralError(
+        'The specified paths have no diff content to export. ' +
+          '(--skip-lint is set; lint checks were bypassed but there are still no content changes — ' +
+          'the paths may have only been lint-level differences that resolved, or the working tree is already clean.)'
+      );
+    }
     throw new GeneralError('The specified paths have no diff content to export.');
   }
 

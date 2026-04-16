@@ -101,7 +101,25 @@ describe('furnaceInitCommand', () => {
 
   it('rejects path traversal in --ftlBasePath', async () => {
     await expect(furnaceInitCommand('/project', { ftlBasePath: '../escape/path' })).rejects.toThrow(
-      'ftlBasePath must not contain ".."'
+      /must not escape the engine checkout via parent-directory segments/
+    );
+  });
+
+  it('rejects absolute paths in --ftlBasePath', async () => {
+    await expect(furnaceInitCommand('/project', { ftlBasePath: '/absolute/path' })).rejects.toThrow(
+      /must be a relative path/
+    );
+  });
+
+  it('rejects Windows-drive absolute paths in --ftlBasePath', async () => {
+    await expect(
+      furnaceInitCommand('/project', { ftlBasePath: 'C:\\absolute\\path' })
+    ).rejects.toThrow(/must be a relative path/);
+  });
+
+  it('rejects null bytes in --ftlBasePath', async () => {
+    await expect(furnaceInitCommand('/project', { ftlBasePath: 'bad\0path' })).rejects.toThrow(
+      /must not contain null bytes/
     );
   });
 
@@ -139,7 +157,14 @@ describe('furnaceInitCommand', () => {
     vi.mocked(isCancel).mockReturnValue(true);
     vi.mocked(text).mockResolvedValue(Symbol('cancel') as unknown as string);
 
-    await furnaceInitCommand('/project');
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+
+    try {
+      await furnaceInitCommand('/project');
+    } finally {
+      Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
+    }
 
     expect(cancel).toHaveBeenCalledWith('Init cancelled');
     expect(writeFurnaceConfig).not.toHaveBeenCalled();

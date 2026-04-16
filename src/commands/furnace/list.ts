@@ -31,15 +31,22 @@ async function getHealthIndicator(
   name: string,
   appliedChecksums: Record<string, string> | undefined
 ): Promise<string> {
-  if (!(await pathExists(componentDir))) {
-    return formatErrorText('missing');
+  try {
+    if (!(await pathExists(componentDir))) {
+      return formatErrorText('missing');
+    }
+    const previous = extractComponentChecksums(appliedChecksums, type, name);
+    if (Object.keys(previous).length === 0) {
+      return formatErrorText('not applied');
+    }
+    const changed = await hasComponentChanged(componentDir, previous);
+    return changed ? formatErrorText('modified') : formatSuccessText('clean');
+  } catch {
+    // A race with `furnace remove`, filesystem permission change, or a
+    // transient IO failure must not crash the entire `list -v` output —
+    // render a degraded state so the rest of the table still shows.
+    return formatErrorText('unavailable');
   }
-  const previous = extractComponentChecksums(appliedChecksums, type, name);
-  if (Object.keys(previous).length === 0) {
-    return formatErrorText('not applied');
-  }
-  const changed = await hasComponentChanged(componentDir, previous);
-  return changed ? formatErrorText('modified') : formatSuccessText('clean');
 }
 
 /**

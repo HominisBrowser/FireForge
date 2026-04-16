@@ -3,7 +3,7 @@
  * Rebase abort flow.
  */
 
-import { getProjectPaths, loadState, saveState } from '../../core/config.js';
+import { getProjectPaths, updateState } from '../../core/config.js';
 import { getFurnacePaths, updateFurnaceState } from '../../core/furnace-config.js';
 import { resetChanges } from '../../core/git.js';
 import { clearRebaseSession, loadRebaseSession } from '../../core/rebase-session.js';
@@ -27,7 +27,8 @@ export async function handleAbort(projectRoot: string, yes?: boolean): Promise<v
     !(await confirmDirtyEngineReset({
       engineDir: paths.engine,
       yes: yes ?? false,
-      nonInteractiveHint: 'Use: fireforge rebase --abort --yes',
+      nonInteractiveCommand: 'fireforge rebase --abort --yes',
+      argumentName: '--yes',
       warningMessage: 'The engine directory has uncommitted changes that will be lost.',
       promptMessage: 'Discard uncommitted changes and abort rebase?',
       cancelMessage: 'Abort cancelled',
@@ -38,29 +39,39 @@ export async function handleAbort(projectRoot: string, yes?: boolean): Promise<v
 
   const s = spinner('Restoring engine to pre-rebase state...');
 
+  // Step 1: git reset. If this fails, the rebase session MUST stay on disk
+  // so the user can retry the abort — resetChanges is the only irreversible
+  // operation in this handler and everything downstream assumes it ran.
   try {
     await resetChanges(paths.engine);
     s.stop('Engine restored');
-
-    // Clear Furnace state — the engine has been rolled back to pre-rebase state.
-    const furnacePaths = getFurnacePaths(projectRoot);
-    if (await pathExists(furnacePaths.furnaceState)) {
-      await updateFurnaceState(projectRoot, (current) => ({
-        ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
-      }));
-    }
   } catch (error: unknown) {
     s.error('Failed to restore engine');
     throw error;
   }
 
-  // Clear pending resolution state if any
-  const state = await loadState(projectRoot);
-  if (state.pendingResolution) {
-    delete state.pendingResolution;
-    await saveState(projectRoot, state);
+  // Step 2: clear Furnace state. A failure here is reported on its own
+  // (rather than labelled "Failed to restore engine", which would be
+  // misleading now that reset already succeeded). The rebase session is
+  // still kept on disk so the user can retry the abort and let it
+  // idempotently re-clear furnace state.
+  const furnacePaths = getFurnacePaths(projectRoot);
+  if (await pathExists(furnacePaths.furnaceState)) {
+    await updateFurnaceState(projectRoot, (current) => ({
+      ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
+    }));
   }
 
+  // Step 3: clear pending resolution transactionally.
+  await updateState(projectRoot, (current) => {
+    if (!current.pendingResolution) return current;
+    const next = { ...current };
+    delete next.pendingResolution;
+    return next;
+  });
+
+  // Step 4: clear the rebase session LAST so a failure in any prior step
+  // preserves the session on disk and a retry of --abort can succeed.
   await clearRebaseSession(projectRoot);
   success('Rebase aborted and session cleared.');
   outro('Rebase aborted');

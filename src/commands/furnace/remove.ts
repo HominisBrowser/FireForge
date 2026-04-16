@@ -176,15 +176,17 @@ async function cleanupCustomTestFiles(
   name: string,
   projectRoot: string,
   journal: RollbackJournal
-): Promise<void> {
+): Promise<{ partialFailures: string[] }> {
+  const partialFailures: string[] = [];
+
   let forgeConfig;
   try {
     forgeConfig = await loadConfig(projectRoot);
   } catch (error: unknown) {
-    warn(
-      `Could not load config for test cleanup — ${toError(error).message}. Remove test files manually if needed.`
-    );
-    return;
+    const msg = `Could not load config for test cleanup — ${toError(error).message}. Remove test files manually if needed.`;
+    warn(msg);
+    partialFailures.push(msg);
+    return { partialFailures };
   }
 
   const paths = getProjectPaths(projectRoot);
@@ -197,7 +199,7 @@ async function cleanupCustomTestFiles(
   const testFileName = `browser_${binaryName}_${underscored}.js`;
   const testDir = join(paths.engine, 'browser/base/content/test', binaryName);
 
-  if (!(await pathExists(testDir))) return;
+  if (!(await pathExists(testDir))) return { partialFailures };
 
   // Step 1: Delete the test file itself
   try {
@@ -208,9 +210,9 @@ async function cleanupCustomTestFiles(
       info(`Deleted test file: ${testFileName}`);
     }
   } catch (error: unknown) {
-    warn(
-      `Could not delete test file ${testFileName} — ${toError(error).message}. Remove it manually if needed.`
-    );
+    const msg = `Could not delete test file ${testFileName} — ${toError(error).message}. Remove it manually if needed.`;
+    warn(msg);
+    partialFailures.push(msg);
   }
 
   // Step 2: Remove the test entry from browser.toml
@@ -226,9 +228,9 @@ async function cleanupCustomTestFiles(
       }
     }
   } catch (error: unknown) {
-    warn(
-      `Could not update browser.toml — ${toError(error).message}. Remove the test entry manually if needed.`
-    );
+    const msg = `Could not update browser.toml — ${toError(error).message}. Remove the test entry manually if needed.`;
+    warn(msg);
+    partialFailures.push(msg);
   }
 
   // Step 3: Clean up empty test directory and deregister from moz.build
@@ -246,10 +248,12 @@ async function cleanupCustomTestFiles(
       }
     }
   } catch (error: unknown) {
-    warn(
-      `Could not clean up test directory — ${toError(error).message}. Remove it manually if needed.`
-    );
+    const msg = `Could not clean up test directory — ${toError(error).message}. Remove it manually if needed.`;
+    warn(msg);
+    partialFailures.push(msg);
   }
+
+  return { partialFailures };
 }
 
 function dropChecksumsByPrefix(state: FurnaceState, prefix: string): FurnaceState {
@@ -265,6 +269,57 @@ function dropChecksumsByPrefix(state: FurnaceState, prefix: string): FurnaceStat
     );
   }
   return result;
+}
+
+/**
+ * Confirms the remove operation interactively when TTY is available, or
+ * enforces the `--yes` contract in non-interactive mode. Returns `false`
+ * when the user cancelled and the caller should exit silently.
+ */
+async function confirmFurnaceRemove(
+  name: string,
+  type: ComponentType,
+  options: FurnaceRemoveOptions,
+  isInteractive: boolean
+): Promise<boolean> {
+  if (!isInteractive && !options.yes) {
+    throw new FurnaceError(
+      `Cannot remove "${name}" in non-interactive mode without --yes flag.`,
+      name
+    );
+  }
+
+  if (!options.yes && isInteractive) {
+    const confirmed = await confirm({
+      message: `Remove ${type} component "${name}"?`,
+    });
+
+    if (isCancel(confirmed) || !confirmed) {
+      cancel('Remove cancelled');
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Enforces the engine-as-git precondition for both override and custom
+ * removals. Runs BEFORE the lock is acquired or a journal is registered so
+ * the failure path does not involve any rollback infrastructure.
+ */
+async function requireGitEngineForRemove(
+  type: ComponentType,
+  name: string,
+  engineDir: string
+): Promise<void> {
+  if (type !== 'override' && type !== 'custom') return;
+  if (!(await isGitRepository(engineDir))) {
+    throw new FurnaceError(
+      `Cannot remove ${type} component "${name}": engine is not a git repository. Run "fireforge download" to initialise it.`,
+      name
+    );
+  }
 }
 
 /**
@@ -297,24 +352,8 @@ export async function furnaceRemoveCommand(
     );
   }
 
-  // Require --yes in non-interactive mode to prevent silent removals
-  if (!isInteractive && !options.yes) {
-    throw new FurnaceError(
-      `Cannot remove "${name}" in non-interactive mode without --yes flag.`,
-      name
-    );
-  }
-
-  // Confirm removal (skip if --yes)
-  if (!options.yes && isInteractive) {
-    const confirmed = await confirm({
-      message: `Remove ${type} component "${name}"?`,
-    });
-
-    if (isCancel(confirmed) || !confirmed) {
-      cancel('Remove cancelled');
-      return;
-    }
+  if (!(await confirmFurnaceRemove(name, type, options, isInteractive))) {
+    return;
   }
 
   // Begin transactional mutation: every file deleted or rewritten is first
@@ -323,6 +362,8 @@ export async function furnaceRemoveCommand(
   // the furnace-wide lock and is registered with the global SIGINT/SIGTERM
   // rollback pathway.
   const paths = getProjectPaths(projectRoot);
+
+  await requireGitEngineForRemove(type, name, paths.engine);
 
   await runFurnaceMutation(projectRoot, 'remove-rollback', async (ctx) => {
     const journal = createRollbackJournal();
@@ -369,6 +410,14 @@ export async function furnaceRemoveCommand(
         }
       } else if (type === 'custom') {
         const customConfig = config.custom[name];
+
+        // Custom-component removal mutates engine files (jar.mn,
+        // customElements.js, deployed widgets, optional .ftl) and the
+        // rollback journal is the only safety net for those edits while
+        // the command runs. The git-as-engine precondition is enforced
+        // before the lock is acquired (see furnaceRemoveCommand above)
+        // so if we reach this point, the engine is a git repository.
+
         if (customConfig?.register) {
           // customElements.js is the only file removeCustomElementRegistration touches.
           await snapshotFile(journal, join(paths.engine, 'toolkit/content/customElements.js'));
@@ -411,8 +460,10 @@ export async function furnaceRemoveCommand(
         }
       }
 
+      let testCleanupFailures: string[] = [];
       if (type === 'custom') {
-        await cleanupCustomTestFiles(name, projectRoot, journal);
+        const result = await cleanupCustomTestFiles(name, projectRoot, journal);
+        testCleanupFailures = result.partialFailures;
       }
 
       // Remove entry from furnace.json
@@ -438,6 +489,17 @@ export async function furnaceRemoveCommand(
       await updateFurnaceState(projectRoot, (state) =>
         dropChecksumsByPrefix(state, `${type}/${name}/`)
       );
+
+      // Test-cleanup failures are warn-and-continue by design (test files
+      // are secondary artefacts), but the caller deserves a single summary
+      // line pointing at the residue so they don't have to re-scan earlier
+      // warn output to realise the removal was partial.
+      if (testCleanupFailures.length > 0) {
+        warn(
+          `Component "${name}" removed with ${testCleanupFailures.length} test-cleanup warning(s) above. ` +
+            `The component is deregistered, but test files may linger in the engine — review and delete manually if needed.`
+        );
+      }
     } catch (error: unknown) {
       try {
         await restoreRollbackJournalOrThrow(journal, `Failed to remove component "${name}"`);

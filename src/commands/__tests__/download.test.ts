@@ -56,6 +56,7 @@ vi.mock('../../utils/logger.js', () => ({
   info: vi.fn(),
   warn: vi.fn(),
   step: vi.fn(),
+  verbose: vi.fn(),
 }));
 
 import { getProjectPaths } from '../../core/config.js';
@@ -119,6 +120,29 @@ describe('downloadCommand', () => {
     );
 
     expect(initRepository).not.toHaveBeenCalled();
+  });
+
+  it('preserves the underlying resume failure as the PartialEngineExistsError cause', async () => {
+    vi.mocked(getHead).mockRejectedValueOnce(
+      new Error(
+        "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree."
+      )
+    );
+    const underlying = new Error('socket hang up');
+    vi.mocked(resumeRepository).mockRejectedValueOnce(underlying);
+
+    let captured: unknown;
+    try {
+      await downloadCommand('/project', {});
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(captured).toBeInstanceOf(Error);
+    const fireforgeError = captured as { cause?: unknown; userMessage?: string };
+    expect(fireforgeError.cause).toBe(underlying);
+    expect(fireforgeError.userMessage).toContain('socket hang up');
+    expect(fireforgeError.userMessage).toContain('--verbose');
   });
 
   it('resumes a partially initialized repository and records the resumed base commit', async () => {

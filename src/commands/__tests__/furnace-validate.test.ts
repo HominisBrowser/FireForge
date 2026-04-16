@@ -90,7 +90,11 @@ import { furnaceValidateCommand } from '../furnace/validate.js';
 describe('furnaceValidateCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(addJarMnEntries).mockResolvedValue(undefined);
+    // Default to "all entries were new"; tests that simulate an idempotent
+    // no-op (jar.mn already has the entries) override this to 0.
+    vi.mocked(addJarMnEntries).mockImplementation((_engine, _name, files) =>
+      Promise.resolve(files.length)
+    );
     vi.mocked(addCustomElementRegistration).mockResolvedValue(undefined);
     vi.mocked(readdir).mockResolvedValue([]);
     vi.mocked(furnaceConfigExists).mockResolvedValue(true);
@@ -347,22 +351,45 @@ describe('furnaceValidateCommand', () => {
       parentPath: '',
     });
 
-    it('auto-fixes jar.mn mjs issues and reports fixed count', async () => {
-      vi.mocked(validateComponent).mockResolvedValue([mjsIssue('moz-sidebar')]);
+    it('auto-fixes jar.mn mjs issues and reports fixed count from a true re-validation', async () => {
+      // Initial validation surfaces the fixable issue; re-validation after
+      // the fix returns no issues, which is what justifies the "Auto-fixed"
+      // count. The fix counter is now derived from the *real* drop in
+      // fixable issues, not from autoFixIssues' return value.
+      vi.mocked(validateComponent)
+        .mockResolvedValueOnce([mjsIssue('moz-sidebar')])
+        .mockResolvedValueOnce([]);
+      vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);
+
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).resolves.toBeUndefined();
+
+      expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-sidebar', [
+        'moz-sidebar.mjs',
+      ]);
+      expect(info).toHaveBeenCalledWith('Fixed: added moz-sidebar.mjs to jar.mn for moz-sidebar');
+      expect(info).toHaveBeenCalledWith('\nAuto-fixed 1 issue(s).');
+      expect(outro).toHaveBeenCalledWith('Validation passed');
+    });
+
+    it('warns when an auto-fix attempt did not actually clear the fixable issue', async () => {
+      // autoFixIssues returns a positive number, but the underlying issue
+      // remains on re-validation. The user must learn that the reported
+      // fix did not actually land — the previous behaviour silently
+      // inflated the fixed count.
+      vi.mocked(validateComponent)
+        .mockResolvedValueOnce([mjsIssue('moz-sidebar')])
+        .mockResolvedValueOnce([mjsIssue('moz-sidebar')]);
       vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);
 
       await expect(
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
       ).rejects.toThrow(/Validation failed/i);
 
-      expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-sidebar', [
-        'moz-sidebar.mjs',
-      ]);
-      expect(info).toHaveBeenCalledWith('Fixed: added moz-sidebar.mjs to jar.mn for moz-sidebar');
-      expect(info).toHaveBeenCalledWith('\nAuto-fixed 1 issue(s). Re-run validate to confirm.');
-      // With --fix, no fixHint appended
-      expect(info).toHaveBeenCalledWith(
-        'Fix the errors above and run "fireforge furnace validate" again.'
+      expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Auto-fixed'));
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('1 fixable issue(s) remain after auto-fix')
       );
     });
 
@@ -380,15 +407,14 @@ describe('furnaceValidateCommand', () => {
     });
 
     it('batches multiple jar.mn issues for the same component', async () => {
-      vi.mocked(validateComponent).mockResolvedValue([
-        mjsIssue('moz-sidebar'),
-        cssIssue('moz-sidebar'),
-      ]);
+      vi.mocked(validateComponent)
+        .mockResolvedValueOnce([mjsIssue('moz-sidebar'), cssIssue('moz-sidebar')])
+        .mockResolvedValueOnce([]);
       vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);
 
       await expect(
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
-      ).rejects.toThrow(/Validation failed/i);
+      ).resolves.toBeUndefined();
 
       expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-sidebar', [
         'moz-sidebar.mjs',
@@ -397,7 +423,51 @@ describe('furnaceValidateCommand', () => {
       expect(info).toHaveBeenCalledWith(
         'Fixed: added moz-sidebar.mjs, moz-sidebar.css to jar.mn for moz-sidebar'
       );
-      expect(info).toHaveBeenCalledWith('\nAuto-fixed 2 issue(s). Re-run validate to confirm.');
+      expect(info).toHaveBeenCalledWith('\nAuto-fixed 2 issue(s).');
+    });
+
+    it('logs a no-op line when jar.mn entries were already present', async () => {
+      // `addJarMnEntries` returns 0 when every requested entry was already
+      // on disk. The caller must not claim "Fixed: …" — that would lie to
+      // the user — but it must still report the honest outcome.
+      vi.mocked(validateComponent)
+        .mockResolvedValueOnce([mjsIssue('moz-sidebar')])
+        .mockResolvedValueOnce([]);
+      vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);
+      vi.mocked(addJarMnEntries).mockResolvedValueOnce(0);
+
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).resolves.toBeUndefined();
+
+      expect(info).toHaveBeenCalledWith(
+        'No-op: jar.mn entries for moz-sidebar were already present'
+      );
+      expect(info).not.toHaveBeenCalledWith(
+        expect.stringContaining('Fixed: added moz-sidebar.mjs')
+      );
+    });
+
+    it('counts warning-severity issues separately from errors during re-validation', async () => {
+      // Exercises the post-fix re-validation branch that classifies each
+      // remaining issue by severity. A warning-only residue must NOT be
+      // counted as an error and must NOT cause the command to reject.
+      const warningIssue: ValidationIssue = {
+        component: 'moz-sidebar',
+        check: 'non-fixable-observation',
+        message: 'residual warning',
+        severity: 'warning',
+      };
+      vi.mocked(validateComponent)
+        .mockResolvedValueOnce([mjsIssue('moz-sidebar')])
+        .mockResolvedValueOnce([warningIssue]);
+      vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);
+
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).resolves.toBeUndefined();
+      expect(info).toHaveBeenCalledWith('\nAuto-fixed 1 issue(s).');
+      expect(outro).toHaveBeenCalledWith('Validation passed');
     });
 
     it('warns when addJarMnEntries throws and does not count as fixed', async () => {
@@ -564,16 +634,19 @@ describe('furnaceValidateCommand', () => {
       vi.mocked(validateAllComponents).mockResolvedValue(
         new Map([['moz-sidebar', [mjsIssue('moz-sidebar')]]])
       );
+      // Re-validation pass uses validateComponent per component; return
+      // empty so the actual fixed-count is honest.
+      vi.mocked(validateComponent).mockResolvedValueOnce([]);
       vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);
 
-      await expect(furnaceValidateCommand('/project', undefined, { fix: true })).rejects.toThrow(
-        /Validation failed/i
-      );
+      await expect(
+        furnaceValidateCommand('/project', undefined, { fix: true })
+      ).resolves.toBeUndefined();
 
       expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-sidebar', [
         'moz-sidebar.mjs',
       ]);
-      expect(info).toHaveBeenCalledWith('\nAuto-fixed 1 issue(s). Re-run validate to confirm.');
+      expect(info).toHaveBeenCalledWith('\nAuto-fixed 1 issue(s).');
     });
   });
 });

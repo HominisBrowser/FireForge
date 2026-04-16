@@ -255,7 +255,8 @@ Path: /project/engine
 
 To fix this:
   1. Re-run "fireforge download --force" to recreate the baseline repository
-  2. Or manually delete the engine/ directory before downloading again"
+  2. Or manually delete the engine/ directory before downloading again
+  3. Re-run with --verbose for the full underlying error and stack trace"
 `;
 
 exports[`userMessage snapshots > PatchApplyError 1`] = `

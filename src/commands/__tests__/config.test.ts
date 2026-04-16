@@ -116,13 +116,20 @@ describe('configCommand', () => {
     expect(config.custom?.key).toBe(1);
   });
 
-  it('accepts invalid known-key structures with force', async () => {
-    await configCommand(projectRoot, 'build.jobs', '"oops"', { force: true });
+  it('still rejects invalid values for known keys even with force', async () => {
+    // --force is intended as an escape hatch for *unknown* keys. It must
+    // not also let the user write a structurally invalid value for a
+    // known key — that bypass would silently corrupt fireforge.json so
+    // the next loadConfig fails with no breadcrumb back to this write.
+    await expect(
+      configCommand(projectRoot, 'build.jobs', '"oops"', { force: true })
+    ).rejects.toThrow('Invalid value for "build.jobs"');
 
     const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
-      build?: { jobs?: string };
+      build?: { jobs?: number };
     };
-    expect(config.build?.jobs).toBe('oops');
+    // The original value remains untouched.
+    expect(config.build?.jobs).not.toBe('oops');
   });
 });
 

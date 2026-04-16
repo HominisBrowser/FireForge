@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
-import { getProjectPaths, loadConfig, loadState, saveState } from '../core/config.js';
+import { getProjectPaths, loadConfig, loadState, updateState } from '../core/config.js';
 import { getHead } from '../core/git.js';
 import { getDirtyFiles } from '../core/git-status.js';
 import {
@@ -39,6 +39,21 @@ import {
 } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 
+/**
+ * Errno codes for filesystem-level failures against the working file.
+ * These are safe to fall through as "unmanaged" because they describe the
+ * *state of the engine directory*, not the integrity of the patch stack.
+ * Manifest / patch-parse / PatchError failures do NOT match this set and
+ * are re-thrown so the root cause surfaces instead of being silently
+ * reclassified as a spurious dirty file.
+ */
+const SAFE_IO_FALLBACK_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'EBUSY']);
+
+function isSafeIoFallback(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && SAFE_IO_FALLBACK_CODES.has(code);
+}
+
 async function getUnmanagedDirtyFiles(
   engineDir: string,
   patchesDir: string,
@@ -54,8 +69,20 @@ async function getUnmanagedDirtyFiles(
         const actual = exists ? await readText(join(engineDir, file)) : null;
         return actual === expected ? null : file;
       } catch (error: unknown) {
+        // PatchError, manifest corruption, and patch-parse failures are
+        // *structural* problems with the patch stack — masking them as
+        // "unmanaged dirty file" would let the user `--force` past a real
+        // root cause (e.g. "patch 003 missing from manifest") and compound
+        // the corruption. Only swallow the pure-IO fallback cases where
+        // the working file itself can't be read.
+        if (error instanceof PatchError) {
+          throw error;
+        }
+        if (!isSafeIoFallback(error)) {
+          throw error;
+        }
         verbose(
-          `Treating ${file} as unmanaged because patched-content classification failed: ${toError(error).message}`
+          `Treating ${file} as unmanaged because patched-content classification failed with IO error: ${toError(error).message}`
         );
         return file;
       }
@@ -115,17 +142,24 @@ async function checkUncommittedPatchFiles(
 
 async function handlePatchFailures(
   summary: Awaited<ReturnType<typeof applyPatchesWithContinue>>,
-  state: Awaited<ReturnType<typeof loadState>>,
   projectRoot: string
 ): Promise<void> {
   const firstFailed = summary.failed[0];
 
   if (firstFailed) {
-    state.pendingResolution = {
-      patchFilename: firstFailed.patch.filename,
-      originalError: firstFailed.error ?? 'Unknown error',
-    };
-    await saveState(projectRoot, state);
+    // Transactional update rather than `loadState` + mutate + `saveState`. The
+    // caller captures `state` at the start of the import run, and the run can
+    // span a long window (drift-check prompt, patch apply loop). A concurrent
+    // command (`fireforge download`, `rebase`, another state mutation) writing
+    // unrelated fields during that window would be silently clobbered when the
+    // stale state object was written back.
+    await updateState(projectRoot, (current) => ({
+      ...current,
+      pendingResolution: {
+        patchFilename: firstFailed.patch.filename,
+        originalError: firstFailed.error ?? 'Unknown error',
+      },
+    }));
   }
 
   for (const result of summary.failed) {
@@ -279,14 +313,37 @@ export async function importCommand(
     }
   }
 
-  // Validate patch integrity (detect orphaned modification patches)
+  // Validate patch integrity (detect orphaned modification patches). Warn
+  // and prompt the operator to confirm before proceeding — the legacy
+  // warn-and-continue behaviour hid the real root cause because import
+  // would later fail during patch application with a secondary, unrelated
+  // error that made diagnosis harder.
   const integrityIssues = await validatePatchIntegrity(paths.patches, paths.engine);
   if (integrityIssues.length > 0) {
     warn('\nPatch integrity issues detected:');
     for (const issue of integrityIssues) {
       warn(`  ${issue.filename}: ${issue.message}`);
     }
-    info('Run "fireforge doctor" for more details.\n');
+    info('Run "fireforge doctor" for more details.');
+
+    if (forceImport) {
+      warn('Continuing because --force was provided. Integrity issues were not resolved.\n');
+    } else if (!process.stdin.isTTY) {
+      throw new GeneralError(
+        `Refusing to import while ${integrityIssues.length} patch integrity issue(s) are unresolved. ` +
+          `Fix the issues reported above (see "fireforge doctor") or re-run with --force to continue anyway.`
+      );
+    } else {
+      const shouldContinue = await confirm({
+        message:
+          'Patch integrity issues detected. Continuing may fail with cascading errors during patch application. Continue anyway?',
+        initialValue: false,
+      });
+      if (isCancel(shouldContinue) || !shouldContinue) {
+        outro('Import cancelled — fix the integrity issues and re-run');
+        return;
+      }
+    }
   }
 
   // Dry-run: list patches that would be applied and exit
@@ -327,7 +384,7 @@ export async function importCommand(
     // Handle failures
     if (summary.failed.length > 0) {
       s.error(`${summary.failed.length} patch(es) failed`);
-      await handlePatchFailures(summary, state, projectRoot);
+      await handlePatchFailures(summary, projectRoot);
     }
 
     // Count auto-resolved patches

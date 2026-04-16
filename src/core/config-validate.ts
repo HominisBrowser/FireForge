@@ -31,11 +31,26 @@ export function validateConfig(data: unknown): FireForgeConfig {
     throw new ConfigError('Config must be an object');
   }
 
-  // Required string fields
+  // Required string fields. Empty strings would technically pass the
+  // typeof-check below but are never valid for any of these identifier
+  // fields — rejecting them here prevents downstream code (Firefox build,
+  // launcher binary lookup, AppID assertions) from failing with confusing
+  // errors much later.
   const name = requireConfigString(rec, 'name');
   const vendor = requireConfigString(rec, 'vendor');
   const appId = requireConfigString(rec, 'appId');
   const binaryName = requireConfigString(rec, 'binaryName');
+
+  for (const [field, value] of [
+    ['name', name],
+    ['vendor', vendor],
+    ['appId', appId],
+    ['binaryName', binaryName],
+  ] as const) {
+    if (value.trim() === '') {
+      throw new ConfigError(`Config field "${field}" must not be empty`);
+    }
+  }
 
   if (
     binaryName.includes('..') ||

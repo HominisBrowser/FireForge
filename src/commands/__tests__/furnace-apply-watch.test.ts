@@ -189,7 +189,7 @@ describe('furnaceApplyCommand — watch mode', () => {
     commandPromise.catch(() => {});
   });
 
-  it('does not start watch when there are no override or custom components', async () => {
+  it('stays running and retries on poll when no component dirs exist at startup', async () => {
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
@@ -205,16 +205,78 @@ describe('furnaceApplyCommand — watch mode', () => {
       custom: {},
     });
 
-    // Make pathExists return true for the engine dir check, but false for
-    // the override and custom directories so runWatchLoop finds nothing.
-    vi.mocked(pathExists)
-      .mockResolvedValueOnce(true) // engine dir
-      .mockResolvedValueOnce(false) // overridesDir
-      .mockResolvedValueOnce(false); // customDir
+    // pathExists sequence:
+    //   1. engine dir check in furnaceApplyCommand: true
+    //   2. first refreshWatchers → overridesDir: false
+    //   3. first refreshWatchers → customDir: false
+    //   4+ subsequent refreshWatchers calls on poll tick: still false
+    vi.mocked(pathExists).mockImplementation((targetPath: string) => {
+      if (targetPath === '/project/engine') return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
 
-    await furnaceApplyCommand('/project', undefined, { watch: true });
+    const commandPromise = furnaceApplyCommand('/project', undefined, { watch: true });
+    // Let the initial apply and refreshWatchers settle.
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(info).toHaveBeenCalledWith('No component directories to watch.');
+    // No fs.watch should be installed while neither candidate dir exists.
     expect(mockWatchers).toHaveLength(0);
+    // The loop stays running and logs the retry hint rather than exiting —
+    // so a later `furnace create` / `furnace override` in another terminal
+    // is picked up on the next 30 s poll tick.
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('No component directories exist yet')
+    );
+
+    process.emit('SIGINT', 'SIGINT');
+    commandPromise.catch(() => {});
+  });
+
+  it('picks up a component dir that appears after watch started', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only',
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+
+    // Initially neither override nor custom dir exists. After the first
+    // poll tick, the override dir appears (simulating a concurrent
+    // `furnace override` command in another terminal).
+    let overrideExists = false;
+    vi.mocked(pathExists).mockImplementation((targetPath: string) => {
+      if (targetPath === '/project/engine') return Promise.resolve(true);
+      if (targetPath === '/project/components/overrides') return Promise.resolve(overrideExists);
+      return Promise.resolve(false);
+    });
+
+    const commandPromise = furnaceApplyCommand('/project', undefined, { watch: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // No watcher at startup — the dir does not exist yet.
+    expect(mockWatchers).toHaveLength(0);
+
+    // Simulate the override dir being created.
+    overrideExists = true;
+
+    // Advance past the 30s poll interval.
+    await vi.advanceTimersByTimeAsync(31_000);
+    // Flush the poll body's promise chain and the triggered apply debounce.
+    await vi.advanceTimersByTimeAsync(500);
+
+    // The newly-appeared dir should now have a watcher.
+    expect(mockWatchers.length).toBeGreaterThan(0);
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('Now watching'));
+
+    process.emit('SIGINT', 'SIGINT');
+    commandPromise.catch(() => {});
   });
 });

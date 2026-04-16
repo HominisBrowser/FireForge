@@ -287,8 +287,13 @@ async function runEngineGitChecks(ctx: DoctorCheckContext): Promise<DoctorCheck[
  * registry. Called once at module load time so a broken reorder surfaces
  * immediately as a thrown error rather than producing a subtle
  * context-population bug at runtime.
+ *
+ * Exported so tests can exercise the forward-only invariant against
+ * fixtures — the real DOCTOR_CHECKS list is also validated at import
+ * time, but a targeted unit test makes the contract explicit and
+ * prevents regressions if the validator is ever relaxed.
  */
-function validateCheckDependencies(checks: readonly DoctorCheckDefinition[]): void {
+export function validateCheckDependencies(checks: readonly DoctorCheckDefinition[]): void {
   const seen = new Set<string>();
   for (const check of checks) {
     if (check.dependsOn) {

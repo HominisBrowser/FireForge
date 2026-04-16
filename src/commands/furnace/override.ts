@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { select, text } from '@clack/prompts';
 
@@ -66,6 +66,33 @@ async function copyOverrideFiles(
   const entries = await readdir(srcDir, { withFileTypes: true });
   const copiedFiles: string[] = [];
 
+  // Snapshot-then-copy helper: ensures the destination's parent dir exists
+  // before snapshot + copy, and surfaces the failing filename on error so
+  // partial-state rollback has the context needed to report cleanly.
+  const snapshotAndCopy = async (
+    from: string,
+    dest: string,
+    displayName: string
+  ): Promise<void> => {
+    await ensureDir(dirname(dest));
+    try {
+      await snapshotFile(journal, dest);
+    } catch (error: unknown) {
+      throw new FurnaceError(
+        `Failed to snapshot "${displayName}" before override: ${toError(error).message}`,
+        componentName
+      );
+    }
+    try {
+      await copyFile(from, dest);
+    } catch (error: unknown) {
+      throw new FurnaceError(
+        `Failed to copy "${displayName}" into the override: ${toError(error).message}`,
+        componentName
+      );
+    }
+  };
+
   for (const entry of entries) {
     if (!entry.isFile()) continue;
 
@@ -73,16 +100,14 @@ async function copyOverrideFiles(
       // Only copy .css files
       if (entry.name.endsWith('.css')) {
         const dest = join(destDir, entry.name);
-        await snapshotFile(journal, dest);
-        await copyFile(join(srcDir, entry.name), dest);
+        await snapshotAndCopy(join(srcDir, entry.name), dest, entry.name);
         copiedFiles.push(entry.name);
       }
     } else {
       // Full override: copy .mjs and .css files
       if (entry.name.endsWith('.mjs') || entry.name.endsWith('.css')) {
         const dest = join(destDir, entry.name);
-        await snapshotFile(journal, dest);
-        await copyFile(join(srcDir, entry.name), dest);
+        await snapshotAndCopy(join(srcDir, entry.name), dest, entry.name);
         copiedFiles.push(entry.name);
       }
     }
@@ -92,8 +117,7 @@ async function copyOverrideFiles(
     const ftlName = `${componentName}.ftl`;
     const ftlSrc = join(engineDir, ftlDir, ftlName);
     const dest = join(destDir, ftlName);
-    await snapshotFile(journal, dest);
-    await copyFile(ftlSrc, dest);
+    await snapshotAndCopy(ftlSrc, dest, ftlName);
     copiedFiles.push(ftlName);
   }
 
@@ -223,6 +247,37 @@ async function performOverrideMutations(args: {
 }
 
 /**
+ * Throws if `componentName` is already classified anywhere in the furnace
+ * config. Without this guard, `writeFurnaceConfig` would happily produce a
+ * file where the same tag appears under multiple categories (stock +
+ * override, custom + override) and later commands would no longer be able
+ * to reason about that component cleanly.
+ */
+function assertNoComponentCollision(
+  config: Awaited<ReturnType<typeof loadAuthoringFurnaceConfig>>,
+  componentName: string
+): void {
+  if (componentName in config.overrides) {
+    throw new FurnaceError(
+      `An override for "${componentName}" already exists in furnace.json`,
+      componentName
+    );
+  }
+  if (config.stock.includes(componentName)) {
+    throw new FurnaceError(
+      `"${componentName}" is already registered as a stock component. Remove it from config.stock before creating an override.`,
+      componentName
+    );
+  }
+  if (componentName in config.custom) {
+    throw new FurnaceError(
+      `"${componentName}" is already registered as a custom component. Custom components cannot also be overrides.`,
+      componentName
+    );
+  }
+}
+
+/**
  * Runs the furnace override command to fork an existing engine component.
  * @param projectRoot - Root directory of the project
  * @param name - Optional component tag name (prompted if not provided)
@@ -301,13 +356,7 @@ export async function furnaceOverrideCommand(
     componentName = selected as string;
   }
 
-  // Check for existing override
-  if (componentName in config.overrides) {
-    throw new FurnaceError(
-      `An override for "${componentName}" already exists in furnace.json`,
-      componentName
-    );
-  }
+  assertNoComponentCollision(config, componentName);
 
   // Validate the component exists in engine
   const details = await getComponentDetails(paths.engine, componentName, ftlDir);
@@ -461,12 +510,14 @@ export async function furnaceBatchOverrideCommand(
   const forgeConfig = await loadConfig(projectRoot);
   const state = await loadState(projectRoot);
 
-  // Check for duplicates and pre-existing overrides
+  // Check for duplicates and pre-existing classifications across every
+  // bucket in furnace.json. Missing these collisions silently double-
+  // classifies a tag (e.g. both stock and override) and leaves the
+  // workspace in a state that later `furnace status`/`apply` cannot
+  // reason about cleanly.
   const uniqueNames = [...new Set(names)];
   for (const name of uniqueNames) {
-    if (name in config.overrides) {
-      throw new FurnaceError(`An override for "${name}" already exists in furnace.json`, name);
-    }
+    assertNoComponentCollision(config, name);
   }
 
   const succeeded: string[] = [];

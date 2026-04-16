@@ -563,4 +563,53 @@ describe('furnaceOverrideCommand', () => {
       );
     });
   });
+
+  describe('classification collisions', () => {
+    it('refuses to create an override that collides with an existing stock entry', async () => {
+      vi.mocked(furnaceConfigExists).mockResolvedValueOnce(true);
+      vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: ['moz-button'],
+        overrides: {},
+        custom: {},
+      });
+
+      await expect(
+        furnaceOverrideCommand('/project', 'moz-button', {
+          type: 'full',
+          description: 'Test',
+        })
+      ).rejects.toThrow(/already registered as a stock component/);
+
+      expect(writeFurnaceConfig).not.toHaveBeenCalled();
+    });
+
+    it('refuses to create an override that collides with an existing custom entry', async () => {
+      vi.mocked(furnaceConfigExists).mockResolvedValueOnce(true);
+      vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-button': {
+            description: 'custom',
+            register: true,
+            localized: false,
+            targetPath: 'toolkit/content/widgets/moz-button',
+          },
+        },
+      });
+
+      await expect(
+        furnaceOverrideCommand('/project', 'moz-button', {
+          type: 'full',
+          description: 'Test',
+        })
+      ).rejects.toThrow(/already registered as a custom component/);
+
+      expect(writeFurnaceConfig).not.toHaveBeenCalled();
+    });
+  });
 });

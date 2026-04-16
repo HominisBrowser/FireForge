@@ -166,6 +166,45 @@ describe('furnace batch override', () => {
     ).rejects.toThrow('already exists');
   });
 
+  it('rejects components that collide with stock entries', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    const { createDefaultFurnaceConfig } = await import('../../core/furnace-config.js');
+    vi.mocked(createDefaultFurnaceConfig).mockReturnValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: ['moz-button'],
+      overrides: {},
+      custom: {},
+    });
+
+    await expect(
+      furnaceBatchOverrideCommand('/project', ['moz-button', 'moz-card'], { type: 'full' })
+    ).rejects.toThrow(/already registered as a stock component/);
+  });
+
+  it('rejects components that collide with custom entries', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    const { createDefaultFurnaceConfig } = await import('../../core/furnace-config.js');
+    vi.mocked(createDefaultFurnaceConfig).mockReturnValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-button': {
+          description: '',
+          register: true,
+          localized: false,
+          targetPath: 'toolkit/content/widgets/moz-button',
+        },
+      },
+    });
+
+    await expect(
+      furnaceBatchOverrideCommand('/project', ['moz-button', 'moz-card'], { type: 'full' })
+    ).rejects.toThrow(/already registered as a custom component/);
+  });
+
   it('reports missing components as failures without blocking others', async () => {
     vi.mocked(pathExists).mockImplementation((path: string) => {
       if (typeof path === 'string' && path.includes('engine')) return Promise.resolve(true);
@@ -275,7 +314,11 @@ describe('furnace batch override', () => {
       expect.stringContaining('components/overrides/moz-button/'),
       'Batch Override'
     );
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-fail: copy exploded'));
+    // copyOverrideFiles wraps filesystem failures with the filename context
+    // ("Failed to copy \"<file>\" into the override: <cause>") so operators
+    // see which file tripped the error.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-fail'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('copy exploded'));
     expect(outro).toHaveBeenCalledWith('Batch override complete: 1 succeeded, 1 failed');
   });
 
@@ -290,7 +333,8 @@ describe('furnace batch override', () => {
       furnaceBatchOverrideCommand('/project', ['moz-button'], { type: 'full' })
     ).rejects.toThrow('All 1 override(s) failed');
 
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-button: copy exploded'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-button'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('copy exploded'));
   });
 
   it('prompts for override type interactively when --type is omitted in TTY mode', async () => {

@@ -53,6 +53,7 @@ vi.mock('../../utils/fs.js', () => ({
 
 vi.mock('../../utils/process.js', () => ({
   executableExists: vi.fn(() => Promise.resolve(true)),
+  exec: vi.fn(() => Promise.resolve({ stdout: '2024.01.15.00\n', stderr: '', exitCode: 0 })),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -60,10 +61,18 @@ vi.mock('../../utils/logger.js', () => ({
   outro: vi.fn(),
   info: vi.fn(),
   warn: vi.fn(),
+  verbose: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
     error: vi.fn(),
   })),
+}));
+
+// `fireforge watch` now runs a furnace staleness check before entering
+// the watch loop. Stub the helper out for preflight tests that don't
+// exercise furnace state.
+vi.mock('../../core/furnace-staleness.js', () => ({
+  warnIfFurnaceStale: vi.fn(() => Promise.resolve()),
 }));
 
 import {

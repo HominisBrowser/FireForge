@@ -97,17 +97,29 @@ export class EngineExistsError extends DownloadError {
  * Error thrown when engine/ exists but contains an unborn git repo from a failed download.
  */
 export class PartialEngineExistsError extends DownloadError {
-  constructor(public readonly enginePath: string) {
-    super(`Engine directory contains a partially initialized checkout: ${enginePath}`);
+  constructor(
+    public readonly enginePath: string,
+    cause?: Error
+  ) {
+    super(
+      `Engine directory contains a partially initialized checkout: ${enginePath}`,
+      undefined,
+      cause
+    );
   }
 
   override get userMessage(): string {
+    const causeMessage =
+      this.cause instanceof Error && this.cause.message ? this.cause.message : undefined;
+
     return (
       `Download Error: Firefox source exists, but the baseline git repository was not fully initialized.\n\n` +
       `Path: ${this.enginePath}\n\n` +
+      (causeMessage ? `Underlying cause: ${causeMessage}\n\n` : '') +
       'To fix this:\n' +
       '  1. Re-run "fireforge download --force" to recreate the baseline repository\n' +
-      '  2. Or manually delete the engine/ directory before downloading again'
+      '  2. Or manually delete the engine/ directory before downloading again\n' +
+      '  3. Re-run with --verbose for the full underlying error and stack trace'
     );
   }
 }

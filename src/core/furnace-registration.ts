@@ -71,7 +71,7 @@ export async function addJarMnEntries(
   engineDir: string,
   tagName: string,
   files: string[]
-): Promise<void> {
+): Promise<number> {
   const filePath = join(engineDir, JAR_MN);
 
   if (!(await pathExists(filePath))) {
@@ -87,7 +87,7 @@ export async function addJarMnEntries(
     (f) => !new RegExp(`content/global/elements/${escapeForRegex(f)}(?:\\s|$)`, 'm').test(content)
   );
 
-  if (newFiles.length === 0) return;
+  if (newFiles.length === 0) return 0;
 
   // Build new entry lines using the indent detected from existing entries.
   const indent = detectJarMnIndent(lines);
@@ -143,6 +143,7 @@ export async function addJarMnEntries(
 
   content = lines.join('\n');
   await writeText(filePath, content);
+  return newFiles.length;
 }
 
 /**

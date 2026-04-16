@@ -6,15 +6,18 @@
 import { join } from 'node:path';
 
 import type { getProjectPaths } from '../../core/config.js';
-import { loadState, saveState } from '../../core/config.js';
+import { updateState } from '../../core/config.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import { applyPatchWithFuzz } from '../../core/patch-apply-fuzz.js';
 import { updatePatch } from '../../core/patch-export.js';
 import { discoverPatches } from '../../core/patch-files.js';
+import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import { loadPatchesManifest, stampPatchVersions } from '../../core/patch-manifest.js';
 import { extractConflictingFiles } from '../../core/patch-parse.js';
 import type { RebaseSession } from '../../core/rebase-session.js';
 import { clearRebaseSession, saveRebaseSession } from '../../core/rebase-session.js';
+import { runInSignalCriticalSection } from '../../core/signal-critical.js';
+import { RebaseError } from '../../errors/rebase.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, spinner, success, warn } from '../../utils/logger.js';
@@ -48,35 +51,56 @@ export async function runPatchLoop(
 
     s.message(`Applying ${entry.filename}...`);
 
-    const result = await applyPatchWithFuzz(patchFile.path, paths.engine, maxFuzz);
+    // Apply + session persist is wrapped in a signal-deferred critical
+    // section so a SIGINT / SIGTERM between the filesystem mutation and
+    // the session-file update is held until the bookkeeping write lands.
+    // Without this guard, `rebase --continue` could see a patch that is
+    // already in the engine but still marked pending, and would re-apply
+    // it on resume (either failing on duplicate hunks or producing
+    // divergent results).
+    const result = await runInSignalCriticalSection(`rebase-apply:${entry.filename}`, async () => {
+      const applyResult = await applyPatchWithFuzz(patchFile.path, paths.engine, maxFuzz);
+
+      if (applyResult.success) {
+        if (applyResult.fuzzFactor === 0) {
+          entry.status = 'applied-clean';
+        } else {
+          entry.status = 'applied-fuzz';
+          entry.fuzzFactor = applyResult.fuzzFactor;
+        }
+        session.currentIndex = i + 1;
+        await saveRebaseSession(projectRoot, session);
+      } else {
+        entry.status = 'failed';
+        if (applyResult.error) {
+          entry.error = applyResult.error;
+        }
+        entry.conflictingFiles = extractConflictingFiles(applyResult.error);
+        session.currentIndex = i;
+        await saveRebaseSession(projectRoot, session);
+      }
+
+      return applyResult;
+    });
 
     if (result.success) {
       if (result.fuzzFactor === 0) {
-        entry.status = 'applied-clean';
         success(`  ${entry.filename} — applied cleanly`);
       } else {
-        entry.status = 'applied-fuzz';
-        entry.fuzzFactor = result.fuzzFactor;
         warn(`  ${entry.filename} — applied with fuzz=${result.fuzzFactor}`);
       }
-      session.currentIndex = i + 1;
-      await saveRebaseSession(projectRoot, session);
     } else {
-      entry.status = 'failed';
-      if (result.error) {
-        entry.error = result.error;
-      }
-      entry.conflictingFiles = extractConflictingFiles(result.error);
-      session.currentIndex = i;
-      await saveRebaseSession(projectRoot, session);
-
-      // Set pendingResolution in state for visibility
-      const state = await loadState(projectRoot);
-      state.pendingResolution = {
-        patchFilename: entry.filename,
-        originalError: result.error ?? 'Unknown error',
-      };
-      await saveState(projectRoot, state);
+      // Set pendingResolution in state for visibility. Kept outside the
+      // critical section — it is advisory UX, not a correctness invariant,
+      // and its absence would at most cause `fireforge status` to omit the
+      // pending-conflict hint until the next state write.
+      await updateState(projectRoot, (current) => ({
+        ...current,
+        pendingResolution: {
+          patchFilename: entry.filename,
+          originalError: result.error ?? 'Unknown error',
+        },
+      }));
 
       s.error(`${entry.filename} failed to apply`);
       if (result.error) {
@@ -97,8 +121,23 @@ export async function runPatchLoop(
 
   s.stop('All patches applied');
 
-  // Re-export all successfully applied patches
-  await reExportAppliedPatches(session, paths);
+  // Re-export all successfully applied patches. Failures here mean the
+  // engine has been rebased onto the new Firefox version but some .patch
+  // files were not refreshed — the queue would lie about what version each
+  // patch was tested against if we proceeded to stamp. Refuse to claim
+  // success and leave the session in place so the user can recover via
+  // `fireforge rebase --continue` after fixing the underlying cause.
+  const reExportFailures = await reExportAppliedPatches(session, paths);
+  if (reExportFailures.length > 0) {
+    for (const f of reExportFailures) {
+      error(`  ${f.filename}: ${f.error}`);
+    }
+    throw new RebaseError(
+      `Apply succeeded but ${reExportFailures.length} patch(es) failed to re-export. ` +
+        `Versions were not stamped and the rebase session has been kept so you can retry. ` +
+        `Fix the underlying cause shown above, then re-run "fireforge rebase --continue".`
+    );
+  }
 
   // Stamp versions
   const appliedFilenames = session.patches
@@ -115,12 +154,14 @@ export async function runPatchLoop(
   printSummary(session);
   await clearRebaseSession(projectRoot);
 
-  // Clear pending resolution if any
-  const state = await loadState(projectRoot);
-  if (state.pendingResolution) {
-    delete state.pendingResolution;
-    await saveState(projectRoot, state);
-  }
+  // Clear pending resolution if any (transactionally, so a concurrent
+  // state write to an unrelated key is not clobbered by a stale reload).
+  await updateState(projectRoot, (current) => {
+    if (!current.pendingResolution) return current;
+    const next = { ...current };
+    delete next.pendingResolution;
+    return next;
+  });
 
   info('');
   success(`All patches re-exported with sourceEsrVersion=${session.toVersion}`);
@@ -130,9 +171,11 @@ export async function runPatchLoop(
 async function reExportAppliedPatches(
   session: RebaseSession,
   paths: ReturnType<typeof getProjectPaths>
-): Promise<void> {
+): Promise<Array<{ filename: string; error: string }>> {
+  const failures: Array<{ filename: string; error: string }> = [];
+
   const manifest = await loadPatchesManifest(paths.patches);
-  if (!manifest) return;
+  if (!manifest) return failures;
 
   const s = spinner('Re-exporting patches...');
 
@@ -155,12 +198,27 @@ async function reExportAppliedPatches(
       const diffContent = await getDiffForFilesAgainstHead(paths.engine, existingFiles);
       if (diffContent.trim()) {
         const patchPath = join(paths.patches, entry.filename);
-        await updatePatch(patchPath, diffContent);
+        // Hold the patch directory lock for the body rewrite so a concurrent
+        // manifest-mutating command (`resolve`, `re-export`, `patch compact`,
+        // `patch reorder`) cannot observe a torn patch body mid-write or
+        // persist metadata describing a body this loop is about to overwrite.
+        // Rebase sessions are serialized against each other by
+        // `rebase-session.ts`, so this lock is only defending against other
+        // command classes, not peer rebases.
+        await withPatchDirectoryLock(paths.patches, () => updatePatch(patchPath, diffContent));
       }
     } catch (err: unknown) {
-      warn(`Failed to re-export ${entry.filename}: ${toError(err).message}`);
+      const message = toError(err).message;
+      warn(`Failed to re-export ${entry.filename}: ${message}`);
+      failures.push({ filename: entry.filename, error: message });
     }
   }
 
-  s.stop('Patches re-exported');
+  if (failures.length > 0) {
+    s.error(`Re-export failed for ${failures.length} patch(es)`);
+  } else {
+    s.stop('Patches re-exported');
+  }
+
+  return failures;
 }

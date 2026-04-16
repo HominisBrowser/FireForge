@@ -8,7 +8,7 @@ import { getProjectPaths, loadConfig } from '../core/config.js';
 import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
-import { updatePatch, updatePatchMetadata } from '../core/patch-export.js';
+import { updatePatchAndMetadata } from '../core/patch-export.js';
 import {
   getClaimedFiles,
   loadPatchesManifest,
@@ -149,13 +149,19 @@ async function reExportSinglePatch(
   if (isDryRun) {
     info(`[dry-run] ${patch.filename}: ${existingFiles.length} file(s)`);
   } else {
-    const patchPath = join(paths.patches, patch.filename);
-    await updatePatch(patchPath, diffContent);
-
-    await updatePatchMetadata(paths.patches, patch.filename, {
+    // Atomic body + manifest update under a single patch-directory lock.
+    // A split `updatePatch` (lock-free) + `updatePatchMetadata` (lock-guarded)
+    // sequence allows a concurrent `resolve` / `rebase --continue` / `patch
+    // compact` / `patch reorder` to rewrite the manifest between the two
+    // writes and leave patch body and `filesAffected` disagreeing.
+    await updatePatchAndMetadata(paths.patches, patch.filename, diffContent, {
       filesAffected: currentFilesAffected,
     });
 
+    // Keep the in-memory manifest in sync so subsequent iterations (notably
+    // `--all --scan`, where `getClaimedFiles` reads from this manifest) see
+    // the just-written `filesAffected`. The on-disk write above is the
+    // authority; this is a cache update.
     const patchIndex = manifest.patches.findIndex((pm) => pm.filename === patch.filename);
     if (patchIndex !== -1) {
       const existingEntry = manifest.patches[patchIndex];

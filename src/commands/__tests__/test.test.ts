@@ -191,4 +191,48 @@ describe('testCommand', () => {
       ['--headless']
     );
   });
+
+  it('strips a case-insensitive engine prefix on case-insensitive filesystems', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['Engine/browser/components/tests/unit/test_distribution.js'])
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/components/tests/unit/test_distribution.js'],
+      []
+    );
+  });
+
+  it('strips engine prefix using a Windows-style backslash separator', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['engine\\browser\\components\\tests\\unit\\test_distribution.js'])
+    ).resolves.toBeUndefined();
+
+    // backslashes survive into mach (Windows mach handles them), but the
+    // engine prefix is stripped.
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser\\components\\tests\\unit\\test_distribution.js'],
+      []
+    );
+  });
+
+  it('trims surrounding whitespace from supplied test paths', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['  engine/browser/components/tests/unit/test_distribution.js  '])
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/components/tests/unit/test_distribution.js'],
+      []
+    );
+  });
 });

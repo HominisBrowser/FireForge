@@ -5,12 +5,13 @@
 
 import { join } from 'node:path';
 
-import { getProjectPaths, loadState, saveState } from '../../core/config.js';
+import { getProjectPaths, updateState } from '../../core/config.js';
 import { getStagedDiffForFiles } from '../../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../../core/git-file-ops.js';
-import { updatePatch, updatePatchMetadata } from '../../core/patch-export.js';
+import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { loadRebaseSession, saveRebaseSession } from '../../core/rebase-session.js';
+import { runInSignalCriticalSection } from '../../core/signal-critical.js';
 import { GeneralError } from '../../errors/base.js';
 import { NoRebaseSessionError, RebaseError } from '../../errors/rebase.js';
 import { pathExists } from '../../utils/fs.js';
@@ -27,6 +28,18 @@ export async function handleContinue(projectRoot: string, maxFuzz: number): Prom
   if (!session) throw new NoRebaseSessionError();
 
   const paths = getProjectPaths(projectRoot);
+
+  // Special case: every patch has already applied but a previous run failed
+  // somewhere in the post-apply work (re-export, version stamping). In that
+  // state currentIndex is past the end of the queue; jumping straight back
+  // into runPatchLoop replays the no-op apply loop and re-attempts the
+  // post-apply pipeline. Without this branch the user would be stuck —
+  // there is no failed patch to resolve, but the session is still active.
+  if (session.currentIndex >= session.patches.length) {
+    info('All patches already applied; retrying post-apply re-export and version stamping.');
+    await runPatchLoop(projectRoot, session, paths, maxFuzz);
+    return;
+  }
 
   // The current patch should be in 'failed' state
   const currentPatch = session.patches[session.currentIndex];
@@ -67,9 +80,13 @@ export async function handleContinue(projectRoot: string, maxFuzz: number): Prom
       return;
     }
 
-    const patchPath = join(paths.patches, currentPatch.filename);
-    await updatePatch(patchPath, diffContent);
-    await updatePatchMetadata(paths.patches, currentPatch.filename, {
+    // Write the patch body and the manifest metadata atomically under the
+    // shared patch-directory lock. The previous lock-free sequence of
+    // updatePatch + updatePatchMetadata could interleave with a concurrent
+    // export / re-export / patch reorder / patch compact and leave the
+    // manifest disagreeing with the freshly-written patch body. Mirrors the
+    // v0.14.0 resolve.ts fix.
+    await updatePatchAndMetadata(paths.patches, currentPatch.filename, diffContent, {
       sourceEsrVersion: session.toVersion,
     });
   } finally {
@@ -78,17 +95,24 @@ export async function handleContinue(projectRoot: string, maxFuzz: number): Prom
     }
   }
 
-  // Mark resolved and advance
-  currentPatch.status = 'resolved';
-  session.currentIndex++;
-  await saveRebaseSession(projectRoot, session);
+  // Mark resolved and advance. Wrap in a signal-deferred critical section
+  // so SIGINT / SIGTERM between the session update and the pendingResolution
+  // clear is held until both writes land, matching the guarantee the apply
+  // loop in patch-loop.ts provides.
+  await runInSignalCriticalSection(`rebase-continue:${currentPatch.filename}`, async () => {
+    currentPatch.status = 'resolved';
+    session.currentIndex++;
+    await saveRebaseSession(projectRoot, session);
 
-  // Clear pending resolution
-  const state = await loadState(projectRoot);
-  if (state.pendingResolution) {
-    delete state.pendingResolution;
-    await saveState(projectRoot, state);
-  }
+    // Clear pending resolution transactionally so concurrent state-file
+    // writes to unrelated keys are not clobbered by a stale reload.
+    await updateState(projectRoot, (current) => {
+      if (!current.pendingResolution) return current;
+      const next = { ...current };
+      delete next.pendingResolution;
+      return next;
+    });
+  });
 
   success(`Resolved ${currentPatch.filename}`);
 

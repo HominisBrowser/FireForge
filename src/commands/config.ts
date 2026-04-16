@@ -139,9 +139,15 @@ export async function configCommand(
     }
 
     const parsedValue = parseValue(value, key);
+    const keyIsKnown = (SUPPORTED_CONFIG_PATHS as readonly string[]).includes(key);
 
     try {
-      if (options.force) {
+      // `--force` is intended as an escape hatch for *unknown* keys; it
+      // should not also let the user write a structurally invalid value
+      // for a *known* key. Apply strict validation whenever the key is
+      // listed in SUPPORTED_CONFIG_PATHS, regardless of --force, and only
+      // skip validation for genuinely unknown key paths.
+      if (options.force && !keyIsKnown) {
         const updatedConfig = mutateConfig(config, key, parsedValue, true);
         await writeConfigDocument(projectRoot, updatedConfig);
       } else {

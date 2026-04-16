@@ -648,4 +648,56 @@ describe('furnaceDeployCommand', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('was created against Firefox'));
     expect(applyAllComponents).toHaveBeenCalled();
   });
+
+  it('persists named-deploy state under the requested component name when apply succeeds', async () => {
+    // Sanity-check the happy path that the new applied[0].name assertion
+    // is designed to protect: when apply succeeds for the requested
+    // component, persistence runs under that exact name. The negative
+    // case (applied[0] for a *different* component) cannot be triggered
+    // from outside the deploy module without monkey-patching its
+    // internal accumulator — it is guarded by an `assert`-style throw in
+    // getPersistableAppliedEntry that future refactors must not strip.
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-card': {
+          type: 'css-only',
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    // Pin Firefox version so baseVersion drift does not fire — earlier
+    // tests in this file leave loadConfig set to 147.0, which would trip
+    // the override-baseVersion preflight.
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '145.0', product: 'firefox' },
+    });
+    vi.mocked(applyOverrideComponent).mockResolvedValue({
+      affectedPaths: ['moz-card.css'],
+      actions: [],
+    });
+    vi.mocked(computeComponentChecksums).mockResolvedValue({ 'moz-card.css': 'hash' });
+    vi.mocked(prefixChecksums).mockImplementation((_checks, type, name) => ({
+      [`${type}/${name}/moz-card.css`]: 'hash',
+    }));
+    vi.mocked(validateComponent).mockResolvedValue([]);
+
+    await expect(furnaceDeployCommand('/project', 'moz-card')).resolves.toBeUndefined();
+
+    expect(updateFurnaceState).toHaveBeenCalledTimes(1);
+    expect(prefixChecksums).toHaveBeenCalledWith(
+      { 'moz-card.css': 'hash' },
+      'override',
+      'moz-card'
+    );
+  });
 });

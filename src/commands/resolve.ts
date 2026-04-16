@@ -4,11 +4,11 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
-import { getProjectPaths, loadConfig, loadState, saveState } from '../core/config.js';
+import { getProjectPaths, loadConfig, loadState, updateState } from '../core/config.js';
 import { isGitRepository } from '../core/git.js';
 import { getStagedDiffForFiles } from '../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../core/git-file-ops.js';
-import { updatePatch, updatePatchMetadata } from '../core/patch-export.js';
+import { updatePatchAndMetadata } from '../core/patch-export.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { GeneralError, ResolutionError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -82,6 +82,20 @@ export async function resolveCommand(projectRoot: string): Promise<void> {
     throw new ResolutionError(`Patch ${patchFilename} not found in manifest.`);
   }
 
+  // Refuse to proceed if the patch file was deleted between the conflict
+  // and the resolve. Without this check, `updatePatchAndMetadata` would
+  // throw a less actionable "patch file is missing" error from inside
+  // the lock; the explicit precondition lets us point the user at the
+  // exact recovery path.
+  const patchPath = join(paths.patches, patchFilename);
+  if (!(await pathExists(patchPath))) {
+    throw new ResolutionError(
+      `Patch file ${patchFilename} is missing on disk. ` +
+        'Delete the "pendingResolution" key from state.json to clear the stale conflict, ' +
+        'or restore the patch file before re-running resolve.'
+    );
+  }
+
   const s = spinner(`Updating ${patchFilename}...`);
 
   try {
@@ -125,20 +139,29 @@ export async function resolveCommand(projectRoot: string): Promise<void> {
       return;
     }
 
-    // Write the new diff content to the patch file
-    const patchPath = join(paths.patches, patchFilename);
-    await updatePatch(patchPath, diffContent);
-
-    // Update metadata (preserve original createdAt)
+    // Atomically write the patch body and the metadata update under the
+    // shared patch-directory lock. Replaces the previous lock-free
+    // sequence of updatePatch + updatePatchMetadata, which a concurrent
+    // import / export / re-export / patch reorder / patch compact could
+    // interleave with and leave the manifest disagreeing with the
+    // freshly-written patch body.
     const config = await loadConfig(projectRoot);
-    await updatePatchMetadata(paths.patches, patchFilename, {
+    await updatePatchAndMetadata(paths.patches, patchFilename, diffContent, {
       ...(activeFiles.length < existingFiles.length ? { filesAffected: activeFiles } : {}),
       sourceEsrVersion: config.firefox.version,
     });
 
-    // Cleanup: Clear pendingResolution from state.json
-    delete state.pendingResolution;
-    await saveState(projectRoot, state);
+    // Cleanup: Clear pendingResolution from state.json transactionally so
+    // we don't clobber concurrent updates to unrelated keys (e.g. another
+    // command writing buildMode or baseCommit between our loadState and
+    // saveState). The updater function runs inside the state-file lock
+    // with the freshest on-disk state, so only pendingResolution is
+    // affected.
+    await updateState(projectRoot, (current) => {
+      const next = { ...current };
+      delete next.pendingResolution;
+      return next;
+    });
 
     s.stop(`Updated ${patchFilename}`);
     success('Patch updated successfully and resolution state cleared.');

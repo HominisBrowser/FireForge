@@ -62,7 +62,9 @@ async function diffOverride(
   const baseCommit = overrideConfig.baseCommit ?? state.baseCommit;
   if (!baseCommit) {
     throw new FurnaceError(
-      'Cannot diff: baseCommit not found. Re-run "fireforge download" to establish a baseline.',
+      `Cannot diff "${name}": baseCommit not recorded for this override. ` +
+        `Run "fireforge furnace refresh --reset-base ${name}" to stamp the current engine HEAD as the baseline, ` +
+        `or re-run "fireforge download" to re-establish a project-wide baseline.`,
       name
     );
   }

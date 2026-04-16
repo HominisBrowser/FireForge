@@ -20,20 +20,26 @@ import { info, intro, spinner } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 
 /**
- * Strips the "engine/" prefix from a path if present.
+ * Strips a leading "engine/" or "engine\\" prefix from a path if present.
  * Users may specify paths like "engine/browser/modules/..." from the project
  * root, but mach test expects paths relative to the engine directory.
+ *
+ * The match is case-insensitive because case-insensitive filesystems
+ * (default macOS, Windows) treat "Engine/" and "engine/" as the same
+ * directory, and a literal lowercase-only check left mach with a
+ * non-stripped prefix that resolved to a different path under the engine
+ * tree. Tab and other whitespace before the prefix is also ignored.
+ *
  * @param testPath - Path as provided by the user
  * @returns Path relative to the engine directory
  */
 function normalizeTestPath(testPath: string): string {
-  if (testPath.startsWith('engine/')) {
-    return testPath.slice('engine/'.length);
+  const trimmed = testPath.trim();
+  const match = /^engine[/\\]/i.exec(trimmed);
+  if (match) {
+    return trimmed.slice(match[0].length);
   }
-  if (testPath.startsWith('engine\\')) {
-    return testPath.slice('engine\\'.length);
-  }
-  return testPath;
+  return trimmed;
 }
 
 async function assertTestPathsExist(engineDir: string, testPaths: string[]): Promise<void> {

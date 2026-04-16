@@ -87,12 +87,32 @@ function getPersistableAppliedEntry(
   appliedEntry: Awaited<ReturnType<typeof applyAllComponents>>['applied'][number] | undefined
 ): { name: string; type: 'override' | 'custom' } {
   if (!appliedEntry) {
-    throw new FurnaceError(`Named deploy for "${name}" completed without an applied entry.`);
+    throw new FurnaceError(
+      `Deploy for "${name}" finished without producing an applied component entry; ` +
+        `furnace state was not modified. Run "fireforge doctor --repair-furnace" to ` +
+        `reconcile state, then retry the deploy. If this persists, file a bug with the ` +
+        `output of "fireforge doctor".`
+    );
   }
 
   if (appliedEntry.type !== 'override' && appliedEntry.type !== 'custom') {
     throw new FurnaceError(
-      `Named deploy for "${name}" returned unsupported component type "${appliedEntry.type}".`
+      `Deploy for "${name}" returned an unsupported component type "${appliedEntry.type}"; ` +
+        `furnace state was not modified. Run "fireforge doctor --repair-furnace" to reconcile, ` +
+        `then verify the component with "fireforge furnace validate" before retrying.`
+    );
+  }
+
+  // Guard against future refactors that might reorder or misroute the
+  // applied[] array: named deploy persists state under a single component
+  // name, so the first applied entry MUST be that component. Persisting a
+  // different component's checksums here would cause the next status/apply
+  // run to mis-report health for both components involved.
+  if (name !== undefined && appliedEntry.name !== name) {
+    throw new FurnaceError(
+      `Deploy for "${name}" returned an applied entry for a different component ` +
+        `("${appliedEntry.name}"); refusing to persist mismatched state. ` +
+        `Run "fireforge doctor --repair-furnace" to reconcile, then retry the deploy.`
     );
   }
 

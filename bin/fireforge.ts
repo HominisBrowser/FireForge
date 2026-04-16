@@ -14,7 +14,16 @@ import {
   isSignalRollbackInFlight,
   rollbackActiveOperationsForSignal,
 } from '../src/core/furnace-operation.js';
+import { waitForActiveCriticalSections } from '../src/core/signal-critical.js';
 import { CommandError } from '../src/errors/base.js';
+
+/**
+ * Upper bound (ms) the signal handler will wait for any in-flight critical
+ * section (e.g. rebase apply + session persist) to finish before calling
+ * process.exit. Keep short so a stuck I/O operation cannot indefinitely
+ * postpone the exit a user requested with Ctrl+C.
+ */
+const SIGNAL_CRITICAL_SECTION_TIMEOUT_MS = 5_000;
 
 installBrokenPipeHandler();
 
@@ -43,16 +52,22 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
       // rather than queueing another rollback that will race the first.
       process.exit(exitCode);
     }
-    rollbackActiveOperationsForSignal(signal)
-      .catch((error: unknown) => {
+    // Run furnace rollback and signal-critical-section drain in parallel.
+    // Rebase-style operations register critical sections (apply + session
+    // persist) via `runInSignalCriticalSection`; awaiting them here ensures
+    // the CLI never exits with a patch applied to the engine but a stale
+    // session file that would mis-track progress on `--continue`.
+    void Promise.allSettled([
+      rollbackActiveOperationsForSignal(signal).catch((error: unknown) => {
         console.error(
           `Furnace rollback after ${signal} failed:`,
           error instanceof Error ? error.message : error
         );
-      })
-      .finally(() => {
-        process.exit(exitCode);
-      });
+      }),
+      waitForActiveCriticalSections(SIGNAL_CRITICAL_SECTION_TIMEOUT_MS),
+    ]).finally(() => {
+      process.exit(exitCode);
+    });
   });
 }
 

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { isAbsolute, normalize } from 'node:path';
+
 import { text } from '@clack/prompts';
 
 import {
@@ -9,6 +11,32 @@ import {
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
 import { cancel, info, intro, isCancel, note, outro, success } from '../../utils/logger.js';
+
+/**
+ * Validates an FTL base path before writing it to furnace.json. Rejects
+ * absolute paths, null bytes, and any normalised segment starting with
+ * `..` — the previous `includes('..')` substring check caught the common
+ * case but missed `./../../` and absolute paths that are arguably worse.
+ */
+function validateFtlBasePath(value: string): void {
+  if (value.length === 0) {
+    throw new FurnaceError('ftlBasePath must not be empty.');
+  }
+  if (value.includes('\0')) {
+    throw new FurnaceError('ftlBasePath must not contain null bytes.');
+  }
+  if (isAbsolute(value) || /^[a-zA-Z]:[\\/]/.test(value)) {
+    throw new FurnaceError(
+      `ftlBasePath "${value}" must be a relative path inside the engine checkout, not absolute.`
+    );
+  }
+  const normalized = normalize(value.replace(/\\/g, '/'));
+  if (normalized === '..' || normalized.startsWith('../')) {
+    throw new FurnaceError(
+      `ftlBasePath "${value}" must not escape the engine checkout via parent-directory segments.`
+    );
+  }
+}
 
 /**
  * Runs the furnace init command to create a default furnace.json with
@@ -27,7 +55,7 @@ export async function furnaceInitCommand(
   }
 
   const config: FurnaceConfig = createDefaultFurnaceConfig();
-  const isInteractive = process.stdin.isTTY;
+  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
 
   // Resolve componentPrefix
   if (options.prefix !== undefined) {
@@ -50,9 +78,7 @@ export async function furnaceInitCommand(
 
   // Resolve ftlBasePath
   if (options.ftlBasePath !== undefined) {
-    if (options.ftlBasePath.includes('..')) {
-      throw new FurnaceError('ftlBasePath must not contain ".." (path traversal)');
-    }
+    validateFtlBasePath(options.ftlBasePath);
     config.ftlBasePath = options.ftlBasePath;
   } else if (isInteractive) {
     const ftlResult = await text({
@@ -65,9 +91,7 @@ export async function furnaceInitCommand(
     }
     const ftlValue = (ftlResult as string).trim();
     if (ftlValue) {
-      if (ftlValue.includes('..')) {
-        throw new FurnaceError('ftlBasePath must not contain ".." (path traversal)');
-      }
+      validateFtlBasePath(ftlValue);
       config.ftlBasePath = ftlValue;
     }
   }

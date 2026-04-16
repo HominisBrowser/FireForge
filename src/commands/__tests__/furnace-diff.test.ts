@@ -290,7 +290,15 @@ describe('furnaceDiffCommand', () => {
     vi.mocked(loadState).mockResolvedValue({});
 
     await expect(furnaceDiffCommand('/project', 'moz-card')).rejects.toThrow(
-      /baseCommit not found/i
+      /baseCommit not recorded for this override/i
+    );
+  });
+
+  it('suggests furnace refresh --reset-base in the missing-baseCommit error', async () => {
+    vi.mocked(loadState).mockResolvedValue({});
+
+    await expect(furnaceDiffCommand('/project', 'moz-card')).rejects.toThrow(
+      /furnace refresh --reset-base moz-card/
     );
   });
 

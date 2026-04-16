@@ -179,7 +179,11 @@ async function scaffoldTestFiles(
   // browser.toml — create if missing, append entry if existing
   const tomlPath = join(testDir, 'browser.toml');
   if (await pathExists(tomlPath)) {
-    // Append the new test entry if not already present
+    // Defensive guard: only append if the entry is not already present.
+    // With a fresh journal per create, the same test file name cannot be
+    // appended twice in a single run — but retaining the check protects
+    // against accidental re-entrance or a future refactor that reuses the
+    // helper with a stale test directory.
     const existingToml = await readText(tomlPath);
     if (!existingToml.includes(`["${testFileName}"]`)) {
       if (journal) await snapshotFile(journal, tomlPath);
@@ -370,16 +374,23 @@ async function performCreateMutations(args: {
   withTests: boolean;
   operationContext?: FurnaceOperationContext;
 }): Promise<{ files: string[]; testFiles: string[] }> {
+  // Invariant: the journal MUST be registered with the operation context
+  // BEFORE any filesystem mutation (including recordCreatedDir, whose entries
+  // are consulted by SIGINT rollback). The try/catch below assumes signal
+  // handlers can find the journal for any partial write that follows.
   const journal = createRollbackJournal();
   if (args.operationContext) {
     args.operationContext.registerJournal(journal);
   }
-  recordCreatedDir(journal, args.componentDir);
 
   const testFiles: string[] = [];
   let files: string[];
 
   try {
+    // Record the componentDir creation entry immediately after registration
+    // so signal-driven rollback can clean it up even if writeComponentFiles
+    // is interrupted mid-ensureDir.
+    recordCreatedDir(journal, args.componentDir);
     files = await writeComponentFiles(
       args.componentDir,
       args.componentName,

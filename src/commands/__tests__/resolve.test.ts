@@ -2,11 +2,11 @@
 import { confirm } from '@clack/prompts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { loadConfig, loadState, saveState } from '../../core/config.js';
+import { loadConfig, loadState, updateState } from '../../core/config.js';
 import { isGitRepository } from '../../core/git.js';
 import { getStagedDiffForFiles } from '../../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../../core/git-file-ops.js';
-import { updatePatch, updatePatchMetadata } from '../../core/patch-export.js';
+import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { pathExists } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
@@ -26,6 +26,7 @@ vi.mock('../../core/config.js', () => ({
   }),
   loadState: vi.fn(),
   saveState: vi.fn(),
+  updateState: vi.fn(),
   loadConfig: vi.fn(),
 }));
 vi.mock('../../core/git.js');
@@ -104,15 +105,21 @@ describe('resolveCommand', () => {
     await resolveCommand(projectRoot);
 
     expect(stageFiles).toHaveBeenCalledWith(expect.any(String), ['file1.js']);
-    expect(updatePatch).toHaveBeenCalledWith(expect.any(String), 'new diff');
-    expect(updatePatchMetadata).toHaveBeenCalledWith(
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
       expect.any(String),
       patchFilename,
+      'new diff',
       expect.objectContaining({
         sourceEsrVersion: '140.9.0esr',
       })
     );
-    expect(saveState).toHaveBeenCalledWith(projectRoot, {});
+    // updateState is called with a transactional updater that deletes
+    // pendingResolution; exercise the updater to confirm the delete.
+    expect(updateState).toHaveBeenCalledWith(projectRoot, expect.any(Function));
+    const updater = vi.mocked(updateState).mock.calls.at(-1)?.[1] as (
+      current: Record<string, unknown>
+    ) => Record<string, unknown>;
+    expect(updater({ pendingResolution: { patchFilename: 'x', originalError: 'y' } })).toEqual({});
   });
 
   it('should fail if no changes detected', async () => {
@@ -141,8 +148,8 @@ describe('resolveCommand', () => {
 
     await resolveCommand(projectRoot);
 
-    expect(updatePatch).not.toHaveBeenCalled();
-    expect(saveState).not.toHaveBeenCalled();
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+    expect(updateState).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledWith(
       'No patch update was generated from the staged diff. Pending resolution was left intact so you can retry. To discard the resolution state, delete the "pendingResolution" key from state.json.'
     );
@@ -178,16 +185,50 @@ describe('resolveCommand', () => {
     await resolveCommand(projectRoot);
 
     expect(stageFiles).toHaveBeenCalledWith(expect.any(String), ['file1.js']);
-    expect(updatePatch).toHaveBeenCalledWith(expect.any(String), 'new diff');
-    expect(updatePatchMetadata).toHaveBeenCalledTimes(1);
-    expect(updatePatchMetadata).toHaveBeenCalledWith(
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
       expect.any(String),
       patchFilename,
+      'new diff',
       expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
       })
     );
+  });
+
+  it('refuses to resolve when the patch file is missing on disk', async () => {
+    const patchFilename = '001-test.patch';
+    vi.mocked(loadState).mockResolvedValue({
+      pendingResolution: { patchFilename, originalError: 'error' },
+    });
+    vi.mocked(confirm).mockResolvedValue(true);
+    vi.mocked(loadPatchesManifest).mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: patchFilename,
+          filesAffected: ['file1.js'],
+          order: 1,
+          category: 'ui',
+          name: 'test',
+          description: '',
+          createdAt: '',
+          sourceEsrVersion: '128.0esr',
+        },
+      ],
+    });
+    // Engine and engine files exist; the patch file itself does not.
+    vi.mocked(pathExists).mockImplementation((targetPath) =>
+      Promise.resolve(!targetPath.endsWith('001-test.patch'))
+    );
+
+    await expect(resolveCommand(projectRoot)).rejects.toThrow(
+      /Patch file 001-test\.patch is missing on disk/
+    );
+
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+    expect(updateState).not.toHaveBeenCalled();
   });
 
   it('does not mutate the manifest when patch rewriting fails', async () => {
@@ -215,11 +256,10 @@ describe('resolveCommand', () => {
       Promise.resolve(targetPath.endsWith('file1.js') || !targetPath.includes('/fake/engine/'))
     );
     vi.mocked(getStagedDiffForFiles).mockResolvedValue('new diff');
-    vi.mocked(updatePatch).mockRejectedValue(new Error('disk full'));
+    vi.mocked(updatePatchAndMetadata).mockRejectedValue(new Error('disk full'));
 
     await expect(resolveCommand(projectRoot)).rejects.toThrow('disk full');
 
-    expect(updatePatchMetadata).not.toHaveBeenCalled();
-    expect(saveState).not.toHaveBeenCalled();
+    expect(updateState).not.toHaveBeenCalled();
   });
 });

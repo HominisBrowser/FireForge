@@ -26,6 +26,23 @@ export async function registerCommand(
 ): Promise<void> {
   intro('Register');
 
+  // --after is matched as a substring against existing manifest lines;
+  // guard against control characters / line terminators that would either
+  // break the match logic or, worse, inject a second line if the value
+  // is ever echoed back to a manifest writer. Null bytes are explicitly
+  // rejected to mirror the hardening already applied to other user-
+  // supplied identifiers (binaryName, furnace targetPath, …).
+  if (options.after !== undefined) {
+    // eslint-disable-next-line no-control-regex -- control chars in --after would break the manifest match
+    const hasControlChar = /[\u0000-\u001f]/.test(options.after);
+    if (options.after.length === 0 || hasControlChar) {
+      throw new InvalidArgumentError(
+        '--after must be a non-empty substring without control characters or line terminators.',
+        'after'
+      );
+    }
+  }
+
   // Verify the file exists in engine/ (skip for dry-run)
   if (!options.dryRun) {
     const paths = getProjectPaths(projectRoot);

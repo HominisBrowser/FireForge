@@ -125,6 +125,10 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
     .option('--no-register', 'Skip customElements.js registration')
     .option('--with-tests', 'Scaffold Mochitest directory and register in moz.build')
     .option(
+      '--xpcshell',
+      'Scaffold an xpcshell test harness (for storage-layer code on forks without tabbrowser)'
+    )
+    .option(
       '--compose <tags>',
       'Record stock tags composed internally (metadata only, comma-separated)',
       (val: string) => val.split(',').map((s) => s.trim())
@@ -138,6 +142,7 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
             localized?: boolean;
             register?: boolean;
             withTests?: boolean;
+            xpcshell?: boolean;
             compose?: string[];
           }
         ) => {

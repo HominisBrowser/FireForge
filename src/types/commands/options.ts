@@ -192,6 +192,12 @@ export interface TestOptions {
   headless?: boolean;
   /** Run incremental UI build before testing */
   build?: boolean;
+  /**
+   * Run a marionette preflight before tests. Reports PASS/FAIL in under a
+   * minute. When test paths are supplied, a FAIL aborts before mach test is
+   * spawned. When no paths are supplied, runs the preflight only and exits.
+   */
+  doctor?: boolean;
 }
 
 /**
@@ -288,6 +294,16 @@ export interface FurnaceCreateOptions {
   register?: boolean;
   /** Scaffold Mochitest directory and register in moz.build */
   withTests?: boolean;
+  /**
+   * Scaffold an xpcshell test harness (headless, no tabbrowser) instead of
+   * browser-chrome. Required for forks without a `tabbrowser` (storage-only
+   * code, observer-driven modules). Implies `withTests` when set. Writes an
+   * `xpcshell.toml` + `test_<name>.js` under
+   * `engine/browser/base/content/test/<binary-name>-xpcshell/` and leaves
+   * moz.build registration to the operator (add the directory to
+   * `XPCSHELL_TESTS_MANIFESTS`).
+   */
+  xpcshell?: boolean;
   /** Stock component tag names composed internally by this component */
   compose?: string[];
 }

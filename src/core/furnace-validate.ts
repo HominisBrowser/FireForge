@@ -83,9 +83,17 @@ export async function validateComponent(
     issues.push(...buildOverrideVersionDriftIssues(config, forgeConfig.firefox.version, tagName));
   }
 
-  // Check for missing token link in browser.xhtml
+  // Check for missing token link across configured chrome host documents.
   if (root) {
-    issues.push(...(await validateTokenLink(componentDir, tagName, root, config?.tokenPrefix)));
+    issues.push(
+      ...(await validateTokenLink(
+        componentDir,
+        tagName,
+        root,
+        config?.tokenPrefix,
+        config?.tokenHostDocuments
+      ))
+    );
   }
 
   // When root is provided and this is a custom component with registration,

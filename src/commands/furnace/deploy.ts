@@ -246,7 +246,8 @@ async function applyNamedComponent(
   ftlDir: string,
   isDryRun: boolean,
   operationContext?: FurnaceOperationContext,
-  projectRoot?: string
+  projectRoot?: string,
+  markerComment?: string
 ): Promise<Awaited<ReturnType<typeof applyAllComponents>> | 'stock'> {
   const rollbackJournal = isDryRun ? undefined : createRollbackJournal();
   if (rollbackJournal && operationContext) {
@@ -309,7 +310,8 @@ async function applyNamedComponent(
         customConfig,
         ftlDir,
         isDryRun,
-        rollbackJournal
+        rollbackJournal,
+        markerComment !== undefined ? { markerComment } : {}
       );
       if (isDryRun && actions) {
         result.actions = actions;
@@ -481,7 +483,8 @@ export async function furnaceDeployCommand(
           ftlDir,
           isDryRun,
           ctx,
-          projectRoot
+          projectRoot,
+          forgeConfig.markerComment
         );
 
         if (namedApplyResult === 'stock') {

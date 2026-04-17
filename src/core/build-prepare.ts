@@ -7,7 +7,7 @@
 import { FurnaceError } from '../errors/furnace.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
-import { spinner, warn } from '../utils/logger.js';
+import { info, spinner, warn } from '../utils/logger.js';
 import { isBrandingSetup, setupBranding } from './branding.js';
 import { applyAllComponents } from './furnace-apply.js';
 import {
@@ -129,8 +129,15 @@ export async function prepareBuildEnvironment(
       }
 
       if (furnaceApplied > 0) {
+        const appliedNames = result.applied.map((entry) => entry.name).join(', ');
         furnaceSpinner.stop(
           `Applied ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'}`
+        );
+        // Loud banner: the build operator needs to see that engine/ was
+        // updated before this build, otherwise a silent re-apply is
+        // indistinguishable from a build that shipped stale components.
+        info(
+          `Furnace: source → engine sync wrote ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'} before build (${appliedNames}). engine/ now matches components/.`
         );
       } else {
         furnaceSpinner.stop('Components up to date');

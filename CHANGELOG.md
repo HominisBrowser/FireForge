@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.15.0
+
+### Furnace registration
+
+- `furnace apply` idempotency check is marker-comment-tolerant. Previously the single-line substring match (`content.includes('["tag",')`) missed multi-line entries, and the standalone-line regex anchored on `\s*$`, which did not allow trailing `// <marker>:` comments an operator may have appended to a previously-written entry. A duplicate tag was then inserted on every re-apply, and the second `setElementCreationCallback` invocation threw `NotSupportedError: Operation is not supported` at every window-load. The idempotency check now matches on tag-name column 0 (both single- and multi-line array shapes) and tolerates trailing `//` comments on the line.
+- New optional fireforge.json field `markerComment` (e.g. `"MYBROWSER"`) is appended as a `  // MYBROWSER:` suffix to every line FireForge writes into `customElements.js`. Keeps fork modifications discoverable and re-applies idempotent without hand-tagging after each apply. The field is threaded through `applyCustomComponent` and `furnace deploy`, not just `furnace create`.
+- `addCustomElementRegistration` and its regex fallback both accept the new marker as an optional parameter; the AST idempotency check and the regex-fallback idempotency check share a single helper (`isTagAlreadyRegistered`).
+
+### Furnace `--localized`
+
+- `furnace create --localized` now emits the Mozilla-idiomatic `MozLitElement` l10n pattern: a module-level `window.MozXULElement?.insertFTLIfNeeded("<chrome-uri>")` call and `this.ownerDocument.l10n?.connectRoot(this.shadowRoot)` / `disconnectRoot` in `connectedCallback` / `disconnectedCallback`. Previously the template called `this.insertFTLIfNeeded(...)` directly on a `MozLitElement` instance, which throws `TypeError: this.insertFTLIfNeeded is not a function` at every connect because that method lives on `MozXULElement`, not `MozLitElement`. The `--localized` path was silently non-functional.
+- `furnace apply` now registers the scaffolded `.ftl` in the locale jar.mn (default `toolkit/locales/jar.mn`) so the chrome URI `insertFTLIfNeeded` expects actually resolves at runtime. Previously only the `.ftl` file itself was copied into the FTL tree, with no chrome registration. `furnace remove` and the workspace-delete codepath (`undeployCustomFiles`) drop the jar.mn entry symmetrically.
+- The locale jar.mn write degrades gracefully — a missing target (non-standard fork tree) surfaces a structured step error rather than aborting apply, so a well-formed `.mjs`/`.css` is never blocked by a broken locale path.
+- FTL chrome URIs are now derived from `furnace.json.ftlBasePath` via a pair of helpers (`resolveFtlChromeSubPath`, `resolveFtlLocaleJarMnPath`) so forks that customise the FTL tree get matching `insertFTLIfNeeded` and jar.mn output.
+
+### Furnace validate
+
+- `missing-token-link` now reads `tokenHostDocuments` from furnace.json and scans every configured chrome document for the tokens CSS link. Warning fires only when NONE of them link the tokens CSS; the warning enumerates the documents it actually checked. Previously the check was hardcoded to `browser/base/content/browser.xhtml`, which false-positived on forks that mount components in a different chrome document (e.g. `mybrowser.xhtml`). Defaults to `["browser/base/content/browser.xhtml"]` when omitted — behaviour is unchanged for projects that never set the field.
+- `no-keyboard-handler` no longer warns when `@click` sits on a native interactive element (`<button>`, `<a href>`, `<input>`, `<select>`, `<textarea>`, `<summary>`, `<details>`, or the Firefox `moz-button`/`moz-toggle`/`moz-checkbox`/`moz-radio`/`moz-menulist` widgets). Those elements dispatch `click` on Enter and Space via the platform, so a duplicate `@keydown`/`@keypress` handler would double-fire. The rule still fires for synthetic interactive markup (e.g. `<div @click>`) and for bare `<a>` without an `href` attribute, which are the real keyboard-a11y hazards.
+- `token-prefix-violation` stops flagging component-owned runtime CSS custom properties. Previously every `var(--foo)` that did not match `tokenPrefix` was rejected as a design-token escape, even when the property was a per-frame state channel (`--cam-x`, `--tile-z`) both written and read by the component. Two relaxations ship together: (a) a new optional `runtimeVariables: string[]` field in `furnace.json` explicitly allowlists cross-component runtime channels (e.g. set in JS, read in the child's CSS); (b) variables that are both declared (`--foo: value;`) and consumed (`var(--foo)`) inside the same CSS file are auto-exempted — no config entry required. The same relaxations apply to the patch-stack lint. The violation message now calls out `runtimeVariables` as the third escape hatch alongside `tokenPrefix` and `tokenAllowlist`.
+- `hardcoded-text` narrowed from a bare `>…<` scan to three context-aware probes: text inside Lit `` html`…` `` template literals, string literals assigned via `.textContent = "…"` / `.innerHTML = "…"`, and XUL-attribute values set via `setAttribute("label"|"title"|"tooltiptext", "…")`. Previously the rule also matched JS comparisons (`if (x > 0 && y < 100)`), long diagnostic strings (`console.error("…")`), and identifier literals passed to `querySelector`, producing noise that trained authors to ignore validator warnings. The file-wide `// furnace-ignore: hardcoded-text` escape hatch is preserved.
+
+### Run / test
+
+- `fireforge run`, `fireforge watch`, `fireforge build`, and every other `mach` invocation launched with inherited stdio now forward parent `SIGINT`/`SIGTERM` to the child as `SIGTERM` and wait ~1.5 s before escalating to `SIGKILL`. A second Ctrl-C during the grace window escalates immediately (matches the usual "hit Ctrl-C twice to force-quit" UX). Previously the parent could exit before Gecko's `AsyncShutdown` / `profileBeforeChange` blockers finished flushing in-memory state, losing the last few seconds of edits. The grace window is configurable via a new `shutdownGraceMs` option on `execInherit` / `execInheritCapture`.
+- New `fireforge test --doctor` runs a short marionette handshake preflight before (optionally) invoking `mach test`. Spawns the built browser headless, opens a TCP socket to `127.0.0.1:2828`, waits for the handshake bytes, and reports PASS/FAIL with the tail of stderr on FAIL. When `--doctor` is supplied with no test paths, it exits after the preflight — a sub-minute way to tell "marionette wedged" apart from "test failed to discover" when `mach test` hangs for the full 360 s marionette timeout. When supplied with test paths, a FAIL preflight short-circuits before `mach test` runs.
+- `fireforge test --doctor` is now a cascade of six layered probes (engine-present → mach-available → python-available → profile-creatable → browser-spawns → marionette-handshake) with tight per-layer budgets. Previously the single 30 s socket poll gave the same generic "socket did not respond" diagnostic whether mach was missing, Python was unavailable, `/tmp` was not writable, or the browser binary crashed at startup — so operators had no lead on where to start debugging. Each layer now short-circuits with a `[layer N/6: <name>]`-prefixed detail message so the first broken layer is surfaced immediately, and a crashing browser is caught by a short settle window at layer 5 instead of wasting the full budget waiting for bytes that never come.
+
+### Furnace build
+
+- `fireforge build` already auto-applies Furnace components (via `prepareBuildEnvironment`) before the mach build step, but the behaviour was undocumented and silent — operators who edited `components/custom/` and then ran `fireforge build` could not distinguish "auto-apply wrote files" from "nothing changed". A loud `Furnace: source → engine sync wrote N component(s) before build (...)` banner now fires whenever apply wrote files, naming every component that was synced. The `fireforge build --help` description and help footer now call out that apply runs before the build step.
+
+### Furnace create
+
+- New `furnace create --xpcshell` flag scaffolds an xpcshell test harness alongside (or instead of) the browser-chrome mochitest that `--with-tests` already produces. xpcshell runs headless without a `tabbrowser`, so storage-layer / observer-driven / module-loading code on forks that do not mount the upstream browser chrome (no `openLinkIn` → `URILoadingHelper`) can be covered without the harness complaining about a missing tab strip. Writes `test_<name>_module_loads.js` and an `xpcshell.toml` manifest into `engine/browser/base/content/test/<binary-name>-xpcshell/<component-name>/`. Registration in `XPCSHELL_TESTS_MANIFESTS` is left to the operator — the moz.build that should own the entry depends on where the component lives.
+
+### Internal
+
+- Extracted `furnace-apply-ftl.ts`, `furnace-config-tokens.ts`, and `create-templates.ts` to keep apply / config / scaffolding files under the per-file LOC budget after the new features landed. `parseStringArray` is now exported from `furnace-config.ts` for cross-module reuse.
+- New `src/core/marionette-preflight.ts` owns the `--doctor` probe and its teardown semantics.
+- Test mocks for `furnace-registration.js` now cover the new `addLocaleFtlJarMnEntry` / `removeLocaleFtlJarMnEntry` exports; `config.js` mocks in apply-batch tests now cover `loadConfig` because the apply path reads `markerComment` from fireforge.json.
+- Repo-wide scrub of fork-example mentions (`hominis.xhtml`, `HOMINIS` marker-comment examples, fixture tag names) in favour of a generic `mybrowser` / `MYBROWSER` placeholder. FireForge reads as fork-agnostic in docs and fixtures; the npm identity (`@hominis/fireforge`) is unchanged.
+
 ## 0.14.0
 
 ### Concurrency and atomicity
@@ -218,7 +261,7 @@
 ### General improvements
 
 - getPackageRoot up to this point expected hardcoded `@hominis/fireforge`, was changed to just the package name for potential forks and more flexibility when changing project name.
-- Some test generators were derived from early Hominis Browser fork additions, the references to Hominis have been replaced with generic naming.
+- Some test generators were derived from an early downstream fork; the fork-specific names have been replaced with generic naming so the templates apply to any Firefox fork.
 
 ### Build and Git reliability
 

@@ -130,10 +130,24 @@ export function registerBuild(
 ): void {
   program
     .command('build')
-    .description('Build the browser')
+    .description('Build the browser (auto-applies Furnace components first)')
     .option('--ui', 'Fast UI-only rebuild')
     .option('-j, --jobs <n>', 'Number of parallel jobs', parseJobCount)
     .option('--brand <name>', 'Build specific brand')
+    .addHelpText(
+      'after',
+      [
+        '',
+        'Furnace apply runs automatically before the build step, so edits in',
+        'components/custom/ and components/overrides/ are propagated to the',
+        'engine/ tree every time. The command prints a banner listing the',
+        'components synced during the current invocation.',
+        '',
+        'If you want to preview the engine state without triggering a build,',
+        'run `fireforge furnace apply` directly. For source-change-driven',
+        'rebuild loops during development, use `fireforge watch`.',
+      ].join('\n')
+    )
     .action(
       withErrorHandling(async (options: { ui?: boolean; jobs?: number; brand?: string }) => {
         await buildCommand(getProjectRoot(), pickDefined(options));

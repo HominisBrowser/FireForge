@@ -22,7 +22,8 @@ Workflow:
   import [options]                  Apply patches from the patches directory
   resolve                           Update a broken patch with manual fixes and
                                     continue
-  build [options]                   Build the browser
+  build [options]                   Build the browser (auto-applies Furnace
+                                    components first)
   run                               Launch the built browser
   status [options]                  Show modified files in engine/
   reset [options]                   Reset engine/ to clean state
@@ -86,6 +87,8 @@ Options:
   --no-register             Skip customElements.js registration
   --with-tests              Scaffold Mochitest directory and register in
                             moz.build
+  --xpcshell                Scaffold an xpcshell test harness (for storage-layer
+                            code on forks without tabbrowser)
   --compose <tags>          Record stock tags composed internally (metadata
                             only, comma-separated)
   -h, --help                display help for command

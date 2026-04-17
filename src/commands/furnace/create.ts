@@ -12,7 +12,7 @@ import {
   loadFurnaceConfig,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { tagNameToClassName } from '../../core/furnace-constants.js';
+import { resolveFtlChromeSubPath, tagNameToClassName } from '../../core/furnace-constants.js';
 import {
   type FurnaceOperationContext,
   recordFurnaceRollbackFailure,
@@ -40,6 +40,8 @@ import type { FurnaceConfig } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { cancel, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
+import { generateCssContent, generateFtlContent, generateMjsContent } from './create-templates.js';
+import { scaffoldXpcshellTestFiles } from './create-xpcshell.js';
 
 async function loadAuthoringFurnaceConfig(projectRoot: string): Promise<FurnaceConfig> {
   if (await furnaceConfigExists(projectRoot)) {
@@ -71,75 +73,6 @@ function checkNameConflict(config: FurnaceConfig, name: string): string | undefi
     return `An override component named "${name}" already exists in furnace.json`;
   }
   return undefined;
-}
-
-/**
- * Generates the .mjs file content for a custom component.
- */
-function generateMjsContent(
-  name: string,
-  className: string,
-  description: string,
-  localized: boolean,
-  header: string
-): string {
-  const connectedCallback = localized
-    ? `
-  connectedCallback() {
-    super.connectedCallback();
-    this.insertFTLIfNeeded("${name}.ftl");
-  }
-`
-    : '';
-
-  return `${header}
-
-import { html } from "chrome://global/content/vendor/lit.all.mjs";
-import { MozLitElement } from "chrome://global/content/lit-utils.mjs";
-
-/**
- * ${description || name}
- *
- * @tagname ${name}
- */
-class ${className} extends MozLitElement {
-  static properties = {};
-
-  constructor() {
-    super();
-  }
-${connectedCallback}
-  render() {
-    return html\`
-      <link rel="stylesheet" href="chrome://global/content/elements/${name}.css" />
-      <slot></slot>
-    \`;
-  }
-}
-customElements.define("${name}", ${className});
-`;
-}
-
-/**
- * Generates the .css file content for a custom component.
- */
-function generateCssContent(header: string): string {
-  return `${header}
-
-:host {
-  display: block;
-}
-`;
-}
-
-/**
- * Generates the .ftl file content for a custom component.
- */
-function generateFtlContent(name: string, header: string): string {
-  return `${header}
-
-## Strings for the ${name} component
-`;
 }
 
 /**
@@ -318,6 +251,7 @@ async function writeComponentFiles(
   description: string,
   localized: boolean,
   license: ProjectLicense,
+  ftlChromeSubPath: string | undefined,
   journal?: RollbackJournal
 ): Promise<string[]> {
   await ensureDir(componentDir);
@@ -331,7 +265,8 @@ async function writeComponentFiles(
     className,
     description,
     localized,
-    getLicenseHeader(license, 'js')
+    getLicenseHeader(license, 'js'),
+    ftlChromeSubPath
   );
   await writeText(mjsPath, mjsContent);
 
@@ -372,6 +307,8 @@ async function performCreateMutations(args: {
   paths: { engine: string };
   license: ProjectLicense;
   withTests: boolean;
+  xpcshellTests: boolean;
+  ftlChromeSubPath: string | undefined;
   operationContext?: FurnaceOperationContext;
 }): Promise<{ files: string[]; testFiles: string[] }> {
   // Invariant: the journal MUST be registered with the operation context
@@ -398,6 +335,7 @@ async function performCreateMutations(args: {
       args.description,
       args.localized,
       args.license,
+      args.ftlChromeSubPath,
       journal
     );
 
@@ -425,6 +363,17 @@ async function performCreateMutations(args: {
       );
       testFiles.push(...scafFiles);
     }
+
+    if (args.xpcshellTests) {
+      const xpcshellFiles = await scaffoldXpcshellTestFiles(
+        args.componentName,
+        args.license,
+        args.forgeConfig,
+        args.paths,
+        journal
+      );
+      testFiles.push(...xpcshellFiles);
+    }
   } catch (error: unknown) {
     try {
       await restoreRollbackJournalOrThrow(
@@ -443,6 +392,71 @@ async function performCreateMutations(args: {
   }
 
   return { files, testFiles };
+}
+
+/**
+ * Prompts the operator for a description when the command is interactive and
+ * the operator did not pass `-d`. Returns the resolved description string.
+ */
+async function resolveDescription(
+  isInteractive: boolean,
+  options: FurnaceCreateOptions
+): Promise<string> {
+  let description = options.description ?? '';
+  if (!description && isInteractive) {
+    const descResult = await text({
+      message: 'Description (optional):',
+      placeholder: 'A brief description of the component',
+    });
+
+    if (!isCancel(descResult)) {
+      description = String(descResult);
+    }
+  }
+  return description;
+}
+
+/**
+ * Validates the `--compose` targets against registered components and runs
+ * cycle detection if the new component is introduced into the graph. Throws
+ * on any failure; returns when the graph is clean.
+ */
+function validateComposesTargets(
+  config: FurnaceConfig,
+  componentName: string,
+  composes: string[] | undefined
+): void {
+  if (!composes || composes.length === 0) return;
+
+  const known = new Set([
+    ...config.stock,
+    ...Object.keys(config.overrides),
+    ...Object.keys(config.custom),
+  ]);
+  for (const tag of composes) {
+    if (tag === componentName) {
+      throw new FurnaceError(`Component "${componentName}" cannot compose itself.`);
+    }
+    if (!known.has(tag)) {
+      throw new FurnaceError(
+        `Cannot compose unknown component "${tag}". ` +
+          'The referenced component must be registered as stock, override, or custom.'
+      );
+    }
+  }
+
+  // Check for cycles that would be introduced by adding this component.
+  const tempCustom: FurnaceConfig['custom'] = {
+    ...config.custom,
+    [componentName]: {
+      description: '',
+      targetPath: `toolkit/content/widgets/${componentName}`,
+      register: true,
+      localized: false,
+      composes,
+    },
+  };
+  detectComposesCycles(tempCustom);
 }
 
 /**
@@ -529,17 +543,7 @@ export async function furnaceCreateCommand(
   }
 
   // --- Resolve description ---
-  let description = options.description ?? '';
-  if (!description && isInteractive) {
-    const descResult = await text({
-      message: 'Description (optional):',
-      placeholder: 'A brief description of the component',
-    });
-
-    if (!isCancel(descResult)) {
-      description = String(descResult);
-    }
-  }
+  const description = await resolveDescription(isInteractive, options);
 
   // --- Resolve features ---
   const featureSelection = await resolveCreateFeatures(isInteractive, options);
@@ -549,13 +553,15 @@ export async function furnaceCreateCommand(
   const { localized, register } = featureSelection;
 
   // --with-tests writes files under engine/browser/base/content/test/ and
-  // registers them in moz.build. Guard against a missing engine now rather
-  // than letting scaffoldTestFiles fabricate a partial engine tree with
-  // ensureDir.
+  // registers them in moz.build. --xpcshell is the equivalent for forks
+  // without a tabbrowser (storage-layer code). Guard against a missing
+  // engine now rather than letting the scaffolders fabricate a partial
+  // engine tree with ensureDir.
   const withTests = options.withTests ?? false;
-  if (withTests && !(await pathExists(paths.engine))) {
+  const xpcshellTests = options.xpcshell ?? false;
+  if ((withTests || xpcshellTests) && !(await pathExists(paths.engine))) {
     throw new FurnaceError(
-      'Engine directory not found. Run "fireforge download" first to use --with-tests.',
+      'Engine directory not found. Run "fireforge download" first to use --with-tests or --xpcshell.',
       componentName
     );
   }
@@ -575,43 +581,18 @@ export async function furnaceCreateCommand(
   // --- Validate --compose targets BEFORE any writes so a failed validation
   // does not strand component files behind.
   const composes = options.compose;
-  if (composes && composes.length > 0) {
-    const known = new Set([
-      ...config.stock,
-      ...Object.keys(config.overrides),
-      ...Object.keys(config.custom),
-    ]);
-    for (const tag of composes) {
-      if (tag === componentName) {
-        throw new FurnaceError(`Component "${componentName}" cannot compose itself.`);
-      }
-      if (!known.has(tag)) {
-        throw new FurnaceError(
-          `Cannot compose unknown component "${tag}". ` +
-            'The referenced component must be registered as stock, override, or custom.'
-        );
-      }
-    }
-
-    // Check for cycles that would be introduced by adding this component.
-    const tempCustom: FurnaceConfig['custom'] = {
-      ...config.custom,
-      [componentName]: {
-        description: '',
-        targetPath: `toolkit/content/widgets/${componentName}`,
-        register: true,
-        localized: false,
-        composes,
-      },
-    };
-    detectComposesCycles(tempCustom);
-  }
+  validateComposesTargets(config, componentName, composes);
 
   // All validation is done. Hand off to the transactional mutation helper
   // so any failure restores the workspace and engine to their pre-command
   // state via the shared rollback journal. The mutation runs under the
   // furnace-wide lock and is registered with the global SIGINT/SIGTERM
   // rollback pathway.
+  // Derive the FTL chrome sub-path from the configured ftlBasePath so the
+  // generated `.mjs` calls `insertFTLIfNeeded` at a URI that actually matches
+  // the locale jar.mn entry `furnace apply` will write.
+  const ftlChromeSubPath = resolveFtlChromeSubPath(config.ftlBasePath);
+
   const { files, testFiles } = await runFurnaceMutation(projectRoot, 'create-rollback', (ctx) =>
     performCreateMutations({
       projectRoot,
@@ -628,6 +609,8 @@ export async function furnaceCreateCommand(
       paths,
       license,
       withTests,
+      xpcshellTests,
+      ftlChromeSubPath,
       operationContext: ctx,
     })
   );
@@ -638,9 +621,10 @@ export async function furnaceCreateCommand(
     files.map((f) => `  ${f}`).join('\n');
 
   if (testFiles.length > 0) {
-    noteParts +=
-      `\n\nTest files in engine/browser/base/content/test/${forgeConfig.binaryName}/:\n` +
-      testFiles.map((f) => `  ${f}`).join('\n');
+    const testRoot = xpcshellTests
+      ? `engine/browser/base/content/test/${forgeConfig.binaryName}-xpcshell/${componentName}/`
+      : `engine/browser/base/content/test/${forgeConfig.binaryName}/`;
+    noteParts += `\n\nTest files in ${testRoot}:\n` + testFiles.map((f) => `  ${f}`).join('\n');
   }
 
   noteParts +=

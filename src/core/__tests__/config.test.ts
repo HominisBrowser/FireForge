@@ -199,6 +199,28 @@ describe('validateConfig', () => {
       'Config field "license" must be one of: EUPL-1.2, MPL-2.0, 0BSD, GPL-2.0-or-later'
     );
   });
+
+  it('accepts a well-formed markerComment and rejects malformed values', () => {
+    expect(validateConfig({ ...makeValidConfig(), markerComment: 'MYBROWSER' }).markerComment).toBe(
+      'MYBROWSER'
+    );
+
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: '' })).toThrow(
+      /must not be empty/
+    );
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: ' MYBROWSER ' })).toThrow(
+      /leading or trailing whitespace/
+    );
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: 'two\nlines' })).toThrow(
+      /newlines or "\*\/"/
+    );
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: 'a*/b' })).toThrow(
+      /newlines or "\*\/"/
+    );
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: 42 as never })).toThrow(
+      /must be a string/
+    );
+  });
 });
 
 describe('config persistence', () => {

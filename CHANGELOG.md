@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.15.0
+
+### Furnace registration
+
+- `furnace apply` idempotency check is marker-comment-tolerant. Previously the single-line substring match (`content.includes('["tag",')`) missed multi-line entries, and the standalone-line regex anchored on `\s*$`, which did not allow trailing `// <marker>:` comments an operator may have appended to a previously-written entry. A duplicate tag was then inserted on every re-apply, and the second `setElementCreationCallback` invocation threw `NotSupportedError: Operation is not supported` at every window-load. The idempotency check now matches on tag-name column 0 (both single- and multi-line array shapes) and tolerates trailing `//` comments on the line.
+- New optional fireforge.json field `markerComment` (e.g. `"HOMINIS"`) is appended as a `  // HOMINIS:` suffix to every line FireForge writes into `customElements.js`. Keeps fork modifications discoverable and re-applies idempotent without hand-tagging after each apply. The field is threaded through `applyCustomComponent` and `furnace deploy`, not just `furnace create`.
+- `addCustomElementRegistration` and its regex fallback both accept the new marker as an optional parameter; the AST idempotency check and the regex-fallback idempotency check share a single helper (`isTagAlreadyRegistered`).
+
+### Furnace `--localized`
+
+- `furnace create --localized` now emits the Mozilla-idiomatic `MozLitElement` l10n pattern: a module-level `window.MozXULElement?.insertFTLIfNeeded("<chrome-uri>")` call and `this.ownerDocument.l10n?.connectRoot(this.shadowRoot)` / `disconnectRoot` in `connectedCallback` / `disconnectedCallback`. Previously the template called `this.insertFTLIfNeeded(...)` directly on a `MozLitElement` instance, which throws `TypeError: this.insertFTLIfNeeded is not a function` at every connect because that method lives on `MozXULElement`, not `MozLitElement`. The `--localized` path was silently non-functional.
+- `furnace apply` now registers the scaffolded `.ftl` in the locale jar.mn (default `toolkit/locales/jar.mn`) so the chrome URI `insertFTLIfNeeded` expects actually resolves at runtime. Previously only the `.ftl` file itself was copied into the FTL tree, with no chrome registration. `furnace remove` and the workspace-delete codepath (`undeployCustomFiles`) drop the jar.mn entry symmetrically.
+- The locale jar.mn write degrades gracefully — a missing target (non-standard fork tree) surfaces a structured step error rather than aborting apply, so a well-formed `.mjs`/`.css` is never blocked by a broken locale path.
+- FTL chrome URIs are now derived from `furnace.json.ftlBasePath` via a pair of helpers (`resolveFtlChromeSubPath`, `resolveFtlLocaleJarMnPath`) so forks that customise the FTL tree get matching `insertFTLIfNeeded` and jar.mn output.
+
+### Furnace validate
+
+- `missing-token-link` now reads `tokenHostDocuments` from furnace.json and scans every configured chrome document for the tokens CSS link. Warning fires only when NONE of them link the tokens CSS; the warning enumerates the documents it actually checked. Previously the check was hardcoded to `browser/base/content/browser.xhtml`, which false-positived on forks that mount components in a different chrome document (e.g. `hominis.xhtml`). Defaults to `["browser/base/content/browser.xhtml"]` when omitted — behaviour is unchanged for projects that never set the field.
+- `no-keyboard-handler` no longer warns when `@click` sits on a native interactive element (`<button>`, `<a href>`, `<input>`, `<select>`, `<textarea>`, `<summary>`, `<details>`, or the Firefox `moz-button`/`moz-toggle`/`moz-checkbox`/`moz-radio`/`moz-menulist` widgets). Those elements dispatch `click` on Enter and Space via the platform, so a duplicate `@keydown`/`@keypress` handler would double-fire. The rule still fires for synthetic interactive markup (e.g. `<div @click>`) and for bare `<a>` without an `href` attribute, which are the real keyboard-a11y hazards.
+
+### Run / test
+
+- `fireforge run`, `fireforge watch`, `fireforge build`, and every other `mach` invocation launched with inherited stdio now forward parent `SIGINT`/`SIGTERM` to the child as `SIGTERM` and wait ~1.5 s before escalating to `SIGKILL`. A second Ctrl-C during the grace window escalates immediately (matches the usual "hit Ctrl-C twice to force-quit" UX). Previously the parent could exit before Gecko's `AsyncShutdown` / `profileBeforeChange` blockers finished flushing in-memory state, losing the last few seconds of edits. The grace window is configurable via a new `shutdownGraceMs` option on `execInherit` / `execInheritCapture`.
+- New `fireforge test --doctor` runs a short marionette handshake preflight before (optionally) invoking `mach test`. Spawns the built browser headless, opens a TCP socket to `127.0.0.1:2828`, waits for the handshake bytes, and reports PASS/FAIL with the tail of stderr on FAIL. When `--doctor` is supplied with no test paths, it exits after the preflight — a sub-minute way to tell "marionette wedged" apart from "test failed to discover" when `mach test` hangs for the full 360 s marionette timeout. When supplied with test paths, a FAIL preflight short-circuits before `mach test` runs.
+
+### Internal
+
+- Extracted `furnace-apply-ftl.ts`, `furnace-config-tokens.ts`, and `create-templates.ts` to keep apply / config / scaffolding files under the per-file LOC budget after the new features landed. `parseStringArray` is now exported from `furnace-config.ts` for cross-module reuse.
+- New `src/core/marionette-preflight.ts` owns the `--doctor` probe and its teardown semantics.
+- Test mocks for `furnace-registration.js` now cover the new `addLocaleFtlJarMnEntry` / `removeLocaleFtlJarMnEntry` exports; `config.js` mocks in apply-batch tests now cover `loadConfig` because the apply path reads `markerComment` from fireforge.json.
+
 ## 0.14.0
 
 ### Concurrency and atomicity

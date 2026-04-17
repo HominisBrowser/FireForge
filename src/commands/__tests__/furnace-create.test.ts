@@ -588,6 +588,19 @@ describe('furnaceCreateCommand validation', () => {
 
     const configArg = mockWriteFurnaceConfig.mock.calls[0]?.[1];
     expect(configArg?.custom['moz-test-widget']?.localized).toBe(true);
+
+    // The generated .mjs must use the MozLitElement-compatible l10n pattern:
+    // a module-level `window.MozXULElement?.insertFTLIfNeeded(...)` call and
+    // `connectRoot(this.shadowRoot)` in connectedCallback. The old (broken)
+    // template called `this.insertFTLIfNeeded(...)` on MozLitElement, which
+    // threw TypeError at every connect.
+    const mjsCall = mockWriteText.mock.calls.find((c) => c[0].endsWith('.mjs'));
+    expect(mjsCall).toBeDefined();
+    const mjsContent = mjsCall?.[1] ?? '';
+    expect(mjsContent).toContain('window.MozXULElement?.insertFTLIfNeeded(');
+    expect(mjsContent).toContain('this.ownerDocument.l10n?.connectRoot(this.shadowRoot)');
+    expect(mjsContent).toContain('this.ownerDocument.l10n?.disconnectRoot(this.shadowRoot)');
+    expect(mjsContent).not.toContain('this.insertFTLIfNeeded(');
   });
 
   it('warns but continues when test manifest registration fails', async () => {

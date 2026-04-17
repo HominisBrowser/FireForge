@@ -135,6 +135,45 @@ describe('furnace-config helpers', () => {
     ).toThrow('array must contain only strings');
   });
 
+  it('accepts tokenHostDocuments and validates that entries stay within the engine tree', () => {
+    expect(
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        tokenPrefix: '--mybrowser-',
+        tokenHostDocuments: [
+          'browser/base/content/browser.xhtml',
+          'browser/base/content/hominis.xhtml',
+        ],
+        stock: [],
+        overrides: {},
+        custom: {},
+      }).tokenHostDocuments
+    ).toEqual(['browser/base/content/browser.xhtml', 'browser/base/content/hominis.xhtml']);
+
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        tokenHostDocuments: ['../escape.xhtml'],
+        stock: [],
+        overrides: {},
+        custom: {},
+      })
+    ).toThrow(/must stay within the engine tree/);
+
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        tokenHostDocuments: [''],
+        stock: [],
+        overrides: {},
+        custom: {},
+      })
+    ).toThrow(/non-empty strings/);
+  });
+
   it('rejects stock entries that would escape the stories directory', () => {
     expect(() =>
       validateFurnaceConfig({

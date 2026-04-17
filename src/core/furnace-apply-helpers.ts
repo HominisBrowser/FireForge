@@ -13,6 +13,11 @@ import type {
 import { toError } from '../utils/errors.js';
 import { copyFile, ensureDir, pathExists, readText, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import {
+  applyCustomFtlFile,
+  describeLocaleFtlJarMnRegistration,
+  removeCustomFtlJarMnEntry,
+} from './furnace-apply-ftl.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
 import {
   addCustomElementRegistration,
@@ -193,6 +198,11 @@ export async function undeployCustomFiles(
       await removeFile(enginePath);
       removed.push(relative(engineDir, enginePath));
     }
+
+    // When an `.ftl` is deleted from the workspace, the corresponding locale
+    // jar.mn entry must also be dropped — otherwise the chrome URI points at
+    // a missing file and runtime Fluent resolution breaks silently.
+    await removeCustomFtlJarMnEntry(engineDir, fileName, ftlDir, rollbackJournal);
   }
   return removed;
 }
@@ -411,6 +421,11 @@ async function buildCustomDryRunActions(
         target: join(engineDir, ftlDir, ftlFile),
         description: `Copy ${ftlFile} to ${ftlDir}`,
       });
+
+      const localeAction = describeLocaleFtlJarMnRegistration(name, ftlDir, ftlFile);
+      if (localeAction) {
+        actions.push(localeAction);
+      }
     }
   }
 
@@ -457,6 +472,16 @@ async function buildCustomDryRunActions(
   return { actions, stepErrors };
 }
 
+/** Extra knobs threaded into `applyCustomComponent` from the project config. */
+export interface CustomApplyOptions {
+  /**
+   * Trailing project marker appended to inserted `customElements.js` entries
+   * (e.g. `"HOMINIS"` emits `  // HOMINIS:` on each line). Mirrors the
+   * `markerComment` field in fireforge.json.
+   */
+  markerComment?: string;
+}
+
 /** Applies a custom component into the engine tree and captures registration step errors. */
 export async function applyCustomComponent(
   engineDir: string,
@@ -465,7 +490,8 @@ export async function applyCustomComponent(
   config: CustomComponentConfig,
   ftlDir: string,
   dryRun = false,
-  rollbackJournal?: RollbackJournal
+  rollbackJournal?: RollbackJournal,
+  applyOptions: CustomApplyOptions = {}
 ): Promise<{ affectedPaths: string[]; stepErrors: StepError[]; actions?: DryRunAction[] }> {
   if (!/^[a-z][a-z0-9-]*$/.test(name)) {
     throw new FurnaceError(`Invalid component name "${name}": must match /^[a-z][a-z0-9-]*$/`);
@@ -532,16 +558,15 @@ export async function applyCustomComponent(
   );
 
   if (config.localized) {
-    const ftlFile = `${name}.ftl`;
-    const ftlSrc = join(componentDir, ftlFile);
-    if (await pathExists(ftlSrc)) {
-      const ftlDest = join(engineDir, ftlDir, ftlFile);
-      if (rollbackJournal) {
-        await snapshotFile(rollbackJournal, ftlDest);
-      }
-      await copyFile(ftlSrc, ftlDest);
-      affectedPaths.push(relative(engineDir, ftlDest));
-    }
+    await applyCustomFtlFile(
+      engineDir,
+      name,
+      componentDir,
+      ftlDir,
+      affectedPaths,
+      stepErrors,
+      rollbackJournal
+    );
   }
 
   if (config.register) {
@@ -550,7 +575,11 @@ export async function applyCustomComponent(
       if (rollbackJournal) {
         await snapshotFile(rollbackJournal, join(engineDir, CUSTOM_ELEMENTS_JS));
       }
-      await addCustomElementRegistration(engineDir, name, modulePath);
+      await addCustomElementRegistration(engineDir, name, modulePath, {
+        ...(applyOptions.markerComment !== undefined
+          ? { markerComment: applyOptions.markerComment }
+          : {}),
+      });
       affectedPaths.push(CUSTOM_ELEMENTS_JS);
     } catch (error: unknown) {
       stepErrors.push({

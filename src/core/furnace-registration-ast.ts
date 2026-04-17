@@ -13,6 +13,7 @@ import { FurnaceError } from '../errors/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
+import { escapeRegex } from '../utils/regex.js';
 import {
   type AcornESTreeNode,
   detectIndent,
@@ -22,6 +23,55 @@ import {
 } from './ast-utils.js';
 import { CUSTOM_ELEMENTS_JS } from './furnace-constants.js';
 import { validateRegistrationPlacement, validateTagName } from './furnace-registration-validate.js';
+
+/**
+ * Returns true when `content` already contains a registration for `tagName`.
+ *
+ * Tolerates trailing line comments (e.g. a project marker like `// HOMINIS:`)
+ * that an operator may have appended to entries written by a previous apply.
+ * Without this, a re-apply would insert a duplicate entry, and the second
+ * `setElementCreationCallback` at window-load would throw `NotSupportedError`.
+ *
+ * Matches any of:
+ *   1. `setElementCreationCallback("tag"` / `setElementCreationCallback('tag'`
+ *   2. Single-line array entry: `["tag", "..."]` — column 0 only, comments allowed after
+ *   3. Multi-line array entry: `"tag",` on its own line, optional trailing `//` comment
+ */
+function isTagAlreadyRegistered(content: string, tagName: string): boolean {
+  const escaped = escapeRegex(tagName);
+  if (
+    content.includes(`setElementCreationCallback("${tagName}"`) ||
+    content.includes(`setElementCreationCallback('${tagName}'`)
+  ) {
+    return true;
+  }
+  if (new RegExp(`^\\s*\\[\\s*["']${escaped}["']\\s*,`, 'm').test(content)) {
+    return true;
+  }
+  if (new RegExp(`^\\s*["']${escaped}["']\\s*,\\s*(?:\\/\\/.*)?$`, 'm').test(content)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Options that shape the lines `addCustomElementRegistration` writes into
+ * `customElements.js`. Kept optional so existing call sites keep working.
+ */
+export interface RegistrationWriteOptions {
+  /**
+   * Trailing project marker appended to every inserted line (e.g. `"HOMINIS"`
+   * produces `  // HOMINIS:` at end-of-line). Keeps modifications discoverable
+   * without requiring the operator to hand-tag them post-apply.
+   */
+  markerComment?: string;
+}
+
+/** Validates a markerComment value and returns the formatted suffix (with leading spaces). */
+function formatMarkerSuffix(markerComment: string | undefined): string {
+  if (!markerComment) return '';
+  return `  // ${markerComment}:`;
+}
 
 // Re-export from split modules so existing import sites continue working
 export { removeCustomElementRegistration } from './furnace-registration-remove.js';
@@ -114,19 +164,26 @@ function selectRegistrationTarget(
 function buildRegistrationEntry(
   referenceEntry: ASTEntryInfo | undefined,
   tagName: string,
-  modulePath: string
+  modulePath: string,
+  markerComment?: string
 ): string {
+  const marker = formatMarkerSuffix(markerComment);
   if (!referenceEntry) {
-    return `    ["${tagName}", "${modulePath}"],`;
+    return `    ["${tagName}", "${modulePath}"],${marker}`;
   }
 
   if (referenceEntry.isMultiLine) {
     const indent = referenceEntry.indent;
     const inner = referenceEntry.innerIndent ?? indent + '  ';
-    return `${indent}[\n${inner}"${tagName}",\n${inner}"${modulePath}",\n${indent}],`;
+    return (
+      `${indent}[${marker}\n` +
+      `${inner}"${tagName}",${marker}\n` +
+      `${inner}"${modulePath}",${marker}\n` +
+      `${indent}],${marker}`
+    );
   }
 
-  return `${referenceEntry.indent}["${tagName}", "${modulePath}"],`;
+  return `${referenceEntry.indent}["${tagName}", "${modulePath}"],${marker}`;
 }
 
 /**
@@ -138,7 +195,8 @@ function addRegistrationAST(
   content: string,
   tagName: string,
   modulePath: string,
-  isESModule: boolean
+  isESModule: boolean,
+  markerComment?: string
 ): string {
   validateTagName(tagName);
   const ast = parseScript(content);
@@ -210,7 +268,7 @@ function addRegistrationAST(
   }
 
   // Build new entry string matching detected format
-  const newEntry = buildRegistrationEntry(referenceEntry, tagName, modulePath);
+  const newEntry = buildRegistrationEntry(referenceEntry, tagName, modulePath, markerComment);
 
   const ms = new MagicString(content);
 
@@ -256,7 +314,8 @@ function addRegistrationRegexFallback(
   content: string,
   tagName: string,
   modulePath: string,
-  isESModule: boolean
+  isESModule: boolean,
+  markerComment?: string
 ): string {
   // Find all registration entries: ["tag", "path"],
   const entryPattern = /^(\s*)\["([^"]+)",\s*"[^"]+"\],?\s*$/gm;
@@ -296,7 +355,8 @@ function addRegistrationRegexFallback(
   }
 
   const indent = lastMatch[1] ?? '    ';
-  const newEntry = `${indent}["${tagName}", "${modulePath}"],`;
+  const marker = formatMarkerSuffix(markerComment);
+  const newEntry = `${indent}["${tagName}", "${modulePath}"],${marker}`;
 
   if (insertAfterMatch) {
     // Insert after the last entry that sorts before tagName
@@ -336,7 +396,8 @@ function addRegistrationRegexFallback(
 export async function addCustomElementRegistration(
   engineDir: string,
   tagName: string,
-  modulePath: string
+  modulePath: string,
+  options: RegistrationWriteOptions = {}
 ): Promise<void> {
   const filePath = join(engineDir, CUSTOM_ELEMENTS_JS);
 
@@ -346,16 +407,12 @@ export async function addCustomElementRegistration(
 
   const content = await readText(filePath);
 
-  // Idempotency: already registered (standalone block or array entry).
-  // Check both double-quote and single-quote variants — upstream Firefox
-  // sources may use either style.
-  if (
-    content.includes(`setElementCreationCallback("${tagName}"`) ||
-    content.includes(`setElementCreationCallback('${tagName}'`) ||
-    content.includes(`["${tagName}",`) ||
-    content.includes(`['${tagName}',`) ||
-    new RegExp(`^\\s*["']${tagName}["'],\\s*$`, 'm').test(content)
-  ) {
+  // Idempotency: check column-0 of each array entry rather than a literal
+  // substring match. A previous apply may have written this entry with
+  // trailing marker comments (see `options.markerComment`); matching on the
+  // full line would then miss it and insert a duplicate on re-apply, which
+  // throws NotSupportedError at every window-load.
+  if (isTagAlreadyRegistered(content, tagName)) {
     return;
   }
 
@@ -388,7 +445,13 @@ export async function addCustomElementRegistration(
 
   let nextContent: string;
   try {
-    nextContent = addRegistrationAST(content, tagName, modulePath, isESModule);
+    nextContent = addRegistrationAST(
+      content,
+      tagName,
+      modulePath,
+      isESModule,
+      options.markerComment
+    );
   } catch (error: unknown) {
     if (error instanceof FurnaceError) {
       // AST structural errors (missing DOMContentLoaded block, etc.) — try regex fallback
@@ -397,7 +460,13 @@ export async function addCustomElementRegistration(
           'Falling back to regex-based insertion. Please report this so the AST parser can be updated.'
       );
       try {
-        nextContent = addRegistrationRegexFallback(content, tagName, modulePath, isESModule);
+        nextContent = addRegistrationRegexFallback(
+          content,
+          tagName,
+          modulePath,
+          isESModule,
+          options.markerComment
+        );
         verbose(
           `Regex fallback succeeded for ${tagName}. The registration may be less precise than the AST approach.`
         );
@@ -412,7 +481,13 @@ export async function addCustomElementRegistration(
           'Falling back to regex-based insertion.'
       );
       try {
-        nextContent = addRegistrationRegexFallback(content, tagName, modulePath, isESModule);
+        nextContent = addRegistrationRegexFallback(
+          content,
+          tagName,
+          modulePath,
+          isESModule,
+          options.markerComment
+        );
         verbose(
           `Regex fallback succeeded for ${tagName}. The registration may be less precise than the AST approach.`
         );
@@ -448,13 +523,7 @@ export async function validateCustomElementRegistration(
 
   const content = await readText(filePath);
 
-  if (
-    content.includes(`setElementCreationCallback("${tagName}"`) ||
-    content.includes(`setElementCreationCallback('${tagName}'`) ||
-    content.includes(`["${tagName}",`) ||
-    content.includes(`['${tagName}',`) ||
-    new RegExp(`^\\s*["']${tagName}["'],\\s*$`, 'm').test(content)
-  ) {
+  if (isTagAlreadyRegistered(content, tagName)) {
     return;
   }
 

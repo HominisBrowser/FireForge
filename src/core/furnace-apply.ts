@@ -11,7 +11,7 @@ import type {
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
-import { getProjectPaths } from './config.js';
+import { getProjectPaths, loadConfig } from './config.js';
 import {
   applyCustomComponent,
   applyOverrideComponent,
@@ -304,7 +304,8 @@ async function applyCustomBatch(
   allActions: DryRunAction[],
   newChecksums: Record<string, string>,
   rollbackJournal?: RollbackJournal,
-  componentName?: string
+  componentName?: string,
+  markerComment?: string
 ): Promise<void> {
   const allKnown = new Set([
     ...config.stock,
@@ -422,7 +423,8 @@ async function applyCustomBatch(
         customConfig,
         ftlDir,
         dryRun,
-        rollbackJournal
+        rollbackJournal,
+        markerComment !== undefined ? { markerComment } : {}
       );
       if (dryRun && actions) {
         allActions.push(...actions);
@@ -500,6 +502,9 @@ export async function applyAllComponents(
   const { engine: engineDir } = getProjectPaths(root);
   const furnacePaths = getFurnacePaths(root);
   const ftlDir = resolveFtlDir(config.ftlBasePath);
+  const markerComment = await loadConfig(root)
+    .then((forgeConfig) => forgeConfig.markerComment)
+    .catch(() => undefined);
 
   if (!(await pathExists(engineDir))) {
     throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
@@ -557,7 +562,8 @@ export async function applyAllComponents(
     allActions,
     newChecksums,
     rollbackJournal,
-    componentName
+    componentName,
+    markerComment
   );
 
   // Check for any partial failures (step errors on applied components).

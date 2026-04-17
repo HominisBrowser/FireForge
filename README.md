@@ -368,9 +368,28 @@ fireforge token --name "--my-color" --value "light-dark(#fff, #000)"
   "patchLint": {
     "checkJs": true,
     "rawColorAllowlist": ["hominis-tokens.css"]
-  }
+  },
+  "markerComment": "MYBROWSER"
 }
 ```
+
+**`markerComment`** (optional). Appended as a `  // <marker>:` suffix to every line FireForge writes into upstream Firefox source files (starting with `customElements.js`). Keeps fork modifications discoverable and makes re-apply idempotent without hand-tagging entries after each `furnace apply`. Reject list: empty strings, leading/trailing whitespace, newlines, `*/` (would close an enclosing block comment), control characters.
+
+**`furnace.json.tokenHostDocuments`** (optional). List of chrome XHTML documents the `missing-token-link` validator scans for the tokens CSS link. Forks with a second chrome host (e.g. `hominis.xhtml` alongside `browser.xhtml`) should list every document that may own the link — the rule fires only when NONE of them link the tokens CSS. Defaults to `["browser/base/content/browser.xhtml"]` when omitted.
+
+### `furnace create --localized` for `MozLitElement`
+
+`fireforge furnace create <tag> --localized` scaffolds a Fluent-ready component. The generated `.mjs` uses the Mozilla-idiomatic `MozLitElement` pattern: a module-level `window.MozXULElement?.insertFTLIfNeeded("<chrome-uri>")` plus `this.ownerDocument.l10n?.connectRoot(this.shadowRoot)` / `disconnectRoot` in `connectedCallback` / `disconnectedCallback`. The chrome URI derives from `furnace.json.ftlBasePath` (default `toolkit/locales/en-US/toolkit/global` → `toolkit/global/<tag>.ftl`). `furnace apply` registers the `.ftl` in the matching locale jar.mn (default `toolkit/locales/jar.mn`) so the chrome URI resolves at runtime. If the locale jar.mn is missing in your fork (non-standard tree), apply surfaces a structured step error instead of aborting — the `.mjs`/`.css` still ship.
+
+### `fireforge test --doctor`
+
+```bash
+# Sub-minute marionette handshake probe; bails out of mach test on FAIL
+fireforge test --doctor
+fireforge test --doctor browser/base/content/test/foo/browser_bar.js
+```
+
+Spawns the built browser headless, waits for a marionette handshake on `127.0.0.1:2828`, and reports PASS/FAIL with the tail of the browser's stderr on FAIL. Distinguishes "marionette wedged" (socket silent) from "mach test discovery failed" — both otherwise surface as a silent 360-second hang followed by `Passed: 0, Failed: 0`. Useful as a prefix on routine `fireforge test` invocations when marionette has been flaky.
 
 ## Roadmap
 

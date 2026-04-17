@@ -70,6 +70,14 @@ export interface FurnaceConfig {
   /** Custom properties allowed even though they don't match tokenPrefix (e.g. ["--background-color-box"]) */
   tokenAllowlist?: string[];
   /**
+   * Chrome documents scanned by the `missing-token-link` validator to confirm
+   * the tokens CSS file is `<link>`ed. Forks with multiple chrome host
+   * documents (e.g. `hominis.xhtml` beside the stock `browser.xhtml`) should
+   * list every document that may own the link. When omitted, defaults to
+   * `['browser/base/content/browser.xhtml']` — the upstream Firefox path.
+   */
+  tokenHostDocuments?: string[];
+  /**
    * Override the default Fluent (.ftl) base path within the engine.
    * Defaults to `toolkit/locales/en-US/toolkit/global` when not set.
    */

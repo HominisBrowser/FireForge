@@ -162,10 +162,26 @@ describe('validateAccessibility', () => {
     expect(roleIssues[0]?.severity).toBe('warning');
   });
 
-  it('warns when @click is used without a keyboard handler', async () => {
+  it('warns when @click on synthetic interactive markup lacks a keyboard handler', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`
       class MyComponent extends MozLitElement {
+        render() {
+          return html\`<div role="button" tabindex="0" @click=\${() => doSomething()}>Open</div>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(true);
+  });
+
+  it('does not warn when @click sits on a native interactive element', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        static shadowRootOptions = { mode: 'open', delegatesFocus: true };
+
         render() {
           return html\`<button @click=\${() => doSomething()}>Open</button>\`;
         }
@@ -173,7 +189,53 @@ describe('validateAccessibility', () => {
     `);
 
     const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(false);
+  });
+
+  it('does not warn when @click sits on an anchor with href', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        static shadowRootOptions = { mode: 'open', delegatesFocus: true };
+
+        render() {
+          return html\`<a href="#next" @click=\${() => doSomething()}>Next</a>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(false);
+  });
+
+  it('warns when @click sits on a bare anchor without href', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<a role="button" @click=\${() => doSomething()}>Next</a>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
     expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(true);
+  });
+
+  it('does not warn when @click sits on a moz-button', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        static shadowRootOptions = { mode: 'open', delegatesFocus: true };
+
+        render() {
+          return html\`<moz-button @click=\${() => doSomething()}>Open</moz-button>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(false);
   });
 
   it('does not warn when click handlers are paired with keyboard handlers and delegatesFocus', async () => {
@@ -694,6 +756,55 @@ describe('validateTokenLink', () => {
 
     const issues = await validateTokenLink('/components/my-comp', 'my-comp', '/project');
     expect(issues).toHaveLength(0);
+  });
+
+  it('accepts multiple chrome host documents — passes when ANY links the tokens CSS', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockImplementation((path: string) => {
+      if (path.includes('.css')) {
+        return Promise.resolve(':host { color: var(--testbrowser-canvas-fg); }');
+      }
+      if (path.endsWith('browser.xhtml')) {
+        return Promise.resolve('<window><html:body></html:body></window>');
+      }
+      if (path.endsWith('hominis.xhtml')) {
+        return Promise.resolve(
+          '<window><link rel="stylesheet" href="testbrowser-tokens.css" /><html:body></html:body></window>'
+        );
+      }
+      return Promise.resolve('');
+    });
+
+    const issues = await validateTokenLink(
+      '/components/my-comp',
+      'my-comp',
+      '/project',
+      '--testbrowser-',
+      ['browser/base/content/browser.xhtml', 'browser/base/content/hominis.xhtml']
+    );
+    expect(issues).toHaveLength(0);
+  });
+
+  it('warns when none of the configured chrome host documents link the tokens CSS', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockImplementation((path: string) => {
+      if (path.includes('.css')) {
+        return Promise.resolve(':host { color: var(--testbrowser-canvas-fg); }');
+      }
+      return Promise.resolve('<window><html:body></html:body></window>');
+    });
+
+    const issues = await validateTokenLink(
+      '/components/my-comp',
+      'my-comp',
+      '/project',
+      '--testbrowser-',
+      ['browser/base/content/browser.xhtml', 'browser/base/content/hominis.xhtml']
+    );
+    const tokenIssues = issues.filter((i) => i.check === 'missing-token-link');
+    expect(tokenIssues).toHaveLength(1);
+    expect(tokenIssues[0]?.message).toContain('browser.xhtml');
+    expect(tokenIssues[0]?.message).toContain('hominis.xhtml');
   });
 });
 

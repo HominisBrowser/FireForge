@@ -192,6 +192,12 @@ export interface TestOptions {
   headless?: boolean;
   /** Run incremental UI build before testing */
   build?: boolean;
+  /**
+   * Run a marionette preflight before tests. Reports PASS/FAIL in under a
+   * minute. When test paths are supplied, a FAIL aborts before mach test is
+   * spawned. When no paths are supplied, runs the preflight only and exits.
+   */
+  doctor?: boolean;
 }
 
 /**

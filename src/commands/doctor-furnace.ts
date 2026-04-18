@@ -424,12 +424,20 @@ const furnaceEnginePathsCheck: DoctorCheckDefinition = {
   dependsOn: ['Furnace configuration'],
   skipIf: (ctx) => !ctx.furnaceConfigExists || !ctx.furnaceConfig || !ctx.engineExists,
   run: async (ctx): Promise<CheckResult> => {
+    // Forks that replace browser.xhtml with a custom top-level chrome
+    // document enumerate their chrome docs in furnace.json.tokenHostDocuments.
+    // Reuse the same field for the engine-path probe so those forks stop
+    // seeing a permanent "browser.xhtml missing" warning.
+    const hostDocs =
+      ctx.furnaceConfig?.tokenHostDocuments && ctx.furnaceConfig.tokenHostDocuments.length > 0
+        ? ctx.furnaceConfig.tokenHostDocuments
+        : ['browser/base/content/browser.xhtml'];
     const expectedPaths: readonly string[] = [
       CUSTOM_ELEMENTS_JS,
       JAR_MN,
       'toolkit/content/widgets',
       resolveFtlDir(ctx.furnaceConfig?.ftlBasePath),
-      'browser/base/content/browser.xhtml',
+      ...hostDocs,
     ];
     const missing: string[] = [];
     for (const relative of expectedPaths) {

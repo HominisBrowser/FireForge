@@ -175,7 +175,7 @@ export function collectNewFileCreatorsByPath(ctx: PatchQueueContext): Map<string
 /**
  * Cross-patch lint rule: the same path is newly created (`--- /dev/null →
  * +++ b/path`) by more than one patch. This is the failure mode that
- * motivated the rule — Hominis landed three patches each trying to create
+ * motivated the rule — a fork landed three patches each trying to create
  * the same file, and the error surfaced only when import rolled back
  * mid-apply.
  *

@@ -192,6 +192,12 @@ export interface TestOptions {
   headless?: boolean;
   /** Run incremental UI build before testing */
   build?: boolean;
+  /**
+   * Run a marionette preflight before tests. Reports PASS/FAIL in under a
+   * minute. When test paths are supplied, a FAIL aborts before mach test is
+   * spawned. When no paths are supplied, runs the preflight only and exits.
+   */
+  doctor?: boolean;
 }
 
 /**
@@ -288,6 +294,31 @@ export interface FurnaceCreateOptions {
   register?: boolean;
   /** Scaffold Mochitest directory and register in moz.build */
   withTests?: boolean;
+  /**
+   * Scaffold an xpcshell test harness (headless, no tabbrowser) instead of
+   * browser-chrome. Required for forks without a `tabbrowser` (storage-only
+   * code, observer-driven modules). Implies `withTests` when set. Writes an
+   * `xpcshell.toml` + `test_<name>.js` under
+   * `engine/browser/base/content/test/<binary-name>-xpcshell/` and leaves
+   * moz.build registration to the operator (add the directory to
+   * `XPCSHELL_TESTS_MANIFESTS`).
+   */
+  xpcshell?: boolean;
+  /**
+   * Test harness style to scaffold when `--with-tests` is set.
+   *
+   * - `mochikit` (default when `--with-tests` is set alone) — a MochiKit
+   *   test at `engine/toolkit/content/tests/widgets/test_<tag>.html` that
+   *   loads the component module directly via `chrome://global/` and
+   *   asserts against `customElements`. Runs today on forks whose
+   *   top-level chrome document (e.g. `mybrowser.xhtml`) lacks a
+   *   `tabbrowser`, because it doesn't go through `URILoadingHelper`.
+   * - `browser-chrome` — today's browser-mochitest scaffold, requires a
+   *   working tabbrowser. Use for components that talk to the browser
+   *   window or open URLs.
+   * - `xpcshell` — equivalent to setting `--xpcshell`; headless, storage-only.
+   */
+  testStyle?: 'mochikit' | 'browser-chrome' | 'xpcshell';
   /** Stock component tag names composed internally by this component */
   compose?: string[];
 }
@@ -302,6 +333,13 @@ export interface WireOptions {
   dryRun?: boolean;
   after?: string;
   subscriptDir?: string;
+  /**
+   * Chrome document the DOM fragment's `#include` is inserted into, relative
+   * to engine/. Defaults to the first entry of
+   * `furnace.json.tokenHostDocuments` when set, otherwise
+   * `browser/base/content/browser.xhtml`.
+   */
+  target?: string;
 }
 
 /**

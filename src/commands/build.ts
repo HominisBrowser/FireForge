@@ -2,6 +2,8 @@
 import { Command, InvalidArgumentError as CommanderInvalidArgumentError } from 'commander';
 
 import { validateBrandOverride } from '../core/brand-validation.js';
+import { auditBuildArtifacts } from '../core/build-audit.js';
+import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { build, buildArtifactMismatchMessage, buildUI, hasBuildArtifacts } from '../core/mach.js';
@@ -9,6 +11,7 @@ import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { BuildOptions } from '../types/commands/index.js';
+import { toError } from '../utils/errors.js';
 import { checkDiskSpace, pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
@@ -78,8 +81,14 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
     info(`Brand: ${options.brand}`);
   }
 
-  // Shared pre-flight: branding, Furnace, mozconfig
-  await prepareBuildEnvironment(projectRoot, paths, config);
+  // Read the previous build baseline BEFORE prepareBuildEnvironment so the
+  // auto-configure step there can detect moz.build-family changes since the
+  // last successful build. The post-build audit below reuses the same
+  // baseline to diff engine changes against dist artifacts.
+  const previousBaseline = await readBuildBaseline(projectRoot);
+
+  // Shared pre-flight: branding, Furnace, mozconfig, auto-configure
+  await prepareBuildEnvironment(projectRoot, paths, config, { previousBaseline });
 
   const jobs = resolveJobCount(options, config.build?.jobs);
 
@@ -120,6 +129,25 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
     );
   }
 
+  // Warn-only post-build audit: surfaces silent packaging drops (files
+  // edited in engine/ but never registered for packaging) against the
+  // previous-build baseline. Never fails the build; the worst case is a
+  // warning an operator chooses to investigate.
+  try {
+    await auditBuildArtifacts(projectRoot, paths.engine, previousBaseline);
+  } catch (auditError: unknown) {
+    verbose(`Audit skipped: ${toError(auditError).message}`);
+  }
+
+  // Record a fresh baseline only on clean success so the next run audits
+  // against this build's HEAD. A failed build keeps the prior baseline so
+  // the next attempt still catches long-standing packaging drops.
+  try {
+    await writeBuildBaseline(projectRoot, paths.engine, config.binaryName);
+  } catch (baselineError: unknown) {
+    verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
+  }
+
   outro(`Build completed in ${timeStr}!`);
 }
 
@@ -130,10 +158,24 @@ export function registerBuild(
 ): void {
   program
     .command('build')
-    .description('Build the browser')
+    .description('Build the browser (auto-applies Furnace components first)')
     .option('--ui', 'Fast UI-only rebuild')
     .option('-j, --jobs <n>', 'Number of parallel jobs', parseJobCount)
     .option('--brand <name>', 'Build specific brand')
+    .addHelpText(
+      'after',
+      [
+        '',
+        'Furnace apply runs automatically before the build step, so edits in',
+        'components/custom/ and components/overrides/ are propagated to the',
+        'engine/ tree every time. The command prints a banner listing the',
+        'components synced during the current invocation.',
+        '',
+        'If you want to preview the engine state without triggering a build,',
+        'run `fireforge furnace apply` directly. For source-change-driven',
+        'rebuild loops during development, use `fireforge watch`.',
+      ].join('\n')
+    )
     .action(
       withErrorHandling(async (options: { ui?: boolean; jobs?: number; brand?: string }) => {
         await buildCommand(getProjectRoot(), pickDefined(options));

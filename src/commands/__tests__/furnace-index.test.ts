@@ -10,6 +10,10 @@ vi.mock('../furnace/create.js', () => ({
   furnaceCreateCommand: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../furnace/chrome-doc.js', () => ({
+  furnaceChromeDocCreateCommand: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../furnace/deploy.js', () => ({
   furnaceDeployCommand: vi.fn(() => Promise.resolve()),
 }));
@@ -64,6 +68,7 @@ vi.mock('../furnace/validate.js', () => ({
 }));
 
 import { furnaceApplyCommand } from '../furnace/apply.js';
+import { furnaceChromeDocCreateCommand } from '../furnace/chrome-doc.js';
 import { furnaceCreateCommand } from '../furnace/create.js';
 import { furnaceDeployCommand } from '../furnace/deploy.js';
 import { furnaceDiffCommand } from '../furnace/diff.js';
@@ -111,6 +116,7 @@ describe('registerFurnace', () => {
       'scan',
       'init',
       'create',
+      'chrome-doc',
       'override',
       'list',
       'remove',
@@ -185,6 +191,59 @@ describe('registerFurnace', () => {
       withTests: true,
       compose: ['moz-button', 'moz-toolbarbutton'],
     });
+  });
+
+  it('passes --test-style through to the create command', async () => {
+    await runFurnaceCommand(
+      'create',
+      'moz-widget',
+      '--with-tests',
+      '--test-style',
+      'browser-chrome'
+    );
+
+    expect(furnaceCreateCommand).toHaveBeenCalledWith(
+      '/project',
+      'moz-widget',
+      expect.objectContaining({ withTests: true, testStyle: 'browser-chrome' })
+    );
+  });
+
+  it('rejects invalid --test-style values', async () => {
+    const program = createProgram();
+    program.exitOverride();
+    await expect(
+      program.parseAsync([
+        'node',
+        'fireforge',
+        'furnace',
+        'create',
+        'moz-widget',
+        '--with-tests',
+        '--test-style',
+        'not-a-style',
+      ])
+    ).rejects.toThrow();
+  });
+
+  it('routes "furnace chrome-doc create" to the chrome-doc scaffolder', async () => {
+    await runFurnaceCommand('chrome-doc', 'create', 'mybrowser');
+
+    expect(furnaceChromeDocCreateCommand).toHaveBeenCalledWith(
+      '/project',
+      'mybrowser',
+      expect.any(Object)
+    );
+  });
+
+  it('passes --no-titlebar to the chrome-doc scaffolder', async () => {
+    await runFurnaceCommand('chrome-doc', 'create', 'overlay', '--no-titlebar');
+
+    expect(furnaceChromeDocCreateCommand).toHaveBeenCalledWith(
+      '/project',
+      'overlay',
+      expect.objectContaining({ titlebar: false })
+    );
   });
 
   it('routes override with typed options', async () => {

@@ -47,6 +47,11 @@ vi.mock('../../core/patch-lint.js', () => ({
   lintPatchQueue: vi.fn(() => []),
 }));
 
+vi.mock('../../core/patch-lint-diff-tag.js', () => ({
+  collectDiffFilePaths: vi.fn(() => Promise.resolve(new Set<string>())),
+  tagLintIssues: vi.fn(),
+}));
+
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
@@ -70,6 +75,7 @@ import {
   getUntrackedFilesInDir,
 } from '../../core/git-status.js';
 import { lintExportedPatch } from '../../core/patch-lint.js';
+import { collectDiffFilePaths, tagLintIssues } from '../../core/patch-lint-diff-tag.js';
 import { GeneralError } from '../../errors/base.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
@@ -208,5 +214,135 @@ describe('lintCommand — branch coverage', () => {
     vi.mocked(pathExists).mockResolvedValue(false);
 
     await expect(lintCommand('/project', [])).rejects.toThrow('Firefox source not found');
+  });
+
+  describe('--only-introduced', () => {
+    it('rejects --only-introduced without --since up-front', async () => {
+      await expect(lintCommand('/project', [], { onlyIntroduced: true })).rejects.toThrow(
+        /requires --since/
+      );
+      // Must abort before any git probe runs so a misconfigured CI exits
+      // with a clear message rather than silently treating every error as
+      // cumulative.
+      expect(lintExportedPatch).not.toHaveBeenCalled();
+    });
+
+    it('passes lint when cumulative errors exist but no issues are tagged introduced', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'raw-color',
+          file: 'unrelated.css',
+          message: 'raw color value',
+          tag: 'cumulative',
+        },
+      ]);
+      // tagLintIssues is normally what stamps the tag — mock it to be a
+      // no-op so the resolved value above flows through unchanged.
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set());
+
+      // With --only-introduced set and no issues tagged introduced, exit
+      // code should be clean.
+      await expect(
+        lintCommand('/project', [], { since: 'main', onlyIntroduced: true })
+      ).resolves.toBeUndefined();
+      expect(vi.mocked(outro)).toHaveBeenCalledWith('Lint passed with warnings');
+    });
+
+    it('fails lint when an introduced error exists, even if cumulative ones also exist', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'license-header',
+          file: 'old.ts',
+          message: 'missing header',
+          tag: 'cumulative',
+        },
+        {
+          severity: 'error',
+          check: 'raw-color',
+          file: 'new.ts',
+          message: 'raw color',
+          tag: 'introduced',
+        },
+      ]);
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set(['new.ts']));
+
+      await expect(
+        lintCommand('/project', [], { since: 'main', onlyIntroduced: true })
+      ).rejects.toThrow(/introduced error/);
+    });
+
+    it('still fails lint when an introduced error is the only tagged error', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'raw-color',
+          file: 'new.ts',
+          message: 'raw color',
+          tag: 'introduced',
+        },
+      ]);
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set(['new.ts']));
+
+      await expect(
+        lintCommand('/project', [], { since: 'main', onlyIntroduced: true })
+      ).rejects.toThrow(/introduced error/);
+    });
+
+    it('reports cumulative errors as suppressed in the failure message when introduced errors trigger the failure', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'a',
+          file: 'x.ts',
+          message: 'm',
+          tag: 'cumulative',
+        },
+        {
+          severity: 'error',
+          check: 'b',
+          file: 'y.ts',
+          message: 'n',
+          tag: 'cumulative',
+        },
+        {
+          severity: 'error',
+          check: 'c',
+          file: 'z.ts',
+          message: 'o',
+          tag: 'introduced',
+        },
+      ]);
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set(['z.ts']));
+
+      await expect(
+        lintCommand('/project', [], { since: 'main', onlyIntroduced: true })
+      ).rejects.toThrow(/cumulative error\(s\) suppressed by --only-introduced/);
+    });
+
+    it('keeps the classic exit-code semantics when --only-introduced is not set', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'raw-color',
+          file: 'unrelated.css',
+          message: 'raw color',
+          tag: 'cumulative',
+        },
+      ]);
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set());
+
+      // Without --only-introduced the cumulative error still fails lint so
+      // operators keep the pre-flag behaviour unchanged.
+      await expect(lintCommand('/project', [], { since: 'main' })).rejects.toThrow(
+        /Patch lint found 1 error/
+      );
+    });
   });
 });

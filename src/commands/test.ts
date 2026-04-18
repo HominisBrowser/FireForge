@@ -11,12 +11,14 @@ import {
   hasBuildArtifacts,
   testWithOutput,
 } from '../core/mach.js';
+import { reportMarionettePreflight, runMarionettePreflight } from '../core/marionette-preflight.js';
+import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, spinner } from '../utils/logger.js';
+import { info, intro, spinner, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 
 /**
@@ -161,6 +163,40 @@ export async function testCommand(
     }
     s.stop('Build complete');
     info('');
+  } else {
+    // Stale-build preflight — when --build was NOT requested, detect
+    // packageable engine edits since the last successful `fireforge build`
+    // and warn UP-FRONT. Without this, edits to chrome / packaged resources
+    // surface only as a cryptic `NS_ERROR_FILE_NOT_FOUND` inside xpcshell
+    // after mach test has already launched (see motivating case in
+    // `core/test-stale-check.ts`). The check is warn-only so a fork that
+    // rebuilt out-of-band (no FireForge-recorded baseline update) is not
+    // blocked from running tests.
+    const stale = await checkStaleBuildForTest(projectRoot, paths.engine);
+    if (stale.stale) {
+      warn(formatStaleBuildWarning(stale));
+    }
+  }
+
+  // `--doctor` runs a short marionette handshake probe. When test paths are
+  // supplied the probe gates the mach test invocation (a FAIL bails out). When
+  // no paths are supplied this is the only step — it's the fastest way to tell
+  // marionette-wedged apart from test-discovery-failure.
+  if (options.doctor) {
+    info('Running marionette preflight...');
+    const preflight = await runMarionettePreflight(paths.engine);
+    reportMarionettePreflight(preflight);
+    if (testPaths.length === 0) {
+      if (!preflight.ok) {
+        throw new GeneralError('Marionette preflight reported FAIL — see output above.');
+      }
+      return;
+    }
+    if (!preflight.ok) {
+      throw new GeneralError(
+        'Marionette preflight reported FAIL — see output above. Aborting before mach test runs.'
+      );
+    }
   }
 
   // Normalize test paths (strip engine/ prefix if present)
@@ -207,9 +243,16 @@ export function registerTest(
     .description('Run tests via mach test')
     .option('--headless', 'Run tests in headless mode')
     .option('--build', 'Run incremental UI build before testing')
+    .option(
+      '--doctor',
+      'Run a marionette handshake preflight before tests (exit 1 on FAIL). With no paths, runs the preflight only.'
+    )
     .action(
       withErrorHandling(
-        async (paths: string[], options: { headless?: boolean; build?: boolean }) => {
+        async (
+          paths: string[],
+          options: { headless?: boolean; build?: boolean; doctor?: boolean }
+        ) => {
           await testCommand(getProjectRoot(), paths, pickDefined(options));
         }
       )

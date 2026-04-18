@@ -147,6 +147,130 @@ export async function addJarMnEntries(
 }
 
 /**
+ * Adds a locale jar.mn entry mapping `<chromeSubPath>/<tagName>.ftl` to the
+ * on-disk `.ftl` that `furnace apply` just copied under the FTL tree. Without
+ * this entry the chrome URI passed to `window.MozXULElement.insertFTLIfNeeded`
+ * does not resolve at runtime, so the generated `--localized` component
+ * silently ships broken l10n.
+ *
+ * Degrades gracefully — if the locale jar.mn (e.g. `toolkit/locales/jar.mn`)
+ * does not exist, returns 0 rather than throwing, so a custom fork without a
+ * standard locales package can still apply a localized component.
+ *
+ * The written entry mirrors the Mozilla convention for toolkit widgets:
+ *
+ *   locale/@AB_CD@/<chromeSubPath>/<tagName>.ftl (%<chromeSubPath>/<tagName>.ftl)
+ *
+ * @param engineDir - Path to the Firefox engine source root
+ * @param jarMnRelPath - Engine-relative path to the locale jar.mn
+ * @param tagName - Custom element tag name (base of the `.ftl` file)
+ * @param chromeSubPath - Chrome sub-path (e.g. `toolkit/global`)
+ * @returns Number of entries inserted (0 when already present, or jar.mn missing)
+ */
+export async function addLocaleFtlJarMnEntry(
+  engineDir: string,
+  jarMnRelPath: string,
+  tagName: string,
+  chromeSubPath: string
+): Promise<number> {
+  const filePath = join(engineDir, jarMnRelPath);
+
+  if (!(await pathExists(filePath))) {
+    return 0;
+  }
+
+  const content = await readText(filePath);
+  const lines = content.split('\n');
+
+  const ftlFile = `${tagName}.ftl`;
+  const escapedTag = escapeForRegex(tagName);
+  const escapedChrome = escapeForRegex(chromeSubPath);
+  const presencePattern = new RegExp(
+    `locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapedChrome}\\/${escapedTag}\\.ftl`,
+    'm'
+  );
+  if (presencePattern.test(content)) {
+    return 0;
+  }
+
+  const indent = detectLocaleJarMnIndent(lines, chromeSubPath);
+  const newEntry = `${indent}locale/@AB_CD@/${chromeSubPath}/${ftlFile} (%${chromeSubPath}/${ftlFile})`;
+
+  const sectionPattern = new RegExp(
+    `^(\\s+)locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapedChrome}\\/([^.\\s]+)\\.ftl`
+  );
+  let insertIndex = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === undefined) continue;
+    const match = sectionPattern.exec(line);
+    if (match) {
+      const existingTag = match[2] ?? '';
+      if (existingTag > tagName) {
+        insertIndex = i;
+        break;
+      }
+      insertIndex = i + 1;
+    }
+  }
+
+  if (insertIndex === -1) {
+    // No existing entries under this chrome sub-path. Fall back to end-of-file
+    // placement so the operator can reorder manually if desired.
+    insertIndex = lines.length;
+  }
+
+  lines.splice(insertIndex, 0, newEntry);
+  await writeText(filePath, lines.join('\n'));
+  return 1;
+}
+
+/** Detects locale jar.mn indentation by sampling an existing matching entry. */
+function detectLocaleJarMnIndent(lines: string[], chromeSubPath: string): string {
+  const escapedChrome = escapeForRegex(chromeSubPath);
+  const pattern = new RegExp(`^(\\s+)locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapedChrome}\\/`);
+  for (const line of lines) {
+    const match = pattern.exec(line);
+    if (match?.[1]) return match[1];
+  }
+  // Fall back to detecting any existing `locale/...` indent before giving up.
+  for (const line of lines) {
+    const match = /^(\s+)locale\//.exec(line);
+    if (match?.[1]) return match[1];
+  }
+  return '  ';
+}
+
+/**
+ * Removes a locale jar.mn entry previously written by `addLocaleFtlJarMnEntry`.
+ * Idempotent — if the entry is absent or the file is missing, nothing happens.
+ */
+export async function removeLocaleFtlJarMnEntry(
+  engineDir: string,
+  jarMnRelPath: string,
+  tagName: string,
+  chromeSubPath: string
+): Promise<void> {
+  const filePath = join(engineDir, jarMnRelPath);
+
+  if (!(await pathExists(filePath))) {
+    return;
+  }
+
+  const content = await readText(filePath);
+  const lines = content.split('\n');
+  const pattern = new RegExp(
+    `locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapeForRegex(chromeSubPath)}\\/${escapeForRegex(tagName)}\\.ftl`
+  );
+
+  const filtered = lines.filter((line) => !pattern.test(line));
+  if (filtered.length === lines.length) return;
+
+  await writeText(filePath, filtered.join('\n'));
+}
+
+/**
  * Removes all jar.mn entries for a given tag name.
  *
  * This operation is idempotent — if no entries exist or the file is missing,

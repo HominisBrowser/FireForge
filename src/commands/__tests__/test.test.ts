@@ -31,7 +31,7 @@ vi.mock('../../core/mach.js', () => ({
 }));
 
 vi.mock('../../core/build-prepare.js', () => ({
-  prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0 })),
+  prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0, reconfigured: false })),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -41,10 +41,23 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   info: vi.fn(),
+  warn: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
     error: vi.fn(),
   })),
+}));
+
+vi.mock('../../core/marionette-preflight.js', () => ({
+  runMarionettePreflight: vi.fn(),
+  reportMarionettePreflight: vi.fn(),
+}));
+
+vi.mock('../../core/test-stale-check.js', () => ({
+  checkStaleBuildForTest: vi.fn(() =>
+    Promise.resolve({ stale: false, changedPaths: [], truncated: 0, baseline: undefined })
+  ),
+  formatStaleBuildWarning: vi.fn(() => 'stale warning'),
 }));
 
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
@@ -54,8 +67,14 @@ import {
   hasBuildArtifacts,
   testWithOutput,
 } from '../../core/mach.js';
+import {
+  reportMarionettePreflight,
+  runMarionettePreflight,
+} from '../../core/marionette-preflight.js';
+import { checkStaleBuildForTest, formatStaleBuildWarning } from '../../core/test-stale-check.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { pathExists } from '../../utils/fs.js';
+import { warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 
 describe('testCommand', () => {
@@ -234,5 +253,105 @@ describe('testCommand', () => {
       ['browser/components/tests/unit/test_distribution.js'],
       []
     );
+  });
+
+  it('runs the marionette preflight without calling mach test when --doctor is supplied alone', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: true,
+      durationMs: 200,
+      detail: 'handshake',
+    });
+
+    await expect(testCommand('/project', [], { doctor: true })).resolves.toBeUndefined();
+
+    expect(runMarionettePreflight).toHaveBeenCalledWith('/project/engine');
+    expect(reportMarionettePreflight).toHaveBeenCalled();
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a FAIL preflight as an actionable error and does not invoke mach test', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: false,
+      durationMs: 12_000,
+      detail: 'socket timeout',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'], {
+        doctor: true,
+      })
+    ).rejects.toThrow(/Marionette preflight reported FAIL/i);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('warns up-front when the stale-build preflight reports packageable engine changes', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce({
+      stale: true,
+      changedPaths: ['browser/base/content/hominis.xhtml', 'browser/base/content/hominis.js'],
+      truncated: 0,
+      baseline: {
+        engineHeadSha: 'abc123',
+        builtAt: new Date().toISOString(),
+        binaryName: 'mybrowser',
+      },
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
+    ).resolves.toBeUndefined();
+
+    // The warning must fire before mach test — the user's feedback was that
+    // discovering stale artifacts AFTER xpcshell launches gives no actionable
+    // signal in time.
+    expect(checkStaleBuildForTest).toHaveBeenCalledWith('/project', '/project/engine');
+    expect(formatStaleBuildWarning).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('stale warning');
+    expect(testWithOutput).toHaveBeenCalled();
+  });
+
+  it('skips the stale-build preflight when --build was requested', async () => {
+    // --build already refreshes the obj-* bundle, so an additional
+    // stale-build warning would be actively misleading — it reports drift
+    // against a baseline that the rebuild just invalidated.
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        build: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(checkStaleBuildForTest).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when the stale-build preflight reports no packageable changes', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    // Default mock already returns stale: false.
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
+    ).resolves.toBeUndefined();
+
+    expect(checkStaleBuildForTest).toHaveBeenCalled();
+    expect(formatStaleBuildWarning).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to mach test when the preflight passes and test paths are supplied', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: true,
+      durationMs: 120,
+      detail: 'handshake',
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'], {
+        doctor: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalled();
   });
 });

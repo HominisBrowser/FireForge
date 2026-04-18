@@ -3,14 +3,18 @@ import { join } from 'node:path';
 
 import { MachNotFoundError } from '../errors/build.js';
 import { pathExists } from '../utils/fs.js';
+import { warn } from '../utils/logger.js';
 import { exec, execInherit, execInheritCapture, execStream } from '../utils/process.js';
+import { explainMachError } from './mach-error-hints.js';
 import { getPython } from './mach-python.js';
 
 // Re-export sub-modules so existing `from './mach.js'` imports keep working.
 export {
+  attemptMozinfoRewrite,
   type BuildArtifactCheck,
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
+  type MozinfoRewriteResult,
 } from './mach-build-artifacts.js';
 export { generateMozconfig, type MozconfigVariables } from './mach-mozconfig.js';
 export { ensurePython, resetResolvedPython } from './mach-python.js';
@@ -165,7 +169,23 @@ export async function bootstrapWithOutput(engineDir: string): Promise<MachComman
 }
 
 /**
- * Runs a full mach build.
+ * Prints any matched {@link MachErrorHint} hints for the captured stderr.
+ * No-op when nothing matches. Always called before a non-zero exit propagates
+ * so the hint sits immediately below the raw mach error in the operator's
+ * terminal.
+ */
+function surfaceMachErrorHints(stderr: string): void {
+  const hints = explainMachError(stderr);
+  if (hints.length === 0) return;
+  for (const hint of hints) {
+    warn(`Hint: ${hint}`);
+  }
+}
+
+/**
+ * Runs a full mach build. On a non-zero exit, any matched error hints are
+ * surfaced on top of the raw mach output so operators get an actionable
+ * nudge alongside the cryptic mozbuild traceback.
  * @param engineDir - Path to the engine directory
  * @param jobs - Number of parallel jobs (optional)
  * @returns Exit code
@@ -177,16 +197,25 @@ export async function build(engineDir: string, jobs?: number): Promise<number> {
     args.push('-j', String(jobs));
   }
 
-  return runMach(args, engineDir, { inherit: true });
+  const result = await runMachInheritCapture(args, engineDir);
+  if (result.exitCode !== 0) {
+    surfaceMachErrorHints(result.stderr);
+  }
+  return result.exitCode;
 }
 
 /**
- * Runs a fast UI-only build.
+ * Runs a fast UI-only build. On a non-zero exit, any matched error hints are
+ * surfaced on top of the raw mach output.
  * @param engineDir - Path to the engine directory
  * @returns Exit code
  */
 export async function buildUI(engineDir: string): Promise<number> {
-  return runMach(['build', 'faster'], engineDir, { inherit: true });
+  const result = await runMachInheritCapture(['build', 'faster'], engineDir);
+  if (result.exitCode !== 0) {
+    surfaceMachErrorHints(result.stderr);
+  }
+  return result.exitCode;
 }
 
 /**

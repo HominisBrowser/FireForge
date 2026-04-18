@@ -46,6 +46,14 @@ export interface BuildOptions {
   jobs?: number;
   /** Brand to build (stable, esr, etc.) */
   brand?: string;
+  /**
+   * When a mozinfo mismatch is detected that looks like a safe path
+   * relocation (same structure, different prefix), patch mozinfo paths
+   * in place and run `mach configure` rather than aborting with a
+   * full-rebuild instruction. Falls back to the original abort message
+   * for any mismatch the rewriter cannot prove safe.
+   */
+  rewriteMozinfo?: boolean;
 }
 
 /**
@@ -192,6 +200,12 @@ export interface TestOptions {
   headless?: boolean;
   /** Run incremental UI build before testing */
   build?: boolean;
+  /**
+   * Run a marionette preflight before tests. Reports PASS/FAIL in under a
+   * minute. When test paths are supplied, a FAIL aborts before mach test is
+   * spawned. When no paths are supplied, runs the preflight only and exits.
+   */
+  doctor?: boolean;
 }
 
 /**
@@ -288,8 +302,41 @@ export interface FurnaceCreateOptions {
   register?: boolean;
   /** Scaffold Mochitest directory and register in moz.build */
   withTests?: boolean;
+  /**
+   * Scaffold an xpcshell test harness (headless, no tabbrowser) instead of
+   * browser-chrome. Required for forks without a `tabbrowser` (storage-only
+   * code, observer-driven modules). Implies `withTests` when set. Writes an
+   * `xpcshell.toml` + `test_<name>.js` under
+   * `engine/browser/base/content/test/<binary-name>-xpcshell/` and leaves
+   * moz.build registration to the operator (add the directory to
+   * `XPCSHELL_TESTS_MANIFESTS`).
+   */
+  xpcshell?: boolean;
+  /**
+   * Test harness style to scaffold when `--with-tests` is set.
+   *
+   * - `mochikit` (default when `--with-tests` is set alone) — a MochiKit
+   *   test at `engine/toolkit/content/tests/widgets/test_<tag>.html` that
+   *   loads the component module directly via `chrome://global/` and
+   *   asserts against `customElements`. Runs today on forks whose
+   *   top-level chrome document (e.g. `mybrowser.xhtml`) lacks a
+   *   `tabbrowser`, because it doesn't go through `URILoadingHelper`.
+   * - `browser-chrome` — today's browser-mochitest scaffold, requires a
+   *   working tabbrowser. Use for components that talk to the browser
+   *   window or open URLs.
+   * - `xpcshell` — equivalent to setting `--xpcshell`; headless, storage-only.
+   */
+  testStyle?: 'mochikit' | 'browser-chrome' | 'xpcshell';
   /** Stock component tag names composed internally by this component */
   compose?: string[];
+  /**
+   * Show the planned file set and furnace.json changes without writing
+   * anything. All validation that does not require disk writes (tag name
+   * shape, name conflicts, engine pre-existence, `--compose` targets, cycle
+   * detection, prefix warning) runs before the plan is emitted, so a
+   * dry-run faithfully previews the real command's outcome.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -302,6 +349,13 @@ export interface WireOptions {
   dryRun?: boolean;
   after?: string;
   subscriptDir?: string;
+  /**
+   * Chrome document the DOM fragment's `#include` is inserted into, relative
+   * to engine/. Defaults to the first entry of
+   * `furnace.json.tokenHostDocuments` when set, otherwise
+   * `browser/base/content/browser.xhtml`.
+   */
+  target?: string;
 }
 
 /**

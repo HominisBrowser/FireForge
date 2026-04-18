@@ -22,7 +22,8 @@ Workflow:
   import [options]                  Apply patches from the patches directory
   resolve                           Update a broken patch with manual fixes and
                                     continue
-  build [options]                   Build the browser
+  build [options]                   Build the browser (auto-applies Furnace
+                                    components first)
   run                               Launch the built browser
   status [options]                  Show modified files in engine/
   reset [options]                   Reset engine/ to clean state
@@ -52,7 +53,7 @@ Components:
 
 Diagnostics:
   doctor [options]                  Diagnose project issues
-  lint [paths...]                   Lint engine changes against patch quality
+  lint [options] [paths...]         Lint engine changes against patch quality
                                     rules
   verify                            Read-only fsck for the patch queue (manifest
                                     + cross-patch lint)
@@ -75,6 +76,20 @@ Options:
 "
 `;
 
+exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace chrome-doc --help 1`] = `
+"Usage: fireforge furnace chrome-doc [options] [command]
+
+Scaffold top-level chrome documents (xhtml + js + css + ftl + jar.mn)
+
+Options:
+  -h, --help               display help for command
+
+Commands:
+  create [options] <name>  Scaffold a new top-level chrome document
+  help [command]           display help for command
+"
+`;
+
 exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace create --help 1`] = `
 "Usage: fireforge furnace create [options] [name]
 
@@ -84,10 +99,22 @@ Options:
   -d, --description <desc>  Component description
   --localized               Include Fluent l10n support
   --no-register             Skip customElements.js registration
-  --with-tests              Scaffold Mochitest directory and register in
-                            moz.build
+  --with-tests              Scaffold a test harness (defaults to MochiKit; see
+                            --test-style)
+  --xpcshell                Scaffold an xpcshell test harness (for storage-layer
+                            code on forks without tabbrowser); equivalent to
+                            --test-style=xpcshell. Note: xpcshell resolves
+                            chrome://global/* URIs but not chrome://browser/* —
+                            use --test-style=browser-chrome for
+                            browser-chrome-dependent tests.
+  --test-style <style>      Override the harness written by --with-tests:
+                            mochikit (default, runs against non-tabbrowser
+                            chrome), browser-chrome (today's scaffold, needs
+                            tabbrowser), or xpcshell (headless)
   --compose <tags>          Record stock tags composed internally (metadata
                             only, comma-separated)
+  --dry-run                 Show the planned file set and furnace.json changes
+                            without writing
   -h, --help                display help for command
 "
 `;

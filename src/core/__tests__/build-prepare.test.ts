@@ -12,10 +12,25 @@ vi.mock('../furnace-stories.js', () => ({
 
 vi.mock('../mach.js', () => ({
   generateMozconfig: vi.fn(),
+  runMach: vi.fn(),
+}));
+
+vi.mock('../git-base.js', () => ({
+  git: vi.fn(),
+}));
+
+vi.mock('../git.js', () => ({
+  hasChanges: vi.fn(),
+  isMissingHeadError: vi.fn(() => false),
+}));
+
+vi.mock('../git-status.js', () => ({
+  getUntrackedFiles: vi.fn(() => Promise.resolve([] as string[])),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
+  info: vi.fn(),
   spinner: vi.fn(() => ({
     message: vi.fn(),
     stop: vi.fn(),
@@ -52,7 +67,7 @@ vi.mock('../furnace-operation.js', () => ({
 
 import type { FireForgeConfig, ProjectPaths } from '../../types/config.js';
 import { pathExists } from '../../utils/fs.js';
-import { spinner, warn } from '../../utils/logger.js';
+import { info, spinner, warn } from '../../utils/logger.js';
 import { isBrandingSetup, setupBranding } from '../branding.js';
 import { prepareBuildEnvironment } from '../build-prepare.js';
 import { applyAllComponents } from '../furnace-apply.js';
@@ -72,6 +87,7 @@ const mockApplyAllComponents = vi.mocked(applyAllComponents);
 const mockRunFurnaceMutation = vi.mocked(runFurnaceMutation);
 const mockPathExists = vi.mocked(pathExists);
 const mockWarn = vi.mocked(warn);
+const mockInfo = vi.mocked(info);
 const mockSpinner = vi.mocked(spinner);
 
 const paths: ProjectPaths = {
@@ -243,6 +259,54 @@ describe('prepareBuildEnvironment', () => {
 
     const result = await prepareBuildEnvironment('/project', paths, config);
     expect(result.furnaceApplied).toBe(0);
+  });
+
+  it('emits a banner naming applied components when apply wrote files', async () => {
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      overrides: { 'moz-button': {} },
+      custom: { 'moz-storage-widget': {} },
+      stock: [],
+    } as never);
+    mockApplyAllComponents.mockResolvedValue({
+      applied: [
+        { name: 'moz-button', filesAffected: [] },
+        { name: 'moz-storage-widget', filesAffected: [] },
+      ],
+      errors: [],
+      skipped: [],
+    } as never);
+
+    await prepareBuildEnvironment('/project', paths, config);
+
+    const bannerCall = mockInfo.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('source → engine sync')
+    );
+    expect(bannerCall).toBeDefined();
+    expect(bannerCall?.[0]).toContain('2 components');
+    expect(bannerCall?.[0]).toContain('moz-button');
+    expect(bannerCall?.[0]).toContain('moz-storage-widget');
+  });
+
+  it('does not emit the banner when no components were applied', async () => {
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      overrides: { 'moz-button': {} },
+      custom: {},
+      stock: [],
+    } as never);
+    mockApplyAllComponents.mockResolvedValue({
+      applied: [],
+      errors: [],
+      skipped: [],
+    } as never);
+
+    await prepareBuildEnvironment('/project', paths, config);
+
+    const bannerCall = mockInfo.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('source → engine sync')
+    );
+    expect(bannerCall).toBeUndefined();
   });
 
   it('shows "Components up to date" when 0 applied but components exist', async () => {

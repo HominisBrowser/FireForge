@@ -65,7 +65,10 @@ describe('packageCommand', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(prepareBuildEnvironment).mockResolvedValue({ furnaceApplied: 0 });
+    vi.mocked(prepareBuildEnvironment).mockResolvedValue({
+      furnaceApplied: 0,
+      reconfigured: false,
+    });
     vi.mocked(machPackage).mockResolvedValue(0);
   });
 
@@ -159,7 +162,10 @@ describe('registerPackage', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(prepareBuildEnvironment).mockResolvedValue({ furnaceApplied: 0 });
+    vi.mocked(prepareBuildEnvironment).mockResolvedValue({
+      furnaceApplied: 0,
+      reconfigured: false,
+    });
     vi.mocked(machPackage).mockResolvedValue(0);
   });
 

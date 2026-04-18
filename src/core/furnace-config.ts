@@ -16,6 +16,7 @@ import { warn } from '../utils/logger.js';
 import { isExplicitAbsolutePath } from '../utils/paths.js';
 import { isArray, isBoolean, isObject, isString } from '../utils/validation.js';
 import { FIREFORGE_DIR } from './config.js';
+import { validateRuntimeVariables, validateTokenHostDocuments } from './furnace-config-tokens.js';
 import { resolveFtlDir } from './furnace-constants.js';
 import { detectComposesCycles, validateComposesReferences } from './furnace-graph-utils.js';
 import { quarantineStateFile, withStateFileLock } from './state-file.js';
@@ -84,7 +85,7 @@ export async function furnaceConfigExists(root: string): Promise<boolean> {
  * @param data - Raw data to validate
  * @param name - Component name for error messages
  */
-function parseStringArray(value: unknown, fieldName: string): string[] {
+export function parseStringArray(value: unknown, fieldName: string): string[] {
   if (!isArray(value)) {
     throw new FurnaceError(`Furnace config: "${fieldName}" must be an array`);
   }
@@ -248,6 +249,14 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
     parseStringArray(migrated['tokenAllowlist'], 'tokenAllowlist');
   }
 
+  // Validate optional runtimeVariables — CSS runtime state channels
+  // (e.g. `--cam-x`) that are exempt from `token-prefix-violation`.
+  validateRuntimeVariables(migrated['runtimeVariables']);
+
+  // Validate optional tokenHostDocuments — list of chrome XHTMLs that the
+  // `missing-token-link` validator scans for the tokens CSS link.
+  validateTokenHostDocuments(migrated['tokenHostDocuments']);
+
   const stock = parseStringArray(migrated['stock'], 'stock');
   const stockSet = new Set<string>();
   for (const name of stock) {
@@ -312,12 +321,16 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
     custom,
   };
 
-  if (migrated['tokenPrefix'] !== undefined) {
-    config.tokenPrefix = migrated['tokenPrefix'];
-  }
-
+  if (migrated['tokenPrefix'] !== undefined) config.tokenPrefix = migrated['tokenPrefix'];
   if (migrated['tokenAllowlist'] !== undefined) {
     config.tokenAllowlist = parseStringArray(migrated['tokenAllowlist'], 'tokenAllowlist');
+  }
+  if (migrated['runtimeVariables'] !== undefined) {
+    config.runtimeVariables = parseStringArray(migrated['runtimeVariables'], 'runtimeVariables');
+  }
+  if (migrated['tokenHostDocuments'] !== undefined) {
+    const docs = parseStringArray(migrated['tokenHostDocuments'], 'tokenHostDocuments');
+    config.tokenHostDocuments = docs;
   }
 
   // Validate optional ftlBasePath

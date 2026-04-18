@@ -31,7 +31,7 @@ vi.mock('../../core/mach.js', () => ({
 }));
 
 vi.mock('../../core/build-prepare.js', () => ({
-  prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0 })),
+  prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0, reconfigured: false })),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -41,10 +41,16 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   info: vi.fn(),
+  warn: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
     error: vi.fn(),
   })),
+}));
+
+vi.mock('../../core/marionette-preflight.js', () => ({
+  runMarionettePreflight: vi.fn(),
+  reportMarionettePreflight: vi.fn(),
 }));
 
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
@@ -54,6 +60,10 @@ import {
   hasBuildArtifacts,
   testWithOutput,
 } from '../../core/mach.js';
+import {
+  reportMarionettePreflight,
+  runMarionettePreflight,
+} from '../../core/marionette-preflight.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { pathExists } from '../../utils/fs.js';
 import { testCommand } from '../test.js';
@@ -234,5 +244,52 @@ describe('testCommand', () => {
       ['browser/components/tests/unit/test_distribution.js'],
       []
     );
+  });
+
+  it('runs the marionette preflight without calling mach test when --doctor is supplied alone', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: true,
+      durationMs: 200,
+      detail: 'handshake',
+    });
+
+    await expect(testCommand('/project', [], { doctor: true })).resolves.toBeUndefined();
+
+    expect(runMarionettePreflight).toHaveBeenCalledWith('/project/engine');
+    expect(reportMarionettePreflight).toHaveBeenCalled();
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a FAIL preflight as an actionable error and does not invoke mach test', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: false,
+      durationMs: 12_000,
+      detail: 'socket timeout',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'], {
+        doctor: true,
+      })
+    ).rejects.toThrow(/Marionette preflight reported FAIL/i);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to mach test when the preflight passes and test paths are supplied', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: true,
+      durationMs: 120,
+      detail: 'handshake',
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'], {
+        doctor: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalled();
   });
 });

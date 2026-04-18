@@ -293,12 +293,46 @@ There are three component types:
 fireforge furnace scan                             # discover components in the engine
 fireforge furnace override moz-button -t css-only  # fork with CSS-only restyle
 fireforge furnace create moz-my-widget             # scaffold a new component
+fireforge furnace chrome-doc create mybrowser      # scaffold a top-level chrome document
 fireforge furnace deploy                           # apply to engine/ + validate
 fireforge furnace status                           # workspace vs engine drift
 fireforge furnace diff moz-button                  # unified diff against baseline
 ```
 
-`furnace deploy` validates components before applying. As always, errors block, warnings are advisory. `fireforge build` and `fireforge test --build` run apply automatically. Use `fireforge doctor --repair-furnace` if the engine gets out of sync.
+`furnace deploy` validates components before applying. As always, errors block, warnings are advisory. `fireforge build` and `fireforge test --build` run apply automatically — when apply wrote files during a build, the build prints a `Furnace: source → engine sync wrote N component(s) …` banner naming every component that was synced, so it is obvious whether engine/ was freshly updated. Use `fireforge doctor --repair-furnace` if the engine gets out of sync.
+
+### Scaffolding top-level chrome documents
+
+Custom elements live under `toolkit/content/widgets`, but a fork's top-level chrome document (`browser.xhtml` equivalents like `mybrowser.xhtml`, `about:*` panels, onboarding flows) lives at `browser/base/content/` and needs jar.mn, jar.inc.mn, and locales/jar.mn entries to reach the packaged bundle. `furnace chrome-doc create <name>` handles that boilerplate:
+
+```bash
+fireforge furnace chrome-doc create mybrowser              # full chrome (titlebar + windowtype)
+fireforge furnace chrome-doc create overlay --no-titlebar  # frameless overlay
+```
+
+The command writes:
+
+- `engine/browser/base/content/<name>.xhtml` — XHTML shell, optional titlebar-buttonbox, Fluent `<link>`.
+- `engine/browser/base/content/<name>.js` — startup-topic observer fired on first idle.
+- `engine/browser/themes/shared/<name>-chrome.css` — scoped CSS; emits the macOS `.titlebar-button { display: none }` carve-out under `--no-titlebar`.
+- `engine/browser/locales/en-US/browser/<name>.ftl` — Fluent stub keyed on `<name>-window-title`.
+- Appends the corresponding `jar.mn` / `jar.inc.mn` / `locales/jar.mn` entries.
+
+Writes are transactional: a SIGINT mid-scaffold rolls back every touched file. Requires an existing engine — run `fireforge download` first.
+
+### Picking a test harness for `furnace create`
+
+`furnace create --with-tests` defaults to a MochiKit test at `engine/toolkit/content/tests/widgets/test_<tag>.html`. MochiKit tests load the component module via `chrome://global/` and don't need a `tabbrowser`, so they run against any fork — including bespoke chrome documents (`mybrowser.xhtml`-class) that deliberately omit the upstream browser chrome.
+
+Three styles are available via `--test-style`:
+
+| Style            | When to use                                                                                                                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mochikit`       | Default. Pure-UI custom elements. Runs today against non-tabbrowser chrome. Emits `test_<tag>.html` under `toolkit/content/tests/widgets/`.                                                                         |
+| `browser-chrome` | Element talks to the browser window (open URLs, manipulate tabs). Requires a working `tabbrowser` in the chrome document. Emits the `browser_<bin>_<tag>.js` scaffold and registers it in `browser/base/moz.build`. |
+| `xpcshell`       | Storage-layer, observer-driven, or ESM-loading code. Headless, no tabbrowser. Emits `test_<name>_module_loads.js` + `xpcshell.toml` (registration in `XPCSHELL_TESTS_MANIFESTS` is left to the operator).           |
+
+`--xpcshell` is preserved as an alias for `--test-style=xpcshell`; conflicting flag combinations (`--xpcshell --test-style=mochikit`) are rejected.
 
 ## Additional Commands
 
@@ -348,6 +382,26 @@ fireforge watch
 fireforge token --name "--my-color" --value "light-dark(#fff, #000)"
 ```
 
+### Diff-scoped lint (`lint --since`)
+
+`fireforge lint --since <git-rev>` tags each issue as `[introduced]` or `[cumulative]` based on whether its file changed since `<git-rev>`:
+
+```bash
+fireforge lint --since HEAD~1            # just the current commit
+fireforge lint --since main              # everything since main
+fireforge lint --since abc1234           # since a specific SHA
+```
+
+The summary line splits counts — e.g. `Lint: 2 introduced error(s), 0 introduced warning(s); 5 cumulative error(s), 1 cumulative warning(s)` — so triage of "did my diff introduce any of these?" is a one-glance check on a large patch series. Exit code still fails on any error (introduced or cumulative); the flag is purely a display / audit tool. Without `--since`, output is unchanged.
+
+### Post-build audit and auto-configure
+
+`fireforge build` is a transactional step: after a successful mach build it audits the dist bundle against engine-relative paths touched since the last successful build, and warns per file that is packageable-by-convention (`.js`/`.mjs`/`.css`/`.ftl`/`.xhtml`/`app/profile/…`) but has no matching artifact or whose dist mtime is older than the source. Ends every build with a `Packaged: N updated, M stale, K missing, S skipped` summary. The audit is warn-only — it never fails a build that mach reported green.
+
+The build also auto-runs `mach configure` before the mach build step when any `moz.build`, `moz.configure`, or `Makefile.in` changed since the last successful build. Prevents incremental builds from silently skipping work against a stale recursive-make backend. Emits a `Backend config changed; running mach configure first...` banner when it fires.
+
+Mach build failures with known-cryptic mozbuild errors now print actionable hints. Example: a `JS_PREFERENCE_PP_FILES` entry with no `#filter` / `#expand` directives now prints `Hint: ...use JS_PREFERENCE_FILES instead, or add at least one #filter / #expand directive to the file.` alongside the raw mach traceback.
+
 ## Configuration
 
 `fireforge.json` at your project root:
@@ -367,10 +421,48 @@ fireforge token --name "--my-color" --value "light-dark(#fff, #000)"
   "wire": { "subscriptDir": "browser/components/mybrowser" },
   "patchLint": {
     "checkJs": true,
-    "rawColorAllowlist": ["hominis-tokens.css"]
-  }
+    "rawColorAllowlist": ["mybrowser-tokens.css"]
+  },
+  "markerComment": "MYBROWSER"
 }
 ```
+
+**`markerComment`** (optional). Appended as a `  // <marker>:` suffix to every line FireForge writes into upstream Firefox source files (starting with `customElements.js`). Keeps fork modifications discoverable and makes re-apply idempotent without hand-tagging entries after each `furnace apply`. Reject list: empty strings, leading/trailing whitespace, newlines, `*/` (would close an enclosing block comment), control characters.
+
+**`furnace.json.tokenHostDocuments`** (optional). List of chrome XHTML documents the `missing-token-link` validator scans for the tokens CSS link. Forks with a second chrome host (e.g. `mybrowser.xhtml` alongside `browser.xhtml`) should list every document that may own the link — the rule fires only when NONE of them link the tokens CSS. Defaults to `["browser/base/content/browser.xhtml"]` when omitted.
+
+### `furnace create --localized` for `MozLitElement`
+
+`fireforge furnace create <tag> --localized` scaffolds a Fluent-ready component. The generated `.mjs` uses the Mozilla-idiomatic `MozLitElement` pattern: a module-level `window.MozXULElement?.insertFTLIfNeeded("<chrome-uri>")` plus `this.ownerDocument.l10n?.connectRoot(this.shadowRoot)` / `disconnectRoot` in `connectedCallback` / `disconnectedCallback`. The chrome URI derives from `furnace.json.ftlBasePath` (default `toolkit/locales/en-US/toolkit/global` → `toolkit/global/<tag>.ftl`). `furnace apply` registers the `.ftl` in the matching locale jar.mn (default `toolkit/locales/jar.mn`) so the chrome URI resolves at runtime. If the locale jar.mn is missing in your fork (non-standard tree), apply surfaces a structured step error instead of aborting — the `.mjs`/`.css` still ship.
+
+### `fireforge test --doctor`
+
+```bash
+# Sub-minute marionette handshake probe; bails out of mach test on FAIL
+fireforge test --doctor
+fireforge test --doctor browser/base/content/test/foo/browser_bar.js
+```
+
+Spawns the built browser headless, waits for a marionette handshake on `127.0.0.1:2828`, and reports PASS/FAIL with the tail of the browser's stderr on FAIL. Distinguishes "marionette wedged" (socket silent) from "mach test discovery failed" — both otherwise surface as a silent 360-second hang followed by `Passed: 0, Failed: 0`. Useful as a prefix on routine `fireforge test` invocations when marionette has been flaky.
+
+The probe is a cascade of six layered checks — engine-present → mach-available → python-available → profile-creatable → browser-spawns → marionette-handshake. Each failure is tagged `[layer N/6: <name>]` so the first broken layer is surfaced immediately instead of the whole cascade blocking on the final socket poll. When the browser binary crashes at startup (missing dylib, wrong CPU arch, corrupt profile) the cascade fails at layer 5 within the settle window, not after the full socket timeout.
+
+### Runtime CSS variables in Furnace
+
+Design tokens imported from the fork's palette are enforced by `tokenPrefix`, but some components write and read CSS custom properties as runtime state channels (`--cam-x` per frame, `--tile-z` from a hit-test observer). Two escape hatches exist:
+
+- **Auto-exempt** — a variable that is both declared (`--foo: 0;`) and consumed (`var(--foo)`) inside the same component's CSS file is recognised as a component-local runtime channel. No config entry required.
+- **`furnace.json.runtimeVariables`** — explicit allowlist for names that are _written_ in JS and _read_ in a different file's CSS (cross-component runtime channels that the CSS-only auto-exempt cannot see). Entries must start with `--`.
+
+Both rules compose with the existing `tokenPrefix` / `tokenAllowlist` checks and apply to both component validation and patch-stack lint.
+
+### Test harness options
+
+`fireforge furnace create --with-tests` scaffolds a **browser-chrome mochitest**. Use this when the component renders UI that depends on the tab strip (`openLinkIn` → `URILoadingHelper`, `gBrowser`, etc.).
+
+`fireforge furnace create --xpcshell` scaffolds an **xpcshell test harness** instead. Use this when the component's code path is storage-only, observer-driven, or module-loading logic that does not touch a `tabbrowser`. xpcshell runs headless without browser chrome, so forks without an upstream tab strip can still cover these paths. The scaffolder writes `test_<name>_module_loads.js` + `xpcshell.toml` into `engine/browser/base/content/test/<binary-name>-xpcshell/<component-name>/` and prints a note: registration in `XPCSHELL_TESTS_MANIFESTS` is the operator's call (the moz.build that should own the entry depends on where the component actually lives).
+
+The two flags can be combined — `--with-tests --xpcshell` writes both harnesses.
 
 ## Roadmap
 

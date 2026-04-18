@@ -150,12 +150,14 @@ export async function lintPatchedCss(
   // Load furnace config gracefully — skip token-prefix check if unavailable
   let tokenPrefix: string | undefined;
   let tokenAllowlist: Set<string> | undefined;
+  let runtimeVariables: Set<string> | undefined;
   try {
     const root = join(repoDir, '..');
     const furnaceConfig = await loadFurnaceConfig(root);
     if (furnaceConfig.tokenPrefix) {
       tokenPrefix = furnaceConfig.tokenPrefix;
       tokenAllowlist = new Set(furnaceConfig.tokenAllowlist ?? []);
+      runtimeVariables = new Set(furnaceConfig.runtimeVariables ?? []);
     }
   } catch (error: unknown) {
     verbose(
@@ -202,20 +204,34 @@ export async function lintPatchedCss(
       }
     }
 
-    // Check for non-tokenized custom properties
+    // Check for non-tokenized custom properties. A variable that is both
+    // declared and consumed inside the same file is auto-exempted as a
+    // runtime state channel (see furnace.json → runtimeVariables).
     if (tokenPrefix) {
+      const declarationPattern = /(?:^|[{;,\s])(--[\w-]+)\s*:/g;
+      const localDeclarations = new Set<string>();
+      let declMatch: RegExpExecArray | null;
+      while ((declMatch = declarationPattern.exec(cssContent)) !== null) {
+        const name = declMatch[1];
+        if (name) localDeclarations.add(name);
+      }
+
       const varPattern = /var\(\s*(--[\w-]+)/g;
       let match: RegExpExecArray | null;
       while ((match = varPattern.exec(cssContent)) !== null) {
         const prop = match[1];
-        if (prop && !prop.startsWith(tokenPrefix) && !tokenAllowlist?.has(prop)) {
-          issues.push({
-            file,
-            check: 'token-prefix-violation',
-            message: `CSS references var(${prop}) which does not match the required token prefix "${tokenPrefix}". Use a design token or add to tokenAllowlist.`,
-            severity: 'error',
-          });
-        }
+        if (!prop) continue;
+        if (prop.startsWith(tokenPrefix)) continue;
+        if (tokenAllowlist?.has(prop)) continue;
+        if (runtimeVariables?.has(prop)) continue;
+        if (localDeclarations.has(prop)) continue;
+
+        issues.push({
+          file,
+          check: 'token-prefix-violation',
+          message: `CSS references var(${prop}) which does not match the required token prefix "${tokenPrefix}". Use a design token, add to tokenAllowlist, or (for runtime state channels) list the variable in runtimeVariables.`,
+          severity: 'error',
+        });
       }
     }
   }

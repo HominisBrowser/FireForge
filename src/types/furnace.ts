@@ -70,6 +70,25 @@ export interface FurnaceConfig {
   /** Custom properties allowed even though they don't match tokenPrefix (e.g. ["--background-color-box"]) */
   tokenAllowlist?: string[];
   /**
+   * Custom properties used as runtime state channels — written and read by the
+   * component itself (e.g. per-frame camera/tile positions) rather than
+   * consumed as design tokens. Listed names are exempt from the
+   * `token-prefix-violation` check even when they do not match `tokenPrefix`
+   * and are not in `tokenAllowlist`. Use this for cross-component runtime
+   * variables (e.g. set in JS, read in CSS of a child). Component-local
+   * variables that are both declared and consumed inside the same component's
+   * own CSS file are auto-exempted and do not need an entry here.
+   */
+  runtimeVariables?: string[];
+  /**
+   * Chrome documents scanned by the `missing-token-link` validator to confirm
+   * the tokens CSS file is `<link>`ed. Forks with multiple chrome host
+   * documents (e.g. `mybrowser.xhtml` beside the stock `browser.xhtml`) should
+   * list every document that may own the link. When omitted, defaults to
+   * `['browser/base/content/browser.xhtml']` — the upstream Firefox path.
+   */
+  tokenHostDocuments?: string[];
+  /**
    * Override the default Fluent (.ftl) base path within the engine.
    * Defaults to `toolkit/locales/en-US/toolkit/global` when not set.
    */
@@ -103,7 +122,8 @@ export type FurnacePendingRepairOperation =
   | 'override-rollback'
   | 'scan-rollback'
   | 'rename-rollback'
-  | 'refresh-rollback';
+  | 'refresh-rollback'
+  | 'chrome-doc-rollback';
 
 /**
  * Marker persisted into `.fireforge/furnace-state.json` when a furnace

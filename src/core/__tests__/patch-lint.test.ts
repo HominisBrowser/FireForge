@@ -171,6 +171,43 @@ describe('lintPatchedCss', () => {
     expect(issues.filter((i) => i.check === 'token-prefix-violation')).toHaveLength(0);
   });
 
+  it('allows runtime variables listed in furnace.json runtimeVariables', async () => {
+    mockLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      tokenPrefix: '--brand-',
+      tokenAllowlist: [],
+      runtimeVariables: ['--cam-x'],
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('body { transform: translateX(var(--cam-x)); }');
+
+    const issues = await lintPatchedCss('/engine', ['style.css']);
+
+    expect(issues.filter((i) => i.check === 'token-prefix-violation')).toHaveLength(0);
+  });
+
+  it('auto-exempts variables declared and consumed in the same CSS file', async () => {
+    mockLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      tokenPrefix: '--brand-',
+      tokenAllowlist: [],
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('body { --tile-z: 0; transform: translateZ(var(--tile-z)); }');
+
+    const issues = await lintPatchedCss('/engine', ['style.css']);
+
+    expect(issues.filter((i) => i.check === 'token-prefix-violation')).toHaveLength(0);
+  });
+
   it('handles multiple CSS files', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('body { color: #abc; }');

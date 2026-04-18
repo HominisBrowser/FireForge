@@ -171,6 +171,15 @@ export async function execStream(
 
 /**
  * Executes a command and inherits stdio (shows output directly).
+ *
+ * Graceful shutdown: when the FireForge process receives SIGINT/SIGTERM, the
+ * signal is forwarded to the child as SIGTERM and a short grace timer (default
+ * 1500ms) runs before escalating to SIGKILL. A second matching signal during
+ * the grace period triggers an immediate SIGKILL — matching the usual
+ * "hit Ctrl-C again to force-quit" UX. Without this, Firefox's AsyncShutdown
+ * / profileBeforeChange blockers (which flush in-memory state to disk) can be
+ * racing the OS child-exit path, losing the last few seconds of edits.
+ *
  * @param command - Command to execute
  * @param args - Command arguments
  * @param options - Execution options
@@ -179,7 +188,7 @@ export async function execStream(
 export async function execInherit(
   command: string,
   args: string[],
-  options: ExecOptions = {}
+  options: ExecOptions & { shutdownGraceMs?: number } = {}
 ): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -189,14 +198,82 @@ export async function execInherit(
       signal: buildSignalFromTimeout(options.timeout),
     });
 
+    const graceMs = options.shutdownGraceMs ?? 1500;
+    const { dispose } = installGracefulShutdownForwarder(child, graceMs);
+
     child.on('error', (error) => {
+      dispose();
       reject(error);
     });
 
     child.on('close', (code, signal) => {
+      dispose();
       resolve(exitCodeFromClose(code, signal));
     });
   });
+}
+
+/**
+ * Wires parent-process SIGINT/SIGTERM to a child: first signal → child.kill
+ * (SIGTERM) + grace timer; second matching signal → immediate SIGKILL; grace
+ * timer expiry → SIGKILL. Returns a `dispose()` that clears the listeners and
+ * any outstanding timer. Callers must invoke `dispose()` from both the child's
+ * `close` and `error` handlers so the process does not accumulate signal
+ * listeners across repeated spawns.
+ */
+function installGracefulShutdownForwarder(
+  child: ReturnType<typeof spawn>,
+  graceMs: number
+): { dispose: () => void } {
+  let graceTimer: NodeJS.Timeout | undefined;
+  const forwarded = new Set<NodeJS.Signals>();
+
+  const escalate = (): void => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // Child is already gone — nothing to do.
+    }
+  };
+
+  const handleSignal = (signal: NodeJS.Signals): void => {
+    if (forwarded.has(signal)) {
+      // Second receipt of the same signal while still running: escalate now.
+      escalate();
+      return;
+    }
+    forwarded.add(signal);
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      // If the child can't accept SIGTERM (already dead), nothing to do.
+      return;
+    }
+    graceTimer = setTimeout(escalate, graceMs);
+    graceTimer.unref();
+  };
+
+  const onSigint = (): void => {
+    handleSignal('SIGINT');
+  };
+  const onSigterm = (): void => {
+    handleSignal('SIGTERM');
+  };
+
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
+
+  const dispose = (): void => {
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+    if (graceTimer) {
+      clearTimeout(graceTimer);
+      graceTimer = undefined;
+    }
+  };
+
+  return { dispose };
 }
 
 /**
@@ -210,7 +287,7 @@ export async function execInherit(
 export async function execInheritCapture(
   command: string,
   args: string[],
-  options: ExecOptions = {}
+  options: ExecOptions & { shutdownGraceMs?: number } = {}
 ): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -225,11 +302,16 @@ export async function execInheritCapture(
     child.stdout.on('data', out.onData);
     child.stderr.on('data', err.onData);
 
+    const graceMs = options.shutdownGraceMs ?? 1500;
+    const { dispose } = installGracefulShutdownForwarder(child, graceMs);
+
     child.on('error', (error) => {
+      dispose();
       reject(error);
     });
 
     child.on('close', (code, signal) => {
+      dispose();
       resolve({
         stdout: out.getText(),
         stderr: err.getText(),

@@ -113,7 +113,8 @@ describe('validateComponent', () => {
       '/comp/my-btn',
       'my-btn',
       '/project',
-      '--brand-'
+      '--brand-',
+      undefined
     );
   });
 

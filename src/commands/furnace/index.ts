@@ -4,6 +4,7 @@ import { Command, Option } from 'commander';
 import type { CommandContext } from '../../types/cli.js';
 import { pickDefined } from '../../utils/options.js';
 import { furnaceApplyCommand } from './apply.js';
+import { furnaceChromeDocCreateCommand } from './chrome-doc.js';
 import { furnaceCreateCommand } from './create.js';
 import { furnaceDeployCommand } from './deploy.js';
 import { furnaceDiffCommand } from './diff.js';
@@ -22,6 +23,7 @@ import { furnaceValidateCommand } from './validate.js';
 export {
   furnaceApplyCommand,
   furnaceBatchOverrideCommand,
+  furnaceChromeDocCreateCommand,
   furnaceCreateCommand,
   furnaceDeployCommand,
   furnaceDiffCommand,
@@ -123,7 +125,23 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
     .option('-d, --description <desc>', 'Component description')
     .option('--localized', 'Include Fluent l10n support')
     .option('--no-register', 'Skip customElements.js registration')
-    .option('--with-tests', 'Scaffold Mochitest directory and register in moz.build')
+    .option('--with-tests', 'Scaffold a test harness (defaults to MochiKit; see --test-style)')
+    .option(
+      '--xpcshell',
+      'Scaffold an xpcshell test harness (for storage-layer code on forks without tabbrowser); equivalent to --test-style=xpcshell'
+    )
+    .option(
+      '--test-style <style>',
+      "Override the harness written by --with-tests: mochikit (default, runs against non-tabbrowser chrome), browser-chrome (today's scaffold, needs tabbrowser), or xpcshell (headless)",
+      (value: string) => {
+        if (value !== 'mochikit' && value !== 'browser-chrome' && value !== 'xpcshell') {
+          throw new Error(
+            `--test-style must be one of: mochikit, browser-chrome, xpcshell. Got: "${value}".`
+          );
+        }
+        return value;
+      }
+    )
     .option(
       '--compose <tags>',
       'Record stock tags composed internally (metadata only, comma-separated)',
@@ -138,12 +156,28 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
             localized?: boolean;
             register?: boolean;
             withTests?: boolean;
+            xpcshell?: boolean;
+            testStyle?: 'mochikit' | 'browser-chrome' | 'xpcshell';
             compose?: string[];
           }
         ) => {
           await furnaceCreateCommand(getProjectRoot(), name, options);
         }
       )
+    );
+
+  const chromeDoc = furnace
+    .command('chrome-doc')
+    .description('Scaffold top-level chrome documents (xhtml + js + css + ftl + jar.mn)');
+
+  chromeDoc
+    .command('create <name>')
+    .description('Scaffold a new top-level chrome document')
+    .option('--no-titlebar', 'Frameless overlay-style document (omits titlebar-buttonbox)')
+    .action(
+      withErrorHandling(async (name: string, options: { titlebar?: boolean }) => {
+        await furnaceChromeDocCreateCommand(getProjectRoot(), name, pickDefined(options));
+      })
     );
 }
 

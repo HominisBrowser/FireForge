@@ -21,6 +21,8 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../furnace-registration.js', () => ({
   addCustomElementRegistration: vi.fn(),
   addJarMnEntries: vi.fn(),
+  addLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(0)),
+  removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve()),
   validateCustomElementRegistration: vi.fn(),
   validateJarMnEntries: vi.fn(),
 }));

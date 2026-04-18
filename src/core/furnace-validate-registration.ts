@@ -253,14 +253,27 @@ export async function validateJarMnEntries(
 }
 
 /**
+ * Default chrome host document scanned by `validateTokenLink` when
+ * `tokenHostDocuments` is not configured in furnace.json.
+ */
+const DEFAULT_TOKEN_HOST_DOCUMENTS = ['browser/base/content/browser.xhtml'];
+
+/**
  * Validates that components using design tokens have the tokens CSS
- * linked in browser.xhtml. Without the link, tokens silently resolve to nothing.
+ * linked in at least one chrome host document. Without the link, tokens
+ * silently resolve to nothing at runtime.
+ *
+ * Forks with multiple chrome host documents (e.g. `mybrowser.xhtml` beside
+ * `browser.xhtml`) can enumerate them via `tokenHostDocuments` in
+ * furnace.json; the warning fires only when NONE of the configured
+ * documents link the tokens CSS.
  */
 export async function validateTokenLink(
   componentDir: string,
   tagName: string,
   root: string,
-  tokenPrefix?: string
+  tokenPrefix?: string,
+  tokenHostDocuments?: string[]
 ): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
   const cssPath = join(componentDir, `${tagName}.css`);
@@ -273,11 +286,11 @@ export async function validateTokenLink(
   // Check if the component CSS references any tokens with the configured prefix
   if (!cssContent.includes(tokenPrefix)) return issues;
 
-  // Check if browser.xhtml links the token CSS file
   const { engine: engineDir } = getProjectPaths(root);
-  const browserXhtmlPath = join(engineDir, 'browser/base/content/browser.xhtml');
-
-  if (!(await pathExists(browserXhtmlPath))) return issues;
+  const hostDocuments =
+    tokenHostDocuments && tokenHostDocuments.length > 0
+      ? tokenHostDocuments
+      : DEFAULT_TOKEN_HOST_DOCUMENTS;
 
   let tokensCssFile: string;
   try {
@@ -290,13 +303,28 @@ export async function validateTokenLink(
     return issues;
   }
 
-  const xhtmlContent = await readText(browserXhtmlPath);
-  if (!xhtmlContent.includes(tokensCssFile)) {
+  const checkedDocuments: string[] = [];
+  let anyLinks = false;
+  for (const relDocPath of hostDocuments) {
+    const absPath = join(engineDir, relDocPath);
+    if (!(await pathExists(absPath))) continue;
+    checkedDocuments.push(relDocPath);
+    const xhtmlContent = await readText(absPath);
+    if (xhtmlContent.includes(tokensCssFile)) {
+      anyLinks = true;
+      break;
+    }
+  }
+
+  if (checkedDocuments.length === 0) return issues;
+
+  if (!anyLinks) {
+    const docsList = checkedDocuments.join(', ');
     issues.push({
       component: tagName,
       severity: 'warning',
       check: 'missing-token-link',
-      message: `Component uses ${tokenPrefix}* tokens but browser.xhtml does not link ${tokensCssFile}. Tokens will silently resolve to nothing.`,
+      message: `Component uses ${tokenPrefix}* tokens but none of the configured chrome host documents (${docsList}) link ${tokensCssFile}. Tokens will silently resolve to nothing. Configure additional hosts via furnace.json "tokenHostDocuments" if needed.`,
     });
   }
 

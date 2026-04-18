@@ -427,3 +427,162 @@ document.addEventListener("DOMContentLoaded", () => {
     expect(buttonIdx).toBeLessThan(cardIdx);
   });
 });
+
+describe('addCustomElementRegistration — marker-tagged idempotency', () => {
+  // Regression: prior behaviour inserted a duplicate entry when the operator
+  // had appended a project marker comment to a previously-written entry. The
+  // duplicate caused setElementCreationCallback to throw NotSupportedError at
+  // every window-load.
+
+  async function makeEngineWithMultilineEntry(
+    tagName: string,
+    modulePath: string
+  ): Promise<{
+    engineDir: string;
+    customElementsPath: string;
+  }> {
+    const engineDir = await mkdtemp(join(tmpdir(), 'fireforge-marker-idempotent-'));
+    cleanupPaths.push(engineDir);
+    const customElementsPath = join(engineDir, CUSTOM_ELEMENTS_JS);
+    await mkdir(dirname(customElementsPath), { recursive: true });
+    // Seed with a DCL block containing a multi-line entry whose lines each
+    // carry a `// MYBROWSER:` trailing marker comment — the exact shape that
+    // tripped the old idempotency check.
+    await writeFile(
+      customElementsPath,
+      `document.addEventListener("DOMContentLoaded", () => {
+  for (const [tag, script] of [
+    [  // MYBROWSER:
+      "${tagName}",  // MYBROWSER:
+      "${modulePath}",  // MYBROWSER:
+    ],  // MYBROWSER:
+    ["moz-zzz", "chrome://global/content/elements/moz-zzz.mjs"],
+  ]) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`
+    );
+    return { engineDir, customElementsPath };
+  }
+
+  it('does not re-insert a tag whose multi-line entry carries trailing `// marker:` comments', async () => {
+    const { engineDir, customElementsPath } = await makeEngineWithMultilineEntry(
+      'moz-mybrowser-dock',
+      'chrome://global/content/elements/moz-mybrowser-dock.mjs'
+    );
+    const before = await readFile(customElementsPath, 'utf8');
+
+    await addCustomElementRegistration(
+      engineDir,
+      'moz-mybrowser-dock',
+      'chrome://global/content/elements/moz-mybrowser-dock.mjs'
+    );
+
+    const after = await readFile(customElementsPath, 'utf8');
+    expect(after).toBe(before);
+
+    const occurrences = after.match(/"moz-mybrowser-dock"/g) ?? [];
+    expect(occurrences).toHaveLength(1);
+  });
+
+  it('does not re-insert a tag whose single-line entry carries a trailing `// marker:` comment', async () => {
+    const engineDir = await mkdtemp(join(tmpdir(), 'fireforge-marker-single-'));
+    cleanupPaths.push(engineDir);
+    const customElementsPath = join(engineDir, CUSTOM_ELEMENTS_JS);
+    await mkdir(dirname(customElementsPath), { recursive: true });
+    await writeFile(
+      customElementsPath,
+      `document.addEventListener("DOMContentLoaded", () => {
+  for (const [tag, script] of [
+    ["moz-mybrowser-dock", "chrome://global/content/elements/moz-mybrowser-dock.mjs"],  // MYBROWSER:
+    ["moz-zzz", "chrome://global/content/elements/moz-zzz.mjs"],
+  ]) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`
+    );
+    const before = await readFile(customElementsPath, 'utf8');
+
+    await addCustomElementRegistration(
+      engineDir,
+      'moz-mybrowser-dock',
+      'chrome://global/content/elements/moz-mybrowser-dock.mjs'
+    );
+
+    const after = await readFile(customElementsPath, 'utf8');
+    expect(after).toBe(before);
+    const occurrences = after.match(/"moz-mybrowser-dock"/g) ?? [];
+    expect(occurrences).toHaveLength(1);
+  });
+
+  it('validateCustomElementRegistration treats marker-tagged entries as already present', async () => {
+    const { engineDir } = await makeEngineWithMultilineEntry(
+      'moz-mybrowser-dock',
+      'chrome://global/content/elements/moz-mybrowser-dock.mjs'
+    );
+    await expect(
+      validateCustomElementRegistration(
+        engineDir,
+        'moz-mybrowser-dock',
+        'chrome://global/content/elements/moz-mybrowser-dock.mjs'
+      )
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('addCustomElementRegistration — markerComment output', () => {
+  it('appends `// <marker>:` to every line of a multi-line insertion', async () => {
+    const { engineDir, customElementsPath } = await makeEngineWithFixture('multiline-array.js');
+
+    await addCustomElementRegistration(
+      engineDir,
+      'moz-banner',
+      'chrome://global/content/elements/moz-banner.mjs',
+      { markerComment: 'MYBROWSER' }
+    );
+
+    const updated = await readFile(customElementsPath, 'utf8');
+    const bannerBlockStart = updated.indexOf('"moz-banner"');
+    expect(bannerBlockStart).toBeGreaterThan(-1);
+    const contextBefore = updated.slice(Math.max(0, bannerBlockStart - 80), bannerBlockStart);
+    const contextAfter = updated.slice(
+      bannerBlockStart,
+      Math.min(updated.length, bannerBlockStart + 240)
+    );
+    // Each of the 4 lines of the multi-line entry (`[`, tag, url, `],`) carries
+    // the trailing marker.
+    expect(
+      (contextBefore + contextAfter).match(/\/\/ MYBROWSER:/g)?.length ?? 0
+    ).toBeGreaterThanOrEqual(4);
+  });
+
+  it('re-applying a marker-tagged insertion stays idempotent', async () => {
+    const { engineDir, customElementsPath } = await makeEngineWithFixture('multiline-array.js');
+
+    await addCustomElementRegistration(
+      engineDir,
+      'moz-banner',
+      'chrome://global/content/elements/moz-banner.mjs',
+      { markerComment: 'MYBROWSER' }
+    );
+    const firstPass = await readFile(customElementsPath, 'utf8');
+
+    await addCustomElementRegistration(
+      engineDir,
+      'moz-banner',
+      'chrome://global/content/elements/moz-banner.mjs',
+      { markerComment: 'MYBROWSER' }
+    );
+    const secondPass = await readFile(customElementsPath, 'utf8');
+
+    expect(secondPass).toBe(firstPass);
+    const occurrences = secondPass.match(/"moz-banner"/g) ?? [];
+    expect(occurrences).toHaveLength(1);
+  });
+});

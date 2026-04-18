@@ -373,7 +373,70 @@ describe('addDomFragment', () => {
 
     await expect(
       addDomFragment('/engine', 'browser/components/test/test.inc.xhtml')
-    ).rejects.toThrow('browser.xhtml not found');
+    ).rejects.toThrow('browser/base/content/browser.xhtml not found in engine');
+  });
+
+  it('targets a custom chrome document when targetPath is provided', async () => {
+    const customDoc = `<?xml version="1.0"?>
+<window>
+  <html:body>
+#include browser-sets.inc
+  </html:body>
+</window>`;
+    mockPathExists.mockImplementation((p: string) => {
+      if (p.endsWith('hominis.xhtml')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    mockReadText.mockResolvedValue(customDoc);
+
+    const result = await addDomFragment(
+      '/engine',
+      'browser/base/content/fragments/panel.inc.xhtml',
+      'browser/base/content/hominis.xhtml'
+    );
+
+    expect(result).toBe(true);
+    const writePath = mockWriteText.mock.calls[0]?.[0] as string;
+    expect(writePath).toBe('/engine/browser/base/content/hominis.xhtml');
+    const written = mockWriteText.mock.calls[0]?.[1] as string;
+    // Include path is relative to the target doc's directory, not hardcoded browser/base/content
+    expect(written).toContain('#include fragments/panel.inc.xhtml');
+  });
+
+  it('computes the include path relative to a target that lives outside browser/base/content', async () => {
+    const customDoc = `<?xml version="1.0"?>
+<window>
+  <html:body>
+#include browser-sets.inc
+  </html:body>
+</window>`;
+    mockPathExists.mockImplementation((p: string) => {
+      if (p.endsWith('hominis.xhtml')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    mockReadText.mockResolvedValue(customDoc);
+
+    await addDomFragment(
+      '/engine',
+      'browser/base/content/fragments/panel.inc.xhtml',
+      'hominis/content/hominis.xhtml'
+    );
+
+    const written = mockWriteText.mock.calls[0]?.[1] as string;
+    // Include path resolved from hominis/content/ to browser/base/content/fragments/panel.inc.xhtml
+    expect(written).toContain('#include ../../browser/base/content/fragments/panel.inc.xhtml');
+  });
+
+  it('throws with the actual target in the error message when the custom target is missing', async () => {
+    mockPathExists.mockResolvedValue(false);
+
+    await expect(
+      addDomFragment(
+        '/engine',
+        'browser/components/test/test.inc.xhtml',
+        'browser/base/content/hominis.xhtml'
+      )
+    ).rejects.toThrow('browser/base/content/hominis.xhtml not found in engine');
   });
 });
 

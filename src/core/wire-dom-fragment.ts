@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * browser.xhtml — DOM fragment insertion.
+ * Top-level chrome document — DOM fragment insertion.
+ *
+ * Default target is `browser/base/content/browser.xhtml`. Forks that replace
+ * browser.xhtml with a custom top-level chrome document pass the replacement
+ * path in via `targetPath`; the insertion logic is shape-agnostic (looks for
+ * `#include browser-sets.inc`, then falls back to `<html:body>`), so any
+ * browser.xhtml-shaped xhtml works.
  */
 
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
@@ -12,7 +18,7 @@ import { escapeRegex } from '../utils/regex.js';
 import { withParserFallback } from './parser-fallback.js';
 import { tokenizeXhtml } from './wire-utils.js';
 
-const BROWSER_XHTML = 'browser/base/content/browser.xhtml';
+export const DEFAULT_DOM_TARGET = 'browser/base/content/browser.xhtml';
 
 /**
  * Tokenizer-based implementation for DOM fragment insertion.
@@ -43,7 +49,7 @@ export function addDomFragmentTokenized(content: string, includeDirective: strin
   }
 
   if (insertIndex === -1) {
-    throw new GeneralError('Could not find insertion point in browser.xhtml');
+    throw new GeneralError('Could not find insertion point in chrome document');
   }
 
   lines.splice(insertIndex, 0, includeDirective);
@@ -76,7 +82,7 @@ export function legacyAddDomFragment(content: string, includeDirective: string):
   }
 
   if (insertIndex === -1) {
-    throw new GeneralError('Could not find insertion point in browser.xhtml');
+    throw new GeneralError('Could not find insertion point in chrome document');
   }
 
   lines.splice(insertIndex, 0, includeDirective);
@@ -84,29 +90,42 @@ export function legacyAddDomFragment(content: string, includeDirective: string):
 }
 
 /**
- * Inserts a `#include` directive for an `.inc.xhtml` file into browser.xhtml,
- * before `#include browser-sets.inc`.
+ * Inserts a `#include` directive for an `.inc.xhtml` file into the top-level
+ * chrome document (default: `browser/base/content/browser.xhtml`), before
+ * `#include browser-sets.inc`.
  *
  * If the file's content was previously inlined (detected by root element id=),
  * the inlined block is automatically replaced with the `#include` directive.
  *
  * @param engineDir - Engine source root
  * @param domFilePath - Path to the `.inc.xhtml` file relative to engine root
+ * @param targetPath - Chrome document to insert into, relative to engine
+ *   root. Defaults to {@link DEFAULT_DOM_TARGET}. Forks that replace
+ *   browser.xhtml with a custom top-level chrome document pass the
+ *   replacement path here.
  * @returns true if inserted, false if already present
  */
-export async function addDomFragment(engineDir: string, domFilePath: string): Promise<boolean> {
-  const browserXhtmlPath = join(engineDir, BROWSER_XHTML);
+export async function addDomFragment(
+  engineDir: string,
+  domFilePath: string,
+  targetPath: string = DEFAULT_DOM_TARGET
+): Promise<boolean> {
+  const targetAbsPath = join(engineDir, targetPath);
   const safeDomFilePath = toRootRelativePath(engineDir, domFilePath);
 
-  if (!(await pathExists(browserXhtmlPath))) {
-    throw new GeneralError(`${BROWSER_XHTML} not found in engine`);
+  if (!(await pathExists(targetAbsPath))) {
+    throw new GeneralError(`${targetPath} not found in engine`);
   }
 
-  // Compute include path relative to browser/base/content/ (where browser.xhtml lives)
-  const includePath = relative('browser/base/content', safeDomFilePath).replace(/\\/g, '/');
+  // Compute include path relative to the target's directory — the `#include`
+  // directive is resolved by the preprocessor relative to the file that
+  // contains it, so this must track the chrome doc's location, not a
+  // hardcoded `browser/base/content/`.
+  const targetDir = dirname(targetPath);
+  const includePath = relative(targetDir, safeDomFilePath).replace(/\\/g, '/');
   const includeDirective = `#include ${includePath}`;
 
-  let content = await readText(browserXhtmlPath);
+  let content = await readText(targetAbsPath);
 
   // Idempotency: check if the #include directive already exists (line-anchored to avoid substring matches)
   if (new RegExp(`^${escapeRegex(includeDirective)}$`, 'm').test(content)) {
@@ -135,7 +154,7 @@ export async function addDomFragment(engineDir: string, domFilePath: string): Pr
         }
         lines.splice(startIdx, endIdx - startIdx, includeDirective);
         content = lines.join('\n');
-        await writeText(browserXhtmlPath, content);
+        await writeText(targetAbsPath, content);
         return true;
       }
     }
@@ -145,9 +164,9 @@ export async function addDomFragment(engineDir: string, domFilePath: string): Pr
   const { value } = withParserFallback(
     () => addDomFragmentTokenized(content, includeDirective),
     () => legacyAddDomFragment(content, includeDirective),
-    BROWSER_XHTML
+    targetPath
   );
 
-  await writeText(browserXhtmlPath, value);
+  await writeText(targetAbsPath, value);
   return true;
 }

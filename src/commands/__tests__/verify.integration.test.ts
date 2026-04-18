@@ -5,7 +5,7 @@
  *   1. clean queue → exits 0
  *   2. duplicate /dev/null creation → errors
  *   3. forward import from earlier to later patch → errors
- * Plus the end-to-end "Hominis mess" repair scenario: build a broken
+ * Plus the end-to-end fork-regression repair scenario: build a broken
  * queue, run verify (expect failure), use patch delete + re-export --files
  * + patch reorder to fix it, re-run verify (expect clean).
  */

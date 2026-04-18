@@ -38,6 +38,14 @@ export interface WireOptions {
   destroy?: string | undefined;
   /** Path to `.inc.xhtml` file relative to engine root */
   domFilePath?: string | undefined;
+  /**
+   * Top-level chrome document the DOM fragment's `#include` directive is
+   * inserted into, relative to engine/. Defaults to
+   * `browser/base/content/browser.xhtml`. Forks that replace browser.xhtml
+   * with a custom chrome document (e.g. `mybrowser.xhtml`) pass the
+   * replacement path here.
+   */
+  domTargetPath?: string | undefined;
   /** Dry run — don't write any files */
   dryRun?: boolean | undefined;
   /** Insert init block after the block containing this name */
@@ -104,12 +112,13 @@ export async function wireSubscript(
     destroyAdded = await addDestroyToBrowserInit(engineDir, options.destroy);
   }
 
-  // 4. Add #include directive to browser.xhtml (if provided)
+  // 4. Add #include directive to the top-level chrome document (if provided)
   let domInserted = false;
   if (options.domFilePath) {
     domInserted = await addDomFragment(
       engineDir,
-      toRootRelativePath(engineDir, options.domFilePath)
+      toRootRelativePath(engineDir, options.domFilePath),
+      options.domTargetPath
     );
   }
 

@@ -72,6 +72,90 @@ export function hasTemplateKeyboardHandler(content: string): boolean {
   return /@key(down|press|up)\s*=\s*\$\{/.test(content);
 }
 
+/**
+ * Native HTML elements that dispatch `click` on Enter and Space via the
+ * platform. Attaching `@click` to these is NOT a keyboard-a11y bug because
+ * the browser already handles the keyboard activation path — a duplicate
+ * `@keydown`/`@keypress` handler would usually double-fire the action.
+ *
+ * `<a>` is accepted only when an `href` attribute is present; bare `<a>` is
+ * non-interactive and is treated as synthetic.
+ */
+const NATIVE_CLICK_INTERACTIVE_TAGS = new Set([
+  'button',
+  'input',
+  'select',
+  'textarea',
+  'summary',
+  'details',
+  // Mozilla widgets that extend the native pattern and keep Enter/Space activation.
+  'moz-button',
+  'moz-toggle',
+  'moz-checkbox',
+  'moz-radio',
+  'moz-radio-group',
+  'moz-menulist',
+]);
+
+/**
+ * Returns true when `content` has at least one `@click=${...}` handler on a
+ * *synthetic* interactive element (e.g. `<div @click>`), which lacks native
+ * keyboard activation and therefore needs an explicit key handler for
+ * Enter/Space. Returns false when every `@click` handler sits on a native
+ * interactive element — those already fire `click` on keyboard activation.
+ */
+export function hasTemplateClickOnSyntheticInteractive(content: string): boolean {
+  const pattern = /@click\s*=\s*\$\{/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content)) !== null) {
+    if (isClickOnSyntheticInteractive(content, match.index)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Given the offset of an `@click=${...}` occurrence, walks backwards to find
+ * the opening `<tag` that owns it and decides whether that tag is a native
+ * interactive element (no warning needed) or a synthetic one (warning needed).
+ */
+function isClickOnSyntheticInteractive(content: string, clickIndex: number): boolean {
+  // Find the nearest preceding `<` that starts a tag (skip `</` closers).
+  let i = clickIndex - 1;
+  let tagOpenIndex = -1;
+  while (i >= 0) {
+    if (content[i] === '<' && content[i + 1] !== '/') {
+      tagOpenIndex = i;
+      break;
+    }
+    // A `>` before an unclosed `<` means we're outside the attribute list,
+    // which shouldn't happen for a well-formed template but we defensively
+    // treat it as synthetic to preserve the prior-behaviour warning.
+    if (content[i] === '>') {
+      return true;
+    }
+    i--;
+  }
+  if (tagOpenIndex < 0) return true;
+
+  const tagMatch = /^<([a-zA-Z][a-zA-Z0-9-]*)/.exec(content.slice(tagOpenIndex));
+  if (!tagMatch?.[1]) return true;
+  const tagName = tagMatch[1].toLowerCase();
+
+  if (tagName === 'a') {
+    // Bare <a> (no href) is non-interactive; require a keyboard handler.
+    // Look forward from the tag open for the closing `>` and scan the
+    // attribute text in between for an href attribute.
+    const tagEnd = content.indexOf('>', tagOpenIndex);
+    if (tagEnd < 0) return true;
+    const attrs = content.slice(tagOpenIndex, tagEnd);
+    return !/\shref\s*=/.test(attrs);
+  }
+
+  return !NATIVE_CLICK_INTERACTIVE_TAGS.has(tagName);
+}
+
 function isSymbolOnlyText(text: string): boolean {
   return Array.from(text).every((character) => {
     const code = character.codePointAt(0) ?? 0;
@@ -90,35 +174,89 @@ function isWithinLocalizedElement(content: string, matchIndex: number): boolean 
   return /data-l10n-id\s*=/.test(tagContent);
 }
 
-/** Detects hardcoded user-visible template text that should usually be localized. */
+/**
+ * Detects hardcoded user-visible template text that should usually be
+ * localized.
+ *
+ * Scoped to three positive contexts rather than scanning the whole file,
+ * because a bare `>…<` regex catches JS comparisons (`if (x > 0 && y <
+ * 100)`), diagnostic strings (`console.error("Failed <id> lookup")`), and
+ * identifier literals that are never shown to a user. Only matches that
+ * actually enter a UI render path count:
+ *
+ *   1. Content inside a Lit `` html`…` `` tagged template literal.
+ *   2. The string literal on the RHS of `.textContent = "…"` or
+ *      `.innerHTML = "…"`.
+ *   3. The string literal assigned to an XUL-widget `label=`,
+ *      `title=`, or `tooltiptext=` attribute when constructing DOM in JS.
+ *
+ * A file-wide `// furnace-ignore: hardcoded-text` comment suppresses all
+ * findings (matches the pre-existing escape hatch).
+ */
 export function containsHardcodedTemplateText(content: string): boolean {
   if (/furnace-ignore:\s*hardcoded-text/.test(content)) {
     return false;
   }
 
-  const textPattern = />([^<$\s][^<$]*)</g;
-  let textMatch: RegExpExecArray | null;
-  while ((textMatch = textPattern.exec(content)) !== null) {
-    const text = textMatch[1]?.trim() ?? '';
-    if (/\$\{/.test(text)) {
-      continue;
-    }
+  return (
+    hasFlaggedTextInLitTemplates(content) ||
+    hasFlaggedTextInDomAssignment(content) ||
+    hasFlaggedTextInXulAttribute(content)
+  );
+}
 
-    if (Array.from(text).length <= 1) {
-      continue;
-    }
+function isFlaggableText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/\$\{/.test(trimmed)) return false;
+  if (Array.from(trimmed).length <= 1) return false;
+  if (isSymbolOnlyText(trimmed)) return false;
+  return true;
+}
 
-    if (isSymbolOnlyText(text)) {
-      continue;
+function hasFlaggedTextInLitTemplates(content: string): boolean {
+  // Match `html\`…\`` regions, anchored on a non-identifier char before `html`
+  // so substrings like `otherhtml` do not spuriously open a template.
+  const htmlPattern = /(?:^|[^a-zA-Z0-9_$])html`([\s\S]*?)`/g;
+  let litMatch: RegExpExecArray | null;
+  while ((litMatch = htmlPattern.exec(content)) !== null) {
+    const region = litMatch[1] ?? '';
+    const textPattern = />([^<$\s][^<$]*)</g;
+    let textMatch: RegExpExecArray | null;
+    while ((textMatch = textPattern.exec(region)) !== null) {
+      const text = textMatch[1] ?? '';
+      if (!isFlaggableText(text)) continue;
+      if (isWithinLocalizedElement(region, textMatch.index)) continue;
+      return true;
     }
-
-    if (isWithinLocalizedElement(content, textMatch.index)) {
-      continue;
-    }
-
-    return true;
   }
+  return false;
+}
 
+function hasFlaggedTextInDomAssignment(content: string): boolean {
+  // `<expr>.textContent = "abc"` and `<expr>.innerHTML = "abc"` — these are
+  // user-visible render paths. Template-literal RHS is excluded (usually
+  // dynamic), matching the `${` guard used elsewhere in this helper.
+  const assignPattern = /\.(?:textContent|innerHTML)\s*=\s*(["'])((?:\\.|(?!\1).)*)\1/g;
+  let match: RegExpExecArray | null;
+  while ((match = assignPattern.exec(content)) !== null) {
+    const text = match[2] ?? '';
+    if (isFlaggableText(text)) return true;
+  }
+  return false;
+}
+
+function hasFlaggedTextInXulAttribute(content: string): boolean {
+  // Assignments like `node.setAttribute("label", "Save")` or JS-built XUL
+  // attributes `label="…"` / `title="…"` / `tooltiptext="…"` in template
+  // literals outside Lit blocks. Covers DOM built via createXULElement.
+  const setAttrPattern =
+    /setAttribute\s*\(\s*["'](?:label|title|tooltiptext)["']\s*,\s*(["'])((?:\\.|(?!\1).)*)\1/g;
+  let setAttrMatch: RegExpExecArray | null;
+  while ((setAttrMatch = setAttrPattern.exec(content)) !== null) {
+    const text = setAttrMatch[2] ?? '';
+    if (isFlaggableText(text)) return true;
+  }
   return false;
 }
 
@@ -173,6 +311,27 @@ export function collectCssVariableReferences(cssContent: string): string[] {
   return referencedVariables;
 }
 
+/**
+ * Collects CSS custom property *declarations* — names appearing on the
+ * left-hand side of a `--name:` declaration. Used to auto-exempt
+ * component-local runtime variables from the token-prefix check: if the
+ * component both declares and consumes a variable in its own CSS file, it
+ * is a local runtime channel, not a design-token reference.
+ *
+ * The anchor `(?:^|[{;,\s])` rules out `var(--name)` occurrences (which are
+ * always preceded by `(`), so references are not mistaken for declarations.
+ */
+export function collectCssVariableDeclarations(cssContent: string): Set<string> {
+  const declared = new Set<string>();
+  const pattern = /(?:^|[{;,\s])(--[\w-]+)\s*:/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(cssContent)) !== null) {
+    const name = match[1];
+    if (name) declared.add(name);
+  }
+  return declared;
+}
+
 async function collectInheritedOverrideVariables(
   tagName: string,
   config: FurnaceConfig,
@@ -204,14 +363,20 @@ export async function getTokenPrefixContext(
   type: ComponentType,
   config: FurnaceConfig,
   root: string | undefined
-): Promise<{ allowlist: Set<string>; inheritedOverrideVars: Set<string> }> {
+): Promise<{
+  allowlist: Set<string>;
+  inheritedOverrideVars: Set<string>;
+  runtimeVariables: Set<string>;
+}> {
   const allowlist = new Set(config.tokenAllowlist ?? []);
+  const runtimeVariables = new Set(config.runtimeVariables ?? []);
   if (type !== 'override' || !root) {
-    return { allowlist, inheritedOverrideVars: new Set<string>() };
+    return { allowlist, inheritedOverrideVars: new Set<string>(), runtimeVariables };
   }
 
   return {
     allowlist,
     inheritedOverrideVars: await collectInheritedOverrideVariables(tagName, config, root),
+    runtimeVariables,
   };
 }

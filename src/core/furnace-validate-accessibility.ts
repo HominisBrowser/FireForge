@@ -11,6 +11,7 @@ import {
   hasGenericInteractiveElement,
   hasPositiveTabindex,
   hasTemplateClickHandler,
+  hasTemplateClickOnSyntheticInteractive,
   hasTemplateKeyboardHandler,
   hasUnlabelledFormInput,
 } from './furnace-validate-helpers.js';
@@ -42,7 +43,13 @@ export async function validateAccessibility(
 
   const hasClick = hasTemplateClickHandler(content);
   const hasKeyboardHandler = hasTemplateKeyboardHandler(content);
-  if (hasClick && !hasKeyboardHandler) {
+  // Native interactive elements (<button>, <a href>, form controls,
+  // moz-button/moz-toggle/etc.) dispatch click on Enter/Space via the
+  // platform, so a duplicate keyboard handler would usually double-fire.
+  // Only flag synthetic markup (e.g. `<div @click>`) where the activation
+  // path has to be wired manually.
+  const hasClickOnSynthetic = hasTemplateClickOnSyntheticInteractive(content);
+  if (hasClickOnSynthetic && !hasKeyboardHandler) {
     issues.push(
       createIssue(
         tagName,

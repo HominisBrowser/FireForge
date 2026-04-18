@@ -6,6 +6,7 @@ import { pathExists, readText } from '../utils/fs.js';
 import { hasRawCssColors } from '../utils/regex.js';
 import {
   classExtendsMozLitElement,
+  collectCssVariableDeclarations,
   collectCssVariableReferences,
   createIssue,
   getTokenPrefixContext,
@@ -82,28 +83,34 @@ async function validateCssCompatibility(
   }
 
   if (config?.tokenPrefix) {
-    const { allowlist, inheritedOverrideVars } = await getTokenPrefixContext(
+    const { allowlist, inheritedOverrideVars, runtimeVariables } = await getTokenPrefixContext(
       tagName,
       type,
       config,
       root
     );
 
+    // Auto-exempt component-local runtime channels: a CSS custom property
+    // both declared and consumed in the same file is a runtime state
+    // channel (e.g. `--cam-x`), not a design-token reference. See
+    // `runtimeVariables` in furnace.json for cross-component cases.
+    const localDeclarations = collectCssVariableDeclarations(cssContent);
+
     for (const prop of collectCssVariableReferences(cssContent)) {
-      if (
-        !prop.startsWith(config.tokenPrefix) &&
-        !allowlist.has(prop) &&
-        !inheritedOverrideVars.has(prop)
-      ) {
-        issues.push(
-          createIssue(
-            tagName,
-            'error',
-            'token-prefix-violation',
-            `CSS references var(${prop}) which does not match the required token prefix "${config.tokenPrefix}". Use a design token or add to tokenAllowlist.`
-          )
-        );
-      }
+      if (prop.startsWith(config.tokenPrefix)) continue;
+      if (allowlist.has(prop)) continue;
+      if (inheritedOverrideVars.has(prop)) continue;
+      if (runtimeVariables.has(prop)) continue;
+      if (localDeclarations.has(prop)) continue;
+
+      issues.push(
+        createIssue(
+          tagName,
+          'error',
+          'token-prefix-violation',
+          `CSS references var(${prop}) which does not match the required token prefix "${config.tokenPrefix}". Use a design token, add to tokenAllowlist, or (for runtime state channels) list the variable in runtimeVariables.`
+        )
+      );
     }
   }
 

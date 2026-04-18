@@ -104,4 +104,13 @@ export interface PatchLintIssue {
   message: string;
   /** Severity: errors block export, warnings are advisory, notices are informational (not counted) */
   severity: 'error' | 'warning' | 'notice';
+  /**
+   * Diff-scoping tag populated by `lint --since <rev>`. Absent when the
+   * caller did not request diff-scoping.
+   *
+   * - `introduced` — the issue's file was touched in the diff since `<rev>`.
+   * - `cumulative` — the issue is pre-existing patch-state drift not
+   *   introduced by the current task.
+   */
+  tag?: 'introduced' | 'cumulative';
 }

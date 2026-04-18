@@ -10,6 +10,9 @@ class MockStream extends EventEmitter {}
 interface MockChildProcess extends EventEmitter {
   stdout: MockStream;
   stderr: MockStream;
+  kill: (signal?: NodeJS.Signals) => boolean;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
 }
 
 const { mockSpawn } = vi.hoisted(() => ({
@@ -21,10 +24,14 @@ vi.mock('node:child_process', () => ({
 }));
 
 function makeChild(): MockChildProcess {
-  return Object.assign(new EventEmitter(), {
+  const child = Object.assign(new EventEmitter(), {
     stdout: new MockStream(),
     stderr: new MockStream(),
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    kill: vi.fn() as unknown as (signal?: NodeJS.Signals) => boolean,
   });
+  return child;
 }
 
 describe('exec', () => {
@@ -105,6 +112,59 @@ describe('execInherit', () => {
     child.emit('close', 7, null);
 
     await expect(promise).resolves.toBe(7);
+  });
+
+  it('forwards SIGINT to the child as SIGTERM and resolves once the child closes', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = execInherit('long-running', [], { shutdownGraceMs: 50 });
+    // Parent receives SIGINT — helper should kill the child with SIGTERM, not
+    // synchronously exit the Node process.
+    process.emit('SIGINT');
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+
+    // Cooperative child exits promptly on SIGTERM.
+    child.emit('close', null, 'SIGTERM');
+    await expect(promise).resolves.toBe(128 + 15);
+  });
+
+  it('escalates to SIGKILL after the grace window if the child does not exit', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = makeChild();
+      mockSpawn.mockReturnValue(child);
+      const promise = execInherit('stubborn', [], { shutdownGraceMs: 50 });
+
+      process.emit('SIGINT');
+      expect(child.kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
+
+      vi.advanceTimersByTime(100);
+      expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+
+      child.emit('close', null, 'SIGKILL');
+      await expect(promise).resolves.toBe(128 + 9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('removes its signal listeners on close so repeated calls do not leak handlers', async () => {
+    const baselineSigint = process.listenerCount('SIGINT');
+    const baselineSigterm = process.listenerCount('SIGTERM');
+
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+    const promise = execInherit('echo', ['hello']);
+
+    expect(process.listenerCount('SIGINT')).toBe(baselineSigint + 1);
+    expect(process.listenerCount('SIGTERM')).toBe(baselineSigterm + 1);
+
+    child.emit('close', 0, null);
+    await promise;
+
+    expect(process.listenerCount('SIGINT')).toBe(baselineSigint);
+    expect(process.listenerCount('SIGTERM')).toBe(baselineSigterm);
   });
 });
 

@@ -14,18 +14,36 @@ import {
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { buildPatchQueueContext, lintExportedPatch, lintPatchQueue } from '../core/patch-lint.js';
+import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 
+/** Options controlling how the lint command filters and tags its output. */
+export interface LintCommandOptions {
+  /**
+   * When set, tag each issue as `introduced` or `cumulative` based on
+   * whether its file changed since this git revision (e.g. `HEAD`, a
+   * branch name, or a SHA). Issues are not filtered — the full set still
+   * prints and the exit code is unchanged — but a diff-scoped summary
+   * makes it trivial to see which errors the current task introduced.
+   */
+  since?: string;
+}
+
 /**
  * Runs the lint command to check engine changes against patch quality rules.
  * @param projectRoot - Root directory of the project
  * @param files - Optional file/directory paths to lint (relative to engine/)
+ * @param options - Additional lint options such as `--since` diff-scoping
  */
-export async function lintCommand(projectRoot: string, files: string[]): Promise<void> {
+export async function lintCommand(
+  projectRoot: string,
+  files: string[],
+  options: LintCommandOptions = {}
+): Promise<void> {
   intro('FireForge Lint');
 
   const paths = getProjectPaths(projectRoot);
@@ -131,21 +149,44 @@ export async function lintCommand(projectRoot: string, files: string[]): Promise
     return;
   }
 
+  // Diff-scoping: tag each issue as introduced-in-current-task vs
+  // cumulative-pre-existing-drift. Never filters — full set still prints
+  // and exit code semantics are unchanged — but the per-line prefix and
+  // summary make triage trivial on a large patch series.
+  const sinceActive = Boolean(options.since);
+  if (options.since) {
+    const diffFiles = await collectDiffFilePaths(paths.engine, options.since);
+    tagLintIssues(issues, diffFiles);
+  }
+
   const errors = issues.filter((i) => i.severity === 'error');
   const warnings = issues.filter((i) => i.severity === 'warning');
   const notices = issues.filter((i) => i.severity === 'notice');
 
+  const tagPrefix = (issue: PatchLintIssue): string =>
+    sinceActive && issue.tag ? `[${issue.tag}] ` : '';
+
   for (const issue of notices) {
-    info(`NOTICE [${issue.check}] ${issue.file}: ${issue.message}`);
+    info(`${tagPrefix(issue)}NOTICE [${issue.check}] ${issue.file}: ${issue.message}`);
   }
   for (const issue of warnings) {
-    warn(`[${issue.check}] ${issue.file}: ${issue.message}`);
+    warn(`${tagPrefix(issue)}[${issue.check}] ${issue.file}: ${issue.message}`);
   }
   for (const issue of errors) {
-    warn(`ERROR [${issue.check}] ${issue.file}: ${issue.message}`);
+    warn(`${tagPrefix(issue)}ERROR [${issue.check}] ${issue.file}: ${issue.message}`);
   }
 
-  info(`\nLint: ${errors.length} error(s), ${warnings.length} warning(s)`);
+  if (sinceActive) {
+    const introducedErrors = errors.filter((i) => i.tag === 'introduced').length;
+    const introducedWarnings = warnings.filter((i) => i.tag === 'introduced').length;
+    const cumulativeErrors = errors.length - introducedErrors;
+    const cumulativeWarnings = warnings.length - introducedWarnings;
+    info(
+      `\nLint: ${introducedErrors} introduced error(s), ${introducedWarnings} introduced warning(s); ${cumulativeErrors} cumulative error(s), ${cumulativeWarnings} cumulative warning(s)`
+    );
+  } else {
+    info(`\nLint: ${errors.length} error(s), ${warnings.length} warning(s)`);
+  }
 
   if (errors.length > 0) {
     outro('Lint failed');
@@ -165,9 +206,17 @@ export function registerLint(
   program
     .command('lint [paths...]')
     .description('Lint engine changes against patch quality rules')
+    .option(
+      '--since <git-rev>',
+      'Tag issues as [introduced] or [cumulative] based on whether the file changed since <git-rev> (e.g. HEAD, a branch, a SHA)'
+    )
     .action(
-      withErrorHandling(async (paths: string[]) => {
-        await lintCommand(getProjectRoot(), paths);
+      withErrorHandling(async (paths: string[], options: { since?: string }) => {
+        const lintOptions: LintCommandOptions = {};
+        if (options.since !== undefined) {
+          lintOptions.since = options.since;
+        }
+        await lintCommand(getProjectRoot(), paths, lintOptions);
       })
     );
 }

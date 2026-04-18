@@ -38,6 +38,17 @@ vi.mock('../../core/build-prepare.js', () => ({
   prepareBuildEnvironment: vi.fn(),
 }));
 
+vi.mock('../../core/build-baseline.js', () => ({
+  readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
+  writeBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
+}));
+
+vi.mock('../../core/build-audit.js', () => ({
+  auditBuildArtifacts: vi.fn(() =>
+    Promise.resolve({ updated: 0, stale: 0, missing: 0, skipped: 0, entries: [] })
+  ),
+}));
+
 import { validateBrandOverride } from '../../core/brand-validation.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
@@ -74,7 +85,10 @@ describe('buildCommand', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(prepareBuildEnvironment).mockResolvedValue({ furnaceApplied: 0 });
+    vi.mocked(prepareBuildEnvironment).mockResolvedValue({
+      furnaceApplied: 0,
+      reconfigured: false,
+    });
     vi.mocked(build).mockResolvedValue(0);
     vi.mocked(buildUI).mockResolvedValue(0);
   });
@@ -110,7 +124,8 @@ describe('buildCommand', () => {
     expect(prepareBuildEnvironment).toHaveBeenCalledWith(
       '/project',
       makeProjectPaths(),
-      expect.objectContaining({ binaryName: 'mybrowser' })
+      expect.objectContaining({ binaryName: 'mybrowser' }),
+      expect.objectContaining({ previousBaseline: undefined })
     );
     expect(buildUI).toHaveBeenCalledWith('/project/engine');
     expect(build).not.toHaveBeenCalled();
@@ -212,7 +227,10 @@ describe('registerBuild', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(prepareBuildEnvironment).mockResolvedValue({ furnaceApplied: 0 });
+    vi.mocked(prepareBuildEnvironment).mockResolvedValue({
+      furnaceApplied: 0,
+      reconfigured: false,
+    });
     vi.mocked(build).mockResolvedValue(0);
     vi.mocked(buildUI).mockResolvedValue(0);
   });

@@ -5,7 +5,12 @@ import { Command } from 'commander';
 
 import { DEFAULT_BROWSER_SUBSCRIPT_DIR, wireSubscript } from '../core/browser-wire.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import {
+  furnaceConfigExists as checkFurnaceConfigExists,
+  loadFurnaceConfig,
+} from '../core/furnace-config.js';
 import { consumeParserFallbackEvents } from '../core/parser-fallback.js';
+import { DEFAULT_DOM_TARGET } from '../core/wire-dom-fragment.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { WireOptions } from '../types/commands/index.js';
@@ -22,6 +27,7 @@ function printWireDryRun(
   name: string,
   subscriptDir: string,
   domFilePath: string | undefined,
+  domTargetPath: string,
   options: WireOptions
 ): void {
   info('[dry-run] Would wire subscript:');
@@ -38,7 +44,7 @@ function printWireDryRun(
       join(engineDir, subscriptDir),
       join(engineDir, domFilePath)
     ).replace(/\\/g, '/');
-    info(`  browser.xhtml: #include ${includePath}`);
+    info(`  ${domTargetPath}: #include ${includePath}`);
   }
   const relPath = relative(
     join(engineDir, BROWSER_BASE_DIR),
@@ -46,6 +52,42 @@ function printWireDryRun(
   ).replace(/\\/g, '/');
   info(`  jar.mn: content/browser/${name}.js (${relPath}/${name}.js)`);
   outro('Dry run complete');
+}
+
+/**
+ * Resolves the chrome document the `#include` directive is inserted into.
+ *
+ * Preference order:
+ *   1. `--target <path>` CLI flag (explicit caller intent)
+ *   2. First entry of `furnace.json.tokenHostDocuments` (fork-configured
+ *      chrome doc list; already consumed by the missing-token-link
+ *      validator and the doctor check)
+ *   3. `browser/base/content/browser.xhtml` (upstream default)
+ *
+ * Step 2 is silent — a missing / invalid furnace.json falls through to the
+ * upstream default rather than surfacing a warning, because forks that don't
+ * use furnace shouldn't have to configure anything.
+ */
+async function resolveDomTargetPath(
+  projectRoot: string,
+  explicit: string | undefined
+): Promise<string> {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  if (await checkFurnaceConfigExists(projectRoot)) {
+    try {
+      const furnaceConfig = await loadFurnaceConfig(projectRoot);
+      const first = furnaceConfig.tokenHostDocuments?.[0];
+      if (first !== undefined && first.length > 0) {
+        return first;
+      }
+    } catch {
+      // Fall through to default — a broken furnace.json should not block
+      // the wire command. The doctor surfaces that issue separately.
+    }
+  }
+  return DEFAULT_DOM_TARGET;
 }
 
 /**
@@ -128,6 +170,28 @@ export async function wireCommand(
     domFilePath = toRootRelativePath(paths.engine, options.dom);
   }
 
+  // Resolve the chrome document the `#include` directive will land in.
+  // Only consulted when `--dom` is supplied — we still resolve it here so
+  // the dry-run plan can print the target accurately.
+  if (options.target !== undefined && !isContainedRelativePath(options.target)) {
+    throw new InvalidArgumentError(
+      `Target chrome document must stay within engine/: ${options.target}`,
+      'target'
+    );
+  }
+  const domTargetPath = await resolveDomTargetPath(projectRoot, options.target);
+  if (domFilePath) {
+    const paths = getProjectPaths(projectRoot);
+    if (!options.dryRun && !(await pathExists(join(paths.engine, domTargetPath)))) {
+      throw new InvalidArgumentError(
+        `Chrome document not found in engine: ${domTargetPath}\n` +
+          'Set "tokenHostDocuments" in furnace.json (first entry is used by wire) ' +
+          'or pass --target <path>.',
+        'target'
+      );
+    }
+  }
+
   // Verify the subscript file exists in engine/ (skip for dry-run)
   if (!options.dryRun) {
     const paths = getProjectPaths(projectRoot);
@@ -142,7 +206,14 @@ export async function wireCommand(
   }
 
   if (options.dryRun) {
-    printWireDryRun(getProjectPaths(projectRoot).engine, name, subscriptDir, domFilePath, options);
+    printWireDryRun(
+      getProjectPaths(projectRoot).engine,
+      name,
+      subscriptDir,
+      domFilePath,
+      domTargetPath,
+      options
+    );
     return;
   }
 
@@ -150,6 +221,7 @@ export async function wireCommand(
     ...(options.init !== undefined ? { init: options.init } : {}),
     ...(options.destroy !== undefined ? { destroy: options.destroy } : {}),
     ...(domFilePath !== undefined ? { domFilePath } : {}),
+    ...(domFilePath !== undefined && domTargetPath !== DEFAULT_DOM_TARGET ? { domTargetPath } : {}),
     ...(options.after !== undefined ? { after: options.after } : {}),
     ...(subscriptDir !== DEFAULT_BROWSER_SUBSCRIPT_DIR ? { subscriptDir } : {}),
     dryRun: false,
@@ -187,9 +259,9 @@ export async function wireCommand(
 
   if (domFilePath) {
     if (result.domInserted) {
-      success(`Inserted #include directive into browser.xhtml`);
+      success(`Inserted #include directive into ${domTargetPath}`);
     } else {
-      info(`#include directive already present in browser.xhtml (skipped)`);
+      info(`#include directive already present in ${domTargetPath} (skipped)`);
     }
   }
 
@@ -212,12 +284,17 @@ export function registerWire(
     .description('Wire a chrome subscript into the browser')
     .option('--init <expression>', 'Init expression for browser-init.js onLoad()')
     .option('--destroy <expression>', 'Destroy expression for browser-init.js onUnload()')
-    .option('--dom <file>', 'XHTML fragment file to insert into browser.xhtml')
+    .option('--dom <file>', 'XHTML fragment file to insert into the chrome document')
     .option('--dry-run', 'Show what would be changed without writing')
     .option('--after <name>', 'Insert init block after the block for this name')
     .option(
       '--subscript-dir <dir>',
       'Subscript directory relative to engine/ (default: browser/base/content)'
+    )
+    .option(
+      '--target <path>',
+      'Chrome document to insert --dom into, relative to engine/ ' +
+        '(default: first entry of furnace.json tokenHostDocuments, else browser/base/content/browser.xhtml)'
     )
     .action(
       withErrorHandling(
@@ -230,6 +307,7 @@ export function registerWire(
             dryRun?: boolean;
             after?: string;
             subscriptDir?: string;
+            target?: string;
           }
         ) => {
           await wireCommand(getProjectRoot(), name, pickDefined(options));

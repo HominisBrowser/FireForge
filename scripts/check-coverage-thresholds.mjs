@@ -34,6 +34,25 @@ const MODULE_THRESHOLDS = {
   'src/commands/run.ts': { lines: 95, branches: 86 },
   'src/core/wire-dom-fragment.ts': { lines: 93, branches: 82 },
   'src/commands/furnace/override.ts': { lines: 98, branches: 98 },
+  // Pure pattern-based error-hint translator — trivially testable.
+  'src/core/mach-error-hints.ts': { lines: 100, branches: 95, functions: 100 },
+  // Post-build audit (warn-only) — critical because misdetections here
+  // cause noisy warnings on every successful build.
+  'src/core/build-audit.ts': { lines: 88, branches: 75 },
+  // Audit helpers — pure path-resolution and Python-style moz.build
+  // gate detection. Both are easy to unit-test exhaustively.
+  'src/core/build-audit-resolve.ts': { lines: 90, branches: 80 },
+  'src/core/build-audit-platform.ts': { lines: 88, branches: 80 },
+  // Build baseline marker — tiny file, easy to hit high coverage.
+  'src/core/build-baseline.ts': { lines: 95, branches: 85 },
+  // Lint diff-scoping helper — pure filtering + git integration.
+  'src/core/patch-lint-diff-tag.ts': { lines: 95, branches: 80 },
+  // Chrome-doc scaffolder — transactional, journal-backed.
+  'src/commands/furnace/chrome-doc.ts': { lines: 88, branches: 78 },
+  // Chrome-doc templates — pure string assembly.
+  'src/commands/furnace/chrome-doc-templates.ts': { lines: 100, branches: 95, functions: 100 },
+  // MochiKit scaffolder — mirrors the xpcshell scaffolder shape.
+  'src/commands/furnace/create-mochikit.ts': { lines: 95, branches: 80 },
 };
 
 function loadCoverageSummary() {

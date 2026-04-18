@@ -162,10 +162,26 @@ describe('validateAccessibility', () => {
     expect(roleIssues[0]?.severity).toBe('warning');
   });
 
-  it('warns when @click is used without a keyboard handler', async () => {
+  it('warns when @click on synthetic interactive markup lacks a keyboard handler', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`
       class MyComponent extends MozLitElement {
+        render() {
+          return html\`<div role="button" tabindex="0" @click=\${() => doSomething()}>Open</div>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(true);
+  });
+
+  it('does not warn when @click sits on a native interactive element', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        static shadowRootOptions = { mode: 'open', delegatesFocus: true };
+
         render() {
           return html\`<button @click=\${() => doSomething()}>Open</button>\`;
         }
@@ -173,7 +189,53 @@ describe('validateAccessibility', () => {
     `);
 
     const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(false);
+  });
+
+  it('does not warn when @click sits on an anchor with href', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        static shadowRootOptions = { mode: 'open', delegatesFocus: true };
+
+        render() {
+          return html\`<a href="#next" @click=\${() => doSomething()}>Next</a>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(false);
+  });
+
+  it('warns when @click sits on a bare anchor without href', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<a role="button" @click=\${() => doSomething()}>Next</a>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
     expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(true);
+  });
+
+  it('does not warn when @click sits on a moz-button', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        static shadowRootOptions = { mode: 'open', delegatesFocus: true };
+
+        render() {
+          return html\`<moz-button @click=\${() => doSomething()}>Open</moz-button>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'no-keyboard-handler')).toBe(false);
   });
 
   it('does not warn when click handlers are paired with keyboard handlers and delegatesFocus', async () => {
@@ -411,6 +473,68 @@ describe('validateCompatibility', () => {
     );
 
     expect(issues.some((issue) => issue.check === 'token-prefix-violation')).toBe(false);
+  });
+
+  it('allows runtime variables listed in runtimeVariables', async () => {
+    const runtimeConfig: FurnaceConfig = {
+      ...baseConfig,
+      runtimeVariables: ['--cross-component-channel'],
+    };
+
+    mockPathExists.mockImplementation((path: string) =>
+      Promise.resolve(path === '/components/custom/moz-audit-card/moz-audit-card.css')
+    );
+    mockReadText.mockResolvedValue(
+      ':host { transform: translateX(var(--cross-component-channel)); }'
+    );
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-audit-card',
+      'moz-audit-card',
+      'custom',
+      runtimeConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'token-prefix-violation')).toBe(false);
+  });
+
+  it('auto-exempts component-local variables declared and consumed in the same CSS file', async () => {
+    mockPathExists.mockImplementation((path: string) =>
+      Promise.resolve(path === '/components/custom/moz-audit-card/moz-audit-card.css')
+    );
+    // `--cam-x` is both declared and read in this file — runtime state
+    // channel, not a design token reference.
+    mockReadText.mockResolvedValue(':host { --cam-x: 0; transform: translateX(var(--cam-x)); }');
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-audit-card',
+      'moz-audit-card',
+      'custom',
+      baseConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'token-prefix-violation')).toBe(false);
+  });
+
+  it('still flags referenced-but-not-declared unprefixed variables', async () => {
+    mockPathExists.mockImplementation((path: string) =>
+      Promise.resolve(path === '/components/custom/moz-audit-card/moz-audit-card.css')
+    );
+    // `--rogue` is read but never declared in this component's CSS — not a
+    // local runtime channel, so the token-prefix violation should still fire.
+    mockReadText.mockResolvedValue(':host { color: var(--rogue); }');
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-audit-card',
+      'moz-audit-card',
+      'custom',
+      baseConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'token-prefix-violation')).toBe(true);
   });
 });
 
@@ -695,6 +819,58 @@ describe('validateTokenLink', () => {
     const issues = await validateTokenLink('/components/my-comp', 'my-comp', '/project');
     expect(issues).toHaveLength(0);
   });
+
+  it('accepts multiple chrome host documents — passes when ANY links the tokens CSS', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockImplementation((path: string) => {
+      if (path.includes('.css')) {
+        return Promise.resolve(':host { color: var(--testbrowser-canvas-fg); }');
+      }
+      // Check the more-specific filename first — `browser.xhtml` is a suffix
+      // of `mybrowser.xhtml`, so `endsWith('browser.xhtml')` on the wrong
+      // branch would swallow the token link and flip the assertion.
+      if (path.endsWith('/mybrowser.xhtml')) {
+        return Promise.resolve(
+          '<window><link rel="stylesheet" href="testbrowser-tokens.css" /><html:body></html:body></window>'
+        );
+      }
+      if (path.endsWith('/browser.xhtml')) {
+        return Promise.resolve('<window><html:body></html:body></window>');
+      }
+      return Promise.resolve('');
+    });
+
+    const issues = await validateTokenLink(
+      '/components/my-comp',
+      'my-comp',
+      '/project',
+      '--testbrowser-',
+      ['browser/base/content/browser.xhtml', 'browser/base/content/mybrowser.xhtml']
+    );
+    expect(issues).toHaveLength(0);
+  });
+
+  it('warns when none of the configured chrome host documents link the tokens CSS', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockImplementation((path: string) => {
+      if (path.includes('.css')) {
+        return Promise.resolve(':host { color: var(--testbrowser-canvas-fg); }');
+      }
+      return Promise.resolve('<window><html:body></html:body></window>');
+    });
+
+    const issues = await validateTokenLink(
+      '/components/my-comp',
+      'my-comp',
+      '/project',
+      '--testbrowser-',
+      ['browser/base/content/browser.xhtml', 'browser/base/content/mybrowser.xhtml']
+    );
+    const tokenIssues = issues.filter((i) => i.check === 'missing-token-link');
+    expect(tokenIssues).toHaveLength(1);
+    expect(tokenIssues[0]?.message).toContain('browser.xhtml');
+    expect(tokenIssues[0]?.message).toContain('mybrowser.xhtml');
+  });
 });
 
 describe('validateAccessibility — hardcoded-text', () => {
@@ -726,5 +902,83 @@ describe('validateAccessibility — hardcoded-text', () => {
     const issues = await validateAccessibility('/components/my-comp', 'my-comp');
     const textIssues = issues.filter((i) => i.check === 'hardcoded-text');
     expect(textIssues).toHaveLength(1);
+  });
+
+  it('does not flag long diagnostic strings passed to console.error', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class Controller {
+        handle() {
+          console.error("Failed to process tile ID AB-123: camera out of bounds");
+          if (this.camX > 0 && this.tileZ < 100) { this.resync(); }
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    const textIssues = issues.filter((i) => i.check === 'hardcoded-text');
+    expect(textIssues).toHaveLength(0);
+  });
+
+  it('does not flag identifier string literals passed to querySelector', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class Controller {
+        bind() {
+          this.ownerDocument.querySelector("canvas.tile-editor-root");
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    const textIssues = issues.filter((i) => i.check === 'hardcoded-text');
+    expect(textIssues).toHaveLength(0);
+  });
+
+  it('flags text assigned via .textContent', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class Controller {
+        render() {
+          this.label.textContent = "Save changes";
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    const textIssues = issues.filter((i) => i.check === 'hardcoded-text');
+    expect(textIssues).toHaveLength(1);
+  });
+
+  it('flags text set via setAttribute("label", ...)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class Controller {
+        build() {
+          const item = document.createXULElement("toolbarbutton");
+          item.setAttribute("label", "Open preferences");
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    const textIssues = issues.filter((i) => i.check === 'hardcoded-text');
+    expect(textIssues).toHaveLength(1);
+  });
+
+  it('honours file-wide furnace-ignore: hardcoded-text suppression', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      // furnace-ignore: hardcoded-text
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<span>Intentional fallback text</span>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    const textIssues = issues.filter((i) => i.check === 'hardcoded-text');
+    expect(textIssues).toHaveLength(0);
   });
 });

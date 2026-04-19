@@ -105,6 +105,67 @@ describe('furnace-config helpers', () => {
     });
   });
 
+  it('round-trips sharedFtl through validation when localized is true', () => {
+    const result = validateFurnaceConfig({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'hominis-dock-button': {
+          description: 'Dock button',
+          targetPath: 'toolkit/content/widgets/hominis-dock-button',
+          register: true,
+          localized: true,
+          sharedFtl: 'browser/hominis-dock.ftl',
+        },
+      },
+    });
+    expect(result.custom['hominis-dock-button']?.sharedFtl).toBe('browser/hominis-dock.ftl');
+  });
+
+  it('rejects sharedFtl when localized is false', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'my-widget': {
+            description: 'Widget',
+            targetPath: 'toolkit/content/widgets/my-widget',
+            register: true,
+            localized: false,
+            sharedFtl: 'browser/feature.ftl',
+          },
+        },
+      })
+    ).toThrow(/sharedFtl.*requires.*localized/);
+  });
+
+  it('rejects sharedFtl containing characters that would break the generated .mjs', () => {
+    // Backtick, ${, and backslash would close the template literal or
+    // introduce escaped sequences the generator does not expect.
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'my-widget': {
+            description: 'Widget',
+            targetPath: 'toolkit/content/widgets/my-widget',
+            register: true,
+            localized: true,
+            sharedFtl: 'browser/`hack`.ftl',
+          },
+        },
+      })
+    ).toThrow(/backticks/);
+  });
+
   it('rejects invalid traversal and malformed arrays during validation', () => {
     expect(() =>
       validateFurnaceConfig({
@@ -133,6 +194,71 @@ describe('furnace-config helpers', () => {
         custom: {},
       })
     ).toThrow('array must contain only strings');
+  });
+
+  it('round-trips runtimeVariables through validation', () => {
+    const result = validateFurnaceConfig({
+      version: 1,
+      componentPrefix: 'moz-',
+      tokenPrefix: '--mybrowser-',
+      runtimeVariables: ['--cam-x', '--tile-z'],
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+    expect(result.runtimeVariables).toEqual(['--cam-x', '--tile-z']);
+  });
+
+  it('rejects runtimeVariables entries that do not start with "--"', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        runtimeVariables: ['cam-x'],
+        stock: [],
+        overrides: {},
+        custom: {},
+      })
+    ).toThrow(/must start with "--"/);
+  });
+
+  it('accepts tokenHostDocuments and validates that entries stay within the engine tree', () => {
+    expect(
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        tokenPrefix: '--mybrowser-',
+        tokenHostDocuments: [
+          'browser/base/content/browser.xhtml',
+          'browser/base/content/mybrowser.xhtml',
+        ],
+        stock: [],
+        overrides: {},
+        custom: {},
+      }).tokenHostDocuments
+    ).toEqual(['browser/base/content/browser.xhtml', 'browser/base/content/mybrowser.xhtml']);
+
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        tokenHostDocuments: ['../escape.xhtml'],
+        stock: [],
+        overrides: {},
+        custom: {},
+      })
+    ).toThrow(/must stay within the engine tree/);
+
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        tokenHostDocuments: [''],
+        stock: [],
+        overrides: {},
+        custom: {},
+      })
+    ).toThrow(/non-empty strings/);
   });
 
   it('rejects stock entries that would escape the stories directory', () => {

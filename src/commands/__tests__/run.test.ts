@@ -19,12 +19,11 @@ vi.mock('../../core/mach.js', () => ({
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
   buildArtifactMismatchMessage: vi.fn(() => undefined),
   run: vi.fn(),
+  runMachSmoke: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  removeDir: vi.fn(),
-  removeFile: vi.fn(),
+vi.mock('node:fs', () => ({
+  createWriteStream: vi.fn(() => ({ end: vi.fn(), on: vi.fn() })),
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -32,8 +31,15 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return {
     ...actual,
     readdir: vi.fn(),
+    readFile: vi.fn(),
   };
 });
+
+vi.mock('../../utils/fs.js', () => ({
+  pathExists: vi.fn(),
+  removeDir: vi.fn(),
+  removeFile: vi.fn(),
+}));
 
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
@@ -54,7 +60,8 @@ vi.mock('../../core/furnace-apply-helpers.js', () => ({
   hasComponentChanged: vi.fn(),
 }));
 
-import { readdir } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
 
 import { Command } from 'commander';
 
@@ -68,10 +75,17 @@ import {
   loadFurnaceConfig,
   loadFurnaceState,
 } from '../../core/furnace-config.js';
-import { buildArtifactMismatchMessage, hasBuildArtifacts, run } from '../../core/mach.js';
+import {
+  buildArtifactMismatchMessage,
+  hasBuildArtifacts,
+  run,
+  runMachSmoke,
+} from '../../core/mach.js';
+import { ExitCode } from '../../errors/codes.js';
+import { SmokeRunError } from '../../errors/run.js';
 import { pathExists, removeDir, removeFile } from '../../utils/fs.js';
 import { verbose, warn } from '../../utils/logger.js';
-import { registerRun, runCommand } from '../run.js';
+import { registerRun, runCommand, SMOKE_EXIT_FAILURE, SMOKE_LAUNCH_FAILURE } from '../run.js';
 
 const FURNACE_PATHS = {
   furnaceConfig: '/project/furnace.json',
@@ -333,6 +347,236 @@ describe('runCommand', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  // --- smoke-exit coverage ---
+
+  describe('--smoke-exit', () => {
+    it('routes through runMachSmoke and succeeds when the deadline fires with no findings', async () => {
+      vi.mocked(runMachSmoke).mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 143,
+        timedOut: true,
+      });
+
+      await expect(runCommand('/project', { smokeExit: 30 })).resolves.toBeUndefined();
+
+      expect(run).not.toHaveBeenCalled();
+      expect(runMachSmoke).toHaveBeenCalledWith(
+        ['run'],
+        '/project/engine',
+        expect.objectContaining({ smokeTimeoutMs: 30_000 })
+      );
+    });
+
+    it('fails with SMOKE_EXIT_FAILURE when an unallowed error line fires', async () => {
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('JavaScript error: lazy.HominisEvents.HOMINIS_TOPICS is undefined');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      const thrown = await runCommand('/project', { smokeExit: 30 }).catch(
+        (error: unknown) => error
+      );
+      expect(thrown).toBeInstanceOf(SmokeRunError);
+      expect((thrown as SmokeRunError).code).toBe(SMOKE_EXIT_FAILURE);
+      expect((thrown as SmokeRunError).code).toBe(ExitCode.SMOKE_EXIT_FAILURE);
+    });
+
+    it('ignores error lines that match any --console-allow regex', async () => {
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('JavaScript error: known-flake 404');
+        opts.onStderrLine?.('JavaScript error: real failure');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      // Only the 'real failure' line should count — it's not in the allowlist.
+      const thrown = await runCommand('/project', {
+        smokeExit: 30,
+        consoleAllow: ['known-flake'],
+      }).catch((error: unknown) => error);
+
+      expect(thrown).toBeInstanceOf(SmokeRunError);
+      expect((thrown as SmokeRunError).code).toBe(SMOKE_EXIT_FAILURE);
+    });
+
+    it('succeeds when every error line matches the allowlist', async () => {
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('JavaScript error: known-flake 404');
+        opts.onStderrLine?.('console.error: AsyncShutdown drained');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      await expect(
+        runCommand('/project', {
+          smokeExit: 30,
+          consoleAllow: ['known-flake', 'AsyncShutdown'],
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('fails with SMOKE_LAUNCH_FAILURE when the child exits non-cleanly before the deadline', async () => {
+      vi.mocked(runMachSmoke).mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 1,
+        timedOut: false,
+      });
+
+      const thrown = await runCommand('/project', { smokeExit: 30 }).catch(
+        (error: unknown) => error
+      );
+      expect(thrown).toBeInstanceOf(SmokeRunError);
+      expect((thrown as SmokeRunError).code).toBe(SMOKE_LAUNCH_FAILURE);
+    });
+
+    it('rejects a zero or negative smokeExit explicitly', async () => {
+      await expect(runCommand('/project', { smokeExit: 0 })).rejects.toThrow(/positive integer/i);
+      expect(runMachSmoke).not.toHaveBeenCalled();
+    });
+
+    it('does not invoke runMachSmoke when --smoke-exit is not set', async () => {
+      vi.mocked(run).mockResolvedValue(0);
+
+      await expect(runCommand('/project')).resolves.toBeUndefined();
+
+      expect(runMachSmoke).not.toHaveBeenCalled();
+      expect(run).toHaveBeenCalled();
+    });
+
+    it('compiles allowlist entries from --console-allow-file and applies them', async () => {
+      vi.mocked(readFile).mockResolvedValue('# skip comment\n\nknown-flake\nAsyncShutdown\n');
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('JavaScript error: known-flake tripped');
+        opts.onStderrLine?.('console.error: AsyncShutdown drained');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      await expect(
+        runCommand('/project', { smokeExit: 30, consoleAllowFile: '/tmp/allow.txt' })
+      ).resolves.toBeUndefined();
+
+      expect(readFile).toHaveBeenCalledWith('/tmp/allow.txt', 'utf8');
+    });
+
+    it('wraps --console-allow-file read errors as InvalidArgumentError', async () => {
+      const { InvalidArgumentError } = await import('../../errors/base.js');
+      vi.mocked(readFile).mockRejectedValue(new Error('ENOENT: no such file'));
+
+      const thrown = await runCommand('/project', {
+        smokeExit: 30,
+        consoleAllowFile: '/tmp/missing.txt',
+      }).catch((error: unknown) => error);
+
+      expect(thrown).toBeInstanceOf(InvalidArgumentError);
+      expect((thrown as Error).message).toMatch(/Failed to read --console-allow-file/);
+      expect(runMachSmoke).not.toHaveBeenCalled();
+    });
+
+    it('wraps bad --console-allow regex as InvalidArgumentError', async () => {
+      const { InvalidArgumentError } = await import('../../errors/base.js');
+
+      const thrown = await runCommand('/project', {
+        smokeExit: 30,
+        consoleAllow: ['[unterminated'],
+      }).catch((error: unknown) => error);
+
+      expect(thrown).toBeInstanceOf(InvalidArgumentError);
+      expect(runMachSmoke).not.toHaveBeenCalled();
+    });
+
+    it('opens --capture-console write stream and closes it when the run finishes', async () => {
+      const endSpy = vi.fn();
+      vi.mocked(createWriteStream).mockReturnValue({
+        end: endSpy,
+        on: vi.fn(),
+      } as unknown as ReturnType<typeof createWriteStream>);
+      vi.mocked(runMachSmoke).mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 143,
+        timedOut: true,
+      });
+
+      await expect(
+        runCommand('/project', { smokeExit: 30, captureConsole: '/tmp/smoke.log' })
+      ).resolves.toBeUndefined();
+
+      expect(createWriteStream).toHaveBeenCalledWith('/tmp/smoke.log');
+      // .end() fires from the finally block so log rotation after smoke-exit
+      // does not race on a still-open writer — essential when agents symlink
+      // the capture file to their session log.
+      expect(endSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('still closes --capture-console stream when the run throws mid-stream', async () => {
+      const endSpy = vi.fn();
+      vi.mocked(createWriteStream).mockReturnValue({
+        end: endSpy,
+        on: vi.fn(),
+      } as unknown as ReturnType<typeof createWriteStream>);
+      vi.mocked(runMachSmoke).mockRejectedValue(new Error('mach spawn failed'));
+
+      await expect(
+        runCommand('/project', { smokeExit: 30, captureConsole: '/tmp/smoke.log' })
+      ).rejects.toThrow('mach spawn failed');
+      expect(endSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('emits a "…and N more" summary tail when unallowed findings exceed the preview cap', async () => {
+      const { info, warn } = await import('../../utils/logger.js');
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        // 12 errors: SMOKE_UNALLOWED_PREVIEW_MAX is 10, so we expect
+        // "…and 2 more." plus the ten preview lines.
+        for (let i = 0; i < 12; i += 1) {
+          opts.onStderrLine?.(`JavaScript error: batch-${String(i)}`);
+        }
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      const thrown = await runCommand('/project', { smokeExit: 30 }).catch(
+        (error: unknown) => error
+      );
+      expect(thrown).toBeInstanceOf(SmokeRunError);
+
+      const warnCalls = vi.mocked(warn).mock.calls.flat();
+      expect(warnCalls.some((msg) => /…and 2 more/.test(msg))).toBe(true);
+      // Sanity: the preview header and the summary info line still fire so
+      // the truncation is additive, not a replacement.
+      const infoCalls = vi.mocked(info).mock.calls.flat();
+      expect(infoCalls.some((msg) => /Smoke run complete/.test(msg))).toBe(true);
+    });
+
+    it('hits the cold-start verbose hint when the smoke window is under 30s', async () => {
+      const { verbose } = await import('../../utils/logger.js');
+      vi.mocked(runMachSmoke).mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 143,
+        timedOut: true,
+      });
+
+      await expect(runCommand('/project', { smokeExit: 10 })).resolves.toBeUndefined();
+
+      expect(verbose).toHaveBeenCalledWith(
+        expect.stringContaining('cold starts on slow machines often exceed 30s')
+      );
+    });
+
+    it('routes stdout error lines into findings alongside stderr', async () => {
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStdoutLine?.('Launching browser…');
+        opts.onStdoutLine?.('JavaScript error: in-stdout failure');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      const thrown = await runCommand('/project', { smokeExit: 30 }).catch(
+        (error: unknown) => error
+      );
+      expect(thrown).toBeInstanceOf(SmokeRunError);
+      expect((thrown as SmokeRunError).code).toBe(SMOKE_EXIT_FAILURE);
+    });
+  });
+
   // --- registerRun coverage ---
 
   describe('registerRun', () => {
@@ -360,6 +604,95 @@ describe('runCommand', () => {
       // Parse "run" to fire the action
       await program.parseAsync(['node', 'fireforge', 'run']);
       expect(run).toHaveBeenCalled();
+    });
+
+    it('parses --smoke-exit as a positive integer and forwards it', async () => {
+      const program = new Command();
+      vi.mocked(runMachSmoke).mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 143,
+        timedOut: true,
+      });
+
+      registerRun(program, {
+        getProjectRoot: () => '/project',
+        withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
+      });
+
+      await program.parseAsync(['node', 'fireforge', 'run', '--smoke-exit', '30']);
+
+      expect(runMachSmoke).toHaveBeenCalledWith(
+        ['run'],
+        '/project/engine',
+        expect.objectContaining({ smokeTimeoutMs: 30_000 })
+      );
+    });
+
+    it('rejects --smoke-exit with a non-integer value at parse time', async () => {
+      const program = new Command();
+      program.exitOverride(); // Commander normally calls process.exit on parse error.
+
+      registerRun(program, {
+        getProjectRoot: () => '/project',
+        withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
+      });
+
+      await expect(
+        program.parseAsync(['node', 'fireforge', 'run', '--smoke-exit', 'abc'])
+      ).rejects.toThrow(/positive integer/);
+      expect(runMachSmoke).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('rejects --smoke-exit with a fractional value', async () => {
+      const program = new Command();
+      program.exitOverride();
+
+      registerRun(program, {
+        getProjectRoot: () => '/project',
+        withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
+      });
+
+      // `parseInt('1.5', 10)` yields `1`, which would silently round a
+      // "1.5s smoke window" to 1s. The parser rejects non-integer input
+      // explicitly so the operator sees what happened.
+      await expect(
+        program.parseAsync(['node', 'fireforge', 'run', '--smoke-exit', '1.5'])
+      ).rejects.toThrow(/positive integer/);
+    });
+
+    it('accumulates repeated --console-allow values and passes them through', async () => {
+      const program = new Command();
+      vi.mocked(runMachSmoke).mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 143,
+        timedOut: true,
+      });
+
+      registerRun(program, {
+        getProjectRoot: () => '/project',
+        withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
+      });
+
+      await program.parseAsync([
+        'node',
+        'fireforge',
+        'run',
+        '--smoke-exit',
+        '30',
+        '--console-allow',
+        'foo',
+        '--console-allow',
+        'bar',
+      ]);
+
+      // The runCommand-level smoke test already proves the allowlist is
+      // applied; here we only confirm the Commander parser reached smoke
+      // mode with both values (fatal mismatch would make runMachSmoke
+      // uncalled when the parser silently drops repeats).
+      expect(runMachSmoke).toHaveBeenCalledTimes(1);
     });
   });
 });

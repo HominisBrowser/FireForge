@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createProgram } from '../../cli.js';
 import {
   createTempProject,
   removeTempProject,
@@ -87,6 +88,40 @@ describe('setupCommand integration', () => {
         name: 'MissingFields',
       })
     ).rejects.toThrow('Missing required options for non-interactive mode');
+  });
+
+  it('creates fireforge.json via the CLI entrypoint from a fresh cwd', async () => {
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(projectRoot);
+      const program = createProgram();
+      await program.parseAsync([
+        'node',
+        'fireforge',
+        'setup',
+        '--name',
+        'CliBrowser',
+        '--vendor',
+        'CLI Co',
+        '--app-id',
+        'org.example.clibrowser',
+        '--binary-name',
+        'clibrowser',
+        '--firefox-version',
+        '140.9.0esr',
+        '--product',
+        'firefox-esr',
+        '--license',
+        'EUPL-1.2',
+      ]);
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    const config = await readText(join(projectRoot, 'fireforge.json'));
+    expect(config).toContain('"binaryName": "clibrowser"');
+    await expect(access(join(projectRoot, 'configs'))).resolves.toBeUndefined();
+    await expect(access(join(projectRoot, 'patches'))).resolves.toBeUndefined();
   });
 
   it.each([

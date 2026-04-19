@@ -46,6 +46,7 @@ vi.mock('../../core/patch-manifest.js', async (importOriginal) => {
     ...actual,
     loadPatchesManifest: vi.fn(),
     getClaimedFiles: vi.fn().mockReturnValue(new Set<string>()),
+    stampPatchVersions: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -84,7 +85,11 @@ import { multiselect } from '@clack/prompts';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-status.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { lintExportedPatch } from '../../core/patch-lint.js';
-import { getClaimedFiles, loadPatchesManifest } from '../../core/patch-manifest.js';
+import {
+  getClaimedFiles,
+  loadPatchesManifest,
+  stampPatchVersions,
+} from '../../core/patch-manifest.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
@@ -490,5 +495,107 @@ describe('reExportCommand - --scan flag', () => {
       | undefined;
     expect(handle?.message).toHaveBeenCalledWith('Re-exporting 001-ui-first.patch...');
     expect(handle?.message).toHaveBeenCalledWith('Re-exporting 002-ui-second.patch...');
+  });
+
+  describe('--stamp', () => {
+    it('stamps sourceEsrVersion on every re-exported patch when the run is clean', async () => {
+      const patch1 = makePatch('001-ui-first.patch', ['dir/a.js']);
+      const patch2 = makePatch('002-ui-second.patch', ['dir/b.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', [], { all: true, stamp: true });
+
+      expect(stampPatchVersions).toHaveBeenCalledTimes(1);
+      expect(stampPatchVersions).toHaveBeenCalledWith(
+        '/fake/patches',
+        ['001-ui-first.patch', '002-ui-second.patch'],
+        '140.9.0esr'
+      );
+      expect(success).toHaveBeenCalledWith('Stamped sourceEsrVersion=140.9.0esr on 2 patch(es)');
+    });
+
+    it('refuses to stamp when any selected patch is skipped', async () => {
+      const goodPatch = makePatch('001-ui-keep.patch', ['a.js']);
+      const missingPatch = makePatch('002-ui-missing.patch', ['missing.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([goodPatch, missingPatch]));
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p === '/fake/engine') return Promise.resolve(true);
+        if (p.endsWith('/a.js')) return Promise.resolve(true);
+        if (p.endsWith('/missing.js')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      await reExportCommand('/fake/root', [], { all: true, stamp: true });
+
+      expect(stampPatchVersions).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        '--stamp was requested but some patches failed or were skipped; refusing to stamp a partial set.'
+      );
+    });
+
+    it('does not stamp during dry-run but announces the plan', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], { dryRun: true, stamp: true });
+
+      expect(stampPatchVersions).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith(
+        '[dry-run] Would stamp sourceEsrVersion=140.9.0esr on 1 patch(es)'
+      );
+    });
+
+    it('is a no-op when --stamp is not passed', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      expect(stampPatchVersions).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('lintIgnore', () => {
+    it('forwards patch.lintIgnore to lintExportedPatch as an ignoreChecks set', async () => {
+      const patch = makePatch('001-branding-assets.patch', ['a.js']);
+      patch.lintIgnore = ['large-patch-lines', 'large-patch-files'];
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(1);
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      const ignore = call?.[5];
+      expect(ignore).toBeInstanceOf(Set);
+      expect(ignore?.has('large-patch-lines')).toBe(true);
+      expect(ignore?.has('large-patch-files')).toBe(true);
+    });
+
+    it('passes undefined when lintIgnore is absent on the patch', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      expect(call?.[5]).toBeUndefined();
+    });
+
+    it('passes undefined when lintIgnore is an empty array (no intent to suppress)', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      patch.lintIgnore = [];
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      expect(call?.[5]).toBeUndefined();
+    });
   });
 });

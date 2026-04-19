@@ -21,6 +21,8 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../furnace-registration.js', () => ({
   addCustomElementRegistration: vi.fn(),
   addJarMnEntries: vi.fn(),
+  addLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(0)),
+  removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve()),
   validateCustomElementRegistration: vi.fn(),
   validateJarMnEntries: vi.fn(),
 }));
@@ -141,6 +143,36 @@ describe('FTL localization lifecycle', () => {
           targetPath: 'toolkit/content/widgets/my-widget',
           register: false,
           localized: true,
+        },
+        FTL_DIR
+      );
+
+      const ftlCalls = mockCopyFile.mock.calls.filter((call) => call[1].endsWith('.ftl'));
+      expect(ftlCalls).toHaveLength(0);
+    });
+
+    it('skips per-component .ftl copy and locale jar.mn registration when sharedFtl is set', async () => {
+      // Even if a stray .ftl exists in the workspace (e.g. left behind
+      // from a prior per-component layout), sharedFtl makes the shared
+      // bundle authoritative and FireForge must not copy the per-component
+      // file. Registering a new locale jar.mn line would either duplicate
+      // the shared one or orphan the per-component entry on removal.
+      mockReaddir.mockResolvedValueOnce([
+        fakeEntry('hominis-dock-button.mjs'),
+        fakeEntry('hominis-dock-button.ftl'),
+      ] as never);
+      mockPathExists.mockResolvedValue(true);
+
+      await applyCustomComponent(
+        '/engine',
+        'hominis-dock-button',
+        '/comp/hominis-dock-button',
+        {
+          description: 'Dock button',
+          targetPath: 'toolkit/content/widgets/hominis-dock-button',
+          register: false,
+          localized: true,
+          sharedFtl: 'browser/hominis-dock.ftl',
         },
         FTL_DIR
       );

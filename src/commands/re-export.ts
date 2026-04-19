@@ -13,6 +13,7 @@ import {
   getClaimedFiles,
   loadPatchesManifest,
   resolvePatchIdentifier,
+  stampPatchVersions,
 } from '../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -144,7 +145,23 @@ async function reExportSinglePatch(
     return false;
   }
 
-  await runPatchLint(paths.engine, existingFiles, diffContent, config, options.skipLint);
+  // Thread the patch's own `lintIgnore` list through so the per-patch
+  // suppression honoured by export/export-all is also honoured here.
+  // Without this, `re-export` could not refresh an advisory-noisy but
+  // intentional patch (a cohesive branding bundle, a localised-resource
+  // pack) without either `--skip-lint` (too blunt) or falling through to
+  // the full `rebase` flow (which internally skips the lint pipeline).
+  const ignoreChecks = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
+
+  await runPatchLint(
+    paths.engine,
+    existingFiles,
+    diffContent,
+    config,
+    options.skipLint,
+    undefined,
+    ignoreChecks
+  );
 
   if (isDryRun) {
     info(`[dry-run] ${patch.filename}: ${existingFiles.length} file(s)`);
@@ -306,13 +323,17 @@ export async function reExportCommand(
   const config = await loadConfig(projectRoot);
 
   let reExported = 0;
+  const reExportedFilenames: string[] = [];
   const progress = spinner('Preparing re-export...');
 
   for (const patch of selectedPatches) {
     progress.message(`Re-exporting ${patch.filename}...`);
     try {
       const exported = await reExportSinglePatch(patch, paths, manifest, options, isDryRun, config);
-      if (exported) reExported++;
+      if (exported) {
+        reExported++;
+        reExportedFilenames.push(patch.filename);
+      }
     } catch (error: unknown) {
       warn(`Failed to re-export ${patch.filename}`);
       warn(toError(error).message);
@@ -324,13 +345,41 @@ export async function reExportCommand(
     throw new GeneralError('All selected patches failed to re-export. Check the errors above.');
   }
 
+  // `--stamp` only fires on a run where every selected patch refreshed
+  // cleanly. A partial success would leave some patches with a stale body
+  // but a new version — the opposite of the "what I tested, what the
+  // manifest says" invariant `sourceEsrVersion` exists to record. A
+  // non-empty `reExportedFilenames` with fewer entries than `selectedPatches`
+  // means a lint failure or missing-file skip landed somewhere in the loop,
+  // which we refuse to version-stamp through.
+  const shouldStamp =
+    options.stamp === true && !isDryRun && reExported > 0 && reExported === selectedPatches.length;
+
+  if (shouldStamp) {
+    await stampPatchVersions(paths.patches, reExportedFilenames, config.firefox.version);
+  }
+
   if (isDryRun) {
     progress.stop('Dry run complete');
     success(`[dry-run] Would re-export ${reExported} of ${selectedPatches.length} patch(es)`);
+    if (options.stamp === true) {
+      info(
+        `[dry-run] Would stamp sourceEsrVersion=${config.firefox.version} on ${reExported} patch(es)`
+      );
+    }
     outro('Dry run complete');
   } else {
     progress.stop('Re-export complete');
     success(`Re-exported ${reExported} of ${selectedPatches.length} patch(es)`);
+    if (shouldStamp) {
+      success(
+        `Stamped sourceEsrVersion=${config.firefox.version} on ${reExportedFilenames.length} patch(es)`
+      );
+    } else if (options.stamp === true && reExported !== selectedPatches.length) {
+      warn(
+        '--stamp was requested but some patches failed or were skipped; refusing to stamp a partial set.'
+      );
+    }
     outro('Re-export complete');
   }
 }
@@ -342,7 +391,11 @@ export function registerReExport(
 ): void {
   program
     .command('re-export [patches...]')
-    .description('Re-export existing patches from current engine state')
+    .description(
+      'Refresh existing patch bodies (and filesAffected with --scan) from the current engine ' +
+        'state. Does NOT change sourceEsrVersion by default — use --stamp or run rebase for ' +
+        'version stamping.'
+    )
     .option('-a, --all', 'Re-export all patches')
     .option('-s, --scan', 'Scan directories for new/removed files and update filesAffected')
     .option(
@@ -358,6 +411,10 @@ export function registerReExport(
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
     .option('-y, --yes', 'Skip confirmation when --files shrinks a patch (required for non-TTY)')
     .option('--force-unsafe', 'Bypass cross-patch lint refusal when --files shrinks a patch')
+    .option(
+      '--stamp',
+      "After every selected patch refreshes cleanly, stamp each re-exported patch's sourceEsrVersion in patches.json to firefox.version from fireforge.json. No effect on a partial run."
+    )
     .action(
       withErrorHandling(
         async (
@@ -370,6 +427,7 @@ export function registerReExport(
             skipLint?: boolean;
             yes?: boolean;
             forceUnsafe?: boolean;
+            stamp?: boolean;
           }
         ) => {
           await reExportCommand(getProjectRoot(), patches, pickDefined(options));

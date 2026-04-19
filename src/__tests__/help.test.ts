@@ -46,6 +46,7 @@ describe('CLI help output', () => {
     const subcommandNames = subcommands.map((command) => command.name());
     expect(subcommandNames).toEqual([
       'apply',
+      'chrome-doc',
       'create',
       'deploy',
       'diff',

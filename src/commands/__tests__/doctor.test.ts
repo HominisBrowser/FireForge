@@ -616,6 +616,91 @@ describe('doctorCommand', () => {
       expect(successMessages.some((m) => m.includes('Furnace engine state'))).toBe(true);
     });
 
+    it('"Furnace engine paths" scans tokenHostDocuments instead of browser.xhtml when configured', async () => {
+      // Simulate a fork that replaced browser.xhtml with a custom chrome doc.
+      // pathExists returns false for browser.xhtml (it was deleted by the
+      // fork) and true for the configured host document; the check should
+      // then pass without warning about the missing browser.xhtml.
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {
+          'moz-card': {
+            type: 'css-only',
+            description: 'override card',
+            basePath: 'toolkit/content/widgets/moz-card',
+            baseVersion: '145.0',
+          },
+        },
+        custom: {},
+        tokenHostDocuments: ['browser/base/content/mybrowser-shell.xhtml'],
+      });
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('browser/base/content/browser.xhtml')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      const result = await doctorCommand('/project');
+
+      expect(result.exitCode).toBe(0);
+      const warnMessages = vi.mocked(warn).mock.calls.map(([m]) => m);
+      expect(warnMessages.some((m) => m.includes('Furnace engine paths'))).toBe(false);
+      const successMessages = vi.mocked(success).mock.calls.map(([msg]) => msg);
+      expect(successMessages.some((m) => m.includes('Furnace engine paths'))).toBe(true);
+    });
+
+    it('"Furnace engine paths" warns about the configured host document when it is missing', async () => {
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {
+          'moz-card': {
+            type: 'css-only',
+            description: 'override card',
+            basePath: 'toolkit/content/widgets/moz-card',
+            baseVersion: '145.0',
+          },
+        },
+        custom: {},
+        tokenHostDocuments: ['browser/base/content/mybrowser-shell.xhtml'],
+      });
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('mybrowser-shell.xhtml')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      const result = await doctorCommand('/project');
+
+      expect(result.exitCode).toBe(0);
+      const warnMessages = vi.mocked(warn).mock.calls.map(([m]) => m);
+      expect(
+        warnMessages.some(
+          (m) => m.includes('Furnace engine paths') && m.includes('mybrowser-shell.xhtml')
+        )
+      ).toBe(true);
+    });
+
+    it('"Furnace engine paths" falls back to browser.xhtml when tokenHostDocuments is not set', async () => {
+      // No tokenHostDocuments in the config — old default applies.
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('browser/base/content/browser.xhtml')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      const result = await doctorCommand('/project');
+
+      expect(result.exitCode).toBe(0);
+      const warnMessages = vi.mocked(warn).mock.calls.map(([m]) => m);
+      expect(
+        warnMessages.some(
+          (m) =>
+            m.includes('Furnace engine paths') && m.includes('browser/base/content/browser.xhtml')
+        )
+      ).toBe(true);
+    });
+
     it('fails "Furnace configuration" when furnace.json is invalid', async () => {
       vi.mocked(loadFurnaceConfig).mockRejectedValueOnce(
         new Error('Furnace config: "version" must be 1')

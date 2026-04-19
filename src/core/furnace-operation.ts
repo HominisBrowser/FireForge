@@ -17,7 +17,8 @@ const FURNACE_LOCK_FILENAME = 'furnace.lock';
  * The signal names the lifecycle wrapper knows how to react to. Spelled out
  * as a literal union (rather than `NodeJS.Signals`) so the public type
  * surface does not depend on the NodeJS global namespace — consumers of
- * `@hominis/fireforge` may compile against tsconfigs that omit `@types/node`.
+ * FireForge's published scoped npm package may compile against tsconfigs
+ * that omit `@types/node`.
  */
 export type FurnaceShutdownSignal = 'SIGINT' | 'SIGTERM';
 
@@ -139,17 +140,25 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function rollbackActiveOperationsForSignal(
   signal: FurnaceShutdownSignal
 ): Promise<void> {
+  // Snapshot the active operations so we don't race with `runFurnaceMutation`
+  // clearing slots during normal completion. Filter completed bodies so a
+  // body sitting in its finally-block cleanup window is not counted as live
+  // work — this would mis-trigger the rollback banner for plain `fireforge
+  // run` (which never registers a mutation but can receive SIGTERM).
+  const snapshot = [...activeOperations.values()].filter((op) => !op.completed);
+
+  if (snapshot.length === 0) {
+    // Nothing to roll back. Stay silent so commands that never mutated (run,
+    // watch, test, doctor) don't print an alarming "rolling back mutations"
+    // line on Ctrl+C / SIGTERM. Leave `signalRollbackInFlight` false so a
+    // subsequent registrant can still trigger the full path.
+    return;
+  }
+
   signalRollbackInFlight = true;
   warn(`Received ${signal}; rolling back in-flight furnace mutations…`);
-  // Snapshot the active operations so we don't race with `runFurnaceMutation`
-  // clearing slots during normal completion.
-  const snapshot = [...activeOperations.values()];
 
   for (const op of snapshot) {
-    // If the body completed successfully and is in its finally-block cleanup
-    // (deleting the token), skip rollback — the mutation committed cleanly.
-    if (op.completed) continue;
-
     const cleanupErrors: string[] = [];
 
     // Run extra cleanup callbacks first (e.g. preview's cleanStories), so the

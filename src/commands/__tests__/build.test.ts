@@ -14,6 +14,8 @@ vi.mock('../../core/mach.js', () => ({
   buildUI: vi.fn(),
   hasBuildArtifacts: vi.fn(),
   buildArtifactMismatchMessage: vi.fn(),
+  attemptMozinfoRewrite: vi.fn(),
+  runMach: vi.fn(),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -28,6 +30,11 @@ vi.mock('../../utils/logger.js', () => ({
   error: vi.fn(),
   verbose: vi.fn(),
   warn: vi.fn(),
+  spinner: vi.fn(() => ({
+    stop: vi.fn(),
+    error: vi.fn(),
+    message: vi.fn(),
+  })),
 }));
 
 vi.mock('../../core/brand-validation.js', () => ({
@@ -38,14 +45,27 @@ vi.mock('../../core/build-prepare.js', () => ({
   prepareBuildEnvironment: vi.fn(),
 }));
 
+vi.mock('../../core/build-baseline.js', () => ({
+  readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
+  writeBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
+}));
+
+vi.mock('../../core/build-audit.js', () => ({
+  auditBuildArtifacts: vi.fn(() =>
+    Promise.resolve({ updated: 0, stale: 0, missing: 0, skipped: 0, entries: [] })
+  ),
+}));
+
 import { validateBrandOverride } from '../../core/brand-validation.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import {
+  attemptMozinfoRewrite,
   build,
   buildArtifactMismatchMessage,
   buildUI,
   hasBuildArtifacts,
+  runMach,
 } from '../../core/mach.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, verbose } from '../../utils/logger.js';
@@ -74,7 +94,10 @@ describe('buildCommand', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(prepareBuildEnvironment).mockResolvedValue({ furnaceApplied: 0 });
+    vi.mocked(prepareBuildEnvironment).mockResolvedValue({
+      furnaceApplied: 0,
+      reconfigured: false,
+    });
     vi.mocked(build).mockResolvedValue(0);
     vi.mocked(buildUI).mockResolvedValue(0);
   });
@@ -103,6 +126,68 @@ describe('buildCommand', () => {
     expect(build).not.toHaveBeenCalled();
   });
 
+  it('rewrites mozinfo and reconfigures when --rewrite-mozinfo succeeds', async () => {
+    // Safe-relocation path: the mozinfo rewriter patches paths in place
+    // and mach configure regenerates the backend. The build proceeds past
+    // the preflight rather than aborting with a clean-rebuild instruction,
+    // preserving the obj-* tree.
+    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(
+      'Build cannot use copied or relocated build artifacts.'
+    );
+    vi.mocked(attemptMozinfoRewrite).mockResolvedValue({
+      rewritten: true,
+      newTopsrcdir: '/project/engine',
+      newTopobjdir: '/project/engine/obj-debug',
+    });
+    vi.mocked(runMach).mockResolvedValue(0);
+
+    await expect(buildCommand('/project', { rewriteMozinfo: true })).resolves.toBeUndefined();
+
+    expect(attemptMozinfoRewrite).toHaveBeenCalledWith('/project/engine', 'obj-debug');
+    expect(runMach).toHaveBeenCalledWith(['configure'], '/project/engine');
+    expect(prepareBuildEnvironment).toHaveBeenCalled();
+    expect(build).toHaveBeenCalled();
+  });
+
+  it('aborts with the rewriter refusal reason when --rewrite-mozinfo cannot prove safety', async () => {
+    // Unsafe-relocation case: rewriter refuses because the objdir name
+    // changed. The original mismatch guidance is preserved and the
+    // refusal reason is appended so the operator sees both.
+    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(
+      'Build cannot use copied or relocated build artifacts.'
+    );
+    vi.mocked(attemptMozinfoRewrite).mockResolvedValue({
+      rewritten: false,
+      reason: 'mozinfo objdir "obj-arm64" does not match detected objdir "obj-debug"',
+    });
+
+    await expect(buildCommand('/project', { rewriteMozinfo: true })).rejects.toThrow(
+      /mozinfo rewrite refused: mozinfo objdir "obj-arm64"/
+    );
+
+    expect(runMach).not.toHaveBeenCalled();
+    expect(prepareBuildEnvironment).not.toHaveBeenCalled();
+    expect(build).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a non-zero mach configure exit after a successful rewrite', async () => {
+    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(
+      'Build cannot use copied or relocated build artifacts.'
+    );
+    vi.mocked(attemptMozinfoRewrite).mockResolvedValue({
+      rewritten: true,
+      newTopsrcdir: '/project/engine',
+      newTopobjdir: '/project/engine/obj-debug',
+    });
+    vi.mocked(runMach).mockResolvedValue(2);
+
+    await expect(buildCommand('/project', { rewriteMozinfo: true })).rejects.toThrow(
+      /mach configure exited non-zero \(2\) after mozinfo rewrite/
+    );
+
+    expect(build).not.toHaveBeenCalled();
+  });
+
   it('runs UI-only builds through buildUI after the shared preflight completes', async () => {
     await expect(buildCommand('/project', { ui: true, brand: 'beta' })).resolves.toBeUndefined();
 
@@ -110,7 +195,8 @@ describe('buildCommand', () => {
     expect(prepareBuildEnvironment).toHaveBeenCalledWith(
       '/project',
       makeProjectPaths(),
-      expect.objectContaining({ binaryName: 'mybrowser' })
+      expect.objectContaining({ binaryName: 'mybrowser' }),
+      expect.objectContaining({ previousBaseline: undefined })
     );
     expect(buildUI).toHaveBeenCalledWith('/project/engine');
     expect(build).not.toHaveBeenCalled();
@@ -212,7 +298,10 @@ describe('registerBuild', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(prepareBuildEnvironment).mockResolvedValue({ furnaceApplied: 0 });
+    vi.mocked(prepareBuildEnvironment).mockResolvedValue({
+      furnaceApplied: 0,
+      reconfigured: false,
+    });
     vi.mocked(build).mockResolvedValue(0);
     vi.mocked(buildUI).mockResolvedValue(0);
   });

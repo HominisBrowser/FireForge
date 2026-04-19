@@ -39,6 +39,7 @@ export const SUPPORTED_CONFIG_ROOT_KEYS = [
   'license',
   'wire',
   'patchLint',
+  'markerComment',
 ] as const;
 
 /** Supported config paths that can be read or set without --force. */
@@ -58,6 +59,7 @@ export const SUPPORTED_CONFIG_PATHS = [
   'patchLint',
   'patchLint.checkJs',
   'patchLint.rawColorAllowlist',
+  'markerComment',
 ] as const;
 
 /**

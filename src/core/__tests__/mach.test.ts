@@ -19,6 +19,7 @@ import {
   runMach,
   runMachCapture,
   runMachInheritCapture,
+  runMachSmoke,
   test as runMachTest,
   testWithOutput,
   watch,
@@ -41,8 +42,15 @@ vi.mock('../../utils/process.js', () => ({
   exec: vi.fn(),
   execInherit: vi.fn(),
   execInheritCapture: vi.fn(),
+  execSmokeRun: vi.fn(),
   execStream: vi.fn(),
   executableExists: vi.fn(),
+}));
+
+vi.mock('../../utils/logger.js', () => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  verbose: vi.fn(),
 }));
 
 describe('hasBuildArtifacts', () => {
@@ -504,17 +512,17 @@ describe('mach command execution', () => {
       ['/engine/mach', 'bootstrap', '--application-choice', 'browser'],
       expect.any(Object)
     );
-    expect(execInherit).toHaveBeenCalledWith(
+    expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
       ['/engine/mach', 'build', '-j', '4'],
       expect.any(Object)
     );
-    expect(execInherit).toHaveBeenCalledWith(
+    expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
       ['/engine/mach', 'build'],
       expect.any(Object)
     );
-    expect(execInherit).toHaveBeenCalledWith(
+    expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
       ['/engine/mach', 'build', 'faster'],
       expect.any(Object)
@@ -552,5 +560,125 @@ describe('mach command execution', () => {
 
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
+  });
+
+  it('forwards runMachSmoke options through to execSmokeRun without undefined keys', async () => {
+    const { execSmokeRun } = await import('../../utils/process.js');
+    await primePythonResolution();
+    vi.mocked(execSmokeRun).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    });
+
+    const onStdoutLine = vi.fn();
+    const onStderrLine = vi.fn();
+    const mirror = { stdout: process.stdout, stderr: process.stderr };
+
+    await expect(
+      runMachSmoke(['run'], '/engine', {
+        env: { SMOKE: '1' },
+        smokeTimeoutMs: 30_000,
+        killGraceMs: 5_000,
+        onStdoutLine,
+        onStderrLine,
+        mirror,
+      })
+    ).resolves.toEqual({ stdout: '', stderr: '', exitCode: 0, timedOut: false });
+
+    // Every optional key is present on the forwarded options when the
+    // caller supplied it. The conditional spreads inside runMachSmoke are
+    // there specifically to avoid tripping exactOptionalPropertyTypes, so
+    // the assertion shape has to match — a plain objectContaining would
+    // pass even with `key: undefined`.
+    expect(execSmokeRun).toHaveBeenCalledWith('python3.12', ['/engine/mach', 'run'], {
+      cwd: '/engine',
+      env: { SMOKE: '1' },
+      smokeTimeoutMs: 30_000,
+      killGraceMs: 5_000,
+      onStdoutLine,
+      onStderrLine,
+      mirror,
+    });
+  });
+
+  it('omits optional keys from forwarded runMachSmoke options when unset', async () => {
+    // Mirrors the exactOptionalPropertyTypes contract — a missing option
+    // must leave its key absent, not set it to undefined. Previously we
+    // relied on this implicitly; the test pins it down.
+    const { execSmokeRun } = await import('../../utils/process.js');
+    await primePythonResolution();
+    vi.mocked(execSmokeRun).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 143,
+      timedOut: true,
+    });
+
+    await expect(runMachSmoke(['run'], '/engine', { smokeTimeoutMs: 15_000 })).resolves.toEqual({
+      stdout: '',
+      stderr: '',
+      exitCode: 143,
+      timedOut: true,
+    });
+
+    expect(execSmokeRun).toHaveBeenCalledWith('python3.12', ['/engine/mach', 'run'], {
+      cwd: '/engine',
+      smokeTimeoutMs: 15_000,
+    });
+  });
+
+  it('surfaces preprocessor hints on a failed mach build', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { warn } = await import('../../utils/logger.js');
+    await primePythonResolution();
+
+    const stderr = [
+      'mozbuild.preprocessor.Preprocessor.Error: (',
+      "'mybrowser.js', None, 'no preprocessor directives found', None",
+      ')',
+    ].join('\n');
+    vi.mocked(execInheritCapture).mockResolvedValueOnce({ stdout: '', stderr, exitCode: 1 });
+    const warnMock = vi.mocked(warn);
+    warnMock.mockClear();
+
+    await expect(build('/engine')).resolves.toBe(1);
+    expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('JS_PREFERENCE_FILES'));
+  });
+
+  it('surfaces preprocessor hints on a failed mach build faster (UI-only)', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { warn } = await import('../../utils/logger.js');
+    await primePythonResolution();
+
+    const stderr = [
+      'mozbuild.preprocessor.Preprocessor.Error: (',
+      "'mybrowser.js', None, 'no preprocessor directives found', None",
+      ')',
+    ].join('\n');
+    vi.mocked(execInheritCapture).mockResolvedValueOnce({ stdout: '', stderr, exitCode: 2 });
+    const warnMock = vi.mocked(warn);
+    warnMock.mockClear();
+
+    await expect(buildUI('/engine')).resolves.toBe(2);
+    expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('JS_PREFERENCE_FILES'));
+  });
+
+  it('stays silent when a failing mach build has no recognized hint patterns', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { warn } = await import('../../utils/logger.js');
+    await primePythonResolution();
+
+    vi.mocked(execInheritCapture).mockResolvedValueOnce({
+      stdout: '',
+      stderr: 'Some unrelated build error',
+      exitCode: 1,
+    });
+    const warnMock = vi.mocked(warn);
+    warnMock.mockClear();
+
+    await expect(build('/engine')).resolves.toBe(1);
+    expect(warnMock).not.toHaveBeenCalled();
   });
 });

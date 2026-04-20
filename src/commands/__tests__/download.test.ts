@@ -66,7 +66,7 @@ import { getHead, initRepository, resumeRepository } from '../../core/git.js';
 import { EngineExistsError } from '../../errors/download.js';
 import { pathExists, removeDir } from '../../utils/fs.js';
 import type { SpinnerHandle } from '../../utils/logger.js';
-import { spinner, step, warn } from '../../utils/logger.js';
+import { info, spinner, step, warn } from '../../utils/logger.js';
 import { downloadCommand } from '../download.js';
 
 function createSpinnerMock(): SpinnerHandle & {
@@ -284,6 +284,26 @@ describe('downloadCommand', () => {
     expect(downloadSpinner.messageMock).toHaveBeenNthCalledWith(
       2,
       'Downloading Firefox 140.9.0esr... 10% (10 B / 100 B)'
+    );
+  });
+
+  it('emits the indexing-banner before starting the git init spinner (Finding #17)', async () => {
+    // Finding #17: the git-add phase can run silently for minutes. The
+    // new banner fires BEFORE the spinner so CI log tails and non-TTY
+    // shells show expected-duration guidance even when the spinner's
+    // interactive updates are suppressed. `info` is the channel used
+    // (unlike spinner.message, which is interactive-only).
+    const downloadSpinner = createSpinnerMock();
+    const gitSpinner = createSpinnerMock();
+    vi.mocked(spinner).mockReturnValueOnce(downloadSpinner).mockReturnValueOnce(gitSpinner);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', {});
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Indexing downloaded source into git')
     );
   });
 });

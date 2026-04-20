@@ -17,7 +17,7 @@ import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { StatusOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readText } from '../utils/fs.js';
+import { FIREFORGE_TMP_PATH_PATTERN, pathExists, readText } from '../utils/fs.js';
 import { info, intro, outro, verbose, warn } from '../utils/logger.js';
 
 /**
@@ -238,6 +238,22 @@ async function expandDirectoryEntries(
 }
 
 /**
+ * Strips entries whose path matches the atomic-temp-file shape
+ * FireForge's own `writeText` produces (see
+ * {@link import('../utils/fs.js').FIREFORGE_TMP_PATH_PATTERN}). Those
+ * files only exist for the duration of a write + rename and should
+ * never appear in `status` output; filtering them here keeps every
+ * status mode (default, raw, unmanaged, ownership, json) symmetric so
+ * the operator never sees a `.mozconfig.fireforge-tmp-<pid>-<uuid>`
+ * entry mid-write. Files named for unrelated reasons (e.g. a user's
+ * `.bashrc.fireforge-tmp-backup` without the PID+UUID tail) do not
+ * match the pattern and pass through unfiltered.
+ */
+function filterFireForgeTempFiles(files: StatusFile[]): StatusFile[] {
+  return files.filter((entry) => !FIREFORGE_TMP_PATH_PATTERN.test(entry.file));
+}
+
+/**
  * Classifies files into patch-backed, unmanaged, or branding buckets.
  */
 async function classifyFiles(
@@ -390,7 +406,11 @@ export async function statusCommand(
     const ownershipExpansion = (await isGitRepository(paths.engine))
       ? await expandDirectoryEntries(await getStatusWithCodes(paths.engine), paths.engine)
       : { entries: [], truncations: [] };
-    const rawFilesOwnership = ownershipExpansion.entries;
+    // Filter atomic-write temp files (Finding #18) so a mid-flight
+    // `.fireforge-tmp-<pid>-<uuid>` artefact never shows up in any
+    // status mode. The pattern is tight enough to let legitimately
+    // similar names through.
+    const rawFilesOwnership = filterFireForgeTempFiles(ownershipExpansion.entries);
     renderTruncationBanner(ownershipExpansion.truncations);
 
     // Only walk the patch bodies when the directory actually exists.
@@ -440,8 +460,30 @@ export async function statusCommand(
   }
 
   const rawFiles = await getStatusWithCodes(paths.engine);
-  const { entries: files, truncations } = await expandDirectoryEntries(rawFiles, paths.engine);
+  const { entries: expanded, truncations } = await expandDirectoryEntries(rawFiles, paths.engine);
+  // Strip atomic-write temp files (Finding #18) before every mode
+  // branch so raw / unmanaged / default / json all agree.
+  const files = filterFireForgeTempFiles(expanded);
   renderTruncationBanner(truncations);
+
+  // `--json` callers expect machine-parseable output on every invocation,
+  // including the clean-tree case. Before this ordering fix a clean tree
+  // printed "No modified files" / "Working tree clean" via the human
+  // branch below and `--json` was silently ignored, so scripts that piped
+  // the output through a JSON parser broke precisely when there was
+  // nothing to report. Emit `[]` here and return before the human fallback.
+  if (options.json) {
+    await renderJsonStatus(files, paths, projectRoot, config.binaryName);
+    return;
+  }
+
+  // `--raw` consumers parse the native `git status --porcelain` output
+  // directly. On a clean tree the raw mode should produce nothing on
+  // stdout — the human "Working tree clean" banner would contaminate the
+  // pipe. Short-circuit before the human clean-tree branch below.
+  if (options.raw && files.length === 0) {
+    return;
+  }
 
   if (files.length === 0) {
     info('No modified files');
@@ -452,12 +494,6 @@ export async function statusCommand(
   // Raw mode: existing behavior
   if (options.raw) {
     renderRawStatus(files);
-    return;
-  }
-
-  // JSON mode and default mode both need classification
-  if (options.json) {
-    await renderJsonStatus(files, paths, projectRoot, config.binaryName);
     return;
   }
 

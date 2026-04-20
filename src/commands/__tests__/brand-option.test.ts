@@ -32,7 +32,10 @@ vi.mock('../../core/mach.js', () => ({
   buildUI: vi.fn(() => Promise.resolve(0)),
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
   buildArtifactMismatchMessage: vi.fn(() => undefined),
-  machPackage: vi.fn(() => Promise.resolve(0)),
+  // The package command switched to `machPackageCapture` in 0.16.0 so it
+  // can feed stderr through `explainMachError` (Finding #12). Tests only
+  // check "was it called?", so seed a clean zero-exit result.
+  machPackageCapture: vi.fn(() => Promise.resolve({ stdout: '', stderr: '', exitCode: 0 })),
 }));
 
 vi.mock('../../core/branding.js', () => ({
@@ -76,7 +79,7 @@ vi.mock('../../utils/logger.js', () => ({
   })),
 }));
 
-import { build, buildUI, generateMozconfig, machPackage } from '../../core/mach.js';
+import { build, buildUI, generateMozconfig, machPackageCapture } from '../../core/mach.js';
 import { buildCommand } from '../build.js';
 import { packageCommand } from '../package.js';
 
@@ -99,7 +102,7 @@ describe('brand override handling', () => {
       /Brand override "stable" is not supported yet/i
     );
     expect(generateMozconfig).not.toHaveBeenCalled();
-    expect(machPackage).not.toHaveBeenCalled();
+    expect(machPackageCapture).not.toHaveBeenCalled();
   });
 
   it('allows the configured brand name as a no-op alias', async () => {
@@ -107,6 +110,6 @@ describe('brand override handling', () => {
     await expect(packageCommand('/project', { brand: 'mybrowser' })).resolves.toBeUndefined();
     expect(generateMozconfig).toHaveBeenCalledTimes(2);
     expect(build).toHaveBeenCalledTimes(1);
-    expect(machPackage).toHaveBeenCalledTimes(1);
+    expect(machPackageCapture).toHaveBeenCalledTimes(1);
   });
 });

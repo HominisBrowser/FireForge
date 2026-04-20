@@ -10,7 +10,9 @@ import { verbose } from '../utils/logger.js';
 import { isObject } from '../utils/validation.js';
 import { validateConfig } from './config-validate.js';
 
-function cloneConfigDocument(config: FireForgeConfig): Record<string, unknown> {
+function cloneConfigDocument(
+  config: FireForgeConfig | Record<string, unknown>
+): Record<string, unknown> {
   const cloned: unknown = structuredClone(config);
   if (!isObject(cloned)) {
     throw new ConfigError('Config clone unexpectedly produced a non-object value');
@@ -49,13 +51,13 @@ export function mutateConfig(
   skipValidation?: false
 ): FireForgeConfig;
 export function mutateConfig(
-  config: FireForgeConfig,
+  config: FireForgeConfig | Record<string, unknown>,
   key: string,
   value: unknown,
   skipValidation: true
 ): Record<string, unknown>;
 export function mutateConfig(
-  config: FireForgeConfig,
+  config: FireForgeConfig | Record<string, unknown>,
   key: string,
   value: unknown,
   skipValidation = false

@@ -118,6 +118,8 @@ vi.mock('../../utils/logger.js', () => ({
   cancel: vi.fn(),
   isCancel: vi.fn(() => false),
   note: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
 }));
 
 vi.mock('@clack/prompts', () => ({
@@ -565,24 +567,35 @@ describe('furnaceOverrideCommand', () => {
   });
 
   describe('classification collisions', () => {
-    it('refuses to create an override that collides with an existing stock entry', async () => {
+    it('promotes a stock-bucket component to override instead of refusing', async () => {
+      // Before 0.16.0 this path threw `already registered as a stock
+      // component. Remove it from config.stock before creating an override`
+      // — awkward guidance because `furnace scan` auto-populates
+      // `config.stock`, so the operator had to hand-edit furnace.json
+      // before every override of a stock widget. The new behaviour splices
+      // the name out of the stock bucket in-memory and lets
+      // `writeFurnaceConfig` persist the promotion atomically alongside
+      // the new override entry.
       vi.mocked(furnaceConfigExists).mockResolvedValueOnce(true);
       vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
         version: 1,
         componentPrefix: 'moz-',
-        stock: ['moz-button'],
+        stock: ['moz-button', 'moz-checkbox'],
         overrides: {},
         custom: {},
       });
 
-      await expect(
-        furnaceOverrideCommand('/project', 'moz-button', {
-          type: 'full',
-          description: 'Test',
-        })
-      ).rejects.toThrow(/already registered as a stock component/);
+      await furnaceOverrideCommand('/project', 'moz-button', {
+        type: 'full',
+        description: 'Promoted from stock',
+      });
 
-      expect(writeFurnaceConfig).not.toHaveBeenCalled();
+      const writtenConfig = vi.mocked(writeFurnaceConfig).mock.calls[0]?.[1];
+      expect(writtenConfig?.stock).toEqual(['moz-checkbox']);
+      expect(writtenConfig?.overrides['moz-button']).toMatchObject({
+        type: 'full',
+        description: 'Promoted from stock',
+      });
     });
 
     it('refuses to create an override that collides with an existing custom entry', async () => {

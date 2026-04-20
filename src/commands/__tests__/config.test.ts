@@ -131,6 +131,37 @@ describe('configCommand', () => {
     // The original value remains untouched.
     expect(config.build?.jobs).not.toBe('oops');
   });
+
+  it('reads keys that were persisted via --force (raw-document fallback)', async () => {
+    // Regression against the 0.16.0 finding: a value written with
+    // `fireforge config foo bar --force` was readable on disk but the
+    // read path (which previously consulted the validated config) threw
+    // `Unknown config key` because `validateConfig` stripped the key
+    // from the typed result. `configCommand` now reads the raw JSON
+    // document on the get branch so forced keys round-trip.
+    await configCommand(projectRoot, 'totallyUnknown', 'forced-value', { force: true });
+
+    vi.mocked(info).mockClear();
+    await configCommand(projectRoot, 'totallyUnknown');
+
+    expect(info).toHaveBeenCalledWith('totallyUnknown = forced-value');
+  });
+
+  it('preserves earlier forced keys when subsequent --force writes land', async () => {
+    // Pre-0.16.0 the `--force` write path seeded mutation from
+    // `loadConfig` (which strips unknowns), so writing a second forced
+    // key silently dropped every earlier forced key. The fix seeds
+    // from the raw document when the key is unknown.
+    await configCommand(projectRoot, 'firstUnknown', 'one', { force: true });
+    await configCommand(projectRoot, 'secondUnknown', 'two', { force: true });
+
+    const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as Record<
+      string,
+      unknown
+    >;
+    expect(config['firstUnknown']).toBe('one');
+    expect(config['secondUnknown']).toBe('two');
+  });
 });
 
 describe('registerConfig', () => {

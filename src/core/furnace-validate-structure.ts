@@ -50,14 +50,18 @@ export async function validateStructure(
   // Localized custom components must have a {tag}.ftl file. Without one,
   // apply silently deploys nothing for the locale and the runtime
   // localization payload is empty, which is hard to spot in review.
-  if (type === 'custom' && customConfig?.localized) {
+  //
+  // Components that declare `sharedFtl` participate in a pre-existing
+  // feature-scoped bundle, so there is no per-component .ftl to require —
+  // the shared file is owned by whoever authored the feature bundle.
+  if (type === 'custom' && customConfig?.localized && !customConfig.sharedFtl) {
     const ftlPath = join(componentDir, `${tagName}.ftl`);
     if (!(await pathExists(ftlPath))) {
       issues.push({
         component: tagName,
         severity: 'error',
         check: 'missing-ftl',
-        message: `Component is marked localized: true but ${tagName}.ftl is missing. Create the file or set localized: false in furnace.json.`,
+        message: `Component is marked localized: true but ${tagName}.ftl is missing. Create the file, set localized: false in furnace.json, or switch to sharedFtl.`,
       });
     }
   }

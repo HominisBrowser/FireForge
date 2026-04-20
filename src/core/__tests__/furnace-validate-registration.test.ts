@@ -303,6 +303,117 @@ describe('furnace registration validation helpers', () => {
     ]);
   });
 
+  it('auto-detects a replacement chrome document that references the component tag', async () => {
+    // Fork mounts moz-dock from a custom `mybrowser.xhtml` chrome document
+    // WITHOUT configuring tokenHostDocuments. The default scan set (only
+    // browser.xhtml) does not link the tokens CSS, but the custom document
+    // does — auto-detection adds it to the scan set and the warning is
+    // suppressed.
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        [
+          '/component/moz-dock.css',
+          '/engine/browser/base/content',
+          '/engine/browser/base/content/browser.xhtml',
+          '/engine/browser/base/content/mybrowser.xhtml',
+        ].includes(filePath)
+      )
+    );
+    vi.mocked(readdir).mockResolvedValue([
+      'browser.xhtml',
+      'mybrowser.xhtml',
+      'something-unrelated.js',
+    ] as never);
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath === '/component/moz-dock.css') {
+        return Promise.resolve('.dock { color: var(--ff-token-color); }');
+      }
+      if (filePath === '/engine/browser/base/content/browser.xhtml') {
+        // Upstream document does not mount moz-dock and does not link tokens.
+        return Promise.resolve('<window><html:body></html:body></window>');
+      }
+      if (filePath === '/engine/browser/base/content/mybrowser.xhtml') {
+        // Replacement document mounts moz-dock AND links the tokens CSS.
+        return Promise.resolve(
+          '<window><link rel="stylesheet" href="nightlyfox.css" /><moz-dock></moz-dock></window>'
+        );
+      }
+      return Promise.resolve('');
+    });
+
+    const issues = await validateTokenLink('/component', 'moz-dock', '/project', '--ff-token');
+    expect(issues.filter((i) => i.check === 'missing-token-link')).toEqual([]);
+  });
+
+  it('still warns when auto-detected hosts also lack the tokens CSS link', async () => {
+    // A chrome document references the tag but does NOT link the tokens CSS,
+    // and no other document does either. The warning fires and names both
+    // the configured default AND the auto-detected document so the operator
+    // can see where to add the link.
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        [
+          '/component/moz-dock.css',
+          '/engine/browser/base/content',
+          '/engine/browser/base/content/browser.xhtml',
+          '/engine/browser/base/content/mybrowser.xhtml',
+        ].includes(filePath)
+      )
+    );
+    vi.mocked(readdir).mockResolvedValue(['browser.xhtml', 'mybrowser.xhtml'] as never);
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath === '/component/moz-dock.css') {
+        return Promise.resolve('.dock { color: var(--ff-token-color); }');
+      }
+      if (filePath.endsWith('mybrowser.xhtml')) {
+        return Promise.resolve('<window><moz-dock></moz-dock></window>');
+      }
+      return Promise.resolve('<window></window>');
+    });
+
+    const issues = await validateTokenLink('/component', 'moz-dock', '/project', '--ff-token');
+    const tokenIssues = issues.filter((i) => i.check === 'missing-token-link');
+    expect(tokenIssues).toHaveLength(1);
+    expect(tokenIssues[0]?.message).toContain('browser/base/content/browser.xhtml');
+    expect(tokenIssues[0]?.message).toContain('browser/base/content/mybrowser.xhtml');
+  });
+
+  it('does not double-scan a document listed in tokenHostDocuments that also mentions the tag', async () => {
+    // When the operator explicitly configures tokenHostDocuments AND the
+    // same document happens to mention the component tag, the auto-detect
+    // path must not add a duplicate entry that would render twice in the
+    // warning list.
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        [
+          '/component/moz-dock.css',
+          '/engine/browser/base/content',
+          '/engine/browser/base/content/mybrowser.xhtml',
+        ].includes(filePath)
+      )
+    );
+    vi.mocked(readdir).mockResolvedValue(['mybrowser.xhtml'] as never);
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath === '/component/moz-dock.css') {
+        return Promise.resolve('.dock { color: var(--ff-token-color); }');
+      }
+      if (filePath.endsWith('mybrowser.xhtml')) {
+        return Promise.resolve('<window><moz-dock></moz-dock></window>');
+      }
+      return Promise.resolve('');
+    });
+
+    const issues = await validateTokenLink('/component', 'moz-dock', '/project', '--ff-token', [
+      'browser/base/content/mybrowser.xhtml',
+    ]);
+    const tokenIssues = issues.filter((i) => i.check === 'missing-token-link');
+    expect(tokenIssues).toHaveLength(1);
+    // The same path must appear exactly once in the rendered list.
+    const mentions =
+      tokenIssues[0]?.message.split('browser/base/content/mybrowser.xhtml').length ?? 0;
+    expect(mentions - 1).toBe(1);
+  });
+
   describe('validateJarMnEntries', () => {
     const baseConfig: FurnaceConfig = {
       version: 1,

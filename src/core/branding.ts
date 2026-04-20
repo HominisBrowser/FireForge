@@ -18,6 +18,52 @@ export class BrandingError extends FireForgeError {
 }
 
 /**
+ * Error thrown when the generated `mozconfig` references a `--with-branding`
+ * directory that does not match the branding tree FireForge set up. The
+ * mismatch is a silent-corruption hazard — `mach configure` picks the value
+ * from mozconfig but the scaffolded branding lives elsewhere, so the build
+ * fails deep inside moz.build resolution with a confusing "path does not
+ * exist" message. Surface it as an actionable preflight instead.
+ *
+ * The root cause is that setup renders templates under `configs/` with
+ * `${binaryName}` baked in at setup time; a subsequent edit to
+ * `fireforge.json`'s `binaryName` (or a re-setup without re-templating)
+ * leaves those baked-in names stale while `setupBranding` continues to use
+ * the current `config.binaryName`. Both directions (mozconfig ahead of
+ * config, config ahead of mozconfig) produce the same class of build break.
+ */
+export class BrandingMozconfigMismatchError extends FireForgeError {
+  readonly code = ExitCode.PATCH_ERROR;
+
+  constructor(
+    public readonly expectedBrandingDir: string,
+    public readonly mozconfigBrandingDir: string,
+    public readonly reason: 'mozconfig-missing-branding' | 'name-mismatch' | 'branding-dir-missing'
+  ) {
+    super(
+      `Generated mozconfig references "${mozconfigBrandingDir}" but the active branding directory is "${expectedBrandingDir}".`
+    );
+  }
+
+  override get userMessage(): string {
+    const diagnosis =
+      this.reason === 'mozconfig-missing-branding'
+        ? `The generated mozconfig does not contain a --with-branding directive (found "${this.mozconfigBrandingDir}"). FireForge expected to write one for binaryName "${this.expectedBrandingDir}".`
+        : this.reason === 'name-mismatch'
+          ? `The generated mozconfig sets --with-branding="${this.mozconfigBrandingDir}" but FireForge set up branding under "${this.expectedBrandingDir}".`
+          : `The generated mozconfig sets --with-branding="${this.mozconfigBrandingDir}" but no moz.build exists under engine/${this.mozconfigBrandingDir}/.`;
+
+    return (
+      `Branding Error: ${diagnosis}\n\n` +
+      'This usually means the rendered configs/ templates drifted from fireforge.json. Fix one of:\n' +
+      '  1. Edit configs/common.mozconfig so --with-branding uses ${binaryName} (or the current binaryName), then re-run "fireforge build".\n' +
+      '  2. Update fireforge.json so binaryName matches the --with-branding value baked into configs/.\n\n' +
+      'The mismatch is caught before mach builds because resolving the build against the wrong branding tree fails deep in moz.build with a confusing "path does not exist" message.'
+    );
+  }
+}
+
+/**
  * Full branding configuration.
  */
 export interface BrandingConfig {

@@ -387,6 +387,21 @@ describe('rollbackActiveOperationsForSignal', () => {
     releaseBody!();
     await runPromise;
   });
+
+  it('stays silent and writes no marker when there are no active operations', async () => {
+    // Regression guard for the "fireforge run rollback false-positive" issue:
+    // plain launch commands never register a mutation, so a SIGTERM landing
+    // during run must not print the "rolling back in-flight furnace
+    // mutations" banner nor write a pending-repair marker.
+    const { warn } = await import('../../utils/logger.js');
+    const warnMock = vi.mocked(warn);
+    warnMock.mockClear();
+
+    await rollbackActiveOperationsForSignal('SIGTERM');
+
+    expect(warnMock).not.toHaveBeenCalled();
+    expect(updateFurnaceStateMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('recordFurnaceRollbackFailure', () => {

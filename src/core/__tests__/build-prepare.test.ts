@@ -12,10 +12,26 @@ vi.mock('../furnace-stories.js', () => ({
 
 vi.mock('../mach.js', () => ({
   generateMozconfig: vi.fn(),
+  runMach: vi.fn(),
+}));
+
+vi.mock('../git-base.js', () => ({
+  git: vi.fn(),
+}));
+
+vi.mock('../git.js', () => ({
+  hasChanges: vi.fn(),
+  isMissingHeadError: vi.fn(() => false),
+}));
+
+vi.mock('../git-status.js', () => ({
+  getUntrackedFiles: vi.fn(() => Promise.resolve([] as string[])),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
+  info: vi.fn(),
+  verbose: vi.fn(),
   spinner: vi.fn(() => ({
     message: vi.fn(),
     stop: vi.fn(),
@@ -52,7 +68,7 @@ vi.mock('../furnace-operation.js', () => ({
 
 import type { FireForgeConfig, ProjectPaths } from '../../types/config.js';
 import { pathExists } from '../../utils/fs.js';
-import { spinner, warn } from '../../utils/logger.js';
+import { info, spinner, warn } from '../../utils/logger.js';
 import { isBrandingSetup, setupBranding } from '../branding.js';
 import { prepareBuildEnvironment } from '../build-prepare.js';
 import { applyAllComponents } from '../furnace-apply.js';
@@ -72,6 +88,7 @@ const mockApplyAllComponents = vi.mocked(applyAllComponents);
 const mockRunFurnaceMutation = vi.mocked(runFurnaceMutation);
 const mockPathExists = vi.mocked(pathExists);
 const mockWarn = vi.mocked(warn);
+const mockInfo = vi.mocked(info);
 const mockSpinner = vi.mocked(spinner);
 
 const paths: ProjectPaths = {
@@ -245,6 +262,54 @@ describe('prepareBuildEnvironment', () => {
     expect(result.furnaceApplied).toBe(0);
   });
 
+  it('emits a banner naming applied components when apply wrote files', async () => {
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      overrides: { 'moz-button': {} },
+      custom: { 'moz-storage-widget': {} },
+      stock: [],
+    } as never);
+    mockApplyAllComponents.mockResolvedValue({
+      applied: [
+        { name: 'moz-button', filesAffected: [] },
+        { name: 'moz-storage-widget', filesAffected: [] },
+      ],
+      errors: [],
+      skipped: [],
+    } as never);
+
+    await prepareBuildEnvironment('/project', paths, config);
+
+    const bannerCall = mockInfo.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('source → engine sync')
+    );
+    expect(bannerCall).toBeDefined();
+    expect(bannerCall?.[0]).toContain('2 components');
+    expect(bannerCall?.[0]).toContain('moz-button');
+    expect(bannerCall?.[0]).toContain('moz-storage-widget');
+  });
+
+  it('does not emit the banner when no components were applied', async () => {
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      overrides: { 'moz-button': {} },
+      custom: {},
+      stock: [],
+    } as never);
+    mockApplyAllComponents.mockResolvedValue({
+      applied: [],
+      errors: [],
+      skipped: [],
+    } as never);
+
+    await prepareBuildEnvironment('/project', paths, config);
+
+    const bannerCall = mockInfo.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('source → engine sync')
+    );
+    expect(bannerCall).toBeUndefined();
+  });
+
   it('shows "Components up to date" when 0 applied but components exist', async () => {
     mockFurnaceConfigExists.mockResolvedValue(true);
     mockLoadFurnaceConfig.mockResolvedValue({
@@ -312,5 +377,157 @@ describe('prepareBuildEnvironment', () => {
       /1 component failed to apply cleanly/
     );
     expect(mockWarn).toHaveBeenCalledWith('Furnace: moz-button [register] pattern mismatch');
+  });
+});
+
+describe('prepareBuildEnvironment auto-configure', () => {
+  it('runs mach configure when moz.build changed since the baseline', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMach } = await import('../mach.js');
+
+    vi.mocked(git).mockImplementation((args: string[]) => {
+      if (args.includes('abc..HEAD')) {
+        return Promise.resolve('browser/moz.build\nbrowser/base/browser.js\n');
+      }
+      return Promise.resolve('');
+    });
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(runMach).mockResolvedValue(0);
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+      },
+    });
+
+    expect(result.reconfigured).toBe(true);
+    expect(runMach).toHaveBeenCalledWith(['configure'], '/project/engine');
+    expect(mockInfo).toHaveBeenCalledWith(
+      expect.stringContaining('Backend config changed; running mach configure first')
+    );
+  });
+
+  it('skips mach configure when no backend-invalidating files changed', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMach } = await import('../mach.js');
+
+    vi.mocked(git).mockResolvedValue('browser/base/browser.js\n'); // .js is not backend-invalidating
+    vi.mocked(hasChanges).mockResolvedValue(false);
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+      },
+    });
+
+    expect(result.reconfigured).toBe(false);
+    expect(runMach).not.toHaveBeenCalled();
+  });
+
+  it('continues the build when mach configure exits non-zero', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMach } = await import('../mach.js');
+
+    vi.mocked(git).mockResolvedValue('browser/moz.build\n');
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(runMach).mockResolvedValue(1);
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+      },
+    });
+
+    // configure failed, but prepare itself did not — reconfigured stays false.
+    expect(result.reconfigured).toBe(false);
+  });
+
+  it('swallows mach configure exceptions and keeps building', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMach } = await import('../mach.js');
+
+    vi.mocked(git).mockResolvedValue('browser/moz.configure\n');
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(runMach).mockRejectedValue(new Error('python missing'));
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+      },
+    });
+
+    expect(result.reconfigured).toBe(false);
+  });
+
+  it('picks up workdir-modified moz.build when the baseline diff is empty', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMach } = await import('../mach.js');
+    const { getUntrackedFiles } = await import('../git-status.js');
+
+    vi.mocked(git).mockImplementation((args: string[]) => {
+      if (args.includes('abc..HEAD')) {
+        return Promise.resolve('');
+      }
+      if (args[0] === 'diff' && args[1] === '--name-only' && args[2] === 'HEAD') {
+        return Promise.resolve('toolkit/Makefile.in\n');
+      }
+      return Promise.resolve('');
+    });
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+    vi.mocked(runMach).mockResolvedValue(0);
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+      },
+    });
+
+    expect(result.reconfigured).toBe(true);
+  });
+
+  it('skips auto-configure entirely when no baseline is provided', async () => {
+    const { runMach } = await import('../mach.js');
+
+    const result = await prepareBuildEnvironment('/project', paths, config);
+
+    expect(result.reconfigured).toBe(false);
+    expect(runMach).not.toHaveBeenCalled();
+  });
+});
+
+describe('isBackendInvalidatingFile', () => {
+  it('matches moz.build, moz.configure, and Makefile.in at any depth', async () => {
+    const { isBackendInvalidatingFile } = await import('../build-prepare.js');
+    expect(isBackendInvalidatingFile('moz.build')).toBe(true);
+    expect(isBackendInvalidatingFile('browser/moz.build')).toBe(true);
+    expect(isBackendInvalidatingFile('browser/base/moz.build')).toBe(true);
+    expect(isBackendInvalidatingFile('moz.configure')).toBe(true);
+    expect(isBackendInvalidatingFile('toolkit/moz.configure')).toBe(true);
+    expect(isBackendInvalidatingFile('Makefile.in')).toBe(true);
+    expect(isBackendInvalidatingFile('toolkit/Makefile.in')).toBe(true);
+  });
+
+  it('does not match packaged source or similarly-named files', async () => {
+    const { isBackendInvalidatingFile } = await import('../build-prepare.js');
+    expect(isBackendInvalidatingFile('browser/base/browser.js')).toBe(false);
+    expect(isBackendInvalidatingFile('browser/moz.build.py')).toBe(false);
+    expect(isBackendInvalidatingFile('docs/moz.build.md')).toBe(false);
+    expect(isBackendInvalidatingFile('makefile.in')).toBe(false);
   });
 });

@@ -46,6 +46,14 @@ export interface BuildOptions {
   jobs?: number;
   /** Brand to build (stable, esr, etc.) */
   brand?: string;
+  /**
+   * When a mozinfo mismatch is detected that looks like a safe path
+   * relocation (same structure, different prefix), patch mozinfo paths
+   * in place and run `mach configure` rather than aborting with a
+   * full-rebuild instruction. Falls back to the original abort message
+   * for any mismatch the rewriter cannot prove safe.
+   */
+  rewriteMozinfo?: boolean;
 }
 
 /**
@@ -158,6 +166,16 @@ export interface ReExportOptions {
   yes?: boolean;
   /** Bypass cross-patch lint refusal on projected shrink state */
   forceUnsafe?: boolean;
+  /**
+   * After every selected patch re-exports cleanly, stamp each re-exported
+   * patch's `sourceEsrVersion` in `patches.json` to the current
+   * `firefox.version` from `fireforge.json`. Opt-in because the default
+   * contract of `re-export` is "refresh the patch body and filesAffected";
+   * version stamping is normally a `rebase` responsibility. Use this when
+   * re-exporting after a manual Firefox bump that did not go through
+   * `rebase`.
+   */
+  stamp?: boolean;
 }
 
 /**
@@ -182,6 +200,39 @@ export interface RebaseOptions {
 export interface RunOptions {
   /** Additional arguments to pass to the browser */
   args?: string[];
+  /**
+   * Enable smoke-run mode. Launches the browser, streams the console,
+   * sends SIGTERM to the whole process group after `smokeExit` seconds,
+   * and applies the smoke exit contract:
+   *  - `0` — clean window (no unallowed error lines).
+   *  - `ExitCode.SMOKE_EXIT_FAILURE` (12) — one or more console lines
+   *    matched the error heuristic and were not covered by the allowlist.
+   *  - `ExitCode.SMOKE_LAUNCH_FAILURE` (13) — the browser exited with a
+   *    non-clean status before the smoke window elapsed (launch-side
+   *    failure we cannot observe as a console line — crash before console
+   *    wiring, missing profile, etc.).
+   *
+   * POSIX only (process-group semantics do not map cleanly onto Windows);
+   * `runSmokeExit` rejects the flag up front on `win32`.
+   */
+  smokeExit?: number;
+  /**
+   * Repeatable regex patterns that mark a matching console line as
+   * benign. Matches are still counted for the summary but do not drive
+   * the smoke-run exit code.
+   */
+  consoleAllow?: string[];
+  /**
+   * Path to a newline-delimited allowlist regex file. Blank lines and
+   * `#` comments are ignored; each remaining line is compiled as a
+   * regex and appended to the active allowlist.
+   */
+  consoleAllowFile?: string;
+  /**
+   * Mirror the captured console output to this file path so agents can
+   * inspect the raw stream after smoke-exit returns.
+   */
+  captureConsole?: string;
 }
 
 /**
@@ -192,6 +243,19 @@ export interface TestOptions {
   headless?: boolean;
   /** Run incremental UI build before testing */
   build?: boolean;
+  /**
+   * Run a marionette preflight before tests. Reports PASS/FAIL in under a
+   * minute. When test paths are supplied, a FAIL aborts before mach test is
+   * spawned. When no paths are supplied, runs the preflight only and exits.
+   */
+  doctor?: boolean;
+  /**
+   * Extra arguments forwarded verbatim to `mach test` (repeatable). Escape
+   * valve for upstream xpcshell/mochitest flags that FireForge does not
+   * model directly. Order relative to other flags is preserved; passthrough
+   * values appear after `--headless` if both are set.
+   */
+  machArg?: string[];
 }
 
 /**
@@ -288,8 +352,59 @@ export interface FurnaceCreateOptions {
   register?: boolean;
   /** Scaffold Mochitest directory and register in moz.build */
   withTests?: boolean;
+  /**
+   * Scaffold an xpcshell test harness (headless, no tabbrowser) instead of
+   * browser-chrome. Required for forks without a `tabbrowser` (storage-only
+   * code, observer-driven modules). Implies `withTests` when set. Writes an
+   * `xpcshell.toml` + `test_<name>.js` under
+   * `engine/browser/base/content/test/<binary-name>-xpcshell/` and leaves
+   * moz.build registration to the operator (add the directory to
+   * `XPCSHELL_TESTS_MANIFESTS`).
+   */
+  xpcshell?: boolean;
+  /**
+   * Test harness style to scaffold when `--with-tests` is set.
+   *
+   * - `mochikit` (default when `--with-tests` is set alone) — a MochiKit
+   *   test at `engine/toolkit/content/tests/widgets/test_<tag>.html` that
+   *   loads the component module directly via `chrome://global/` and
+   *   asserts against `customElements`. Runs today on forks whose
+   *   top-level chrome document (e.g. `mybrowser.xhtml`) lacks a
+   *   `tabbrowser`, because it doesn't go through `URILoadingHelper`.
+   * - `browser-chrome` — today's browser-mochitest scaffold, requires a
+   *   working tabbrowser. Use for components that talk to the browser
+   *   window or open URLs.
+   * - `xpcshell` — equivalent to setting `--xpcshell`; headless, storage-only.
+   */
+  testStyle?: 'mochikit' | 'browser-chrome' | 'xpcshell';
   /** Stock component tag names composed internally by this component */
   compose?: string[];
+  /**
+   * Participate in a pre-existing feature-scoped Fluent bundle at this
+   * path (as used by `insertFTLIfNeeded`, e.g. `browser/hominis-dock.ftl`)
+   * instead of scaffolding a per-component `.ftl`. Implies `localized`.
+   * Persists onto the furnace.json entry so validation and apply skip the
+   * per-component paths.
+   */
+  sharedFtl?: string;
+  /**
+   * Show the planned file set and furnace.json changes without writing
+   * anything. All validation that does not require disk writes (tag name
+   * shape, name conflicts, engine pre-existence, `--compose` targets, cycle
+   * detection, prefix warning) runs before the plan is emitted, so a
+   * dry-run faithfully previews the real command's outcome.
+   */
+  dryRun?: boolean;
+  /**
+   * Bypass the configured `componentPrefix` check for the supplied name.
+   * Without this flag, a name that does not start with the prefix is
+   * rejected before any files are written, so a prefix-mismatched
+   * component cannot leave behind a half-scaffolded state. Pass this
+   * flag only when you know the prefix mismatch is intentional — e.g.
+   * creating an experimental component whose name intentionally breaks
+   * the fork's convention.
+   */
+  allowPrefixMismatch?: boolean;
 }
 
 /**
@@ -302,6 +417,13 @@ export interface WireOptions {
   dryRun?: boolean;
   after?: string;
   subscriptDir?: string;
+  /**
+   * Chrome document the DOM fragment's `#include` is inserted into, relative
+   * to engine/. Defaults to the first entry of
+   * `furnace.json.tokenHostDocuments` when set, otherwise
+   * `browser/base/content/browser.xhtml`.
+   */
+  target?: string;
 }
 
 /**

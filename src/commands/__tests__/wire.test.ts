@@ -13,6 +13,11 @@ vi.mock('../../core/browser-wire.js', () => ({
   DEFAULT_BROWSER_SUBSCRIPT_DIR: 'browser/base/content',
 }));
 
+vi.mock('../../core/furnace-config.js', () => ({
+  furnaceConfigExists: vi.fn(),
+  loadFurnaceConfig: vi.fn(),
+}));
+
 vi.mock('../../core/parser-fallback.js', () => ({
   consumeParserFallbackEvents: vi.fn(),
 }));
@@ -32,6 +37,7 @@ vi.mock('../../utils/logger.js', () => ({
 
 import { wireSubscript } from '../../core/browser-wire.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { consumeParserFallbackEvents } from '../../core/parser-fallback.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
@@ -44,6 +50,14 @@ describe('wireCommand', () => {
     vi.mocked(loadConfig).mockResolvedValue({
       wire: { subscriptDir: 'browser/components/custom' },
     } as never);
+    vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(consumeParserFallbackEvents).mockReturnValue([]);
     vi.mocked(wireSubscript).mockResolvedValue({
@@ -77,7 +91,7 @@ describe('wireCommand', () => {
     expect(info).toHaveBeenCalledWith('  browser-init.js: Panel.init()');
     expect(info).toHaveBeenCalledWith('  browser-init.js onUnload(): Panel.destroy()');
     expect(info).toHaveBeenCalledWith(
-      '  browser.xhtml: #include ../../base/content/fragments/panel.inc.xhtml'
+      '  browser/base/content/browser.xhtml: #include ../../base/content/fragments/panel.inc.xhtml'
     );
     expect(info).toHaveBeenCalledWith(
       '  jar.mn: content/browser/panel.js (../components/custom/panel.js)'
@@ -108,6 +122,87 @@ describe('wireCommand', () => {
         dom: '/tmp/panel.inc.xhtml',
       })
     ).rejects.toThrow('DOM fragment file must stay within engine/: /tmp/panel.inc.xhtml');
+
+    expect(wireSubscript).not.toHaveBeenCalled();
+  });
+
+  it('probes engine-relative --dom paths inside the engine root', async () => {
+    // Engine-relative input must be joined with paths.engine before the
+    // existence probe. Before the 0.16.0 fix, `pathExists` ran on the
+    // bare engine-relative path and resolved against CWD, so operators
+    // hit "DOM fragment file not found" for files that were correctly
+    // placed inside engine/.
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: 'browser/base/content/fragments/panel.inc.xhtml',
+      })
+    ).resolves.toBeUndefined();
+
+    expect(pathExists).toHaveBeenCalledWith(
+      '/project/engine/browser/base/content/fragments/panel.inc.xhtml'
+    );
+    expect(wireSubscript).toHaveBeenCalledWith(
+      '/project',
+      'panel',
+      expect.objectContaining({
+        domFilePath: 'browser/base/content/fragments/panel.inc.xhtml',
+      })
+    );
+  });
+
+  it('probes repo-root-relative --dom paths via stripEnginePrefix + engine join', async () => {
+    // The `engine/`-prefixed form strips the prefix and then joins with
+    // paths.engine, so the probe targets the same absolute path as the
+    // engine-relative form above.
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: 'engine/browser/base/content/fragments/panel.inc.xhtml',
+      })
+    ).resolves.toBeUndefined();
+
+    expect(pathExists).toHaveBeenCalledWith(
+      '/project/engine/browser/base/content/fragments/panel.inc.xhtml'
+    );
+    expect(wireSubscript).toHaveBeenCalledWith(
+      '/project',
+      'panel',
+      expect.objectContaining({
+        domFilePath: 'browser/base/content/fragments/panel.inc.xhtml',
+      })
+    );
+  });
+
+  it('probes absolute --dom paths as-is (no engine join)', async () => {
+    // Absolute input already carries its full path; joining with engine
+    // would produce a double-rooted garbage path. Regression guard so a
+    // future refactor doesn't accidentally re-route absolutes through join.
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+      })
+    ).resolves.toBeUndefined();
+
+    expect(pathExists).toHaveBeenCalledWith(
+      '/project/engine/browser/base/content/fragments/panel.inc.xhtml'
+    );
+  });
+
+  it('surfaces the original --dom input in the not-found error for engine-relative paths', async () => {
+    // When the joined engine path does not exist, the error message
+    // should echo the operator's original input (not the internal
+    // joined path) — matching the existing absolute-input behaviour so
+    // the error is copy-pasteable back into the CLI.
+    vi.mocked(pathExists).mockImplementation((value) =>
+      Promise.resolve(value !== '/project/engine/browser/base/content/fragments/missing.inc.xhtml')
+    );
+
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: 'browser/base/content/fragments/missing.inc.xhtml',
+      })
+    ).rejects.toThrow(
+      'DOM fragment file not found: browser/base/content/fragments/missing.inc.xhtml'
+    );
 
     expect(wireSubscript).not.toHaveBeenCalled();
   });
@@ -159,7 +254,7 @@ describe('wireCommand', () => {
     );
     expect(success).toHaveBeenCalledWith('Added destroy expression to browser-init.js onUnload()');
     expect(info).toHaveBeenCalledWith(
-      '#include directive already present in browser.xhtml (skipped)'
+      '#include directive already present in browser/base/content/browser.xhtml (skipped)'
     );
     expect(info).toHaveBeenCalledWith('panel.js already registered in jar.mn (skipped)');
     expect(outro).toHaveBeenCalledWith('Wiring complete');
@@ -191,5 +286,164 @@ describe('wireCommand', () => {
       'panel',
       expect.not.objectContaining({ subscriptDir: expect.any(String) as unknown })
     );
+  });
+
+  it('resolves the DOM target from furnace.json tokenHostDocuments when present', async () => {
+    vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+      tokenHostDocuments: ['browser/base/content/mybrowser-shell.xhtml'],
+    });
+
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+      })
+    ).resolves.toBeUndefined();
+
+    expect(wireSubscript).toHaveBeenCalledWith(
+      '/project',
+      'panel',
+      expect.objectContaining({
+        domFilePath: 'browser/base/content/fragments/panel.inc.xhtml',
+        domTargetPath: 'browser/base/content/mybrowser-shell.xhtml',
+      })
+    );
+    expect(success).toHaveBeenCalledWith(
+      'Inserted #include directive into browser/base/content/mybrowser-shell.xhtml'
+    );
+  });
+
+  it('--target overrides furnace.json tokenHostDocuments', async () => {
+    vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+      tokenHostDocuments: ['browser/base/content/mybrowser-shell.xhtml'],
+    });
+
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        target: 'browser/base/content/mybrowser.xhtml',
+      })
+    ).resolves.toBeUndefined();
+
+    expect(wireSubscript).toHaveBeenCalledWith(
+      '/project',
+      'panel',
+      expect.objectContaining({
+        domTargetPath: 'browser/base/content/mybrowser.xhtml',
+      })
+    );
+  });
+
+  it('omits domTargetPath when the resolved target is the upstream default', async () => {
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+      })
+    ).resolves.toBeUndefined();
+
+    // No furnace config and no --target: leave browser-wire's internal default alone
+    expect(wireSubscript).toHaveBeenCalledWith(
+      '/project',
+      'panel',
+      expect.not.objectContaining({ domTargetPath: expect.any(String) as unknown })
+    );
+  });
+
+  it('rejects --target values that escape engine/', async () => {
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        target: '../outside.xhtml',
+      })
+    ).rejects.toThrow('Target chrome document must stay within engine/: ../outside.xhtml');
+
+    expect(wireSubscript).not.toHaveBeenCalled();
+  });
+
+  it('fails with a pointer to tokenHostDocuments when the resolved target is missing', async () => {
+    vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+      tokenHostDocuments: ['browser/base/content/mybrowser-shell.xhtml'],
+    });
+    vi.mocked(pathExists).mockImplementation((p: string) =>
+      Promise.resolve(!p.includes('mybrowser-shell.xhtml'))
+    );
+
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+      })
+    ).rejects.toThrow(/Chrome document not found.*tokenHostDocuments/s);
+
+    expect(wireSubscript).not.toHaveBeenCalled();
+  });
+
+  it('falls through to the upstream default when furnace.json fails to load', async () => {
+    vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+    vi.mocked(loadFurnaceConfig).mockRejectedValue(new Error('parse error'));
+
+    await expect(
+      wireCommand('/project', 'panel', {
+        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+      })
+    ).resolves.toBeUndefined();
+
+    // The broken furnace config was swallowed; the command proceeds with the
+    // upstream default and does not emit domTargetPath to wireSubscript.
+    expect(wireSubscript).toHaveBeenCalledWith(
+      '/project',
+      'panel',
+      expect.not.objectContaining({ domTargetPath: expect.any(String) as unknown })
+    );
+  });
+
+  it('rejects invalid init expressions in --dry-run with the same error as the real run', async () => {
+    // Finding #7: pre-0.16.0 `wire --dry-run --init 'void 0'` previewed the
+    // expression successfully even though the real run rejected `void 0`
+    // (space characters fail the safe-interpolation regex). Validation now
+    // runs up-front in both paths, so the preview no longer silently
+    // promises a wiring the real command will refuse.
+    await expect(
+      wireCommand('/project', 'panel', { init: 'void 0', dryRun: true })
+    ).rejects.toThrow(/Invalid init expression "void 0"/);
+    expect(info).not.toHaveBeenCalledWith('[dry-run] Would wire subscript:');
+  });
+
+  it('rejects invalid destroy expressions in --dry-run', async () => {
+    await expect(
+      wireCommand('/project', 'panel', { destroy: 'void 0', dryRun: true })
+    ).rejects.toThrow(/Invalid destroy expression "void 0"/);
+  });
+
+  it('coerces bare property chains to function calls in the dry-run preview', async () => {
+    // Finding #8: the preview must mirror what the real wire emits —
+    // `EvalStartup.init` is coerced to `EvalStartup.init()` in the
+    // generated block, so the preview reflects the same shape.
+    await expect(
+      wireCommand('/project', 'panel', {
+        init: 'EvalStartup.init',
+        destroy: 'EvalStartup.destroy',
+        dryRun: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(info).toHaveBeenCalledWith('  browser-init.js: EvalStartup.init()');
+    expect(info).toHaveBeenCalledWith('  browser-init.js onUnload(): EvalStartup.destroy()');
   });
 });

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
 import type { FurnacePendingRepairOperation } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
-import { warn } from '../utils/logger.js';
+import { verbose, warn } from '../utils/logger.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { withFileLock } from './file-lock.js';
 import { loadFurnaceState, updateFurnaceState } from './furnace-config.js';
@@ -17,7 +18,8 @@ const FURNACE_LOCK_FILENAME = 'furnace.lock';
  * The signal names the lifecycle wrapper knows how to react to. Spelled out
  * as a literal union (rather than `NodeJS.Signals`) so the public type
  * surface does not depend on the NodeJS global namespace — consumers of
- * `@hominis/fireforge` may compile against tsconfigs that omit `@types/node`.
+ * FireForge's published scoped npm package may compile against tsconfigs
+ * that omit `@types/node`.
  */
 export type FurnaceShutdownSignal = 'SIGINT' | 'SIGTERM';
 
@@ -139,17 +141,25 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function rollbackActiveOperationsForSignal(
   signal: FurnaceShutdownSignal
 ): Promise<void> {
+  // Snapshot the active operations so we don't race with `runFurnaceMutation`
+  // clearing slots during normal completion. Filter completed bodies so a
+  // body sitting in its finally-block cleanup window is not counted as live
+  // work — this would mis-trigger the rollback banner for plain `fireforge
+  // run` (which never registers a mutation but can receive SIGTERM).
+  const snapshot = [...activeOperations.values()].filter((op) => !op.completed);
+
+  if (snapshot.length === 0) {
+    // Nothing to roll back. Stay silent so commands that never mutated (run,
+    // watch, test, doctor) don't print an alarming "rolling back mutations"
+    // line on Ctrl+C / SIGTERM. Leave `signalRollbackInFlight` false so a
+    // subsequent registrant can still trigger the full path.
+    return;
+  }
+
   signalRollbackInFlight = true;
   warn(`Received ${signal}; rolling back in-flight furnace mutations…`);
-  // Snapshot the active operations so we don't race with `runFurnaceMutation`
-  // clearing slots during normal completion.
-  const snapshot = [...activeOperations.values()];
 
   for (const op of snapshot) {
-    // If the body completed successfully and is in its finally-block cleanup
-    // (deleting the token), skip rollback — the mutation committed cleanly.
-    if (op.completed) continue;
-
     const cleanupErrors: string[] = [];
 
     // Run extra cleanup callbacks first (e.g. preview's cleanStories), so the
@@ -235,6 +245,36 @@ async function persistPendingRepair(
  */
 export function getFurnaceLockPath(root: string): string {
   return join(root, FIREFORGE_DIR, FURNACE_LOCK_FILENAME);
+}
+
+/**
+ * Forcibly removes the furnace lock directory for every active operation.
+ *
+ * The bin-layer signal handler calls `process.exit` after rollback, which
+ * short-circuits Node's normal unwinding — `withFileLock`'s `finally { rm
+ * }` never runs, so the lock directory survives the process. The next
+ * FireForge command then has to either wait out the staleness window or
+ * have the operator remove the lock manually. This sweeper runs inside
+ * the signal-handler pipeline BEFORE `process.exit`, so the lock is gone
+ * by the time the next command starts.
+ *
+ * Errors are logged and swallowed: we do not want a slow I/O failure at
+ * shutdown to prevent the process from exiting. The doctor-side stale
+ * lock check (`src/commands/doctor-furnace.ts`) is the backup path for
+ * any lock that escapes this sweep.
+ */
+export async function forceReleaseFurnaceLocksForActiveOperations(): Promise<void> {
+  const paths = new Set([...activeOperations.values()].map((op) => getFurnaceLockPath(op.root)));
+  for (const lockPath of paths) {
+    try {
+      await rm(lockPath, { recursive: true, force: true });
+      verbose(`Removed furnace lock at ${lockPath} during signal teardown`);
+    } catch (error: unknown) {
+      verbose(
+        `Could not remove furnace lock at ${lockPath} during signal teardown: ${toError(error).message}`
+      );
+    }
+  }
 }
 
 /**

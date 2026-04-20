@@ -26,6 +26,8 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../furnace-registration.js', () => ({
   addCustomElementRegistration: vi.fn(),
   addJarMnEntries: vi.fn(),
+  addLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(0)),
+  removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve()),
   validateCustomElementRegistration: vi.fn(),
   validateJarMnEntries: vi.fn(),
 }));
@@ -265,7 +267,8 @@ describe('applyCustomComponent', () => {
     expect(mockAddCEReg).toHaveBeenCalledWith(
       '/engine',
       'my-btn',
-      'chrome://global/content/elements/my-btn.mjs'
+      'chrome://global/content/elements/my-btn.mjs',
+      {}
     );
     expect(mockAddJarMn).toHaveBeenCalled();
   });

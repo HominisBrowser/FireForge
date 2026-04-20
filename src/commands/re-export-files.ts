@@ -100,8 +100,20 @@ export async function reExportFilesInPlace(
   }
 
   // Run the per-patch lint against the projected diff. This mirrors what
-  // runPatchLint does in the standard re-export path.
-  await runPatchLint(paths.engine, actualProjectedFiles, projectedDiff, config, options.skipLint);
+  // runPatchLint does in the standard re-export path. The target patch's
+  // `lintIgnore` threads through so a shrink of an advisory-noisy-but-
+  // intentional patch (branding bundle, localised-resource pack) does not
+  // have to choose between `--skip-lint` (blunt) and the full rebase path.
+  const ignoreChecks = target.lintIgnore?.length ? new Set<string>(target.lintIgnore) : undefined;
+  await runPatchLint(
+    paths.engine,
+    actualProjectedFiles,
+    projectedDiff,
+    config,
+    options.skipLint,
+    undefined,
+    ignoreChecks
+  );
 
   // Project the cross-patch context: replace the target entry with its
   // would-be shrunken self (new diff + new newFiles + new

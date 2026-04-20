@@ -13,9 +13,16 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
-import { step } from '../../utils/logger.js';
 import { downloadCommand } from '../download.js';
 
+// The spinner mock tracks `message(...)` calls so tests can assert that
+// git-init progress flowed through the spinner — 0.16.0 removed the
+// redundant `step(...)` call that the resume/init paths used to make
+// alongside `spinner.message(...)`, because the non-TTY spinner fallback
+// already emits `p.log.step(msg)` from `.message()`. Recording the
+// per-handle `message` calls lets integration tests verify the contract
+// without coupling to internal fallback wiring.
+const spinnerMessageCalls: string[] = [];
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
@@ -25,7 +32,9 @@ vi.mock('../../utils/logger.js', () => ({
   spinner: vi.fn(() => ({
     stop: vi.fn(),
     error: vi.fn(),
-    message: vi.fn(),
+    message: vi.fn((msg: string) => {
+      spinnerMessageCalls.push(msg);
+    }),
   })),
 }));
 
@@ -37,6 +46,7 @@ describe('downloadCommand integration', () => {
     projectRoot = await createTempProject();
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
+    spinnerMessageCalls.length = 0;
   });
 
   afterEach(async () => {
@@ -138,7 +148,7 @@ describe('downloadCommand integration', () => {
     await expect(
       readText(projectRoot, '.fireforge/cache/firefox-firefox-esr-140.9.0esr.source.tar.xz.json')
     ).resolves.toContain('"archiveVersion": "140.9.0esr"');
-    expect(vi.mocked(step).mock.calls.some(([message]) => /git add -A/i.test(message))).toBe(true);
+    expect(spinnerMessageCalls.some((message) => /git add -A/i.test(message))).toBe(true);
   });
 
   it('invalidates corrupted cached archives after extraction failure and recovers on retry', async () => {

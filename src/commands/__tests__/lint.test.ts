@@ -47,6 +47,15 @@ vi.mock('../../core/patch-lint.js', () => ({
   lintPatchQueue: vi.fn(() => []),
 }));
 
+vi.mock('../../core/patch-manifest.js', () => ({
+  loadPatchesManifest: vi.fn(() => Promise.resolve(null)),
+}));
+
+vi.mock('../../core/patch-lint-diff-tag.js', () => ({
+  collectDiffFilePaths: vi.fn(() => Promise.resolve(new Set<string>())),
+  tagLintIssues: vi.fn(),
+}));
+
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
@@ -69,8 +78,15 @@ import {
   getUntrackedFiles,
   getUntrackedFilesInDir,
 } from '../../core/git-status.js';
-import { lintExportedPatch } from '../../core/patch-lint.js';
+import {
+  buildPatchQueueContext,
+  lintExportedPatch,
+  lintPatchQueue,
+} from '../../core/patch-lint.js';
+import { collectDiffFilePaths, tagLintIssues } from '../../core/patch-lint-diff-tag.js';
+import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { GeneralError } from '../../errors/base.js';
+import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
 import { lintCommand } from '../lint.js';
@@ -208,5 +224,360 @@ describe('lintCommand — branch coverage', () => {
     vi.mocked(pathExists).mockResolvedValue(false);
 
     await expect(lintCommand('/project', [])).rejects.toThrow('Firefox source not found');
+  });
+
+  describe('--only-introduced', () => {
+    it('rejects --only-introduced without --since up-front', async () => {
+      await expect(lintCommand('/project', [], { onlyIntroduced: true })).rejects.toThrow(
+        /requires --since/
+      );
+      // Must abort before any git probe runs so a misconfigured CI exits
+      // with a clear message rather than silently treating every error as
+      // cumulative.
+      expect(lintExportedPatch).not.toHaveBeenCalled();
+    });
+
+    it('passes lint when cumulative errors exist but no issues are tagged introduced', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'raw-color',
+          file: 'unrelated.css',
+          message: 'raw color value',
+          tag: 'cumulative',
+        },
+      ]);
+      // tagLintIssues is normally what stamps the tag — mock it to be a
+      // no-op so the resolved value above flows through unchanged.
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set());
+
+      // With --only-introduced set and no issues tagged introduced, exit
+      // code should be clean.
+      await expect(
+        lintCommand('/project', [], { since: 'main', onlyIntroduced: true })
+      ).resolves.toBeUndefined();
+      expect(vi.mocked(outro)).toHaveBeenCalledWith('Lint passed with warnings');
+    });
+
+    it('fails lint when an introduced error exists, even if cumulative ones also exist', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'license-header',
+          file: 'old.ts',
+          message: 'missing header',
+          tag: 'cumulative',
+        },
+        {
+          severity: 'error',
+          check: 'raw-color',
+          file: 'new.ts',
+          message: 'raw color',
+          tag: 'introduced',
+        },
+      ]);
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set(['new.ts']));
+
+      await expect(
+        lintCommand('/project', [], { since: 'main', onlyIntroduced: true })
+      ).rejects.toThrow(/introduced error/);
+    });
+
+    it('still fails lint when an introduced error is the only tagged error', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'raw-color',
+          file: 'new.ts',
+          message: 'raw color',
+          tag: 'introduced',
+        },
+      ]);
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set(['new.ts']));
+
+      await expect(
+        lintCommand('/project', [], { since: 'main', onlyIntroduced: true })
+      ).rejects.toThrow(/introduced error/);
+    });
+
+    it('reports cumulative errors as suppressed in the failure message when introduced errors trigger the failure', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'a',
+          file: 'x.ts',
+          message: 'm',
+          tag: 'cumulative',
+        },
+        {
+          severity: 'error',
+          check: 'b',
+          file: 'y.ts',
+          message: 'n',
+          tag: 'cumulative',
+        },
+        {
+          severity: 'error',
+          check: 'c',
+          file: 'z.ts',
+          message: 'o',
+          tag: 'introduced',
+        },
+      ]);
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set(['z.ts']));
+
+      await expect(
+        lintCommand('/project', [], { since: 'main', onlyIntroduced: true })
+      ).rejects.toThrow(/cumulative error\(s\) suppressed by --only-introduced/);
+    });
+
+    it('keeps the classic exit-code semantics when --only-introduced is not set', async () => {
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'raw-color',
+          file: 'unrelated.css',
+          message: 'raw color',
+          tag: 'cumulative',
+        },
+      ]);
+      vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
+      vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set());
+
+      // Without --only-introduced the cumulative error still fails lint so
+      // operators keep the pre-flag behaviour unchanged.
+      await expect(lintCommand('/project', [], { since: 'main' })).rejects.toThrow(
+        /Patch lint found 1 error/
+      );
+    });
+  });
+
+  describe('aggregate-mode NOTE for patch-size rules', () => {
+    it('prints the --per-patch hint and downgrades size rules to warnings on a multi-patch queue', async () => {
+      // Post-0.16.0, aggregate-mode on a multi-patch queue should:
+      // - still print the NOTE pointing at `--per-patch`
+      // - downgrade `large-patch-lines` / `large-patch-files` from error
+      //   to warning so the command exits zero (operator uses
+      //   `--per-patch` for authoritative per-patch error detection).
+      vi.mocked(buildPatchQueueContext).mockResolvedValue({
+        entries: [{ filename: 'a.patch' }, { filename: 'b.patch' }] as unknown as Awaited<
+          ReturnType<typeof buildPatchQueueContext>
+        >['entries'],
+      });
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'large-patch-lines',
+          file: '(patch)',
+          message: 'Patch is 37529 lines',
+        },
+      ]);
+
+      await expect(lintCommand('/project', [])).resolves.toBeUndefined();
+
+      expect(vi.mocked(info)).toHaveBeenCalledWith(
+        expect.stringContaining('aggregate diff across all applied patches')
+      );
+    });
+
+    it('omits the hint when explicit file paths scope the diff', async () => {
+      vi.mocked(stat).mockResolvedValue(fakeStats({ isDirectory: () => true }));
+      vi.mocked(getModifiedFilesInDir).mockResolvedValue(['src/app.ts']);
+      vi.mocked(buildPatchQueueContext).mockResolvedValue({
+        entries: [{ filename: 'a.patch' }, { filename: 'b.patch' }] as unknown as Awaited<
+          ReturnType<typeof buildPatchQueueContext>
+        >['entries'],
+      });
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'large-patch-lines',
+          file: '(patch)',
+          message: 'Patch is 37529 lines',
+        },
+      ]);
+
+      await expect(lintCommand('/project', ['src'])).rejects.toThrow(/Patch lint found 1 error/);
+
+      expect(vi.mocked(info)).not.toHaveBeenCalledWith(
+        expect.stringContaining('aggregate diff across all applied patches')
+      );
+    });
+
+    it('omits the hint when the queue has only one patch (no aggregation artefact)', async () => {
+      vi.mocked(buildPatchQueueContext).mockResolvedValue({
+        entries: [{ filename: 'a.patch' }] as unknown as Awaited<
+          ReturnType<typeof buildPatchQueueContext>
+        >['entries'],
+      });
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'large-patch-lines',
+          file: '(patch)',
+          message: 'Patch is 4000 lines',
+        },
+      ]);
+
+      await expect(lintCommand('/project', [])).rejects.toThrow(/Patch lint found 1 error/);
+
+      expect(vi.mocked(info)).not.toHaveBeenCalledWith(
+        expect.stringContaining('aggregate diff across all applied patches')
+      );
+    });
+  });
+
+  describe('--per-patch', () => {
+    function makePatch(filename: string, filesAffected: string[]): PatchMetadata {
+      return {
+        filename,
+        order: parseInt(filename.split('-')[0] ?? '0', 10),
+        category: 'ui' as const,
+        name: 'test',
+        description: '',
+        createdAt: new Date().toISOString(),
+        sourceEsrVersion: '140.9.0esr',
+        filesAffected,
+      };
+    }
+    function makeManifest(patches: PatchMetadata[]): PatchesManifest {
+      return { version: 1, patches };
+    }
+
+    it('rejects --per-patch when combined with explicit file paths', async () => {
+      await expect(lintCommand('/project', ['src/app.ts'], { perPatch: true })).rejects.toThrow(
+        /cannot be combined with explicit file paths/
+      );
+    });
+
+    it('short-circuits cleanly when the manifest is empty', async () => {
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([]));
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(vi.mocked(info)).toHaveBeenCalledWith(
+        'No patches in manifest — nothing to lint per-patch.'
+      );
+      expect(lintExportedPatch).not.toHaveBeenCalled();
+    });
+
+    it('lints each patch in isolation and forwards its lintIgnore set', async () => {
+      const a = makePatch('001-ui-a.patch', ['a.ts']);
+      const b = makePatch('002-ui-b.patch', ['b.ts']);
+      b.lintIgnore = ['large-patch-lines'];
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a, b]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(2);
+      const firstCall = vi.mocked(lintExportedPatch).mock.calls[0];
+      const secondCall = vi.mocked(lintExportedPatch).mock.calls[1];
+      // First patch has no lintIgnore — undefined ignoreChecks
+      expect(firstCall?.[5]).toBeUndefined();
+      // Second patch has lintIgnore — Set containing its entry
+      const ignore = secondCall?.[5];
+      expect(ignore).toBeInstanceOf(Set);
+      expect(ignore?.has('large-patch-lines')).toBe(true);
+    });
+
+    it('namespaces issues with the patch filename so triage can attribute findings', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'error',
+          check: 'relative-import',
+          file: 'a.ts',
+          message: 'bad import',
+        },
+      ]);
+
+      await expect(lintCommand('/project', [], { perPatch: true })).rejects.toThrow(
+        /found 1 error/
+      );
+
+      expect(vi.mocked(warn)).toHaveBeenCalledWith(
+        'ERROR [relative-import] 001-ui-test.patch :: a.ts: bad import'
+      );
+    });
+
+    it('still runs cross-patch rules once over the whole queue context', async () => {
+      const a = makePatch('001-ui-a.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(lintPatchQueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips a patch whose filesAffected are all missing on disk', async () => {
+      const patch = makePatch('001-ui-test.patch', ['missing.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('/missing.ts')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(lintExportedPatch).not.toHaveBeenCalled();
+      expect(vi.mocked(success)).toHaveBeenCalledWith(
+        expect.stringContaining('No lint issues found across 0 patch(es)')
+      );
+    });
+  });
+});
+
+describe('lintCommand — engine/ prefix normalization (Finding #4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(getAllDiff).mockResolvedValue('diff content');
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+    vi.mocked(lintExportedPatch).mockResolvedValue([]);
+    vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+  });
+
+  it('accepts a repo-root-relative engine/ prefix on a file path', async () => {
+    vi.mocked(stat).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(getStatusWithCodes).mockResolvedValue([
+      { status: 'M', file: 'browser/base/content/foo.js' },
+    ]);
+
+    // Operator pastes the path with the `engine/` prefix (common from git
+    // status output). Pre-fix, this fell through to
+    // "No modified files found in the specified paths." because the
+    // status lookup sees paths relative to engine/ and the explicit
+    // prefix double-rooted. `stripEnginePrefix` now makes both forms
+    // equivalent to the pipeline.
+    await expect(
+      lintCommand('/project', ['engine/browser/base/content/foo.js'])
+    ).resolves.toBeUndefined();
+
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+      'browser/base/content/foo.js',
+    ]);
+    expect(info).not.toHaveBeenCalledWith('No modified files found in the specified paths.');
+  });
+
+  it('accepts an engine/ prefix on a directory path', async () => {
+    vi.mocked(stat).mockResolvedValue(fakeStats({ isDirectory: () => true }));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue(['browser/base/content/foo.js']);
+
+    await lintCommand('/project', ['engine/browser/base/content']);
+
+    expect(getModifiedFilesInDir).toHaveBeenCalledWith('/project/engine', 'browser/base/content');
   });
 });

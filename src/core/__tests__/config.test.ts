@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
@@ -199,6 +199,28 @@ describe('validateConfig', () => {
       'Config field "license" must be one of: EUPL-1.2, MPL-2.0, 0BSD, GPL-2.0-or-later'
     );
   });
+
+  it('accepts a well-formed markerComment and rejects malformed values', () => {
+    expect(validateConfig({ ...makeValidConfig(), markerComment: 'MYBROWSER' }).markerComment).toBe(
+      'MYBROWSER'
+    );
+
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: '' })).toThrow(
+      /must not be empty/
+    );
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: ' MYBROWSER ' })).toThrow(
+      /leading or trailing whitespace/
+    );
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: 'two\nlines' })).toThrow(
+      /newlines or "\*\/"/
+    );
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: 'a*/b' })).toThrow(
+      /newlines or "\*\/"/
+    );
+    expect(() => validateConfig({ ...makeValidConfig(), markerComment: 42 as never })).toThrow(
+      /must be a string/
+    );
+  });
 });
 
 describe('config persistence', () => {
@@ -267,6 +289,50 @@ describe('config persistence', () => {
     expect(mutateConfig(makeValidConfig(), 'build.jobs', 'many', true)).toEqual({
       ...makeValidConfig(),
       build: { jobs: 'many' },
+    });
+  });
+
+  describe('prototype-pollution sentinel rejection', () => {
+    // The canonical pollution probe: after the guarded call runs, a
+    // freshly-constructed object must not expose the attempted sentinel
+    // write via its prototype chain. We run the probe on a key that is
+    // not otherwise present on `Object.prototype` so an accidental
+    // pass through would be immediately visible.
+    const PROBE_KEY = 'fireforgePollutionProbe';
+
+    afterEach(() => {
+      // Defensive cleanup — if any assertion somehow pollutes the chain
+      // (it shouldn't, since the guard throws), remove it so downstream
+      // tests don't inherit the poisoned prototype. `Reflect.deleteProperty`
+      // sidesteps `@typescript-eslint/no-dynamic-delete` for a probe key
+      // that is intentionally parameterised.
+      Reflect.deleteProperty(Object.prototype, PROBE_KEY);
+    });
+
+    it('rejects a leading __proto__ segment before any clone or mutation', () => {
+      expect(() =>
+        mutateConfig(makeValidConfig(), `__proto__.${PROBE_KEY}`, 'polluted', true)
+      ).toThrow(/reserved segment "__proto__"/);
+      expect(({} as Record<string, unknown>)[PROBE_KEY]).toBeUndefined();
+    });
+
+    it('rejects a standalone constructor segment', () => {
+      expect(() => mutateConfig(makeValidConfig(), 'constructor', 'polluted', true)).toThrow(
+        /reserved segment "constructor"/
+      );
+    });
+
+    it('rejects a nested prototype segment', () => {
+      expect(() =>
+        mutateConfig(makeValidConfig(), `nested.prototype.${PROBE_KEY}`, 'polluted', true)
+      ).toThrow(/reserved segment "prototype"/);
+      expect(({} as Record<string, unknown>)[PROBE_KEY]).toBeUndefined();
+    });
+
+    it('rejects a trailing __proto__ segment even when preceded by legitimate names', () => {
+      expect(() => mutateConfig(makeValidConfig(), 'build.__proto__', 'polluted', true)).toThrow(
+        /reserved segment "__proto__"/
+      );
     });
   });
 

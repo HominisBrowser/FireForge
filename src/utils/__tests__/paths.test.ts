@@ -6,6 +6,7 @@ import {
   isExplicitAbsolutePath,
   isPathInsideRoot,
   normalizePathSlashes,
+  stripEnginePrefix,
   toRootRelativePath,
 } from '../paths.js';
 
@@ -139,5 +140,42 @@ describe('toRootRelativePath', () => {
 
   it('throws when a relative candidate escapes the root', () => {
     expect(() => toRootRelativePath('/root', '../escape.txt')).toThrow(/escapes root/);
+  });
+});
+
+describe('stripEnginePrefix', () => {
+  it('strips a POSIX "engine/" prefix', () => {
+    expect(stripEnginePrefix('engine/browser/base/content/foo.js')).toBe(
+      'browser/base/content/foo.js'
+    );
+  });
+
+  it('strips a Windows-flavour "engine\\" prefix', () => {
+    expect(stripEnginePrefix('engine\\browser\\base\\content\\foo.js')).toBe(
+      'browser\\base\\content\\foo.js'
+    );
+  });
+
+  it('is case-insensitive', () => {
+    expect(stripEnginePrefix('Engine/browser/foo.js')).toBe('browser/foo.js');
+    expect(stripEnginePrefix('ENGINE/browser/foo.js')).toBe('browser/foo.js');
+  });
+
+  it('tolerates leading whitespace before the prefix', () => {
+    expect(stripEnginePrefix('  engine/browser/foo.js')).toBe('browser/foo.js');
+    expect(stripEnginePrefix('\tengine/browser/foo.js')).toBe('browser/foo.js');
+  });
+
+  it('passes through paths without the prefix', () => {
+    expect(stripEnginePrefix('browser/base/content/foo.js')).toBe('browser/base/content/foo.js');
+    expect(stripEnginePrefix('engine-adjacent/foo.js')).toBe('engine-adjacent/foo.js');
+    expect(stripEnginePrefix('')).toBe('');
+  });
+
+  it('does not strip a bare "engine" with no separator', () => {
+    // `engine` by itself is not the prefix pattern — a caller might mean a
+    // literal path named `engine` in the repo root. The pattern requires a
+    // trailing separator, so pass-through is correct.
+    expect(stripEnginePrefix('engine')).toBe('engine');
   });
 });

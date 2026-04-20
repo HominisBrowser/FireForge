@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { dirname, join } from 'node:path';
 
-import { multiselect } from '@clack/prompts';
+import { confirm, multiselect } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
@@ -13,6 +13,7 @@ import {
   getClaimedFiles,
   loadPatchesManifest,
   resolvePatchIdentifier,
+  stampPatchVersions,
 } from '../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -21,9 +22,24 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '../utils/logger.js';
+
+/**
+ * Threshold above which `--scan` must be explicitly confirmed. Values were
+ * picked so the common "refresh after one-or-two-file tweak" case stays
+ * frictionless while catching the eval finding #13 scenario where `--scan`
+ * silently pulled in an entire sibling feature (xhtml + tests + theme CSS).
+ */
+const SCAN_ADD_COUNT_THRESHOLD = 3;
+const SCAN_DIR_COUNT_THRESHOLD = 2;
 import { pickDefined } from '../utils/options.js';
 import { runPatchLint } from './export-shared.js';
 import { reExportFilesInPlace } from './re-export-files.js';
+
+interface ScanResult {
+  updated: string[];
+  added: string[];
+  removed: string[];
+}
 
 async function scanPatchFiles(
   currentFilesAffected: string[],
@@ -31,7 +47,7 @@ async function scanPatchFiles(
   manifest: PatchesManifest,
   patchFilename: string,
   isDryRun: boolean
-): Promise<string[]> {
+): Promise<ScanResult> {
   const parentDirs = [...new Set(currentFilesAffected.map((f) => dirname(f)))];
   const claimedByOthers = getClaimedFiles(manifest, patchFilename);
 
@@ -60,10 +76,13 @@ async function scanPatchFiles(
     }
   }
 
-  for (const f of added.sort()) {
+  const sortedAdded = [...added].sort();
+  const sortedRemoved = [...removed].sort();
+
+  for (const f of sortedAdded) {
     info(`  + ${f}`);
   }
-  for (const f of removed.sort()) {
+  for (const f of sortedRemoved) {
     info(`  - ${f}`);
   }
 
@@ -74,10 +93,72 @@ async function scanPatchFiles(
     info(
       `  ${isDryRun ? 'Would update' : 'Updated'} ${patchFilename}: +${added.length} / -${removed.length} files`
     );
-    return updated;
+    return { updated, added: sortedAdded, removed: sortedRemoved };
   }
 
-  return currentFilesAffected;
+  return { updated: currentFilesAffected, added: [], removed: [] };
+}
+
+/**
+ * Returns true when the caller-confirmed threshold is exceeded for this
+ * scan's additions. The heuristic treats "small, same-directory" additions
+ * as friction-free (the common refresh case) and flags larger or
+ * multi-directory expansions so operators see them before they land.
+ *
+ * Pre-0.16.0 `--scan` silently broadened patches to include any modified or
+ * untracked file that shared a parent directory with the existing
+ * filesAffected — in practice, pulling adjacent feature code into a patch
+ * that had nothing to do with it. The gate below turns the broadening into
+ * an explicit opt-in.
+ */
+function scanAdditionsNeedConfirmation(added: readonly string[]): boolean {
+  if (added.length === 0) return false;
+  if (added.length > SCAN_ADD_COUNT_THRESHOLD) return true;
+  const dirs = new Set(added.map((f) => dirname(f)));
+  return dirs.size >= SCAN_DIR_COUNT_THRESHOLD;
+}
+
+/**
+ * Gate for broad `--scan` additions. Enforces explicit acknowledgement when
+ * the scan would pull in more files than a narrow refresh. Dry-run always
+ * proceeds (the preview is the whole point).
+ *
+ * @returns true if the caller should proceed; false if the user cancelled.
+ */
+async function confirmBroadScanAdditions(args: {
+  patchFilename: string;
+  added: readonly string[];
+  isDryRun: boolean;
+  yes: boolean;
+  isInteractive: boolean;
+}): Promise<boolean> {
+  const { patchFilename, added, isDryRun, yes, isInteractive } = args;
+  if (isDryRun) return true;
+  if (!scanAdditionsNeedConfirmation(added)) return true;
+  if (yes) return true;
+
+  warn(
+    `${patchFilename}: --scan would add ${String(added.length)} file(s) that span ${String(new Set(added.map((f) => dirname(f))).size)} director${new Set(added.map((f) => dirname(f))).size === 1 ? 'y' : 'ies'}. ` +
+      'Broad scans can silently pull adjacent features into a patch — review the diff before continuing.'
+  );
+
+  if (!isInteractive) {
+    throw new GeneralError(
+      `Refusing to broaden "${patchFilename}" via --scan in non-interactive mode. ` +
+        'Pass --yes to acknowledge the expansion, or run with --dry-run first to review.'
+    );
+  }
+
+  const confirmed = await confirm({
+    message: `Proceed and broaden ${patchFilename} with ${String(added.length)} newly discovered file(s)?`,
+    initialValue: false,
+  });
+
+  if (isCancel(confirmed) || !confirmed) {
+    cancel(`Skipped ${patchFilename}`);
+    return false;
+  }
+  return true;
 }
 
 async function reExportSinglePatch(
@@ -92,13 +173,51 @@ async function reExportSinglePatch(
 
   // --- Scan for new/removed files ---
   if (options.scan) {
-    currentFilesAffected = await scanPatchFiles(
+    const scanResult = await scanPatchFiles(
       currentFilesAffected,
       paths.engine,
       manifest,
       patch.filename,
       isDryRun
     );
+    const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+    const proceed = await confirmBroadScanAdditions({
+      patchFilename: patch.filename,
+      added: scanResult.added,
+      isDryRun,
+      yes: options.yes === true,
+      isInteractive,
+    });
+    if (!proceed) {
+      return false;
+    }
+    currentFilesAffected = scanResult.updated;
+  } else if (options.files === undefined) {
+    // Finding #16: when neither `--scan` nor `--files` is set and some
+    // of the manifest's claimed files no longer exist on disk, the
+    // re-export silently writes a refreshed body whose filesAffected
+    // still names the vanished paths. That is the documented contract,
+    // but it is also a footgun — a later `verify` then fails on
+    // manifest-consistency with no obvious trigger. Emit one advisory
+    // warning up-front when we can detect the drift cheaply, so the
+    // operator has a chance to re-run with `--scan` or `--files`
+    // before the stale filesAffected lands in patches.json.
+    const missingFiles: string[] = [];
+    for (const file of currentFilesAffected) {
+      if (!(await pathExists(join(paths.engine, file)))) {
+        missingFiles.push(file);
+      }
+    }
+    if (missingFiles.length > 0) {
+      warn(
+        `${patch.filename}: some files in patches.json no longer exist on disk ` +
+          `(${missingFiles.join(', ')}). Without --scan, re-export keeps the manifest's ` +
+          `filesAffected unchanged and the missing entries will be preserved — ` +
+          `\`fireforge verify\` may flag manifest inconsistency after this run.\n` +
+          `  Re-run with --scan to reconcile filesAffected with the current worktree, ` +
+          `or pass --files <paths> to set the list explicitly.`
+      );
+    }
   }
 
   // --- Explicit file-subset path ---
@@ -144,7 +263,23 @@ async function reExportSinglePatch(
     return false;
   }
 
-  await runPatchLint(paths.engine, existingFiles, diffContent, config, options.skipLint);
+  // Thread the patch's own `lintIgnore` list through so the per-patch
+  // suppression honoured by export/export-all is also honoured here.
+  // Without this, `re-export` could not refresh an advisory-noisy but
+  // intentional patch (a cohesive branding bundle, a localised-resource
+  // pack) without either `--skip-lint` (too blunt) or falling through to
+  // the full `rebase` flow (which internally skips the lint pipeline).
+  const ignoreChecks = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
+
+  await runPatchLint(
+    paths.engine,
+    existingFiles,
+    diffContent,
+    config,
+    options.skipLint,
+    undefined,
+    ignoreChecks
+  );
 
   if (isDryRun) {
     info(`[dry-run] ${patch.filename}: ${existingFiles.length} file(s)`);
@@ -306,13 +441,17 @@ export async function reExportCommand(
   const config = await loadConfig(projectRoot);
 
   let reExported = 0;
+  const reExportedFilenames: string[] = [];
   const progress = spinner('Preparing re-export...');
 
   for (const patch of selectedPatches) {
     progress.message(`Re-exporting ${patch.filename}...`);
     try {
       const exported = await reExportSinglePatch(patch, paths, manifest, options, isDryRun, config);
-      if (exported) reExported++;
+      if (exported) {
+        reExported++;
+        reExportedFilenames.push(patch.filename);
+      }
     } catch (error: unknown) {
       warn(`Failed to re-export ${patch.filename}`);
       warn(toError(error).message);
@@ -324,13 +463,41 @@ export async function reExportCommand(
     throw new GeneralError('All selected patches failed to re-export. Check the errors above.');
   }
 
+  // `--stamp` only fires on a run where every selected patch refreshed
+  // cleanly. A partial success would leave some patches with a stale body
+  // but a new version — the opposite of the "what I tested, what the
+  // manifest says" invariant `sourceEsrVersion` exists to record. A
+  // non-empty `reExportedFilenames` with fewer entries than `selectedPatches`
+  // means a lint failure or missing-file skip landed somewhere in the loop,
+  // which we refuse to version-stamp through.
+  const shouldStamp =
+    options.stamp === true && !isDryRun && reExported > 0 && reExported === selectedPatches.length;
+
+  if (shouldStamp) {
+    await stampPatchVersions(paths.patches, reExportedFilenames, config.firefox.version);
+  }
+
   if (isDryRun) {
     progress.stop('Dry run complete');
     success(`[dry-run] Would re-export ${reExported} of ${selectedPatches.length} patch(es)`);
+    if (options.stamp === true) {
+      info(
+        `[dry-run] Would stamp sourceEsrVersion=${config.firefox.version} on ${reExported} patch(es)`
+      );
+    }
     outro('Dry run complete');
   } else {
     progress.stop('Re-export complete');
     success(`Re-exported ${reExported} of ${selectedPatches.length} patch(es)`);
+    if (shouldStamp) {
+      success(
+        `Stamped sourceEsrVersion=${config.firefox.version} on ${reExportedFilenames.length} patch(es)`
+      );
+    } else if (options.stamp === true && reExported !== selectedPatches.length) {
+      warn(
+        '--stamp was requested but some patches failed or were skipped; refusing to stamp a partial set.'
+      );
+    }
     outro('Re-export complete');
   }
 }
@@ -342,7 +509,11 @@ export function registerReExport(
 ): void {
   program
     .command('re-export [patches...]')
-    .description('Re-export existing patches from current engine state')
+    .description(
+      'Refresh existing patch bodies (and filesAffected with --scan) from the current engine ' +
+        'state. Does NOT change sourceEsrVersion by default — use --stamp or run rebase for ' +
+        'version stamping.'
+    )
     .option('-a, --all', 'Re-export all patches')
     .option('-s, --scan', 'Scan directories for new/removed files and update filesAffected')
     .option(
@@ -358,6 +529,10 @@ export function registerReExport(
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
     .option('-y, --yes', 'Skip confirmation when --files shrinks a patch (required for non-TTY)')
     .option('--force-unsafe', 'Bypass cross-patch lint refusal when --files shrinks a patch')
+    .option(
+      '--stamp',
+      "After every selected patch refreshes cleanly, stamp each re-exported patch's sourceEsrVersion in patches.json to firefox.version from fireforge.json. No effect on a partial run."
+    )
     .action(
       withErrorHandling(
         async (
@@ -370,6 +545,7 @@ export function registerReExport(
             skipLint?: boolean;
             yes?: boolean;
             forceUnsafe?: boolean;
+            stamp?: boolean;
           }
         ) => {
           await reExportCommand(getProjectRoot(), patches, pickDefined(options));

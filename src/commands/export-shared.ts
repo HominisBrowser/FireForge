@@ -10,7 +10,9 @@ import {
   detectNewFilesInDiff,
   lintExportedPatch,
 } from '../core/patch-lint.js';
+import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
+import type { PatchesManifest } from '../types/commands/index.js';
 import type { ExportOptions, PatchCategory } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { pathExists, readText } from '../utils/fs.js';
@@ -28,6 +30,11 @@ import { isValidPatchCategory, PATCH_CATEGORIES, validatePatchName } from '../ut
  * @param config - Project configuration
  * @param skipLint - If true, downgrade errors to warnings
  * @param patchQueueCtx - Optional cross-patch context for ownership resolution
+ * @param ignoreChecks - Optional per-patch set of `check` IDs to suppress
+ *   (threaded from `PatchMetadata.lintIgnore`). Surgical alternative to
+ *   `--skip-lint` when exactly one advisory rule does not apply to a
+ *   specific patch — e.g. `large-patch-lines` on a cohesive branding
+ *   bundle that genuinely cannot be split.
  */
 export async function runPatchLint(
   engineDir: string,
@@ -35,14 +42,16 @@ export async function runPatchLint(
   diffContent: string,
   config: FireForgeConfig,
   skipLint?: boolean,
-  patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext
+  patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext,
+  ignoreChecks?: ReadonlySet<string>
 ): Promise<void> {
   const issues = await lintExportedPatch(
     engineDir,
     filesAffected,
     diffContent,
     config,
-    patchQueueCtx
+    patchQueueCtx,
+    ignoreChecks
   );
   if (issues.length === 0) return;
 
@@ -286,6 +295,103 @@ export async function autoFixLicenseHeaders(
     const filePath = join(engineDir, file);
     await addLicenseHeaderToFile(filePath, license, style);
     info(`Added ${license} header to ${file}`);
+  }
+
+  return true;
+}
+
+/**
+ * Maps every file in `filesAffected` to the existing patches that already
+ * claim ownership of it, excluding the caller's own patch (when `newFilename`
+ * is provided) and any patches that the caller intends to fully supersede.
+ *
+ * Returns an empty map when no overlap exists. Used by the overlap gate in
+ * `export` and `export-all` to refuse a default-mode export that would
+ * silently create cross-patch ownership conflicts — the same class of
+ * conflict `verify` immediately fails with.
+ */
+export function findPartialOwnershipOverlap(
+  manifest: PatchesManifest,
+  filesAffected: string[],
+  excludeFilenames: ReadonlySet<string>
+): Map<string, string[]> {
+  const overlap = new Map<string, string[]>();
+  const targetSet = new Set(filesAffected);
+  for (const patch of manifest.patches) {
+    if (excludeFilenames.has(patch.filename)) continue;
+    for (const file of patch.filesAffected) {
+      if (!targetSet.has(file)) continue;
+      const owners = overlap.get(file) ?? [];
+      owners.push(patch.filename);
+      overlap.set(file, owners);
+    }
+  }
+  return overlap;
+}
+
+/**
+ * Gate that refuses the default export path when the new patch would
+ * silently claim files that are already tracked by other non-superseded
+ * patches. `findAllPatchesForFiles` already catches the full-coverage
+ * supersede case — this helper fills the gap for partial overlap, which
+ * was the eval finding #12 scenario (two patches both claiming
+ * `browser/themes/shared/jar.inc.mn` after a second export with
+ * `--before`).
+ *
+ * Proceeds silently when there is no overlap, or when the caller passed
+ * `--allow-overlap`. In interactive mode the caller is prompted to
+ * acknowledge the overlap (the proper fix path is `re-export --files` to
+ * repartition ownership, so the prompt surfaces that pointer). In
+ * non-interactive mode the function throws — better to fail fast than
+ * let the queue fall out of sync with verify.
+ */
+export async function guardOwnershipOverlap(args: {
+  patchesDir: string;
+  filesAffected: string[];
+  supersedingFilenames: ReadonlySet<string>;
+  allowOverlap: boolean;
+  isInteractive: boolean;
+  s: SpinnerHandle;
+}): Promise<boolean> {
+  const { patchesDir, filesAffected, supersedingFilenames, allowOverlap, isInteractive, s } = args;
+  if (allowOverlap) return true;
+
+  const manifest = await loadPatchesManifest(patchesDir);
+  if (!manifest) return true;
+
+  const overlap = findPartialOwnershipOverlap(manifest, filesAffected, supersedingFilenames);
+  if (overlap.size === 0) return true;
+
+  s.stop();
+  const entries = [...overlap.entries()].sort(([a], [b]) => a.localeCompare(b));
+  warn(
+    `This export would create cross-patch ownership overlap on ${String(entries.length)} file${entries.length === 1 ? '' : 's'}:`
+  );
+  for (const [file, owners] of entries) {
+    warn(`  - ${file} already claimed by: ${owners.join(', ')}`);
+  }
+  warn(
+    'The queue would fail `fireforge verify` immediately after this export. ' +
+      'To repartition ownership safely, run `fireforge re-export --files <paths> <existing-patch>` ' +
+      'on the overlapping patches first, then re-run the export.'
+  );
+
+  if (!isInteractive) {
+    throw new GeneralError(
+      'Refusing to export a queue with cross-patch ownership overlap in non-interactive mode. ' +
+        'Pass --allow-overlap to acknowledge the conflict, or repartition ownership via `fireforge re-export --files`.'
+    );
+  }
+
+  const confirmed = await confirm({
+    message:
+      'Proceed with overlapping ownership? This will leave the queue in a verify-failing state.',
+    initialValue: false,
+  });
+
+  if (isCancel(confirmed) || !confirmed) {
+    cancel('Export cancelled');
+    return false;
   }
 
   return true;

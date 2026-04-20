@@ -25,6 +25,38 @@ export function resolveFtlDir(configuredPath?: string): string {
 }
 
 /**
+ * Resolves the chrome sub-path that `document.l10n` / `insertFTLIfNeeded`
+ * expects for a given `ftlBasePath`. Strips the mandatory `locales/<LOCALE>/`
+ * segment. For the default `toolkit/locales/en-US/toolkit/global` this yields
+ * `toolkit/global`.
+ *
+ * Returns `undefined` when no `locales/<LOCALE>/` segment is present. Callers
+ * must treat that as "cannot confidently locate the locale jar.mn entry" and
+ * degrade gracefully rather than inventing a path.
+ */
+export function resolveFtlChromeSubPath(ftlBasePath?: string): string | undefined {
+  const path = (ftlBasePath ?? FTL_DIR).replace(/\\/g, '/');
+  const match = /^(.*?)\/locales\/[^/]+\/(.+?)\/?$/.exec(path);
+  if (!match?.[2]) return undefined;
+  return match[2];
+}
+
+/**
+ * Returns the engine-relative locale jar.mn that owns the FTL tree for a
+ * given `ftlBasePath`. For the default toolkit tree this yields
+ * `toolkit/locales/jar.mn`.
+ *
+ * Returns `undefined` when the path does not contain a `locales/` segment —
+ * callers must treat that as "cannot locate" and degrade gracefully.
+ */
+export function resolveFtlLocaleJarMnPath(ftlBasePath?: string): string | undefined {
+  const path = (ftlBasePath ?? FTL_DIR).replace(/\\/g, '/');
+  const match = /^(.*?)\/locales\/[^/]+\//.exec(path);
+  if (!match?.[1]) return undefined;
+  return `${match[1]}/locales/jar.mn`;
+}
+
+/**
  * Converts a kebab-case tag name to PascalCase class name.
  * e.g. "moz-sidebar-panel" → "MozSidebarPanel"
  */

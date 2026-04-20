@@ -243,6 +243,34 @@ async function checkEngineDrift(
 }
 
 /**
+ * Builds the set of patch filenames in scope when `--until <name>` is set.
+ * Accepts either the full filename (e.g. `001-foo.patch`) or the name
+ * without the `.patch` suffix (matching `applyPatchesWithContinue`'s
+ * `untilFilename` resolver).
+ *
+ * Returns an empty set when no match is found — the caller treats that as
+ * "no scope filter applies" so the import behaves identically to an
+ * unrecognised `--until` target (which `applyPatchesWithContinue` will
+ * later surface as a normal error).
+ */
+function buildUntilFilenameSet(
+  patches: ReadonlyArray<{ filename: string; order: number }>,
+  until: string | undefined
+): Set<string> {
+  const set = new Set<string>();
+  if (until === undefined) return set;
+  const normalized = until.endsWith('.patch') ? until : `${until}.patch`;
+  const target = patches.find((p) => p.filename === until || p.filename === normalized);
+  if (!target) return set;
+  for (const patch of patches) {
+    if (patch.order <= target.order) {
+      set.add(patch.filename);
+    }
+  }
+  return set;
+}
+
+/**
  * Runs the import command to apply patches.
  * @param projectRoot - Root directory of the project
  * @param options - Import options
@@ -287,11 +315,37 @@ export async function importCommand(
     return;
   }
 
-  info(`Found ${patchCount} patch${patchCount === 1 ? '' : 'es'} to apply`);
+  // Load manifest early so we can scope the integrity / consistency checks to
+  // the `--until` subset. The manifest-consistency check stays global because
+  // structural manifest corruption (missing / duplicate rows) should block any
+  // import regardless of scope, but per-patch integrity and files-affected
+  // issues are legitimately skippable when the operator has asked to stop at
+  // an earlier patch.
+  const manifest = await loadPatchesManifest(paths.patches);
+  const untilFilenameSet = buildUntilFilenameSet(manifest?.patches ?? [], options.until);
+
+  const scopedPatchCount = options.until !== undefined ? untilFilenameSet.size : patchCount;
+  info(
+    `Found ${scopedPatchCount} patch${scopedPatchCount === 1 ? '' : 'es'} to apply${
+      options.until !== undefined ? ` (up to ${options.until})` : ''
+    }`
+  );
 
   const manifestConsistencyIssues = await validatePatchesManifestConsistency(paths.patches);
-  if (manifestConsistencyIssues.length > 0) {
-    const issueSummary = manifestConsistencyIssues.map((issue) => issue.message).join('\n  ');
+  const scopedManifestIssues =
+    options.until !== undefined
+      ? manifestConsistencyIssues.filter(
+          (issue) =>
+            // Global (manifest-level) issues have no specific filename to scope
+            // against — a missing or unparseable patches.json blocks any
+            // import. Per-patch issues only block when the patch is in scope.
+            issue.code === 'manifest-missing' ||
+            issue.code === 'manifest-invalid' ||
+            untilFilenameSet.has(issue.filename)
+        )
+      : manifestConsistencyIssues;
+  if (scopedManifestIssues.length > 0) {
+    const issueSummary = scopedManifestIssues.map((issue) => issue.message).join('\n  ');
     throw new GeneralError(
       'Patch manifest consistency check failed. Repair patches/patches.json before importing.\n' +
         `  ${issueSummary}\n\n` +
@@ -299,13 +353,15 @@ export async function importCommand(
     );
   }
 
-  // Load manifest and check version compatibility
-  const manifest = await loadPatchesManifest(paths.patches);
+  // Version compatibility warnings (advisory only)
   if (manifest) {
     const config = await loadConfig(projectRoot);
     const currentVersion = config.firefox.version;
 
     for (const patch of manifest.patches) {
+      // Scope the advisory warnings too: an operator running with --until
+      // doesn't need to see version warnings for patches outside the range.
+      if (options.until !== undefined && !untilFilenameSet.has(patch.filename)) continue;
       const warning = checkVersionCompatibility(patch.sourceEsrVersion, currentVersion);
       if (warning) {
         warn(`${patch.filename}: ${warning}`);
@@ -318,7 +374,16 @@ export async function importCommand(
   // warn-and-continue behaviour hid the real root cause because import
   // would later fail during patch application with a secondary, unrelated
   // error that made diagnosis harder.
-  const integrityIssues = await validatePatchIntegrity(paths.patches, paths.engine);
+  //
+  // Scope the surfaced issues to the `--until` range: a later patch with
+  // integrity problems should not block importing an earlier good subset,
+  // which is exactly what operators reach for when the tail of the queue
+  // is broken and they want to keep working against an earlier checkpoint.
+  const allIntegrityIssues = await validatePatchIntegrity(paths.patches, paths.engine);
+  const integrityIssues =
+    options.until !== undefined
+      ? allIntegrityIssues.filter((issue) => untilFilenameSet.has(issue.filename))
+      : allIntegrityIssues;
   if (integrityIssues.length > 0) {
     warn('\nPatch integrity issues detected:');
     for (const issue of integrityIssues) {
@@ -349,14 +414,10 @@ export async function importCommand(
   // Dry-run: list patches that would be applied and exit
   if (isDryRun) {
     if (manifest) {
-      const patches = options.until
-        ? manifest.patches.filter((p) => {
-            const untilPatch = manifest.patches.find(
-              (u) => u.filename === options.until || u.filename === `${options.until}.patch`
-            );
-            return untilPatch ? p.order <= untilPatch.order : true;
-          })
-        : manifest.patches;
+      const patches =
+        options.until !== undefined
+          ? manifest.patches.filter((p) => untilFilenameSet.has(p.filename))
+          : manifest.patches;
 
       info(`\n[dry-run] Would apply ${patches.length} patch(es) in order:`);
       for (const patch of patches) {

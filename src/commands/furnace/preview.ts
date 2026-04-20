@@ -11,7 +11,7 @@ import {
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { restoreRollbackJournal, type RollbackJournal } from '../../core/furnace-rollback.js';
 import { cleanStories, syncStories } from '../../core/furnace-stories.js';
-import { runMach, runMachCapture } from '../../core/mach.js';
+import { hasBuildArtifacts, runMach, runMachCapture } from '../../core/mach.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnacePreviewOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
@@ -93,17 +93,56 @@ function reportPreviewStagingFailures(
 }
 
 /**
+ * Filenames emitted by the Firefox build backend (not by Storybook's npm
+ * package set) — their absence means `mach build` has not produced its
+ * post-configure artifacts, which is a different failure mode from a
+ * missing Storybook workspace dependency tree. The eval log for finding
+ * #11 reported `FileNotFoundError: [...] chrome-map.json` *after* a
+ * successful Storybook `npm install`, and the pre-0.16 heuristic
+ * misdiagnosed it as a dep failure and sent the operator back to
+ * `--install`. Pattern list is narrow on purpose so we only surface the
+ * backend-rebuild hint when we are confident.
+ */
+const BACKEND_ARTIFACT_PATTERNS: readonly RegExp[] = [
+  /chrome-map\.json/i,
+  /config\.status/i,
+  /obj-[^\s/]+\/dist\/bin\/\.lldbinit/i,
+];
+
+/**
  * Builds a targeted Storybook failure message from captured mach output.
+ *
+ * Exported for the test suite: the heuristic has three branches (backend
+ * artifact missing, Storybook dep missing, generic) and regression
+ * testing each is easier when the classifier is addressable directly.
+ *
  * @param output - Combined stdout and stderr from the Storybook command
  * @param installRequested - Whether the caller requested a dependency reinstall first
  * @returns User-facing guidance for the specific failure mode
  */
-function buildStorybookFailureMessage(output: string, installRequested: boolean): string {
+export function buildStorybookFailureMessage(output: string, installRequested: boolean): string {
   const installHint = installRequested
     ? 'Try running "python3 ./mach storybook upgrade" manually in the engine directory.'
     : 'Run "fireforge furnace preview --install" to bootstrap Storybook dependencies, or run "python3 ./mach storybook upgrade" manually in engine/.';
 
-  if (/(ENOENT|No such file or directory)/i.test(output) && /storybook|backend/i.test(output)) {
+  const hasFileNotFoundSignal = /(ENOENT|No such file or directory|FileNotFoundError)/i.test(
+    output
+  );
+
+  // Check backend-artifact signal first — a missing chrome-map.json looks
+  // like any other "No such file" error to a naïve regex, but the fix is
+  // to rerun `fireforge build`, not to reinstall Storybook dependencies.
+  if (hasFileNotFoundSignal && BACKEND_ARTIFACT_PATTERNS.some((p) => p.test(output))) {
+    return (
+      'Storybook failed because the Firefox build backend artifacts are missing or stale ' +
+      '(chrome-map.json / config.status / obj-*/dist/bin/.lldbinit). ' +
+      'This is a Firefox-build completeness issue, not a Storybook dependency issue.\n\n' +
+      'Rerun "fireforge build" and let it finish, then retry "fireforge furnace preview". ' +
+      'A full rebuild regenerates the backend artifacts Storybook reads.'
+    );
+  }
+
+  if (hasFileNotFoundSignal && /storybook|backend/i.test(output)) {
     return (
       'Storybook failed because the Firefox checkout appears to be missing Storybook workspace files or backend dependencies.\n\n' +
       installHint
@@ -114,6 +153,55 @@ function buildStorybookFailureMessage(output: string, installRequested: boolean)
     'Storybook failed to start. Check the output above for the specific Firefox-side error.\n\n' +
     installHint
   );
+}
+
+/**
+ * Preflights the Firefox build + toolchain prerequisites `mach storybook`
+ * quietly assumes. Pre-0.16.0 the preview staged components and launched
+ * a ~1000-package `mach storybook upgrade` npm install before the
+ * backend surfaced a "missing chrome-map.json" / Cargo-config failure;
+ * the preflight below refuses fast and leaves the workspace untouched.
+ *
+ * Extracted from `furnacePreviewCommand` so the main function stays
+ * under the per-function LOC budget as the preflight list grows.
+ *
+ * @param engineDir - Resolved engine directory
+ * @throws FurnaceError when the Firefox build hasn't produced dist/, or
+ *         when `.cargo/config.toml` is absent
+ */
+async function assertPreviewPrerequisites(engineDir: string): Promise<void> {
+  const buildCheck = await hasBuildArtifacts(engineDir);
+  if (!buildCheck.exists) {
+    throw new FurnaceError(
+      'Furnace preview requires a completed Firefox build. ' +
+        '`mach storybook` consumes `obj-*/dist/chrome-map.json` and the packaged chrome resources under `dist/`, neither of which is present before `fireforge build` completes.\n\n' +
+        'Run "fireforge build" and wait for it to finish, then rerun "fireforge furnace preview". ' +
+        'This preflight avoids a multi-minute `mach storybook upgrade` npm install on an engine that cannot start Storybook anyway.'
+    );
+  }
+
+  // Accept either `.cargo/config.toml` (post-configure) or
+  // `.cargo/config.toml.in` (post-bootstrap template, consumed at
+  // `mach configure` time). Pre-0.16.0 the preflight insisted on the
+  // plain file, but `fireforge bootstrap` alone produces only `.in` —
+  // operators who followed the remediation instruction ("run bootstrap
+  // then rerun preview") hit the same refusal on the retry. Either name
+  // is sufficient to prove the Rust toolchain is registered; the stronger
+  // `hasBuildArtifacts` check above already guards against a completely
+  // un-configured tree, so relaxing this to an OR-check does not weaken
+  // the signal we care about.
+  const cargoConfigPath = join(engineDir, '.cargo', 'config.toml');
+  const cargoConfigInPath = join(engineDir, '.cargo', 'config.toml.in');
+  const cargoConfigPresent =
+    (await pathExists(cargoConfigPath)) || (await pathExists(cargoConfigInPath));
+  if (!cargoConfigPresent) {
+    throw new FurnaceError(
+      "Furnace preview requires the engine's Rust toolchain to be bootstrapped. " +
+        'Neither `.cargo/config.toml` nor `.cargo/config.toml.in` exists under the engine directory — ' +
+        '`mach storybook` fails deep inside the Storybook backend compile without either of them.\n\n' +
+        'Run "fireforge bootstrap" (or the underlying `mach bootstrap` in the engine) to populate the toolchain config, then rerun "fireforge furnace preview".'
+    );
+  }
 }
 
 /**
@@ -159,6 +247,10 @@ export async function furnacePreviewCommand(
       'This Firefox checkout does not contain browser/components/storybook. Furnace preview requires the upstream Storybook workspace to exist before stories can be synced.'
     );
   }
+
+  // Build + toolchain preflight (Finding #9). Extracted into a helper so
+  // the function below stays under the per-function LOC budget.
+  await assertPreviewPrerequisites(paths.engine);
 
   let previewResult:
     | {

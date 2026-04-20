@@ -126,7 +126,10 @@ export async function applyPatchToContent(
 
   // The "no newline at end" marker applies to the last hunk in file order
   // (highest oldStart), which is the *first* hunk in our reverse-sorted array.
-  const lastHunkNoNewline = sortedHunks[0]?.noNewlineAtEnd ?? false;
+  // We read the new-side flag because the output we produce corresponds to
+  // the new side; asymmetric diffs (old lacks newline, new has one — or
+  // vice versa) would otherwise disagree with `git apply`.
+  const lastHunkNoNewline = sortedHunks[0]?.noNewlineAtEndNew ?? false;
   for (const hunk of sortedHunks) {
     const newLines: string[] = [];
 

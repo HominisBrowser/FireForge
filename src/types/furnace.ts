@@ -55,6 +55,45 @@ export interface CustomComponentConfig {
   localized: boolean;
   /** Stock component tag names composed internally by this component */
   composes?: string[];
+  /**
+   * Opts the component out of the `no-keyboard-handler` accessibility check
+   * when it wraps a native-interactive inner element that is not tracked in
+   * `composes` (for example a hand-authored `<button>` or a non-stock
+   * `moz-*` widget). When `true`, the check is skipped even if the template
+   * appears to attach `@click` to synthetic markup.
+   *
+   * Leave unset for the default behavior: the validator still silences the
+   * check automatically when any entry in `composes` matches its native-
+   * interactive allowlist (e.g. `moz-button`, `moz-toggle`). This flag is
+   * only needed when `composes` does not capture the inner element.
+   *
+   * Operator-asserted: setting this to `true` does not re-check the
+   * component, so it can be used to silence genuine findings. Prefer adding
+   * the wrapped element to `composes` when that field applies.
+   */
+  keyboardCovered?: boolean;
+  /**
+   * Path of a pre-existing feature-scoped Fluent bundle this component
+   * participates in, in the same form used by `insertFTLIfNeeded` (for
+   * example `browser/hominis-dock.ftl`). When set:
+   *
+   *   - `furnace create --localized` does NOT scaffold a per-component
+   *     `.ftl` stub — the component shares the feature bundle.
+   *   - The generated `.mjs` calls `insertFTLIfNeeded("<sharedFtl>")` at
+   *     the shared path instead of the per-component one.
+   *   - `furnace validate`'s `missing-ftl` structural rule is skipped for
+   *     the component (there is no `<tag>.ftl` to require).
+   *   - `furnace apply` does NOT copy a per-component `.ftl` into the FTL
+   *     tree nor register a new entry in the locale `jar.mn` — the shared
+   *     file is owned by whoever authored the feature bundle.
+   *
+   * Requires `localized: true`. Mutually exclusive with the per-component
+   * `.ftl` scaffold. Does NOT auto-migrate previous per-component FTL
+   * state: flipping an existing component onto `sharedFtl` leaves the
+   * prior per-component entry in the engine tree and the locale `jar.mn`
+   * until explicitly cleaned up.
+   */
+  sharedFtl?: string;
 }
 
 /**
@@ -69,6 +108,25 @@ export interface FurnaceConfig {
   tokenPrefix?: string;
   /** Custom properties allowed even though they don't match tokenPrefix (e.g. ["--background-color-box"]) */
   tokenAllowlist?: string[];
+  /**
+   * Custom properties used as runtime state channels — written and read by the
+   * component itself (e.g. per-frame camera/tile positions) rather than
+   * consumed as design tokens. Listed names are exempt from the
+   * `token-prefix-violation` check even when they do not match `tokenPrefix`
+   * and are not in `tokenAllowlist`. Use this for cross-component runtime
+   * variables (e.g. set in JS, read in CSS of a child). Component-local
+   * variables that are both declared and consumed inside the same component's
+   * own CSS file are auto-exempted and do not need an entry here.
+   */
+  runtimeVariables?: string[];
+  /**
+   * Chrome documents scanned by the `missing-token-link` validator to confirm
+   * the tokens CSS file is `<link>`ed. Forks with multiple chrome host
+   * documents (e.g. `mybrowser.xhtml` beside the stock `browser.xhtml`) should
+   * list every document that may own the link. When omitted, defaults to
+   * `['browser/base/content/browser.xhtml']` — the upstream Firefox path.
+   */
+  tokenHostDocuments?: string[];
   /**
    * Override the default Fluent (.ftl) base path within the engine.
    * Defaults to `toolkit/locales/en-US/toolkit/global` when not set.
@@ -103,7 +161,8 @@ export type FurnacePendingRepairOperation =
   | 'override-rollback'
   | 'scan-rollback'
   | 'rename-rollback'
-  | 'refresh-rollback';
+  | 'refresh-rollback'
+  | 'chrome-doc-rollback';
 
 /**
  * Marker persisted into `.fireforge/furnace-state.json` when a furnace

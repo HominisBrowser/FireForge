@@ -66,7 +66,7 @@ import { getHead, initRepository, resumeRepository } from '../../core/git.js';
 import { EngineExistsError } from '../../errors/download.js';
 import { pathExists, removeDir } from '../../utils/fs.js';
 import type { SpinnerHandle } from '../../utils/logger.js';
-import { spinner, step, warn } from '../../utils/logger.js';
+import { info, spinner, step, warn } from '../../utils/logger.js';
 import { downloadCommand } from '../download.js';
 
 function createSpinnerMock(): SpinnerHandle & {
@@ -173,7 +173,13 @@ describe('downloadCommand', () => {
     }
 
     expect(resumeRepository).toHaveBeenCalledWith('/project/engine', expect.any(Object));
-    expect(step).toHaveBeenCalledWith('git add -A');
+    // Progress messages now flow through the spinner handle exclusively —
+    // the non-TTY spinner fallback emits `p.log.step(msg)` internally,
+    // so the explicit `step()` call that used to sit alongside
+    // `.message()` was removed in 0.16.0 (it had been double-printing
+    // every git-init progress line in CI logs).
+    expect(resumeSpinner.messageMock).toHaveBeenCalledWith('git add -A');
+    expect(step).not.toHaveBeenCalledWith('git add -A');
   });
 
   it('throws EngineExistsError when a valid engine checkout already exists without force', async () => {
@@ -285,5 +291,52 @@ describe('downloadCommand', () => {
       2,
       'Downloading Firefox 140.9.0esr... 10% (10 B / 100 B)'
     );
+  });
+
+  it('emits the indexing-banner before starting the git init spinner (Finding #17)', async () => {
+    // Finding #17: the git-add phase can run silently for minutes. The
+    // new banner fires BEFORE the spinner so CI log tails and non-TTY
+    // shells show expected-duration guidance even when the spinner's
+    // interactive updates are suppressed. `info` is the channel used
+    // (unlike spinner.message, which is interactive-only).
+    const downloadSpinner = createSpinnerMock();
+    const gitSpinner = createSpinnerMock();
+    vi.mocked(spinner).mockReturnValueOnce(downloadSpinner).mockReturnValueOnce(gitSpinner);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', {});
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Indexing downloaded source into git')
+    );
+  });
+
+  it('stops the restore spinner with a no-op message when the patch queue is empty', async () => {
+    // Finding #4: pre-0.16.0 `download` always closed the restore
+    // spinner with "Patch-touched files restored" even when the project
+    // had zero patches. Operators reading the output thought a restore
+    // had happened on a workspace that had never exported a patch. The
+    // fix routes an empty-queue result through a dedicated stop message.
+    const downloadSpinner = createSpinnerMock();
+    const gitSpinner = createSpinnerMock();
+    const restoreSpinner = createSpinnerMock();
+    vi.mocked(spinner)
+      .mockReturnValueOnce(downloadSpinner)
+      .mockReturnValueOnce(gitSpinner)
+      .mockReturnValueOnce(restoreSpinner);
+    // patches dir absent → getPatchTouchedFiles returns an empty set →
+    // cleanPatchTouchedFiles reports hadQueue: false.
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', {});
+
+    expect(restoreSpinner.stopMock).toHaveBeenCalledWith(
+      'No patches in queue — nothing to restore'
+    );
+    expect(restoreSpinner.stopMock).not.toHaveBeenCalledWith('Patch-touched files restored');
   });
 });

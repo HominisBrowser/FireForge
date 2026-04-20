@@ -16,7 +16,7 @@ import {
   getUntrackedFilesInDir,
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
-import { commitExportedPatch } from '../core/patch-export.js';
+import { commitExportedPatch, findAllPatchesForFiles } from '../core/patch-export.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions, PatchCategory, PatchMetadata } from '../types/commands/index.js';
@@ -24,6 +24,7 @@ import { toError } from '../utils/errors.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
+import { stripEnginePrefix } from '../utils/paths.js';
 import { parsePositiveIntegerFlag, PATCH_CATEGORIES } from '../utils/validation.js';
 import {
   commitPlacementExport,
@@ -36,6 +37,7 @@ import {
 import {
   autoFixLicenseHeaders,
   confirmSupersedePatches,
+  guardOwnershipOverlap,
   promptExportPatchMetadata,
   runPatchLint,
 } from './export-shared.js';
@@ -49,7 +51,15 @@ async function collectExportFiles(
   let fileStatuses: { status: string; file: string }[] | undefined;
   let untrackedFiles: string[] | undefined;
 
-  for (const inputPath of files) {
+  // Accept both repo-root-relative (`engine/browser/...`) and engine-relative
+  // (`browser/...`) paths for every input, matching `register`/`test`/`lint`.
+  // Previously, an `engine/`-prefixed path fell through to
+  // `File "engine/..." has no changes to export.` because the status lookup
+  // sees paths relative to `paths.engine` and the explicit prefix double-
+  // rooted the candidate. `stripEnginePrefix` makes that user-facing form
+  // a no-op for the lookup pipeline.
+  for (const rawInputPath of files) {
+    const inputPath = stripEnginePrefix(rawInputPath);
     const fullInputPath = join(paths.engine, inputPath);
     let isDirectory = false;
     try {
@@ -366,6 +376,26 @@ export async function exportCommand(
     );
     if (!shouldProceed) return;
 
+    // Overlap gate: pre-0.16.0 `export` only caught FULL-coverage
+    // supersedes, so a second export targeting a shared file like
+    // `browser/themes/shared/jar.inc.mn` happily created a queue where
+    // two patches both listed the same file in `filesAffected`. `verify`
+    // then failed immediately on "cross-patch filesAffected conflicts".
+    // `confirmSupersedePatches` might already have confirmed full
+    // supersedes above; pass their filenames through so we do not flag
+    // a file claimed by a patch that is about to be removed.
+    const willSupersede = await findAllPatchesForFiles(paths.patches, filesAffected);
+    const supersedingFilenames = new Set(willSupersede.map((p) => p.filename));
+    const shouldProceedPastOverlap = await guardOwnershipOverlap({
+      patchesDir: paths.patches,
+      filesAffected,
+      supersedingFilenames,
+      allowOverlap: options.allowOverlap === true,
+      isInteractive,
+      s,
+    });
+    if (!shouldProceedPastOverlap) return;
+
     const { patchFilename, superseded } = await commitExportedPatch({
       patchesDir: paths.patches,
       category: selectedCategory,
@@ -420,6 +450,10 @@ export function registerExport(
     .option('-y, --yes', 'Skip confirmation for placement renumbers (required for non-TTY)')
     .option('--force-unsafe', 'Bypass cross-patch lint refusal on projected placement')
     .option('--exclude-furnace', 'Exclude furnace-managed file paths from the export')
+    .option(
+      '--allow-overlap',
+      'Acknowledge cross-patch ownership overlap (default mode only; the resulting queue fails verify)'
+    )
     .action(
       withErrorHandling(
         async (
@@ -437,6 +471,7 @@ export function registerExport(
             yes?: boolean;
             forceUnsafe?: boolean;
             excludeFurnace?: boolean;
+            allowOverlap?: boolean;
           }
         ) => {
           const { category, ...rest } = options;

@@ -6,6 +6,16 @@ vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn(),
 }));
 
+// The 0.16.0 token-coverage command asks the furnace-config module whether
+// furnace.json exists (it augments discovery with deployed custom-component
+// CSS). The mock covers both paths: `furnaceConfigExists` returns false
+// by default so baseline tests skip the augmentation, and targeted cases
+// flip it via `mockResolvedValueOnce`.
+vi.mock('../../core/furnace-config.js', () => ({
+  furnaceConfigExists: vi.fn(),
+  loadFurnaceConfig: vi.fn(),
+}));
+
 vi.mock('../../core/git.js', () => ({
   getStatusWithCodes: vi.fn(),
   isGitRepository: vi.fn(),
@@ -32,6 +42,7 @@ vi.mock('../../utils/logger.js', () => ({
 }));
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { getStatusWithCodes, isGitRepository } from '../../core/git.js';
 import { measureTokenCoverage } from '../../core/token-coverage.js';
 import { getTokensCssPath } from '../../core/token-manager.js';
@@ -46,6 +57,8 @@ const mockedLoadConfig = vi.mocked(loadConfig);
 const mockedMeasureTokenCoverage = vi.mocked(measureTokenCoverage);
 const mockedGetTokensCssPath = vi.mocked(getTokensCssPath);
 const mockedPathExists = vi.mocked(pathExists);
+const mockedFurnaceConfigExists = vi.mocked(furnaceConfigExists);
+const mockedLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
 
 describe('tokenCoverageCommand', () => {
   beforeEach(() => {
@@ -69,6 +82,9 @@ describe('tokenCoverageCommand', () => {
     >);
     mockedGetTokensCssPath.mockReturnValue('browser/themes/shared/mybrowser-tokens.css');
     mockedGetStatusWithCodes.mockResolvedValue([]);
+    // Default: no furnace.json, so the baseline tests that predate the
+    // furnace-aware discovery still exercise the old git-status-only path.
+    mockedFurnaceConfigExists.mockResolvedValue(false);
   });
 
   it('fails when the Firefox source tree does not exist', async () => {
@@ -129,6 +145,65 @@ describe('tokenCoverageCommand', () => {
     );
     expect(outro).toHaveBeenCalledWith('1 CSS file scanned');
     expect(success).not.toHaveBeenCalled();
+  });
+
+  it('augments scan with Furnace custom-component CSS files that exist on disk', async () => {
+    // Finding #10: the eval had a deployed `moz-eval-card.css` that was
+    // untracked in git but present in the engine, and coverage missed it
+    // entirely because the old discovery path only read git status.
+    mockedGetStatusWithCodes.mockResolvedValue([
+      { status: 'M', file: 'browser/themes/shared/panel.css' },
+    ]);
+    mockedFurnaceConfigExists.mockResolvedValue(true);
+    mockedLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-eval-card': {
+          description: '',
+          targetPath: 'toolkit/content/widgets/moz-eval-card',
+          register: true,
+          localized: false,
+        },
+      },
+    });
+    // `pathExists` is invoked both for the engine check and for each
+    // candidate CSS file. Keep it unconditionally truthy so both the
+    // engine and the deployed CSS are considered present.
+    mockedPathExists.mockResolvedValue(true);
+    mockedMeasureTokenCoverage.mockResolvedValue({
+      filesScanned: 2,
+      tokenUsages: 2,
+      allowlistedUsages: 0,
+      unknownVarUsages: 0,
+      rawColorCount: 0,
+      files: [
+        {
+          file: 'browser/themes/shared/panel.css',
+          tokenUsages: 1,
+          allowlisted: 0,
+          unknownVars: 0,
+          rawColors: 0,
+        },
+        {
+          file: 'toolkit/content/widgets/moz-eval-card/moz-eval-card.css',
+          tokenUsages: 1,
+          allowlisted: 0,
+          unknownVars: 0,
+          rawColors: 0,
+        },
+      ],
+    });
+
+    await tokenCoverageCommand('/project');
+
+    expect(mockedMeasureTokenCoverage).toHaveBeenCalledWith('/project/engine', [
+      'browser/themes/shared/panel.css',
+      'toolkit/content/widgets/moz-eval-card/moz-eval-card.css',
+    ]);
+    expect(outro).toHaveBeenCalledWith('2 CSS files scanned');
   });
 
   it('reports success when all measured usages are token-backed', async () => {

@@ -46,6 +46,7 @@ vi.mock('../../core/patch-manifest.js', async (importOriginal) => {
     ...actual,
     loadPatchesManifest: vi.fn(),
     getClaimedFiles: vi.fn().mockReturnValue(new Set<string>()),
+    stampPatchVersions: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -76,15 +77,20 @@ vi.mock('../../utils/logger.js', () => ({
 
 vi.mock('@clack/prompts', () => ({
   multiselect: vi.fn(),
+  confirm: vi.fn(),
   isCancel: vi.fn().mockReturnValue(false),
 }));
 
-import { multiselect } from '@clack/prompts';
+import { confirm, multiselect } from '@clack/prompts';
 
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-status.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { lintExportedPatch } from '../../core/patch-lint.js';
-import { getClaimedFiles, loadPatchesManifest } from '../../core/patch-manifest.js';
+import {
+  getClaimedFiles,
+  loadPatchesManifest,
+  stampPatchVersions,
+} from '../../core/patch-manifest.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
@@ -305,6 +311,171 @@ describe('reExportCommand - --scan flag', () => {
     expect(getClaimedFiles).not.toHaveBeenCalled();
   });
 
+  it('warns when filesAffected names a path missing from disk without --scan (Finding #16)', async () => {
+    // Finding #16 guardrail: re-export without --scan preserves the
+    // manifest's filesAffected verbatim. If some of those paths are
+    // gone (deleted locally, moved by another branch), the refreshed
+    // patch body writes against a stale manifest and `verify` later
+    // fails on manifest-consistency with no obvious trigger. The
+    // warning alerts the operator before that happens.
+    const patch = makePatch('001-ui-test.patch', [
+      'browser/modules/foo/a.js',
+      'browser/modules/foo/missing.js',
+    ]);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockImplementation((p: string) => {
+      if (p.endsWith('/missing.js')) return Promise.resolve(false);
+      return Promise.resolve(true);
+    });
+
+    await reExportCommand('/fake/root', ['001'], {});
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('some files in patches.json no longer exist on disk')
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Re-run with --scan'));
+  });
+
+  it('does NOT emit the stale-manifest warning when --scan is set', async () => {
+    // --scan already reconciles filesAffected with the worktree, so the
+    // advisory is redundant and noisy in that mode. Seed the worktree
+    // with a file that exists so the re-export still produces a body
+    // (otherwise all-files-missing short-circuits before any warning
+    // path could run).
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getClaimedFiles).mockReturnValue(new Set());
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    await reExportCommand('/fake/root', ['001'], { scan: true });
+
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('some files in patches.json no longer exist on disk')
+    );
+  });
+
+  it('refuses to broaden a patch with many scan-discovered files in non-interactive mode without --yes', async () => {
+    // Finding #13: pre-0.16.0 `--scan` silently pulled every sibling
+    // modified/untracked file into the patch, including unrelated
+    // features that merely shared a directory. The 0.16.0 gate refuses
+    // the broad expansion in non-interactive mode unless the operator
+    // passes --yes, so drift is visible before it lands in patches.json.
+    //
+    // The per-patch loop in `reExportCommand` catches the refusal, emits
+    // a warn, and rolls it into the "All selected patches failed" outer
+    // throw — asserting on the warn gives a stable signal regardless of
+    // whether the run contained a single patch (outer throw) or a mix
+    // (partial success).
+    restoreTTY = setInteractiveMode(false);
+    const patch = makePatch('001-infra-startup-wiring.patch', ['browser/base/content/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([
+      'browser/base/content/a.js',
+      'browser/base/content/b.js',
+      'browser/base/content/c.js',
+      'browser/base/content/d.js',
+      'browser/base/content/e.js',
+    ]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getClaimedFiles).mockReturnValue(new Set<string>());
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    await expect(reExportCommand('/fake/root', ['001'], { scan: true })).rejects.toThrow(
+      /All selected patches failed to re-export/
+    );
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Refusing to broaden'));
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
+  it('allows broad scan expansion when --yes is passed in non-interactive mode', async () => {
+    restoreTTY = setInteractiveMode(false);
+    const patch = makePatch('001-infra-startup-wiring.patch', ['browser/base/content/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([
+      'browser/base/content/a.js',
+      'browser/base/content/b.js',
+      'browser/base/content/c.js',
+      'browser/base/content/d.js',
+      'browser/base/content/e.js',
+    ]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getClaimedFiles).mockReturnValue(new Set<string>());
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    await reExportCommand('/fake/root', ['001'], { scan: true, yes: true });
+
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it('prompts in interactive mode before broadening and proceeds on confirm', async () => {
+    restoreTTY = setInteractiveMode(true);
+    const patch = makePatch('001-infra-startup-wiring.patch', ['browser/base/content/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([
+      'browser/base/content/a.js',
+      'browser/base/content/b.js',
+      'browser/base/content/c.js',
+      'browser/base/content/d.js',
+      'browser/base/content/e.js',
+    ]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getClaimedFiles).mockReturnValue(new Set<string>());
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(confirm).mockResolvedValue(true);
+
+    await reExportCommand('/fake/root', ['001'], { scan: true });
+
+    expect(confirm).toHaveBeenCalled();
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the scan gate for small, same-directory additions (common refresh case)', async () => {
+    // The threshold is deliberately lenient: <= 3 files in the same
+    // directory do not prompt. A typical refresh after a small edit to
+    // a couple of sibling files stays frictionless.
+    restoreTTY = setInteractiveMode(false);
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([
+      'browser/modules/foo/a.js',
+      'browser/modules/foo/b.js',
+    ]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getClaimedFiles).mockReturnValue(new Set<string>());
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    await reExportCommand('/fake/root', ['001'], { scan: true });
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows dry-run scans without any confirmation', async () => {
+    restoreTTY = setInteractiveMode(false);
+    const patch = makePatch('001-infra-startup-wiring.patch', ['browser/base/content/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([
+      'browser/base/content/a.js',
+      'browser/base/content/b.js',
+      'browser/base/content/c.js',
+      'browser/base/content/d.js',
+      'browser/base/content/e.js',
+    ]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getClaimedFiles).mockReturnValue(new Set<string>());
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    await reExportCommand('/fake/root', ['001'], { scan: true, dryRun: true });
+
+    // Dry-run is always allowed — the whole point is to preview the
+    // expansion so the operator can decide whether to run for real.
+    expect(confirm).not.toHaveBeenCalled();
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
   it('should work with --all and --scan combined', async () => {
     const patch1 = makePatch('001-ui-test.patch', ['dir1/a.js']);
     const patch2 = makePatch('002-ui-other.patch', ['dir2/b.js']);
@@ -490,5 +661,107 @@ describe('reExportCommand - --scan flag', () => {
       | undefined;
     expect(handle?.message).toHaveBeenCalledWith('Re-exporting 001-ui-first.patch...');
     expect(handle?.message).toHaveBeenCalledWith('Re-exporting 002-ui-second.patch...');
+  });
+
+  describe('--stamp', () => {
+    it('stamps sourceEsrVersion on every re-exported patch when the run is clean', async () => {
+      const patch1 = makePatch('001-ui-first.patch', ['dir/a.js']);
+      const patch2 = makePatch('002-ui-second.patch', ['dir/b.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', [], { all: true, stamp: true });
+
+      expect(stampPatchVersions).toHaveBeenCalledTimes(1);
+      expect(stampPatchVersions).toHaveBeenCalledWith(
+        '/fake/patches',
+        ['001-ui-first.patch', '002-ui-second.patch'],
+        '140.9.0esr'
+      );
+      expect(success).toHaveBeenCalledWith('Stamped sourceEsrVersion=140.9.0esr on 2 patch(es)');
+    });
+
+    it('refuses to stamp when any selected patch is skipped', async () => {
+      const goodPatch = makePatch('001-ui-keep.patch', ['a.js']);
+      const missingPatch = makePatch('002-ui-missing.patch', ['missing.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([goodPatch, missingPatch]));
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p === '/fake/engine') return Promise.resolve(true);
+        if (p.endsWith('/a.js')) return Promise.resolve(true);
+        if (p.endsWith('/missing.js')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      await reExportCommand('/fake/root', [], { all: true, stamp: true });
+
+      expect(stampPatchVersions).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        '--stamp was requested but some patches failed or were skipped; refusing to stamp a partial set.'
+      );
+    });
+
+    it('does not stamp during dry-run but announces the plan', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], { dryRun: true, stamp: true });
+
+      expect(stampPatchVersions).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith(
+        '[dry-run] Would stamp sourceEsrVersion=140.9.0esr on 1 patch(es)'
+      );
+    });
+
+    it('is a no-op when --stamp is not passed', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      expect(stampPatchVersions).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('lintIgnore', () => {
+    it('forwards patch.lintIgnore to lintExportedPatch as an ignoreChecks set', async () => {
+      const patch = makePatch('001-branding-assets.patch', ['a.js']);
+      patch.lintIgnore = ['large-patch-lines', 'large-patch-files'];
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(1);
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      const ignore = call?.[5];
+      expect(ignore).toBeInstanceOf(Set);
+      expect(ignore?.has('large-patch-lines')).toBe(true);
+      expect(ignore?.has('large-patch-files')).toBe(true);
+    });
+
+    it('passes undefined when lintIgnore is absent on the patch', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      expect(call?.[5]).toBeUndefined();
+    });
+
+    it('passes undefined when lintIgnore is an empty array (no intent to suppress)', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      patch.lintIgnore = [];
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      expect(call?.[5]).toBeUndefined();
+    });
   });
 });

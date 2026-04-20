@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../../core/furnace-config.js';
-import { getStatusWithCodes, isGitRepository } from '../../core/git.js';
+import { getHead, getStatusWithCodes, isGitRepository } from '../../core/git.js';
 import { getUntrackedFilesInDir } from '../../core/git-status.js';
 import { isFileRegistered, matchesRegistrablePattern } from '../../core/manifest-rules.js';
 import { computePatchedContent } from '../../core/patch-apply.js';
@@ -37,6 +37,17 @@ vi.mock('../../core/furnace-config.js', () => ({
 vi.mock('../../core/git.js', () => ({
   getStatusWithCodes: vi.fn(),
   isGitRepository: vi.fn(),
+  // Default: engine has a baseline commit so the unborn-HEAD early return
+  // does not fire in the common test cases. The specific regression test
+  // for that branch rebinds getHead to throw.
+  getHead: vi.fn().mockResolvedValue('base-commit'),
+  isMissingHeadError: vi.fn(
+    (err: unknown) =>
+      err instanceof Error &&
+      /(ambiguous argument 'HEAD'|unknown revision or path not in the working tree)/i.test(
+        err.message
+      )
+  ),
 }));
 
 vi.mock('../../core/git-status.js', () => ({
@@ -64,6 +75,11 @@ vi.mock('../../core/patch-lint.js', () => ({
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
   readText: vi.fn(),
+  // Finding #18 added this filter pattern so status can strip atomic-
+  // write temps. Export the real regex here so status's filter behaves
+  // identically to production — tests for the filter rely on the same
+  // exact pattern.
+  FIREFORGE_TMP_PATH_PATTERN: /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9a-f-]{36}$/i,
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -117,6 +133,25 @@ describe('statusCommand', () => {
 
       await expect(statusCommand(projectRoot)).rejects.toThrow('Config not found');
       expect(isGitRepository).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a single recovery banner when HEAD is unborn', async () => {
+      // Eval regression: interrupting a `fireforge download` mid-indexing
+      // leaves engine/ extracted but git has no HEAD. `fireforge status`
+      // would then flood the output with hundreds of thousands of
+      // untracked entries plus a truncation warning — correct but
+      // unhelpful. Emit a single actionable banner pointing at
+      // `fireforge download --force` instead.
+      vi.mocked(getHead).mockRejectedValueOnce(
+        new Error(
+          "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree"
+        )
+      );
+
+      await expect(statusCommand(projectRoot)).rejects.toThrow(
+        /Engine repository has no baseline commit yet/
+      );
+      expect(getStatusWithCodes).not.toHaveBeenCalled();
     });
 
     it('shows unmanaged changes when no patches manifest exists', async () => {
@@ -854,6 +889,96 @@ describe('statusCommand', () => {
       await statusCommand(projectRoot);
 
       expect(getUntrackedFilesInDir).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('FireForge temp-file filtering (Finding #18)', () => {
+    it('omits .fireforge-tmp-<pid>-<uuid> entries from every status mode', async () => {
+      // Finding #18 regression guard. `writeFileAtomic` names its
+      // rename-target `.<filename>.fireforge-tmp-<pid>-<uuid>`; a
+      // concurrent `status` run during a brand.ftl or mozconfig write
+      // briefly saw those entries in the raw git output. The filter
+      // in status.ts excises them before classification so no mode
+      // leaks the temp path.
+      const tempFile = '.mozconfig.fireforge-tmp-12345-11111111-2222-3333-4444-555555555555';
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: tempFile },
+        { status: 'M', file: 'browser/base/content/browser.xhtml' },
+      ]);
+
+      await statusCommand(projectRoot);
+
+      const messages = infoMessages();
+      expect(messages.join('\n')).not.toContain('fireforge-tmp-');
+      expect(messages).toContain('  browser/base/content/browser.xhtml');
+    });
+
+    it('preserves an operator-named file that looks similar but lacks the PID+UUID tail', async () => {
+      // The pattern is anchored to `fireforge-tmp-<digits>-<uuid>` so a
+      // manually-named backup like `.notes.fireforge-tmp-backup` is
+      // NOT treated as a FireForge temp.
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: '.notes.fireforge-tmp-backup' },
+      ]);
+
+      await statusCommand(projectRoot);
+
+      expect(infoMessages()).toContain('  .notes.fireforge-tmp-backup');
+    });
+  });
+
+  describe('clean-tree output shape (Finding #3)', () => {
+    it('emits [] via stdout when --json is set and the tree is clean', async () => {
+      // Regression guard for the clean-tree `--json` branch. Pre-0.16.0
+      // the empty-files early-return ran before the `--json` check and
+      // printed "No modified files" / "Working tree clean" human text,
+      // so a pipe through `jq` broke on the most common clean-workspace
+      // invocation.
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+      vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+      const writes: string[] = [];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+
+      try {
+        await statusCommand(projectRoot, { json: true });
+      } finally {
+        stdoutSpy.mockRestore();
+      }
+
+      const combined = writes.join('');
+      expect(combined.trim()).toBe('[]');
+      // Human banner must NOT fire in json mode on a clean tree.
+      expect(infoMessages()).not.toContain('No modified files');
+    });
+
+    it('writes nothing to stdout when --raw is set and the tree is clean', async () => {
+      // Raw consumers parse `git status --porcelain`-shaped output. A
+      // clean tree produces no lines there, and `fireforge status --raw`
+      // now matches that — the "No modified files" / "Working tree
+      // clean" human banner previously contaminated the pipe.
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+      vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+      const writes: string[] = [];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+
+      try {
+        await statusCommand(projectRoot, { raw: true });
+      } finally {
+        stdoutSpy.mockRestore();
+      }
+
+      expect(writes.join('')).toBe('');
+      expect(infoMessages()).not.toContain('No modified files');
     });
   });
 });

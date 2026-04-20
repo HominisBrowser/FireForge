@@ -129,4 +129,26 @@ describe('validateStructure', () => {
 
     expect(issues.some((i) => i.check === 'missing-ftl')).toBe(false);
   });
+
+  it('does not report missing .ftl when sharedFtl is set, even if localized is true', async () => {
+    // Components opted into a shared feature-scoped bundle do not own a
+    // per-component .ftl; the shared file is registered elsewhere. The
+    // structure validator must skip the missing-ftl rule for them or every
+    // such component ships with a permanent error.
+    mockPathExists.mockImplementation((p: string) => Promise.resolve(!p.endsWith('.ftl')));
+    mockReaddir.mockResolvedValue([
+      { isFile: () => true, name: 'hominis-dock-button.mjs' },
+      { isFile: () => true, name: 'hominis-dock-button.css' },
+    ] as never);
+
+    const issues = await validateStructure('/comp', 'hominis-dock-button', 'custom', {
+      description: 'Dock button sharing the feature bundle',
+      targetPath: 'toolkit/content/widgets/hominis-dock-button',
+      register: true,
+      localized: true,
+      sharedFtl: 'browser/hominis-dock.ftl',
+    });
+
+    expect(issues.some((i) => i.check === 'missing-ftl')).toBe(false);
+  });
 });

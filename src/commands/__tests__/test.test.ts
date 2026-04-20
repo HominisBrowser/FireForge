@@ -31,7 +31,7 @@ vi.mock('../../core/mach.js', () => ({
 }));
 
 vi.mock('../../core/build-prepare.js', () => ({
-  prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0 })),
+  prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0, reconfigured: false })),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -41,10 +41,29 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   info: vi.fn(),
+  outro: vi.fn(),
+  warn: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
     error: vi.fn(),
   })),
+}));
+
+vi.mock('../../core/marionette-preflight.js', () => ({
+  runMarionettePreflight: vi.fn(),
+  reportMarionettePreflight: vi.fn(),
+}));
+
+vi.mock('../../core/test-stale-check.js', () => ({
+  checkStaleBuildForTest: vi.fn(() =>
+    Promise.resolve({ stale: false, changedPaths: [], truncated: 0, baseline: undefined })
+  ),
+  formatStaleBuildWarning: vi.fn(() => 'stale warning'),
+}));
+
+vi.mock('../../core/xpcshell-appdir.js', () => ({
+  resolveXpcshellAppdirArg: vi.fn(() => Promise.resolve({ kind: 'none' })),
+  operatorAlreadySetAppPath: vi.fn(() => false),
 }));
 
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
@@ -54,8 +73,16 @@ import {
   hasBuildArtifacts,
   testWithOutput,
 } from '../../core/mach.js';
+import {
+  reportMarionettePreflight,
+  runMarionettePreflight,
+} from '../../core/marionette-preflight.js';
+import { checkStaleBuildForTest, formatStaleBuildWarning } from '../../core/test-stale-check.js';
+import { operatorAlreadySetAppPath, resolveXpcshellAppdirArg } from '../../core/xpcshell-appdir.js';
+import { GeneralError } from '../../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { pathExists } from '../../utils/fs.js';
+import { outro, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 
 describe('testCommand', () => {
@@ -234,5 +261,371 @@ describe('testCommand', () => {
       ['browser/components/tests/unit/test_distribution.js'],
       []
     );
+  });
+
+  it('runs the marionette preflight without calling mach test when --doctor is supplied alone', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: true,
+      durationMs: 200,
+      detail: 'handshake',
+    });
+
+    await expect(testCommand('/project', [], { doctor: true })).resolves.toBeUndefined();
+
+    expect(runMarionettePreflight).toHaveBeenCalledWith('/project/engine');
+    expect(reportMarionettePreflight).toHaveBeenCalled();
+    expect(testWithOutput).not.toHaveBeenCalled();
+    // Finding #14: the doctor-only success path now closes the intro
+    // frame with an outro so the PASS line renders and automation sees
+    // a deterministic "done" marker. Without the outro, clack's
+    // grouped-output mode was dropping the trailing info line in
+    // non-TTY captures.
+    expect(outro).toHaveBeenCalledWith(expect.stringMatching(/Marionette preflight: PASS/));
+  });
+
+  it('surfaces a FAIL preflight as an actionable error and does not invoke mach test', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: false,
+      durationMs: 12_000,
+      detail: 'socket timeout',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'], {
+        doctor: true,
+      })
+    ).rejects.toThrow(/Marionette preflight reported FAIL/i);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('warns up-front when the stale-build preflight reports packageable engine changes', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce({
+      stale: true,
+      changedPaths: ['browser/base/content/hominis.xhtml', 'browser/base/content/hominis.js'],
+      truncated: 0,
+      baseline: {
+        engineHeadSha: 'abc123',
+        builtAt: new Date().toISOString(),
+        binaryName: 'mybrowser',
+      },
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
+    ).resolves.toBeUndefined();
+
+    // The warning must fire before mach test — the user's feedback was that
+    // discovering stale artifacts AFTER xpcshell launches gives no actionable
+    // signal in time.
+    expect(checkStaleBuildForTest).toHaveBeenCalledWith('/project', '/project/engine');
+    expect(formatStaleBuildWarning).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('stale warning');
+    expect(testWithOutput).toHaveBeenCalled();
+  });
+
+  it('skips the stale-build preflight when --build was requested', async () => {
+    // --build already refreshes the obj-* bundle, so an additional
+    // stale-build warning would be actively misleading — it reports drift
+    // against a baseline that the rebuild just invalidated.
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        build: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(checkStaleBuildForTest).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when the stale-build preflight reports no packageable changes', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    // Default mock already returns stale: false.
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
+    ).resolves.toBeUndefined();
+
+    expect(checkStaleBuildForTest).toHaveBeenCalled();
+    expect(formatStaleBuildWarning).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to mach test when the preflight passes and test paths are supplied', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: true,
+      durationMs: 120,
+      detail: 'handshake',
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'], {
+        doctor: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalled();
+  });
+
+  it('rewrites xpcshell resource:///modules/ failures into the appdir hint', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'Error: Failed to load resource:///modules/CanvasMath.sys.mjs',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/modules/mybrowser/test/unit/test_canvas_math.js'])
+    ).rejects.toThrow(/xpcshell failed to load core resource:\/\/\/modules/);
+  });
+
+  it('throws the xpcshell appdir hint as GeneralError, not BuildError', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'Error: Failed to load resource:///modules/Something.sys.mjs',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/modules/mybrowser/test/unit/test_something.js'])
+    ).rejects.toBeInstanceOf(GeneralError);
+  });
+
+  it('falls through to the xpcshell-appdir hint when only resource:///modules/* is named', async () => {
+    // 0.16.0 narrowing: the stale-build signal no longer matches
+    // `resource:///modules/distribution.sys.mjs` on its own — that literal
+    // was producing false-positive "rebuild" advice for fork-custom
+    // module-load failures (the eval saw this for
+    // `HominisStore.sys.mjs`, which was actually an appdir issue). A
+    // generic `Failed to load resource:///modules/…` now routes straight
+    // to the xpcshell-appdir hint, which is the right first guess in
+    // practice. Branding-specific stale signals (brand.properties,
+    // branding moz.build) still win ahead of xpcshell-appdir.
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr:
+        'ERROR Unexpected exception Error: Failed to load resource:///modules/distribution.sys.mjs',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'])
+    ).rejects.toThrow(/xpcshell failed to load core resource/i);
+  });
+
+  it('routes fork-custom resource module failures to the xpcshell-appdir hint', async () => {
+    // Eval regression: the hominis
+    // `Failed to load resource:///modules/hominis/HominisStore.sys.mjs`
+    // failure surfaced as "rebuild" advice before the narrowing, because
+    // `distribution.sys.mjs` wasn't there but the broader pattern caught
+    // any `resource:///modules/…`. After the narrowing the right hint
+    // wins — app-path injection, not rebuild.
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr:
+        'ERROR Unexpected exception Error: Failed to load resource:///modules/hominis/HominisStore.sys.mjs',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_browserGlue_hominis_startup.js'])
+    ).rejects.toThrow(/xpcshell failed to load core resource/i);
+  });
+
+  it('rewrites the MochitestDesktop http3Server AttributeError into the branding-registration hint', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr:
+        "File \"/project/engine/obj-debug/_tests/testing/mochitest/runtests.py\", line 1519, in stopServers: if self.http3Server is not None: AttributeError: 'MochitestDesktop' object has no attribute 'http3Server'",
+    });
+
+    await expect(
+      testCommand('/project', ['browser/modules/mybrowser/test/browser_mybrowser_canvas.js'])
+    ).rejects.toThrow(/chrome:\/\/branding/);
+  });
+
+  it('throws the mochitest http3Server hint as GeneralError, not BuildError', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr: "AttributeError: 'MochitestDesktop' object has no attribute 'http3Server'",
+    });
+
+    await expect(
+      testCommand('/project', ['browser/modules/mybrowser/test/browser_mybrowser_canvas.js'])
+    ).rejects.toBeInstanceOf(GeneralError);
+  });
+
+  it('forwards --mach-arg values verbatim to testWithOutput after --headless', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        headless: true,
+        machArg: ['--verbose', '--keep-going'],
+      })
+    ).resolves.toBeUndefined();
+
+    // Order matters: FireForge-managed flags first, passthrough last.
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/components/tests/unit/test_distribution.js'],
+      ['--headless', '--verbose', '--keep-going']
+    );
+  });
+
+  it('ignores an empty --mach-arg array without appending anything', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        machArg: [],
+      })
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/components/tests/unit/test_distribution.js'],
+      []
+    );
+  });
+
+  it('auto-injects --app-path when the resolver returns an "injected" outcome', async () => {
+    // Simulates a rebranded fork (appname=mybrowser) whose xpcshell.toml
+    // sets `firefox-appdir = "browser"`. The resolver returns the
+    // absolute path it computed against obj-debug/dist/, and the test
+    // command must append `--app-path=<abs>` to the mach test args so
+    // the harness uses the right root rather than falling back to xrePath.
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
+      kind: 'injected',
+      result: {
+        appPath: '/project/engine/obj-debug/dist/bin/browser',
+        manifestPath: '/project/engine/browser/base/content/test/foo/xpcshell.toml',
+        key: 'firefox-appdir',
+        relativeAppdir: 'browser',
+      },
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/foo/test_x.js'])
+    ).resolves.toBeUndefined();
+
+    expect(resolveXpcshellAppdirArg).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/foo/test_x.js'],
+      'obj-debug'
+    );
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/foo/test_x.js'],
+      ['--app-path=/project/engine/obj-debug/dist/bin/browser']
+    );
+  });
+
+  it('does not auto-inject when the operator already passed --app-path via --mach-arg', async () => {
+    // Operator override takes precedence: the resolver must not even be
+    // consulted to compute its outcome. The recorded call confirms the
+    // skip path runs before resolution.
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(operatorAlreadySetAppPath).mockReturnValueOnce(true);
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/foo/test_x.js'], {
+        machArg: ['--app-path=/custom/path'],
+      })
+    ).resolves.toBeUndefined();
+
+    expect(resolveXpcshellAppdirArg).not.toHaveBeenCalled();
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/foo/test_x.js'],
+      ['--app-path=/custom/path']
+    );
+  });
+
+  it('warns and skips injection when the resolver reports a mismatch across paths', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
+      kind: 'mismatch',
+      values: ['/p/A/dist/bin/browser', '/p/B/dist/bin/xulrunner'],
+    });
+
+    await expect(
+      testCommand('/project', [
+        'browser/base/content/test/A/test_a.js',
+        'browser/base/content/test/B/test_b.js',
+      ])
+    ).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/multiple test paths resolved to different app dirs/)
+    );
+    // No --app-path injected.
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/A/test_a.js', 'browser/base/content/test/B/test_b.js'],
+      []
+    );
+  });
+
+  it('warns and skips injection when the resolver cannot find the appdir under dist', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
+      kind: 'unresolved',
+      relativeAppdir: 'browser',
+      manifestPath: '/project/engine/browser/base/content/test/foo/xpcshell.toml',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/foo/test_x.js'])
+    ).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/no matching directory exists under obj-debug\/dist/)
+    );
+  });
+
+  it('rewrites xpcshell appdir failures with an injection-attempted hint when injection fired', async () => {
+    // After auto-injection runs and the xpcshell symptom STILL fires, the
+    // diagnostic message must say so — the operator needs to know
+    // FireForge already tried the easy fix and the cause lies elsewhere.
+    vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
+      kind: 'injected',
+      result: {
+        appPath: '/project/engine/obj-debug/dist/bin/browser',
+        manifestPath: '/project/engine/x/xpcshell.toml',
+        key: 'firefox-appdir',
+        relativeAppdir: 'browser',
+      },
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'Error: Failed to load resource:///modules/Something.sys.mjs',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/modules/mybrowser/test/unit/test_something.js'])
+    ).rejects.toThrow(/auto-injected `--app-path=<absolute>` against the resolved obj-dir/);
+  });
+
+  it('keeps the original "Likely triggers" wording when injection did not run', async () => {
+    // Default mock returns kind: 'none' — no injection. The diagnostic
+    // hint must keep its pre-injection wording so the operator sees the
+    // appname-key explanation that points at the underlying upstream
+    // behaviour rather than at FireForge's auto-injection path.
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'Error: Failed to load resource:///modules/Something.sys.mjs',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/modules/mybrowser/test/unit/test_something.js'])
+    ).rejects.toThrow(/literal `firefox-appdir` directive is silently ignored/);
   });
 });

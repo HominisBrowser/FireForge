@@ -155,4 +155,67 @@ describe('file-lock', () => {
       })
     ).rejects.toThrow('permission denied');
   });
+
+  it('removes a young lock whose PID file points at a dead process', async () => {
+    // Eval regression: after SIGINT of `furnace preview`, `withFileLock`'s
+    // `finally { rm }` is skipped because the signal handler calls
+    // `process.exit`. The next command used to wait the full staleness
+    // window (5 minutes) before removing the orphan lock — even though the
+    // lock's PID file already pointed at a dead process. The PID-first
+    // check unblocks immediately when the owner is explicitly gone.
+    const { writeFile } = await import('node:fs/promises');
+    const tempDir = await makeTempDir('fireforge-dead-pid-lock-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+    // Spawn-and-wait for a short-lived child so we capture a PID we know
+    // was real but is now gone. Using a literal PID like 99999 is fragile
+    // because the kernel may have recycled it; this pattern gives a
+    // deterministically-dead PID for the current test run.
+    const { spawn } = await import('node:child_process');
+    const child = spawn('true');
+    const deadPid: number = await new Promise((resolve) => {
+      child.once('exit', () => {
+        if (child.pid !== undefined) {
+          resolve(child.pid);
+        } else {
+          resolve(-1);
+        }
+      });
+    });
+    expect(deadPid).toBeGreaterThan(0);
+    await writeFile(join(lockPath, 'pid'), String(deadPid), 'utf-8');
+    // Young lock (mtime = now) — age-only heuristic would NOT remove it.
+    // PID-first check removes immediately.
+    const result = await withFileLock(lockPath, () => Promise.resolve('recovered'), {
+      // Generous staleMs so the age gate cannot be the one doing the work.
+      staleMs: 60 * 60 * 1000,
+      onStaleLockMessage: () => 'stale lock removed',
+    });
+    expect(result).toBe('recovered');
+    expect(vi.mocked(warn)).toHaveBeenCalledWith('stale lock removed');
+  });
+
+  it('respects a young lock whose PID file points at a live process', async () => {
+    // Defensive complement: the PID-first check must NOT race-remove a
+    // lock whose owner is still alive. The current test process's PID
+    // is trivially live — simulate a slow operation by pointing the lock
+    // at it. Attempting to acquire should time out rather than tear down
+    // a legitimate holder.
+    const { writeFile } = await import('node:fs/promises');
+    const tempDir = await makeTempDir('fireforge-live-pid-lock-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+    await writeFile(join(lockPath, 'pid'), String(process.pid), 'utf-8');
+    const staleTime = new Date(Date.now() - 10 * 60 * 1000);
+    await utimes(lockPath, staleTime, staleTime);
+
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+        timeoutMs: 25,
+        pollMs: 5,
+        staleMs: 1000, // Age is well past staleMs, but PID-first still wins.
+        onTimeoutMessage: 'lock still held',
+      })
+    ).rejects.toThrow('lock still held');
+  });
 });

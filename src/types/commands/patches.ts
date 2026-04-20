@@ -56,6 +56,28 @@ export interface PatchMetadata {
   sourceEsrVersion: string;
   /** Array of file paths affected by this patch */
   filesAffected: string[];
+  /**
+   * Optional per-patch list of lint check IDs to suppress when this patch
+   * is the target of `export`, `export-all`, or `re-export`. Exists for
+   * the class of patch that is advisory-noisy by nature — a cohesive
+   * branding bundle, a localised-resource pack, an auto-generated
+   * manifest — where the generic `large-patch-lines` / `large-patch-files`
+   * thresholds do not apply but `--skip-lint` (which silences *all*
+   * errors, not just the one that does not apply) is too coarse a hammer.
+   *
+   * Previously the only escape hatches were `--skip-lint` (blunt) or the
+   * full `rebase` flow (refreshes the same patch through a code path that
+   * silently skips `runPatchLint` — an asymmetry that forced operators
+   * through a multi-minute Firefox source re-download just to refresh
+   * one patch body).
+   *
+   * Values are free-form check IDs (e.g. `"large-patch-lines"`,
+   * `"large-patch-files"`). Checks not listed here still run normally.
+   * An entry for an unknown check ID is a no-op — the patch metadata
+   * documents the *intent* to suppress even if the check is later
+   * renamed or removed.
+   */
+  lintIgnore?: string[];
 }
 
 /**
@@ -104,4 +126,13 @@ export interface PatchLintIssue {
   message: string;
   /** Severity: errors block export, warnings are advisory, notices are informational (not counted) */
   severity: 'error' | 'warning' | 'notice';
+  /**
+   * Diff-scoping tag populated by `lint --since <rev>`. Absent when the
+   * caller did not request diff-scoping.
+   *
+   * - `introduced` — the issue's file was touched in the diff since `<rev>`.
+   * - `cumulative` — the issue is pre-existing patch-state drift not
+   *   introduced by the current task.
+   */
+  tag?: 'introduced' | 'cumulative';
 }

@@ -498,6 +498,46 @@ describe('download stall detection', () => {
   });
 });
 
+describe('downloadFirefoxSource phase callback (Finding #2)', () => {
+  it('fires onPhase("download") before the transfer and onPhase("extract") before the tar run', async () => {
+    // Regression guard: pre-0.16.0 there was no way for the download
+    // command to distinguish the byte-transfer phase from the silent
+    // tar-xz decompression phase, so the spinner read "Downloading...
+    // 100%" throughout extraction. The phase callback gives the command
+    // a single signal to switch spinners.
+    const body = new ReadableStream({
+      start(controller): void {
+        controller.enqueue(new TextEncoder().encode('all-data'));
+        controller.close();
+      },
+    });
+    mockFetch.mockResolvedValueOnce(
+      new Response(body, { status: 200, headers: { 'content-length': '8' } })
+    );
+
+    stubDownloadFs();
+    const fsMod = await import('../../utils/fs.js');
+    vi.mocked(fsMod.pathExists).mockResolvedValue(false);
+    mockReaddir.mockResolvedValue([{ name: 'firefox-140.9.0', isDirectory: () => true }]);
+
+    const phases: Array<'download' | 'extract'> = [];
+    await downloadFirefoxSource(
+      '140.9.0',
+      'firefox',
+      '/tmp/dest',
+      '/tmp/cache',
+      undefined,
+      (phase) => {
+        phases.push(phase);
+      }
+    );
+
+    // Download fires first (before the HTTP fetch), extract fires before
+    // tar. The two calls are the authoritative phase-change signals.
+    expect(phases).toEqual(['download', 'extract']);
+  });
+});
+
 describe('getFirefoxVersion', () => {
   it('returns undefined when version.txt is missing', async () => {
     const fsMod = await import('../../utils/fs.js');

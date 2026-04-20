@@ -18,6 +18,10 @@ vi.mock('../../core/furnace-config.js', () => ({
       tokenPrefix: '--mybrowser-',
     })
   ),
+  // Finding #15: tokenAddCommand now gates on furnace.json existence
+  // before delegating to token-manager. Default to "initialized" so
+  // existing tests keep exercising the add path.
+  furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
 }));
 
 vi.mock('../../core/token-manager.js', () => ({
@@ -48,7 +52,7 @@ vi.mock('../token-coverage.js', () => ({
 }));
 
 import { loadConfig } from '../../core/config.js';
-import { loadFurnaceConfig } from '../../core/furnace-config.js';
+import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { addToken, validateTokenAdd } from '../../core/token-manager.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
 import { registerToken, tokenAddCommand } from '../token.js';
@@ -58,6 +62,7 @@ const mockedAddToken = vi.mocked(addToken);
 const mockedValidateTokenAdd = vi.mocked(validateTokenAdd);
 const mockedLoadConfig = vi.mocked(loadConfig);
 const mockedLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
+const mockedFurnaceConfigExists = vi.mocked(furnaceConfigExists);
 const mockedTokenCoverageCommand = vi.mocked(tokenCoverageCommand);
 
 function createProgram(): Command {
@@ -80,6 +85,7 @@ describe('tokenAddCommand', () => {
     mockedLoadFurnaceConfig.mockResolvedValue({ tokenPrefix: '--mybrowser-' } as Awaited<
       ReturnType<typeof loadFurnaceConfig>
     >);
+    mockedFurnaceConfigExists.mockResolvedValue(true);
     mockedAddToken.mockResolvedValue({
       cssAdded: true,
       docsAdded: true,
@@ -252,6 +258,28 @@ describe('tokenAddCommand', () => {
     expect(info).toHaveBeenCalledWith('Token --mybrowser-audit-gap already exists (skipped)');
     expect(mockedLoadConfig).not.toHaveBeenCalled();
   });
+
+  it('guides the operator to `furnace init` when furnace.json is missing (Finding #15)', async () => {
+    // Pre-0.16.0 this path surfaced `Token CSS file not found:
+    // browser/themes/shared/<binary>-tokens.css` from
+    // `assertTokenCategoryExists` — technically correct, but the
+    // missing tokens CSS file is a downstream artefact of Furnace not
+    // being initialized. The new guard short-circuits with the
+    // actionable recovery step.
+    mockedFurnaceConfigExists.mockResolvedValue(false);
+
+    await expect(
+      tokenAddCommand('/project', '--mybrowser-audit-gap', '12px', {
+        category: 'Spacing',
+        mode: 'static',
+      })
+    ).rejects.toThrow(/Token management requires Furnace to be initialized/);
+
+    // Must refuse before the token manager gets a chance to throw its
+    // generic "file not found" error.
+    expect(mockedAddToken).not.toHaveBeenCalled();
+    expect(mockedValidateTokenAdd).not.toHaveBeenCalled();
+  });
 });
 
 describe('registerToken', () => {
@@ -263,6 +291,7 @@ describe('registerToken', () => {
     mockedLoadFurnaceConfig.mockResolvedValue({ tokenPrefix: '--mybrowser-' } as Awaited<
       ReturnType<typeof loadFurnaceConfig>
     >);
+    mockedFurnaceConfigExists.mockResolvedValue(true);
     mockedValidateTokenAdd.mockResolvedValue();
     mockedAddToken.mockResolvedValue({
       cssAdded: true,
@@ -312,5 +341,31 @@ describe('registerToken', () => {
     await program.parseAsync(['node', 'fireforge', 'token', 'coverage']);
 
     expect(mockedTokenCoverageCommand).toHaveBeenCalledWith('/project');
+  });
+
+  it('prints help and exits cleanly when invoked without a subcommand', async () => {
+    // Finding #1: pre-0.16.0 `fireforge token` with no subcommand fell
+    // through to commander's default help-then-exit-1 path, while
+    // `fireforge furnace` printed a friendly status and exited 0. Scripts
+    // probing the CLI surface saw an inconsistent exit contract. The
+    // default action now prints help via `outputHelp()` and returns
+    // successfully. Capturing stdout verifies both the exit contract
+    // (no throw) AND that the help content is rendered.
+    const program = createProgram();
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    let captured = '';
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      captured += typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      await program.parseAsync(['node', 'fireforge', 'token']);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    expect(captured).toContain('Design token management');
+    expect(captured).toContain('coverage');
   });
 });

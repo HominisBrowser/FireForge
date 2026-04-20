@@ -92,6 +92,10 @@ vi.mock('../../core/furnace-operation.js', () => ({
         registerCleanup: vi.fn(),
       })
   ),
+  // Required by the new `furnaceStaleLockCheck` in doctor-furnace.ts; returns
+  // a stable, never-on-disk path so `pathExists` reports absent in the
+  // default mock configuration (which then short-circuits the check to ok).
+  getFurnaceLockPath: vi.fn((root: string) => `${root}/.fireforge/furnace.lock`),
 }));
 
 vi.mock('../../core/furnace-validate.js', () => ({
@@ -115,6 +119,14 @@ vi.mock('../../core/patch-manifest.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
+}));
+
+vi.mock('../../utils/process.js', () => ({
+  // Default to "watchman is installed" so the new check shows ok for the
+  // broad swath of existing tests that don't care about watch mode. The
+  // specific regression test for the missing-watchman branch overrides
+  // this with mockResolvedValueOnce(false).
+  executableExists: vi.fn(() => Promise.resolve(true)),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -214,7 +226,7 @@ describe('doctorCommand', () => {
   it('reports a clean workspace as fully passing', async () => {
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('All 14 checks passed!');
+    expect(outro).toHaveBeenCalledWith('All 15 checks passed!');
     expect(result.exitCode).toBe(0);
   });
 
@@ -233,7 +245,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('13 passed, 1 warning');
+    expect(outro).toHaveBeenCalledWith('14 passed, 1 warning');
     expect(result.exitCode).toBe(0);
   });
 
@@ -262,7 +274,7 @@ describe('doctorCommand', () => {
     expect(
       vi.mocked(error).mock.calls.some(([message]) => message.includes('Engine state consistency'))
     ).toBe(true);
-    expect(outro).toHaveBeenCalledWith('13 passed, 1 warning, 1 failed');
+    expect(outro).toHaveBeenCalledWith('14 passed, 1 warning, 1 failed');
     expect(result.exitCode).toBe(1);
   });
 
@@ -280,7 +292,39 @@ describe('doctorCommand', () => {
           message.includes('Engine is detached at the recorded base commit')
         )
     ).toBe(true);
-    expect(outro).toHaveBeenCalledWith('14 passed, 1 warning');
+    expect(outro).toHaveBeenCalledWith('15 passed, 1 warning');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('warns (does not fail) when watchman is absent from PATH', async () => {
+    // Eval regression: `fireforge watch` depends on watchman, but prior
+    // to this check operators completed setup → download → build without
+    // ever seeing that requirement. Now doctor surfaces a warning row so
+    // the dependency gap is visible during the normal onboarding sweep.
+    // Warning-severity (not failure) because most projects don't run
+    // watch and we don't want to fail `doctor` outright for a
+    // command-specific dependency.
+    //
+    // Use `mockImplementationOnce` rather than `mockImplementation` so the
+    // override does not leak into sibling tests. `clearAllMocks` in the
+    // module beforeEach clears call history but preserves mock
+    // implementations, so a permanent override would turn unrelated tests'
+    // accounting (warning counts, passed-checks counts) sideways.
+    const { executableExists } = await import('../../utils/process.js');
+    vi.mocked(executableExists).mockImplementationOnce((name: string) =>
+      Promise.resolve(name !== 'watchman')
+    );
+
+    const result = await doctorCommand('/project');
+
+    expect(
+      vi
+        .mocked(warn)
+        .mock.calls.some(([message]) =>
+          message.includes('watchman is not installed or not on PATH')
+        )
+    ).toBe(true);
+    // Warning-only: the run still succeeds overall.
     expect(result.exitCode).toBe(0);
   });
 
@@ -616,6 +660,91 @@ describe('doctorCommand', () => {
       expect(successMessages.some((m) => m.includes('Furnace engine state'))).toBe(true);
     });
 
+    it('"Furnace engine paths" scans tokenHostDocuments instead of browser.xhtml when configured', async () => {
+      // Simulate a fork that replaced browser.xhtml with a custom chrome doc.
+      // pathExists returns false for browser.xhtml (it was deleted by the
+      // fork) and true for the configured host document; the check should
+      // then pass without warning about the missing browser.xhtml.
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {
+          'moz-card': {
+            type: 'css-only',
+            description: 'override card',
+            basePath: 'toolkit/content/widgets/moz-card',
+            baseVersion: '145.0',
+          },
+        },
+        custom: {},
+        tokenHostDocuments: ['browser/base/content/mybrowser-shell.xhtml'],
+      });
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('browser/base/content/browser.xhtml')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      const result = await doctorCommand('/project');
+
+      expect(result.exitCode).toBe(0);
+      const warnMessages = vi.mocked(warn).mock.calls.map(([m]) => m);
+      expect(warnMessages.some((m) => m.includes('Furnace engine paths'))).toBe(false);
+      const successMessages = vi.mocked(success).mock.calls.map(([msg]) => msg);
+      expect(successMessages.some((m) => m.includes('Furnace engine paths'))).toBe(true);
+    });
+
+    it('"Furnace engine paths" warns about the configured host document when it is missing', async () => {
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {
+          'moz-card': {
+            type: 'css-only',
+            description: 'override card',
+            basePath: 'toolkit/content/widgets/moz-card',
+            baseVersion: '145.0',
+          },
+        },
+        custom: {},
+        tokenHostDocuments: ['browser/base/content/mybrowser-shell.xhtml'],
+      });
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('mybrowser-shell.xhtml')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      const result = await doctorCommand('/project');
+
+      expect(result.exitCode).toBe(0);
+      const warnMessages = vi.mocked(warn).mock.calls.map(([m]) => m);
+      expect(
+        warnMessages.some(
+          (m) => m.includes('Furnace engine paths') && m.includes('mybrowser-shell.xhtml')
+        )
+      ).toBe(true);
+    });
+
+    it('"Furnace engine paths" falls back to browser.xhtml when tokenHostDocuments is not set', async () => {
+      // No tokenHostDocuments in the config — old default applies.
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('browser/base/content/browser.xhtml')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      const result = await doctorCommand('/project');
+
+      expect(result.exitCode).toBe(0);
+      const warnMessages = vi.mocked(warn).mock.calls.map(([m]) => m);
+      expect(
+        warnMessages.some(
+          (m) =>
+            m.includes('Furnace engine paths') && m.includes('browser/base/content/browser.xhtml')
+        )
+      ).toBe(true);
+    });
+
     it('fails "Furnace configuration" when furnace.json is invalid', async () => {
       vi.mocked(loadFurnaceConfig).mockRejectedValueOnce(
         new Error('Furnace config: "version" must be 1')
@@ -683,6 +812,21 @@ describe('doctorCommand', () => {
       expect(result.appliedChecksums).toEqual({
         'override/moz-card/moz-card.css': 'abc',
       });
+    });
+
+    it('reports "Furnace lock" as passing when no lock directory is present', async () => {
+      // Default `pathExists` mock returns true for every probe (see top of
+      // file). Override it for the furnace-lock path so the check takes the
+      // ok branch — this matches the steady-state scenario where no furnace
+      // command is in flight.
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('furnace.lock')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+      const result = await doctorCommand('/project');
+      expect(result.exitCode).toBe(0);
+      const successMessages = vi.mocked(success).mock.calls.map(([m]) => m);
+      expect(successMessages.some((m) => m.includes('Furnace lock'))).toBe(true);
     });
 
     it('fails "Furnace engine state" when drift is detected', async () => {
@@ -938,7 +1082,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('13 passed, 2 warnings');
+    expect(outro).toHaveBeenCalledWith('14 passed, 2 warnings');
     expect(result.exitCode).toBe(0);
   });
 });
@@ -1032,6 +1176,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
       'Pending Resolution',
       'Engine is git repository',
       'mach available',
+      'Watchman available',
       'Patches directory exists',
       'Patches found',
       'Patch manifest consistency',
@@ -1040,6 +1185,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
       'Furnace state consistency',
       'Furnace engine paths',
       'Furnace Storybook backend',
+      'Furnace lock',
       'Furnace engine state',
       'Furnace component validation',
       'Configs directory exists',

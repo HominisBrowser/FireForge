@@ -22,6 +22,10 @@ vi.mock('../../core/patch-export.js', () => ({
   findAllPatchesForFiles: vi.fn(() => Promise.resolve([])),
 }));
 
+vi.mock('../../core/patch-manifest.js', () => ({
+  loadPatchesManifest: vi.fn(() => Promise.resolve(null)),
+}));
+
 vi.mock('../../core/license-headers.js', () => ({
   getLicenseHeader: vi.fn(() => '// LICENSE HEADER'),
   addLicenseHeaderToFile: vi.fn(() => Promise.resolve(true)),
@@ -44,6 +48,7 @@ import * as clack from '@clack/prompts';
 import { addLicenseHeaderToFile } from '../../core/license-headers.js';
 import { findAllPatchesForFiles } from '../../core/patch-export.js';
 import { detectNewFilesInDiff, lintExportedPatch } from '../../core/patch-lint.js';
+import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { pathExists, readText } from '../../utils/fs.js';
@@ -52,6 +57,8 @@ import { cancel, info, isCancel, warn } from '../../utils/logger.js';
 import {
   autoFixLicenseHeaders,
   confirmSupersedePatches,
+  findPartialOwnershipOverlap,
+  guardOwnershipOverlap,
   promptExportPatchMetadata,
   runPatchLint,
 } from '../export-shared.js';
@@ -348,5 +355,169 @@ describe('autoFixLicenseHeaders', () => {
     const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true);
 
     expect(result).toBe(false);
+  });
+});
+
+describe('findPartialOwnershipOverlap', () => {
+  // Finding #12: eval showed two exports both claiming
+  // `browser/themes/shared/jar.inc.mn`. `findAllPatchesForFiles` only
+  // catches FULL supersedes; partial overlap needs its own detector.
+  it('returns an empty map when nothing overlaps', () => {
+    const manifest = {
+      version: 1 as const,
+      patches: [
+        {
+          filename: '001.patch',
+          order: 1,
+          category: 'ui' as const,
+          name: 'one',
+          description: '',
+          createdAt: '',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['foo.js'],
+        },
+      ],
+    };
+    expect(findPartialOwnershipOverlap(manifest, ['bar.js'], new Set())).toEqual(new Map());
+  });
+
+  it('surfaces files claimed by other non-superseded patches', () => {
+    const manifest = {
+      version: 1 as const,
+      patches: [
+        {
+          filename: '001.patch',
+          order: 1,
+          category: 'ui' as const,
+          name: 'one',
+          description: '',
+          createdAt: '',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['shared.mn'],
+        },
+        {
+          filename: '002.patch',
+          order: 2,
+          category: 'ui' as const,
+          name: 'two',
+          description: '',
+          createdAt: '',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['shared.mn', 'only-in-two.css'],
+        },
+      ],
+    };
+    const overlap = findPartialOwnershipOverlap(manifest, ['shared.mn'], new Set());
+    expect(overlap.get('shared.mn')).toEqual(['001.patch', '002.patch']);
+  });
+
+  it('excludes supersede-targeted patches from the overlap result', () => {
+    const manifest = {
+      version: 1 as const,
+      patches: [
+        {
+          filename: '001.patch',
+          order: 1,
+          category: 'ui' as const,
+          name: 'one',
+          description: '',
+          createdAt: '',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['shared.mn'],
+        },
+      ],
+    };
+    const overlap = findPartialOwnershipOverlap(manifest, ['shared.mn'], new Set(['001.patch']));
+    expect(overlap.size).toBe(0);
+  });
+});
+
+describe('guardOwnershipOverlap', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('passes through when --allow-overlap is set', async () => {
+    const result = await guardOwnershipOverlap({
+      patchesDir: '/patches',
+      filesAffected: ['shared.mn'],
+      supersedingFilenames: new Set(),
+      allowOverlap: true,
+      isInteractive: false,
+      s: mockSpinner,
+    });
+    expect(result).toBe(true);
+    expect(loadPatchesManifest).not.toHaveBeenCalled();
+  });
+
+  it('throws in non-interactive mode when overlap exists', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
+      version: 1,
+      patches: [
+        {
+          filename: '001.patch',
+          order: 1,
+          category: 'ui',
+          name: 'one',
+          description: '',
+          createdAt: '',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['shared.mn'],
+        },
+      ],
+    });
+    await expect(
+      guardOwnershipOverlap({
+        patchesDir: '/patches',
+        filesAffected: ['shared.mn'],
+        supersedingFilenames: new Set(),
+        allowOverlap: false,
+        isInteractive: false,
+        s: mockSpinner,
+      })
+    ).rejects.toThrow(/cross-patch ownership overlap in non-interactive mode/);
+  });
+
+  it('proceeds silently when the manifest is empty (no overlap possible)', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValueOnce(null);
+    const result = await guardOwnershipOverlap({
+      patchesDir: '/patches',
+      filesAffected: ['shared.mn'],
+      supersedingFilenames: new Set(),
+      allowOverlap: false,
+      isInteractive: false,
+      s: mockSpinner,
+    });
+    expect(result).toBe(true);
+  });
+
+  it('prompts and respects cancellation in interactive mode', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
+      version: 1,
+      patches: [
+        {
+          filename: '001.patch',
+          order: 1,
+          category: 'ui',
+          name: 'one',
+          description: '',
+          createdAt: '',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['shared.mn'],
+        },
+      ],
+    });
+    vi.mocked(clack.confirm).mockResolvedValueOnce(false);
+
+    const result = await guardOwnershipOverlap({
+      patchesDir: '/patches',
+      filesAffected: ['shared.mn'],
+      supersedingFilenames: new Set(),
+      allowOverlap: false,
+      isInteractive: true,
+      s: mockSpinner,
+    });
+    expect(result).toBe(false);
+    expect(cancel).toHaveBeenCalledWith('Export cancelled');
   });
 });

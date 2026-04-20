@@ -179,4 +179,32 @@ const gBrowserInit = {
     // "Thing.destroy()" is present, but "OtherThing.destroy()" should NOT match
     await expect(addDestroyToBrowserInit('/engine', 'OtherThing.destroy()')).resolves.toBe(true);
   });
+
+  it('coerces a bare property chain into a function call (AST path)', () => {
+    // Finding #8 symmetric case for destroy: `EvalStartup.destroy` must
+    // invoke, not just reference. `addDestroyAST` now appends `()` when
+    // the caller passed a bare property chain.
+    const updated = addDestroyAST(BASE_BROWSER_INIT, 'EvalStartup.destroy');
+    expect(updated).toContain('EvalStartup.destroy();');
+    expect(updated).not.toMatch(/EvalStartup\.destroy;[^(]/);
+  });
+
+  it('preserves an explicit function-call expression without double-parens (AST path)', () => {
+    const updated = addDestroyAST(BASE_BROWSER_INIT, 'EvalStartup.destroy()');
+    expect(updated).toContain('EvalStartup.destroy();');
+    expect(updated).not.toContain('EvalStartup.destroy()();');
+  });
+
+  it('coerces a bare property chain into a function call (legacy path)', () => {
+    const updated = legacyAddDestroy(BASE_BROWSER_INIT, 'EvalStartup.destroy');
+    expect(updated).toContain('EvalStartup.destroy();');
+    expect(updated).not.toMatch(/EvalStartup\.destroy;[^(]/);
+  });
+
+  it('idempotency check recognises a previously coerced call when re-running with the bare form', async () => {
+    vi.mocked(readText).mockResolvedValue(`${BASE_BROWSER_INIT}\n    EvalStartup.destroy();\n`);
+
+    await expect(addDestroyToBrowserInit('/engine', 'EvalStartup.destroy')).resolves.toBe(false);
+    expect(writeText).not.toHaveBeenCalled();
+  });
 });

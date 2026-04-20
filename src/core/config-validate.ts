@@ -154,6 +154,12 @@ export function validateConfig(data: unknown): FireForgeConfig {
     config.license = licenseRaw as ProjectLicense;
   }
 
+  // Marker comment — appended to lines FireForge writes into upstream files.
+  const markerComment = parseMarkerComment(rec.raw('markerComment'));
+  if (markerComment !== undefined) {
+    config.markerComment = markerComment;
+  }
+
   // PatchLint
   const patchLintRec = optionalConfigObject(rec, 'patchLint');
   if (patchLintRec) {
@@ -215,6 +221,35 @@ function optionalConfigString(
     throw new ConfigError(`Config field "${label}" must be a string`);
   }
   return value;
+}
+
+/**
+ * Validates a raw `markerComment` value. Rejected values: non-strings, empty
+ * strings, surrounding whitespace (ambiguous format), newlines (would break
+ * source formatting), and `*&#47;` (would terminate an enclosing block comment
+ * downstream). Control characters are rejected for the same reason.
+ */
+function parseMarkerComment(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string') {
+    throw new ConfigError('Config field "markerComment" must be a string');
+  }
+  if (raw.trim() === '') {
+    throw new ConfigError('Config field "markerComment" must not be empty');
+  }
+  if (raw !== raw.trim()) {
+    throw new ConfigError(
+      'Config field "markerComment" must not have leading or trailing whitespace'
+    );
+  }
+  if (/[\n\r]/.test(raw) || raw.includes('*/')) {
+    throw new ConfigError('Config field "markerComment" must not contain newlines or "*/"');
+  }
+  // eslint-disable-next-line no-control-regex -- intentionally rejecting control chars
+  if (/[\x00-\x1f]/.test(raw)) {
+    throw new ConfigError('Config field "markerComment" must not contain control characters');
+  }
+  return raw;
 }
 
 function optionalConfigObject(

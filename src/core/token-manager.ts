@@ -165,10 +165,60 @@ async function assertTokenCategoryExists(
     }
   }
 
+  const discoveredCategories = discoverCategoryHeaders(lines);
+  const available =
+    discoveredCategories.length > 0
+      ? `Available categories in the file: ${discoveredCategories.map((name) => `"${name}"`).join(', ')}.`
+      : 'The file currently has no category headers. Add one by hand near the top of the :root { … } block — the format is "/* = My Category = */" — or run "fireforge furnace init --force" to re-scaffold the default seed set.';
+
   throw new GeneralError(
-    `Category "${category}" not found in ${tokensCssPath}. ` +
-      'Available categories are defined by /* =... category ...= */ comment headers.'
+    `Category "${category}" not found in ${tokensCssPath}.\n\n` +
+      `${available}\n\n` +
+      'Categories are declared by comment headers. Single-line shape: /* = My Category = */. ' +
+      'Multi-line shape: /* =============\\n * My Category\\n * ============= */.'
   );
+}
+
+/**
+ * Scans a tokens CSS file for category header comments and returns the
+ * category names in document order. Used to enrich the "category not
+ * found" error body with concrete alternatives the operator can copy.
+ *
+ * Mirrors the shapes `findCategorySection` already recognises:
+ * - Single-line: `/* = Foo = *\/`
+ * - Multi-line: `/* =====` opening, `Foo` on any of the next ~5 lines,
+ *   closing `*\/`.
+ *
+ * This helper exists as a pure inspector; it never throws on malformed
+ * headers and silently skips shapes it cannot parse.
+ */
+function discoverCategoryHeaders(lines: string[]): string[] {
+  const categories = new Set<string>();
+  const singleLinePattern = /\/\*\s*=+\s*(.+?)\s*=+\s*\*\//;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const singleMatch = singleLinePattern.exec(line);
+    if (singleMatch?.[1]) {
+      const extracted = singleMatch[1].trim();
+      if (extracted.length > 0) categories.add(extracted);
+      continue;
+    }
+
+    if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
+      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+        const blockLine = lines[j] ?? '';
+        if (/\*\//.test(blockLine)) break;
+        const trimmed = blockLine.replace(/^\s*\*\s*/, '').trim();
+        if (trimmed.length === 0) continue;
+        if (/^=+$/.test(trimmed)) continue;
+        categories.add(trimmed);
+        break;
+      }
+    }
+  }
+
+  return [...categories];
 }
 
 /**
@@ -277,9 +327,16 @@ function findCategorySection(
   }
 
   if (categoryLine === -1) {
+    const discoveredCategories = discoverCategoryHeaders(lines);
+    const available =
+      discoveredCategories.length > 0
+        ? `Available categories in the file: ${discoveredCategories.map((name) => `"${name}"`).join(', ')}.`
+        : 'The file currently has no category headers.';
+
     throw new GeneralError(
-      `Category "${category}" not found in ${tokensCssPath}. ` +
-        'Available categories are defined by /* =... category ...= */ comment headers.'
+      `Category "${category}" not found in ${tokensCssPath}.\n\n` +
+        `${available}\n\n` +
+        'Add a header by hand inside the :root block (format: "/* = My Category = */") or re-run "fireforge furnace init --force" to re-seed the default categories.'
     );
   }
 

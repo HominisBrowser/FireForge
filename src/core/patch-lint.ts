@@ -94,7 +94,28 @@ export function countNonBinaryDiffLines(diffContent: string): {
 const PATCH_LINE_THRESHOLDS = {
   general: { notice: 800, warning: 1500, error: 3000 },
   test: { notice: 1500, warning: 3000, error: 6000 },
+  /**
+   * Branding patches have a legitimate reason to be large: they include
+   * every locale's `brand.ftl`, copied upstream CSS/PNG assets, and the
+   * fork-specific `configure.sh` / `brand.properties` under a single
+   * `browser/branding/<name>/` subtree. The general hard limit of 3000
+   * lines fires on even a first-export branding patch (the eval saw 15904
+   * lines for a freshly-setup fork), which is loud but not actionable —
+   * the patch already is the minimum branding diff. A dedicated tier keeps
+   * the size guidance while moving the hard limit to a threshold that
+   * corresponds to "something other than branding is bundled in here too".
+   */
+  branding: { notice: 3000, warning: 8000, error: 20000 },
 } as const;
+
+/**
+ * Returns true when every file in a patch lives under `browser/branding/`.
+ * Used by `lintPatchSize` to pick the branding threshold tier.
+ */
+function isBrandingOnlyPatch(files: ReadonlyArray<string>): boolean {
+  if (files.length === 0) return false;
+  return files.every((file) => file.startsWith('browser/branding/'));
+}
 
 /**
  * Returns true if the filename looks like a JS/MJS/JSM file.
@@ -150,12 +171,14 @@ export async function lintPatchedCss(
   // Load furnace config gracefully — skip token-prefix check if unavailable
   let tokenPrefix: string | undefined;
   let tokenAllowlist: Set<string> | undefined;
+  let runtimeVariables: Set<string> | undefined;
   try {
     const root = join(repoDir, '..');
     const furnaceConfig = await loadFurnaceConfig(root);
     if (furnaceConfig.tokenPrefix) {
       tokenPrefix = furnaceConfig.tokenPrefix;
       tokenAllowlist = new Set(furnaceConfig.tokenAllowlist ?? []);
+      runtimeVariables = new Set(furnaceConfig.runtimeVariables ?? []);
     }
   } catch (error: unknown) {
     verbose(
@@ -175,11 +198,19 @@ export async function lintPatchedCss(
     const cssContent = rawCss.replace(/\/\*[\s\S]*?\*\//g, '');
 
     // Check only introduced raw color values when diff context is available.
-    // Skip files on the raw-color allowlist (exact path or basename match).
+    // Skip files on the raw-color allowlist (exact path or basename match) and
+    // auto-exempt files under `browser/branding/` — those are the fork's
+    // visual identity assets (app-about dialogs, installer pages, branded
+    // CSS copied from Firefox's `unofficial` template) and belong to the
+    // design-decision layer the design-token system does not govern.
+    // Without this auto-exemption, every first-time setup's copied CSS
+    // failed `raw-color-value` with no actionable fix other than manually
+    // listing each path in `rawColorAllowlist`.
     const allowlist = config?.patchLint?.rawColorAllowlist;
     const isAllowlisted = allowlist?.some((entry) => file === entry || file.endsWith('/' + entry));
+    const isBranding = file.startsWith('browser/branding/');
 
-    if (!isAllowlisted) {
+    if (!isAllowlisted && !isBranding) {
       // Strip lines with inline fireforge-ignore: raw-color-value suppression.
       // Check against rawCss (before comment stripping) so the CSS comment marker is still present.
       const sourceForSuppression = addedLinesByFile
@@ -202,17 +233,54 @@ export async function lintPatchedCss(
       }
     }
 
-    // Check for non-tokenized custom properties
+    // Check for non-tokenized custom properties. A variable that is both
+    // declared and consumed inside the same file is auto-exempted as a
+    // runtime state channel (see furnace.json → runtimeVariables).
+    //
+    // When diff context is available, scope the `var(...)` scan to
+    // added/modified lines only. `cssContent` (full-file) is still the
+    // source of `localDeclarations` so vars declared anywhere in the file
+    // are recognised as same-file refs regardless of where the consuming
+    // `var(...)` appears. Before this scoping change, a small edit to a
+    // Furnace override of a stock component (e.g. moz-card) produced a
+    // `token-prefix-violation` for every stock `var(--moz-card-*)` the
+    // upstream file already carried, because the scanner saw the full
+    // applied file and flagged each inherited reference as if the fork
+    // had introduced it.
     if (tokenPrefix) {
-      const varPattern = /var\(\s*(--[\w-]+)/g;
-      let match: RegExpExecArray | null;
-      while ((match = varPattern.exec(cssContent)) !== null) {
-        const prop = match[1];
-        if (prop && !prop.startsWith(tokenPrefix) && !tokenAllowlist?.has(prop)) {
+      const declarationPattern = /(?:^|[{;,\s])(--[\w-]+)\s*:/g;
+      const localDeclarations = new Set<string>();
+      let declMatch: RegExpExecArray | null;
+      while ((declMatch = declarationPattern.exec(cssContent)) !== null) {
+        const name = declMatch[1];
+        if (name) localDeclarations.add(name);
+      }
+
+      const prefixScanSource = addedLinesByFile
+        ? (addedLinesByFile.get(file) ?? []).join('\n').replace(/\/\*[\s\S]*?\*\//g, '')
+        : cssContent;
+
+      if (prefixScanSource.length > 0) {
+        const varPattern = /var\(\s*(--[\w-]+)/g;
+        const flaggedProps = new Set<string>();
+        let match: RegExpExecArray | null;
+        while ((match = varPattern.exec(prefixScanSource)) !== null) {
+          const prop = match[1];
+          if (!prop) continue;
+          if (prop.startsWith(tokenPrefix)) continue;
+          if (tokenAllowlist?.has(prop)) continue;
+          if (runtimeVariables?.has(prop)) continue;
+          if (localDeclarations.has(prop)) continue;
+          // De-duplicate per (file, prop) pair so the same introduced var
+          // used five times in the added hunk doesn't produce five
+          // identical issue entries.
+          if (flaggedProps.has(prop)) continue;
+          flaggedProps.add(prop);
+
           issues.push({
             file,
             check: 'token-prefix-violation',
-            message: `CSS references var(${prop}) which does not match the required token prefix "${tokenPrefix}". Use a design token or add to tokenAllowlist.`,
+            message: `CSS references var(${prop}) which does not match the required token prefix "${tokenPrefix}". Use a design token, add to tokenAllowlist, or (for runtime state channels) list the variable in runtimeVariables.`,
             severity: 'error',
           });
         }
@@ -253,14 +321,24 @@ export async function lintNewFileHeaders(
     const content = await readText(filePath);
     const expectedHeader = getLicenseHeader(license, style);
 
-    if (!content.startsWith(expectedHeader)) {
-      issues.push({
-        file,
-        check: 'missing-license-header',
-        message: `New file is missing the required ${license} license header.`,
-        severity: 'error',
-      });
-    }
+    // Auto-exempt `browser/branding/` when the file carries ANY recognised
+    // license header in the matching comment style. The setup-generated
+    // branding directory is copied from Firefox's `unofficial` template,
+    // which arrives with Mozilla MPL-2.0 headers — those are legitimate
+    // for copyright purposes (the assets are Mozilla's) even when the
+    // fork's own code is 0BSD / EUPL-1.2 / GPL-2.0-or-later. The narrower
+    // license-match rule would force operators to either rewrite the
+    // copied headers (misrepresenting authorship) or suppress the lint
+    // with `--skip-lint` (hiding real issues elsewhere).
+    if (content.startsWith(expectedHeader)) continue;
+    if (file.startsWith('browser/branding/') && hasAnyLicenseHeader(content, style)) continue;
+
+    issues.push({
+      file,
+      check: 'missing-license-header',
+      message: `New file is missing the required ${license} license header.`,
+      severity: 'error',
+    });
   }
 
   return issues;
@@ -444,8 +522,19 @@ export function lintPatchSize(filesAffected: string[], lineCount: number): Patch
     });
   }
 
+  // Tier selection: test > branding > general. Tests keep their elevated
+  // thresholds because a big regression test is legitimate (table-driven
+  // harnesses run into the thousands of lines). Branding patches get their
+  // own tier so a first-export of setup-generated branding doesn't fire
+  // the general hard limit — see `PATCH_LINE_THRESHOLDS.branding` above
+  // for the eval data motivating this tier.
   const allTests = filesAffected.length > 0 && filesAffected.every(isTestFile);
-  const thresholds = allTests ? PATCH_LINE_THRESHOLDS.test : PATCH_LINE_THRESHOLDS.general;
+  const branding = !allTests && isBrandingOnlyPatch(filesAffected);
+  const thresholds = allTests
+    ? PATCH_LINE_THRESHOLDS.test
+    : branding
+      ? PATCH_LINE_THRESHOLDS.branding
+      : PATCH_LINE_THRESHOLDS.general;
 
   if (lineCount >= thresholds.error) {
     issues.push({
@@ -531,6 +620,11 @@ export async function lintModifiedFileHeaders(
  * @param diffContent - Raw unified diff string
  * @param config - Project configuration
  * @param patchQueueCtx - Optional cross-patch context for ownership resolution
+ * @param ignoreChecks - Optional set of per-patch `check` IDs to drop from the
+ *   returned issues. Threaded from `PatchMetadata.lintIgnore` so a patch that
+ *   is advisory-noisy by nature (a cohesive branding bundle, auto-generated
+ *   manifest, etc.) can opt out of a specific rule without reaching for the
+ *   blunt `--skip-lint` hammer. Not mutated by this function.
  * @returns Array of all lint issues found
  */
 export async function lintExportedPatch(
@@ -538,7 +632,8 @@ export async function lintExportedPatch(
   affectedFiles: string[],
   diffContent: string,
   config: FireForgeConfig,
-  patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext
+  patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext,
+  ignoreChecks?: ReadonlySet<string>
 ): Promise<PatchLintIssue[]> {
   const newFiles = detectNewFilesInDiff(diffContent);
   const { textLines: lineCount } = countNonBinaryDiffLines(diffContent);
@@ -569,5 +664,13 @@ export async function lintExportedPatch(
     issues.push(...checkJsIssues);
   }
 
+  // Filter out ignored checks last so every rule still runs (keeps the
+  // implementation uniform) but suppressed rules do not surface. We do not
+  // reclassify severities — an ignored error simply drops, mirroring how
+  // inline `fireforge-ignore: <check>` markers work in the CSS and
+  // forward-import rules.
+  if (ignoreChecks && ignoreChecks.size > 0) {
+    return issues.filter((issue) => !ignoreChecks.has(issue.check));
+  }
   return issues;
 }

@@ -274,7 +274,7 @@ export async function furnaceStatusCommand(projectRoot: string, name?: string): 
   }
 
   info(
-    'Tip: run `furnace status <name>` for detailed component info, or `furnace --help` for all subcommands.'
+    'Tip: run `fireforge furnace status <name>` for detailed component info, or `fireforge furnace --help` for all subcommands.'
   );
 
   outro('Status complete');

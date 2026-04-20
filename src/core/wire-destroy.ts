@@ -16,6 +16,7 @@ import { type AcornESTreeNode, detectIndent, parseScript } from './ast-utils.js'
 import { withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,
+  coerceToCall,
   extractNameFromExpression,
   findMethodBody,
   findMethodBraceIndex,
@@ -30,6 +31,12 @@ const BROWSER_INIT_JS = 'browser/base/content/browser-init.js';
  */
 export function addDestroyAST(content: string, expression: string): string {
   const name = extractNameFromExpression(expression);
+  // See wire-init.ts for the rationale: the template interpolates the
+  // expression verbatim, so a bare `Foo.bar` compiled to `Foo.bar;`
+  // (a property reference) instead of `Foo.bar();`. `coerceToCall`
+  // appends `()` when absent so the emitted block always invokes the
+  // teardown hook the operator asked for.
+  const callExpression = coerceToCall(expression);
   const ast = parseScript(content);
   const ms = new MagicString(content);
 
@@ -56,7 +63,7 @@ export function addDestroyAST(content: string, expression: string): string {
     `${indent}// ${name} destroy`,
     `${indent}try {`,
     `${indent}  if (typeof ${name} !== "undefined") {`,
-    `${indent}    ${expression};`,
+    `${indent}    ${callExpression};`,
     `${indent}  }`,
     `${indent}} catch (e) {`,
     `${indent}  console.error("${name} destroy failed:", e);`,
@@ -72,6 +79,9 @@ export function addDestroyAST(content: string, expression: string): string {
  */
 export function legacyAddDestroy(content: string, expression: string): string {
   const name = extractNameFromExpression(expression);
+  // Match the AST path on the call-coercion contract so fallback vs AST
+  // emits identical blocks (see wire-init.ts).
+  const callExpression = coerceToCall(expression);
   const lines = content.split('\n');
 
   const destroyRegex = /\b(?:async\s+)?(onUnload|uninit)\s*[(:]/;
@@ -90,7 +100,7 @@ export function legacyAddDestroy(content: string, expression: string): string {
     `    // ${name} destroy`,
     `    try {`,
     `      if (typeof ${name} !== "undefined") {`,
-    `        ${expression};`,
+    `        ${callExpression};`,
     `      }`,
     `    } catch (e) {`,
     `      console.error("${name} destroy failed:", e);`,
@@ -122,8 +132,12 @@ export async function addDestroyToBrowserInit(
 
   const content = await readText(filePath);
 
-  // Idempotency check — use word-boundary regex to avoid substring false positives
-  const destroyPattern = new RegExp(`(?:^|\\W)${escapeRegex(expression)}\\s*;?\\s*$`, 'm');
+  // Idempotency check — look for the coerced (call) form because that is
+  // what the emitter writes. Matching against the raw input would miss a
+  // previous `EvalStartup.destroy` invocation that the 0.16.0 coercion
+  // already persisted as `EvalStartup.destroy()`.
+  const callExpression = coerceToCall(expression);
+  const destroyPattern = new RegExp(`(?:^|\\W)${escapeRegex(callExpression)}\\s*;?\\s*$`, 'm');
   if (destroyPattern.test(content)) {
     return false;
   }

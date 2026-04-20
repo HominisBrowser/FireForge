@@ -186,4 +186,34 @@ describe('COMMAND_MANIFEST integrity', () => {
 
     expect(missing, `unreferenced registrars: ${JSON.stringify(missing)}`).toEqual([]);
   });
+
+  it('each group-style parent command installs a default action that exits cleanly', () => {
+    // Finding #1: pre-0.16.0 `fireforge patch` and `fireforge token` fell
+    // through to commander's default help-then-exit-1 path, while
+    // `fireforge furnace` had a friendly default action and exited 0.
+    // Scripts probing the CLI surface saw an inconsistent exit contract
+    // for informational invocations. Each group-style parent now installs
+    // a default action that prints its own help and returns successfully.
+    const noopContext: CommandContext = {
+      getProjectRoot: () => '/tmp/fireforge-manifest-test',
+      withErrorHandling: <T extends unknown[]>(handler: (...args: T) => Promise<void>) => {
+        return handler;
+      },
+    };
+    const parentGroups = ['furnace', 'patch', 'token'];
+    for (const name of parentGroups) {
+      const entry = COMMAND_MANIFEST.find((e) => e.name === name);
+      expect(entry, `manifest entry for ${name}`).toBeDefined();
+      if (!entry) continue;
+      const program = new Command();
+      entry.register(program, noopContext);
+      const parent = program.commands.find((c) => c.name() === name);
+      expect(parent, `parent command ${name}`).toBeDefined();
+      // Commander stores the default action handler on a private symbol.
+      // The public `action()` method sets `_actionHandler`; we just need
+      // to confirm something was installed (commander falls back to
+      // "outputHelp + process.exit(1)" when `_actionHandler` is absent).
+      expect((parent as unknown as { _actionHandler?: unknown })._actionHandler).toBeDefined();
+    }
+  });
 });

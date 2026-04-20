@@ -276,4 +276,38 @@ const gBrowserInit = {
       expect.stringContaining('DockController.init();')
     );
   });
+
+  it('coerces a bare property chain into a function call (AST path)', () => {
+    // Finding #8: pre-0.16.0 passing `EvalStartup.init` (no parens) emitted
+    // `EvalStartup.init;` — a plain property reference, not a function call.
+    // The validator accepted both shapes but the template interpolated the
+    // expression verbatim. `coerceToCall` inside `addInitAST` now appends
+    // `()` when missing so the emitted block invokes the hook.
+    const updated = addInitAST(BASE_BROWSER_INIT, 'EvalStartup.init');
+    expect(updated).toContain('EvalStartup.init();');
+    expect(updated).not.toMatch(/EvalStartup\.init;[^(]/);
+  });
+
+  it('preserves an explicit function-call expression without double-parens (AST path)', () => {
+    const updated = addInitAST(BASE_BROWSER_INIT, 'EvalStartup.init()');
+    expect(updated).toContain('EvalStartup.init();');
+    expect(updated).not.toContain('EvalStartup.init()();');
+  });
+
+  it('coerces a bare property chain into a function call (legacy path)', () => {
+    const updated = legacyAddInit(BASE_BROWSER_INIT, 'EvalStartup.init');
+    expect(updated).toContain('EvalStartup.init();');
+    expect(updated).not.toMatch(/EvalStartup\.init;[^(]/);
+  });
+
+  it('idempotency check recognises a previously coerced call when re-running with the bare form', async () => {
+    // Simulate: the first `wire --init EvalStartup.init` coerced and
+    // persisted `EvalStartup.init();`. Re-running with the same bare form
+    // should be a no-op — the idempotency regex now matches the coerced
+    // shape stored in the file.
+    vi.mocked(readText).mockResolvedValue(`${BASE_BROWSER_INIT}\n    EvalStartup.init();\n`);
+
+    await expect(addInitToBrowserInit('/engine', 'EvalStartup.init')).resolves.toBe(false);
+    expect(writeText).not.toHaveBeenCalled();
+  });
 });

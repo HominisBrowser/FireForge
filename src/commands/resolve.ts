@@ -8,6 +8,7 @@ import { getProjectPaths, loadConfig, loadState, updateState } from '../core/con
 import { isGitRepository } from '../core/git.js';
 import { getStagedDiffForFiles } from '../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../core/git-file-ops.js';
+import { extractAffectedFiles } from '../core/patch-apply.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { GeneralError, ResolutionError } from '../errors/base.js';
@@ -145,9 +146,22 @@ export async function resolveCommand(projectRoot: string): Promise<void> {
     // import / export / re-export / patch reorder / patch compact could
     // interleave with and leave the manifest disagreeing with the
     // freshly-written patch body.
+    //
+    // Always recompute `filesAffected` from the diff content itself. The
+    // eval finding #16 scenario: the user's manual fix removed every
+    // hunk for one file while the file still existed on disk, so the
+    // pre-0.16.0 gate of "update filesAffected only when files were
+    // deleted from disk" left the manifest claiming a file the patch
+    // body no longer targeted. The next `fireforge import` then failed
+    // the patch-manifest consistency check even though resolve reported
+    // success. `extractAffectedFiles` already owns the canonical
+    // "parse a diff, return its target paths" logic used by export and
+    // consistency — using it here keeps resolve in agreement with every
+    // other writer.
+    const diffFilesAffected = extractAffectedFiles(diffContent);
     const config = await loadConfig(projectRoot);
     await updatePatchAndMetadata(paths.patches, patchFilename, diffContent, {
-      ...(activeFiles.length < existingFiles.length ? { filesAffected: activeFiles } : {}),
+      filesAffected: diffFilesAffected,
       sourceEsrVersion: config.firefox.version,
     });
 

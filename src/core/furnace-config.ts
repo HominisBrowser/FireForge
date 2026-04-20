@@ -3,7 +3,6 @@ import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
 import type {
-  CustomComponentConfig,
   FurnaceConfig,
   FurnacePendingRepair,
   FurnacePendingRepairOperation,
@@ -13,9 +12,10 @@ import type {
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
-import { isExplicitAbsolutePath } from '../utils/paths.js';
-import { isArray, isBoolean, isObject, isString } from '../utils/validation.js';
+import { isArray, isObject, isString } from '../utils/validation.js';
 import { FIREFORGE_DIR } from './config.js';
+import { parseCustomConfig } from './furnace-config-custom.js';
+import { validateRuntimeVariables, validateTokenHostDocuments } from './furnace-config-tokens.js';
 import { resolveFtlDir } from './furnace-constants.js';
 import { detectComposesCycles, validateComposesReferences } from './furnace-graph-utils.js';
 import { quarantineStateFile, withStateFileLock } from './state-file.js';
@@ -84,7 +84,7 @@ export async function furnaceConfigExists(root: string): Promise<boolean> {
  * @param data - Raw data to validate
  * @param name - Component name for error messages
  */
-function parseStringArray(value: unknown, fieldName: string): string[] {
+export function parseStringArray(value: unknown, fieldName: string): string[] {
   if (!isArray(value)) {
     throw new FurnaceError(`Furnace config: "${fieldName}" must be an array`);
   }
@@ -128,49 +128,6 @@ function parseOverrideConfig(data: Record<string, unknown>, name: string): Overr
     basePath: data['basePath'],
     baseVersion: data['baseVersion'],
     ...(isString(data['baseCommit']) ? { baseCommit: data['baseCommit'] } : {}),
-  };
-}
-
-/**
- * Validates a custom component config object.
- * @param data - Raw data to validate
- * @param name - Component name for error messages
- */
-function parseCustomConfig(data: Record<string, unknown>, name: string): CustomComponentConfig {
-  if (!isString(data['description'])) {
-    throw new FurnaceError(`Furnace config: custom "${name}.description" must be a string`);
-  }
-  if (!isString(data['targetPath'])) {
-    throw new FurnaceError(`Furnace config: custom "${name}.targetPath" must be a string`);
-  }
-  if (data['targetPath'].includes('..') || data['targetPath'].includes('\0')) {
-    throw new FurnaceError(
-      `Furnace config: custom "${name}.targetPath" must not contain ".." or null bytes (path traversal)`
-    );
-  }
-  if (isExplicitAbsolutePath(data['targetPath'])) {
-    throw new FurnaceError(
-      `Furnace config: custom "${name}.targetPath" must not be an absolute path`
-    );
-  }
-  if (!isBoolean(data['register'])) {
-    throw new FurnaceError(`Furnace config: custom "${name}.register" must be a boolean`);
-  }
-  if (!isBoolean(data['localized'])) {
-    throw new FurnaceError(`Furnace config: custom "${name}.localized" must be a boolean`);
-  }
-  if (data['composes'] !== undefined) {
-    parseStringArray(data['composes'], `${name}.composes`);
-  }
-
-  return {
-    description: data['description'],
-    targetPath: data['targetPath'],
-    register: data['register'],
-    localized: data['localized'],
-    ...(data['composes'] !== undefined
-      ? { composes: parseStringArray(data['composes'], `${name}.composes`) }
-      : {}),
   };
 }
 
@@ -248,6 +205,14 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
     parseStringArray(migrated['tokenAllowlist'], 'tokenAllowlist');
   }
 
+  // Validate optional runtimeVariables — CSS runtime state channels
+  // (e.g. `--cam-x`) that are exempt from `token-prefix-violation`.
+  validateRuntimeVariables(migrated['runtimeVariables']);
+
+  // Validate optional tokenHostDocuments — list of chrome XHTMLs that the
+  // `missing-token-link` validator scans for the tokens CSS link.
+  validateTokenHostDocuments(migrated['tokenHostDocuments']);
+
   const stock = parseStringArray(migrated['stock'], 'stock');
   const stockSet = new Set<string>();
   for (const name of stock) {
@@ -312,12 +277,16 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
     custom,
   };
 
-  if (migrated['tokenPrefix'] !== undefined) {
-    config.tokenPrefix = migrated['tokenPrefix'];
-  }
-
+  if (migrated['tokenPrefix'] !== undefined) config.tokenPrefix = migrated['tokenPrefix'];
   if (migrated['tokenAllowlist'] !== undefined) {
     config.tokenAllowlist = parseStringArray(migrated['tokenAllowlist'], 'tokenAllowlist');
+  }
+  if (migrated['runtimeVariables'] !== undefined) {
+    config.runtimeVariables = parseStringArray(migrated['runtimeVariables'], 'runtimeVariables');
+  }
+  if (migrated['tokenHostDocuments'] !== undefined) {
+    const docs = parseStringArray(migrated['tokenHostDocuments'], 'tokenHostDocuments');
+    config.tokenHostDocuments = docs;
   }
 
   // Validate optional ftlBasePath
@@ -575,6 +544,47 @@ export async function loadFurnaceConfig(root: string): Promise<FurnaceConfig> {
 export async function writeFurnaceConfig(root: string, config: FurnaceConfig): Promise<void> {
   const paths = getFurnacePaths(root);
   await writeJson(paths.furnaceConfig, config);
+}
+
+/**
+ * Stamps every override's `baseVersion` to the supplied version. Used by
+ * `fireforge rebase` after a successful patch re-export so a successful
+ * ESR bump does not leave Furnace overrides in a doctor-failing drift
+ * state. Returns the number of overrides stamped (zero if furnace.json
+ * has no overrides, or if the file is missing).
+ *
+ * Motivating case: a 140.9.0esr → 140.9.1esr rebase stamps patch
+ * `sourceEsrVersion` via `stampPatchVersions`, but before 0.16.0 no
+ * equivalent stamping ran for Furnace override `baseVersion`. `doctor`
+ * then immediately failed Furnace component validation on every
+ * override. The stamp is deliberately unconditional — `fireforge
+ * furnace validate` is the right tool for "does this override still
+ * apply", and rebase already attested that the patch layer re-validated
+ * against the new ESR; the per-override health check belongs in a
+ * separate pass, not inline with the stamp.
+ *
+ * @param root - Root directory of the project
+ * @param version - Firefox version string to stamp onto every override
+ * @returns Number of overrides whose `baseVersion` was updated (either
+ *   because it was missing or because it differed from `version`).
+ */
+export async function stampFurnaceOverrideBaseVersions(
+  root: string,
+  version: string
+): Promise<number> {
+  if (!(await furnaceConfigExists(root))) return 0;
+  const config = await loadFurnaceConfig(root);
+  let changed = 0;
+  for (const override of Object.values(config.overrides)) {
+    if (override.baseVersion !== version) {
+      override.baseVersion = version;
+      changed++;
+    }
+  }
+  if (changed > 0) {
+    await writeFurnaceConfig(root, config);
+  }
+  return changed;
 }
 
 /**

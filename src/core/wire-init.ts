@@ -16,6 +16,7 @@ import { type AcornESTreeNode, detectIndent, getNodeSource, parseScript } from '
 import { withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,
+  coerceToCall,
   extractNameFromExpression,
   findInsertionAfterFireforgeBlocks,
   findMethodBody,
@@ -33,6 +34,12 @@ const BROWSER_INIT_JS = 'browser/base/content/browser-init.js';
  */
 export function addInitAST(content: string, expression: string, after?: string): string {
   const name = extractNameFromExpression(expression);
+  // `validateWireName` accepts both `Foo.bar` and `Foo.bar()` shapes. The
+  // template below interpolates the value verbatim, so a bare property
+  // path compiles to `Foo.bar;` — a silent no-op, not a lifecycle
+  // invocation. `coerceToCall` normalises to the function-call form so
+  // the emitted block always invokes the hook the operator asked for.
+  const callExpression = coerceToCall(expression);
   const ast = parseScript(content);
   const ms = new MagicString(content);
 
@@ -109,7 +116,7 @@ export function addInitAST(content: string, expression: string, after?: string):
     `${indent}// inits that reference native UI elements we hide.`,
     `${indent}try {`,
     `${indent}  if (typeof ${name} !== "undefined") {`,
-    `${indent}    ${expression};`,
+    `${indent}    ${callExpression};`,
     `${indent}  }`,
     `${indent}} catch (e) {`,
     `${indent}  console.error("${name} init failed:", e);`,
@@ -125,6 +132,11 @@ export function addInitAST(content: string, expression: string, after?: string):
  */
 export function legacyAddInit(content: string, expression: string, after?: string): string {
   const name = extractNameFromExpression(expression);
+  // See `addInitAST` for the rationale — the AST and fallback paths must
+  // agree on whether the emitted block is a function call, otherwise
+  // operators would see different behaviour depending on which parser
+  // happened to handle their browser-init.js layout.
+  const callExpression = coerceToCall(expression);
   const lines = content.split('\n');
 
   const onLoadRegex = /\b(?:async\s+)?onLoad\s*[(:]/;
@@ -188,7 +200,7 @@ export function legacyAddInit(content: string, expression: string, after?: strin
     `${baseIndent}// inits that reference native UI elements we hide.`,
     `${baseIndent}try {`,
     `${inner}if (typeof ${name} !== "undefined") {`,
-    `${inner2}${expression};`,
+    `${inner2}${callExpression};`,
     `${inner}}`,
     `${baseIndent}} catch (e) {`,
     `${inner}console.error("${name} init failed:", e);`,
@@ -222,8 +234,12 @@ export async function addInitToBrowserInit(
 
   const content = await readText(filePath);
 
-  // Idempotency check — use word-boundary regex to avoid substring false positives
-  const initPattern = new RegExp(`(?:^|\\W)${escapeRegex(expression)}\\s*;?\\s*$`, 'm');
+  // Idempotency check — look for the coerced (call) form because that is
+  // what the emitter writes. Matching against the raw input would miss a
+  // previous `EvalStartup.init` invocation that the 0.16.0 coercion
+  // already persisted as `EvalStartup.init()`.
+  const callExpression = coerceToCall(expression);
+  const initPattern = new RegExp(`(?:^|\\W)${escapeRegex(callExpression)}\\s*;?\\s*$`, 'm');
   if (initPattern.test(content)) {
     return false;
   }

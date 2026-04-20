@@ -26,7 +26,16 @@ export { patchReorderCommand } from './reorder.js';
 export function registerPatch(program: Command, context: CommandContext): void {
   const patch = program
     .command('patch')
-    .description('Manage individual patches in the queue (compact, delete, reorder)');
+    .description('Manage individual patches in the queue (compact, delete, reorder)')
+    // Match `fireforge furnace`'s no-args contract: print the group's help and
+    // exit 0. Without this default action, commander routes `fireforge patch`
+    // (no subcommand) through its own help-then-exit-1 path, so scripts that
+    // probe the CLI surface see a misleading non-zero exit for a purely
+    // informational invocation. The action prints the exact same help commander
+    // would otherwise print, but returns successfully.
+    .action(() => {
+      patch.outputHelp();
+    });
 
   registerPatchCompact(patch, context);
   registerPatchDelete(patch, context);

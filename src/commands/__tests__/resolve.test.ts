@@ -12,6 +12,21 @@ import { pathExists } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
 import { resolveCommand } from '../resolve.js';
 
+/**
+ * Returns a minimal unified-diff body that `extractAffectedFiles` parses
+ * into the supplied file list. `resolve` now derives `filesAffected` from
+ * the diff content itself (eval finding #16), so the mock needs to supply
+ * a real diff shape rather than a bare placeholder string.
+ */
+function fakeUnifiedDiff(files: string[]): string {
+  return files
+    .map(
+      (file) =>
+        `diff --git a/${file} b/${file}\nindex 0..1 100644\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-old\n+new\n`
+    )
+    .join('');
+}
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn().mockReturnValue({
     root: '/fake/root',
@@ -100,7 +115,8 @@ describe('resolveCommand', () => {
         },
       ],
     });
-    vi.mocked(getStagedDiffForFiles).mockResolvedValue('new diff');
+    const diff = fakeUnifiedDiff(['file1.js']);
+    vi.mocked(getStagedDiffForFiles).mockResolvedValue(diff);
 
     await resolveCommand(projectRoot);
 
@@ -108,8 +124,9 @@ describe('resolveCommand', () => {
     expect(updatePatchAndMetadata).toHaveBeenCalledWith(
       expect.any(String),
       patchFilename,
-      'new diff',
+      diff,
       expect.objectContaining({
+        filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
       })
     );
@@ -180,7 +197,8 @@ describe('resolveCommand', () => {
     vi.mocked(pathExists).mockImplementation((targetPath) =>
       Promise.resolve(targetPath.endsWith('file1.js') || !targetPath.includes('/fake/engine/'))
     );
-    vi.mocked(getStagedDiffForFiles).mockResolvedValue('new diff');
+    const diff = fakeUnifiedDiff(['file1.js']);
+    vi.mocked(getStagedDiffForFiles).mockResolvedValue(diff);
 
     await resolveCommand(projectRoot);
 
@@ -189,7 +207,7 @@ describe('resolveCommand', () => {
     expect(updatePatchAndMetadata).toHaveBeenCalledWith(
       expect.any(String),
       patchFilename,
-      'new diff',
+      diff,
       expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
@@ -255,11 +273,63 @@ describe('resolveCommand', () => {
     vi.mocked(pathExists).mockImplementation((targetPath) =>
       Promise.resolve(targetPath.endsWith('file1.js') || !targetPath.includes('/fake/engine/'))
     );
-    vi.mocked(getStagedDiffForFiles).mockResolvedValue('new diff');
+    vi.mocked(getStagedDiffForFiles).mockResolvedValue(fakeUnifiedDiff(['file1.js']));
     vi.mocked(updatePatchAndMetadata).mockRejectedValue(new Error('disk full'));
 
     await expect(resolveCommand(projectRoot)).rejects.toThrow('disk full');
 
     expect(updateState).not.toHaveBeenCalled();
+  });
+
+  it('derives filesAffected from the diff body even when all files remain on disk', async () => {
+    // Eval finding #16: the user's manual fix eliminated every hunk for
+    // `file2.js` but the file still existed on disk. Pre-0.16.0 resolve
+    // kept the stale `filesAffected: [file1, file2]` in the manifest
+    // because `activeFiles.length === existingFiles.length`, so the next
+    // import failed the patch-manifest consistency check. The fix
+    // recomputes `filesAffected` from the diff itself every time.
+    //
+    // Reset updatePatchAndMetadata explicitly: `vi.clearAllMocks()` only
+    // clears recorded calls, not the rejected implementation a preceding
+    // test installed.
+    vi.mocked(updatePatchAndMetadata).mockReset();
+    vi.mocked(updatePatchAndMetadata).mockResolvedValue(undefined);
+    const patchFilename = '001-test.patch';
+    vi.mocked(loadState).mockResolvedValue({
+      pendingResolution: { patchFilename, originalError: 'error' },
+    });
+    vi.mocked(confirm).mockResolvedValue(true);
+    vi.mocked(loadPatchesManifest).mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: patchFilename,
+          filesAffected: ['file1.js', 'file2.js'],
+          order: 1,
+          category: 'ui',
+          name: 'test',
+          description: '',
+          createdAt: '',
+          sourceEsrVersion: '128.0esr',
+        },
+      ],
+    });
+    vi.mocked(pathExists).mockResolvedValue(true);
+    // The staged diff only contains file1.js; file2.js's hunks were
+    // dropped by the manual fix but the file itself still exists.
+    const diff = fakeUnifiedDiff(['file1.js']);
+    vi.mocked(getStagedDiffForFiles).mockResolvedValue(diff);
+
+    await resolveCommand(projectRoot);
+
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
+      expect.any(String),
+      patchFilename,
+      diff,
+      expect.objectContaining({
+        filesAffected: ['file1.js'],
+        sourceEsrVersion: '140.9.0esr',
+      })
+    );
   });
 });

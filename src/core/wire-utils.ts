@@ -27,6 +27,24 @@ export function validateWireName(value: string, label: string): void {
 }
 
 /**
+ * Coerces an init/destroy expression into a function call by appending `()`
+ * when the caller passed a bare property chain. Idempotent: an expression
+ * already ending in `()` is returned unchanged, so operators can pass either
+ * `EvalStartup.init` or `EvalStartup.init()` and get the same wired output.
+ *
+ * Motivation (eval finding 8): `validateWireName` accepts both shapes, but
+ * the generated block interpolated the expression verbatim inside
+ * `${expression};`. When a caller passed `EvalStartup.init`, the emitted
+ * code was `EvalStartup.init;` — a plain property reference that never
+ * invoked the lifecycle hook. The symptom was silent: `wire` reported
+ * success and the browser-init block looked plausible, but the hook
+ * never fired at runtime. Coercion at the template site closes that gap.
+ */
+export function coerceToCall(expression: string): string {
+  return expression.endsWith('()') ? expression : `${expression}()`;
+}
+
+/**
  * Counts net brace depth change in a single line, ignoring braces inside
  * string literals (single, double, template), line comments (`//`), and
  * block comments.

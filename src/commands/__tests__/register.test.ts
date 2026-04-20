@@ -100,4 +100,64 @@ describe('registerCommand', () => {
     );
     expect(outro).toHaveBeenCalledWith('Done');
   });
+
+  it('accepts a repo-root-relative path with a leading engine/ segment', async () => {
+    // Operators frequently paste paths copied from `git status` or shell
+    // completion, which include the `engine/` prefix. Previously the
+    // command rejected these with a misleading "File not found in engine:
+    // engine/browser/..." error pointing at a doubled path. The prefix is
+    // now stripped so both forms resolve to the same engine-relative path.
+    vi.mocked(registerFile).mockResolvedValue({
+      manifest: 'browser/base/jar.mn',
+      entry: 'content/browser/new-widget.js',
+      skipped: false,
+    });
+
+    await expect(
+      registerCommand('/project', 'engine/browser/base/content/new-widget.js')
+    ).resolves.toBeUndefined();
+
+    // The path passed down to registerFile is engine-relative, not the
+    // repo-root-relative input the caller provided.
+    expect(registerFile).toHaveBeenCalledWith(
+      '/project',
+      'browser/base/content/new-widget.js',
+      undefined,
+      undefined
+    );
+    expect(success).toHaveBeenCalledWith(
+      expect.stringContaining('Registered browser/base/content/new-widget.js')
+    );
+  });
+
+  it('surfaces the normalised engine-relative path in the not-found error', async () => {
+    // When the file genuinely does not exist, the error message must name
+    // the normalised path the resolver actually probed — not the raw input
+    // — so the operator can map it against `engine/…` listings without
+    // mental substitution.
+    vi.mocked(pathExists).mockResolvedValue(false);
+
+    await expect(
+      registerCommand('/project', 'engine/browser/base/content/absent.xhtml')
+    ).rejects.toThrow('File not found in engine: browser/base/content/absent.xhtml');
+  });
+
+  it('skips file existence checks during dry-run and emits the normalised path in the plan', async () => {
+    vi.mocked(registerFile).mockResolvedValue({
+      manifest: 'browser/base/jar.mn',
+      entry: 'content/browser/new-widget.js',
+      skipped: false,
+    });
+
+    await expect(
+      registerCommand('/project', 'engine/browser/base/content/new-widget.js', {
+        dryRun: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(pathExists).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      '[dry-run] Would register browser/base/content/new-widget.js'
+    );
+  });
 });

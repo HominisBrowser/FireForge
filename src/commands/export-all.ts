@@ -5,10 +5,15 @@ import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { hasChanges, isGitRepository } from '../core/git.js';
-import { getAllDiff } from '../core/git-diff.js';
+import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getWorkingTreeStatus } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
-import { commitExportedPatch } from '../core/patch-export.js';
+import { commitExportedPatch, findAllPatchesForFiles } from '../core/patch-export.js';
+import {
+  buildPatchQueueContext,
+  collectNewFileCreatorsByPath,
+  detectNewFilesInDiff,
+} from '../core/patch-lint.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions, PatchCategory } from '../types/commands/index.js';
@@ -19,6 +24,7 @@ import { PATCH_CATEGORIES } from '../utils/validation.js';
 import {
   autoFixLicenseHeaders,
   confirmSupersedePatches,
+  guardOwnershipOverlap,
   promptExportPatchMetadata,
   runPatchLint,
 } from './export-shared.js';
@@ -42,12 +48,25 @@ async function checkBrandingManagedFiles(
   }
 }
 
-async function checkFurnaceManagedFiles(
+/**
+ * Policy around Furnace-managed files in the aggregate diff.
+ *
+ * Default behavior refuses the export (Furnace paths belong to
+ * `furnace apply`). `--exclude-furnace` flips the policy from refusal to
+ * filtering: the command still runs, but the Furnace-managed paths are
+ * dropped from the diff and counted in an info line so operators in
+ * mixed workspaces can capture only the non-Furnace subset.
+ *
+ * Returns the set of Furnace-managed paths to exclude (empty when the
+ * policy is "refuse" and nothing is in the working tree).
+ */
+async function resolveFurnaceExclusionPolicy(
   paths: ReturnType<typeof getProjectPaths>,
-  projectRoot: string
-): Promise<void> {
+  projectRoot: string,
+  excludeFurnace: boolean | undefined
+): Promise<Set<string>> {
   const prefixes = await collectFurnaceManagedPrefixes(projectRoot);
-  if (prefixes.size === 0) return;
+  if (prefixes.size === 0) return new Set();
 
   const changedFiles = await getWorkingTreeStatus(paths.engine);
   const furnaceManagedFiles = changedFiles
@@ -56,12 +75,66 @@ async function checkFurnaceManagedFiles(
     )
     .filter((file) => [...prefixes].some((prefix) => file.startsWith(prefix)));
 
-  if (furnaceManagedFiles.length > 0) {
-    throw new GeneralError(
-      'Export-all refuses to capture Furnace-managed component changes.\n\n' +
-        'These files are deployed by "fireforge furnace apply" and should be managed through the Furnace workflow. Review them with "fireforge status" or "fireforge furnace status".'
-    );
+  if (furnaceManagedFiles.length === 0) return new Set();
+
+  if (excludeFurnace) {
+    return new Set(furnaceManagedFiles);
   }
+
+  throw new GeneralError(
+    'Export-all refuses to capture Furnace-managed component changes.\n\n' +
+      'These files are deployed by "fireforge furnace apply" and should be managed through the Furnace workflow. ' +
+      'Review them with "fireforge status" or "fireforge furnace status", ' +
+      'or pass --exclude-furnace to export the non-Furnace subset of the diff.'
+  );
+}
+
+/**
+ * Refuses the export when the aggregate diff would create (new-file-mode) a
+ * path that some existing patch in the queue already creates. `verify`
+ * detects this post-hoc via `collectNewFileCreatorsByPath`, but by the time
+ * `verify` runs the operator has already landed a patch that irreversibly
+ * sits atop the queue — resolving the conflict from there requires a
+ * `patch delete` or hand-surgery on `re-export --files`. Catching it here,
+ * pre-write, keeps the queue clean and gives the operator a specific path
+ * to narrow with `export` + explicit file scoping (which lets them drop
+ * the already-claimed path without losing other edits).
+ *
+ * Slots in alongside the existing branding and furnace guards so the three
+ * "export-all refuses" branches remain the single, symmetric fence around
+ * unintended captures.
+ */
+async function checkDuplicateNewFileCreations(
+  paths: ReturnType<typeof getProjectPaths>,
+  diff: string
+): Promise<void> {
+  if (!(await pathExists(paths.patches))) return;
+
+  const pendingNewFiles = detectNewFilesInDiff(diff);
+  if (pendingNewFiles.size === 0) return;
+
+  const ctx = await buildPatchQueueContext(paths.patches);
+  if (ctx.entries.length === 0) return;
+
+  const creators = collectNewFileCreatorsByPath(ctx);
+  const conflicts: Array<{ path: string; owners: string[] }> = [];
+  for (const path of pendingNewFiles) {
+    const owners = creators.get(path);
+    if (owners && owners.length > 0) {
+      conflicts.push({ path, owners });
+    }
+  }
+
+  if (conflicts.length === 0) return;
+
+  const conflictList = conflicts
+    .map(({ path, owners }) => `  • ${path} — already created by ${owners.join(', ')}`)
+    .join('\n');
+  throw new GeneralError(
+    'Export-all refuses to capture new-file creations that are already claimed by existing patches.\n\n' +
+      `Conflicting creations:\n${conflictList}\n\n` +
+      'Only one patch may create a given path. Run "fireforge export <path> [...]" with an explicit file list that omits the already-claimed path(s), or resolve the conflict via "fireforge patch delete" / "fireforge re-export --files" before retrying export-all.'
+  );
 }
 
 /**
@@ -98,16 +171,57 @@ export async function exportAllCommand(
 
   const config = await loadConfig(projectRoot);
   await checkBrandingManagedFiles(paths, config);
-  await checkFurnaceManagedFiles(paths, projectRoot);
+  const furnaceExcluded = await resolveFurnaceExclusionPolicy(
+    paths,
+    projectRoot,
+    options.excludeFurnace
+  );
 
-  // Get the full diff
-  let diff = await getAllDiff(paths.engine);
+  // Get the full diff. When --exclude-furnace is set and furnaceExcluded
+  // is non-empty, rescope the diff to the non-Furnace path subset so the
+  // resulting patch does not contain any Furnace-managed hunks. We use
+  // `getDiffForFilesAgainstHead` over the filtered path list rather than
+  // post-hoc string surgery on the aggregate diff, which keeps the
+  // output shape aligned with the single-file `export` command.
+  let diff: string;
+  if (furnaceExcluded.size > 0) {
+    const allChanged = await getWorkingTreeStatus(paths.engine);
+    const nonFurnacePaths = [
+      ...new Set(
+        allChanged
+          .flatMap((entry) =>
+            [entry.file, entry.originalPath].filter((value): value is string => !!value)
+          )
+          .filter((file) => !furnaceExcluded.has(file))
+      ),
+    ].sort();
+
+    if (nonFurnacePaths.length === 0) {
+      info(
+        `Excluded ${furnaceExcluded.size} furnace-managed file(s) from export; no non-Furnace changes remain.`
+      );
+      outro('Nothing to export');
+      return;
+    }
+
+    diff = await getDiffForFilesAgainstHead(paths.engine, nonFurnacePaths);
+    info(
+      `Excluded ${furnaceExcluded.size} furnace-managed file(s) from export; exporting ${nonFurnacePaths.length} remaining path(s).`
+    );
+  } else {
+    diff = await getAllDiff(paths.engine);
+  }
 
   if (!diff.trim()) {
     info('No diff content to export');
     outro('Nothing to export');
     return;
   }
+
+  // Duplicate-creation preflight needs the diff in hand to see which paths
+  // the aggregate would newly create, so it runs here instead of alongside
+  // the branding / furnace guards that operate on the raw status list.
+  await checkDuplicateNewFileCreations(paths, diff);
 
   // Check for non-interactive mode
   const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
@@ -142,6 +256,22 @@ export async function exportAllCommand(
       s
     );
     if (!shouldProceed) return;
+
+    // Overlap gate — see the matching comment in `export.ts`. The same
+    // cross-patch ownership problem applies to `export-all` because a
+    // mixed aggregate diff often touches shared files like manifest
+    // fragments that other patches already claim.
+    const willSupersede = await findAllPatchesForFiles(paths.patches, filesAffected);
+    const supersedingFilenames = new Set(willSupersede.map((p) => p.filename));
+    const shouldProceedPastOverlap = await guardOwnershipOverlap({
+      patchesDir: paths.patches,
+      filesAffected,
+      supersedingFilenames,
+      allowOverlap: options.allowOverlap === true,
+      isInteractive,
+      s,
+    });
+    if (!shouldProceedPastOverlap) return;
 
     // Get Firefox version for metadata
     const { patchFilename, superseded } = await commitExportedPatch({
@@ -187,6 +317,14 @@ export function registerExportAll(
     .option('-d, --description <desc>', 'Description of the patch')
     .option('--supersede', 'Allow superseding multiple existing patches')
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
+    .option(
+      '--exclude-furnace',
+      'Export the non-Furnace subset of the aggregate diff instead of refusing when Furnace-managed files are modified. Furnace-managed files are still deployed by "fireforge furnace apply"; this flag only changes whether export-all aborts or filters in their presence.'
+    )
+    .option(
+      '--allow-overlap',
+      'Acknowledge cross-patch ownership overlap with non-superseded patches (the resulting queue fails verify)'
+    )
     .action(
       withErrorHandling(
         async (options: {
@@ -195,6 +333,8 @@ export function registerExportAll(
           description?: string;
           supersede?: boolean;
           skipLint?: boolean;
+          excludeFurnace?: boolean;
+          allowOverlap?: boolean;
         }) => {
           const { category, ...rest } = options;
           await exportAllCommand(getProjectRoot(), {

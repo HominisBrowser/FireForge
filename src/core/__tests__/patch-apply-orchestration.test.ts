@@ -127,6 +127,11 @@ describe('patch orchestration helpers', () => {
       ].join('\n')
     );
 
+    // `getAllTargetFilesFromPatch` delegates to `extractAffectedFiles` (mocked
+    // in this file to `[]`). The real parser is exercised by the unit test
+    // in `patch-files.test.ts`; here we just confirm the orchestration layer
+    // calls through correctly.
+    vi.mocked(extractAffectedFiles).mockReturnValueOnce(['foo.js', 'bar.css']);
     await expect(isNewFilePatch('/patches/001-foo.patch')).resolves.toBe(true);
     await expect(getTargetFileFromPatch('/patches/001-foo.patch')).resolves.toBe('foo.js');
     await expect(getAllTargetFilesFromPatch('/patches/001-foo.patch')).resolves.toEqual([

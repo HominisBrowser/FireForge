@@ -178,4 +178,51 @@ describe('patch transform helper coverage', () => {
       applyPatchToContent('actual-one\nexpected-two\n', '/patches/001-app.patch', 'browser/app.js')
     ).rejects.toThrow(PatchError);
   });
+
+  it('emits a trailing newline when only the old side lacks one (asymmetric)', async () => {
+    // The marker follows `-line2`, so it annotates only the old-side.
+    // The new-side ends with `line2-modified` plus an implicit trailing
+    // newline; the projected content must match what `git apply` would
+    // write so `fireforge status` does not drift into a phantom diff.
+    vi.mocked(readText).mockResolvedValue(
+      [
+        'diff --git a/browser/asym.js b/browser/asym.js',
+        '--- a/browser/asym.js',
+        '+++ b/browser/asym.js',
+        '@@ -1,2 +1,2 @@',
+        ' line1',
+        '-line2',
+        '\\ No newline at end of file',
+        '+line2-modified',
+        '',
+      ].join('\n')
+    );
+
+    await expect(
+      applyPatchToContent('line1\nline2', '/patches/001-asym.patch', 'browser/asym.js')
+    ).resolves.toBe('line1\nline2-modified\n');
+  });
+
+  it('omits the trailing newline when only the new side lacks one (asymmetric)', async () => {
+    // Mirror of the previous case: the marker trails `+line2-modified`,
+    // so the new side lacks a trailing newline even though the old one
+    // had it.
+    vi.mocked(readText).mockResolvedValue(
+      [
+        'diff --git a/browser/asym.js b/browser/asym.js',
+        '--- a/browser/asym.js',
+        '+++ b/browser/asym.js',
+        '@@ -1,2 +1,2 @@',
+        ' line1',
+        '-line2',
+        '+line2-modified',
+        '\\ No newline at end of file',
+        '',
+      ].join('\n')
+    );
+
+    await expect(
+      applyPatchToContent('line1\nline2\n', '/patches/001-asym.patch', 'browser/asym.js')
+    ).resolves.toBe('line1\nline2-modified');
+  });
 });

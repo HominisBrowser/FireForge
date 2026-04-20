@@ -13,12 +13,14 @@ import {
   ensureMach,
   ensurePython,
   hasBuildArtifacts,
+  hasRunnableBundle,
   machPackage,
   resetResolvedPython,
   run as runBrowser,
   runMach,
   runMachCapture,
   runMachInheritCapture,
+  runMachSmoke,
   test as runMachTest,
   testWithOutput,
   watch,
@@ -41,9 +43,25 @@ vi.mock('../../utils/process.js', () => ({
   exec: vi.fn(),
   execInherit: vi.fn(),
   execInheritCapture: vi.fn(),
+  execSmokeRun: vi.fn(),
   execStream: vi.fn(),
   executableExists: vi.fn(),
 }));
+
+vi.mock('../../utils/logger.js', () => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  verbose: vi.fn(),
+}));
+
+// hasRunnableBundle reads getPlatform() to pick the per-OS binary path;
+// mock it so each `hasRunnableBundle` test can stamp the probe under a
+// specific platform without touching the host.
+vi.mock('../../utils/platform.js', () => ({
+  getPlatform: vi.fn(() => 'linux'),
+}));
+
+import { getPlatform } from '../../utils/platform.js';
 
 describe('hasBuildArtifacts', () => {
   beforeEach(() => {
@@ -166,6 +184,151 @@ describe('hasBuildArtifacts', () => {
       exists: true,
       objDir: 'obj-debug',
     });
+  });
+});
+
+describe('hasRunnableBundle (Finding #13)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns runnable=false when dist/ itself does not exist', async () => {
+    // dist/ absent is the pre-`mach build` state; no subsequent probe is
+    // meaningful. Caller surfaces this as "build has not started".
+    vi.mocked(pathExists).mockResolvedValue(false);
+
+    await expect(hasRunnableBundle('/engine', 'mybrowser', 'obj-debug')).resolves.toEqual({
+      runnable: false,
+    });
+  });
+
+  it('finds the Linux binary under dist/bin/<binaryName>', async () => {
+    vi.mocked(getPlatform).mockReturnValue('linux');
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' || path === '/engine/obj-debug/dist/bin/mybrowser'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/bin/mybrowser');
+  });
+
+  it('reports the expected path when the Linux binary is missing', async () => {
+    vi.mocked(getPlatform).mockReturnValue('linux');
+    // dist/ exists but dist/bin/mybrowser does not — the precise error
+    // message must name the missing path so the operator can grep dist/
+    // for a moved/renamed binary.
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === '/engine/obj-debug/dist')
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(false);
+    expect(result.expectedPath).toBe('obj-debug/dist/bin/mybrowser');
+  });
+
+  it('appends .exe to the probed Windows binary path', async () => {
+    vi.mocked(getPlatform).mockReturnValue('win32');
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' || path === '/engine/obj-debug/dist/bin/mybrowser.exe'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/bin/mybrowser.exe');
+  });
+
+  it('finds the macOS binary inside *.app/Contents/MacOS/<binaryName>', async () => {
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'MyBrowser.app', isDirectory: () => true, isFile: () => false } as never,
+      { name: 'bin', isDirectory: () => true, isFile: () => false } as never,
+    ] as never);
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' ||
+          path === '/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser');
+  });
+
+  it('reports the expected macOS path even when no .app exists yet', async () => {
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(readdir).mockResolvedValue([] as never);
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === '/engine/obj-debug/dist')
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(false);
+    // The synthetic "<AppName>.app" placeholder tells the operator what
+    // shape to look for without committing to a specific display name.
+    expect(result.expectedPath).toContain('<AppName>.app/Contents/MacOS/mybrowser');
+  });
+
+  it('degrades to runnable=false on readdir failure rather than throwing', async () => {
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockRejectedValue(new Error('EACCES'));
+
+    await expect(hasRunnableBundle('/engine', 'mybrowser', 'obj-debug')).resolves.toEqual({
+      runnable: false,
+    });
+  });
+
+  it('ignores non-directory and non-.app entries under dist/ on darwin', async () => {
+    // The `entry.isDirectory()` and `.app` filter branches must hit the
+    // skip-continue paths (not just the match path) so the module's
+    // branch coverage reflects all three outcomes. A mixed fixture —
+    // regular file, non-.app directory, `.app` directory with binary —
+    // exercises all three in one pass.
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'README.txt', isDirectory: () => false, isFile: () => true } as never,
+      { name: 'bin', isDirectory: () => true, isFile: () => false } as never,
+      { name: 'MyBrowser.app', isDirectory: () => true, isFile: () => false } as never,
+    ] as never);
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' ||
+          path === '/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser');
+  });
+
+  it('keeps looking through later .app bundles when an earlier one is empty on darwin', async () => {
+    // Exercises the darwin for-loop's "candidate exists? no" continue
+    // branch. Two `.app` bundles, only the second owns the binary —
+    // the iterator must fall through the first `if (await pathExists)`
+    // branch and still return runnable via the second.
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'OldBrowser.app', isDirectory: () => true, isFile: () => false } as never,
+      { name: 'MyBrowser.app', isDirectory: () => true, isFile: () => false } as never,
+    ] as never);
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' ||
+          // OldBrowser.app binary is NOT present; MyBrowser.app is.
+          path === '/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser');
   });
 });
 
@@ -504,17 +667,17 @@ describe('mach command execution', () => {
       ['/engine/mach', 'bootstrap', '--application-choice', 'browser'],
       expect.any(Object)
     );
-    expect(execInherit).toHaveBeenCalledWith(
+    expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
       ['/engine/mach', 'build', '-j', '4'],
       expect.any(Object)
     );
-    expect(execInherit).toHaveBeenCalledWith(
+    expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
       ['/engine/mach', 'build'],
       expect.any(Object)
     );
-    expect(execInherit).toHaveBeenCalledWith(
+    expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
       ['/engine/mach', 'build', 'faster'],
       expect.any(Object)
@@ -552,5 +715,173 @@ describe('mach command execution', () => {
 
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
+  });
+
+  it('forwards runMachSmoke options through to execSmokeRun without undefined keys', async () => {
+    const { execSmokeRun } = await import('../../utils/process.js');
+    await primePythonResolution();
+    vi.mocked(execSmokeRun).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    });
+
+    const onStdoutLine = vi.fn();
+    const onStderrLine = vi.fn();
+    const mirror = { stdout: process.stdout, stderr: process.stderr };
+
+    await expect(
+      runMachSmoke(['run'], '/engine', {
+        env: { SMOKE: '1' },
+        smokeTimeoutMs: 30_000,
+        killGraceMs: 5_000,
+        onStdoutLine,
+        onStderrLine,
+        mirror,
+      })
+    ).resolves.toEqual({ stdout: '', stderr: '', exitCode: 0, timedOut: false });
+
+    // Every optional key is present on the forwarded options when the
+    // caller supplied it. The conditional spreads inside runMachSmoke are
+    // there specifically to avoid tripping exactOptionalPropertyTypes, so
+    // the assertion shape has to match — a plain objectContaining would
+    // pass even with `key: undefined`.
+    expect(execSmokeRun).toHaveBeenCalledWith('python3.12', ['/engine/mach', 'run'], {
+      cwd: '/engine',
+      env: { SMOKE: '1' },
+      smokeTimeoutMs: 30_000,
+      killGraceMs: 5_000,
+      onStdoutLine,
+      onStderrLine,
+      mirror,
+    });
+  });
+
+  it('omits optional keys from forwarded runMachSmoke options when unset', async () => {
+    // Mirrors the exactOptionalPropertyTypes contract — a missing option
+    // must leave its key absent, not set it to undefined. Previously we
+    // relied on this implicitly; the test pins it down.
+    const { execSmokeRun } = await import('../../utils/process.js');
+    await primePythonResolution();
+    vi.mocked(execSmokeRun).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 143,
+      timedOut: true,
+    });
+
+    await expect(runMachSmoke(['run'], '/engine', { smokeTimeoutMs: 15_000 })).resolves.toEqual({
+      stdout: '',
+      stderr: '',
+      exitCode: 143,
+      timedOut: true,
+    });
+
+    expect(execSmokeRun).toHaveBeenCalledWith('python3.12', ['/engine/mach', 'run'], {
+      cwd: '/engine',
+      smokeTimeoutMs: 15_000,
+    });
+  });
+
+  it('surfaces preprocessor hints on a failed mach build', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { warn } = await import('../../utils/logger.js');
+    await primePythonResolution();
+
+    const stderr = [
+      'mozbuild.preprocessor.Preprocessor.Error: (',
+      "'mybrowser.js', None, 'no preprocessor directives found', None",
+      ')',
+    ].join('\n');
+    vi.mocked(execInheritCapture).mockResolvedValueOnce({ stdout: '', stderr, exitCode: 1 });
+    const warnMock = vi.mocked(warn);
+    warnMock.mockClear();
+
+    await expect(build('/engine')).resolves.toBe(1);
+    expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('JS_PREFERENCE_FILES'));
+  });
+
+  it('surfaces preprocessor hints on a failed mach build faster (UI-only)', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { warn } = await import('../../utils/logger.js');
+    await primePythonResolution();
+
+    const stderr = [
+      'mozbuild.preprocessor.Preprocessor.Error: (',
+      "'mybrowser.js', None, 'no preprocessor directives found', None",
+      ')',
+    ].join('\n');
+    vi.mocked(execInheritCapture).mockResolvedValueOnce({ stdout: '', stderr, exitCode: 2 });
+    const warnMock = vi.mocked(warn);
+    warnMock.mockClear();
+
+    await expect(buildUI('/engine')).resolves.toBe(2);
+    expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('JS_PREFERENCE_FILES'));
+  });
+
+  it('stays silent when a failing mach build has no recognized hint patterns', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { warn } = await import('../../utils/logger.js');
+    await primePythonResolution();
+
+    vi.mocked(execInheritCapture).mockResolvedValueOnce({
+      stdout: '',
+      stderr: 'Some unrelated build error',
+      exitCode: 1,
+    });
+    const warnMock = vi.mocked(warn);
+    warnMock.mockClear();
+
+    await expect(build('/engine')).resolves.toBe(1);
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the bindgen hint when the _CharT error lands on stdout instead of stderr', async () => {
+    // Finding #5: the eval's Darwin 25 Rust error streamed through mach's
+    // timestamp-prefixing wrapper on stdout, but pre-0.16.0 `build()` only
+    // scanned `result.stderr` for hints. Combined stdout+stderr scanning
+    // makes the registered `_CharT` hint fire against whichever stream
+    // mach chose.
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { warn } = await import('../../utils/logger.js');
+    await primePythonResolution();
+
+    const stdout = [
+      ' 1:25.29 error[E0425]: cannot find type `_CharT` in this scope',
+      ' 1:25.29   --> /build/obj-debug/release/build/gecko-profiler-abc123/out/gecko/bindings.rs:1877:67',
+    ].join('\n');
+    vi.mocked(execInheritCapture).mockResolvedValueOnce({ stdout, stderr: '', exitCode: 2 });
+    const warnMock = vi.mocked(warn);
+    warnMock.mockClear();
+
+    await expect(build('/engine')).resolves.toBe(2);
+    expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('gecko-profiler'));
+  });
+
+  it('surfaces the post-failure epilogue hint on a failed mach build that appends Configure complete!', async () => {
+    // Finding #6: mach's own shutdown pipeline prints a "Configure
+    // complete!" banner after a failed build, which reads like success.
+    // The hint now recognises the exact post-failure signature and
+    // clarifies the trailing block.
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { warn } = await import('../../utils/logger.js');
+    await primePythonResolution();
+
+    const stdout = [
+      ' 2:22.26 make: *** [build] Error 2',
+      ' 2:22.36 W 87 compiler warnings present.',
+      ' Config object not found by mach.',
+      'Configure complete!',
+      'Be sure to run |mach build| to pick up any changes',
+    ].join('\n');
+    vi.mocked(execInheritCapture).mockResolvedValueOnce({ stdout, stderr: '', exitCode: 2 });
+    const warnMock = vi.mocked(warn);
+    warnMock.mockClear();
+
+    await expect(build('/engine')).resolves.toBe(2);
+    expect(warnMock).toHaveBeenCalledWith(
+      expect.stringContaining('post-failure configure summary')
+    );
   });
 });

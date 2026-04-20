@@ -65,25 +65,44 @@ async function removeIfStaleLock(
   try {
     const lockStat = await stat(lockPath);
     const ageMs = Date.now() - lockStat.mtimeMs;
-    if (ageMs <= staleMs) {
+
+    // Check PID FIRST, independent of age. Before this ordering change the
+    // function age-gated everything: a lock younger than `staleMs` (default
+    // 5 minutes) was never removed even when its PID file pointed at a
+    // process that had already exited. That's the exact situation an
+    // operator lands in after SIGINT'ing `furnace preview` — the signal
+    // handler calls `process.exit`, `withFileLock`'s `finally { rm }`
+    // never runs, and the next command has to either wait 5 minutes for
+    // the staleness gate or manually remove the lock directory. With the
+    // PID-first check, an explicitly-dead owner unblocks immediately.
+    const pidCheck = await readLockOwnerPid(lockPath);
+    if (pidCheck.present) {
+      if (!isProcessAlive(pidCheck.pid)) {
+        const staleMessage = onStaleLockMessage?.(ageMs);
+        if (staleMessage) {
+          warn(staleMessage);
+        } else {
+          verbose(
+            `Lock at ${lockPath} owner PID ${pidCheck.pid} is no longer running — removing (age: ${Math.round(ageMs / 1000)}s)`
+          );
+        }
+        await rm(lockPath, { recursive: true, force: true });
+        return true;
+      }
+      // PID is alive — respect it regardless of age. A slow `mach build`
+      // legitimately holds the lock past the stale threshold and we don't
+      // want to race-remove it.
+      verbose(
+        `Lock at ${lockPath} is ${Math.round(ageMs / 1000)}s old but PID ${pidCheck.pid} is still running — not removing`
+      );
       return false;
     }
 
-    // If the lock directory contains a PID file, check whether the owning
-    // process is still running before removing. This prevents premature
-    // removal when a slow operation (e.g. mach build) legitimately holds
-    // the lock past the stale threshold.
-    try {
-      const pidContent = await readFile(join(lockPath, LOCK_PID_FILE), 'utf-8');
-      const pid = parseInt(pidContent.trim(), 10);
-      if (Number.isFinite(pid) && isProcessAlive(pid)) {
-        verbose(
-          `Lock at ${lockPath} is ${Math.round(ageMs / 1000)}s old but PID ${pid} is still running — not removing`
-        );
-        return false;
-      }
-    } catch {
-      // No PID file or unreadable — fall through to stale removal
+    // No readable PID file. Fall back to the age-only heuristic so locks
+    // written by earlier FireForge releases (which may not have written a
+    // PID file) still clear after the staleness window elapses.
+    if (ageMs <= staleMs) {
+      return false;
     }
 
     const staleMessage = onStaleLockMessage?.(ageMs);
@@ -103,6 +122,26 @@ async function removeIfStaleLock(
     verbose(`Stale lock check failed for ${lockPath}: ${toError(error).message}`);
     throw toError(error);
   }
+}
+
+/**
+ * Reads the owner PID from a lock directory's PID file. Returns `{ present:
+ * false }` when the PID file is missing or the content does not parse as a
+ * finite integer (caller falls back to the age-only staleness heuristic).
+ */
+async function readLockOwnerPid(
+  lockPath: string
+): Promise<{ present: false } | { present: true; pid: number }> {
+  try {
+    const pidContent = await readFile(join(lockPath, LOCK_PID_FILE), 'utf-8');
+    const pid = parseInt(pidContent.trim(), 10);
+    if (Number.isFinite(pid)) {
+      return { present: true, pid };
+    }
+  } catch {
+    // PID file missing or unreadable — treat as absent.
+  }
+  return { present: false };
 }
 
 /** Runs an async operation while holding a directory lock, with stale-lock recovery. */

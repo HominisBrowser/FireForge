@@ -49,6 +49,13 @@ export interface FireForgeConfig {
   wire?: WireConfig;
   /** Patch lint configuration */
   patchLint?: PatchLintConfig;
+  /**
+   * Project marker prefix appended to lines FireForge writes into
+   * upstream Firefox source files (e.g. the `customElements.js` tag list).
+   * `"MYBROWSER"` emits a trailing `  // MYBROWSER:` on each inserted line.
+   * Keeps modifications discoverable and re-applies idempotent.
+   */
+  markerComment?: string;
 }
 
 /**

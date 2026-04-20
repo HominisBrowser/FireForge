@@ -7,6 +7,7 @@ import { join } from 'node:path';
 
 import type { getProjectPaths } from '../../core/config.js';
 import { updateState } from '../../core/config.js';
+import { stampFurnaceOverrideBaseVersions } from '../../core/furnace-config.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import { applyPatchWithFuzz } from '../../core/patch-apply-fuzz.js';
 import { updatePatch } from '../../core/patch-export.js';
@@ -148,6 +149,26 @@ export async function runPatchLoop(
 
   if (appliedFilenames.length > 0) {
     await stampPatchVersions(paths.patches, appliedFilenames, session.toVersion);
+  }
+
+  // Stamp every Furnace override's `baseVersion` to match the rebased
+  // Firefox version. Before this stamp, a successful ESR bump left
+  // overrides in a doctor-failing drift state (each override still
+  // claimed the pre-rebase ESR as its baseline) and every subsequent
+  // `fireforge doctor` failed `Furnace component validation`. The
+  // stamp is unconditional per the helper's contract: rebase already
+  // succeeded on the patch side, so the operator is committing to the
+  // new ESR baseline; per-component health checking stays with
+  // `fireforge furnace validate` / `doctor --repair-furnace`.
+  try {
+    const overridesStamped = await stampFurnaceOverrideBaseVersions(projectRoot, session.toVersion);
+    if (overridesStamped > 0) {
+      info(`Stamped ${overridesStamped} Furnace override baseVersion(s) to ${session.toVersion}.`);
+    }
+  } catch (furnaceStampError: unknown) {
+    warn(
+      `Could not stamp Furnace override baseVersion(s) to ${session.toVersion}: ${toError(furnaceStampError).message}. Update baseVersion in furnace.json by hand or run "fireforge furnace refresh" if validate reports drift.`
+    );
   }
 
   // Print summary and clean up

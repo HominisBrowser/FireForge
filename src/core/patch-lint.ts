@@ -150,12 +150,14 @@ export async function lintPatchedCss(
   // Load furnace config gracefully — skip token-prefix check if unavailable
   let tokenPrefix: string | undefined;
   let tokenAllowlist: Set<string> | undefined;
+  let runtimeVariables: Set<string> | undefined;
   try {
     const root = join(repoDir, '..');
     const furnaceConfig = await loadFurnaceConfig(root);
     if (furnaceConfig.tokenPrefix) {
       tokenPrefix = furnaceConfig.tokenPrefix;
       tokenAllowlist = new Set(furnaceConfig.tokenAllowlist ?? []);
+      runtimeVariables = new Set(furnaceConfig.runtimeVariables ?? []);
     }
   } catch (error: unknown) {
     verbose(
@@ -202,17 +204,54 @@ export async function lintPatchedCss(
       }
     }
 
-    // Check for non-tokenized custom properties
+    // Check for non-tokenized custom properties. A variable that is both
+    // declared and consumed inside the same file is auto-exempted as a
+    // runtime state channel (see furnace.json → runtimeVariables).
+    //
+    // When diff context is available, scope the `var(...)` scan to
+    // added/modified lines only. `cssContent` (full-file) is still the
+    // source of `localDeclarations` so vars declared anywhere in the file
+    // are recognised as same-file refs regardless of where the consuming
+    // `var(...)` appears. Before this scoping change, a small edit to a
+    // Furnace override of a stock component (e.g. moz-card) produced a
+    // `token-prefix-violation` for every stock `var(--moz-card-*)` the
+    // upstream file already carried, because the scanner saw the full
+    // applied file and flagged each inherited reference as if the fork
+    // had introduced it.
     if (tokenPrefix) {
-      const varPattern = /var\(\s*(--[\w-]+)/g;
-      let match: RegExpExecArray | null;
-      while ((match = varPattern.exec(cssContent)) !== null) {
-        const prop = match[1];
-        if (prop && !prop.startsWith(tokenPrefix) && !tokenAllowlist?.has(prop)) {
+      const declarationPattern = /(?:^|[{;,\s])(--[\w-]+)\s*:/g;
+      const localDeclarations = new Set<string>();
+      let declMatch: RegExpExecArray | null;
+      while ((declMatch = declarationPattern.exec(cssContent)) !== null) {
+        const name = declMatch[1];
+        if (name) localDeclarations.add(name);
+      }
+
+      const prefixScanSource = addedLinesByFile
+        ? (addedLinesByFile.get(file) ?? []).join('\n').replace(/\/\*[\s\S]*?\*\//g, '')
+        : cssContent;
+
+      if (prefixScanSource.length > 0) {
+        const varPattern = /var\(\s*(--[\w-]+)/g;
+        const flaggedProps = new Set<string>();
+        let match: RegExpExecArray | null;
+        while ((match = varPattern.exec(prefixScanSource)) !== null) {
+          const prop = match[1];
+          if (!prop) continue;
+          if (prop.startsWith(tokenPrefix)) continue;
+          if (tokenAllowlist?.has(prop)) continue;
+          if (runtimeVariables?.has(prop)) continue;
+          if (localDeclarations.has(prop)) continue;
+          // De-duplicate per (file, prop) pair so the same introduced var
+          // used five times in the added hunk doesn't produce five
+          // identical issue entries.
+          if (flaggedProps.has(prop)) continue;
+          flaggedProps.add(prop);
+
           issues.push({
             file,
             check: 'token-prefix-violation',
-            message: `CSS references var(${prop}) which does not match the required token prefix "${tokenPrefix}". Use a design token or add to tokenAllowlist.`,
+            message: `CSS references var(${prop}) which does not match the required token prefix "${tokenPrefix}". Use a design token, add to tokenAllowlist, or (for runtime state channels) list the variable in runtimeVariables.`,
             severity: 'error',
           });
         }
@@ -531,6 +570,11 @@ export async function lintModifiedFileHeaders(
  * @param diffContent - Raw unified diff string
  * @param config - Project configuration
  * @param patchQueueCtx - Optional cross-patch context for ownership resolution
+ * @param ignoreChecks - Optional set of per-patch `check` IDs to drop from the
+ *   returned issues. Threaded from `PatchMetadata.lintIgnore` so a patch that
+ *   is advisory-noisy by nature (a cohesive branding bundle, auto-generated
+ *   manifest, etc.) can opt out of a specific rule without reaching for the
+ *   blunt `--skip-lint` hammer. Not mutated by this function.
  * @returns Array of all lint issues found
  */
 export async function lintExportedPatch(
@@ -538,7 +582,8 @@ export async function lintExportedPatch(
   affectedFiles: string[],
   diffContent: string,
   config: FireForgeConfig,
-  patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext
+  patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext,
+  ignoreChecks?: ReadonlySet<string>
 ): Promise<PatchLintIssue[]> {
   const newFiles = detectNewFilesInDiff(diffContent);
   const { textLines: lineCount } = countNonBinaryDiffLines(diffContent);
@@ -569,5 +614,13 @@ export async function lintExportedPatch(
     issues.push(...checkJsIssues);
   }
 
+  // Filter out ignored checks last so every rule still runs (keeps the
+  // implementation uniform) but suppressed rules do not surface. We do not
+  // reclassify severities — an ignored error simply drops, mirroring how
+  // inline `fireforge-ignore: <check>` markers work in the CSS and
+  // forward-import rules.
+  if (ignoreChecks && ignoreChecks.size > 0) {
+    return issues.filter((issue) => !ignoreChecks.has(issue.check));
+  }
   return issues;
 }

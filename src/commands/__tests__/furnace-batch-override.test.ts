@@ -118,6 +118,7 @@ vi.mock('node:fs/promises', () => ({
 
 import { select } from '@clack/prompts';
 
+import { writeFurnaceConfig } from '../../core/furnace-config.js';
 import { copyFile, pathExists } from '../../utils/fs.js';
 import { info, isCancel, note, outro, warn } from '../../utils/logger.js';
 import { furnaceBatchOverrideCommand } from '../furnace/override.js';
@@ -166,20 +167,46 @@ describe('furnace batch override', () => {
     ).rejects.toThrow('already exists');
   });
 
-  it('rejects components that collide with stock entries', async () => {
-    vi.mocked(pathExists).mockResolvedValue(true);
+  it('promotes stock components out of the stock bucket instead of rejecting', async () => {
+    // The pre-0.16.0 batch path rejected any name already present in the
+    // stock bucket, which forced operators to hand-edit furnace.json
+    // before overriding a stock-discovered widget. The new contract
+    // matches single-override: splice the name out of `stock` and let
+    // the mutation phase persist the promotion alongside the new
+    // override entries via `writeFurnaceConfig`. This test is the
+    // batch-flavoured counterpart to the single-override promotion test
+    // in `furnace-override.test.ts`.
+    //
+    // Path-routing on pathExists: engine tree and source component
+    // directories are "present" (needed for the copy phase to proceed),
+    // but the override destination directories must be absent so the
+    // command doesn't refuse with "directory already exists". This
+    // mirrors the routed-pathExists scheme used in
+    // `furnace-override.test.ts` for the single-override happy paths.
+    vi.mocked(pathExists).mockImplementation((probedPath: string) => {
+      if (probedPath.includes('components/overrides/')) return Promise.resolve(false);
+      return Promise.resolve(true);
+    });
     const { createDefaultFurnaceConfig } = await import('../../core/furnace-config.js');
     vi.mocked(createDefaultFurnaceConfig).mockReturnValueOnce({
       version: 1,
       componentPrefix: 'moz-',
-      stock: ['moz-button'],
+      stock: ['moz-button', 'moz-card'],
       overrides: {},
       custom: {},
     });
 
     await expect(
       furnaceBatchOverrideCommand('/project', ['moz-button', 'moz-card'], { type: 'full' })
-    ).rejects.toThrow(/already registered as a stock component/);
+    ).resolves.toBeUndefined();
+
+    // The last writeFurnaceConfig call records the final config state; both
+    // names must have left the stock bucket AND appear under overrides.
+    const writeCalls = vi.mocked(writeFurnaceConfig).mock.calls;
+    const finalConfig = writeCalls.at(-1)?.[1];
+    expect(finalConfig?.stock).toEqual([]);
+    expect(finalConfig?.overrides['moz-button']).toBeDefined();
+    expect(finalConfig?.overrides['moz-card']).toBeDefined();
   });
 
   it('rejects components that collide with custom entries', async () => {

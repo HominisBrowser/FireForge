@@ -7,6 +7,7 @@ import {
   buildArtifactMismatchMessage,
   generateMozconfig,
   hasBuildArtifacts,
+  hasRunnableBundle,
   watchWithOutput,
 } from '../core/mach.js';
 import { GeneralError } from '../errors/base.js';
@@ -151,7 +152,19 @@ export async function watchCommand(projectRoot: string): Promise<void> {
     );
   }
 
-  info(`Using build artifacts from ${buildCheck.objDir}/`);
+  // Report bundle state alongside the "Using build artifacts..." banner
+  // so an operator watching a mid-build tree can see why `fireforge run`
+  // would refuse right now while watch is still going. Watch remains
+  // permissive (it exists to drive rebuilds) — this is informational.
+  // The `hasBuildArtifacts` check already passed at this point, so
+  // `objDir` is always defined.
+  const bundleCheck = buildCheck.objDir
+    ? await hasRunnableBundle(paths.engine, config.binaryName, buildCheck.objDir)
+    : { runnable: false };
+  const bundleSuffix = bundleCheck.runnable
+    ? ' (bundle: runnable)'
+    : ' (bundle: pending — watch will rebuild)';
+  info(`Using build artifacts from ${buildCheck.objDir}/${bundleSuffix}`);
 
   // Advisory: warn when Furnace components have drifted since the last
   // apply so the user doesn't launch watch-mode builds with stale

@@ -26,6 +26,7 @@ vi.mock('../../core/git.js', () => ({
 
 vi.mock('../../core/git-diff.js', () => ({
   getAllDiff: vi.fn(),
+  getDiffForFilesAgainstHead: vi.fn(),
 }));
 
 vi.mock('../../core/git-status.js', () => ({
@@ -58,6 +59,8 @@ vi.mock('../../core/patch-lint.js', () => ({
   lintExportedPatch: vi.fn().mockResolvedValue([]),
   detectNewFilesInDiff: vi.fn().mockReturnValue(new Set()),
   commentStyleForFile: vi.fn().mockReturnValue(null),
+  buildPatchQueueContext: vi.fn().mockResolvedValue({ entries: [] }),
+  collectNewFileCreatorsByPath: vi.fn().mockReturnValue(new Map()),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -98,7 +101,12 @@ import { getAllDiff } from '../../core/git-diff.js';
 import { getWorkingTreeStatus } from '../../core/git-status.js';
 import { extractAffectedFiles } from '../../core/patch-apply.js';
 import { commitExportedPatch, findAllPatchesForFiles } from '../../core/patch-export.js';
-import { lintExportedPatch } from '../../core/patch-lint.js';
+import {
+  buildPatchQueueContext,
+  collectNewFileCreatorsByPath,
+  detectNewFilesInDiff,
+  lintExportedPatch,
+} from '../../core/patch-lint.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
 import { ensureDir } from '../../utils/fs.js';
 import { cancel, info, outro, warn } from '../../utils/logger.js';
@@ -116,6 +124,11 @@ describe('exportAllCommand', () => {
     vi.mocked(findAllPatchesForFiles).mockResolvedValue([]);
     vi.mocked(lintExportedPatch).mockResolvedValue([]);
     vi.mocked(prompts.confirm).mockResolvedValue(true);
+    // `clearAllMocks` resets call history but leaves the last mock
+    // implementation in place — tests that set `collectFurnaceManagedPrefixes`
+    // to a non-empty set would otherwise bleed into neighbors. Reset to
+    // the "no Furnace config" default here so each test starts clean.
+    vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(new Set());
   });
 
   afterEach(() => {
@@ -432,6 +445,147 @@ describe('exportAllCommand', () => {
       name: 'all-changes',
       category: 'ui',
       description: 'test',
+    });
+
+    expect(commitExportedPatch).toHaveBeenCalled();
+  });
+
+  it('filters Furnace-managed files out of the diff when --exclude-furnace is set (Finding #13)', async () => {
+    // Regression guard: pre-0.16.0 export-all refused outright on any
+    // Furnace-managed file, which made it unusable in realistic mixed
+    // workspaces. `--exclude-furnace` now keeps the command running on
+    // the non-Furnace subset of the diff; the Furnace-managed paths
+    // stay untouched in the working tree (they are re-deployed by
+    // `furnace apply`), and the info line reports how many paths were
+    // excluded so the operator can verify the carve-out.
+    const { getDiffForFilesAgainstHead } = await import('../../core/git-diff.js');
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue(
+      'diff --git a/toolkit/modules/AppConstants.sys.mjs b/toolkit/modules/AppConstants.sys.mjs\n' +
+        '+content\n'
+    );
+
+    vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(
+      new Set(['toolkit/content/widgets/moz-button/'])
+    );
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      {
+        status: ' M',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        file: 'toolkit/content/widgets/moz-button/moz-button.css',
+        isUntracked: false,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+      {
+        status: ' M',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        file: 'toolkit/modules/AppConstants.sys.mjs',
+        isUntracked: false,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+    ]);
+
+    await exportAllCommand('/fake/root', {
+      name: 'no-furnace',
+      category: 'ui',
+      description: 'test',
+      excludeFurnace: true,
+    });
+
+    // `commitExportedPatch` must have run (the command did not refuse).
+    expect(commitExportedPatch).toHaveBeenCalled();
+
+    // Exclusion is reported to the operator.
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Excluded 1 furnace-managed file(s)')
+    );
+
+    // The diff passed to the export path was the Furnace-filtered one —
+    // we rescope via `getDiffForFilesAgainstHead`, which should have
+    // been called with only the non-Furnace path subset.
+    const diffCall = vi.mocked(getDiffForFilesAgainstHead).mock.calls.at(-1);
+    expect(diffCall?.[1]).toContain('toolkit/modules/AppConstants.sys.mjs');
+    expect(diffCall?.[1]).not.toContain('toolkit/content/widgets/moz-button/moz-button.css');
+  });
+
+  it('reports "Nothing to export" when --exclude-furnace removes every changed path', async () => {
+    vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(
+      new Set(['toolkit/content/widgets/moz-button/'])
+    );
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      {
+        status: ' M',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        file: 'toolkit/content/widgets/moz-button/moz-button.css',
+        isUntracked: false,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+    ]);
+
+    await exportAllCommand('/fake/root', {
+      name: 'no-furnace',
+      category: 'ui',
+      description: 'test',
+      excludeFurnace: true,
+    });
+
+    expect(commitExportedPatch).not.toHaveBeenCalled();
+    expect(outro).toHaveBeenCalledWith('Nothing to export');
+  });
+
+  it('refuses to create a new file that an existing patch already creates', async () => {
+    // Simulate a queue where a previous patch owns `browser/modules/labforge/Hello.sys.mjs`
+    // as a new-file creation, then have the current aggregate diff try to
+    // newly-create the same path — the direct repro of Finding #3.
+    vi.mocked(getAllDiff).mockResolvedValue(
+      'diff --git a/browser/modules/labforge/Hello.sys.mjs b/browser/modules/labforge/Hello.sys.mjs\nnew file mode 100644\n+contents\n'
+    );
+    vi.mocked(detectNewFilesInDiff).mockReturnValue(
+      new Set(['browser/modules/labforge/Hello.sys.mjs'])
+    );
+    vi.mocked(buildPatchQueueContext).mockResolvedValue({
+      entries: [{ filename: '001-infra-hello.patch', metadata: {} as never, diff: '' } as never],
+    } as never);
+    vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(
+      new Map([['browser/modules/labforge/Hello.sys.mjs', ['001-infra-hello.patch']]])
+    );
+
+    await expect(
+      exportAllCommand('/fake/root', {
+        name: 'bye-module',
+        category: 'infra' as never,
+        description: 'second creator',
+      })
+    ).rejects.toThrow(/refuses to capture new-file creations/i);
+
+    expect(commitExportedPatch).not.toHaveBeenCalled();
+  });
+
+  it('permits new-file creations that no other patch claims', async () => {
+    vi.mocked(getAllDiff).mockResolvedValue(
+      'diff --git a/browser/modules/labforge/Fresh.sys.mjs b/browser/modules/labforge/Fresh.sys.mjs\nnew file mode 100644\n+contents\n'
+    );
+    vi.mocked(detectNewFilesInDiff).mockReturnValue(
+      new Set(['browser/modules/labforge/Fresh.sys.mjs'])
+    );
+    vi.mocked(buildPatchQueueContext).mockResolvedValue({
+      entries: [{ filename: '001-infra-other.patch', metadata: {} as never, diff: '' } as never],
+    } as never);
+    // Queue has creators recorded for an unrelated path — ours is not in the map.
+    vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(
+      new Map([['browser/modules/labforge/Unrelated.sys.mjs', ['001-infra-other.patch']]])
+    );
+    vi.mocked(extractAffectedFiles).mockReturnValue(['browser/modules/labforge/Fresh.sys.mjs']);
+
+    await exportAllCommand('/fake/root', {
+      name: 'fresh-module',
+      category: 'infra' as never,
+      description: 'clean new creator',
     });
 
     expect(commitExportedPatch).toHaveBeenCalled();

@@ -65,17 +65,13 @@ export async function validateComponent(
   const issues: ValidationIssue[] = [];
 
   // Pass the matching custom config so structure validation can enforce
-  // the .ftl-when-localized invariant. Non-custom validations ignore the
+  // the .ftl-when-localized invariant and accessibility validation can
+  // recognize wrapper-over-native components (via `composes` or an
+  // explicit `keyboardCovered` opt-out). Non-custom validations ignore the
   // parameter, so this is a no-op for stock and override components.
-  issues.push(
-    ...(await validateStructure(
-      componentDir,
-      tagName,
-      type,
-      type === 'custom' ? config?.custom[tagName] : undefined
-    ))
-  );
-  issues.push(...(await validateAccessibility(componentDir, tagName)));
+  const customConfigForTag = type === 'custom' ? config?.custom[tagName] : undefined;
+  issues.push(...(await validateStructure(componentDir, tagName, type, customConfigForTag)));
+  issues.push(...(await validateAccessibility(componentDir, tagName, customConfigForTag)));
   issues.push(...(await validateCompatibility(componentDir, tagName, type, config, root)));
 
   if (root && config && type === 'override') {
@@ -83,9 +79,17 @@ export async function validateComponent(
     issues.push(...buildOverrideVersionDriftIssues(config, forgeConfig.firefox.version, tagName));
   }
 
-  // Check for missing token link in browser.xhtml
+  // Check for missing token link across configured chrome host documents.
   if (root) {
-    issues.push(...(await validateTokenLink(componentDir, tagName, root, config?.tokenPrefix)));
+    issues.push(
+      ...(await validateTokenLink(
+        componentDir,
+        tagName,
+        root,
+        config?.tokenPrefix,
+        config?.tokenHostDocuments
+      ))
+    );
   }
 
   // When root is provided and this is a custom component with registration,

@@ -84,15 +84,19 @@ describe('patch parse helper coverage', () => {
         newStart: 1,
         newCount: 2,
         lines: [' old-one', '-old-two', '+new-two'],
-        noNewlineAtEnd: false,
+        noNewlineAtEndOld: false,
+        noNewlineAtEndNew: false,
       },
       {
         oldStart: 8,
         oldCount: 1,
         newStart: 8,
         newCount: 2,
+        // The no-newline marker follows `+new-nine`, so it annotates only
+        // the new side. The old side still terminates with a newline.
         lines: [' context-eight', '+new-nine'],
-        noNewlineAtEnd: true,
+        noNewlineAtEndOld: false,
+        noNewlineAtEndNew: true,
       },
     ]);
   });
@@ -119,7 +123,95 @@ describe('patch parse helper coverage', () => {
         newStart: 4,
         newCount: 1,
         lines: ['-before', '+after'],
-        noNewlineAtEnd: false,
+        noNewlineAtEndOld: false,
+        noNewlineAtEndNew: false,
+      },
+    ]);
+  });
+
+  it('annotates the old side only when the marker follows a removed line', () => {
+    // Removing the trailing-newlineless last line and replacing it with
+    // a line that does have a terminating newline. A single boolean
+    // would confuse this with the symmetric case and cause the projected
+    // content to disagree with `git apply` on the new-side newline.
+    const patch = [
+      'diff --git a/browser/asym.js b/browser/asym.js',
+      '--- a/browser/asym.js',
+      '+++ b/browser/asym.js',
+      '@@ -1,2 +1,2 @@',
+      ' keep',
+      '-old-last',
+      '\\ No newline at end of file',
+      '+new-last',
+      '',
+    ].join('\n');
+
+    expect(parseHunksForFile(patch, 'browser/asym.js')).toEqual([
+      {
+        oldStart: 1,
+        oldCount: 2,
+        newStart: 1,
+        newCount: 2,
+        lines: [' keep', '-old-last', '+new-last'],
+        noNewlineAtEndOld: true,
+        noNewlineAtEndNew: false,
+      },
+    ]);
+  });
+
+  it('annotates both sides when independent markers trail both removed and added lines', () => {
+    // Both the old and new versions end without a trailing newline. Each
+    // `\ No newline at end of file` marker is independent and applies to
+    // the side of the preceding body line.
+    const patch = [
+      'diff --git a/browser/both.js b/browser/both.js',
+      '--- a/browser/both.js',
+      '+++ b/browser/both.js',
+      '@@ -1 +1 @@',
+      '-old',
+      '\\ No newline at end of file',
+      '+new',
+      '\\ No newline at end of file',
+      '',
+    ].join('\n');
+
+    expect(parseHunksForFile(patch, 'browser/both.js')).toEqual([
+      {
+        oldStart: 1,
+        oldCount: 1,
+        newStart: 1,
+        newCount: 1,
+        lines: ['-old', '+new'],
+        noNewlineAtEndOld: true,
+        noNewlineAtEndNew: true,
+      },
+    ]);
+  });
+
+  it('annotates both sides when the marker follows a context line', () => {
+    // A context line is shared between both sides, so a marker that
+    // trails one is asserting that the line is the terminal line of
+    // both files and lacks a trailing newline on both.
+    const patch = [
+      'diff --git a/browser/ctx.js b/browser/ctx.js',
+      '--- a/browser/ctx.js',
+      '+++ b/browser/ctx.js',
+      '@@ -1,2 +1,1 @@',
+      '-dropped',
+      ' kept',
+      '\\ No newline at end of file',
+      '',
+    ].join('\n');
+
+    expect(parseHunksForFile(patch, 'browser/ctx.js')).toEqual([
+      {
+        oldStart: 1,
+        oldCount: 2,
+        newStart: 1,
+        newCount: 1,
+        lines: ['-dropped', ' kept'],
+        noNewlineAtEndOld: true,
+        noNewlineAtEndNew: true,
       },
     ]);
   });

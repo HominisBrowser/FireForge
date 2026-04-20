@@ -171,6 +171,118 @@ describe('lintPatchedCss', () => {
     expect(issues.filter((i) => i.check === 'token-prefix-violation')).toHaveLength(0);
   });
 
+  it('allows runtime variables listed in furnace.json runtimeVariables', async () => {
+    mockLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      tokenPrefix: '--brand-',
+      tokenAllowlist: [],
+      runtimeVariables: ['--cam-x'],
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('body { transform: translateX(var(--cam-x)); }');
+
+    const issues = await lintPatchedCss('/engine', ['style.css']);
+
+    expect(issues.filter((i) => i.check === 'token-prefix-violation')).toHaveLength(0);
+  });
+
+  it('auto-exempts variables declared and consumed in the same CSS file', async () => {
+    mockLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      tokenPrefix: '--brand-',
+      tokenAllowlist: [],
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('body { --tile-z: 0; transform: translateZ(var(--tile-z)); }');
+
+    const issues = await lintPatchedCss('/engine', ['style.css']);
+
+    expect(issues.filter((i) => i.check === 'token-prefix-violation')).toHaveLength(0);
+  });
+
+  it('does not flag pre-existing stock vars outside added diff lines (Finding #10)', async () => {
+    // Regression guard: a Furnace override of a stock component (e.g.
+    // moz-card) carries the upstream file's full `var(--moz-card-*)`
+    // vocabulary. The rule used to scan the whole file and flag every
+    // inherited reference as a prefix violation against the fork's
+    // tokenPrefix — effectively making any CSS-only override unable to
+    // pass lint. With diff context available, the scan is scoped to
+    // added lines only.
+    mockLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'ff-',
+      tokenPrefix: '--ff-',
+      tokenAllowlist: [],
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      '.moz-card {\n  padding: var(--moz-card-padding);\n  border-radius: var(--moz-card-border-radius);\n  color: var(--ff-text-color);\n}\n'
+    );
+
+    const diff =
+      'diff --git a/moz-card.css b/moz-card.css\n' +
+      '--- a/moz-card.css\n' +
+      '+++ b/moz-card.css\n' +
+      '@@ -1,3 +1,4 @@\n' +
+      ' .moz-card {\n' +
+      '   padding: var(--moz-card-padding);\n' +
+      '   border-radius: var(--moz-card-border-radius);\n' +
+      '+  color: var(--ff-text-color);\n' +
+      ' }\n';
+
+    const issues = await lintPatchedCss('/engine', ['moz-card.css'], diff);
+
+    // Stock inherited vars on unchanged lines should NOT be flagged. The
+    // only introduced var (--ff-text-color) matches the tokenPrefix so
+    // no violations should fire.
+    expect(issues.filter((i) => i.check === 'token-prefix-violation')).toHaveLength(0);
+  });
+
+  it('still flags newly-introduced prefix-violating vars on added lines', async () => {
+    // Companion to the previous test — make sure the scoping doesn't
+    // silently hide genuine introductions.
+    mockLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'ff-',
+      tokenPrefix: '--ff-',
+      tokenAllowlist: [],
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      '.moz-card {\n  padding: var(--moz-card-padding);\n  color: var(--stolen-accent);\n}\n'
+    );
+
+    const diff =
+      'diff --git a/moz-card.css b/moz-card.css\n' +
+      '--- a/moz-card.css\n' +
+      '+++ b/moz-card.css\n' +
+      '@@ -1,2 +1,3 @@\n' +
+      ' .moz-card {\n' +
+      '   padding: var(--moz-card-padding);\n' +
+      '+  color: var(--stolen-accent);\n' +
+      ' }\n';
+
+    const issues = await lintPatchedCss('/engine', ['moz-card.css'], diff);
+
+    const prefixIssues = issues.filter((i) => i.check === 'token-prefix-violation');
+    expect(prefixIssues).toHaveLength(1);
+    expect(prefixIssues[0]?.message).toContain('--stolen-accent');
+  });
+
   it('handles multiple CSS files', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('body { color: #abc; }');
@@ -927,5 +1039,78 @@ describe('lintExportedPatch', () => {
     // Should have at least: missing-license-header + raw-color-value
     expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
     expect(issues.some((i) => i.check === 'raw-color-value')).toBe(true);
+  });
+
+  it('filters out issues whose check is in ignoreChecks', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockImplementation((path: string) => {
+      if (path.endsWith('.css')) return Promise.resolve('body { color: #ff0000; }');
+      return Promise.resolve('const x = 1;\n');
+    });
+
+    const diff =
+      'diff --git a/new.js b/new.js\nnew file mode 100644\n--- /dev/null\n+++ b/new.js\n@@ -0,0 +1 @@\n+const x = 1;\n' +
+      'diff --git a/style.css b/style.css\n--- a/style.css\n+++ b/style.css\n@@ -1 +1 @@\n-old\n+body { color: #ff0000; }\n';
+
+    const ignore = new Set<string>(['raw-color-value']);
+    const issues = await lintExportedPatch(
+      '/engine',
+      ['new.js', 'style.css'],
+      diff,
+      mockConfig,
+      undefined,
+      ignore
+    );
+
+    // missing-license-header still surfaces because it is not ignored.
+    expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
+    // raw-color-value is suppressed by the ignore list.
+    expect(issues.some((i) => i.check === 'raw-color-value')).toBe(false);
+  });
+
+  it('suppresses patch-size findings when large-patch-lines is ignored', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('const x = 1;\n');
+
+    // Build a diff that crosses the general-track hard limit (3000 lines)
+    // so lintPatchSize produces a large-patch-lines error.
+    const huge = Array.from({ length: 3100 }, (_, i) => `+line ${i}`).join('\n');
+    const diff =
+      'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1,1 +1,3100 @@\n-old\n' + huge + '\n';
+
+    const withoutIgnore = await lintExportedPatch('/engine', ['a.js'], diff, mockConfig);
+    expect(withoutIgnore.some((i) => i.check === 'large-patch-lines')).toBe(true);
+
+    const withIgnore = await lintExportedPatch(
+      '/engine',
+      ['a.js'],
+      diff,
+      mockConfig,
+      undefined,
+      new Set(['large-patch-lines'])
+    );
+    expect(withIgnore.some((i) => i.check === 'large-patch-lines')).toBe(false);
+  });
+
+  it('is a no-op when ignoreChecks is empty', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('body { color: #ff0000; }');
+
+    const diff =
+      'diff --git a/style.css b/style.css\n--- a/style.css\n+++ b/style.css\n@@ -1 +1 @@\n-old\n+body { color: #ff0000; }\n';
+
+    const issuesWithEmpty = await lintExportedPatch(
+      '/engine',
+      ['style.css'],
+      diff,
+      mockConfig,
+      undefined,
+      new Set<string>()
+    );
+    const issuesWithUndefined = await lintExportedPatch('/engine', ['style.css'], diff, mockConfig);
+
+    expect(issuesWithEmpty.map((i) => i.check).sort()).toEqual(
+      issuesWithUndefined.map((i) => i.check).sort()
+    );
   });
 });

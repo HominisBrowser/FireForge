@@ -605,3 +605,62 @@ describe('registerExport', () => {
     );
   });
 });
+
+describe('exportCommand — engine/ prefix normalization (Finding #4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStatForPaths([]);
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(isGitRepository).mockResolvedValue(true);
+  });
+
+  it('accepts a repo-root-relative engine/ prefix on a file path', async () => {
+    // Operator pastes the path with the `engine/` prefix (the same form
+    // `register`/`test` already accept). Before the fix, export threw
+    // `File "engine/browser/base/content/fresh-extra-a.js" has no changes
+    // to export.` because status returns paths relative to engine/ and
+    // the explicit prefix double-rooted the candidate. After the fix,
+    // `stripEnginePrefix` normalises the input so the status lookup
+    // sees the engine-relative form.
+    vi.mocked(getStatusWithCodes).mockResolvedValue([
+      { status: 'M', file: 'browser/base/content/fresh-extra-a.js' },
+    ]);
+    vi.mocked(isBinaryFile).mockResolvedValue(false);
+    vi.mocked(generateFullFilePatch).mockResolvedValue(
+      'diff --git a/browser/base/content/fresh-extra-a.js b/browser/base/content/fresh-extra-a.js\n+content\n'
+    );
+    vi.mocked(extractAffectedFiles).mockReturnValue(['browser/base/content/fresh-extra-a.js']);
+
+    await exportCommand('/fake/root', ['engine/browser/base/content/fresh-extra-a.js'], {
+      name: 'fresh-extra-a',
+      category: 'ui',
+      description: 'prefix test',
+    });
+
+    // Once the prefix is stripped, the diff generator must see the
+    // engine-relative form — exactly what git sees.
+    expect(generateFullFilePatch).toHaveBeenCalledWith(
+      '/fake/engine',
+      'browser/base/content/fresh-extra-a.js'
+    );
+    expect(commitExportedPatch).toHaveBeenCalled();
+  });
+
+  it('accepts an engine/ prefix on a directory path', async () => {
+    mockStatForPaths(['browser/base/content']);
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue(['browser/base/content/foo.js']);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(generateFullFilePatch).mockResolvedValue(
+      'diff --git a/browser/base/content/foo.js b/browser/base/content/foo.js\n+c\n'
+    );
+    vi.mocked(extractAffectedFiles).mockReturnValue(['browser/base/content/foo.js']);
+
+    await exportCommand('/fake/root', ['engine/browser/base/content'], {
+      name: 'dir-prefix',
+      category: 'ui',
+      description: 'dir prefix test',
+    });
+
+    expect(getModifiedFilesInDir).toHaveBeenCalledWith('/fake/engine', 'browser/base/content');
+  });
+});

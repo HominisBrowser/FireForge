@@ -168,7 +168,15 @@ describe('getProjectRoot', () => {
     vi.restoreAllMocks();
   });
 
-  it('throws when the walk depth limit is exhausted without finding fireforge.json', () => {
+  it('throws ConfigNotFoundError when the walk depth limit is exhausted', () => {
+    // Finding #11: `getProjectRoot` now throws a typed
+    // `ConfigNotFoundError` instead of a plain `Error` so
+    // `withErrorHandling` surfaces the nicely formatted userMessage
+    // instead of a stack dump. The thrown message is the
+    // ConfigError-formatted copy ("Configuration file not found:
+    // fireforge.json"), not the old "Could not find fireforge.json"
+    // prose. Verify both the shape and the payload so a future
+    // refactor can't silently regress back to the stack-dump path.
     const fakeStart = '/a/b/c/d/e';
     vi.spyOn(process, 'cwd').mockReturnValue(fakeStart);
     vi.mocked(existsSync).mockReturnValue(false);
@@ -176,7 +184,7 @@ describe('getProjectRoot', () => {
     let counter = 0;
     vi.mocked(dirname).mockImplementation(() => `/synthetic/${counter++}`);
 
-    expect(() => getProjectRoot()).toThrow('Could not find fireforge.json');
+    expect(() => getProjectRoot()).toThrow(/Configuration file not found: fireforge\.json/);
   });
 });
 

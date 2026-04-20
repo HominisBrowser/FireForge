@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { addJarMnEntries, removeJarMnEntries } from '../furnace-registration.js';
+import {
+  addJarMnEntries,
+  addLocaleFtlJarMnEntry,
+  removeJarMnEntries,
+  removeLocaleFtlJarMnEntry,
+} from '../furnace-registration.js';
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
@@ -208,6 +213,93 @@ describe('removeJarMnEntries', () => {
 
     await removeJarMnEntries('/engine', 'search-textbox');
 
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+});
+
+describe('addLocaleFtlJarMnEntry', () => {
+  const MOCK_LOCALE_JAR = [
+    '@AB_CD@.jar:',
+    '% locale global @AB_CD@ %locale/@AB_CD@/global/',
+    '  locale/@AB_CD@/toolkit/global/moz-card.ftl (%toolkit/global/moz-card.ftl)',
+    '  locale/@AB_CD@/toolkit/global/moz-zzz.ftl (%toolkit/global/moz-zzz.ftl)',
+  ].join('\n');
+
+  it('inserts an entry alphabetically under the matching chrome sub-path', async () => {
+    mockReadText.mockResolvedValue(MOCK_LOCALE_JAR);
+    const inserted = await addLocaleFtlJarMnEntry(
+      '/engine',
+      'toolkit/locales/jar.mn',
+      'moz-dock',
+      'toolkit/global'
+    );
+    expect(inserted).toBe(1);
+
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    const lines = written.split('\n');
+    const cardIdx = lines.findIndex((line: string) => line.includes('moz-card.ftl'));
+    const dockIdx = lines.findIndex((line: string) => line.includes('moz-dock.ftl'));
+    const zzzIdx = lines.findIndex((line: string) => line.includes('moz-zzz.ftl'));
+
+    expect(cardIdx).toBeGreaterThan(-1);
+    expect(dockIdx).toBeGreaterThan(cardIdx);
+    expect(zzzIdx).toBeGreaterThan(dockIdx);
+  });
+
+  it('is idempotent when the entry is already present', async () => {
+    mockReadText.mockResolvedValue(MOCK_LOCALE_JAR);
+    const inserted = await addLocaleFtlJarMnEntry(
+      '/engine',
+      'toolkit/locales/jar.mn',
+      'moz-card',
+      'toolkit/global'
+    );
+    expect(inserted).toBe(0);
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('returns 0 when the locale jar.mn is missing (graceful degradation)', async () => {
+    mockPathExists.mockResolvedValueOnce(false);
+    const inserted = await addLocaleFtlJarMnEntry(
+      '/engine',
+      'toolkit/locales/jar.mn',
+      'moz-dock',
+      'toolkit/global'
+    );
+    expect(inserted).toBe(0);
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+});
+
+describe('removeLocaleFtlJarMnEntry', () => {
+  it('drops the matching entry and leaves siblings in place', async () => {
+    mockReadText.mockResolvedValue(
+      [
+        '  locale/@AB_CD@/toolkit/global/moz-card.ftl (%toolkit/global/moz-card.ftl)',
+        '  locale/@AB_CD@/toolkit/global/moz-dock.ftl (%toolkit/global/moz-dock.ftl)',
+      ].join('\n')
+    );
+
+    await removeLocaleFtlJarMnEntry(
+      '/engine',
+      'toolkit/locales/jar.mn',
+      'moz-dock',
+      'toolkit/global'
+    );
+
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    expect(written).toContain('moz-card.ftl');
+    expect(written).not.toContain('moz-dock.ftl');
+  });
+
+  it('is a no-op when the jar.mn file is missing', async () => {
+    mockPathExists.mockResolvedValueOnce(false);
+    await removeLocaleFtlJarMnEntry(
+      '/engine',
+      'toolkit/locales/jar.mn',
+      'moz-dock',
+      'toolkit/global'
+    );
     expect(mockWriteText).not.toHaveBeenCalled();
   });
 });

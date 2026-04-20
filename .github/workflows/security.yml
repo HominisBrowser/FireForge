@@ -58,20 +58,20 @@ jobs:
       - if: steps.code_scanning.outputs.enabled == 'true'
         uses: actions/checkout@v6.0.2
       - if: steps.code_scanning.outputs.enabled == 'true'
-        uses: actions/setup-node@v6.3.0
+        uses: actions/setup-node@v6.4.0
         with:
           node-version: '20'
           cache: 'npm'
       - if: steps.code_scanning.outputs.enabled == 'true'
         run: npm ci
       - if: steps.code_scanning.outputs.enabled == 'true'
-        uses: github/codeql-action/init@v4.35.1
+        uses: github/codeql-action/init@v4.35.2
         with:
           languages: javascript-typescript
       - if: steps.code_scanning.outputs.enabled == 'true'
         run: npm run build
       - if: steps.code_scanning.outputs.enabled == 'true'
-        uses: github/codeql-action/analyze@v4.35.1
+        uses: github/codeql-action/analyze@v4.35.2
       - if: steps.code_scanning.outputs.enabled != 'true'
         run: echo 'Skipping CodeQL because this repository is not configured to accept code scanning uploads from this workflow.'
 
@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
-      - uses: actions/setup-node@v6.3.0
+      - uses: actions/setup-node@v6.4.0
         with:
           node-version: '20'
           cache: 'npm'

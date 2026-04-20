@@ -129,6 +129,14 @@ async function diffOverride(
 /**
  * Diffs a custom component's workspace files against the engine-deployed copy.
  * Shows what would change (or has changed) on the next `furnace apply`.
+ *
+ * `.ftl` files deploy to `engine/<ftlDir>/<name>.ftl` via `applyCustomFtlFile`
+ * — NOT to `customConfig.targetPath` — so the deployment-target lookup has
+ * to branch on extension. Before this branch existed, a component's
+ * localization file always reported "not yet deployed to engine (new
+ * file)" after a successful apply/deploy because diff was looking for it
+ * under the component's `targetPath` while apply had written it into the
+ * locale tree.
  */
 async function diffCustom(name: string, projectRoot: string, config: FurnaceConfig): Promise<void> {
   const customConfig = config.custom[name];
@@ -137,6 +145,7 @@ async function diffCustom(name: string, projectRoot: string, config: FurnaceConf
   }
   const paths = getProjectPaths(projectRoot);
   const furnacePaths = getFurnacePaths(projectRoot);
+  const ftlDir = resolveFtlDir(config.ftlBasePath);
 
   const customDir = join(furnacePaths.customDir, name);
   if (!(await pathExists(customDir))) {
@@ -153,8 +162,20 @@ async function diffCustom(name: string, projectRoot: string, config: FurnaceConf
     if (!isComponentSourceFile(entry.name)) continue;
 
     const workspacePath = join(customDir, entry.name);
-    const deployedPath = join(engineDir, entry.name);
     const workspaceContent = await readText(workspacePath);
+
+    // `.ftl` files deploy to the locale tree, not the component's
+    // targetPath; mirror `applyCustomFtlFile`'s target computation so the
+    // diff header and the existence probe name the same path apply
+    // writes to. Any change here must stay in lock-step with
+    // `src/core/furnace-apply-ftl.ts`.
+    const isFtl = entry.name.endsWith('.ftl');
+    const deployedPath = isFtl
+      ? join(paths.engine, ftlDir, entry.name)
+      : join(engineDir, entry.name);
+    const deployedDisplayPath = isFtl
+      ? `engine/${ftlDir}/${entry.name}`
+      : `engine/${customConfig.targetPath}/${entry.name}`;
 
     if (!(await pathExists(deployedPath))) {
       info(`${entry.name}: not yet deployed to engine (new file)`);
@@ -169,7 +190,7 @@ async function diffCustom(name: string, projectRoot: string, config: FurnaceConf
     }
 
     hasDifferences = true;
-    info(`--- engine/${customConfig.targetPath}/${entry.name}`);
+    info(`--- ${deployedDisplayPath}`);
     info(`+++ components/custom/${name}/${entry.name}`);
 
     for (const line of formatUnifiedDiff(deployedContent, workspaceContent)) {

@@ -43,7 +43,15 @@ export function getRules(binaryName: string): PatternRule[] {
       extractArgs: (m) => [m[1] ?? ''],
     },
     {
-      pattern: /^browser\/base\/content\/(.+\.(?:js|mjs|xhtml|css))$/,
+      // `.inc.xhtml` fragments under browser/base/content/ are deliberately
+      // excluded: they are consumed via `#include` from a registered chrome
+      // document (typically browser.xhtml) and do not get their own
+      // packaged chrome URI. Before this carve-out, `status` flagged every
+      // wired fragment as "potentially unregistered" and `register --dry-run`
+      // proposed a bogus jar.mn entry. The lookahead blocks the match so
+      // `getUnregistrableAdvice` gets a chance to emit the correct
+      // guidance for the `.inc.xhtml` case.
+      pattern: /^browser\/base\/content\/(?!.+\.inc\.xhtml$)(.+\.(?:js|mjs|xhtml|css))$/,
       isRegistered: (engineDir, fileName) => isBrowserContentRegistered(engineDir, fileName),
       register: (engineDir, after, dryRun, fileName) =>
         registerBrowserContent(engineDir, fileName, after, undefined, dryRun),
@@ -150,6 +158,22 @@ export function matchesRegistrablePattern(filePath: string, binaryName: string):
 function getUnregistrableAdvice(filePath: string): string | null {
   if (filePath.endsWith('.ftl')) {
     return "FTL locale files are auto-discovered via jar.mn glob patterns and don't need manual registration.";
+  }
+
+  // `.inc.xhtml` fragments live under browser/base/content/ but are
+  // consumed via `#include` from a registered chrome document (browser.xhtml
+  // by default; a fork's custom top-level doc when `wire --dom-target` is
+  // set). The preprocessor resolves the include at packaging time, so the
+  // fragment never needs its own chrome URI entry in jar.mn. Give the
+  // operator the actionable `wire` path instead of letting the generic
+  // "unknown file pattern" message above fire.
+  if (/^browser\/base\/content\/.+\.inc\.xhtml$/.test(filePath)) {
+    return (
+      '`.inc.xhtml` fragments are consumed via `#include` from a registered chrome document ' +
+      '(e.g. browser.xhtml). They do not need an independent jar.mn entry — run ' +
+      '"fireforge wire <name> --dom <path>" to insert the #include, or add the directive manually ' +
+      'in the top-level chrome document.'
+    );
   }
 
   const testMatch = filePath.match(/^browser\/base\/content\/test\/([^/]+)\/(?!browser\.toml$).+$/);

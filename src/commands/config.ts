@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import {
   configExists,
   loadConfig,
+  loadRawConfigDocument,
   mutateConfig,
   SUPPORTED_CONFIG_PATHS,
   SUPPORTED_CONFIG_ROOT_KEYS,
@@ -109,11 +110,15 @@ export async function configCommand(
     throw new GeneralError('No fireforge.json found. Run "fireforge setup" to create a project.');
   }
 
-  const config = await loadConfig(projectRoot);
-
   if (value === undefined) {
-    // Get mode
-    const currentValue = getNestedValue(config, key);
+    // Get mode — read the raw document rather than the validated config so
+    // keys persisted via `fireforge config <key> --force` remain readable.
+    // `validateConfig` builds a typed clone containing only the known
+    // schema fields; relying on it here would silently hide forced-write
+    // keys and surface "Unknown config key" on the read even though the
+    // key is sitting plainly inside fireforge.json.
+    const rawConfig = await loadRawConfigDocument(projectRoot);
+    const currentValue = getNestedValue(rawConfig, key);
 
     if (currentValue === undefined) {
       throw new InvalidArgumentError(`Unknown config key: ${key}`);
@@ -148,9 +153,15 @@ export async function configCommand(
       // listed in SUPPORTED_CONFIG_PATHS, regardless of --force, and only
       // skip validation for genuinely unknown key paths.
       if (options.force && !keyIsKnown) {
-        const updatedConfig = mutateConfig(config, key, parsedValue, true);
+        // Seed mutation from the raw on-disk document so previously-forced
+        // keys (which `validateConfig` would strip) survive the round-trip.
+        // Without this, writing a second --force key would silently drop
+        // every earlier forced key from fireforge.json.
+        const rawConfig = await loadRawConfigDocument(projectRoot);
+        const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
         await writeConfigDocument(projectRoot, updatedConfig);
       } else {
+        const config = await loadConfig(projectRoot);
         const updatedConfig = mutateConfig(config, key, parsedValue);
         await writeConfig(projectRoot, updatedConfig);
       }

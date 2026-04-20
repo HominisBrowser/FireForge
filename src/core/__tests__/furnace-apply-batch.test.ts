@@ -17,6 +17,10 @@ vi.mock('../config.js', () => ({
     src: '/project/src',
     componentsDir: '/project/components',
   })),
+  // `applyAllComponents` reads fireforge.json only for the optional
+  // `markerComment` field. Tests do not exercise it, so resolve to an empty
+  // shape — the code path also tolerates a rejection.
+  loadConfig: vi.fn(() => Promise.resolve({})),
 }));
 
 vi.mock('../furnace-rollback.js', () => ({
@@ -31,7 +35,9 @@ vi.mock('../furnace-rollback.js', () => ({
 
 vi.mock('../furnace-registration.js', () => ({
   addJarMnEntries: vi.fn(() => Promise.resolve()),
+  addLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(0)),
   removeJarMnEntries: vi.fn(() => Promise.resolve()),
+  removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve()),
   removeCustomElementRegistration: vi.fn(() => Promise.resolve()),
 }));
 

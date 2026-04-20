@@ -4,9 +4,44 @@ import { isAbsolute, relative, resolve } from 'node:path';
 const WINDOWS_ABSOLUTE_PATH = /^[a-zA-Z]:[\\/]/;
 const RELATIVE_PATH_ROOT = resolve('/__fireforge_path_root__');
 
+/**
+ * Matches a leading `engine/` or `engine\\` segment (case-insensitive,
+ * tolerates leading whitespace). Shared between `register`, `test`, `lint`,
+ * and `export` so every command that takes an engine-relative path accepts
+ * both the repo-root form (`engine/browser/...`) and the engine-relative
+ * form (`browser/...`) without diverging.
+ */
+const ENGINE_PREFIX_PATTERN = /^\s*engine[/\\]/i;
+
 /** Converts Windows path separators to forward slashes for stable comparisons. */
 export function normalizePathSlashes(path: string): string {
   return path.replace(/\\/g, '/');
+}
+
+/**
+ * Strips a leading `engine/` (or `engine\\`) segment from a user-supplied
+ * path so the same command invocation accepts both repo-root-relative paths
+ * (`engine/browser/base/content/foo.js`) and engine-relative paths
+ * (`browser/base/content/foo.js`). The match is case-insensitive because
+ * default macOS and Windows filesystems treat `Engine/` and `engine/` as
+ * the same directory; a literal lowercase-only check previously left `mach`
+ * / the manifest writers resolving against a wrongly-cased prefix. Leading
+ * whitespace is ignored so tab-completed inputs don't slip past the strip.
+ *
+ * The return value is trimmed of the same leading whitespace when the
+ * prefix matched, and otherwise passed through verbatim — callers that
+ * care about internal whitespace can trim on their side.
+ *
+ * @param filePath Path as provided by the user
+ * @returns Path relative to the engine directory (or the original when the
+ *          prefix was absent)
+ */
+export function stripEnginePrefix(filePath: string): string {
+  const match = ENGINE_PREFIX_PATTERN.exec(filePath);
+  if (match) {
+    return filePath.slice(match[0].length);
+  }
+  return filePath;
 }
 
 /** Checks whether a path is explicitly absolute on either POSIX or Windows. */

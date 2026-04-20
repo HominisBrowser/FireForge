@@ -207,9 +207,16 @@ export async function downloadCommand(
   const cacheDir = join(paths.fireforgeDir, 'cache');
   await ensureDir(cacheDir);
 
-  // Download with progress
-  const s = spinner(`Downloading Firefox ${version}...`);
+  // Phase-switched spinners: the download phase runs with the byte-count
+  // progress callbacks below; the extract phase is blocking tar-xz and
+  // has no incremental progress, but it can take 30–90s on a ~600 MB
+  // Firefox tree, so it gets its own spinner message. Before the phase
+  // split, a single "Downloading Firefox … 100%" spinner covered both
+  // — the first-run setup looked hung precisely when the archive had
+  // already reached disk and `tar` was the long pole.
+  let s = spinner(`Downloading Firefox ${version}...`);
   let lastPercent = 0;
+  const phaseState: { value: 'download' | 'extract' } = { value: 'download' };
 
   try {
     await downloadFirefoxSource(
@@ -226,14 +233,39 @@ export async function downloadCommand(
           );
           lastPercent = percent;
         }
+      },
+      (phase) => {
+        if (phase === 'extract' && phaseState.value === 'download') {
+          s.stop(`Firefox ${version} downloaded`);
+          phaseState.value = 'extract';
+          s = spinner(
+            `Extracting Firefox ${version}... (decompressing ~600 MB of source; typically 30–90s)`
+          );
+        }
       }
     );
 
-    s.stop(`Firefox ${version} downloaded`);
+    if (phaseState.value === 'extract') {
+      s.stop(`Firefox ${version} extracted`);
+    } else {
+      s.stop(`Firefox ${version} downloaded`);
+    }
   } catch (error: unknown) {
-    s.error('Download failed');
+    s.error(phaseState.value === 'extract' ? 'Extraction failed' : 'Download failed');
     throw error;
   }
+
+  // Finding #17: the git indexing phase of `download` can block for
+  // minutes on a ~600 MB Firefox tree — the spinner updates less often
+  // than operators expect during the monolithic `git add -A` pass, and
+  // non-TTY shells see long stretches of silence. Emit a one-line
+  // heads-up banner BEFORE the spinner starts so even a log-scraping
+  // CI job notes the expected duration. The progress callbacks below
+  // still fire as usual; this is an additional up-front signal, not a
+  // replacement.
+  info(
+    'Indexing downloaded source into git (one-time; typically 1–3 minutes on a ~600 MB Firefox tree)...'
+  );
 
   // Initialize git repository
   const gitSpinner = spinner('Initializing git repository (this may take a few minutes)...');
@@ -262,13 +294,27 @@ export async function downloadCommand(
   // commit (e.g. line-ending normalisation or extraction artefacts) so that
   // a subsequent `fireforge import` works without --force.
   //
+  // Wrapped in a dedicated spinner because the restore can itself take
+  // tens of seconds on a ~600 MB Firefox tree: it walks every file in the
+  // patch manifest, calls `git status` / `git checkout` for each, and the
+  // eval's "download looks hung" report landed at least partly on this
+  // post-commit window. An operator watching the CLI needs to see that
+  // this phase is distinct from the preceding git-add work.
+  //
   // This runs BEFORE updateState so a restore failure keeps the previous
   // downloadedVersion in state.json. The invariant we preserve is
   // "state.downloadedVersion matches a clean engine": stamping the new
   // version only after the restore succeeds means a failed clean-up will
   // re-enter the resume path on the next `fireforge download` rather than
   // reporting success against a dirty engine.
-  await cleanPatchTouchedFiles(paths.engine, paths.patches);
+  const restoreSpinner = spinner('Restoring patch-touched files to baseline...');
+  try {
+    await cleanPatchTouchedFiles(paths.engine, paths.patches);
+    restoreSpinner.stop('Patch-touched files restored');
+  } catch (error: unknown) {
+    restoreSpinner.error('Failed to restore patch-touched files');
+    throw error;
+  }
 
   await updateState(projectRoot, {
     downloadedVersion: version,

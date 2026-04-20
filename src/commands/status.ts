@@ -6,7 +6,7 @@ import { Command } from 'commander';
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
-import { getStatusWithCodes, isGitRepository } from '../core/git.js';
+import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { getUntrackedFilesInDir } from '../core/git-status.js';
 import { isFileRegistered, matchesRegistrablePattern } from '../core/manifest-rules.js';
 import { buildOwnershipTable, renderOwnershipTable } from '../core/ownership-table.js';
@@ -17,7 +17,7 @@ import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { StatusOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readText } from '../utils/fs.js';
+import { FIREFORGE_TMP_PATH_PATTERN, pathExists, readText } from '../utils/fs.js';
 import { info, intro, outro, verbose, warn } from '../utils/logger.js';
 
 /**
@@ -238,6 +238,22 @@ async function expandDirectoryEntries(
 }
 
 /**
+ * Strips entries whose path matches the atomic-temp-file shape
+ * FireForge's own `writeText` produces (see
+ * {@link import('../utils/fs.js').FIREFORGE_TMP_PATH_PATTERN}). Those
+ * files only exist for the duration of a write + rename and should
+ * never appear in `status` output; filtering them here keeps every
+ * status mode (default, raw, unmanaged, ownership, json) symmetric so
+ * the operator never sees a `.mozconfig.fireforge-tmp-<pid>-<uuid>`
+ * entry mid-write. Files named for unrelated reasons (e.g. a user's
+ * `.bashrc.fireforge-tmp-backup` without the PID+UUID tail) do not
+ * match the pattern and pass through unfiltered.
+ */
+function filterFireForgeTempFiles(files: StatusFile[]): StatusFile[] {
+  return files.filter((entry) => !FIREFORGE_TMP_PATH_PATTERN.test(entry.file));
+}
+
+/**
  * Classifies files into patch-backed, unmanaged, or branding buckets.
  */
 async function classifyFiles(
@@ -351,6 +367,35 @@ async function renderJsonStatus(
 }
 
 /**
+ * Detects the "unborn HEAD" aftermath of an interrupted `fireforge download`
+ * — git init succeeded but the initial Firefox source commit was never
+ * created, so every file in engine/ reads as untracked. On a ~600 MB
+ * Firefox tree this would flood the output with hundreds of thousands of
+ * entries and a truncation warning, which is technically correct but not
+ * actionable. Throws a `GeneralError` with a single recovery banner
+ * pointing at `fireforge download --force`. `raw` / `json` modes skip the
+ * banner so their consumers see the structural failure in error form
+ * only.
+ */
+async function assertEngineHasBaselineCommit(
+  engineDir: string,
+  options: StatusOptions
+): Promise<void> {
+  try {
+    await getHead(engineDir);
+  } catch (err: unknown) {
+    if (!isMissingHeadError(err)) throw err;
+    const guidance =
+      'Engine repository has no baseline commit yet — a previous "fireforge download" was interrupted before git created the initial Firefox source commit. Re-run "fireforge download --force" to recreate the baseline repository cleanly.';
+    if (!options.raw && !options.json) {
+      warn(guidance);
+      outro('Engine baseline missing — re-run download --force');
+    }
+    throw new GeneralError(guidance);
+  }
+}
+
+/**
  * Runs the status command to show modified files.
  * @param projectRoot - Root directory of the project
  * @param options - Status display options
@@ -390,7 +435,11 @@ export async function statusCommand(
     const ownershipExpansion = (await isGitRepository(paths.engine))
       ? await expandDirectoryEntries(await getStatusWithCodes(paths.engine), paths.engine)
       : { entries: [], truncations: [] };
-    const rawFilesOwnership = ownershipExpansion.entries;
+    // Filter atomic-write temp files (Finding #18) so a mid-flight
+    // `.fireforge-tmp-<pid>-<uuid>` artefact never shows up in any
+    // status mode. The pattern is tight enough to let legitimately
+    // similar names through.
+    const rawFilesOwnership = filterFireForgeTempFiles(ownershipExpansion.entries);
     renderTruncationBanner(ownershipExpansion.truncations);
 
     // Only walk the patch bodies when the directory actually exists.
@@ -439,9 +488,33 @@ export async function statusCommand(
     );
   }
 
+  await assertEngineHasBaselineCommit(paths.engine, options);
+
   const rawFiles = await getStatusWithCodes(paths.engine);
-  const { entries: files, truncations } = await expandDirectoryEntries(rawFiles, paths.engine);
+  const { entries: expanded, truncations } = await expandDirectoryEntries(rawFiles, paths.engine);
+  // Strip atomic-write temp files (Finding #18) before every mode
+  // branch so raw / unmanaged / default / json all agree.
+  const files = filterFireForgeTempFiles(expanded);
   renderTruncationBanner(truncations);
+
+  // `--json` callers expect machine-parseable output on every invocation,
+  // including the clean-tree case. Before this ordering fix a clean tree
+  // printed "No modified files" / "Working tree clean" via the human
+  // branch below and `--json` was silently ignored, so scripts that piped
+  // the output through a JSON parser broke precisely when there was
+  // nothing to report. Emit `[]` here and return before the human fallback.
+  if (options.json) {
+    await renderJsonStatus(files, paths, projectRoot, config.binaryName);
+    return;
+  }
+
+  // `--raw` consumers parse the native `git status --porcelain` output
+  // directly. On a clean tree the raw mode should produce nothing on
+  // stdout — the human "Working tree clean" banner would contaminate the
+  // pipe. Short-circuit before the human clean-tree branch below.
+  if (options.raw && files.length === 0) {
+    return;
+  }
 
   if (files.length === 0) {
     info('No modified files');
@@ -452,12 +525,6 @@ export async function statusCommand(
   // Raw mode: existing behavior
   if (options.raw) {
     renderRawStatus(files);
-    return;
-  }
-
-  // JSON mode and default mode both need classification
-  if (options.json) {
-    await renderJsonStatus(files, paths, projectRoot, config.binaryName);
     return;
   }
 

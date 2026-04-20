@@ -3,14 +3,28 @@ import { join } from 'node:path';
 
 import { MachNotFoundError } from '../errors/build.js';
 import { pathExists } from '../utils/fs.js';
-import { exec, execInherit, execInheritCapture, execStream } from '../utils/process.js';
+import { warn } from '../utils/logger.js';
+import {
+  exec,
+  execInherit,
+  execInheritCapture,
+  execSmokeRun,
+  execStream,
+  type SmokeLineCallback,
+  type SmokeRunResult,
+} from '../utils/process.js';
+import { explainMachError } from './mach-error-hints.js';
 import { getPython } from './mach-python.js';
 
 // Re-export sub-modules so existing `from './mach.js'` imports keep working.
 export {
+  attemptMozinfoRewrite,
   type BuildArtifactCheck,
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
+  hasRunnableBundle,
+  type MozinfoRewriteResult,
+  type RunnableBundleCheck,
 } from './mach-build-artifacts.js';
 export { generateMozconfig, type MozconfigVariables } from './mach-mozconfig.js';
 export { ensurePython, resetResolvedPython } from './mach-python.js';
@@ -165,7 +179,23 @@ export async function bootstrapWithOutput(engineDir: string): Promise<MachComman
 }
 
 /**
- * Runs a full mach build.
+ * Prints any matched {@link MachErrorHint} hints for the captured stderr.
+ * No-op when nothing matches. Always called before a non-zero exit propagates
+ * so the hint sits immediately below the raw mach error in the operator's
+ * terminal.
+ */
+function surfaceMachErrorHints(stderr: string): void {
+  const hints = explainMachError(stderr);
+  if (hints.length === 0) return;
+  for (const hint of hints) {
+    warn(`Hint: ${hint}`);
+  }
+}
+
+/**
+ * Runs a full mach build. On a non-zero exit, any matched error hints are
+ * surfaced on top of the raw mach output so operators get an actionable
+ * nudge alongside the cryptic mozbuild traceback.
  * @param engineDir - Path to the engine directory
  * @param jobs - Number of parallel jobs (optional)
  * @returns Exit code
@@ -177,16 +207,25 @@ export async function build(engineDir: string, jobs?: number): Promise<number> {
     args.push('-j', String(jobs));
   }
 
-  return runMach(args, engineDir, { inherit: true });
+  const result = await runMachInheritCapture(args, engineDir);
+  if (result.exitCode !== 0) {
+    surfaceMachErrorHints(result.stderr);
+  }
+  return result.exitCode;
 }
 
 /**
- * Runs a fast UI-only build.
+ * Runs a fast UI-only build. On a non-zero exit, any matched error hints are
+ * surfaced on top of the raw mach output.
  * @param engineDir - Path to the engine directory
  * @returns Exit code
  */
 export async function buildUI(engineDir: string): Promise<number> {
-  return runMach(['build', 'faster'], engineDir, { inherit: true });
+  const result = await runMachInheritCapture(['build', 'faster'], engineDir);
+  if (result.exitCode !== 0) {
+    surfaceMachErrorHints(result.stderr);
+  }
+  return result.exitCode;
 }
 
 /**
@@ -200,12 +239,67 @@ export async function run(engineDir: string, args: string[] = []): Promise<numbe
 }
 
 /**
+ * Options for {@link runMachSmoke}.
+ */
+export interface RunMachSmokeOptions {
+  env?: Record<string, string>;
+  smokeTimeoutMs: number;
+  killGraceMs?: number;
+  onStdoutLine?: SmokeLineCallback;
+  onStderrLine?: SmokeLineCallback;
+  mirror?: { stdout?: NodeJS.WritableStream; stderr?: NodeJS.WritableStream };
+}
+
+/**
+ * Launches `mach run` under the smoke-run wrapper: streams line-by-line,
+ * enforces a deadline by SIGTERMing the whole process group, and returns
+ * the captured output alongside a `timedOut` flag.
+ *
+ * Unlike {@link run}, this variant does NOT inherit stdio. The child
+ * stdout/stderr are piped back through the line callbacks so the caller
+ * can scan for `JavaScript error:` / `console.error:` without coupling
+ * the runner to chrome-specific pattern logic.
+ */
+export async function runMachSmoke(
+  args: string[],
+  engineDir: string,
+  options: RunMachSmokeOptions
+): Promise<SmokeRunResult> {
+  const python = await getPython(engineDir);
+  await ensureMach(engineDir);
+  const machPath = join(engineDir, 'mach');
+  return execSmokeRun(python, [machPath, ...args], {
+    cwd: engineDir,
+    ...(options.env ? { env: options.env } : {}),
+    smokeTimeoutMs: options.smokeTimeoutMs,
+    ...(options.killGraceMs !== undefined ? { killGraceMs: options.killGraceMs } : {}),
+    ...(options.onStdoutLine ? { onStdoutLine: options.onStdoutLine } : {}),
+    ...(options.onStderrLine ? { onStderrLine: options.onStderrLine } : {}),
+    ...(options.mirror ? { mirror: options.mirror } : {}),
+  });
+}
+
+/**
  * Creates a distribution package.
  * @param engineDir - Path to the engine directory
  * @returns Exit code
  */
 export async function machPackage(engineDir: string): Promise<number> {
   return runMach(['package'], engineDir, { inherit: true });
+}
+
+/**
+ * Creates a distribution package while streaming output to the terminal
+ * and capturing the stderr tail for post-run diagnostics. Callers that
+ * want to consult {@link explainMachError} on failure should use this
+ * variant; the inherit-only `machPackage` above remains for callers that
+ * just need an exit code.
+ *
+ * @param engineDir - Path to the engine directory
+ * @returns Captured mach result (stdout tail, stderr tail, exit code)
+ */
+export async function machPackageCapture(engineDir: string): Promise<MachCommandResult> {
+  return runMachCapture(['package'], engineDir);
 }
 
 /**

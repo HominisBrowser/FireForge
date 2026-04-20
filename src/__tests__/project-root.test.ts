@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getProjectRoot } from '../cli.js';
+import { ConfigNotFoundError } from '../errors/config.js';
 
 describe('getProjectRoot', () => {
   const cwdSpy = vi.spyOn(process, 'cwd');
@@ -27,11 +28,17 @@ describe('getProjectRoot', () => {
     expect(getProjectRoot()).toBe(root);
   });
 
-  it('throws when no fireforge.json exists in any ancestor', async () => {
+  it('throws a ConfigNotFoundError when no fireforge.json exists in any ancestor', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'fireforge-nonroot-'));
     tempDirs.push(cwd);
     cwdSpy.mockReturnValue(cwd);
 
-    expect(() => getProjectRoot()).toThrow('Could not find fireforge.json');
+    // The throw is a user-facing `ConfigNotFoundError` (exit code CONFIG_ERROR)
+    // rather than a plain `Error` — `withErrorHandling` prints the nicely
+    // formatted `userMessage` without the stack dump that a bare Error would
+    // trigger. Verifying the type (not just the message) pins the contract
+    // so a future refactor can't silently regress back to a stack-dump exit.
+    expect(() => getProjectRoot()).toThrow(ConfigNotFoundError);
+    expect(() => getProjectRoot()).toThrow(/Configuration file not found: fireforge\.json/);
   });
 });

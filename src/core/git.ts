@@ -106,6 +106,16 @@ async function stageAllFilesChunked(
 }
 
 /**
+ * Interval between heartbeat progress messages during the monolithic
+ * `git add -A`. On a fresh ~600 MB Firefox tree the monolithic add runs
+ * 60–120 seconds, during which git emits nothing to stdout/stderr. Without
+ * a heartbeat the CLI spinner stays pinned on "Indexing Firefox source …"
+ * for the full window, looks hung, and in the eval scenario operators
+ * SIGINT'd mid-way assuming the process had stalled.
+ */
+const GIT_ADD_HEARTBEAT_MS = 15_000;
+
+/**
  * Stages all files in the repository.
  * Tries a monolithic `git add -A` first; if that times out, falls back to
  * directory-by-directory staged adds.
@@ -115,21 +125,40 @@ export async function stageAllFiles(
   options: { onProgress?: (message: string) => void; timeout?: number } = {}
 ): Promise<void> {
   const timeout = options.timeout ?? GIT_ADD_TIMEOUT_MS;
+  const reportProgress = options.onProgress;
+
+  const heartbeatStartedAt = Date.now();
+  // Periodic heartbeat so non-TTY log scrapers (CI, tail -f) AND operators
+  // watching a spinner both see that the add is still making progress
+  // rather than a dead process. Each tick reports elapsed seconds so the
+  // expected 1–3 minute window (see `download.ts`' info banner) is
+  // observable as it unfolds.
+  const heartbeatTimer = reportProgress
+    ? setInterval(() => {
+        const elapsedS = Math.round((Date.now() - heartbeatStartedAt) / 1000);
+        reportProgress(`Indexing Firefox source (still staging, ${elapsedS}s elapsed)`);
+      }, GIT_ADD_HEARTBEAT_MS)
+    : null;
+  heartbeatTimer?.unref();
 
   try {
-    await git(['add', '-A'], dir, { timeout, env: GIT_ADD_ENV });
-    return;
-  } catch (error: unknown) {
-    if (!isTimeoutError(error)) {
-      throw await maybeWrapIndexLockError(dir, error);
+    try {
+      await git(['add', '-A'], dir, { timeout, env: GIT_ADD_ENV });
+      return;
+    } catch (error: unknown) {
+      if (!isTimeoutError(error)) {
+        throw await maybeWrapIndexLockError(dir, error);
+      }
+      options.onProgress?.('Monolithic git add timed out; falling back to chunked staging...');
     }
-    options.onProgress?.('Monolithic git add timed out; falling back to chunked staging...');
+
+    // The killed process may have left an index lock
+    await cleanupIndexLock(dir);
+
+    await stageAllFilesChunked(dir, options);
+  } finally {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
   }
-
-  // The killed process may have left an index lock
-  await cleanupIndexLock(dir);
-
-  await stageAllFilesChunked(dir, options);
 }
 
 /**

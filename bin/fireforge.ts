@@ -11,6 +11,7 @@
 
 import { installBrokenPipeHandler, main } from '../src/cli.js';
 import {
+  forceReleaseFurnaceLocksForActiveOperations,
   isSignalRollbackInFlight,
   rollbackActiveOperationsForSignal,
 } from '../src/core/furnace-operation.js';
@@ -65,9 +66,18 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
         );
       }),
       waitForActiveCriticalSections(SIGNAL_CRITICAL_SECTION_TIMEOUT_MS),
-    ]).finally(() => {
-      process.exit(exitCode);
-    });
+    ])
+      // Force-release the furnace lock directory after rollback completes.
+      // `withFileLock`'s `finally { rm }` never runs when we `process.exit`
+      // the handler below, so without this sweep the lock survives the
+      // process and wedges the next `fireforge furnace …` / `fireforge
+      // test --build` command until the staleness window elapses. See
+      // `forceReleaseFurnaceLocksForActiveOperations` for why the sweep is
+      // best-effort (errors are logged, not thrown).
+      .then(() => forceReleaseFurnaceLocksForActiveOperations())
+      .finally(() => {
+        process.exit(exitCode);
+      });
   });
 }
 

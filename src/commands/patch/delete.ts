@@ -141,7 +141,16 @@ export async function patchDeleteCommand(
   const conflicts: ConflictReport | null =
     dependents.length > 0
       ? {
-          reason: `${dependents.length} later patch(es) depend on files created by ${target.filename}`,
+          // Wording deliberately clarifies the *runtime* impact: `git apply`
+          // doesn't resolve imports and will succeed even when a later patch
+          // imports a file the target created (the eval observed this
+          // directly — forcing the delete and re-importing the remaining
+          // 20-patch queue was clean). The breakage surfaces at browser
+          // startup when `ChromeUtils.importESModule` can't locate the
+          // deleted module. Operators who deliberately plan to re-introduce
+          // the imported files (rename, refactor) need to know this is the
+          // impact model, not a patch-application failure.
+          reason: `${dependents.length} later patch(es) contain import statements that reference files created by ${target.filename}. Patch application itself will still succeed, but runtime imports will fail at browser startup until those files are re-introduced.`,
           details: dependents,
         }
       : null;

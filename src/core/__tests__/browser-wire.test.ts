@@ -38,6 +38,20 @@ vi.mock('../manifest-register.js', () => ({
   })),
 }));
 
+// The transactional-wire rollback journal reads real files via
+// `node:fs/promises` before each mutation. The existing tests in this file
+// mock `utils/fs.js` but not the native module, so a real `snapshotFile`
+// would hit ENOENT on the `/project/engine/...` fake paths. Stub the
+// journal plumbing to no-ops so the pre-existing wire-target tests can
+// keep asserting their own behaviour without interference. The rollback
+// itself is exercised end-to-end by
+// `browser-wire-rollback.integration.test.ts`.
+vi.mock('../furnace-rollback.js', () => ({
+  createRollbackJournal: vi.fn(() => ({ files: new Map(), createdDirs: new Set() })),
+  snapshotFile: vi.fn(() => Promise.resolve()),
+  restoreRollbackJournal: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
@@ -373,7 +387,70 @@ describe('addDomFragment', () => {
 
     await expect(
       addDomFragment('/engine', 'browser/components/test/test.inc.xhtml')
-    ).rejects.toThrow('browser.xhtml not found');
+    ).rejects.toThrow('browser/base/content/browser.xhtml not found in engine');
+  });
+
+  it('targets a custom chrome document when targetPath is provided', async () => {
+    const customDoc = `<?xml version="1.0"?>
+<window>
+  <html:body>
+#include browser-sets.inc
+  </html:body>
+</window>`;
+    mockPathExists.mockImplementation((p: string) => {
+      if (p.endsWith('mybrowser-shell.xhtml')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    mockReadText.mockResolvedValue(customDoc);
+
+    const result = await addDomFragment(
+      '/engine',
+      'browser/base/content/fragments/panel.inc.xhtml',
+      'browser/base/content/mybrowser-shell.xhtml'
+    );
+
+    expect(result).toBe(true);
+    const writePath = mockWriteText.mock.calls[0]?.[0] as string;
+    expect(writePath).toBe('/engine/browser/base/content/mybrowser-shell.xhtml');
+    const written = mockWriteText.mock.calls[0]?.[1] as string;
+    // Include path is relative to the target doc's directory, not hardcoded browser/base/content
+    expect(written).toContain('#include fragments/panel.inc.xhtml');
+  });
+
+  it('computes the include path relative to a target that lives outside browser/base/content', async () => {
+    const customDoc = `<?xml version="1.0"?>
+<window>
+  <html:body>
+#include browser-sets.inc
+  </html:body>
+</window>`;
+    mockPathExists.mockImplementation((p: string) => {
+      if (p.endsWith('mybrowser-shell.xhtml')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    mockReadText.mockResolvedValue(customDoc);
+
+    await addDomFragment(
+      '/engine',
+      'browser/base/content/fragments/panel.inc.xhtml',
+      'mybrowser-shell/content/mybrowser-shell.xhtml'
+    );
+
+    const written = mockWriteText.mock.calls[0]?.[1] as string;
+    // Include path resolved from mybrowser-shell/content/ to browser/base/content/fragments/panel.inc.xhtml
+    expect(written).toContain('#include ../../browser/base/content/fragments/panel.inc.xhtml');
+  });
+
+  it('throws with the actual target in the error message when the custom target is missing', async () => {
+    mockPathExists.mockResolvedValue(false);
+
+    await expect(
+      addDomFragment(
+        '/engine',
+        'browser/components/test/test.inc.xhtml',
+        'browser/base/content/mybrowser-shell.xhtml'
+      )
+    ).rejects.toThrow('browser/base/content/mybrowser-shell.xhtml not found in engine');
   });
 });
 

@@ -7,6 +7,7 @@ import { Command, Help } from 'commander';
 import { COMMAND_MANIFEST, type CommandManifestEntry } from './commands/manifest.js';
 import { CancellationError, CommandError, FireForgeError } from './errors/base.js';
 import { ExitCode } from './errors/codes.js';
+import { ConfigNotFoundError } from './errors/config.js';
 import type { CommandContext } from './types/cli.js';
 import { toError } from './utils/errors.js';
 import { cancel, error as logError, setVerbose } from './utils/logger.js';
@@ -85,7 +86,10 @@ const MAX_PROJECT_ROOT_WALK_DEPTH = 50;
 /**
  * Gets the project root directory.
  * Walks up from the current working directory until a fireforge.json is found.
- * Throws when no fireforge.json is found within the walk depth limit.
+ * Throws a {@link ConfigNotFoundError} (code: CONFIG_ERROR) when no
+ * fireforge.json is found within the walk depth limit — the error is
+ * user-facing so `withErrorHandling` can print the guidance without
+ * the stack dump that a plain `Error` would trigger.
  */
 export function getProjectRoot(): string {
   const start = resolve(process.cwd());
@@ -102,10 +106,7 @@ export function getProjectRoot(): string {
     current = parent;
   }
 
-  throw new Error(
-    'Could not find fireforge.json in any parent directory. ' +
-      'Are you inside a FireForge project?'
-  );
+  throw new ConfigNotFoundError('fireforge.json');
 }
 
 /**

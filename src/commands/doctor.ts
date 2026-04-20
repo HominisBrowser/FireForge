@@ -21,6 +21,7 @@ import type { FurnaceConfig } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, success, warn } from '../utils/logger.js';
+import { executableExists } from '../utils/process.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 
 /**
@@ -408,6 +409,26 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
       return ok('mach available');
     },
     fix: 'Firefox source may be corrupted. Re-download with "fireforge download --force"',
+  },
+  {
+    // `fireforge watch` has an undeclared hard dependency on watchman —
+    // neither `bootstrap` nor `doctor` used to surface it, so operators
+    // got through setup → download → build → and only discovered the gap
+    // when they tried to start watch mode. A warning-severity doctor row
+    // is the right shape: most projects never run watch, so a missing
+    // watchman should not fail `doctor` outright, but the information
+    // needs to be visible ahead of time rather than at the watch-mode
+    // failure site.
+    name: 'Watchman available',
+    run: async () => {
+      const present = await executableExists('watchman');
+      if (present) return ok('Watchman available');
+      return warning(
+        'Watchman available',
+        'watchman is not installed or not on PATH. "fireforge watch" requires it.',
+        'Install watchman (brew install watchman / dnf install watchman / https://facebook.github.io/watchman/), then re-run doctor.'
+      );
+    },
   },
   {
     name: 'Patches directory exists',

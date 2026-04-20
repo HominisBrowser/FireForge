@@ -173,6 +173,7 @@ describe('furnaceCreateCommand --with-tests', () => {
       await furnaceCreateCommand('/project', 'moz-test-widget', {
         description: 'A test widget',
         withTests: true,
+        testStyle: 'browser-chrome',
       });
     } finally {
       process.stdin.isTTY = origTTY;
@@ -234,6 +235,7 @@ describe('furnaceCreateCommand --with-tests', () => {
       await furnaceCreateCommand('/project', 'moz-testbrowser-foo', {
         description: 'A foo widget',
         withTests: true,
+        testStyle: 'browser-chrome',
       });
     } finally {
       process.stdin.isTTY = origTTY;
@@ -271,6 +273,7 @@ describe('furnaceCreateCommand --with-tests', () => {
         furnaceCreateCommand('/project', 'moz-test-widget', {
           description: 'A test widget',
           withTests: true,
+          testStyle: 'browser-chrome',
         })
       ).rejects.toThrow(/Engine directory not found/i);
     } finally {
@@ -358,6 +361,7 @@ describe('furnaceCreateCommand --with-tests', () => {
       await furnaceCreateCommand('/project', 'moz-test-widget', {
         description: 'A test widget',
         withTests: true,
+        testStyle: 'browser-chrome',
       });
     } finally {
       process.stdin.isTTY = origTTY;
@@ -419,6 +423,90 @@ describe('furnaceCreateCommand --with-tests', () => {
     const customEntry = configArg?.custom['moz-test-widget'];
     expect(customEntry).toBeDefined();
     expect(customEntry?.composes).toBeUndefined();
+  });
+});
+
+describe('furnaceCreateCommand --xpcshell', () => {
+  it('scaffolds an xpcshell test harness when --xpcshell is set', async () => {
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+
+    try {
+      await furnaceCreateCommand('/project', 'moz-storage-widget', {
+        description: 'A storage widget',
+        xpcshell: true,
+      });
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+
+    const writeTextCalls = mockWriteText.mock.calls.map((c) => c[0]);
+
+    // xpcshell harness lives under <binary>-xpcshell/<component>/ so it does
+    // not mix with browser-chrome tests.
+    const xpcshellDir = mockEnsureDir.mock.calls
+      .map((c) => c[0])
+      .find((p: string) => p.includes('testbrowser-xpcshell/moz-storage-widget'));
+    expect(xpcshellDir).toBeDefined();
+
+    const manifest = writeTextCalls.find(
+      (p: string) => p.endsWith('xpcshell.toml') && p.includes('moz-storage-widget')
+    );
+    expect(manifest).toBeDefined();
+
+    const testFile = writeTextCalls.find((p: string) =>
+      p.includes('test_moz_storage_widget_packaged.js')
+    );
+    expect(testFile).toBeDefined();
+
+    const testCall = mockWriteText.mock.calls.find((c) =>
+      c[0].includes('test_moz_storage_widget_packaged.js')
+    );
+    const testContent = testCall?.[1] ?? '';
+    // The scaffold probes the packaged tree rather than loading the
+    // module. `ChromeUtils.importESModule` pulls in Lit, which references
+    // `window` at module-load — xpcshell has no `window` global, so the
+    // old module-load path reliably failed with
+    // `ReferenceError: window is not defined` for every Lit-based
+    // component. Assert there is no `await ChromeUtils.importESModule(`
+    // CALL (the explanatory header comment can still name the
+    // now-avoided API).
+    expect(testContent).not.toMatch(/await\s+ChromeUtils\.importESModule\(/);
+    expect(testContent).toContain('Services.dirsvc.get("XCurProcD"');
+    // Both the primary (dist/bin/browser) and fallback (app-bundle)
+    // packaged-layout candidates are probed.
+    expect(testContent).toContain('"chrome", "global", "elements", "moz-storage-widget.mjs"');
+    expect(testContent).toContain(
+      '"browser", "chrome", "global", "elements", "moz-storage-widget.mjs"'
+    );
+
+    // xpcshell does not go through registerTestManifest (moz.build wiring is
+    // left to the operator — see function docstring).
+    expect(mockRegisterTestManifest).not.toHaveBeenCalled();
+  });
+
+  it('throws when --xpcshell is set and the engine directory does not exist', async () => {
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(false);
+      return Promise.resolve(false);
+    });
+
+    try {
+      await expect(
+        furnaceCreateCommand('/project', 'moz-storage-widget', {
+          description: 'A storage widget',
+          xpcshell: true,
+        })
+      ).rejects.toThrow(/Engine directory not found/i);
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+
+    const ensureDirCalls = mockEnsureDir.mock.calls.map((c) => c[0]);
+    expect(ensureDirCalls.find((p: string) => p.includes('testbrowser-xpcshell'))).toBeUndefined();
   });
 });
 
@@ -554,19 +642,47 @@ describe('furnaceCreateCommand validation', () => {
     }
   });
 
-  it('warns when name does not match componentPrefix', async () => {
+  it('refuses when name does not match componentPrefix (post-0.16.0 hard refusal)', async () => {
+    // Pre-0.16.0 this was a warn + continue, which could land a
+    // partially-scaffolded component that follow-up commands (list,
+    // rename, status) then failed to recognise. The post-0.16.0
+    // contract is an up-front `InvalidArgumentError` that leaves the
+    // workspace untouched. `--allow-prefix-mismatch` is the escape
+    // hatch for intentional mismatches.
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
 
     try {
-      await furnaceCreateCommand('/project', 'custom-widget', { description: 'No prefix' });
+      await expect(
+        furnaceCreateCommand('/project', 'custom-widget', { description: 'No prefix' })
+      ).rejects.toThrow(/does not start with the configured prefix/);
     } finally {
       process.stdin.isTTY = origTTY;
     }
 
-    expect(mockWarn).toHaveBeenCalledWith(
-      expect.stringContaining('does not start with the configured prefix')
-    );
+    // The scaffold must not have started. `writeFurnaceConfig` would
+    // fire only if the mutation phase reached its mid-flight config
+    // write, so asserting zero calls confirms the refusal is truly
+    // pre-write.
+    expect(mockWriteFurnaceConfig).not.toHaveBeenCalled();
+  });
+
+  it('allows a prefix-mismatched name when --allow-prefix-mismatch is set', async () => {
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+
+    try {
+      await furnaceCreateCommand('/project', 'custom-widget', {
+        description: 'No prefix (override)',
+        allowPrefixMismatch: true,
+      });
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+
+    // The mutation phase ran — config was written with the new entry.
+    const configArg = mockWriteFurnaceConfig.mock.calls[0]?.[1];
+    expect(configArg?.custom['custom-widget']).toBeDefined();
   });
 
   it('generates localized files when --localized is set', async () => {
@@ -588,6 +704,19 @@ describe('furnaceCreateCommand validation', () => {
 
     const configArg = mockWriteFurnaceConfig.mock.calls[0]?.[1];
     expect(configArg?.custom['moz-test-widget']?.localized).toBe(true);
+
+    // The generated .mjs must use the MozLitElement-compatible l10n pattern:
+    // a module-level `window.MozXULElement?.insertFTLIfNeeded(...)` call and
+    // `connectRoot(this.shadowRoot)` in connectedCallback. The old (broken)
+    // template called `this.insertFTLIfNeeded(...)` on MozLitElement, which
+    // threw TypeError at every connect.
+    const mjsCall = mockWriteText.mock.calls.find((c) => c[0].endsWith('.mjs'));
+    expect(mjsCall).toBeDefined();
+    const mjsContent = mjsCall?.[1] ?? '';
+    expect(mjsContent).toContain('window.MozXULElement?.insertFTLIfNeeded(');
+    expect(mjsContent).toContain('this.ownerDocument.l10n?.connectRoot(this.shadowRoot)');
+    expect(mjsContent).toContain('this.ownerDocument.l10n?.disconnectRoot(this.shadowRoot)');
+    expect(mjsContent).not.toContain('this.insertFTLIfNeeded(');
   });
 
   it('warns but continues when test manifest registration fails', async () => {
@@ -600,6 +729,7 @@ describe('furnaceCreateCommand validation', () => {
       await furnaceCreateCommand('/project', 'moz-test-widget', {
         description: 'A test widget',
         withTests: true,
+        testStyle: 'browser-chrome',
       });
     } finally {
       process.stdin.isTTY = origTTY;

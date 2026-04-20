@@ -87,16 +87,18 @@ describe('validateComponent', () => {
   it('runs structure, accessibility, and compatibility checks', async () => {
     await validateComponent('/comp/my-btn', 'my-btn', 'custom');
 
-    // The fourth argument is the optional CustomComponentConfig used to
-    // gate the .ftl-when-localized check; without a config in scope this
-    // call site forwards undefined.
+    // The fourth argument is the optional CustomComponentConfig used by
+    // structure validation to gate the .ftl-when-localized check and by
+    // accessibility validation to recognize wrapper-over-native opt-outs
+    // (composes + keyboardCovered). Without a config in scope this call
+    // site forwards undefined to both.
     expect(mockValidateStructure).toHaveBeenCalledWith(
       '/comp/my-btn',
       'my-btn',
       'custom',
       undefined
     );
-    expect(mockValidateAccessibility).toHaveBeenCalledWith('/comp/my-btn', 'my-btn');
+    expect(mockValidateAccessibility).toHaveBeenCalledWith('/comp/my-btn', 'my-btn', undefined);
     expect(mockValidateCompatibility).toHaveBeenCalledWith(
       '/comp/my-btn',
       'my-btn',
@@ -113,7 +115,8 @@ describe('validateComponent', () => {
       '/comp/my-btn',
       'my-btn',
       '/project',
-      '--brand-'
+      '--brand-',
+      undefined
     );
   });
 
@@ -147,6 +150,44 @@ describe('validateComponent', () => {
 
     expect(mockValidateRegistrationPatterns).not.toHaveBeenCalled();
     expect(mockValidateJarMnEntries).not.toHaveBeenCalled();
+  });
+
+  it('forwards the matching custom config into accessibility validation', async () => {
+    // The accessibility validator needs `composes` / `keyboardCovered` to
+    // silence the `no-keyboard-handler` warning on wrapper components.
+    // Confirm the orchestrator threads the matching entry through.
+    const config: FurnaceConfig = {
+      ...baseConfig,
+      custom: {
+        'hominis-dock-button': {
+          description: 'Dock button wrapping moz-button',
+          targetPath: 'toolkit/content/widgets/hominis-dock-button',
+          register: true,
+          localized: false,
+          composes: ['moz-button'],
+        },
+      },
+    };
+
+    await validateComponent(
+      '/comp/hominis-dock-button',
+      'hominis-dock-button',
+      'custom',
+      config,
+      '/project'
+    );
+
+    expect(mockValidateAccessibility).toHaveBeenCalledWith(
+      '/comp/hominis-dock-button',
+      'hominis-dock-button',
+      expect.objectContaining({ composes: ['moz-button'] })
+    );
+  });
+
+  it('forwards undefined to accessibility validation for override components', async () => {
+    await validateComponent('/comp/moz-card', 'moz-card', 'override', baseConfig, '/project');
+
+    expect(mockValidateAccessibility).toHaveBeenCalledWith('/comp/moz-card', 'moz-card', undefined);
   });
 
   it('reports override baseVersion drift as a validation error', async () => {

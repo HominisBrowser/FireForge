@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { resolve } from 'node:path';
+
 import { confirm } from '@clack/prompts';
 import { Command, Option } from 'commander';
 
@@ -79,10 +81,7 @@ export async function setupCommand(projectRoot: string, options: SetupOptions = 
 }
 
 /** Registers the setup command on the CLI program. */
-export function registerSetup(
-  program: Command,
-  { getProjectRoot, withErrorHandling }: CommandContext
-): void {
+export function registerSetup(program: Command, { withErrorHandling }: CommandContext): void {
   program
     .command('setup')
     .description('Initialize a new FireForge project')
@@ -129,7 +128,7 @@ export function registerSetup(
             }
           }
 
-          await setupCommand(getProjectRoot(), setupOptions);
+          await setupCommand(resolve(process.cwd()), setupOptions);
         }
       )
     );

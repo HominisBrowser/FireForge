@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { isAbsolute, normalize } from 'node:path';
+import { dirname, isAbsolute, join, normalize } from 'node:path';
 
 import { text } from '@clack/prompts';
 
+import { getProjectPaths, loadConfig, mutateConfig, writeConfig } from '../../core/config.js';
 import {
   createDefaultFurnaceConfig,
   furnaceConfigExists,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
+import { DEFAULT_LICENSE } from '../../core/license-headers.js';
+import { getTokensCssPath } from '../../core/token-manager.js';
+import { generateDefaultTokensCss } from '../../core/token-scaffold.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
-import { cancel, info, intro, isCancel, note, outro, success } from '../../utils/logger.js';
+import { toError } from '../../utils/errors.js';
+import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
+import { cancel, info, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
 
 /**
  * Validates an FTL base path before writing it to furnace.json. Rejects
@@ -99,9 +105,14 @@ export async function furnaceInitCommand(
   await writeFurnaceConfig(projectRoot, config);
   success('Created furnace.json');
 
+  const scaffoldResult = await scaffoldTokensCss(projectRoot);
+
   const lines: string[] = [`Component prefix: ${config.componentPrefix}`];
   if (config.ftlBasePath) {
     lines.push(`FTL base path: ${config.ftlBasePath}`);
+  }
+  if (scaffoldResult.tokensCssPath) {
+    lines.push(`Tokens CSS:       ${scaffoldResult.tokensCssPath}`);
   }
   note(lines.join('\n'), 'Configuration');
 
@@ -113,4 +124,81 @@ export async function furnaceInitCommand(
   );
 
   outro('Init complete');
+}
+
+/**
+ * Scaffolds the default tokens CSS file under the engine and registers
+ * its path in `fireforge.json`'s `patchLint.rawColorAllowlist`. Both
+ * operations are skipped silently when the engine directory does not
+ * yet exist (a fresh project that hasn't `fireforge download`ed yet);
+ * the scaffold is re-driven on the next `furnace init --force`.
+ *
+ * Returns the scaffolded path when the file was actually created, so
+ * the init command can surface it in the summary note.
+ */
+async function scaffoldTokensCss(projectRoot: string): Promise<{ tokensCssPath?: string }> {
+  const paths = getProjectPaths(projectRoot);
+  if (!(await pathExists(paths.engine))) {
+    info(
+      'Skipping tokens CSS scaffold: engine/ not found. Run "fireforge download" followed by "fireforge furnace init --force" to scaffold it.'
+    );
+    return {};
+  }
+
+  let forgeConfig;
+  try {
+    forgeConfig = await loadConfig(projectRoot);
+  } catch (error: unknown) {
+    warn(
+      `Skipping tokens CSS scaffold: fireforge.json could not be loaded (${toError(error).message}). Re-run "fireforge furnace init --force" after fixing the config.`
+    );
+    return {};
+  }
+
+  const tokensCssPath = getTokensCssPath(forgeConfig.binaryName);
+  const tokensCssAbsPath = join(paths.engine, tokensCssPath);
+
+  if (!(await pathExists(tokensCssAbsPath))) {
+    try {
+      await ensureDir(dirname(tokensCssAbsPath));
+      await writeText(
+        tokensCssAbsPath,
+        generateDefaultTokensCss(forgeConfig.binaryName, forgeConfig.license ?? DEFAULT_LICENSE)
+      );
+      success(`Scaffolded tokens CSS at engine/${tokensCssPath}`);
+    } catch (error: unknown) {
+      warn(
+        `Could not scaffold tokens CSS at engine/${tokensCssPath}: ${toError(error).message}. Create the file manually before running "fireforge token add".`
+      );
+      return {};
+    }
+  } else {
+    info(`Tokens CSS already present at engine/${tokensCssPath}; leaving it untouched.`);
+  }
+
+  // Registering the tokens file in `patchLint.rawColorAllowlist` is the
+  // complement to the scaffold itself: the file exists specifically to
+  // carry raw color literals, and without the allowlist entry the very
+  // first `fireforge lint` run against a post-`token add` workspace
+  // fails on raw-color-value issues for tokens the operator just
+  // created. The add is idempotent, so re-running `furnace init --force`
+  // does not duplicate the entry.
+  try {
+    const existingAllowlist = forgeConfig.patchLint?.rawColorAllowlist ?? [];
+    if (!existingAllowlist.includes(tokensCssPath)) {
+      const updatedConfig = mutateConfig(forgeConfig, 'patchLint.rawColorAllowlist', [
+        ...existingAllowlist,
+        tokensCssPath,
+      ]);
+      await writeConfig(projectRoot, updatedConfig);
+      info(`Added ${tokensCssPath} to patchLint.rawColorAllowlist`);
+    }
+  } catch (error: unknown) {
+    warn(
+      `Could not register tokens CSS in patchLint.rawColorAllowlist: ${toError(error).message}. ` +
+        `Add "${tokensCssPath}" manually under patchLint.rawColorAllowlist in fireforge.json if lint flags its contents.`
+    );
+  }
+
+  return { tokensCssPath };
 }

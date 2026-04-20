@@ -72,6 +72,44 @@ export async function loadConfig(root: string): Promise<FireForgeConfig> {
 }
 
 /**
+ * Reads the raw `fireforge.json` document without running it through
+ * {@link validateConfig}. Returns every persisted key — including keys
+ * written via `fireforge config <key> --force` that `validateConfig`
+ * would strip from the typed result.
+ *
+ * Callers that need the validated, typed shape must still use
+ * {@link loadConfig}; this helper exists specifically for the `config`
+ * read path so `fireforge config <key>` can surface keys the write path
+ * accepted under `--force`.
+ *
+ * @param root - Root directory of the project
+ * @returns Raw config object as persisted on disk
+ * @throws ConfigNotFoundError when fireforge.json is missing
+ * @throws ConfigError when the file is not valid JSON
+ */
+export async function loadRawConfigDocument(root: string): Promise<Record<string, unknown>> {
+  const paths = getProjectPaths(root);
+
+  if (!(await pathExists(paths.config))) {
+    throw new ConfigNotFoundError(paths.config);
+  }
+
+  try {
+    const data = await readJson<unknown>(paths.config);
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+      throw new ConfigError(`Invalid fireforge.json at ${paths.config}: expected an object`);
+    }
+    return data as Record<string, unknown>;
+  } catch (error: unknown) {
+    if (error instanceof ConfigError || error instanceof ConfigNotFoundError) {
+      throw error;
+    }
+
+    throw new ConfigError(`Invalid fireforge.json at ${paths.config}: ${toError(error).message}`);
+  }
+}
+
+/**
  * Writes a configuration to fireforge.json.
  * @param root - Root directory of the project
  * @param config - Configuration to write

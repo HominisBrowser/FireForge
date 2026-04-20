@@ -460,6 +460,42 @@ describe('registerFile', () => {
       registerFile('/project', 'browser/base/content/test/sidebar/head.html')
     ).rejects.toThrow('browser.toml');
   });
+
+  it('throws xpcshell-specific advice for xpcshell.toml manifests', async () => {
+    // Eval regression: `fireforge furnace create --test-style xpcshell`
+    // and `fireforge furnace chrome-doc create --with-tests` scaffold
+    // `xpcshell.toml` under a dedicated subdirectory, but
+    // `fireforge register <path>/xpcshell.toml` then routed through the
+    // generic testMatch branch and suggested registering browser.toml —
+    // wrong manifest type AND a path that does not exist. The dedicated
+    // xpcshell branch points operators at XPCSHELL_TESTS_MANIFESTS in
+    // the appropriate moz.build.
+    await expect(
+      registerFile(
+        '/project',
+        'browser/base/content/test/mybrowser-xpcshell/my-widget/xpcshell.toml'
+      )
+    ).rejects.toThrow(/XPCSHELL_TESTS_MANIFESTS/);
+    await expect(
+      registerFile(
+        '/project',
+        'browser/base/content/test/mybrowser-xpcshell/my-widget/xpcshell.toml'
+      )
+    ).rejects.toThrow(/xpcshell\.toml manifests are not auto-registered/);
+  });
+
+  it('throws helpful advice for .inc.xhtml fragments under browser/base/content', async () => {
+    // Finding #10: the browser-content pattern previously matched every
+    // .xhtml under browser/base/content/, including `.inc.xhtml`
+    // fragments consumed via `#include`. Status then flagged them as
+    // "potentially unregistered" and register proposed a bogus jar.mn
+    // entry. The fix narrows the pattern to exclude `.inc.xhtml` and
+    // routes the call through getUnregistrableAdvice so the operator
+    // sees the `wire` guidance instead of a packaging entry.
+    await expect(
+      registerFile('/project', 'browser/base/content/my-fragment.inc.xhtml')
+    ).rejects.toThrow(/`?\.inc\.xhtml`? fragments are consumed via `#include`/);
+  });
 });
 
 describe('isFileRegistered', () => {
@@ -501,6 +537,35 @@ describe('isFileRegistered', () => {
     await expect(
       isFileRegistered('/project', 'browser/base/content/test/sidebar/head.html')
     ).rejects.toThrow('browser.toml');
+  });
+
+  it('throws advice for .inc.xhtml fragments instead of routing them into jar.mn', async () => {
+    await expect(
+      isFileRegistered('/project', 'browser/base/content/my-fragment.inc.xhtml')
+    ).rejects.toThrow(/\.inc\.xhtml/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchesRegistrablePattern — .inc.xhtml carve-out (status heuristic)
+// ---------------------------------------------------------------------------
+
+describe('matchesRegistrablePattern — .inc.xhtml carve-out', () => {
+  it('returns false for .inc.xhtml fragments so status does not flag them', () => {
+    // This is the direct gate for the status-command finding: `status`
+    // iterates new files through matchesRegistrablePattern to decide
+    // what to surface as "potentially unregistered". Before the pattern
+    // narrowed, every wired `.inc.xhtml` fragment lit up the warning,
+    // even though the file is intentionally consumed via `#include`.
+    expect(
+      matchesRegistrablePattern('browser/base/content/my-fragment.inc.xhtml', 'mybrowser')
+    ).toBe(false);
+  });
+
+  it('still matches plain .xhtml files under browser/base/content', () => {
+    expect(matchesRegistrablePattern('browser/base/content/my-overlay.xhtml', 'mybrowser')).toBe(
+      true
+    );
   });
 });
 

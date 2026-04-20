@@ -34,6 +34,50 @@ const MODULE_THRESHOLDS = {
   'src/commands/run.ts': { lines: 95, branches: 86 },
   'src/core/wire-dom-fragment.ts': { lines: 93, branches: 82 },
   'src/commands/furnace/override.ts': { lines: 98, branches: 98 },
+  // Pure pattern-based error-hint translator — trivially testable.
+  'src/core/mach-error-hints.ts': { lines: 100, branches: 95, functions: 100 },
+  // Post-build audit (warn-only) — critical because misdetections here
+  // cause noisy warnings on every successful build.
+  'src/core/build-audit.ts': { lines: 88, branches: 75 },
+  // Audit helpers — pure path-resolution and Python-style moz.build
+  // gate detection. Both are easy to unit-test exhaustively.
+  'src/core/build-audit-resolve.ts': { lines: 90, branches: 80 },
+  'src/core/build-audit-platform.ts': { lines: 88, branches: 80 },
+  // Registration-aware artifact resolver — walks jar.mn ancestors to
+  // disambiguate same-basename collisions across unrelated subtrees.
+  'src/core/build-audit-registration.ts': { lines: 95, branches: 85 },
+  // Known source→chrome packaging transforms used when no jar.mn
+  // `(source)` annotation is available. Pure path rewriting + dist probe.
+  'src/core/build-audit-transforms.ts': { lines: 95, branches: 85, functions: 100 },
+  // Build-artifact preflight + mozinfo rewriter. Coverage for the
+  // rewriter lives in `mach-mozinfo-rewrite.test.ts` (real fs) because
+  // the `mach.test.ts` suite mocks `utils/fs.js` module-wide.
+  'src/core/mach-build-artifacts.ts': { lines: 90, branches: 80 },
+  // Build baseline marker — tiny file, easy to hit high coverage.
+  'src/core/build-baseline.ts': { lines: 95, branches: 85 },
+  // Stale-build preflight for `fireforge test`. Pure git + path-filter
+  // wrapper; broken probes must never fail-open-as-stale so the defensive
+  // branches are exhaustively exercised.
+  'src/core/test-stale-check.ts': { lines: 90, branches: 75, functions: 100 },
+  // Lint diff-scoping helper — pure filtering + git integration.
+  'src/core/patch-lint-diff-tag.ts': { lines: 95, branches: 80 },
+  // Chrome-doc scaffolder — transactional, journal-backed.
+  'src/commands/furnace/chrome-doc.ts': { lines: 88, branches: 78 },
+  // Chrome-doc templates — pure string assembly.
+  'src/commands/furnace/chrome-doc-templates.ts': { lines: 100, branches: 95, functions: 100 },
+  // Chrome-doc packaging-verification test templates — pure string
+  // assembly; every branch is exercised by the unit tests.
+  'src/commands/furnace/chrome-doc-tests.ts': { lines: 100, branches: 95, functions: 100 },
+  // MochiKit scaffolder — mirrors the xpcshell scaffolder shape.
+  'src/commands/furnace/create-mochikit.ts': { lines: 95, branches: 80 },
+  // Dry-run + success-note formatter for `furnace create` — pure string
+  // assembly, exhaustively exercisable.
+  'src/commands/furnace/create-dry-run.ts': { lines: 95, branches: 85, functions: 100 },
+  // xpcshell appdir auto-injection — the resolver shapes the `--app-path`
+  // arg passed verbatim to mach test, so a regression here re-breaks
+  // every rebranded fork's xpcshell suite. Real-fs unit tests cover both
+  // happy path and the four "skip" outcomes.
+  'src/core/xpcshell-appdir.ts': { lines: 90, branches: 85, functions: 100 },
 };
 
 function loadCoverageSummary() {

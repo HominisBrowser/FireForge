@@ -333,4 +333,61 @@ describe('furnaceDiffCommand', () => {
       'override-specific-sha'
     );
   });
+
+  it('checks the locale tree for a custom component .ftl instead of targetPath', async () => {
+    // Regression guard for Finding #7: `diff` previously probed
+    // `engine/<customConfig.targetPath>/<name>.ftl`, but `furnace apply`
+    // actually writes the `.ftl` to `engine/<ftlDir>/<name>.ftl`. After a
+    // clean apply, the on-disk deployed file existed in the locale tree
+    // and its contents matched the workspace, yet `diff` reported "not
+    // yet deployed to engine (new file)" because it looked in the wrong
+    // directory. The fix mirrors `applyCustomFtlFile`'s path computation;
+    // a passing diff must now probe
+    // `engine/toolkit/locales/en-US/toolkit/global/moz-lab-pill.ftl`
+    // (the default FTL location used by resolveFtlDir).
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-lab-pill': {
+          description: 'localized custom',
+          register: true,
+          localized: true,
+          targetPath: 'toolkit/content/widgets/moz-lab-pill',
+        },
+      },
+    });
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'moz-lab-pill.ftl', isFile: () => true },
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    const workspaceFtl = 'moz-lab-pill = Localized Pill\n';
+    vi.mocked(readText).mockResolvedValue(workspaceFtl);
+
+    const probedPaths: string[] = [];
+    vi.mocked(pathExists).mockImplementation((probedPath: string) => {
+      probedPaths.push(probedPath);
+      return Promise.resolve(true);
+    });
+
+    await furnaceDiffCommand('/project', 'moz-lab-pill');
+
+    // The FTL deployment probe must hit the locale tree (the default
+    // `ftlDir` resolves to `toolkit/locales/en-US/toolkit/global/` for
+    // a project without an override in `ftlBasePath`), NOT the component
+    // targetPath.
+    expect(
+      probedPaths.some((p) => p.includes('toolkit/locales/en-US') && p.endsWith('moz-lab-pill.ftl'))
+    ).toBe(true);
+    expect(
+      probedPaths.some((p) =>
+        p.endsWith('/project/engine/toolkit/content/widgets/moz-lab-pill/moz-lab-pill.ftl')
+      )
+    ).toBe(false);
+
+    // With workspace and deployed contents equal, the command must not
+    // report "not yet deployed to engine" — that was the eval repro.
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('not yet deployed to engine'));
+  });
 });

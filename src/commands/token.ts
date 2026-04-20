@@ -2,7 +2,7 @@
 import { Command, Option } from 'commander';
 
 import { loadConfig } from '../core/config.js';
-import { loadFurnaceConfig } from '../core/furnace-config.js';
+import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
 import {
   addToken,
   getTokensCssPath,
@@ -10,6 +10,7 @@ import {
   validateTokenAdd,
 } from '../core/token-manager.js';
 import { InvalidArgumentError } from '../errors/base.js';
+import { FurnaceError } from '../errors/furnace.js';
 import type { CommandContext } from '../types/cli.js';
 import type { TokenAddOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
@@ -57,6 +58,21 @@ export async function tokenAddCommand(
   options: TokenAddOptions
 ): Promise<void> {
   intro('Token Add');
+
+  // Finding #15: a fresh project without furnace.json failed deep inside
+  // the token-manager's `assertTokenCategoryExists` with "Token CSS file
+  // not found: browser/themes/shared/<binary>-tokens.css" — technically
+  // correct, but the operator's actual next step is to initialize
+  // Furnace (which scaffolds the tokens CSS file among other things).
+  // Catching the uninitialized case here gives the right guidance up-
+  // front before the generic "file not found" error fires.
+  if (!(await furnaceConfigExists(projectRoot))) {
+    throw new FurnaceError(
+      'Token management requires Furnace to be initialized. ' +
+        'Tokens live in the Furnace-managed tokens CSS file, which `fireforge furnace init` scaffolds alongside the rest of the Furnace workspace.\n\n' +
+        'Run "fireforge furnace init" first, then rerun "fireforge token add ...".'
+    );
+  }
 
   // Normalize token name using the configured Furnace token prefix when the
   // user supplied a bare token name like "canvas-gap".
@@ -133,7 +149,13 @@ export function registerToken(
       // valid choices up-front. The runtime check in tokenAddCommand remains
       // as a defence-in-depth guard for programmatic callers that bypass
       // Commander's argument parsing.
-      new Option('--mode <mode>', 'Dark mode behavior')
+      // Description ends with `(required)` because Commander's
+      // `makeOptionMandatory` does not render a required marker in `--help`
+      // output — only `.requiredOption` does that, and switching to
+      // `.requiredOption` would lose the `.choices()` enforcement. The
+      // explicit suffix keeps the runtime validation AND surfaces required
+      // status in help alongside the other options that use `.requiredOption`.
+      new Option('--mode <mode>', 'Dark mode behavior (required)')
         .choices(['auto', 'static', 'override'])
         .makeOptionMandatory(true)
     )

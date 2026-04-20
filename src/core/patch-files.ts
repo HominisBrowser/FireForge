@@ -4,7 +4,7 @@ import { extname, join } from 'node:path';
 
 import type { PatchInfo } from '../types/commands/index.js';
 import { pathExists, readText } from '../utils/fs.js';
-import { extractOrder } from './patch-parse.js';
+import { extractAffectedFiles, extractOrder } from './patch-parse.js';
 
 /** Discovers patch files in a directory and returns them in apply order. */
 export async function discoverPatches(patchesDir: string): Promise<PatchInfo[]> {
@@ -44,16 +44,19 @@ export async function getTargetFileFromPatch(patchPath: string): Promise<string 
   return match?.[1] ?? null;
 }
 
-/** Returns all target file paths referenced by a multi-file patch. */
+/**
+ * Returns all target file paths referenced by a multi-file patch.
+ *
+ * Delegates to {@link extractAffectedFiles} so `GIT binary patch` sections
+ * (which have no `+++ b/…` line, only a `diff --git a/… b/…` header) are
+ * included alongside text hunks. Before this delegation the custom regex
+ * only matched `+++ b/…` lines, dropping every binary file from
+ * `filesAffected` — verify reported `files-affected-mismatch` against
+ * branding patches and `doctor --repair-patches-manifest` "repaired" the
+ * manifest by rewriting it to the text-only subset, hiding the true scope
+ * of the patch.
+ */
 export async function getAllTargetFilesFromPatch(patchPath: string): Promise<string[]> {
   const content = await readText(patchPath);
-  const files: string[] = [];
-  const regex = /^\+\+\+ b\/(.+)$/gm;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(content)) !== null) {
-    if (match[1]) {
-      files.push(match[1]);
-    }
-  }
-  return files;
+  return extractAffectedFiles(content);
 }

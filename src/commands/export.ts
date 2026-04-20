@@ -24,6 +24,7 @@ import { toError } from '../utils/errors.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
+import { stripEnginePrefix } from '../utils/paths.js';
 import { parsePositiveIntegerFlag, PATCH_CATEGORIES } from '../utils/validation.js';
 import {
   commitPlacementExport,
@@ -49,7 +50,15 @@ async function collectExportFiles(
   let fileStatuses: { status: string; file: string }[] | undefined;
   let untrackedFiles: string[] | undefined;
 
-  for (const inputPath of files) {
+  // Accept both repo-root-relative (`engine/browser/...`) and engine-relative
+  // (`browser/...`) paths for every input, matching `register`/`test`/`lint`.
+  // Previously, an `engine/`-prefixed path fell through to
+  // `File "engine/..." has no changes to export.` because the status lookup
+  // sees paths relative to `paths.engine` and the explicit prefix double-
+  // rooted the candidate. `stripEnginePrefix` makes that user-facing form
+  // a no-op for the lookup pipeline.
+  for (const rawInputPath of files) {
+    const inputPath = stripEnginePrefix(rawInputPath);
     const fullInputPath = join(paths.engine, inputPath);
     let isDirectory = false;
     try {

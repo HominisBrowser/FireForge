@@ -17,6 +17,12 @@ vi.mock('../../core/mach.js', () => ({
   generateMozconfig: vi.fn(),
   hasBuildArtifacts: vi.fn(),
   buildArtifactMismatchMessage: vi.fn(),
+  // Watch uses `hasRunnableBundle` informationally (banner suffix only),
+  // so default to "runnable" and let the dedicated bundle-state tests
+  // override per-case.
+  hasRunnableBundle: vi.fn(() =>
+    Promise.resolve({ runnable: true, expectedPath: 'obj-debug/dist/bin/mybrowser' })
+  ),
   watchWithOutput: vi.fn(),
 }));
 
@@ -54,10 +60,11 @@ import {
   buildArtifactMismatchMessage,
   generateMozconfig,
   hasBuildArtifacts,
+  hasRunnableBundle,
   watchWithOutput,
 } from '../../core/mach.js';
 import { pathExists } from '../../utils/fs.js';
-import { outro } from '../../utils/logger.js';
+import { info, outro } from '../../utils/logger.js';
 import { exec, executableExists } from '../../utils/process.js';
 import { watchCommand } from '../watch.js';
 
@@ -80,6 +87,10 @@ describe('watchCommand', () => {
     });
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
+    vi.mocked(hasRunnableBundle).mockResolvedValue({
+      runnable: true,
+      expectedPath: 'obj-debug/dist/bin/mybrowser',
+    });
     vi.mocked(generateMozconfig).mockResolvedValue(undefined);
     vi.mocked(watchWithOutput).mockResolvedValue({ stdout: '', stderr: '', exitCode: 130 });
   });
@@ -161,5 +172,31 @@ describe('watchCommand', () => {
     await expect(watchCommand('/project')).rejects.toThrow(/produced no output/);
 
     expect(watchWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('appends `(bundle: runnable)` when the executable is already built (Finding #13)', async () => {
+    await watchCommand('/project');
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Using build artifacts from obj-debug/ (bundle: runnable)')
+    );
+  });
+
+  it('appends `(bundle: pending — watch will rebuild)` when the binary is missing', async () => {
+    vi.mocked(hasRunnableBundle).mockResolvedValue({
+      runnable: false,
+      expectedPath: 'obj-debug/dist/bin/mybrowser',
+    });
+
+    await watchCommand('/project');
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Using build artifacts from obj-debug/ (bundle: pending — watch will rebuild)'
+      )
+    );
+    // Watch must still start even when the bundle isn't runnable yet —
+    // that's exactly the case watch exists for.
+    expect(watchWithOutput).toHaveBeenCalled();
   });
 });

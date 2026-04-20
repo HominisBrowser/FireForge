@@ -189,4 +189,39 @@ describe('setupBranding', () => {
     expect(calls[0]?.[0]).toContain('configure.sh');
     expect(calls[3]?.[0]).toContain('moz.configure');
   });
+
+  it('stamps generated files with the project license header', async () => {
+    // Regression: without a license in BrandingConfig, the scaffold wrote
+    // MPL-2.0 headers unconditionally. `patch-lint` then flagged every
+    // generated branding file for `missing-license-header` on the first
+    // export of a non-MPL project (0BSD, EUPL-1.2, GPL-2.0-or-later).
+    vi.mocked(pathExists).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('unofficial')) return Promise.resolve(true);
+      if (filePath.endsWith('mybrowser')) return Promise.resolve(false);
+      if (filePath.endsWith('brand.properties')) return Promise.resolve(true);
+      if (filePath.endsWith('brand.ftl')) return Promise.resolve(true);
+      if (filePath.endsWith('moz.configure')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('moz.configure')) {
+        return Promise.resolve('imply_option("MOZ_APP_VENDOR", "Mozilla")\n');
+      }
+      return Promise.resolve('');
+    });
+    vi.mocked(writeTextIfChanged).mockResolvedValue(true);
+
+    await setupBranding('/engine', { ...config, license: '0BSD' });
+
+    const calls = vi.mocked(writeTextIfChanged).mock.calls;
+    // configure.sh, brand.properties, brand.ftl — all three must carry the
+    // `# SPDX-License-Identifier: 0BSD` header (hash-style comments for all
+    // three file types).
+    expect(calls[0]?.[1]).toContain('# SPDX-License-Identifier: 0BSD');
+    expect(calls[1]?.[1]).toContain('# SPDX-License-Identifier: 0BSD');
+    expect(calls[2]?.[1]).toContain('# SPDX-License-Identifier: 0BSD');
+    // moz.configure patching (call 3) never rewrites the license — it's
+    // upstream-owned.
+    expect(calls[3]?.[1]).not.toContain('SPDX-License-Identifier: 0BSD');
+  });
 });

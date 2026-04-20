@@ -374,6 +374,65 @@ export function buildSetupConfig(inputs: ResolvedSetupInputs): FireForgeConfig {
   };
 }
 
+/**
+ * Creates or updates the root `package.json` so its `license` field matches
+ * the project license selected during setup. When the file already exists we
+ * ONLY touch the `license` field — preserving `name`, `description`,
+ * `dependencies`, `scripts`, and every other author-editorial field the
+ * operator may have added. Without this sync, a `fireforge setup --force`
+ * that picked a new license left the old license in `package.json`, which
+ * then disagreed with `fireforge.json` (the motivating eval finding:
+ * setup rewrote fireforge.json but left the original package.json
+ * untouched, so the two files described different projects).
+ *
+ * Preserves the file's trailing newline state so a hand-edited
+ * `package.json` with a specific EOL convention is not silently
+ * re-normalised.
+ */
+async function syncRootPackageJson(projectRoot: string, license: ProjectLicense): Promise<void> {
+  const rootPackageJsonPath = join(projectRoot, 'package.json');
+  if (!(await pathExists(rootPackageJsonPath))) {
+    const rootPackageJson = {
+      private: true,
+      license,
+    };
+    await writeText(rootPackageJsonPath, JSON.stringify(rootPackageJson, null, 2) + '\n');
+    return;
+  }
+
+  const raw = await readText(rootPackageJsonPath);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Malformed package.json is the operator's editorial responsibility to
+    // repair; rewriting it would risk clobbering hand-authored content that
+    // the parser happens to reject. Leave the file alone and rely on the
+    // doctor / lint paths that already surface invalid JSON.
+    return;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return;
+  }
+
+  // Treat the object as a typed shape with only the one field we modify.
+  // Keeping it narrowly typed rather than `Record<string, unknown>` avoids
+  // eslint's `dot-notation` / `noPropertyAccessFromIndexSignature`
+  // friction, and the rest of the package.json body is preserved via
+  // object spread at the write site so we don't lose author-editorial
+  // fields.
+  const packageJson = parsed as { license?: unknown } & Record<string, unknown>;
+  if (packageJson.license === license) {
+    return;
+  }
+
+  const trailingNewline = raw.endsWith('\n') ? '\n' : '';
+  await writeText(
+    rootPackageJsonPath,
+    JSON.stringify({ ...packageJson, license }, null, 2) + trailingNewline
+  );
+}
+
 /** Writes the initial project files produced by the setup workflow. */
 export async function writeSetupProjectFiles(
   projectRoot: string,
@@ -411,13 +470,13 @@ export async function writeSetupProjectFiles(
     await writeText(gitignorePath, requiredIgnores.join('\n') + '\n');
   }
 
-  const rootPackageJsonPath = join(projectRoot, 'package.json');
-  if (!(await pathExists(rootPackageJsonPath))) {
-    const rootPackageJson = {
-      private: true,
-      license: config.license,
-    };
-    await writeText(rootPackageJsonPath, JSON.stringify(rootPackageJson, null, 2) + '\n');
+  // FireForgeConfig types license as optional, but `buildSetupConfig` always
+  // fills it from the resolved setup inputs (which default to `EUPL-1.2`).
+  // Narrow explicitly so the helper takes a concrete license rather than
+  // widening its own signature for a field that is always set at this call
+  // site.
+  if (config.license !== undefined) {
+    await syncRootPackageJson(projectRoot, config.license);
   }
 
   const templatesDir = getTemplatesDir();

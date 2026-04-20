@@ -28,6 +28,11 @@ import { isValidPatchCategory, PATCH_CATEGORIES, validatePatchName } from '../ut
  * @param config - Project configuration
  * @param skipLint - If true, downgrade errors to warnings
  * @param patchQueueCtx - Optional cross-patch context for ownership resolution
+ * @param ignoreChecks - Optional per-patch set of `check` IDs to suppress
+ *   (threaded from `PatchMetadata.lintIgnore`). Surgical alternative to
+ *   `--skip-lint` when exactly one advisory rule does not apply to a
+ *   specific patch — e.g. `large-patch-lines` on a cohesive branding
+ *   bundle that genuinely cannot be split.
  */
 export async function runPatchLint(
   engineDir: string,
@@ -35,14 +40,16 @@ export async function runPatchLint(
   diffContent: string,
   config: FireForgeConfig,
   skipLint?: boolean,
-  patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext
+  patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext,
+  ignoreChecks?: ReadonlySet<string>
 ): Promise<void> {
   const issues = await lintExportedPatch(
     engineDir,
     filesAffected,
     diffContent,
     config,
-    patchQueueCtx
+    patchQueueCtx,
+    ignoreChecks
   );
   if (issues.length === 0) return;
 

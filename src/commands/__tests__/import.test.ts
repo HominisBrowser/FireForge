@@ -80,6 +80,7 @@ import {
   extractAffectedFiles,
 } from '../../core/patch-apply.js';
 import {
+  loadPatchesManifest,
   validatePatchesManifestConsistency,
   validatePatchIntegrity,
 } from '../../core/patch-manifest.js';
@@ -476,5 +477,110 @@ describe('importCommand drift handling', () => {
     expect(error).toHaveBeenCalledWith('\nFailed: 001-ui-test.patch');
     expect(warn).toHaveBeenCalledWith('\n1 patch(es) were skipped:');
     expect(info).toHaveBeenCalledWith('\nResolution Instructions:');
+  });
+
+  it('scopes --until to skip integrity issues on out-of-range later patches', async () => {
+    // Eval regression: with `--until 001-foo.patch`, an integrity problem on
+    // 002-bar.patch used to block the import because `validatePatchIntegrity`
+    // scanned every patch and no filter applied before the blocking check.
+    // The fix filters the returned issues to the `--until` range, so a broken
+    // later patch does not prevent replaying an earlier good subset.
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+    vi.mocked(countPatches).mockResolvedValue(2);
+    vi.mocked(loadPatchesManifest).mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-foo.patch',
+          name: 'foo',
+          order: 1,
+          category: 'ui',
+          description: '',
+          filesAffected: ['a.js'],
+          createdAt: '2026-04-20T00:00:00Z',
+          sourceEsrVersion: '140.9.0esr',
+        },
+        {
+          filename: '002-bar.patch',
+          name: 'bar',
+          order: 2,
+          category: 'ui',
+          description: '',
+          filesAffected: ['b.js'],
+          createdAt: '2026-04-20T00:00:00Z',
+          sourceEsrVersion: '140.9.0esr',
+        },
+      ],
+    });
+    vi.mocked(validatePatchIntegrity).mockResolvedValue([
+      {
+        filename: '002-bar.patch',
+        message: 'manifest mismatch',
+        targetFile: null,
+      },
+    ]);
+    vi.mocked(applyPatchesWithContinue).mockResolvedValue({
+      total: 1,
+      succeeded: [
+        {
+          patch: { filename: '001-foo.patch', path: '/fake/patches/001-foo.patch', order: 1 },
+          success: true,
+        },
+      ],
+      failed: [],
+      skipped: [],
+    });
+
+    await expect(importCommand('/fake/root', { until: '001-foo.patch' })).resolves.toBeUndefined();
+
+    expect(applyPatchesWithContinue).toHaveBeenCalledWith('/fake/patches', '/fake/engine', {
+      continueOnFailure: false,
+      untilFilename: '001-foo.patch',
+    });
+  });
+
+  it('still blocks --until when the in-range patch itself has an integrity issue', async () => {
+    // Defensive complement to the scoping test: if the failing patch IS in
+    // the `--until` range, the integrity block still fires. Without this, the
+    // filter above would accidentally be a blanket suppression.
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+    vi.mocked(countPatches).mockResolvedValue(2);
+    vi.mocked(loadPatchesManifest).mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-foo.patch',
+          name: 'foo',
+          order: 1,
+          category: 'ui',
+          description: '',
+          filesAffected: ['a.js'],
+          createdAt: '2026-04-20T00:00:00Z',
+          sourceEsrVersion: '140.9.0esr',
+        },
+        {
+          filename: '002-bar.patch',
+          name: 'bar',
+          order: 2,
+          category: 'ui',
+          description: '',
+          filesAffected: ['b.js'],
+          createdAt: '2026-04-20T00:00:00Z',
+          sourceEsrVersion: '140.9.0esr',
+        },
+      ],
+    });
+    vi.mocked(validatePatchIntegrity).mockResolvedValue([
+      {
+        filename: '001-foo.patch',
+        message: 'references a missing file',
+        targetFile: null,
+      },
+    ]);
+
+    await expect(importCommand('/fake/root', { until: '001-foo.patch' })).rejects.toThrow(
+      /Refusing to import while 1 patch integrity issue/
+    );
+    expect(applyPatchesWithContinue).not.toHaveBeenCalled();
   });
 });

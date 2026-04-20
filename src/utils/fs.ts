@@ -215,6 +215,19 @@ export async function copyDir(src: string, dest: string): Promise<void> {
 }
 
 /**
+ * Matches the atomic-temp-file shape emitted by `createAtomicTempPath`
+ * anywhere in a normalised (forward-slash) path. The `.fireforge-tmp-`
+ * marker plus a PID/UUID tail is unique to our own rename-based atomic
+ * writes, so callers (notably `status`) can filter these mid-flight
+ * artefacts out of their listings without racing the rename.
+ *
+ * Intentionally anchored so a legitimately-named backup file like
+ * `.notes.fireforge-tmp-backup` (no PID+UUID continuation) is NOT treated
+ * as one of our temps. The full shape is `.<filename>.fireforge-tmp-<pid>-<uuid>`.
+ */
+export const FIREFORGE_TMP_PATH_PATTERN = /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9a-f-]{36}$/i;
+
+/**
  * Generates a unique temp file path for atomic writes.
  *
  * Each invocation gets its own path via PID + UUID, so concurrent writers

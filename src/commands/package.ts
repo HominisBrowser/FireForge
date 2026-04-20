@@ -4,7 +4,12 @@ import { Command } from 'commander';
 import { validateBrandOverride } from '../core/brand-validation.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import { buildArtifactMismatchMessage, hasBuildArtifacts, machPackage } from '../core/mach.js';
+import {
+  buildArtifactMismatchMessage,
+  hasBuildArtifacts,
+  machPackageCapture,
+} from '../core/mach.js';
+import { explainMachError } from '../core/mach-error-hints.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
@@ -64,10 +69,17 @@ export async function packageCommand(projectRoot: string, options: PackageOption
   info('This may take a while.\n');
 
   const startTime = Date.now();
-  let exitCode: number;
+  let result: Awaited<ReturnType<typeof machPackageCapture>>;
 
   try {
-    exitCode = await machPackage(paths.engine);
+    // `machPackageCapture` streams output live AND captures the tail for
+    // post-run diagnostics. Previously `machPackage` inherited stdio
+    // only, so a targeted hint translator could not see the failure text.
+    // The captured stderr is fed through `explainMachError` below so
+    // recognised failure modes (notably the `packager.py` NoneType trip
+    // the evaluator hit on `hominis/`) get an actionable hint prepended
+    // to the raw mach output the operator already saw.
+    result = await machPackageCapture(paths.engine);
   } catch (error: unknown) {
     throw new BuildError(
       'Package process failed to start',
@@ -81,9 +93,15 @@ export async function packageCommand(projectRoot: string, options: PackageOption
   const seconds = Math.floor((duration % 60000) / 1000);
   const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 
-  if (exitCode !== 0) {
+  if (result.exitCode !== 0) {
     error(`Packaging failed after ${timeStr}`);
-    throw new BuildError(`Packaging failed with exit code ${exitCode}`, 'mach package');
+    const combinedOutput = `${result.stdout}\n${result.stderr}`;
+    const hints = explainMachError(combinedOutput);
+    const hintBlock = hints.length > 0 ? `\n\nHint:\n${hints.map((h) => `  ${h}`).join('\n')}` : '';
+    throw new BuildError(
+      `Packaging failed with exit code ${result.exitCode}.${hintBlock}`,
+      'mach package'
+    );
   }
 
   info(`\nPackage created in obj-*/dist/`);

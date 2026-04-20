@@ -466,4 +466,112 @@ describe('setup-support', () => {
 
     expect(writeJson).not.toHaveBeenCalled();
   });
+
+  it('updates only the license field on an existing root package.json and preserves deps', async () => {
+    // Eval regression: `fireforge setup --force` that picked a new license
+    // rewrote fireforge.json but left the root package.json untouched. The
+    // two files then disagreed about the project license. The fix syncs the
+    // package.json `license` field while preserving every other author-
+    // editorial field (dependencies, scripts, name, description, …).
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(filePath === '/project/package.json')
+    );
+    vi.mocked(readText).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        filePath === '/project/package.json'
+          ? JSON.stringify(
+              {
+                name: 'audit-fox',
+                version: '0.1.0',
+                description: 'Hand-authored description',
+                license: 'MPL-2.0',
+                dependencies: { commander: '^14.0.0' },
+                scripts: { build: 'fireforge build' },
+              },
+              null,
+              2
+            ) + '\n'
+          : ''
+      )
+    );
+
+    await writeSetupProjectFiles('/project', {
+      name: 'Audit Fox',
+      vendor: 'Audit Corp',
+      appId: 'org.auditfox.browser',
+      binaryName: 'auditfox',
+      license: '0BSD',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      build: { jobs: 4 },
+    });
+
+    const packageWriteCall = vi
+      .mocked(writeText)
+      .mock.calls.find(([path]) => path === '/project/package.json');
+    expect(packageWriteCall).toBeDefined();
+    const written = packageWriteCall?.[1] ?? '';
+    const parsed = JSON.parse(written) as Record<string, unknown>;
+    expect(parsed['license']).toBe('0BSD');
+    expect(parsed['name']).toBe('audit-fox');
+    expect(parsed['description']).toBe('Hand-authored description');
+    expect(parsed['dependencies']).toEqual({ commander: '^14.0.0' });
+    expect(parsed['scripts']).toEqual({ build: 'fireforge build' });
+  });
+
+  it('leaves an existing root package.json untouched when the license already matches', async () => {
+    // Idempotency: `setup` without a license change should not rewrite the
+    // file at all (avoids spurious diffs on repeated runs).
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(filePath === '/project/package.json')
+    );
+    vi.mocked(readText).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        filePath === '/project/package.json'
+          ? JSON.stringify({ private: true, license: 'EUPL-1.2' }, null, 2) + '\n'
+          : ''
+      )
+    );
+
+    await writeSetupProjectFiles('/project', {
+      name: 'Audit Fox',
+      vendor: 'Audit Corp',
+      appId: 'org.auditfox.browser',
+      binaryName: 'auditfox',
+      license: 'EUPL-1.2',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      build: { jobs: 4 },
+    });
+
+    const packageWriteCall = vi
+      .mocked(writeText)
+      .mock.calls.find(([path]) => path === '/project/package.json');
+    expect(packageWriteCall).toBeUndefined();
+  });
+
+  it('leaves a malformed root package.json alone rather than rewriting it', async () => {
+    // Guard: a hand-edited package.json that happens to be invalid JSON is
+    // the operator's editorial responsibility. Rewriting it would clobber
+    // in-progress content and is worse than a no-op.
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(filePath === '/project/package.json')
+    );
+    vi.mocked(readText).mockImplementation((filePath: string) =>
+      Promise.resolve(filePath === '/project/package.json' ? '{ not-json' : '')
+    );
+
+    await writeSetupProjectFiles('/project', {
+      name: 'Audit Fox',
+      vendor: 'Audit Corp',
+      appId: 'org.auditfox.browser',
+      binaryName: 'auditfox',
+      license: '0BSD',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      build: { jobs: 4 },
+    });
+
+    const packageWriteCall = vi
+      .mocked(writeText)
+      .mock.calls.find(([path]) => path === '/project/package.json');
+    expect(packageWriteCall).toBeUndefined();
+  });
 });

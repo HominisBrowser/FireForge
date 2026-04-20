@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { applyAllComponents } from '../core/furnace-apply.js';
@@ -10,7 +11,7 @@ import {
   updateFurnaceState,
 } from '../core/furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN, resolveFtlDir } from '../core/furnace-constants.js';
-import { runFurnaceMutation } from '../core/furnace-operation.js';
+import { getFurnaceLockPath, runFurnaceMutation } from '../core/furnace-operation.js';
 import { validateAllComponents } from '../core/furnace-validate.js';
 import type {
   ApplyResult,
@@ -424,12 +425,20 @@ const furnaceEnginePathsCheck: DoctorCheckDefinition = {
   dependsOn: ['Furnace configuration'],
   skipIf: (ctx) => !ctx.furnaceConfigExists || !ctx.furnaceConfig || !ctx.engineExists,
   run: async (ctx): Promise<CheckResult> => {
+    // Forks that replace browser.xhtml with a custom top-level chrome
+    // document enumerate their chrome docs in furnace.json.tokenHostDocuments.
+    // Reuse the same field for the engine-path probe so those forks stop
+    // seeing a permanent "browser.xhtml missing" warning.
+    const hostDocs =
+      ctx.furnaceConfig?.tokenHostDocuments && ctx.furnaceConfig.tokenHostDocuments.length > 0
+        ? ctx.furnaceConfig.tokenHostDocuments
+        : ['browser/base/content/browser.xhtml'];
     const expectedPaths: readonly string[] = [
       CUSTOM_ELEMENTS_JS,
       JAR_MN,
       'toolkit/content/widgets',
       resolveFtlDir(ctx.furnaceConfig?.ftlBasePath),
-      'browser/base/content/browser.xhtml',
+      ...hostDocs,
     ];
     const missing: string[] = [];
     for (const relative of expectedPaths) {
@@ -541,6 +550,100 @@ const furnaceComponentValidationCheck: DoctorCheckDefinition = {
 };
 
 /**
+ * Reads the owner PID from a furnace lock directory. Returns `null` when
+ * the PID file is missing, unreadable, or does not parse as a finite
+ * integer — the caller then falls back to an age-only heuristic.
+ */
+async function readFurnaceLockPid(lockPath: string): Promise<number | null> {
+  try {
+    const pidContent = await readFile(join(lockPath, 'pid'), 'utf-8');
+    const pid = parseInt(pidContent.trim(), 10);
+    return Number.isFinite(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessStillRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * "Furnace stale lock" check: detect and (under `--repair-furnace`)
+ * remove a `.fireforge/furnace.lock` directory whose owner process is no
+ * longer alive.
+ *
+ * This is the recovery path when the signal-handler sweep
+ * (`forceReleaseFurnaceLocksForActiveOperations` in `bin/fireforge.ts`)
+ * misses — e.g. a SIGKILL'd process that never got to run the handler, or
+ * a lock created by an older FireForge release without a PID file. The
+ * motivating eval scenario: SIGINT'ing `furnace preview` left the lock
+ * behind, and the next `fireforge test --build` timed out waiting for it.
+ * `doctor --repair-furnace` now clears the lock explicitly so the next
+ * command runs immediately.
+ */
+const furnaceStaleLockCheck: DoctorCheckDefinition = {
+  name: 'Furnace lock',
+  dependsOn: ['Furnace configuration'],
+  skipIf: (ctx) => !ctx.furnaceConfigExists,
+  run: async (ctx): Promise<CheckResult> => {
+    const lockPath = getFurnaceLockPath(ctx.projectRoot);
+    if (!(await pathExists(lockPath))) {
+      return ok('Furnace lock');
+    }
+
+    const pid = await readFurnaceLockPid(lockPath);
+    const lockStat = await stat(lockPath).catch(() => null);
+    const ageMs = lockStat ? Date.now() - lockStat.mtimeMs : undefined;
+    const ageSuffix = ageMs !== undefined ? ` (age: ${Math.round(ageMs / 1000)}s)` : '';
+
+    // Two signals mark a lock as stale:
+    //   1. PID file says owner is dead → unambiguous, remove immediately.
+    //   2. PID file absent AND lock is older than 60s → older FireForge
+    //      releases (or an externally-created lock directory) fall into
+    //      this bucket; the age gate avoids false positives on a lock
+    //      that was just acquired by a concurrent process that hadn't
+    //      written its PID yet.
+    const ownerDead = pid !== null && !isProcessStillRunning(pid);
+    const pidMissingAndOld = pid === null && (ageMs ?? 0) > 60_000;
+    const isStale = ownerDead || pidMissingAndOld;
+
+    if (!isStale) {
+      // Lock is held by a running FireForge process — nothing to report.
+      return ok('Furnace lock');
+    }
+
+    const description = ownerDead
+      ? `Stale furnace lock at ${lockPath}: owner PID ${pid} is no longer running${ageSuffix}.`
+      : `Stale furnace lock at ${lockPath}: no PID file and lock directory is older than 60s${ageSuffix}.`;
+
+    if (!ctx.options.repairFurnace) {
+      return warning(
+        'Furnace lock',
+        description,
+        'Run "fireforge doctor --repair-furnace" to remove the stale lock.'
+      );
+    }
+
+    try {
+      await rm(lockPath, { recursive: true, force: true });
+      return warning('Furnace lock', `Removed stale furnace lock at ${lockPath}${ageSuffix}.`);
+    } catch (err: unknown) {
+      return failure(
+        'Furnace lock',
+        `Could not remove stale furnace lock at ${lockPath}: ${toError(err).message}`,
+        'Remove the directory manually (rm -rf .fireforge/furnace.lock) and retry.'
+      );
+    }
+  },
+};
+
+/**
  * The ordered furnace check group. Exported as an array so `doctor.ts`
  * can splice it into the main registry at the right position. The order
  * here matters: `Furnace configuration` must run before the consumers
@@ -551,6 +654,7 @@ export const FURNACE_DOCTOR_CHECKS: readonly DoctorCheckDefinition[] = [
   furnaceStateConsistencyCheck,
   furnaceEnginePathsCheck,
   furnaceStorybookCheck,
+  furnaceStaleLockCheck,
   furnaceEngineStateCheck,
   furnaceComponentValidationCheck,
 ];

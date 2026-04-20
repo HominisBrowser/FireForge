@@ -532,3 +532,47 @@ describe('lintCommand — branch coverage', () => {
     });
   });
 });
+
+describe('lintCommand — engine/ prefix normalization (Finding #4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(getAllDiff).mockResolvedValue('diff content');
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+    vi.mocked(lintExportedPatch).mockResolvedValue([]);
+    vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+  });
+
+  it('accepts a repo-root-relative engine/ prefix on a file path', async () => {
+    vi.mocked(stat).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(getStatusWithCodes).mockResolvedValue([
+      { status: 'M', file: 'browser/base/content/foo.js' },
+    ]);
+
+    // Operator pastes the path with the `engine/` prefix (common from git
+    // status output). Pre-fix, this fell through to
+    // "No modified files found in the specified paths." because the
+    // status lookup sees paths relative to engine/ and the explicit
+    // prefix double-rooted. `stripEnginePrefix` now makes both forms
+    // equivalent to the pipeline.
+    await expect(
+      lintCommand('/project', ['engine/browser/base/content/foo.js'])
+    ).resolves.toBeUndefined();
+
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+      'browser/base/content/foo.js',
+    ]);
+    expect(info).not.toHaveBeenCalledWith('No modified files found in the specified paths.');
+  });
+
+  it('accepts an engine/ prefix on a directory path', async () => {
+    vi.mocked(stat).mockResolvedValue(fakeStats({ isDirectory: () => true }));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue(['browser/base/content/foo.js']);
+
+    await lintCommand('/project', ['engine/browser/base/content']);
+
+    expect(getModifiedFilesInDir).toHaveBeenCalledWith('/project/engine', 'browser/base/content');
+  });
+});

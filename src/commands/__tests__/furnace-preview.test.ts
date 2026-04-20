@@ -76,6 +76,11 @@ vi.mock('../../core/furnace-stories.js', () => ({
 vi.mock('../../core/mach.js', () => ({
   runMach: vi.fn(),
   runMachCapture: vi.fn(),
+  // The preview preflight (Finding #9) consults hasBuildArtifacts to
+  // refuse fast when no dist/ exists. Default to "build complete" so the
+  // pre-existing tests keep testing the staging + storybook path; the
+  // specific preflight tests below override per-case.
+  hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -97,7 +102,7 @@ import { applyAllComponents } from '../../core/furnace-apply.js';
 import { updateFurnaceState } from '../../core/furnace-config.js';
 import { restoreRollbackJournal } from '../../core/furnace-rollback.js';
 import { cleanStories, syncStories } from '../../core/furnace-stories.js';
-import { runMach, runMachCapture } from '../../core/mach.js';
+import { hasBuildArtifacts, runMach, runMachCapture } from '../../core/mach.js';
 import type { FurnaceState } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
 import { furnacePreviewCommand } from '../furnace/preview.js';
@@ -107,9 +112,12 @@ describe('furnacePreviewCommand', () => {
     vi.clearAllMocks();
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' || path === '/project/engine/browser/components/storybook'
+        path === '/project/engine' ||
+          path === '/project/engine/browser/components/storybook' ||
+          path === '/project/engine/.cargo/config.toml'
       )
     );
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
   });
 
@@ -294,5 +302,57 @@ describe('furnacePreviewCommand', () => {
     expect(message).toMatch(/EACCES: engine locked/);
     expect(message).toMatch(/disk full mid-write/);
     expect(updateFurnaceState).toHaveBeenCalled();
+  });
+});
+
+describe('furnacePreviewCommand — build-artefact preflight (Finding #9)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/project/engine' ||
+          path === '/project/engine/browser/components/storybook' ||
+          path === '/project/engine/.cargo/config.toml'
+      )
+    );
+    vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+  });
+
+  it('refuses fast when no obj-*/dist/ is present', async () => {
+    // Pre-0.16.0 the preview staged components and then launched
+    // `mach storybook upgrade` (an npm install of ~1000 packages) before
+    // `mach storybook` failed on missing backend artefacts. The preflight
+    // short-circuits on hasBuildArtifacts so the operator never pays
+    // the npm-install tax on an unbuilt engine.
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: false });
+
+    await expect(furnacePreviewCommand('/project')).rejects.toThrow(
+      /Furnace preview requires a completed Firefox build/
+    );
+
+    // Must NOT reach the staging step.
+    expect(applyAllComponents).not.toHaveBeenCalled();
+    expect(syncStories).not.toHaveBeenCalled();
+    expect(runMach).not.toHaveBeenCalled();
+    expect(runMachCapture).not.toHaveBeenCalled();
+  });
+
+  it('refuses when .cargo/config.toml is missing', async () => {
+    // `mach storybook` compiles Rust helpers via the engine's Cargo
+    // config. When bootstrap hasn't run or was partial, the install
+    // completes and then the Rust step fails with a cryptic error. The
+    // preflight catches that explicitly.
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/project/engine' || path === '/project/engine/browser/components/storybook'
+        // .cargo/config.toml intentionally missing
+      )
+    );
+
+    await expect(furnacePreviewCommand('/project')).rejects.toThrow(/config\.toml` is missing/);
+
+    expect(applyAllComponents).not.toHaveBeenCalled();
+    expect(syncStories).not.toHaveBeenCalled();
   });
 });

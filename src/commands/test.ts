@@ -25,29 +25,7 @@ import type { TestOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, spinner, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
-
-/**
- * Strips a leading "engine/" or "engine\\" prefix from a path if present.
- * Users may specify paths like "engine/browser/modules/..." from the project
- * root, but mach test expects paths relative to the engine directory.
- *
- * The match is case-insensitive because case-insensitive filesystems
- * (default macOS, Windows) treat "Engine/" and "engine/" as the same
- * directory, and a literal lowercase-only check left mach with a
- * non-stripped prefix that resolved to a different path under the engine
- * tree. Tab and other whitespace before the prefix is also ignored.
- *
- * @param testPath - Path as provided by the user
- * @returns Path relative to the engine directory
- */
-function normalizeTestPath(testPath: string): string {
-  const trimmed = testPath.trim();
-  const match = /^engine[/\\]/i.exec(trimmed);
-  if (match) {
-    return trimmed.slice(match[0].length);
-  }
-  return trimmed;
-}
+import { stripEnginePrefix } from '../utils/paths.js';
 
 async function assertTestPathsExist(engineDir: string, testPaths: string[]): Promise<void> {
   const missingPaths: string[] = [];
@@ -259,8 +237,11 @@ export async function testCommand(
     }
   }
 
-  // Normalize test paths (strip engine/ prefix if present)
-  const normalizedPaths = testPaths.map(normalizeTestPath);
+  // Normalize test paths (strip engine/ prefix if present). Uses the
+  // shared `stripEnginePrefix` helper so `test`, `register`, `lint`, and
+  // `export` all accept the same prefix forms. Also trim to match the
+  // previous case-insensitive + leading-whitespace-tolerant contract.
+  const normalizedPaths = testPaths.map((p) => stripEnginePrefix(p).trim());
   await assertTestPathsExist(paths.engine, normalizedPaths);
 
   // Build extra args

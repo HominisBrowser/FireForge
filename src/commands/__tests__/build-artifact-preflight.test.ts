@@ -31,7 +31,21 @@ vi.mock('../../core/mach.js', () => ({
   watchWithOutput: vi.fn(() => Promise.resolve({ stdout: '', stderr: '', exitCode: 130 })),
   hasBuildArtifacts: vi.fn(),
   buildArtifactMismatchMessage: vi.fn(),
+  // `packageCommand` now uses the capturing variant so it can surface
+  // `explainMachError` hints (Finding #12). Keep the legacy `machPackage`
+  // mock for any path that still references it; both resolve to a
+  // clean-exit shape for these preflight tests which gate on the
+  // `hasBuildArtifacts` outcome, never on the package result.
   machPackage: vi.fn(),
+  machPackageCapture: vi.fn(() => Promise.resolve({ stdout: '', stderr: '', exitCode: 0 })),
+  // Finding #13 adds a bundle-readiness probe that `run` and `watch`
+  // consult. Default to "runnable" so the preflight tests still hit the
+  // branch they actually care about (mismatch reasons, watchman failures);
+  // dedicated bundle-agreement coverage lives in run.test.ts /
+  // watch.test.ts.
+  hasRunnableBundle: vi.fn(() =>
+    Promise.resolve({ runnable: true, expectedPath: 'obj-debug/dist/bin/mybrowser' })
+  ),
   test: vi.fn(),
   testWithOutput: vi.fn(),
   buildUI: vi.fn(),

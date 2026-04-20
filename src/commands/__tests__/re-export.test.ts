@@ -310,6 +310,51 @@ describe('reExportCommand - --scan flag', () => {
     expect(getClaimedFiles).not.toHaveBeenCalled();
   });
 
+  it('warns when filesAffected names a path missing from disk without --scan (Finding #16)', async () => {
+    // Finding #16 guardrail: re-export without --scan preserves the
+    // manifest's filesAffected verbatim. If some of those paths are
+    // gone (deleted locally, moved by another branch), the refreshed
+    // patch body writes against a stale manifest and `verify` later
+    // fails on manifest-consistency with no obvious trigger. The
+    // warning alerts the operator before that happens.
+    const patch = makePatch('001-ui-test.patch', [
+      'browser/modules/foo/a.js',
+      'browser/modules/foo/missing.js',
+    ]);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockImplementation((p: string) => {
+      if (p.endsWith('/missing.js')) return Promise.resolve(false);
+      return Promise.resolve(true);
+    });
+
+    await reExportCommand('/fake/root', ['001'], {});
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('some files in patches.json no longer exist on disk')
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Re-run with --scan'));
+  });
+
+  it('does NOT emit the stale-manifest warning when --scan is set', async () => {
+    // --scan already reconciles filesAffected with the worktree, so the
+    // advisory is redundant and noisy in that mode. Seed the worktree
+    // with a file that exists so the re-export still produces a body
+    // (otherwise all-files-missing short-circuits before any warning
+    // path could run).
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getClaimedFiles).mockReturnValue(new Set());
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    await reExportCommand('/fake/root', ['001'], { scan: true });
+
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('some files in patches.json no longer exist on disk')
+    );
+  });
+
   it('should work with --all and --scan combined', async () => {
     const patch1 = makePatch('001-ui-test.patch', ['dir1/a.js']);
     const patch2 = makePatch('002-ui-other.patch', ['dir2/b.js']);

@@ -247,11 +247,13 @@ async function performOverrideMutations(args: {
 }
 
 /**
- * Throws if `componentName` is already classified anywhere in the furnace
- * config. Without this guard, `writeFurnaceConfig` would happily produce a
- * file where the same tag appears under multiple categories (stock +
- * override, custom + override) and later commands would no longer be able
- * to reason about that component cleanly.
+ * Throws if `componentName` is already classified as something `override`
+ * cannot coexist with. A stock-bucket entry is NOT a hard conflict — the
+ * whole point of `override` is to fork a component out of the stock bucket
+ * into the overrides bucket, and requiring manual `furnace.json` surgery
+ * first was a pure footgun. `promoteStockToOverrideIfNeeded` handles the
+ * transition in-memory; this guard only rejects the other two cases where
+ * a rename actually contradicts existing state.
  */
 function assertNoComponentCollision(
   config: Awaited<ReturnType<typeof loadAuthoringFurnaceConfig>>,
@@ -263,18 +265,30 @@ function assertNoComponentCollision(
       componentName
     );
   }
-  if (config.stock.includes(componentName)) {
-    throw new FurnaceError(
-      `"${componentName}" is already registered as a stock component. Remove it from config.stock before creating an override.`,
-      componentName
-    );
-  }
   if (componentName in config.custom) {
     throw new FurnaceError(
       `"${componentName}" is already registered as a custom component. Custom components cannot also be overrides.`,
       componentName
     );
   }
+}
+
+/**
+ * When the operator overrides a component that `furnace scan` previously
+ * classified as stock, splice the name out of `config.stock` in-memory so
+ * the subsequent `writeFurnaceConfig` inside the mutation phase persists
+ * the stock → override promotion atomically alongside the new override
+ * entry. Returns true when a promotion happened so the caller can emit a
+ * one-line note; false when the component was not stock.
+ */
+function promoteStockToOverrideIfNeeded(
+  config: Awaited<ReturnType<typeof loadAuthoringFurnaceConfig>>,
+  componentName: string
+): boolean {
+  const index = config.stock.indexOf(componentName);
+  if (index === -1) return false;
+  config.stock.splice(index, 1);
+  return true;
 }
 
 /**
@@ -357,6 +371,10 @@ export async function furnaceOverrideCommand(
   }
 
   assertNoComponentCollision(config, componentName);
+  const promotedFromStock = promoteStockToOverrideIfNeeded(config, componentName);
+  if (promotedFromStock) {
+    info(`Promoting "${componentName}" from stock to override.`);
+  }
 
   // Validate the component exists in engine
   const details = await getComponentDetails(paths.engine, componentName, ftlDir);
@@ -511,13 +529,18 @@ export async function furnaceBatchOverrideCommand(
   const state = await loadState(projectRoot);
 
   // Check for duplicates and pre-existing classifications across every
-  // bucket in furnace.json. Missing these collisions silently double-
-  // classifies a tag (e.g. both stock and override) and leaves the
-  // workspace in a state that later `furnace status`/`apply` cannot
-  // reason about cleanly.
+  // bucket in furnace.json. A stock-bucket entry is promoted in-memory
+  // here (see `promoteStockToOverrideIfNeeded`) rather than rejected —
+  // the operator's intent is to fork that specific stock component. The
+  // collision guard still rejects name conflicts that would double-
+  // classify a tag in a way `writeFurnaceConfig` cannot safely produce
+  // (two overrides, or an override + custom).
   const uniqueNames = [...new Set(names)];
   for (const name of uniqueNames) {
     assertNoComponentCollision(config, name);
+    if (promoteStockToOverrideIfNeeded(config, name)) {
+      info(`Promoting "${name}" from stock to override.`);
+    }
   }
 
   const succeeded: string[] = [];

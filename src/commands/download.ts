@@ -235,6 +235,18 @@ export async function downloadCommand(
     throw error;
   }
 
+  // Finding #17: the git indexing phase of `download` can block for
+  // minutes on a ~600 MB Firefox tree — the spinner updates less often
+  // than operators expect during the monolithic `git add -A` pass, and
+  // non-TTY shells see long stretches of silence. Emit a one-line
+  // heads-up banner BEFORE the spinner starts so even a log-scraping
+  // CI job notes the expected duration. The progress callbacks below
+  // still fire as usual; this is an additional up-front signal, not a
+  // replacement.
+  info(
+    'Indexing downloaded source into git (one-time; typically 1–3 minutes on a ~600 MB Firefox tree)...'
+  );
+
   // Initialize git repository
   const gitSpinner = spinner('Initializing git repository (this may take a few minutes)...');
   let baseCommit: string | undefined;

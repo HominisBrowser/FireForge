@@ -425,19 +425,30 @@ export async function furnaceRenameCommand(
   }
 
   const componentType = isCustom ? 'custom' : 'override';
+  // `componentType` is the furnace-state key (singular: `custom` /
+  // `override`); the on-disk directory label differs — custom components
+  // live under `components/custom/` (singular) while overrides live under
+  // `components/overrides/` (plural). Before 0.16.0, every rename
+  // user-facing message appended an `s` to `componentType`, which
+  // produced the wrong label `components/customs/` for custom components
+  // and was technically correct for overrides only by coincidence.
+  // `componentDirLabel` centralises the singular/plural pick so every
+  // operator-facing string names the directory that actually exists on
+  // disk.
+  const componentDirLabel = isCustom ? 'custom' : 'overrides';
   const baseDir = isCustom ? furnacePaths.customDir : furnacePaths.overridesDir;
   const oldDir = join(baseDir, oldName);
   const newDir = join(baseDir, newName);
 
   if (!(await pathExists(oldDir))) {
     throw new FurnaceError(
-      `Component directory not found: components/${componentType}s/${oldName}`,
+      `Component directory not found: components/${componentDirLabel}/${oldName}`,
       oldName
     );
   }
   if (await pathExists(newDir)) {
     throw new FurnaceError(
-      `Target directory already exists: components/${componentType}s/${newName}`,
+      `Target directory already exists: components/${componentDirLabel}/${newName}`,
       newName
     );
   }
@@ -457,7 +468,7 @@ export async function furnaceRenameCommand(
 
   note(
     `Component renamed: ${oldName} → ${newName}\n\n` +
-      `Directory: components/${componentType}s/${newName}/\n\n` +
+      `Directory: components/${componentDirLabel}/${newName}/\n\n` +
       'Next steps:\n' +
       '  1. Review the renamed files for any remaining references\n' +
       '  2. Run "fireforge furnace validate" to verify\n' +

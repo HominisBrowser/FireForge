@@ -13,6 +13,7 @@ import {
   ensureMach,
   ensurePython,
   hasBuildArtifacts,
+  hasRunnableBundle,
   machPackage,
   resetResolvedPython,
   run as runBrowser,
@@ -52,6 +53,15 @@ vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
   verbose: vi.fn(),
 }));
+
+// hasRunnableBundle reads getPlatform() to pick the per-OS binary path;
+// mock it so each `hasRunnableBundle` test can stamp the probe under a
+// specific platform without touching the host.
+vi.mock('../../utils/platform.js', () => ({
+  getPlatform: vi.fn(() => 'linux'),
+}));
+
+import { getPlatform } from '../../utils/platform.js';
 
 describe('hasBuildArtifacts', () => {
   beforeEach(() => {
@@ -174,6 +184,151 @@ describe('hasBuildArtifacts', () => {
       exists: true,
       objDir: 'obj-debug',
     });
+  });
+});
+
+describe('hasRunnableBundle (Finding #13)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns runnable=false when dist/ itself does not exist', async () => {
+    // dist/ absent is the pre-`mach build` state; no subsequent probe is
+    // meaningful. Caller surfaces this as "build has not started".
+    vi.mocked(pathExists).mockResolvedValue(false);
+
+    await expect(hasRunnableBundle('/engine', 'mybrowser', 'obj-debug')).resolves.toEqual({
+      runnable: false,
+    });
+  });
+
+  it('finds the Linux binary under dist/bin/<binaryName>', async () => {
+    vi.mocked(getPlatform).mockReturnValue('linux');
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' || path === '/engine/obj-debug/dist/bin/mybrowser'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/bin/mybrowser');
+  });
+
+  it('reports the expected path when the Linux binary is missing', async () => {
+    vi.mocked(getPlatform).mockReturnValue('linux');
+    // dist/ exists but dist/bin/mybrowser does not — the precise error
+    // message must name the missing path so the operator can grep dist/
+    // for a moved/renamed binary.
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === '/engine/obj-debug/dist')
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(false);
+    expect(result.expectedPath).toBe('obj-debug/dist/bin/mybrowser');
+  });
+
+  it('appends .exe to the probed Windows binary path', async () => {
+    vi.mocked(getPlatform).mockReturnValue('win32');
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' || path === '/engine/obj-debug/dist/bin/mybrowser.exe'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/bin/mybrowser.exe');
+  });
+
+  it('finds the macOS binary inside *.app/Contents/MacOS/<binaryName>', async () => {
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'MyBrowser.app', isDirectory: () => true, isFile: () => false } as never,
+      { name: 'bin', isDirectory: () => true, isFile: () => false } as never,
+    ] as never);
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' ||
+          path === '/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser');
+  });
+
+  it('reports the expected macOS path even when no .app exists yet', async () => {
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(readdir).mockResolvedValue([] as never);
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === '/engine/obj-debug/dist')
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(false);
+    // The synthetic "<AppName>.app" placeholder tells the operator what
+    // shape to look for without committing to a specific display name.
+    expect(result.expectedPath).toContain('<AppName>.app/Contents/MacOS/mybrowser');
+  });
+
+  it('degrades to runnable=false on readdir failure rather than throwing', async () => {
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockRejectedValue(new Error('EACCES'));
+
+    await expect(hasRunnableBundle('/engine', 'mybrowser', 'obj-debug')).resolves.toEqual({
+      runnable: false,
+    });
+  });
+
+  it('ignores non-directory and non-.app entries under dist/ on darwin', async () => {
+    // The `entry.isDirectory()` and `.app` filter branches must hit the
+    // skip-continue paths (not just the match path) so the module's
+    // branch coverage reflects all three outcomes. A mixed fixture —
+    // regular file, non-.app directory, `.app` directory with binary —
+    // exercises all three in one pass.
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'README.txt', isDirectory: () => false, isFile: () => true } as never,
+      { name: 'bin', isDirectory: () => true, isFile: () => false } as never,
+      { name: 'MyBrowser.app', isDirectory: () => true, isFile: () => false } as never,
+    ] as never);
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' ||
+          path === '/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser');
+  });
+
+  it('keeps looking through later .app bundles when an earlier one is empty on darwin', async () => {
+    // Exercises the darwin for-loop's "candidate exists? no" continue
+    // branch. Two `.app` bundles, only the second owns the binary —
+    // the iterator must fall through the first `if (await pathExists)`
+    // branch and still return runnable via the second.
+    vi.mocked(getPlatform).mockReturnValue('darwin');
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'OldBrowser.app', isDirectory: () => true, isFile: () => false } as never,
+      { name: 'MyBrowser.app', isDirectory: () => true, isFile: () => false } as never,
+    ] as never);
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/obj-debug/dist' ||
+          // OldBrowser.app binary is NOT present; MyBrowser.app is.
+          path === '/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser'
+      )
+    );
+
+    const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
+    expect(result.runnable).toBe(true);
+    expect(result.expectedPath).toBe('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser');
   });
 });
 

@@ -11,7 +11,7 @@ import {
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { restoreRollbackJournal, type RollbackJournal } from '../../core/furnace-rollback.js';
 import { cleanStories, syncStories } from '../../core/furnace-stories.js';
-import { runMach, runMachCapture } from '../../core/mach.js';
+import { hasBuildArtifacts, runMach, runMachCapture } from '../../core/mach.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnacePreviewOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
@@ -117,6 +117,41 @@ function buildStorybookFailureMessage(output: string, installRequested: boolean)
 }
 
 /**
+ * Preflights the Firefox build + toolchain prerequisites `mach storybook`
+ * quietly assumes. Pre-0.16.0 the preview staged components and launched
+ * a ~1000-package `mach storybook upgrade` npm install before the
+ * backend surfaced a "missing chrome-map.json" / Cargo-config failure;
+ * the preflight below refuses fast and leaves the workspace untouched.
+ *
+ * Extracted from `furnacePreviewCommand` so the main function stays
+ * under the per-function LOC budget as the preflight list grows.
+ *
+ * @param engineDir - Resolved engine directory
+ * @throws FurnaceError when the Firefox build hasn't produced dist/, or
+ *         when `.cargo/config.toml` is absent
+ */
+async function assertPreviewPrerequisites(engineDir: string): Promise<void> {
+  const buildCheck = await hasBuildArtifacts(engineDir);
+  if (!buildCheck.exists) {
+    throw new FurnaceError(
+      'Furnace preview requires a completed Firefox build. ' +
+        '`mach storybook` consumes `obj-*/dist/chrome-map.json` and the packaged chrome resources under `dist/`, neither of which is present before `fireforge build` completes.\n\n' +
+        'Run "fireforge build" and wait for it to finish, then rerun "fireforge furnace preview". ' +
+        'This preflight avoids a multi-minute `mach storybook upgrade` npm install on an engine that cannot start Storybook anyway.'
+    );
+  }
+
+  const cargoConfigPath = join(engineDir, '.cargo', 'config.toml');
+  if (!(await pathExists(cargoConfigPath))) {
+    throw new FurnaceError(
+      "Furnace preview requires the engine's Rust toolchain to be bootstrapped. " +
+        '`.cargo/config.toml` is missing under the engine directory — `mach storybook` fails deep inside the Storybook backend compile without it.\n\n' +
+        'Run "fireforge bootstrap" (or the underlying `mach bootstrap` in the engine) to populate the toolchain config, then rerun "fireforge furnace preview".'
+    );
+  }
+}
+
+/**
  * Runs the furnace preview command to start Storybook for component preview.
  * @param projectRoot - Root directory of the project
  * @param options - Command options
@@ -159,6 +194,10 @@ export async function furnacePreviewCommand(
       'This Firefox checkout does not contain browser/components/storybook. Furnace preview requires the upstream Storybook workspace to exist before stories can be synced.'
     );
   }
+
+  // Build + toolchain preflight (Finding #9). Extracted into a helper so
+  // the function below stays under the per-function LOC budget.
+  await assertPreviewPrerequisites(paths.engine);
 
   let previewResult:
     | {

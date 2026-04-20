@@ -38,6 +38,20 @@ vi.mock('../manifest-register.js', () => ({
   })),
 }));
 
+// The transactional-wire rollback journal reads real files via
+// `node:fs/promises` before each mutation. The existing tests in this file
+// mock `utils/fs.js` but not the native module, so a real `snapshotFile`
+// would hit ENOENT on the `/project/engine/...` fake paths. Stub the
+// journal plumbing to no-ops so the pre-existing wire-target tests can
+// keep asserting their own behaviour without interference. The rollback
+// itself is exercised end-to-end by
+// `browser-wire-rollback.integration.test.ts`.
+vi.mock('../furnace-rollback.js', () => ({
+  createRollbackJournal: vi.fn(() => ({ files: new Map(), createdDirs: new Set() })),
+  snapshotFile: vi.fn(() => Promise.resolve()),
+  restoreRollbackJournal: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
 }));

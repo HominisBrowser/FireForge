@@ -29,6 +29,23 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
       'A file registered under JS_PREFERENCE_PP_FILES contains no preprocessor directives. ' +
       'Use JS_PREFERENCE_FILES instead, or add at least one #filter / #expand directive to the file.',
   },
+  {
+    // `mach package` inside `packager.py` dereferences a `None` sink when
+    // the packaging input set cannot resolve an entry it expected — the
+    // most common real-world cause is running `fireforge package` before
+    // a full `fireforge build` has finished, so `obj-*/dist/` is missing
+    // pieces the packager assumes exist. The hint points at that root
+    // cause specifically; the broader "build failed" path has already
+    // surfaced the raw traceback above this hint.
+    pattern:
+      /packager\.py[\s\S]*?AttributeError: 'NoneType' object has no attribute 'open'|AttributeError: 'NoneType' object has no attribute 'open'[\s\S]*?packager\.py/,
+    hint:
+      '`mach package` tripped a `NoneType.open` inside `packager.py`. This is almost always a ' +
+      'symptom of the packager being handed an incomplete `obj-*/dist/` tree — e.g. running ' +
+      '"fireforge package" before a full "fireforge build" (not --ui) completed, or packaging ' +
+      'after a build that failed late. Re-run "fireforge build" to completion, confirm the app ' +
+      'bundle exists under `obj-*/dist/`, and rerun "fireforge package".',
+  },
 ];
 
 /**

@@ -13,11 +13,26 @@ vi.mock('../../core/config.js', () => ({
     src: '/project/src',
     componentsDir: '/project/components',
   })),
+  // The run command resolves `config.binaryName` to probe the runnable
+  // bundle (Finding #13). Stub a fixed binary name so hasRunnableBundle
+  // has a stable probe target.
+  loadConfig: vi.fn(() =>
+    Promise.resolve({
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+    })
+  ),
 }));
 
 vi.mock('../../core/mach.js', () => ({
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
   buildArtifactMismatchMessage: vi.fn(() => undefined),
+  // Default to "bundle runnable" so pre-existing tests that gate on
+  // other preflights still reach `mach run`. The new bundle-agreement
+  // tests below override per-case.
+  hasRunnableBundle: vi.fn(() =>
+    Promise.resolve({ runnable: true, expectedPath: 'obj-debug/dist/bin/mybrowser' })
+  ),
   run: vi.fn(),
   runMachSmoke: vi.fn(),
 }));
@@ -78,6 +93,7 @@ import {
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
+  hasRunnableBundle,
   run,
   runMachSmoke,
 } from '../../core/mach.js';
@@ -102,6 +118,10 @@ describe('runCommand', () => {
     vi.mocked(readdir).mockResolvedValue([]);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
+    vi.mocked(hasRunnableBundle).mockResolvedValue({
+      runnable: true,
+      expectedPath: 'obj-debug/dist/bin/mybrowser',
+    });
     // Default: no furnace config so warnIfFurnaceStale returns early
     vi.mocked(furnaceConfigExists).mockResolvedValue(false);
   });
@@ -116,6 +136,21 @@ describe('runCommand', () => {
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: false });
 
     await expect(runCommand('/project')).rejects.toThrow(/Run requires a completed build/i);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('fails with a bundle-specific message when obj-*/dist exists but the binary does not (Finding #13)', async () => {
+    vi.mocked(hasRunnableBundle).mockResolvedValue({
+      runnable: false,
+      expectedPath: 'obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser',
+    });
+
+    await expect(runCommand('/project')).rejects.toThrow(
+      /Run requires a completed build that produced the launchable bundle/
+    );
+    await expect(runCommand('/project')).rejects.toThrow(
+      /obj-debug\/dist\/MyBrowser\.app\/Contents\/MacOS\/mybrowser is missing/
+    );
     expect(run).not.toHaveBeenCalled();
   });
 

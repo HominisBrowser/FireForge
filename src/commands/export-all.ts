@@ -9,6 +9,11 @@ import { getAllDiff } from '../core/git-diff.js';
 import { getWorkingTreeStatus } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { commitExportedPatch } from '../core/patch-export.js';
+import {
+  buildPatchQueueContext,
+  collectNewFileCreatorsByPath,
+  detectNewFilesInDiff,
+} from '../core/patch-lint.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions, PatchCategory } from '../types/commands/index.js';
@@ -65,6 +70,54 @@ async function checkFurnaceManagedFiles(
 }
 
 /**
+ * Refuses the export when the aggregate diff would create (new-file-mode) a
+ * path that some existing patch in the queue already creates. `verify`
+ * detects this post-hoc via `collectNewFileCreatorsByPath`, but by the time
+ * `verify` runs the operator has already landed a patch that irreversibly
+ * sits atop the queue — resolving the conflict from there requires a
+ * `patch delete` or hand-surgery on `re-export --files`. Catching it here,
+ * pre-write, keeps the queue clean and gives the operator a specific path
+ * to narrow with `export` + explicit file scoping (which lets them drop
+ * the already-claimed path without losing other edits).
+ *
+ * Slots in alongside the existing branding and furnace guards so the three
+ * "export-all refuses" branches remain the single, symmetric fence around
+ * unintended captures.
+ */
+async function checkDuplicateNewFileCreations(
+  paths: ReturnType<typeof getProjectPaths>,
+  diff: string
+): Promise<void> {
+  if (!(await pathExists(paths.patches))) return;
+
+  const pendingNewFiles = detectNewFilesInDiff(diff);
+  if (pendingNewFiles.size === 0) return;
+
+  const ctx = await buildPatchQueueContext(paths.patches);
+  if (ctx.entries.length === 0) return;
+
+  const creators = collectNewFileCreatorsByPath(ctx);
+  const conflicts: Array<{ path: string; owners: string[] }> = [];
+  for (const path of pendingNewFiles) {
+    const owners = creators.get(path);
+    if (owners && owners.length > 0) {
+      conflicts.push({ path, owners });
+    }
+  }
+
+  if (conflicts.length === 0) return;
+
+  const conflictList = conflicts
+    .map(({ path, owners }) => `  • ${path} — already created by ${owners.join(', ')}`)
+    .join('\n');
+  throw new GeneralError(
+    'Export-all refuses to capture new-file creations that are already claimed by existing patches.\n\n' +
+      `Conflicting creations:\n${conflictList}\n\n` +
+      'Only one patch may create a given path. Run "fireforge export <path> [...]" with an explicit file list that omits the already-claimed path(s), or resolve the conflict via "fireforge patch delete" / "fireforge re-export --files" before retrying export-all.'
+  );
+}
+
+/**
  * Runs the export-all command to export all changes as a patch.
  * @param projectRoot - Root directory of the project
  * @param options - Export options
@@ -108,6 +161,11 @@ export async function exportAllCommand(
     outro('Nothing to export');
     return;
   }
+
+  // Duplicate-creation preflight needs the diff in hand to see which paths
+  // the aggregate would newly create, so it runs here instead of alongside
+  // the branding / furnace guards that operate on the raw status list.
+  await checkDuplicateNewFileCreations(paths, diff);
 
   // Check for non-interactive mode
   const isInteractive = process.stdin.isTTY && process.stdout.isTTY;

@@ -11,22 +11,7 @@ import type { RegisterOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
-
-/**
- * Strips a leading `engine/` segment (either separator flavour) from a
- * user-supplied path so operators can pass either a repo-root-relative
- * path (`engine/browser/base/content/foo.xhtml`) or an engine-relative
- * path (`browser/base/content/foo.xhtml`). The engine-relative form is
- * what the manifest writers expect; without this normalisation, the
- * former failed with a misleading "File not found in engine" pointing
- * at a doubled path like `engine/engine/browser/...` that operators
- * had no way to spot from the error message alone.
- */
-function normalizeEngineRelativePath(filePath: string): string {
-  if (filePath.startsWith('engine/')) return filePath.slice('engine/'.length);
-  if (filePath.startsWith('engine\\')) return filePath.slice('engine\\'.length);
-  return filePath;
-}
+import { stripEnginePrefix } from '../utils/paths.js';
 
 /**
  * Registers a file in the appropriate build manifest.
@@ -64,7 +49,7 @@ export async function registerCommand(
   // the former from the output of tab completion or `git status`, and
   // the mismatch used to produce a "File not found" error that named
   // the original path with no hint that dropping `engine/` would fix it.
-  const engineRelativePath = normalizeEngineRelativePath(filePath);
+  const engineRelativePath = stripEnginePrefix(filePath);
 
   // Verify the file exists in engine/ (skip for dry-run)
   if (!options.dryRun) {

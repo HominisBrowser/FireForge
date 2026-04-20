@@ -5,11 +5,12 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../core/config.js';
+import { getProjectPaths, loadConfig } from '../core/config.js';
 import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
+  hasRunnableBundle,
   run,
   runMachSmoke,
 } from '../core/mach.js';
@@ -121,6 +122,30 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
       `Run requires a completed build. ${detail}\n\n` +
         "Run 'fireforge build' first, then rerun 'fireforge run'."
     );
+  }
+
+  // `hasBuildArtifacts` only checks for an `obj-*/dist/` directory; a
+  // build that configured but hasn't yet produced the launchable binary
+  // (common in a long real Firefox compile that the operator stopped
+  // and restarted) passes that check, and `mach run` then fails on the
+  // missing binary path. `hasRunnableBundle` narrows the probe to the
+  // actual executable so `fireforge run` refuses with a targeted
+  // message before handing control to mach. `fireforge watch` stays
+  // permissive and instead surfaces the same information as a banner
+  // suffix; watch is supposed to drive rebuilds of partially-built
+  // trees, so blocking there would defeat the feature.
+  if (buildCheck.objDir) {
+    const config = await loadConfig(projectRoot);
+    const bundleCheck = await hasRunnableBundle(paths.engine, config.binaryName, buildCheck.objDir);
+    if (!bundleCheck.runnable) {
+      const expected = bundleCheck.expectedPath ?? `dist/bin/${config.binaryName}`;
+      throw new GeneralError(
+        `Run requires a completed build that produced the launchable bundle. ` +
+          `Build artifacts exist in ${buildCheck.objDir}/ but the expected binary at ${expected} is missing — ` +
+          `the build may have aborted or is still in progress.\n\n` +
+          "Run 'fireforge build' and wait for it to finish before retrying 'fireforge run'."
+      );
+    }
   }
 
   // Warn if Furnace components changed since the last apply

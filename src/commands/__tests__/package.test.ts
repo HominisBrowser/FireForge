@@ -12,7 +12,11 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/mach.js', () => ({
   hasBuildArtifacts: vi.fn(),
   buildArtifactMismatchMessage: vi.fn(),
-  machPackage: vi.fn(),
+  // `packageCommand` now calls `machPackageCapture` so it can pass the
+  // captured stderr through `explainMachError` and surface targeted
+  // hints (Finding #12). Tests seed resolved results with the standard
+  // `{ stdout, stderr, exitCode }` shape.
+  machPackageCapture: vi.fn(),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -38,7 +42,11 @@ vi.mock('../../core/build-prepare.js', () => ({
 import { validateBrandOverride } from '../../core/brand-validation.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import { buildArtifactMismatchMessage, hasBuildArtifacts, machPackage } from '../../core/mach.js';
+import {
+  buildArtifactMismatchMessage,
+  hasBuildArtifacts,
+  machPackageCapture,
+} from '../../core/mach.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, verbose } from '../../utils/logger.js';
 import { packageCommand, registerPackage } from '../package.js';
@@ -69,7 +77,7 @@ describe('packageCommand', () => {
       furnaceApplied: 0,
       reconfigured: false,
     });
-    vi.mocked(machPackage).mockResolvedValue(0);
+    vi.mocked(machPackageCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
   });
 
   it('requires a completed build before packaging', async () => {
@@ -79,7 +87,7 @@ describe('packageCommand', () => {
       'Packaging requires a completed build.'
     );
 
-    expect(machPackage).not.toHaveBeenCalled();
+    expect(machPackageCapture).not.toHaveBeenCalled();
   });
 
   it('fails before packaging when the engine checkout is missing', async () => {
@@ -89,7 +97,7 @@ describe('packageCommand', () => {
       'Firefox source not found. Run "fireforge download" first.'
     );
 
-    expect(machPackage).not.toHaveBeenCalled();
+    expect(machPackageCapture).not.toHaveBeenCalled();
   });
 
   it('rejects ambiguous build artifact discovery before invoking mach', async () => {
@@ -103,7 +111,7 @@ describe('packageCommand', () => {
       'Multiple build artifact directories found: obj-debug, obj-release'
     );
 
-    expect(machPackage).not.toHaveBeenCalled();
+    expect(machPackageCapture).not.toHaveBeenCalled();
   });
 
   it('rejects copied or relocated build artifacts before invoking mach', async () => {
@@ -115,11 +123,11 @@ describe('packageCommand', () => {
       'Package cannot use copied or relocated build artifacts.'
     );
 
-    expect(machPackage).not.toHaveBeenCalled();
+    expect(machPackageCapture).not.toHaveBeenCalled();
   });
 
   it('wraps package startup failures with build context', async () => {
-    vi.mocked(machPackage).mockRejectedValue(new Error('spawn ENOENT'));
+    vi.mocked(machPackageCapture).mockRejectedValue(new Error('spawn ENOENT'));
 
     await expect(packageCommand('/project', {})).rejects.toThrow('Package process failed to start');
   });
@@ -135,19 +143,41 @@ describe('packageCommand', () => {
     expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'stable');
     expect(verbose).toHaveBeenCalledWith('Packaging with brand: stable');
     expect(info).toHaveBeenCalledWith('Brand: stable');
-    expect(machPackage).toHaveBeenCalledWith('/project/engine');
+    expect(machPackageCapture).toHaveBeenCalledWith('/project/engine');
     expect(info).toHaveBeenCalledWith('\nPackage created in obj-*/dist/');
     expect(outro).toHaveBeenCalledWith(expect.stringContaining('Packaging completed in'));
   });
 
   it('treats non-zero package exits as build failures', async () => {
-    vi.mocked(machPackage).mockResolvedValue(1);
+    vi.mocked(machPackageCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 1 });
 
     await expect(packageCommand('/project', {})).rejects.toThrow(
       'Packaging failed with exit code 1'
     );
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Packaging failed after'));
+  });
+
+  it('surfaces the packager NoneType hint on a matching failure (Finding #12)', async () => {
+    // The evaluator hit this on a real hominis/ tree: `mach package`
+    // tripped an `AttributeError: 'NoneType' object has no attribute
+    // 'open'` inside packager.py, and FireForge surfaced it as a
+    // generic `Packaging failed`. With `explainMachError` wired into
+    // the package error path, the hint now lands in the thrown
+    // message so the operator sees the "run a full build first"
+    // recovery instruction without cross-referencing the traceback.
+    vi.mocked(machPackageCapture).mockResolvedValue({
+      stdout: '',
+      stderr: [
+        'Traceback (most recent call last):',
+        '  File "/engine/python/mozbuild/mozpack/packager.py", line 241, in package_fastload',
+        '    zip = self.target.open(path, "wb")',
+        "AttributeError: 'NoneType' object has no attribute 'open'",
+      ].join('\n'),
+      exitCode: 1,
+    });
+
+    await expect(packageCommand('/project', {})).rejects.toThrow(/NoneType\.open.*packager\.py/);
   });
 });
 
@@ -166,7 +196,7 @@ describe('registerPackage', () => {
       furnaceApplied: 0,
       reconfigured: false,
     });
-    vi.mocked(machPackage).mockResolvedValue(0);
+    vi.mocked(machPackageCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
   });
 
   it('routes parsed CLI options through the registered action', async () => {
@@ -175,6 +205,6 @@ describe('registerPackage', () => {
     await program.parseAsync(['node', 'test', 'package', '--brand', 'stable']);
 
     expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'stable');
-    expect(machPackage).toHaveBeenCalledWith('/project/engine');
+    expect(machPackageCapture).toHaveBeenCalledWith('/project/engine');
   });
 });

@@ -64,6 +64,11 @@ vi.mock('../../core/patch-lint.js', () => ({
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
   readText: vi.fn(),
+  // Finding #18 added this filter pattern so status can strip atomic-
+  // write temps. Export the real regex here so status's filter behaves
+  // identically to production — tests for the filter rely on the same
+  // exact pattern.
+  FIREFORGE_TMP_PATH_PATTERN: /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9a-f-]{36}$/i,
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -854,6 +859,41 @@ describe('statusCommand', () => {
       await statusCommand(projectRoot);
 
       expect(getUntrackedFilesInDir).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('FireForge temp-file filtering (Finding #18)', () => {
+    it('omits .fireforge-tmp-<pid>-<uuid> entries from every status mode', async () => {
+      // Finding #18 regression guard. `writeFileAtomic` names its
+      // rename-target `.<filename>.fireforge-tmp-<pid>-<uuid>`; a
+      // concurrent `status` run during a brand.ftl or mozconfig write
+      // briefly saw those entries in the raw git output. The filter
+      // in status.ts excises them before classification so no mode
+      // leaks the temp path.
+      const tempFile = '.mozconfig.fireforge-tmp-12345-11111111-2222-3333-4444-555555555555';
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: tempFile },
+        { status: 'M', file: 'browser/base/content/browser.xhtml' },
+      ]);
+
+      await statusCommand(projectRoot);
+
+      const messages = infoMessages();
+      expect(messages.join('\n')).not.toContain('fireforge-tmp-');
+      expect(messages).toContain('  browser/base/content/browser.xhtml');
+    });
+
+    it('preserves an operator-named file that looks similar but lacks the PID+UUID tail', async () => {
+      // The pattern is anchored to `fireforge-tmp-<digits>-<uuid>` so a
+      // manually-named backup like `.notes.fireforge-tmp-backup` is
+      // NOT treated as a FireForge temp.
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: '.notes.fireforge-tmp-backup' },
+      ]);
+
+      await statusCommand(projectRoot);
+
+      expect(infoMessages()).toContain('  .notes.fireforge-tmp-backup');
     });
   });
 });

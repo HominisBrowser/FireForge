@@ -126,6 +126,7 @@ import {
   removeFile,
   writeText,
 } from '../../utils/fs.js';
+import { note } from '../../utils/logger.js';
 import { furnaceRenameCommand } from '../furnace/rename.js';
 
 const mockReaddir = vi.mocked(readdir);
@@ -296,8 +297,13 @@ describe('furnaceRenameCommand validation', () => {
       return Promise.resolve(false);
     });
 
+    // Finding #8: the message used to read `components/customs/` (plural
+    // `customs` built by appending `s` to the furnace-state key
+    // `custom`). The directory label has to match the on-disk layout —
+    // custom components live under `components/custom/` — so the
+    // guidance names the real path.
     await expect(furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav')).rejects.toThrow(
-      'Component directory not found'
+      /Component directory not found: components\/custom\/moz-sidebar/
     );
   });
 
@@ -309,7 +315,7 @@ describe('furnaceRenameCommand validation', () => {
     });
 
     await expect(furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav')).rejects.toThrow(
-      'Target directory already exists'
+      /Target directory already exists: components\/custom\/moz-nav/
     );
   });
 });
@@ -638,5 +644,61 @@ describe('furnaceRenameCommand rollback', () => {
       'rename-rollback',
       'rename "moz-sidebar" → "moz-nav": Rollback failed'
     );
+  });
+});
+
+describe('furnaceRenameCommand path-label messaging (Finding #8)', () => {
+  beforeEach(() => {
+    // The preceding rollback describe leaves `writeText` rejecting with
+    // "Disk full" and (sometimes) `restoreRollbackJournalOrThrow`
+    // rejecting too. vi.clearAllMocks() inside the top-level beforeEach
+    // clears call history but does NOT reset mockRejectedValue
+    // implementations, so we restore them explicitly here before each
+    // of these tests runs. Without this, every path-label case trips
+    // the rollback path and never reaches the note assertions.
+    mockWriteText.mockResolvedValue(undefined);
+    mockRestoreRollbackJournalOrThrow.mockResolvedValue(undefined);
+  });
+
+  it('renders the success note with the correct `components/custom/` directory label', async () => {
+    // The note used to say `components/customs/moz-nav/` because the code
+    // appended `s` to the furnace-state key `custom`. The real directory
+    // is `components/custom/` (singular), so the guidance must use that.
+    // This test pins the fix against a future refactor that might
+    // re-introduce the pluralising logic.
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    const noteCall = vi
+      .mocked(note)
+      .mock.calls.find(
+        (call): call is [string, string] =>
+          typeof call[0] === 'string' && call[0].includes('moz-sidebar → moz-nav')
+      );
+    expect(noteCall?.[0]).toContain('components/custom/moz-nav/');
+    expect(noteCall?.[0]).not.toContain('components/customs/');
+  });
+
+  it('renders the success note with `components/overrides/` for override renames', async () => {
+    // Overrides were always plural on disk (`components/overrides/`), so
+    // the pre-fix code produced the correct `overrides` label by
+    // coincidence. Pin that branch too so a unified singular/plural
+    // helper can never swap them.
+    mockLoadFurnaceConfig.mockResolvedValue(defaultOverrideConfig());
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === '/project/components/overrides/moz-sidebar') return Promise.resolve(true);
+      if (path === '/project/components/overrides/moz-nav') return Promise.resolve(false);
+      return Promise.resolve(false);
+    });
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    const noteCall = vi
+      .mocked(note)
+      .mock.calls.find(
+        (call): call is [string, string] =>
+          typeof call[0] === 'string' && call[0].includes('moz-sidebar → moz-nav')
+      );
+    expect(noteCall?.[0]).toContain('components/overrides/moz-nav/');
   });
 });

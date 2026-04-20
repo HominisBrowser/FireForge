@@ -115,6 +115,8 @@ fireforge import --force
 
 ### Exporting changes
 
+`export`, `export-all`, `lint`, `register`, and `test` all accept either engine-relative paths (`browser/base/content/foo.js`) or repo-root-relative paths with a leading `engine/` segment (`engine/browser/base/content/foo.js`). The prefix is case-insensitive and tolerates leading whitespace; operators commonly paste the repo-rooted form from `git status` output or shell tab-completion.
+
 ```bash
 # Single file
 fireforge export browser/base/content/browser.js

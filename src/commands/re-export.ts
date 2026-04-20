@@ -100,6 +100,32 @@ async function reExportSinglePatch(
       patch.filename,
       isDryRun
     );
+  } else if (options.files === undefined) {
+    // Finding #16: when neither `--scan` nor `--files` is set and some
+    // of the manifest's claimed files no longer exist on disk, the
+    // re-export silently writes a refreshed body whose filesAffected
+    // still names the vanished paths. That is the documented contract,
+    // but it is also a footgun — a later `verify` then fails on
+    // manifest-consistency with no obvious trigger. Emit one advisory
+    // warning up-front when we can detect the drift cheaply, so the
+    // operator has a chance to re-run with `--scan` or `--files`
+    // before the stale filesAffected lands in patches.json.
+    const missingFiles: string[] = [];
+    for (const file of currentFilesAffected) {
+      if (!(await pathExists(join(paths.engine, file)))) {
+        missingFiles.push(file);
+      }
+    }
+    if (missingFiles.length > 0) {
+      warn(
+        `${patch.filename}: some files in patches.json no longer exist on disk ` +
+          `(${missingFiles.join(', ')}). Without --scan, re-export keeps the manifest's ` +
+          `filesAffected unchanged and the missing entries will be preserved — ` +
+          `\`fireforge verify\` may flag manifest inconsistency after this run.\n` +
+          `  Re-run with --scan to reconcile filesAffected with the current worktree, ` +
+          `or pass --files <paths> to set the list explicitly.`
+      );
+    }
   }
 
   // --- Explicit file-subset path ---

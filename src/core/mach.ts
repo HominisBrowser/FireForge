@@ -22,7 +22,9 @@ export {
   type BuildArtifactCheck,
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
+  hasRunnableBundle,
   type MozinfoRewriteResult,
+  type RunnableBundleCheck,
 } from './mach-build-artifacts.js';
 export { generateMozconfig, type MozconfigVariables } from './mach-mozconfig.js';
 export { ensurePython, resetResolvedPython } from './mach-python.js';
@@ -284,6 +286,20 @@ export async function runMachSmoke(
  */
 export async function machPackage(engineDir: string): Promise<number> {
   return runMach(['package'], engineDir, { inherit: true });
+}
+
+/**
+ * Creates a distribution package while streaming output to the terminal
+ * and capturing the stderr tail for post-run diagnostics. Callers that
+ * want to consult {@link explainMachError} on failure should use this
+ * variant; the inherit-only `machPackage` above remains for callers that
+ * just need an exit code.
+ *
+ * @param engineDir - Path to the engine directory
+ * @returns Captured mach result (stdout tail, stderr tail, exit code)
+ */
+export async function machPackageCapture(engineDir: string): Promise<MachCommandResult> {
+  return runMachCapture(['package'], engineDir);
 }
 
 /**

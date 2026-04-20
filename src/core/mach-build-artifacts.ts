@@ -5,6 +5,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { getPlatform } from '../utils/platform.js';
 import { isObject, isString } from '../utils/validation.js';
 
 /**
@@ -138,6 +139,93 @@ export async function hasBuildArtifacts(engineDir: string): Promise<BuildArtifac
     void error;
     return { exists: false };
   }
+}
+
+/**
+ * Outcome of the `hasRunnableBundle` probe. Distinguishes "no objdir at
+ * all" from "objdir exists but the launchable binary is not yet written"
+ * so callers (notably `fireforge run`) can give the operator a specific
+ * message instead of the generic build-artifacts-missing line.
+ */
+export interface RunnableBundleCheck {
+  /** True when an objdir is present AND the expected binary was found under it. */
+  runnable: boolean;
+  /** Repo-relative (engine-rooted) path we probed; populated even on failure for error copy. */
+  expectedPath?: string;
+}
+
+/**
+ * Checks whether the built browser's launchable binary exists under
+ * `<engineDir>/<objDir>/dist/...`. `hasBuildArtifacts` only confirms that
+ * an obj tree with a `dist/` subdir exists; a partial or in-progress build
+ * can satisfy that check without ever writing the executable, which is the
+ * failure mode that makes `fireforge run` throw `mach run` after having
+ * reported the build as usable. Separating the probes lets `run` fail fast
+ * with a precise message and `watch` stay permissive (it exists to drive
+ * rebuilds of incomplete trees) while still reporting the bundle state in
+ * its startup banner.
+ *
+ * Platform layout:
+ * - macOS: `<objDir>/dist/*.app/Contents/MacOS/<binaryName>` (the `.app`
+ *   display casing can differ from `binaryName` — e.g. `Hominis.app` for
+ *   binary `hominis`, so we enumerate the `*.app` bundles rather than
+ *   compute the name.
+ * - Linux: `<objDir>/dist/bin/<binaryName>`.
+ * - Windows: `<objDir>/dist/bin/<binaryName>.exe`.
+ *
+ * Returns `runnable: false` with no `expectedPath` when the `objDir`
+ * itself cannot be scanned — same degraded contract as `hasBuildArtifacts`.
+ *
+ * @param engineDir Path to the engine directory
+ * @param binaryName Lowercase binary name from `fireforge.json`
+ * @param objDir The single matching `obj-*` directory name (caller
+ *   resolves it; typically from `hasBuildArtifacts().objDir`)
+ * @returns Structured check result
+ */
+export async function hasRunnableBundle(
+  engineDir: string,
+  binaryName: string,
+  objDir: string
+): Promise<RunnableBundleCheck> {
+  const platform = getPlatform();
+  const distDir = join(engineDir, objDir, 'dist');
+
+  if (!(await pathExists(distDir))) {
+    return { runnable: false };
+  }
+
+  if (platform === 'darwin') {
+    let entries;
+    try {
+      entries = await readdir(distDir, { withFileTypes: true });
+    } catch {
+      return { runnable: false };
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (!entry.name.endsWith('.app')) continue;
+      const candidate = join(distDir, entry.name, 'Contents', 'MacOS', binaryName);
+      if (await pathExists(candidate)) {
+        return { runnable: true, expectedPath: relative(engineDir, candidate) };
+      }
+    }
+    // Report an expected-but-missing path rooted at the first .app bundle we
+    // can see, or a synthetic path when no bundle exists yet, so the error
+    // message names something the operator can look for on disk.
+    const firstApp = entries.find((e) => e.isDirectory() && e.name.endsWith('.app'));
+    const expected = firstApp
+      ? relative(engineDir, join(distDir, firstApp.name, 'Contents', 'MacOS', binaryName))
+      : relative(engineDir, join(distDir, `<AppName>.app/Contents/MacOS/${binaryName}`));
+    return { runnable: false, expectedPath: expected };
+  }
+
+  const binaryFile = platform === 'win32' ? `${binaryName}.exe` : binaryName;
+  const candidate = join(distDir, 'bin', binaryFile);
+  const expectedPath = relative(engineDir, candidate);
+  if (await pathExists(candidate)) {
+    return { runnable: true, expectedPath };
+  }
+  return { runnable: false, expectedPath };
 }
 
 /** Builds a user-facing explanation when detected build artifacts belong to another workspace. */

@@ -21,6 +21,7 @@ import type { CommandContext } from '../types/cli.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
+import { stripEnginePrefix } from '../utils/paths.js';
 
 /** Options controlling how the lint command filters and tags its output. */
 export interface LintCommandOptions {
@@ -85,7 +86,16 @@ async function resolveLintDiff(engineDir: string, files: string[]): Promise<stri
     let fileStatuses: { status: string; file: string }[] | undefined;
     let untrackedFiles: string[] | undefined;
 
-    for (const inputPath of files) {
+    // Strip a leading `engine/` segment up-front so the rest of the lookup
+    // pipeline (directory stat, modified-files-in-dir, status probe) all
+    // see the engine-relative form. Without this, passing
+    // `engine/browser/base/content/foo.js` fell through to "No modified
+    // files found in the specified paths." because git sees every path
+    // relative to engine/. The same normalization runs in `register`,
+    // `test`, and `export` via `stripEnginePrefix`.
+    const normalizedFiles = files.map((inputPath) => stripEnginePrefix(inputPath));
+
+    for (const inputPath of normalizedFiles) {
       const fullInputPath = join(engineDir, inputPath);
       let isDirectory = false;
       try {

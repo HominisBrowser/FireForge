@@ -269,6 +269,9 @@ async function reExportSinglePatch(
   // intentional patch (a cohesive branding bundle, a localised-resource
   // pack) without either `--skip-lint` (too blunt) or falling through to
   // the full `rebase` flow (which internally skips the lint pipeline).
+  // The paired `patch.tier` threads the explicit branding-threshold
+  // opt-in the same way, for the branding patch that also touches a
+  // non-allowlisted registration sibling.
   const ignoreChecks = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
 
   await runPatchLint(
@@ -278,7 +281,8 @@ async function reExportSinglePatch(
     config,
     options.skipLint,
     undefined,
-    ignoreChecks
+    ignoreChecks,
+    patch.tier
   );
 
   if (isDryRun) {

@@ -193,14 +193,20 @@ This re-exports the fixed patch and clears the conflict state. The command is de
       "description": "Replaces default Firefox branding with custom logo",
       "createdAt": "2025-01-15T10:30:00Z",
       "sourceEsrVersion": "140.9.0esr",
-      "filesAffected": ["browser/branding/official/logo.png"],
-      "lintIgnore": ["large-patch-lines", "large-patch-files"]
+      "filesAffected": [
+        "browser/branding/official/logo.png",
+        "browser/themes/custom-shared/tokens.css"
+      ],
+      "lintIgnore": ["large-patch-lines", "large-patch-files"],
+      "tier": "branding"
     }
   ]
 }
 ```
 
 The optional `lintIgnore` field lists lint check IDs to suppress for that patch specifically. Useful for the class of patch that is advisory-noisy by nature — a cohesive branding bundle, a localised-resource pack, an auto-generated manifest — where `--skip-lint` is too blunt and a per-line marker cannot exist (the `.patch` body is regenerated on every export). Threaded through `export`, `re-export`, `re-export --files`, and `lint --per-patch`. Unknown check IDs are a no-op.
+
+The optional `tier` field (only `"branding"` recognised) forces the branding threshold tier for the `large-patch-lines` rule regardless of what `filesAffected` looks like. The automatic branding-tier detection already fires when every file is under `browser/branding/` plus a narrow allowlist of branding-registration siblings (`browser/moz.configure`, `browser/confvars.sh`) — covering the canonical Firefox fork shape. Declare `tier: "branding"` only when the patch legitimately also touches a non-allowlisted sibling the auto-detector cannot reach (a fork-specific theme override under `browser/themes/<name>/`, a vendor-specific icon resource, etc.). Precedence is `test > branding > general`: a patch of all-tests always gets the more permissive test-tier thresholds even if it declares `tier: "branding"`. Unknown tier values are rejected at load time rather than silently stripped, so a typo surfaces as a loader error. Prefer `tier` over `lintIgnore: ["large-patch-lines"]` when the patch is legitimately branding-shaped — `tier` keeps the rule running at the correct thresholds (so the warning still surfaces if the patch crosses them); `lintIgnore` drops the rule entirely.
 
 If the manifest drifts after an interrupted export or manual edits, `fireforge import` will stop rather then silently applying a stale stack. Use `fireforge doctor --repair-patches-manifest` to rebuild it from disk. Because the rebuild is deterministic, the result will always be consistent with what is actually on the filesystem.
 
@@ -213,24 +219,24 @@ If the manifest drifts after an interrupted export or manual edits, `fireforge i
 
 By default, a standalone `fireforge lint` (no arguments) lints the **aggregate** `git diff HEAD` — i.e. every applied patch summed — with tool-managed branding paths (`browser/branding/<binaryName>/`) excluded. A fresh-setup workspace carries a large generated branding diff that operators did not author directly, and letting it through tripped the patch-size and license-header rules on content that matches the `branding` bucket in `fireforge status`. When the exclusion fires the command prints a one-line note naming the excluded count so the filter is visible. On a repo where `fireforge import` or `fireforge rebase` has just applied the full queue, the patch-size rules (`large-patch-lines`, `large-patch-files`) fire against the sum, which reads as "my queue is broken" when it is really an artefact of aggregation. Use `fireforge lint --per-patch` to rescope the diff to each patch's own `filesAffected`, honouring the patch's own `lintIgnore`. Cross-patch rules (`duplicate-new-file-creation`, `forward-import`) still run once over the whole queue either way. Pass explicit file paths to narrow the scope further — explicit-path mode does lint branding files (the operator's explicit request wins over the branding exclusion); the three modes (aggregate, file-scoped, per-patch) are mutually exclusive.
 
-| Check                          | Scope                                                                     | Severity                 |
-| ------------------------------ | ------------------------------------------------------------------------- | ------------------------ |
-| `missing-license-header`       | New files (JS/CSS/FTL)                                                    | error                    |
-| `relative-import`              | JS/MJS files                                                              | error                    |
-| `token-prefix-violation`       | CSS files (with furnace)                                                  | error                    |
-| `raw-color-value`              | Introduced CSS color values (allowlist via `patchLint.rawColorAllowlist`) | error                    |
-| `duplicate-new-file-creation`  | Same path created by multiple patches                                     | error                    |
-| `forward-import`               | Patch imports from a later-patch file                                     | error                    |
-| `missing-jsdoc`                | Exports in patch-owned `.sys.mjs`                                         | error                    |
-| `jsdoc-param-mismatch`         | Exports in patch-owned `.sys.mjs`                                         | error                    |
-| `jsdoc-missing-returns`        | Exports in patch-owned `.sys.mjs`                                         | error                    |
-| `checkjs-type-error`           | Patch-owned `.sys.mjs` (opt-in)                                           | error                    |
-| `missing-modification-comment` | Modified upstream JS/MJS                                                  | warning                  |
-| `modified-file-missing-header` | Modified upstream files (JS/CSS/FTL)                                      | warning                  |
-| `file-too-large`               | New files (tiered: 500/750/900 general, 1200/1400/1600 test)              | notice / warning / error |
-| `observer-topic-naming`        | Observer topics with binaryName                                           | warning                  |
-| `large-patch-files`            | Patches affecting >5 files                                                | warning                  |
-| `large-patch-lines`            | Patch line count (tiered: 800/1500/3000 general, 1500/3000/6000 test)     | notice / warning / error |
+| Check                          | Scope                                                                                           | Severity                 |
+| ------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------ |
+| `missing-license-header`       | New files (JS/CSS/FTL)                                                                          | error                    |
+| `relative-import`              | JS/MJS files                                                                                    | error                    |
+| `token-prefix-violation`       | CSS files (with furnace)                                                                        | error                    |
+| `raw-color-value`              | Introduced CSS color values (allowlist via `patchLint.rawColorAllowlist`)                       | error                    |
+| `duplicate-new-file-creation`  | Same path created by multiple patches                                                           | error                    |
+| `forward-import`               | Patch imports from a later-patch file                                                           | error                    |
+| `missing-jsdoc`                | Exports in patch-owned `.sys.mjs`                                                               | error                    |
+| `jsdoc-param-mismatch`         | Exports in patch-owned `.sys.mjs`                                                               | error                    |
+| `jsdoc-missing-returns`        | Exports in patch-owned `.sys.mjs`                                                               | error                    |
+| `checkjs-type-error`           | Patch-owned `.sys.mjs` (opt-in)                                                                 | error                    |
+| `missing-modification-comment` | Modified upstream JS/MJS                                                                        | warning                  |
+| `modified-file-missing-header` | Modified upstream files (JS/CSS/FTL)                                                            | warning                  |
+| `file-too-large`               | New files (tiered: 500/750/900 general, 1200/1400/1600 test)                                    | notice / warning / error |
+| `observer-topic-naming`        | Observer topics with binaryName                                                                 | warning                  |
+| `large-patch-files`            | Patches affecting >5 files                                                                      | warning                  |
+| `large-patch-lines`            | Patch line count (tiered: 800/1500/3000 general, 1500/3000/6000 test, 3000/8000/20000 branding) | notice / warning / error |
 
 **JSDoc validation** uses AST-based analysis (Acorn) to validate exported APIs in patch-owned `.sys.mjs` files. A file is "patch-owned" if it was newly created by the current diff or by an existing patch in the queue. Functions must document every `@param` (names must match) and include `@returns` when the function returns a value. Exported constants and classes require a JSDoc block.
 

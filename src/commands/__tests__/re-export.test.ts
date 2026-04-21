@@ -54,6 +54,7 @@ vi.mock('../../core/patch-lint.js', () => ({
   lintExportedPatch: vi.fn().mockResolvedValue([]),
   detectNewFilesInDiff: vi.fn().mockReturnValue(new Set()),
   commentStyleForFile: vi.fn().mockReturnValue(null),
+  resolvePatchSizeTier: vi.fn().mockReturnValue({ tier: 'general' }),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -762,6 +763,43 @@ describe('reExportCommand - --scan flag', () => {
 
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
       expect(call?.[5]).toBeUndefined();
+    });
+  });
+
+  describe('tier', () => {
+    it('forwards patch.tier to lintExportedPatch as the 7th arg', async () => {
+      // 2026-04-21 eval: a branding patch that also touches a non-
+      // allowlisted sibling (e.g. a fork-specific theme override
+      // under browser/themes/<name>/) declares `tier: "branding"` in
+      // patches.json so lintPatchSize applies the branding thresholds
+      // on re-export. Without this forwarding, `re-export` would
+      // refresh the patch against the general thresholds and refire
+      // `large-patch-lines` at 3000 even when the operator had
+      // explicitly declared branding shape.
+      const patch = makePatch('001-branding-full.patch', [
+        'browser/branding/custom/logo.png',
+        'browser/themes/custom-shared/tokens.css',
+      ]);
+      patch.tier = 'branding';
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(1);
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      expect(call?.[6]).toBe('branding');
+    });
+
+    it('passes undefined when tier is absent on the patch', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      expect(call?.[6]).toBeUndefined();
     });
   });
 });

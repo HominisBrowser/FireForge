@@ -12,6 +12,7 @@ import {
   lintPatchedCss,
   lintPatchedJs,
   lintPatchSize,
+  resolvePatchSizeTier,
 } from '../patch-lint.js';
 
 vi.mock('../../utils/fs.js', () => ({
@@ -1019,10 +1020,44 @@ describe('lintPatchSize', () => {
     ).toBe('error');
   });
 
-  it('does not apply the branding tier when non-branding files are also present', () => {
-    // Branding detection only fires when EVERY file is under branding/; a
-    // mixed patch falls through to the general tier so an operator bundling
-    // unrelated changes into a branding edit still sees the hard limit.
+  it('uses the branding tier when branding files + browser/moz.configure registration', () => {
+    // 2026-04-21 external audit against FireForge 0.17.0: a real-world
+    // branding patch legitimately also touches `browser/moz.configure`
+    // to register the new branding flavor with the top-level configure.
+    // The strict "every file under browser/branding/" predicate returned
+    // false and fell through to the general tier, firing ERROR at 15665
+    // lines. The narrow registration-file allowlist keeps the invariant
+    // ("nothing outside branding + the one-line registration sibling")
+    // while tolerating the edit every real branding patch must make.
+    const brandingWithRegistration = [
+      'browser/branding/hominis/content/aboutDialog.css',
+      'browser/branding/hominis/locales/en-US/brand.ftl',
+      'browser/moz.configure',
+    ];
+    expect(
+      lintPatchSize(brandingWithRegistration, 15904).find((i) => i.check === 'large-patch-lines')
+        ?.severity
+    ).toBe('warning');
+  });
+
+  it('uses the branding tier when branding files + browser/confvars.sh registration', () => {
+    const brandingWithLegacyRegistration = [
+      'browser/branding/hominis/content/aboutDialog.css',
+      'browser/confvars.sh',
+    ];
+    expect(
+      lintPatchSize(brandingWithLegacyRegistration, 15904).find(
+        (i) => i.check === 'large-patch-lines'
+      )?.severity
+    ).toBe('warning');
+  });
+
+  it('does not apply the branding tier when a non-allowlisted sibling is mixed in', () => {
+    // The allowlist is tight on purpose — a random non-branding,
+    // non-registration sibling (e.g. a vendor-specific component
+    // under browser/components/) still disqualifies auto-detection
+    // so an operator bundling unrelated changes into a branding edit
+    // continues to see the hard limit.
     const mixedFiles = [
       'browser/branding/hominis/content/aboutDialog.css',
       'browser/components/tests/unit/test_browserGlue_hominis_startup.js',
@@ -1030,6 +1065,80 @@ describe('lintPatchSize', () => {
     expect(
       lintPatchSize(mixedFiles, 15904).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('error');
+  });
+
+  it('does NOT qualify as branding when moz.configure is the only file', () => {
+    // Guard against a config-only patch accidentally landing in the
+    // branding tier — the allowlist is a registration escape hatch
+    // for a branding patch, not a blanket exemption for any config
+    // edit. Requires ≥1 file under browser/branding/ to qualify.
+    const configOnly = ['browser/moz.configure'];
+    expect(
+      lintPatchSize(configOnly, 15904).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('error');
+  });
+
+  it('applies the branding tier when patchTier=branding is set, even with unrelated files', () => {
+    // Explicit opt-in via PatchMetadata.tier. Covers the branding
+    // patch that also touches a non-allowlisted sibling the narrow
+    // allowlist cannot reach (e.g. a fork-specific theme override
+    // under browser/themes/<name>/). The operator declares intent in
+    // patches.json and the lint tier follows.
+    const filesWithUnrelated = [
+      'browser/branding/hominis/content/aboutDialog.css',
+      'browser/themes/hominis-shared/tokens.css',
+    ];
+    expect(
+      lintPatchSize(filesWithUnrelated, 15904, 'branding').find(
+        (i) => i.check === 'large-patch-lines'
+      )?.severity
+    ).toBe('warning');
+  });
+
+  it('tests still beat branding when both apply', () => {
+    // Precedence documented on PatchMetadata.tier: test > branding >
+    // general. A patch of all tests that also declared tier=branding
+    // keeps the test-tier thresholds because they are already more
+    // permissive and an all-tests-and-branding-shaped patch is
+    // vanishingly rare.
+    const testFiles = ['test/test_foo.js', 'test/test_bar.js'];
+    // 6000 is the test-tier error boundary. If branding had won we'd
+    // have only reached the branding notice (3000 < 6000 < 8000).
+    expect(
+      lintPatchSize(testFiles, 6000, 'branding').find((i) => i.check === 'large-patch-lines')
+        ?.severity
+    ).toBe('error');
+  });
+});
+
+describe('resolvePatchSizeTier', () => {
+  it('returns test tier when every file is a test', () => {
+    expect(resolvePatchSizeTier(['test/test_foo.js', 'test/test_bar.js'])).toEqual({
+      tier: 'test',
+    });
+  });
+
+  it('returns branding-explicit when patchTier opts in', () => {
+    expect(resolvePatchSizeTier(['browser/branding/custom/logo.png'], 'branding')).toEqual({
+      tier: 'branding',
+      source: 'explicit',
+    });
+  });
+
+  it('returns branding-auto when isBrandingOnlyPatch would fire', () => {
+    expect(
+      resolvePatchSizeTier(['browser/branding/custom/logo.png', 'browser/moz.configure'])
+    ).toEqual({ tier: 'branding', source: 'auto' });
+  });
+
+  it('returns general when neither tier heuristic applies', () => {
+    expect(resolvePatchSizeTier(['browser/base/content/browser.js'])).toEqual({ tier: 'general' });
+  });
+
+  it('test tier wins over explicit branding opt-in', () => {
+    expect(resolvePatchSizeTier(['test/test_foo.js', 'test/test_bar.js'], 'branding')).toEqual({
+      tier: 'test',
+    });
   });
 });
 

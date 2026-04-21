@@ -109,12 +109,48 @@ const PATCH_LINE_THRESHOLDS = {
 } as const;
 
 /**
- * Returns true when every file in a patch lives under `browser/branding/`.
- * Used by `lintPatchSize` to pick the branding threshold tier.
+ * Fixed allowlist of non-branding sibling paths that real-world Firefox
+ * branding patches legitimately need to touch to register the new
+ * branding flavor with the top-level configure. The 2026-04-21
+ * external eval showed that a branding patch which also touches
+ * `browser/moz.configure` (the canonical registration point) fell
+ * through to the general lint tier because the original predicate
+ * required every file to live under `browser/branding/`. This
+ * allowlist stays intentionally narrow — additions require a real
+ * operator data point, not a speculative expansion. Add new entries
+ * only when a genuine branding patch cannot be expressed without a
+ * specific registration sibling.
+ *
+ * Pinned against ESR 140.x conventions at time of writing.
+ */
+const BRANDING_REGISTRATION_FILES: ReadonlySet<string> = new Set([
+  'browser/moz.configure',
+  'browser/confvars.sh',
+]);
+
+/**
+ * Returns true when a patch qualifies for the branding threshold tier:
+ * every file lives either under `browser/branding/` or in the narrow
+ * registration allowlist, AND the patch contains at least one file
+ * under `browser/branding/` (guard against a config-only patch
+ * accidentally qualifying as branding).
+ *
+ * Used by `lintPatchSize` to pick the branding threshold tier. The
+ * explicit `tier: "branding"` field on `PatchMetadata` bypasses this
+ * heuristic and forces the branding tier directly.
  */
 function isBrandingOnlyPatch(files: ReadonlyArray<string>): boolean {
   if (files.length === 0) return false;
-  return files.every((file) => file.startsWith('browser/branding/'));
+  let hasBrandingFile = false;
+  for (const file of files) {
+    if (file.startsWith('browser/branding/')) {
+      hasBrandingFile = true;
+      continue;
+    }
+    if (BRANDING_REGISTRATION_FILES.has(file)) continue;
+    return false;
+  }
+  return hasBrandingFile;
 }
 
 /**
@@ -508,9 +544,59 @@ export function lintModificationComments(
 // ---------------------------------------------------------------------------
 
 /**
- * Checks patch size and emits advisory warnings.
+ * Describes which tier `resolvePatchSizeTier` selected and why.
+ * Consumers that want to surface the tier choice to the operator
+ * (e.g. a one-line `info()` when branding thresholds kick in) read
+ * this alongside the issues array from `lintPatchSize`.
  */
-export function lintPatchSize(filesAffected: string[], lineCount: number): PatchLintIssue[] {
+export type PatchSizeTierDecision =
+  | { tier: 'general' }
+  | { tier: 'test' }
+  | { tier: 'branding'; source: 'auto' | 'explicit' };
+
+/**
+ * Decides which `large-patch-lines` threshold tier applies to a patch.
+ * Exported so `runPatchLint` and the per-patch `lint` command can
+ * surface the tier choice to the operator *without* depending on
+ * `lintPatchSize`'s internal return shape — the rule itself stays a
+ * pure issues-array API, and the decision is computed separately for
+ * the sole purpose of reporting.
+ *
+ * Precedence: test > branding (explicit) > branding (auto) > general.
+ * The test tier beats branding because a table-driven regression test
+ * is legitimately large independent of whether the patch also claims
+ * branding shape, and the test-tier thresholds are already more
+ * permissive than branding — so "tests beat branding" is the
+ * defensive-for-tests choice.
+ */
+export function resolvePatchSizeTier(
+  filesAffected: ReadonlyArray<string>,
+  patchTier?: 'branding'
+): PatchSizeTierDecision {
+  const allTests = filesAffected.length > 0 && filesAffected.every(isTestFile);
+  if (allTests) return { tier: 'test' };
+  if (patchTier === 'branding') return { tier: 'branding', source: 'explicit' };
+  if (isBrandingOnlyPatch(filesAffected)) return { tier: 'branding', source: 'auto' };
+  return { tier: 'general' };
+}
+
+/**
+ * Checks patch size and emits advisory warnings.
+ *
+ * @param filesAffected - Files touched by the patch
+ * @param lineCount - Non-binary line count of the unified diff
+ * @param patchTier - Optional explicit tier override declared on
+ *   `PatchMetadata.tier`. When `"branding"`, forces the branding
+ *   thresholds regardless of `filesAffected`. Tests still win over
+ *   branding (precedence `test > branding > general`) because the
+ *   test-tier thresholds are already more permissive and an all-tests
+ *   patch that is also branding-shaped is vanishingly rare.
+ */
+export function lintPatchSize(
+  filesAffected: string[],
+  lineCount: number,
+  patchTier?: 'branding'
+): PatchLintIssue[] {
   const issues: PatchLintIssue[] = [];
 
   if (filesAffected.length > 5) {
@@ -527,14 +613,17 @@ export function lintPatchSize(filesAffected: string[], lineCount: number): Patch
   // harnesses run into the thousands of lines). Branding patches get their
   // own tier so a first-export of setup-generated branding doesn't fire
   // the general hard limit — see `PATCH_LINE_THRESHOLDS.branding` above
-  // for the eval data motivating this tier.
-  const allTests = filesAffected.length > 0 && filesAffected.every(isTestFile);
-  const branding = !allTests && isBrandingOnlyPatch(filesAffected);
-  const thresholds = allTests
-    ? PATCH_LINE_THRESHOLDS.test
-    : branding
-      ? PATCH_LINE_THRESHOLDS.branding
-      : PATCH_LINE_THRESHOLDS.general;
+  // for the eval data motivating this tier. An explicit `patchTier`
+  // opt-in forces branding even when `isBrandingOnlyPatch` cannot reach
+  // the patch's actual shape (a branding patch that also touches a
+  // non-allowlisted sibling like a vendor-specific icon resource).
+  const decision = resolvePatchSizeTier(filesAffected, patchTier);
+  const thresholds =
+    decision.tier === 'test'
+      ? PATCH_LINE_THRESHOLDS.test
+      : decision.tier === 'branding'
+        ? PATCH_LINE_THRESHOLDS.branding
+        : PATCH_LINE_THRESHOLDS.general;
 
   if (lineCount >= thresholds.error) {
     issues.push({
@@ -625,6 +714,12 @@ export async function lintModifiedFileHeaders(
  *   is advisory-noisy by nature (a cohesive branding bundle, auto-generated
  *   manifest, etc.) can opt out of a specific rule without reaching for the
  *   blunt `--skip-lint` hammer. Not mutated by this function.
+ * @param patchTier - Optional explicit tier override, threaded from
+ *   `PatchMetadata.tier`. When `"branding"` forces the branding
+ *   thresholds on the `large-patch-lines` rule. Callers with a
+ *   per-patch manifest context (re-export, per-patch lint) should
+ *   pass this; aggregate-mode callers without a specific patch
+ *   context skip it and fall through to auto-detection.
  * @returns Array of all lint issues found
  */
 export async function lintExportedPatch(
@@ -633,7 +728,8 @@ export async function lintExportedPatch(
   diffContent: string,
   config: FireForgeConfig,
   patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext,
-  ignoreChecks?: ReadonlySet<string>
+  ignoreChecks?: ReadonlySet<string>,
+  patchTier?: 'branding'
 ): Promise<PatchLintIssue[]> {
   const newFiles = detectNewFilesInDiff(diffContent);
   const { textLines: lineCount } = countNonBinaryDiffLines(diffContent);
@@ -647,7 +743,7 @@ export async function lintExportedPatch(
   ]);
 
   const modCommentIssues = lintModificationComments(diffContent, config);
-  const sizeIssues = lintPatchSize(affectedFiles, lineCount);
+  const sizeIssues = lintPatchSize(affectedFiles, lineCount, patchTier);
 
   const issues = [
     ...sizeIssues,

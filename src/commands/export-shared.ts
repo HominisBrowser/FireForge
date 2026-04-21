@@ -9,6 +9,7 @@ import {
   commentStyleForFile,
   detectNewFilesInDiff,
   lintExportedPatch,
+  resolvePatchSizeTier,
 } from '../core/patch-lint.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -35,6 +36,12 @@ import { isValidPatchCategory, PATCH_CATEGORIES, validatePatchName } from '../ut
  *   `--skip-lint` when exactly one advisory rule does not apply to a
  *   specific patch — e.g. `large-patch-lines` on a cohesive branding
  *   bundle that genuinely cannot be split.
+ * @param patchTier - Optional explicit tier override (threaded from
+ *   `PatchMetadata.tier`). Forces the branding-tier thresholds when
+ *   set, independent of the auto-detect allowlist. When the branding
+ *   tier is applied (either via this opt-in or the auto-detect), a
+ *   single `info()` line surfaces the choice so the tier decision is
+ *   visible rather than silent.
  */
 export async function runPatchLint(
   engineDir: string,
@@ -43,15 +50,32 @@ export async function runPatchLint(
   config: FireForgeConfig,
   skipLint?: boolean,
   patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext,
-  ignoreChecks?: ReadonlySet<string>
+  ignoreChecks?: ReadonlySet<string>,
+  patchTier?: 'branding'
 ): Promise<void> {
+  // Compute the tier decision independently of the lint pipeline so the
+  // decision can be surfaced even when the rule body emitted no issues
+  // (e.g. a branding patch under the soft threshold still benefits from
+  // operators knowing which tier governed the run). The same helper is
+  // reused inside `lintPatchSize`, so the surfaced tier and the tier
+  // that actually drove the thresholds never drift.
+  const tierDecision = resolvePatchSizeTier(filesAffected, patchTier);
+  if (tierDecision.tier === 'branding') {
+    info(
+      tierDecision.source === 'explicit'
+        ? 'Lint: branding threshold tier applied via patches.json `tier: "branding"` opt-in.'
+        : 'Lint: branding threshold tier applied (patch is all under browser/branding/ plus registration siblings).'
+    );
+  }
+
   const issues = await lintExportedPatch(
     engineDir,
     filesAffected,
     diffContent,
     config,
     patchQueueCtx,
-    ignoreChecks
+    ignoreChecks,
+    patchTier
   );
   if (issues.length === 0) return;
 

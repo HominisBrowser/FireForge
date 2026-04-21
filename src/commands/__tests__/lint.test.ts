@@ -55,6 +55,7 @@ vi.mock('../../core/patch-lint.js', () => ({
   lintExportedPatch: vi.fn(() => Promise.resolve([])),
   buildPatchQueueContext: vi.fn(() => Promise.resolve({ entries: [] })),
   lintPatchQueue: vi.fn(() => []),
+  resolvePatchSizeTier: vi.fn(() => ({ tier: 'general' })),
 }));
 
 vi.mock('../../core/patch-manifest.js', () => ({
@@ -496,6 +497,32 @@ describe('lintCommand — branch coverage', () => {
       const ignore = secondCall?.[5];
       expect(ignore).toBeInstanceOf(Set);
       expect(ignore?.has('large-patch-lines')).toBe(true);
+    });
+
+    it('forwards patch.tier to lintExportedPatch as the 7th arg', async () => {
+      // 2026-04-21 eval: a branding patch that also touches a non-
+      // allowlisted sibling declares `tier: "branding"` in patches.json
+      // so `lint --per-patch` applies the branding thresholds. Without
+      // this forwarding, per-patch lint would refire `large-patch-lines`
+      // at 3000 even when the operator had explicitly declared branding
+      // shape.
+      const plain = makePatch('001-ui-a.patch', ['a.ts']);
+      const branded = makePatch('002-branding-full.patch', [
+        'browser/branding/custom/logo.png',
+        'browser/themes/custom-shared/tokens.css',
+      ]);
+      branded.tier = 'branding';
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([plain, branded]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(2);
+      const firstCall = vi.mocked(lintExportedPatch).mock.calls[0];
+      const secondCall = vi.mocked(lintExportedPatch).mock.calls[1];
+      expect(firstCall?.[6]).toBeUndefined();
+      expect(secondCall?.[6]).toBe('branding');
     });
 
     it('namespaces issues with the patch filename so triage can attribute findings', async () => {

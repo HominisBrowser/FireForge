@@ -61,6 +61,7 @@ vi.mock('../../core/patch-lint.js', () => ({
   commentStyleForFile: vi.fn().mockReturnValue(null),
   buildPatchQueueContext: vi.fn().mockResolvedValue({ entries: [] }),
   collectNewFileCreatorsByPath: vi.fn().mockReturnValue(new Map()),
+  resolvePatchSizeTier: vi.fn().mockReturnValue({ tier: 'general' }),
 }));
 
 vi.mock('../../utils/fs.js', () => ({

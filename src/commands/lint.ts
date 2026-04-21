@@ -15,7 +15,12 @@ import {
   getUntrackedFilesInDir,
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
-import { buildPatchQueueContext, lintExportedPatch, lintPatchQueue } from '../core/patch-lint.js';
+import {
+  buildPatchQueueContext,
+  lintExportedPatch,
+  lintPatchQueue,
+  resolvePatchSizeTier,
+} from '../core/patch-lint.js';
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { GeneralError } from '../errors/base.js';
@@ -430,7 +435,23 @@ async function lintPerPatch(
     if (!diff.trim()) continue;
 
     const ignore = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
-    const patchIssues = await lintExportedPatch(paths.engine, existing, diff, config, ctx, ignore);
+    const decision = resolvePatchSizeTier(existing, patch.tier);
+    if (decision.tier === 'branding') {
+      info(
+        decision.source === 'explicit'
+          ? `${patch.filename}: branding threshold tier applied via patches.json \`tier: "branding"\` opt-in.`
+          : `${patch.filename}: branding threshold tier applied (all files under browser/branding/ plus registration siblings).`
+      );
+    }
+    const patchIssues = await lintExportedPatch(
+      paths.engine,
+      existing,
+      diff,
+      config,
+      ctx,
+      ignore,
+      patch.tier
+    );
     for (const issue of patchIssues) {
       issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
     }

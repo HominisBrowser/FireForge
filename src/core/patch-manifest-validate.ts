@@ -40,7 +40,30 @@ export function validatePatchMetadata(data: unknown, index: number): PatchMetada
 
   const filesAffected = rec.stringArray('filesAffected');
 
-  return {
+  // Optional fields. These were silently stripped before the 0.17.0
+  // branding-tier work reached in and audited the loader — the 0.16.0
+  // `lintIgnore` escape hatch demonstrably round-tripped only through
+  // test fixtures that mocked `loadPatchesManifest` directly. Real
+  // operator edits to `patches.json` were dropped on every subsequent
+  // load, so any patch that relied on `lintIgnore` to suppress a
+  // specific lint rule was quietly re-tripped the next time the
+  // manifest validated. Preserve both the pre-existing `lintIgnore`
+  // and the new `tier` field here so future-added optional fields
+  // have a ready template to follow.
+  const lintIgnore = rec.optionalStringArray('lintIgnore');
+
+  const rawTier = rec.raw('tier');
+  let tier: 'branding' | undefined;
+  if (rawTier !== undefined) {
+    if (rawTier !== 'branding') {
+      throw new Error(
+        `patches[${index}].tier must be "branding" when present (unknown tier values are rejected, not silently ignored).`
+      );
+    }
+    tier = 'branding';
+  }
+
+  const result: PatchMetadata = {
     filename,
     order,
     category,
@@ -50,6 +73,9 @@ export function validatePatchMetadata(data: unknown, index: number): PatchMetada
     sourceEsrVersion,
     filesAffected,
   };
+  if (lintIgnore !== undefined) result.lintIgnore = lintIgnore;
+  if (tier !== undefined) result.tier = tier;
+  return result;
 }
 
 /** Validates raw patches.json data and returns the typed manifest shape. */

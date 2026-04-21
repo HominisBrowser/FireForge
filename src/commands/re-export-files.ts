@@ -104,6 +104,8 @@ export async function reExportFilesInPlace(
   // `lintIgnore` threads through so a shrink of an advisory-noisy-but-
   // intentional patch (branding bundle, localised-resource pack) does not
   // have to choose between `--skip-lint` (blunt) and the full rebase path.
+  // `target.tier` threads the explicit branding-threshold opt-in for
+  // the branding patch that also touches a non-allowlisted sibling.
   const ignoreChecks = target.lintIgnore?.length ? new Set<string>(target.lintIgnore) : undefined;
   await runPatchLint(
     paths.engine,
@@ -112,7 +114,8 @@ export async function reExportFilesInPlace(
     config,
     options.skipLint,
     undefined,
-    ignoreChecks
+    ignoreChecks,
+    target.tier
   );
 
   // Project the cross-patch context: replace the target entry with its

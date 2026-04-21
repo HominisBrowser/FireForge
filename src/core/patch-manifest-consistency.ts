@@ -184,7 +184,15 @@ export async function rebuildPatchesManifest(
       recoveredFilenames.push(patch.filename);
     }
 
-    rebuiltPatches.push({
+    // Preserve optional fields the operator declared on the existing
+    // entry — `lintIgnore` (per-patch lint suppression) and `tier`
+    // (explicit branding-threshold override). Without this, a
+    // `doctor --repair-patches-manifest` run silently strips both
+    // fields from every entry that had them, and the next `lint`
+    // or `re-export` pass fires rules the operator had intentionally
+    // quieted. Mirrors how other descriptive fields fall back to
+    // existing values when the entry is known.
+    const rebuilt: PatchMetadata = {
       filename: patch.filename,
       order: recoveredOrder,
       category: existing?.category ?? inferred.category,
@@ -195,7 +203,10 @@ export async function rebuildPatchesManifest(
       createdAt: existing?.createdAt ?? new Date(patchStats.mtimeMs).toISOString(),
       sourceEsrVersion: existing?.sourceEsrVersion ?? fallbackSourceEsrVersion,
       filesAffected,
-    });
+    };
+    if (existing?.lintIgnore !== undefined) rebuilt.lintIgnore = [...existing.lintIgnore];
+    if (existing?.tier !== undefined) rebuilt.tier = existing.tier;
+    rebuiltPatches.push(rebuilt);
   }
 
   rebuiltPatches.sort(

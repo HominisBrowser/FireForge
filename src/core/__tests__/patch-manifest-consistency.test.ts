@@ -230,4 +230,57 @@ describe('patch manifest consistency', () => {
     expect(rebuilt.recoveredFilenames).toContain('002-sidebar.patch');
     expect(rebuilt.recoveredFilenames).not.toContain('001-ui-toolbar.patch');
   });
+
+  it('preserves existing lintIgnore and tier fields when rebuilding', async () => {
+    // Without this preservation, a `doctor --repair-patches-manifest`
+    // run would silently strip both optional fields from every entry
+    // that had them. The next lint/re-export pass would then refire
+    // exactly the rules the operator had intentionally quieted via
+    // `lintIgnore` and the branding tier threshold-override set via
+    // `tier: "branding"`.
+    const patchesDir = await mkdtemp(join(tmpdir(), 'fireforge-manifest-'));
+    tempDirs.push(patchesDir);
+
+    await writeFiles(patchesDir, {
+      '001-branding-custom.patch': TOOLBAR_PATCH,
+      'patches.json': `${JSON.stringify(
+        {
+          version: 1,
+          patches: [
+            {
+              filename: '001-branding-custom.patch',
+              order: 1,
+              category: 'branding',
+              name: 'custom',
+              description: 'Custom branding bundle',
+              createdAt: '2026-04-21T00:00:00.000Z',
+              sourceEsrVersion: '140.9.0esr',
+              filesAffected: ['browser/wrong.js'],
+              lintIgnore: ['large-patch-lines', 'large-patch-files'],
+              tier: 'branding',
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`,
+    });
+
+    const rebuilt = await rebuildPatchesManifest(patchesDir, '140.9.0esr');
+
+    expect(rebuilt.manifest.patches[0]).toMatchObject({
+      filename: '001-branding-custom.patch',
+      description: 'Custom branding bundle',
+      lintIgnore: ['large-patch-lines', 'large-patch-files'],
+      tier: 'branding',
+    });
+    // And the preserved lintIgnore must be a fresh array (no aliasing
+    // of the input object that could surface as a cross-manifest leak
+    // later).
+    const persistedLoaded = await loadPatchesManifest(patchesDir);
+    expect(persistedLoaded?.patches[0]?.lintIgnore).toEqual([
+      'large-patch-lines',
+      'large-patch-files',
+    ]);
+  });
 });

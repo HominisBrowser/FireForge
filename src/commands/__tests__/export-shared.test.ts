@@ -16,6 +16,7 @@ vi.mock('../../core/patch-lint.js', () => ({
     return null;
   }),
   detectNewFilesInDiff: vi.fn(() => new Set<string>()),
+  resolvePatchSizeTier: vi.fn(() => ({ tier: 'general' })),
 }));
 
 vi.mock('../../core/patch-export.js', () => ({

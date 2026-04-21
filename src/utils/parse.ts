@@ -157,6 +157,21 @@ export class ParsedRecord {
   }
 
   /**
+   * Extracts an optional array-of-strings field.
+   * @param key - Field name
+   * @returns The string array (fresh copy) or undefined when absent
+   * @throws Error if the field is present but not an array of strings
+   */
+  optionalStringArray(key: string): string[] | undefined {
+    const value = this.#data[key];
+    if (value === undefined) return undefined;
+    if (!isArray(value) || !value.every(isString)) {
+      throw new Error(`${this.#label}.${key} must be an array of strings`);
+    }
+    return [...value];
+  }
+
+  /**
    * Extracts a required nested object field.
    * @param key - Field name
    * @returns A new ParsedRecord wrapping the nested object

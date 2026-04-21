@@ -174,7 +174,7 @@ When `fireforge import` fails on a patch, fix the `.rej` files in `engine/`, the
 fireforge resolve
 ```
 
-This re-exports the fixed patch and continues applying the remaining stack.
+This re-exports the fixed patch and clears the conflict state. The command is deliberately a single-patch refresh — to continue applying the remainder of the queue, run `fireforge import` afterwards. For scripted or CI-driven recovery, pass `--yes` (or `-y`) to skip the interactive "are you done?" prompt; the flag is the explicit opt-in for non-interactive use once the manual merge is complete.
 
 <details>
 <summary>Patch manifest format</summary>
@@ -211,7 +211,7 @@ If the manifest drifts after an interrupted export or manual edits, `fireforge i
 
 `fireforge lint` runs automatically during export, export-all and re-export. Use `--skip-lint` to downgrade errors to warnings. Errors block the export; warnings are printed but do not block.
 
-By default, a standalone `fireforge lint` (no arguments) lints the **aggregate** `git diff HEAD` — i.e. every applied patch summed. On a repo where `fireforge import` or `fireforge rebase` has just applied the full queue, the patch-size rules (`large-patch-lines`, `large-patch-files`) fire against the sum, which reads as "my queue is broken" when it is really an artefact of aggregation. Use `fireforge lint --per-patch` to rescope the diff to each patch's own `filesAffected`, honouring the patch's own `lintIgnore`. Cross-patch rules (`duplicate-new-file-creation`, `forward-import`) still run once over the whole queue either way. Pass explicit file paths to narrow the scope further; the three modes (aggregate, file-scoped, per-patch) are mutually exclusive.
+By default, a standalone `fireforge lint` (no arguments) lints the **aggregate** `git diff HEAD` — i.e. every applied patch summed — with tool-managed branding paths (`browser/branding/<binaryName>/`) excluded. A fresh-setup workspace carries a large generated branding diff that operators did not author directly, and letting it through tripped the patch-size and license-header rules on content that matches the `branding` bucket in `fireforge status`. When the exclusion fires the command prints a one-line note naming the excluded count so the filter is visible. On a repo where `fireforge import` or `fireforge rebase` has just applied the full queue, the patch-size rules (`large-patch-lines`, `large-patch-files`) fire against the sum, which reads as "my queue is broken" when it is really an artefact of aggregation. Use `fireforge lint --per-patch` to rescope the diff to each patch's own `filesAffected`, honouring the patch's own `lintIgnore`. Cross-patch rules (`duplicate-new-file-creation`, `forward-import`) still run once over the whole queue either way. Pass explicit file paths to narrow the scope further — explicit-path mode does lint branding files (the operator's explicit request wins over the branding exclusion); the three modes (aggregate, file-scoped, per-patch) are mutually exclusive.
 
 | Check                          | Scope                                                                     | Severity                 |
 | ------------------------------ | ------------------------------------------------------------------------- | ------------------------ |
@@ -409,6 +409,8 @@ fireforge config firefox.version 145.0.0esr
 fireforge config customKey "value" --force
 ```
 
+Writes are serialised behind a sidecar lock — two concurrent `fireforge config` invocations against the same `fireforge.json` (for example, parallel automation steps) queue instead of racing the read-modify-write. The lock is released automatically on process exit; stale locks from a crashed earlier command are reclaimed on the next invocation via the PID-alive probe.
+
 ### Patch queue management
 
 ```bash
@@ -440,7 +442,7 @@ fireforge watch
 fireforge token add --category 'Colors — General' -- --my-color 'light-dark(#fff, #000)'
 ```
 
-Tokens live in the Furnace-managed tokens CSS file (`engine/browser/themes/shared/<binaryName>-tokens.css`), scaffolded by `fireforge furnace init` alongside `furnace.json`. The scaffold seeds a default set of categories (`Colors — General`, `Colors — Canvas`, `Colors — Experiment`, `Spacing`); add a category by hand as a `/* = My Category = */` comment inside the `:root { … }` block if you need another. `fireforge furnace init` also registers the tokens CSS path in `patchLint.rawColorAllowlist` so raw color literals inside it are not flagged by `fireforge lint`.
+Tokens live in the Furnace-managed tokens CSS file (`engine/browser/themes/shared/<binaryName>-tokens.css`), scaffolded by `fireforge furnace init` alongside `furnace.json`. The scaffold seeds a default set of categories (`Colors — General`, `Colors — Canvas`, `Colors — Experiment`, `Spacing`); add a category by hand as a `/* = My Category = */` comment inside the `:root { … }` block if you need another. `fireforge furnace init` also registers the tokens CSS path in `patchLint.rawColorAllowlist` so raw color literals inside it are not flagged by `fireforge lint`, and derives `tokenPrefix: --<binaryName>-` from `fireforge.json`'s `binaryName` so `fireforge token coverage` has a prefix to key off on the very first run. Projects that prefer a different prefix can override it in `furnace.json` after init.
 
 ### Diff-scoped lint (`lint --since`)
 

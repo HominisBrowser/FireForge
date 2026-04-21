@@ -49,6 +49,9 @@ vi.mock('../../core/mach.js', () => ({
   test: vi.fn(),
   testWithOutput: vi.fn(),
   buildUI: vi.fn(),
+  // Build lock added in 0.16.0; pass through so the preflight tests
+  // still exercise the downstream mach calls exactly as before.
+  withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
 }));
 
 vi.mock('../../core/branding.js', () => ({

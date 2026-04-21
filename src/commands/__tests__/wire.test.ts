@@ -24,7 +24,24 @@ vi.mock('../../core/parser-fallback.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
+  readText: vi.fn(),
+  writeText: vi.fn(),
 }));
+
+// The dry-run/real-run parity probe added in 0.16.0 reads the chrome
+// document from disk and runs the same insertion-point scan the real
+// run uses. Every wire test in this file drives `pathExists` through a
+// generic mock that says "yes, everything exists", so the probe would
+// then try to read those files — we stub it out here to keep the focus
+// on the command-level behaviours these tests already cover. A
+// dedicated integration test pins the probe contract separately.
+vi.mock('../../core/wire-dom-fragment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/wire-dom-fragment.js')>();
+  return {
+    ...actual,
+    probeDomFragmentInsertionPoint: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),

@@ -13,6 +13,7 @@ import {
   buildUI,
   hasBuildArtifacts,
   runMach,
+  withBuildLock,
 } from '../core/mach.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
@@ -173,11 +174,21 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   let exitCode: number;
 
   try {
-    if (options.ui) {
-      exitCode = await buildUI(paths.engine);
-    } else {
-      exitCode = await build(paths.engine, jobs);
-    }
+    // Hold the per-project build lock across the mach invocation so two
+    // overlapping `fireforge build` / `fireforge build --ui` commands
+    // against the same engine tree serialise instead of racing through
+    // the same obj-*. 2026-04-21 eval: a `build --ui` launched during
+    // an in-progress full build hit `No rule to make target 'XUL'` in
+    // mach, which is the downstream consequence of an incomplete
+    // backend — not a clue that a concurrent build was the cause. The
+    // lock turns the second invocation's failure into an explicit
+    // refusal naming the holder PID.
+    exitCode = await withBuildLock(projectRoot, async () => {
+      if (options.ui) {
+        return buildUI(paths.engine);
+      }
+      return build(paths.engine, jobs);
+    });
   } catch (error: unknown) {
     throw new BuildError(
       'Build process failed to start',

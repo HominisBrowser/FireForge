@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { dirname, isAbsolute, join, normalize } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, normalize } from 'node:path';
 
 import { text } from '@clack/prompts';
 
@@ -19,12 +20,47 @@ import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
 
 /**
- * Validates an FTL base path before writing it to furnace.json. Rejects
- * absolute paths, null bytes, and any normalised segment starting with
- * `..` — the previous `includes('..')` substring check caught the common
- * case but missed `./../../` and absolute paths that are arguably worse.
+ * File extensions that are definitely FTL resources (not locale
+ * directories). A value ending in one of these is almost certainly the
+ * result of the operator pointing at a single FTL file instead of the
+ * locale directory that contains it.
+ *
+ * 2026-04-21 eval: `furnace init --ftl-base-path browser/forgefresh.ftl`
+ * produced a misleading success path — the subsequent
+ * `furnace create --localized` scaffolded an `.mjs` referencing
+ * `insertFTLIfNeeded("<name>.ftl")` while furnace.json had no component
+ * entry, leaving the scaffold orphaned. Switching to a locale directory
+ * (`toolkit/locales/en-US/toolkit/global`) fixed the downstream path.
+ * Rejecting file-shaped values up-front keeps the operator on the
+ * correct path before any partial state is written.
  */
-function validateFtlBasePath(value: string): void {
+const FTL_FILE_EXTENSIONS = new Set(['.ftl', '.properties', '.dtd']);
+
+function hasFtlFileExtension(value: string): boolean {
+  const lower = value.toLowerCase();
+  const dotIdx = lower.lastIndexOf('.');
+  const slashIdx = Math.max(lower.lastIndexOf('/'), lower.lastIndexOf('\\'));
+  if (dotIdx <= slashIdx) return false; // No extension in the basename.
+  return FTL_FILE_EXTENSIONS.has(lower.slice(dotIdx));
+}
+
+/**
+ * Validates an FTL base path before writing it to furnace.json.
+ * Rejects:
+ *  - empty values and null bytes;
+ *  - absolute paths (POSIX or Windows-drive) that escape the engine;
+ *  - `..` segments that escape the engine;
+ *  - file-shaped values ending in `.ftl` / `.properties` / `.dtd`
+ *    (these are locale resources, not directories — the operator
+ *    almost certainly meant to name the parent directory).
+ *
+ * When {@link engineDir} is provided and exists on disk, the resolved
+ * `engine/${value}` path is probed: if it exists but is not a
+ * directory, the same file-shape error fires; if it does not exist yet,
+ * a non-blocking warning is logged (a fresh project that has not
+ * `fireforge download`-ed yet is the legitimate pre-existence case).
+ */
+async function validateFtlBasePath(value: string, engineDir?: string): Promise<void> {
   if (value.length === 0) {
     throw new FurnaceError('ftlBasePath must not be empty.');
   }
@@ -41,6 +77,47 @@ function validateFtlBasePath(value: string): void {
     throw new FurnaceError(
       `ftlBasePath "${value}" must not escape the engine checkout via parent-directory segments.`
     );
+  }
+
+  if (hasFtlFileExtension(value)) {
+    throw new FurnaceError(
+      `ftlBasePath "${value}" looks like a file (basename "${basename(value)}" ends in .ftl/.properties/.dtd), but FireForge expects a locale directory such as toolkit/locales/en-US/toolkit/global or browser/locales/en-US/browser. Use the parent directory instead.`
+    );
+  }
+
+  // Shape probe against the real filesystem when we have an engine
+  // directory to anchor against. The probe is best-effort: a missing
+  // engine directory or a not-yet-extracted locale tree is
+  // legitimate (an operator may `furnace init` before `fireforge
+  // download`), so we emit a warning rather than refusing.
+  if (engineDir) {
+    const resolved = join(engineDir, value);
+    try {
+      const info = await stat(resolved);
+      if (!info.isDirectory()) {
+        throw new FurnaceError(
+          `ftlBasePath "${value}" resolves to a non-directory at ${resolved}. FireForge expects a locale directory (for example toolkit/locales/en-US/toolkit/global or browser/locales/en-US/browser).`
+        );
+      }
+    } catch (error: unknown) {
+      // FurnaceError (from the `isDirectory()` branch above) is a real
+      // shape failure — re-throw so the operator sees it.
+      if (error instanceof FurnaceError) throw error;
+      // ENOENT is expected on a fresh project before `fireforge
+      // download` has populated engine/; only warn.
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? (error as { code?: unknown }).code
+          : undefined;
+      if (code === 'ENOENT') {
+        warn(
+          `ftlBasePath "${value}" does not yet exist at ${resolved}. This is fine if you have not run "fireforge download" yet; rerun "fireforge furnace init --force" after the engine is extracted to re-validate.`
+        );
+      }
+      // Any other stat error is also best-effort ignored here — a
+      // permission issue or malformed engine checkout will surface on
+      // the next command that actually reads the FTL tree.
+    }
   }
 }
 
@@ -60,8 +137,30 @@ export async function furnaceInitCommand(
     throw new FurnaceError('furnace.json already exists. Use --force to overwrite it.');
   }
 
-  const config: FurnaceConfig = createDefaultFurnaceConfig();
+  const paths = getProjectPaths(projectRoot);
+
+  // Seed the default furnace config with a tokenPrefix derived from
+  // fireforge.json's binaryName so `token coverage` sees real tokens on
+  // the very first run. The 2026-04-21 eval initialised Furnace, added
+  // tokens, ran coverage, and got `0 tokens / N unknown` — the prefix
+  // default was absent and the scan had nothing to key off. Loading
+  // fireforge.json here is best-effort: a project without one (e.g.
+  // mid-setup) falls through to the prefix-less default, and
+  // `token coverage` emits the existing "no tokenPrefix" warning.
+  let derivedBinaryName: string | undefined;
+  try {
+    const fireForgeConfig = await loadConfig(projectRoot);
+    derivedBinaryName = fireForgeConfig.binaryName;
+  } catch {
+    // Best-effort only: initialising furnace without a fireforge.json is
+    // rare but not forbidden. Skip the prefix default in that case.
+  }
+
+  const config: FurnaceConfig = createDefaultFurnaceConfig(
+    derivedBinaryName ? { binaryName: derivedBinaryName } : {}
+  );
   const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const engineForValidation = (await pathExists(paths.engine)) ? paths.engine : undefined;
 
   // Resolve componentPrefix
   if (options.prefix !== undefined) {
@@ -84,7 +183,7 @@ export async function furnaceInitCommand(
 
   // Resolve ftlBasePath
   if (options.ftlBasePath !== undefined) {
-    validateFtlBasePath(options.ftlBasePath);
+    await validateFtlBasePath(options.ftlBasePath, engineForValidation);
     config.ftlBasePath = options.ftlBasePath;
   } else if (isInteractive) {
     const ftlResult = await text({
@@ -97,7 +196,7 @@ export async function furnaceInitCommand(
     }
     const ftlValue = (ftlResult as string).trim();
     if (ftlValue) {
-      validateFtlBasePath(ftlValue);
+      await validateFtlBasePath(ftlValue, engineForValidation);
       config.ftlBasePath = ftlValue;
     }
   }

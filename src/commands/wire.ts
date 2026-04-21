@@ -10,7 +10,7 @@ import {
   loadFurnaceConfig,
 } from '../core/furnace-config.js';
 import { consumeParserFallbackEvents } from '../core/parser-fallback.js';
-import { DEFAULT_DOM_TARGET } from '../core/wire-dom-fragment.js';
+import { DEFAULT_DOM_TARGET, probeDomFragmentInsertionPoint } from '../core/wire-dom-fragment.js';
 import { coerceToCall, validateWireName as validateWireExpression } from '../core/wire-utils.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -116,6 +116,44 @@ function validateWireName(name: string): void {
         'Names must start with a letter or underscore and contain only letters, digits, underscores, or hyphens. ' +
         'Path separators and parent-directory segments are not permitted.',
       'name'
+    );
+  }
+}
+
+/**
+ * Asserts that the resolved chrome document both exists on disk AND
+ * exposes an insertion anchor (`#include browser-sets.inc` or
+ * `<html:body>`) that `addDomFragment` can splice into. Fires the same
+ * check in dry-run and real-run mode, so the preview and execution
+ * agree on whether the target is wireable before any disk mutations
+ * happen. Before 0.16.0 this check only ran on the real branch, which
+ * let the dry-run produce a plausible-looking plan that the real run
+ * then refused with `Could not find insertion point in chrome document`.
+ */
+async function assertDomTargetIsWireable(
+  projectRoot: string,
+  domFilePath: string,
+  domTargetPath: string
+): Promise<void> {
+  const paths = getProjectPaths(projectRoot);
+  if (!(await pathExists(join(paths.engine, domTargetPath)))) {
+    throw new InvalidArgumentError(
+      `Chrome document not found in engine: ${domTargetPath}\n` +
+        'Set "tokenHostDocuments" in furnace.json (first entry is used by wire) ' +
+        'or pass --target <path>.',
+      'target'
+    );
+  }
+  try {
+    await probeDomFragmentInsertionPoint(paths.engine, domFilePath, domTargetPath);
+  } catch (probeError: unknown) {
+    throw new InvalidArgumentError(
+      `${probeError instanceof Error ? probeError.message : String(probeError)}\n` +
+        `The resolved chrome document ${domTargetPath} does not expose an insertion anchor ` +
+        'that `fireforge wire` recognises (`#include browser-sets.inc` or `<html:body>`). ' +
+        'Add one of those anchors to the chrome doc, or target a document that has them via ' +
+        '`--target <path>`.',
+      'target'
     );
   }
 }
@@ -249,18 +287,13 @@ export async function wireCommand(
   }
   const domTargetPath = await resolveDomTargetPath(projectRoot, normalizedTarget);
   if (domFilePath) {
-    const paths = getProjectPaths(projectRoot);
-    if (!options.dryRun && !(await pathExists(join(paths.engine, domTargetPath)))) {
-      throw new InvalidArgumentError(
-        `Chrome document not found in engine: ${domTargetPath}\n` +
-          'Set "tokenHostDocuments" in furnace.json (first entry is used by wire) ' +
-          'or pass --target <path>.',
-        'target'
-      );
-    }
+    await assertDomTargetIsWireable(projectRoot, domFilePath, domTargetPath);
   }
 
-  // Verify the subscript file exists in engine/ (skip for dry-run)
+  // Verify the subscript file exists in engine/ (skip for dry-run:
+  // dry-run is meant to preview the mutation plan without requiring
+  // the subscript to already exist, matching the "plan before write"
+  // pattern operators rely on for setup scripts).
   if (!options.dryRun) {
     const paths = getProjectPaths(projectRoot);
     const subscriptPath = join(paths.engine, subscriptDir, `${name}.js`);

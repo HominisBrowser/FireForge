@@ -26,10 +26,38 @@ import {
 } from '../utils/logger.js';
 
 /**
+ * Options accepted by {@link resolveCommand}.
+ */
+export interface ResolveCommandOptions {
+  /**
+   * Skip the interactive "Have you finished fixing the files?"
+   * confirmation prompt and treat the resolution as complete.
+   *
+   * Motivating case (2026-04-21 eval, Finding #18): a scripted or
+   * CI-assisted recovery flow that has already completed the manual
+   * merge step cannot advance through `fireforge resolve` because the
+   * TTY guard refuses non-interactive invocations outright. `--yes`
+   * is the explicit opt-in for those flows: the operator is asserting
+   * they have already done the merge, and the command proceeds
+   * straight to the patch-refresh + state-clear path.
+   *
+   * The guard without `--yes` is preserved — running `resolve` with
+   * no TTY and no `--yes` still refuses so an accidental pipe-into
+   * invocation doesn't silently commit whatever the engine happens
+   * to contain.
+   */
+  yes?: boolean;
+}
+
+/**
  * Runs the resolve command to fix broken patches.
  * @param projectRoot - Root directory of the project
+ * @param options - Optional flags; see {@link ResolveCommandOptions}.
  */
-export async function resolveCommand(projectRoot: string): Promise<void> {
+export async function resolveCommand(
+  projectRoot: string,
+  options: ResolveCommandOptions = {}
+): Promise<void> {
   intro('FireForge Resolve');
 
   const paths = getProjectPaths(projectRoot);
@@ -56,21 +84,29 @@ export async function resolveCommand(projectRoot: string): Promise<void> {
     );
   }
 
-  if (!process.stdin.isTTY) {
+  // Non-interactive mode requires an explicit `--yes` to proceed: the
+  // operator is asserting the manual merge is complete and the
+  // refreshed diff is the one to record. Without `--yes`, an accidental
+  // pipe / CI shell could otherwise commit whatever the engine
+  // currently contains. 2026-04-21 eval (Finding #18): a scripted
+  // recovery flow was dead-ended by the unconditional TTY refusal.
+  if (!process.stdin.isTTY && !options.yes) {
     throw new GeneralError(
-      'Cannot run "fireforge resolve" in non-interactive mode. Use a terminal with TTY support.'
+      'Cannot run "fireforge resolve" in non-interactive mode. Use a terminal with TTY support, or pass "--yes" to skip the interactive confirmation once the manual merge is complete.'
     );
   }
 
-  const finished = await confirm({
-    message: 'Have you finished manually fixing the files in engine/?',
-    initialValue: true,
-  });
+  if (!options.yes) {
+    const finished = await confirm({
+      message: 'Have you finished manually fixing the files in engine/?',
+      initialValue: true,
+    });
 
-  if (isCancel(finished) || !finished) {
-    info('Please fix the conflicts and run "fireforge resolve" again.');
-    outro('Resolution paused');
-    return;
+    if (isCancel(finished) || !finished) {
+      info('Please fix the conflicts and run "fireforge resolve" again.');
+      outro('Resolution paused');
+      return;
+    }
   }
 
   const manifest = await loadPatchesManifest(paths.patches);
@@ -179,7 +215,9 @@ export async function resolveCommand(projectRoot: string): Promise<void> {
 
     s.stop(`Updated ${patchFilename}`);
     success('Patch updated successfully and resolution state cleared.');
-    info('Run "fireforge import" to apply the remaining patches.');
+    info(
+      'Patch updated. Run "fireforge import" next to resume the queue from this point — resolve only refreshes the one broken patch, it does not continue applying the remaining patches itself.'
+    );
     outro('Resolution complete');
   } catch (error: unknown) {
     s.error(`Resolution failed for ${patchFilename}`);
@@ -195,10 +233,16 @@ export function registerResolve(
 ): void {
   program
     .command('resolve')
-    .description('Update a broken patch with manual fixes and continue')
+    .description(
+      'Update a broken patch with manual fixes (then run "fireforge import" to resume the queue)'
+    )
+    .option(
+      '-y, --yes',
+      'Skip the interactive confirmation prompt. Use for non-interactive automation flows (CI, scripted recovery) after the manual merge is complete.'
+    )
     .action(
-      withErrorHandling(async () => {
-        await resolveCommand(getProjectRoot());
+      withErrorHandling(async (options: { yes?: boolean }) => {
+        await resolveCommand(getProjectRoot(), options);
       })
     );
 }

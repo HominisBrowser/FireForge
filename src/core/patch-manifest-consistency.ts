@@ -116,16 +116,37 @@ export async function validatePatchesManifestConsistency(
 }
 
 /**
+ * Summary of a {@link rebuildPatchesManifest} run. `recoveredFilenames`
+ * lists patches whose manifest entry was reconstructed from filename,
+ * mtime, and diff alone (no pre-existing manifest entry to preserve).
+ * These entries carry generic descriptions and mtime-based
+ * timestamps; callers like `doctor --repair-patches-manifest` surface
+ * a per-patch review warning so operators know which metadata was
+ * invented vs which was restored.
+ */
+export interface RebuildPatchesManifestResult {
+  /** Rebuilt manifest, ready to be re-applied by callers (already persisted). */
+  manifest: PatchesManifest;
+  /**
+   * Filenames whose manifest entry had no pre-existing metadata to
+   * preserve — every descriptive field on these entries is inferred.
+   */
+  recoveredFilenames: string[];
+}
+
+/**
  * Rebuilds patches.json from the patch files currently present on disk.
  * Existing metadata is preserved when possible; missing entries are recovered
  * from filename structure, patch contents, and file mtimes.
  * @param patchesDir - Path to the patches directory
  * @param fallbackSourceEsrVersion - ESR version to use for recovered entries
+ * @returns {@link RebuildPatchesManifestResult} — the persisted manifest
+ *   plus the filenames that were reconstructed from generic defaults.
  */
 export async function rebuildPatchesManifest(
   patchesDir: string,
   fallbackSourceEsrVersion: string
-): Promise<PatchesManifest> {
+): Promise<RebuildPatchesManifestResult> {
   const manifestState: LoadedManifestState = await loadPatchesManifestState(patchesDir);
   const existingEntries = new Map<string, PatchMetadata>();
 
@@ -137,6 +158,7 @@ export async function rebuildPatchesManifest(
 
   const patches = await discoverPatches(patchesDir);
   const rebuiltPatches: PatchMetadata[] = [];
+  const recoveredFilenames: string[] = [];
   const highestFiniteOrder = patches.reduce((highest, patch) => {
     return Number.isFinite(patch.order) ? Math.max(highest, patch.order) : highest;
   }, 0);
@@ -148,6 +170,19 @@ export async function rebuildPatchesManifest(
     const patchStats = await stat(patch.path);
     const inferred = inferPatchMetadataFromFilename(patch.filename);
     const recoveredOrder = Number.isFinite(patch.order) ? patch.order : nextRecoveredOrder++;
+
+    if (!existing) {
+      // Track every filename that had no pre-existing manifest entry
+      // so callers can warn the operator per-patch. A missing entry
+      // means every descriptive field (`description`, `createdAt`,
+      // `category`) was invented rather than preserved. FireForge
+      // patch files carry no header metadata that could carry a
+      // human description forward, so full fidelity is impossible —
+      // visibility is the best we can offer. 2026-04-21 eval
+      // (Finding #17) tripped over silent overwrites of useful
+      // human-written descriptions during a recovery run.
+      recoveredFilenames.push(patch.filename);
+    }
 
     rebuiltPatches.push({
       filename: patch.filename,
@@ -173,7 +208,7 @@ export async function rebuildPatchesManifest(
   };
 
   await savePatchesManifest(patchesDir, rebuiltManifest);
-  return rebuiltManifest;
+  return { manifest: rebuiltManifest, recoveredFilenames };
 }
 
 function normalizeFiles(files: string[]): string[] {

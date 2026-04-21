@@ -1,24 +1,25 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join } from 'node:path';
-
 import { Command } from 'commander';
 
-import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { getUntrackedFilesInDir } from '../core/git-status.js';
 import { isFileRegistered, matchesRegistrablePattern } from '../core/manifest-rules.js';
 import { buildOwnershipTable, renderOwnershipTable } from '../core/ownership-table.js';
-import { computePatchedContent } from '../core/patch-apply.js';
 import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../core/patch-lint.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
+import {
+  type ClassifiedFile,
+  classifyFiles,
+  type FileClassification,
+  type StatusFile,
+} from '../core/status-classify.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { StatusOptions } from '../types/commands/index.js';
-import { toError } from '../utils/errors.js';
-import { FIREFORGE_TMP_PATH_PATTERN, pathExists, readText } from '../utils/fs.js';
-import { info, intro, outro, verbose, warn } from '../utils/logger.js';
+import { FIREFORGE_TMP_PATH_PATTERN, pathExists } from '../utils/fs.js';
+import { info, intro, outro, warn } from '../utils/logger.js';
 
 /**
  * Status code descriptions for git status.
@@ -39,27 +40,6 @@ const STATUS_DESCRIPTIONS: Record<string, string> = {
  */
 function getStatusDescription(code: string): string {
   return STATUS_DESCRIPTIONS[code] ?? 'changed';
-}
-
-interface StatusFile {
-  status: string;
-  file: string;
-}
-
-/**
- * Classification buckets for engine file changes:
- * - `patch-backed`: content matches the expected post-patch state — normal after `fireforge import`.
- * - `unmanaged`: edits not explained by any patch or tool — local drift to export or discard.
- * - `branding`: files under tool-managed branding paths, written by FireForge's branding pipeline.
- *
- * Empty buckets are omitted from output. A file touched by a patch that also
- * has additional local edits lands in `unmanaged` because its content diverges
- * from the expected patch result.
- */
-type FileClassification = 'patch-backed' | 'unmanaged' | 'branding' | 'furnace';
-
-interface ClassifiedFile extends StatusFile {
-  classification: FileClassification;
 }
 
 function getPrimaryStatusCode(status: string): string {
@@ -254,94 +234,6 @@ function filterFireForgeTempFiles(files: StatusFile[]): StatusFile[] {
 }
 
 /**
- * Classifies files into patch-backed, unmanaged, or branding buckets.
- */
-async function classifyFiles(
-  files: StatusFile[],
-  engineDir: string,
-  patchesDir: string,
-  binaryName: string,
-  furnacePrefixes: Set<string>
-): Promise<ClassifiedFile[]> {
-  const manifest = await loadPatchesManifest(patchesDir);
-
-  // Build set of all patch-claimed file paths
-  const patchClaimedFiles = new Set<string>();
-  if (manifest) {
-    for (const patch of manifest.patches) {
-      for (const f of patch.filesAffected) {
-        patchClaimedFiles.add(f);
-      }
-    }
-  }
-
-  const results: ClassifiedFile[] = [];
-
-  for (const entry of files) {
-    // Branding check first
-    if (isBrandingManagedPath(entry.file, binaryName)) {
-      results.push({ ...entry, classification: 'branding' });
-      continue;
-    }
-
-    // Furnace-managed component paths
-    if (furnacePrefixes.size > 0) {
-      let isFurnace = false;
-      for (const prefix of furnacePrefixes) {
-        if (entry.file.startsWith(prefix)) {
-          isFurnace = true;
-          break;
-        }
-      }
-      if (isFurnace) {
-        results.push({ ...entry, classification: 'furnace' });
-        continue;
-      }
-    }
-
-    // Not in any patch → unmanaged
-    if (!patchClaimedFiles.has(entry.file)) {
-      results.push({ ...entry, classification: 'unmanaged' });
-      continue;
-    }
-
-    // File is claimed by a patch — compare content
-    const primaryCode = getPrimaryStatusCode(entry.status);
-
-    if (primaryCode === 'D') {
-      // Deleted file: patch-backed only if patch expects deletion
-      const expected = await computePatchedContent(patchesDir, engineDir, entry.file);
-      results.push({
-        ...entry,
-        classification: expected === null ? 'patch-backed' : 'unmanaged',
-      });
-      continue;
-    }
-
-    // File exists on disk — compare actual vs expected
-    try {
-      const [expected, actual] = await Promise.all([
-        computePatchedContent(patchesDir, engineDir, entry.file),
-        readText(join(engineDir, entry.file)),
-      ]);
-
-      results.push({
-        ...entry,
-        classification: actual === expected ? 'patch-backed' : 'unmanaged',
-      });
-    } catch (error: unknown) {
-      verbose(
-        `Treating ${entry.file} as unmanaged because patch-backed classification failed: ${toError(error).message}`
-      );
-      // If we can't read the file, treat as unmanaged
-      results.push({ ...entry, classification: 'unmanaged' });
-    }
-  }
-
-  return results;
-}
-
-/**
  * Renders classified file status as machine-readable JSON to stdout.
  */
 async function renderJsonStatus(
@@ -358,11 +250,26 @@ async function renderJsonStatus(
     binaryName,
     furnacePrefixes
   );
-  const output = classified.map((f) => ({
-    file: f.file,
-    status: f.status.trim(),
-    classification: f.classification,
-  }));
+  const output = classified.map((f) => {
+    const entry: {
+      file: string;
+      status: string;
+      classification: FileClassification;
+      claimedBy?: string[];
+    } = {
+      file: f.file,
+      status: f.status.trim(),
+      classification: f.classification,
+    };
+    // `claimedBy` is an optional field present only on conflict
+    // entries, so non-conflict output stays byte-identical to the
+    // pre-0.16.0 shape (no unconditional schema change for the
+    // 99% of entries that are not cross-patch conflicts).
+    if (f.classification === 'conflict' && f.claimedBy && f.claimedBy.length > 0) {
+      entry.claimedBy = [...f.claimedBy];
+    }
+    return entry;
+  });
   process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 }
 
@@ -538,72 +445,139 @@ export async function statusCommand(
     furnacePrefixes
   );
 
-  const unmanagedFiles = classified.filter((f) => f.classification === 'unmanaged');
-  const patchBackedFiles = classified.filter((f) => f.classification === 'patch-backed');
-  const brandingFiles = classified.filter((f) => f.classification === 'branding');
-  const furnaceFiles = classified.filter((f) => f.classification === 'furnace');
+  const buckets: ClassifiedBuckets = {
+    conflict: classified.filter((f) => f.classification === 'conflict'),
+    unmanaged: classified.filter((f) => f.classification === 'unmanaged'),
+    patchBacked: classified.filter((f) => f.classification === 'patch-backed'),
+    branding: classified.filter((f) => f.classification === 'branding'),
+    furnace: classified.filter((f) => f.classification === 'furnace'),
+  };
 
   // --unmanaged mode: only show unmanaged
   if (options.unmanaged) {
-    info(
-      `${unmanagedFiles.length} unmanaged file${unmanagedFiles.length === 1 ? '' : 's'} (${files.length} total modified):\n`
-    );
-    if (unmanagedFiles.length > 0) {
-      printStatusGroups(unmanagedFiles);
-      await printUnregisteredWarnings(unmanagedFiles, projectRoot, config.binaryName);
-    } else {
-      info('No unmanaged changes');
-    }
-    outro(
-      unmanagedFiles.length === 0
-        ? 'No unmanaged changes'
-        : `${unmanagedFiles.length} unmanaged change${unmanagedFiles.length === 1 ? '' : 's'}`
-    );
+    await renderUnmanagedOnly(buckets.unmanaged, files.length, projectRoot, config.binaryName);
     return;
   }
 
-  // Default mode: three-bucket display
-  info(`${files.length} modified file${files.length === 1 ? '' : 's'}:\n`);
+  await renderDefaultStatus(files.length, buckets, projectRoot, config.binaryName);
+}
 
+interface ClassifiedBuckets {
+  conflict: ClassifiedFile[];
+  unmanaged: ClassifiedFile[];
+  patchBacked: ClassifiedFile[];
+  branding: ClassifiedFile[];
+  furnace: ClassifiedFile[];
+}
+
+async function renderUnmanagedOnly(
+  unmanagedFiles: ClassifiedFile[],
+  totalModified: number,
+  projectRoot: string,
+  binaryName: string
+): Promise<void> {
+  info(
+    `${unmanagedFiles.length} unmanaged file${unmanagedFiles.length === 1 ? '' : 's'} (${totalModified} total modified):\n`
+  );
   if (unmanagedFiles.length > 0) {
-    warn('Unmanaged changes:');
     printStatusGroups(unmanagedFiles);
-    await printUnregisteredWarnings(unmanagedFiles, projectRoot, config.binaryName);
+    await printUnregisteredWarnings(unmanagedFiles, projectRoot, binaryName);
+  } else {
+    info('No unmanaged changes');
+  }
+  outro(
+    unmanagedFiles.length === 0
+      ? 'No unmanaged changes'
+      : `${unmanagedFiles.length} unmanaged change${unmanagedFiles.length === 1 ? '' : 's'}`
+  );
+}
+
+/**
+ * Renders the default five-bucket status display: conflicts first
+ * (they block export/import/rebase), then unmanaged, patch-backed,
+ * branding, and furnace-managed sections. Cross-bucket separators
+ * ensure the sections are visually distinct without trailing empty
+ * groups. Empty buckets are omitted — the very-empty case surfaces a
+ * single `No changes` line.
+ */
+async function renderDefaultStatus(
+  totalModified: number,
+  buckets: ClassifiedBuckets,
+  projectRoot: string,
+  binaryName: string
+): Promise<void> {
+  const { conflict, unmanaged, patchBacked, branding, furnace } = buckets;
+
+  info(`${totalModified} modified file${totalModified === 1 ? '' : 's'}:\n`);
+
+  if (conflict.length > 0) {
+    // Surface cross-patch ownership conflicts at the top of the default
+    // output — they block export/import/rebase and want immediate
+    // attention. The `--ownership` view already renders the full table;
+    // here we just name the files and point the operator at the
+    // canonical recovery path.
+    warn('Cross-patch ownership conflicts (same file claimed by multiple patches):');
+    printStatusGroups(conflict);
+    for (const entry of conflict) {
+      if (entry.claimedBy && entry.claimedBy.length > 0) {
+        info(`  ${entry.file} — claimed by ${entry.claimedBy.join(', ')}`);
+      }
+    }
+    info(
+      'Run "fireforge status --ownership" for the full conflict table, then repartition with "fireforge re-export --files <paths> <patch>".'
+    );
   }
 
-  if (patchBackedFiles.length > 0) {
-    if (unmanagedFiles.length > 0) info('');
+  if (unmanaged.length > 0) {
+    if (conflict.length > 0) info('');
+    warn('Unmanaged changes:');
+    printStatusGroups(unmanaged);
+    await printUnregisteredWarnings(unmanaged, projectRoot, binaryName);
+  }
+
+  if (patchBacked.length > 0) {
+    if (conflict.length > 0 || unmanaged.length > 0) info('');
     warn('Patch-backed materialized changes:');
-    printStatusGroups(patchBackedFiles);
+    printStatusGroups(patchBacked);
   }
 
-  if (brandingFiles.length > 0) {
-    if (unmanagedFiles.length > 0 || patchBackedFiles.length > 0) info('');
-    warn('Tool-managed branding changes:');
-    printStatusGroups(brandingFiles);
-  }
-
-  if (furnaceFiles.length > 0) {
-    if (unmanagedFiles.length > 0 || patchBackedFiles.length > 0 || brandingFiles.length > 0)
+  if (branding.length > 0) {
+    if (conflict.length > 0 || unmanaged.length > 0 || patchBacked.length > 0) {
       info('');
+    }
+    warn('Tool-managed branding changes:');
+    printStatusGroups(branding);
+  }
+
+  if (furnace.length > 0) {
+    if (
+      conflict.length > 0 ||
+      unmanaged.length > 0 ||
+      patchBacked.length > 0 ||
+      branding.length > 0
+    ) {
+      info('');
+    }
     warn('Furnace-managed component changes:');
-    printStatusGroups(furnaceFiles);
+    printStatusGroups(furnace);
   }
 
   if (
-    unmanagedFiles.length === 0 &&
-    patchBackedFiles.length === 0 &&
-    brandingFiles.length === 0 &&
-    furnaceFiles.length === 0
+    conflict.length === 0 &&
+    unmanaged.length === 0 &&
+    patchBacked.length === 0 &&
+    branding.length === 0 &&
+    furnace.length === 0
   ) {
     info('No changes');
   }
 
   const parts: string[] = [];
-  if (unmanagedFiles.length > 0) parts.push(`${unmanagedFiles.length} unmanaged`);
-  if (patchBackedFiles.length > 0) parts.push(`${patchBackedFiles.length} patch-backed`);
-  if (brandingFiles.length > 0) parts.push(`${brandingFiles.length} branding`);
-  if (furnaceFiles.length > 0) parts.push(`${furnaceFiles.length} furnace`);
+  if (conflict.length > 0) parts.push(`${conflict.length} conflict`);
+  if (unmanaged.length > 0) parts.push(`${unmanaged.length} unmanaged`);
+  if (patchBacked.length > 0) parts.push(`${patchBacked.length} patch-backed`);
+  if (branding.length > 0) parts.push(`${branding.length} branding`);
+  if (furnace.length > 0) parts.push(`${furnace.length} furnace`);
   outro(parts.join(', '));
 }
 

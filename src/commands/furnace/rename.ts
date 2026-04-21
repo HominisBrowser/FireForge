@@ -178,6 +178,125 @@ async function renameTestFiles(
 }
 
 /**
+ * Removes the deployed custom-widget directory at the old target path so
+ * a subsequent `furnace apply` is the single writer of the new name's
+ * deployment. Best-effort: logs a warning but never blocks the rename.
+ *
+ * 2026-04-21 eval: renaming `ff-chip-row` → `ff-chip-stack` registered
+ * and deployed the new name correctly but left `engine/toolkit/content/
+ * widgets/ff-chip-row/` in place. Subsequent `furnace sync` runs could
+ * not clear the stale widget, and packaging would have pulled in both
+ * copies. The snapshot is taken before the remove so the rollback
+ * journal restores the old directory if any later step in
+ * `performRenameMutations` fails.
+ */
+async function removeStaleDeployedComponentDir(
+  engineDir: string,
+  oldTargetPath: string,
+  journal: ReturnType<typeof createRollbackJournal>
+): Promise<void> {
+  const oldDeployed = join(engineDir, oldTargetPath);
+  if (!(await pathExists(oldDeployed))) return;
+
+  try {
+    await snapshotDir(journal, oldDeployed);
+    await removeDir(oldDeployed);
+    info(`Removed stale deployed widget directory: ${oldTargetPath}`);
+  } catch (error: unknown) {
+    warn(
+      `Could not remove stale deployed widget directory at ${oldTargetPath}: ${toError(error).message}. Remove it manually if needed.`
+    );
+  }
+}
+
+/**
+ * Renames the mochikit test scaffold produced by `furnace create
+ * --with-tests` when the default test style is used. The scaffold lives
+ * at `engine/toolkit/content/tests/widgets/test_<name>.html`, and the
+ * accompanying `chrome.toml` entry names the same file. Neither piece
+ * was handled by the pre-0.16.0 rename, so operators were left with a
+ * `test_<old>.html` file that still imported `chrome://global/content/
+ * elements/<old>.mjs` and referenced `customElements.whenDefined("<old>")`
+ * — the test ran against a component that no longer existed under that
+ * name and either failed or (if the old component was still deployed)
+ * passed for the wrong reason.
+ *
+ * Best-effort: individual failures log a warning. The same journal used
+ * for the rest of the rename snapshots every touched file so a later
+ * failure rolls the pair back together.
+ */
+async function renameMochikitTestFiles(
+  engineDir: string,
+  oldName: string,
+  newName: string,
+  journal: ReturnType<typeof createRollbackJournal>
+): Promise<void> {
+  const testDir = join(engineDir, 'toolkit/content/tests/widgets');
+  if (!(await pathExists(testDir))) return;
+
+  const oldTestFileName = `test_${oldName}.html`;
+  const newTestFileName = `test_${newName}.html`;
+  const oldTestPath = join(testDir, oldTestFileName);
+  const newTestPath = join(testDir, newTestFileName);
+
+  if (await pathExists(oldTestPath)) {
+    try {
+      await snapshotFile(journal, oldTestPath);
+      const content = await readText(oldTestPath);
+      const updatedContent = content
+        .replace(
+          new RegExp(`chrome://global/content/elements/${escapeRegex(oldName)}\\.mjs`, 'g'),
+          `chrome://global/content/elements/${newName}.mjs`
+        )
+        .replace(
+          new RegExp(`customElements\\.whenDefined\\("${escapeRegex(oldName)}"\\)`, 'g'),
+          `customElements.whenDefined("${newName}")`
+        )
+        .replace(new RegExp(`Test the ${escapeRegex(oldName)} `, 'g'), `Test the ${newName} `)
+        .replace(
+          new RegExp(
+            `add_task\\(async function test_${escapeRegex(oldName.replace(/-/g, '_'))}_defined\\(`,
+            'g'
+          ),
+          `add_task(async function test_${newName.replace(/-/g, '_')}_defined(`
+        )
+        .replace(
+          new RegExp(`"${escapeRegex(oldName)} custom element`, 'g'),
+          `"${newName} custom element`
+        );
+      await writeText(newTestPath, updatedContent);
+      await removeFile(oldTestPath);
+      info(`Renamed mochikit test: ${oldTestFileName} → ${newTestFileName}`);
+    } catch (error: unknown) {
+      warn(
+        `Could not rename mochikit test file — ${toError(error).message}. Rename it manually if needed.`
+      );
+    }
+  }
+
+  // Update `chrome.toml` entry if present. The file may live in the
+  // same widgets/tests directory as the test file itself; upstream
+  // convention places exactly one `chrome.toml` there for all widget
+  // scaffolds.
+  const chromeTomlPath = join(testDir, 'chrome.toml');
+  if (await pathExists(chromeTomlPath)) {
+    try {
+      const toml = await readText(chromeTomlPath);
+      if (toml.includes(`["${oldTestFileName}"]`)) {
+        await snapshotFile(journal, chromeTomlPath);
+        const updated = toml.replace(`["${oldTestFileName}"]`, `["${newTestFileName}"]`);
+        await writeText(chromeTomlPath, updated);
+        info(`Updated chrome.toml: ${oldTestFileName} → ${newTestFileName}`);
+      }
+    } catch (error: unknown) {
+      warn(
+        `Could not update widgets chrome.toml — ${toError(error).message}. Update it manually if needed.`
+      );
+    }
+  }
+}
+
+/**
  * Performs the transactional rename mutation inside a furnace lock.
  */
 async function performRenameMutations(args: {
@@ -195,6 +314,11 @@ async function performRenameMutations(args: {
   const { projectRoot, oldName, newName, oldDir, newDir, isCustom, componentType, config } = args;
   const oldClassName = tagNameToClassName(oldName);
   const newClassName = tagNameToClassName(newName);
+  // Capture the pre-rename deployed target path so we know what to
+  // clean up in the engine tree. `updateConfigForCustomRename` rewrites
+  // `targetPath` in-place once the mutation enters phase 2, so we read
+  // it here while it still points at the old name's deployment.
+  const oldCustomTargetPath = isCustom ? config.custom[oldName]?.targetPath : undefined;
 
   await runFurnaceMutation(projectRoot, 'rename-rollback', async (ctx) => {
     const journal = createRollbackJournal();
@@ -272,6 +396,23 @@ async function performRenameMutations(args: {
       // 7. Rename test files created by `furnace create --with-tests` (custom only).
       if (isCustom && (await pathExists(args.engineDir))) {
         await renameTestFiles(args.engineDir, projectRoot, oldName, newName, journal);
+        // Mochikit scaffold + widgets/chrome.toml live in a different
+        // tree than browser.toml-registered browser-chrome tests, so
+        // renameTestFiles doesn't reach them. 2026-04-21 eval: a rename
+        // left `engine/toolkit/content/tests/widgets/test_<old>.html`
+        // and its `chrome.toml` entry pointing at the old name, which
+        // either failed the test run outright or (worse) passed for the
+        // wrong component.
+        await renameMochikitTestFiles(args.engineDir, oldName, newName, journal);
+        // Clear the stale deployed component directory so the next
+        // `furnace apply` is the single writer of the new name's
+        // deployment. Without this, eval runs showed the old widget
+        // still living at `engine/toolkit/content/widgets/<old>/`
+        // alongside the newly-deployed `engine/toolkit/content/
+        // widgets/<new>/`, with no signal to `status` / `verify`.
+        if (oldCustomTargetPath) {
+          await removeStaleDeployedComponentDir(args.engineDir, oldCustomTargetPath, journal);
+        }
       }
 
       info(`Renamed ${componentType} component: ${oldName} → ${newName}`);

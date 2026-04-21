@@ -8,6 +8,7 @@ import {
   mutateConfig,
   SUPPORTED_CONFIG_PATHS,
   SUPPORTED_CONFIG_ROOT_KEYS,
+  withConfigFileLock,
   writeConfig,
   writeConfigDocument,
 } from '../core/config.js';
@@ -147,24 +148,36 @@ export async function configCommand(
     const keyIsKnown = (SUPPORTED_CONFIG_PATHS as readonly string[]).includes(key);
 
     try {
-      // `--force` is intended as an escape hatch for *unknown* keys; it
-      // should not also let the user write a structurally invalid value
-      // for a *known* key. Apply strict validation whenever the key is
-      // listed in SUPPORTED_CONFIG_PATHS, regardless of --force, and only
-      // skip validation for genuinely unknown key paths.
-      if (options.force && !keyIsKnown) {
-        // Seed mutation from the raw on-disk document so previously-forced
-        // keys (which `validateConfig` would strip) survive the round-trip.
-        // Without this, writing a second --force key would silently drop
-        // every earlier forced key from fireforge.json.
-        const rawConfig = await loadRawConfigDocument(projectRoot);
-        const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
-        await writeConfigDocument(projectRoot, updatedConfig);
-      } else {
-        const config = await loadConfig(projectRoot);
-        const updatedConfig = mutateConfig(config, key, parsedValue);
-        await writeConfig(projectRoot, updatedConfig);
-      }
+      // Serialise the read → mutate → write round-trip behind the sidecar
+      // config lock so two concurrent `fireforge config` invocations can't
+      // each read the pre-state, mutate their own copy, and clobber each
+      // other on write. Before the lock, the 2026-04-21 eval reproduced
+      // silent data loss with two parallel `fireforge config <key>
+      // <value>` commands writing different keys: both exited 0, one key
+      // survived, the other vanished. Atomic file writes (temp + rename)
+      // were never enough on their own — the lost update happens before
+      // the rename, inside the read-modify step. Readers stay lock-free
+      // (see `withConfigFileLock` docstring).
+      await withConfigFileLock(projectRoot, async () => {
+        // `--force` is intended as an escape hatch for *unknown* keys; it
+        // should not also let the user write a structurally invalid value
+        // for a *known* key. Apply strict validation whenever the key is
+        // listed in SUPPORTED_CONFIG_PATHS, regardless of --force, and only
+        // skip validation for genuinely unknown key paths.
+        if (options.force && !keyIsKnown) {
+          // Seed mutation from the raw on-disk document so previously-forced
+          // keys (which `validateConfig` would strip) survive the round-trip.
+          // Without this, writing a second --force key would silently drop
+          // every earlier forced key from fireforge.json.
+          const rawConfig = await loadRawConfigDocument(projectRoot);
+          const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
+          await writeConfigDocument(projectRoot, updatedConfig);
+        } else {
+          const config = await loadConfig(projectRoot);
+          const updatedConfig = mutateConfig(config, key, parsedValue);
+          await writeConfig(projectRoot, updatedConfig);
+        }
+      });
     } catch (error: unknown) {
       throw new InvalidArgumentError(`Invalid value for "${key}": ${toError(error).message}`, key);
     }

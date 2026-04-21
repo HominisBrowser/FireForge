@@ -93,27 +93,27 @@ describe('patch manifest recovery paths', () => {
     const rebuilt = await rebuildPatchesManifest(patchesDir, '140.9.0esr');
     const loaded = await loadPatchesManifest(patchesDir);
 
-    expect(rebuilt).toEqual(loaded);
-    expect(rebuilt.patches.map((patch) => [patch.filename, patch.order])).toEqual([
+    expect(rebuilt.manifest).toEqual(loaded);
+    expect(rebuilt.manifest.patches.map((patch) => [patch.filename, patch.order])).toEqual([
       ['001-ui-toolbar.patch', 1],
       ['002-sidebar.patch', 2],
       ['plain.patch', 3],
     ]);
-    expect(rebuilt.patches[0]).toMatchObject({
+    expect(rebuilt.manifest.patches[0]).toMatchObject({
       filename: '001-ui-toolbar.patch',
       category: 'ui',
       name: 'toolbar',
       sourceEsrVersion: '140.9.0esr',
       filesAffected: ['browser/toolbar.js'],
     });
-    expect(rebuilt.patches[1]).toMatchObject({
+    expect(rebuilt.manifest.patches[1]).toMatchObject({
       filename: '002-sidebar.patch',
       category: 'infra',
       name: 'sidebar',
       sourceEsrVersion: '140.9.0esr',
       filesAffected: ['browser/sidebar.js'],
     });
-    expect(rebuilt.patches[2]).toMatchObject({
+    expect(rebuilt.manifest.patches[2]).toMatchObject({
       filename: 'plain.patch',
       category: 'infra',
       name: 'plain',
@@ -121,14 +121,20 @@ describe('patch manifest recovery paths', () => {
       filesAffected: ['browser/panel.js'],
     });
     expect(
-      rebuilt.patches.every((patch) =>
+      rebuilt.manifest.patches.every((patch) =>
         patch.description.startsWith('Recovered manifest entry for ')
       )
     ).toBe(true);
     expect(
-      rebuilt.patches.every(
+      rebuilt.manifest.patches.every(
         (patch) => typeof patch.createdAt === 'string' && patch.createdAt.length > 0
       )
     ).toBe(true);
+    // The original patches.json was unparseable, so every rebuilt
+    // entry is synthetic — the rebuilder must flag all three as
+    // recovered.
+    expect(rebuilt.recoveredFilenames).toEqual(
+      expect.arrayContaining(['001-ui-toolbar.patch', '002-sidebar.patch', 'plain.patch'])
+    );
   });
 });

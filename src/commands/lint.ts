@@ -4,10 +4,12 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
+import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { getStatusWithCodes, hasChanges, isGitRepository } from '../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import {
+  getModifiedFiles,
   getModifiedFilesInDir,
   getUntrackedFiles,
   getUntrackedFilesInDir,
@@ -79,8 +81,23 @@ export interface LintCommandOptions {
  * per-function LOC budget as the command grows; the two file-mode and
  * aggregate-mode branches share no state with the post-lint reporting
  * pipeline, so the split is a pure rename rather than a refactor.
+ *
+ * When `binaryName` is provided, the aggregate-mode branch (no
+ * explicit file list) excludes paths under `browser/branding/<binaryName>/`
+ * from the diff. `status` classifies those paths as `branding` —
+ * tool-managed material the operator did not author directly — and
+ * the 2026-04-21 eval (Finding #2) reported that `fireforge lint` on
+ * a fresh project immediately failed `large-patch-lines` /
+ * `large-patch-files` / `missing-license-header` on the generated
+ * branding tree. File-list mode (explicit paths) preserves the
+ * previous behaviour: passing a branding file explicitly still lints
+ * it, so operators who need to audit branding content can do so.
  */
-async function resolveLintDiff(engineDir: string, files: string[]): Promise<string | null> {
+async function resolveLintDiff(
+  engineDir: string,
+  files: string[],
+  binaryName?: string
+): Promise<string | null> {
   if (files.length > 0) {
     const collectedFiles = new Set<string>();
     let fileStatuses: { status: string; file: string }[] | undefined;
@@ -140,6 +157,44 @@ async function resolveLintDiff(engineDir: string, files: string[]): Promise<stri
     outro('Nothing to lint');
     return null;
   }
+
+  // Aggregate-mode branding exclusion. A fresh-setup workspace (after
+  // `fireforge setup` + `download` + `bootstrap` + `build`) carries a
+  // large tool-managed branding diff that the operator did not
+  // author; running the default lint against it fires size and
+  // license-header rules on content that was never intended to
+  // survive in the patch queue as-is. The exclusion mirrors the
+  // `branding` bucket in `fireforge status` so the two views stay
+  // consistent.
+  if (binaryName) {
+    const modified = await getModifiedFiles(engineDir);
+    const untracked = await getUntrackedFiles(engineDir);
+    const allPaths = [...new Set([...modified, ...untracked])];
+    const nonBrandingPaths = allPaths.filter((path) => !isBrandingManagedPath(path, binaryName));
+    const excludedCount = allPaths.length - nonBrandingPaths.length;
+    if (excludedCount > 0) {
+      info(
+        `Excluded ${excludedCount} tool-managed branding file${excludedCount === 1 ? '' : 's'} from lint. Pass the path explicitly or use \`fireforge lint <path>\` to include them.`
+      );
+    }
+    if (nonBrandingPaths.length === 0) {
+      info('No non-branding changes to lint.');
+      outro('Nothing to lint');
+      return null;
+    }
+    const diff = await getDiffForFilesAgainstHead(engineDir, nonBrandingPaths.sort());
+    if (!diff.trim()) {
+      info('No diff content to lint.');
+      outro('Nothing to lint');
+      return null;
+    }
+    return diff;
+  }
+
+  // Fallback path: no binaryName available (e.g. a legacy caller
+  // without a loaded config). Retain the pre-0.16.0 behaviour of
+  // linting the full diff so the lint surface is at least as broad
+  // as before.
   const diff = await getAllDiff(engineDir);
   if (!diff.trim()) {
     info('No diff content to lint.');
@@ -201,10 +256,15 @@ export async function lintCommand(
     return;
   }
 
-  const diff = await resolveLintDiff(paths.engine, files);
+  // Load the config before resolving the diff so we can pass
+  // `binaryName` into the aggregate-mode branding exclusion in
+  // `resolveLintDiff`. The config was previously loaded only after
+  // the diff was resolved; hoisting it is cheap and keeps the two
+  // call sites close together.
+  const config = await loadConfig(projectRoot);
+  const diff = await resolveLintDiff(paths.engine, files, config.binaryName);
   if (diff === null) return;
 
-  const config = await loadConfig(projectRoot);
   const filesAffected = extractAffectedFiles(diff);
 
   // Build patch queue context once so it can be shared between the

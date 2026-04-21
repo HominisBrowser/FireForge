@@ -11,6 +11,7 @@ import {
   hasBuildArtifacts,
   testWithOutput,
 } from '../core/mach.js';
+import { assertMarionettePortAvailable } from '../core/marionette-port.js';
 import { reportMarionettePreflight, runMarionettePreflight } from '../core/marionette-preflight.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import {
@@ -205,10 +206,14 @@ export async function testCommand(
     );
   }
 
+  // Load the project config once so both the build and the port
+  // probe have access to `binaryName` (the port probe uses it to
+  // recognise a fork-branded browser holding the Marionette port).
+  const projectConfig = await loadConfig(projectRoot);
+
   // Run incremental build if requested
   if (options.build) {
-    const config = await loadConfig(projectRoot);
-    await prepareBuildEnvironment(projectRoot, paths, config);
+    await prepareBuildEnvironment(projectRoot, paths, projectConfig);
     const s = spinner('Running incremental build...');
     const buildExitCode = await buildUI(paths.engine);
     if (buildExitCode !== 0) {
@@ -231,6 +236,16 @@ export async function testCommand(
       warn(formatStaleBuildWarning(stale));
     }
   }
+
+  // Stale-browser probe: an interrupted earlier test run can leave a
+  // Firefox/ForgeFresh/Hominis instance listening on the Marionette
+  // control port, which breaks the next mach test launch with a
+  // bind error that points nowhere near the real cause. Raise a
+  // targeted refusal up front instead of letting mach surface the
+  // generic bind failure. 2026-04-21 eval (Finding #20): a stale
+  // `-marionette` process from `fresh/` poisoned a later test run in
+  // the sibling `hominis/` workspace.
+  await assertMarionettePortAvailable(undefined, { binaryName: projectConfig.binaryName });
 
   // `--doctor` runs a short marionette handshake probe. When test paths are
   // supplied the probe gates the mach test invocation (a FAIL bails out). When

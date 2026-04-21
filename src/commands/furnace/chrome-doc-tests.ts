@@ -119,9 +119,16 @@ add_task(async function test_${taskSuffix}_files_packaged() {
     ["browser", "chrome", "browser", "content", "browser", "${name}.xhtml"],
     "${name}.xhtml",
   );
+  // The scoped CSS is registered through jar.inc.mn under
+  // \`content/browser/<name>-chrome.css\` (see \`chromeDocJarIncMnCssEntry\`
+  // in \`src/commands/furnace/chrome-doc-templates.ts\`), so the packaged
+  // file lands under \`chrome/browser/content/browser/\`, not under
+  // \`skin/classic/browser/\`. The 2026-04-21 eval's first
+  // \`fireforge test --build\` against a scaffolded chrome-doc reported
+  // a false failure because the probe was looking at the skin layout.
   probeEither(
-    ["chrome", "browser", "skin", "classic", "browser", "${name}-chrome.css"],
-    ["browser", "chrome", "browser", "skin", "classic", "browser", "${name}-chrome.css"],
+    ["chrome", "browser", "content", "browser", "${name}-chrome.css"],
+    ["browser", "chrome", "browser", "content", "browser", "${name}-chrome.css"],
     "${name}-chrome.css",
   );
 });

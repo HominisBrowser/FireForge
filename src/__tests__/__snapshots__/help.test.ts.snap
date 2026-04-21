@@ -20,8 +20,9 @@ Engine:
 
 Workflow:
   import [options]                  Apply patches from the patches directory
-  resolve                           Update a broken patch with manual fixes and
-                                    continue
+  resolve [options]                 Update a broken patch with manual fixes
+                                    (then run "fireforge import" to resume the
+                                    queue)
   build [options]                   Build the browser (auto-applies Furnace
                                     components first)
   run [options]                     Launch the built browser

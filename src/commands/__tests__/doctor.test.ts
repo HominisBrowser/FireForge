@@ -112,7 +112,9 @@ vi.mock('../../core/patch-apply.js', () => ({
 }));
 
 vi.mock('../../core/patch-manifest.js', () => ({
-  rebuildPatchesManifest: vi.fn(() => Promise.resolve({ version: 1, patches: [] })),
+  rebuildPatchesManifest: vi.fn(() =>
+    Promise.resolve({ manifest: { version: 1, patches: [] }, recoveredFilenames: [] })
+  ),
   validatePatchIntegrity: vi.fn(() => Promise.resolve([])),
   validatePatchesManifestConsistency: vi.fn(() => Promise.resolve([])),
 }));
@@ -198,7 +200,10 @@ describe('doctorCommand', () => {
     vi.mocked(getWorkingTreeStatus).mockResolvedValue([]);
     vi.mocked(validatePatchIntegrity).mockResolvedValue([]);
     vi.mocked(validatePatchesManifestConsistency).mockResolvedValue([]);
-    vi.mocked(rebuildPatchesManifest).mockResolvedValue({ version: 1, patches: [] });
+    vi.mocked(rebuildPatchesManifest).mockResolvedValue({
+      manifest: { version: 1, patches: [] },
+      recoveredFilenames: [],
+    });
     vi.mocked(pathExists).mockResolvedValue(true);
     // Reset furnace mocks to their "project does not use furnace" defaults.
     // `clearAllMocks` clears call history but preserves implementations, so
@@ -502,19 +507,22 @@ describe('doctorCommand', () => {
       },
     ]);
     vi.mocked(rebuildPatchesManifest).mockResolvedValueOnce({
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-toolbar.patch',
-          order: 1,
-          category: 'ui',
-          name: 'toolbar',
-          description: 'Recovered',
-          createdAt: '2026-01-01T00:00:00.000Z',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['browser/toolbar.js'],
-        },
-      ],
+      manifest: {
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-toolbar.patch',
+            order: 1,
+            category: 'ui',
+            name: 'toolbar',
+            description: 'Recovered',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/toolbar.js'],
+          },
+        ],
+      },
+      recoveredFilenames: ['001-ui-toolbar.patch'],
     });
 
     const result = await doctorCommand('/project', { repairPatchesManifest: true });
@@ -523,6 +531,21 @@ describe('doctorCommand', () => {
     expect(result.exitCode).toBe(0);
     expect(
       vi.mocked(warn).mock.calls.some(([message]) => message.includes('Patch manifest consistency'))
+    ).toBe(true);
+    // 2026-04-21 eval (Finding #17): the repair path now surfaces a
+    // per-file review warning naming each filename whose metadata was
+    // reconstructed from generic defaults. Operators can't recover the
+    // original description, but at least they see exactly which entries
+    // need their attention.
+    expect(
+      vi
+        .mocked(warn)
+        .mock.calls.some(
+          ([message]) =>
+            typeof message === 'string' &&
+            message.includes('Recovered manifest entry for 001-ui-toolbar.patch') &&
+            message.includes('generic description')
+        )
     ).toBe(true);
   });
 
@@ -1106,7 +1129,10 @@ describe('registerDoctor', () => {
     vi.mocked(getWorkingTreeStatus).mockResolvedValue([]);
     vi.mocked(validatePatchIntegrity).mockResolvedValue([]);
     vi.mocked(validatePatchesManifestConsistency).mockResolvedValue([]);
-    vi.mocked(rebuildPatchesManifest).mockResolvedValue({ version: 1, patches: [] });
+    vi.mocked(rebuildPatchesManifest).mockResolvedValue({
+      manifest: { version: 1, patches: [] },
+      recoveredFilenames: [],
+    });
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(checkFurnaceConfigExists).mockResolvedValue(false);
     vi.mocked(loadFurnaceConfig).mockResolvedValue({

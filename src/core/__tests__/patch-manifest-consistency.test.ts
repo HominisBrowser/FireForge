@@ -210,19 +210,24 @@ describe('patch manifest consistency', () => {
     const rebuilt = await rebuildPatchesManifest(patchesDir, '140.9.0esr');
     const loaded = await loadPatchesManifest(patchesDir);
 
-    expect(rebuilt).toEqual(loaded);
-    expect(rebuilt.patches).toHaveLength(2);
-    expect(rebuilt.patches[0]).toMatchObject({
+    expect(rebuilt.manifest).toEqual(loaded);
+    expect(rebuilt.manifest.patches).toHaveLength(2);
+    expect(rebuilt.manifest.patches[0]).toMatchObject({
       filename: '001-ui-toolbar.patch',
       description: 'Toolbar tweak',
       filesAffected: ['browser/toolbar.js'],
     });
-    expect(rebuilt.patches[1]).toMatchObject({
+    expect(rebuilt.manifest.patches[1]).toMatchObject({
       filename: '002-sidebar.patch',
       category: 'infra',
       name: 'sidebar',
       sourceEsrVersion: '140.9.0esr',
       filesAffected: ['browser/sidebar.js'],
     });
+    // 002-sidebar had no pre-existing manifest entry in this fixture,
+    // so the rebuilder should list it as a recovered entry. 001-ui-toolbar
+    // WAS preserved (its description round-tripped), so it must NOT appear.
+    expect(rebuilt.recoveredFilenames).toContain('002-sidebar.patch');
+    expect(rebuilt.recoveredFilenames).not.toContain('001-ui-toolbar.patch');
   });
 });

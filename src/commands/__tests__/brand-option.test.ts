@@ -36,6 +36,9 @@ vi.mock('../../core/mach.js', () => ({
   // can feed stderr through `explainMachError` (Finding #12). Tests only
   // check "was it called?", so seed a clean zero-exit result.
   machPackageCapture: vi.fn(() => Promise.resolve({ stdout: '', stderr: '', exitCode: 0 })),
+  // Build lock added in 0.16.0; pass through so downstream build/buildUI
+  // calls run exactly as they did before the lock was introduced.
+  withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
 }));
 
 vi.mock('../../core/branding.js', () => ({

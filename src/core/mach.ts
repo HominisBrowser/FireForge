@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { MachNotFoundError } from '../errors/build.js';
 import { pathExists } from '../utils/fs.js';
@@ -13,6 +13,7 @@ import {
   type SmokeLineCallback,
   type SmokeRunResult,
 } from '../utils/process.js';
+import { createSiblingLockPath, withFileLock } from './file-lock.js';
 import { explainMachError } from './mach-error-hints.js';
 import { getPython } from './mach-python.js';
 
@@ -235,6 +236,55 @@ export async function buildUI(engineDir: string): Promise<number> {
     surfaceMachErrorHints(result);
   }
   return result.exitCode;
+}
+
+/**
+ * Runs an operation while holding a sidecar build lock keyed on the
+ * project root. Concurrent `fireforge build` / `fireforge build --ui`
+ * invocations against the same tree serialise instead of racing through
+ * the mach obj-dir.
+ *
+ * Motivating case (2026-04-21 eval): a `fireforge build --ui` run
+ * kicked off while a full `fireforge build` was still in flight against
+ * the same engine tree accepted the command and handed off to `mach
+ * build faster`, which failed almost immediately with `No rule to make
+ * target 'XUL'`. The real problem is that the first build had not yet
+ * materialised the full backend; the operator was left staring at a
+ * low-level make error with no link to the actual cause (a concurrent
+ * build in flight). The lock intercepts the second invocation before
+ * it touches mach, and the refusal message names the PID currently
+ * holding the lock so the operator can decide whether to wait or
+ * investigate a hung process.
+ *
+ * Stale-lock recovery: the lock stores the owner PID; a crashed build
+ * (SIGINT, SIGTERM, or a kernel kill) leaves the lock dir behind but
+ * not the owning process, and `withFileLock` removes the lock on the
+ * next attempt when `process.kill(pid, 0)` shows the owner is gone.
+ *
+ * The project-root variant is the right granularity: a single machine
+ * may have several FireForge projects side by side, and nothing says
+ * they cannot build in parallel. The lock serialises *within* one
+ * project, not across unrelated ones.
+ *
+ * Returns whatever the inner operation returns.
+ */
+export async function withBuildLock<T>(
+  projectRoot: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const lockPath = createSiblingLockPath(join(projectRoot, '.fireforge-build'), '.lock');
+  return withFileLock(lockPath, operation, {
+    // Default lock timeout is 30s; bump to 24h so a slow full build does
+    // not trip the timeout while the second invocation waits. A real
+    // operator will ^C long before 24h elapses; the ceiling is there
+    // purely so a forgotten lock cannot wedge the command forever.
+    timeoutMs: 24 * 60 * 60 * 1000,
+    onTimeoutMessage:
+      `Timed out waiting for the FireForge build lock at ${lockPath}. ` +
+      'If no other `fireforge build` is running, remove the lock directory and retry.',
+    onStaleLockMessage: (ageMs) =>
+      `Removing stale FireForge build lock ${basename(lockPath)} (age: ${Math.round(ageMs / 1000)}s). A previous build process may have crashed.`,
+  });
 }
 
 /**

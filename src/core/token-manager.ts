@@ -17,6 +17,7 @@ import {
   rewriteTableRows,
   updateCellByKey,
 } from './markdown-table.js';
+import { findDarkMediaCloseIndex, findDarkRootInsertionIndex } from './token-dark-mode.js';
 
 /**
  * Dark mode behavior for a token.
@@ -373,42 +374,27 @@ function findCategorySection(
 function insertDarkModeOverride(lines: string[], options: AddTokenOptions): void {
   if (options.mode !== 'override' || !options.darkValue) return;
 
-  let darkMediaLine = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/prefers-color-scheme:\s*dark/.test(lines[i] ?? '')) {
-      darkMediaLine = i;
-      break;
-    }
-  }
+  const insertionIndex = findDarkRootInsertionIndex(lines);
+  if (insertionIndex === null) return; // No @media block at all.
 
-  if (darkMediaLine === -1) return;
-
-  // Find the closing } of the @media block
-  let darkBlockEnd = lines.length;
-  let depth = 0;
-  let entryDepth = 0;
-  let enteredBlock = false;
-  for (let i = darkMediaLine; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    for (const ch of line) {
-      if (ch === '{') {
-        depth++;
-        if (!enteredBlock) {
-          entryDepth = depth - 1;
-          enteredBlock = true;
-        }
-      }
-      if (ch === '}') depth--;
-    }
-    if (enteredBlock && depth === entryDepth) {
-      darkBlockEnd = i;
-      break;
-    }
-  }
-
-  // Insert the dark value before the closing }
   const darkEntry = `    ${options.tokenName}: ${options.darkValue};`;
-  lines.splice(darkBlockEnd, 0, darkEntry);
+
+  if (insertionIndex === -1) {
+    // @media block exists but has no nested :root { } — the scaffold
+    // drifted. Warn and fall back to appending a fresh nested :root
+    // block right before the @media block's closing brace so the
+    // generated CSS still parses, rather than dropping the dark value
+    // on the floor or producing a declaration outside any rule.
+    warn(
+      `Dark-mode override block for "${options.tokenName}" could not find a nested ":root { }" inside @media (prefers-color-scheme: dark). Appending a fresh ":root { }" block — review the tokens CSS scaffold.`
+    );
+    const outerCloseIndex = findDarkMediaCloseIndex(lines);
+    if (outerCloseIndex === -1) return;
+    lines.splice(outerCloseIndex, 0, '  :root {', darkEntry, '  }');
+    return;
+  }
+
+  lines.splice(insertionIndex, 0, darkEntry);
 }
 
 /**

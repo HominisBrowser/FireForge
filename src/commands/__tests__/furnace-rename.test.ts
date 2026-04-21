@@ -13,6 +13,7 @@ vi.mock('../../utils/fs.js', () => ({
   copyFile: vi.fn(),
   removeDir: vi.fn(),
   removeFile: vi.fn(),
+  FIREFORGE_TMP_PATH_PATTERN: /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9a-f-]{36}$/i,
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -123,6 +124,7 @@ import {
   ensureDir,
   pathExists,
   readText,
+  removeDir,
   removeFile,
   writeText,
 } from '../../utils/fs.js';
@@ -700,5 +702,129 @@ describe('furnaceRenameCommand path-label messaging (Finding #8)', () => {
           typeof call[0] === 'string' && call[0].includes('moz-sidebar → moz-nav')
       );
     expect(noteCall?.[0]).toContain('components/overrides/moz-nav/');
+  });
+});
+
+describe('furnaceRenameCommand engine-tree cleanup (Finding #9)', () => {
+  // 2026-04-21 eval reproduced two distinct bugs on a rename:
+  //   - the deployed widget directory at `engine/<oldTargetPath>/`
+  //     survived, so subsequent packaging could pick up both the old
+  //     and new widget copies.
+  //   - the mochikit scaffold at
+  //     `engine/toolkit/content/tests/widgets/test_<old>.html` and its
+  //     chrome.toml entry were untouched, so the generated test still
+  //     imported and asserted against the old component name.
+  // These tests pin the 0.16.0 behaviour: rename must clean both.
+
+  beforeEach(() => {
+    mockWriteText.mockResolvedValue(undefined);
+    mockRestoreRollbackJournalOrThrow.mockResolvedValue(undefined);
+    vi.mocked(removeDir).mockResolvedValue(undefined);
+    mockRemoveFile.mockResolvedValue(undefined);
+  });
+
+  it('removes the deployed widget directory at the old targetPath', async () => {
+    const oldDeployedDir = '/project/engine/toolkit/content/widgets/moz-sidebar';
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path === oldDeployedDir) return Promise.resolve(true);
+      if (path.includes('customElements.js')) return Promise.resolve(true);
+      if (path.includes('jar.mn')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    // The old deployed directory must be removed so a subsequent
+    // `furnace apply` is the single writer of the new name's
+    // deployment.
+    expect(vi.mocked(removeDir)).toHaveBeenCalledWith(oldDeployedDir);
+  });
+
+  it('renames the mochikit test file and updates chrome.toml', async () => {
+    const mochikitDir = '/project/engine/toolkit/content/tests/widgets';
+    const oldTestPath = `${mochikitDir}/test_moz-sidebar.html`;
+    const newTestPath = `${mochikitDir}/test_moz-nav.html`;
+    const chromeTomlPath = `${mochikitDir}/chrome.toml`;
+
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path === mochikitDir) return Promise.resolve(true);
+      if (path === oldTestPath) return Promise.resolve(true);
+      if (path === chromeTomlPath) return Promise.resolve(true);
+      if (path.includes('customElements.js')) return Promise.resolve(true);
+      if (path.includes('jar.mn')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    mockReadText.mockImplementation((path: string) => {
+      if (path === oldTestPath) {
+        return Promise.resolve(`<!DOCTYPE html>
+<html>
+  <head><title>Test the moz-sidebar custom element</title></head>
+  <body>
+    <script type="module">
+      import "chrome://global/content/elements/moz-sidebar.mjs";
+      add_task(async function test_moz_sidebar_defined() {
+        const ctor = await customElements.whenDefined("moz-sidebar");
+        ok(ctor, "moz-sidebar custom element should be defined");
+      });
+    </script>
+  </body>
+</html>`);
+      }
+      if (path === chromeTomlPath) {
+        return Promise.resolve(`[DEFAULT]\n["test_moz-sidebar.html"]\n`);
+      }
+      if (path.includes('moz-sidebar.mjs')) {
+        return Promise.resolve(`class MozSidebar extends MozLitElement {}`);
+      }
+      if (path.includes('moz-sidebar.css')) {
+        return Promise.resolve(`moz-sidebar { color: red; }`);
+      }
+      return Promise.resolve('');
+    });
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    // Old test file is snapshotted, new one is written, old one is removed.
+    expect(mockSnapshotFile).toHaveBeenCalledWith(expect.anything(), oldTestPath);
+    const writeCall = mockWriteText.mock.calls.find((c) => c[0] === newTestPath);
+    expect(writeCall).toBeDefined();
+    const writtenContent = writeCall?.[1] ?? '';
+    expect(writtenContent).toContain('chrome://global/content/elements/moz-nav.mjs');
+    expect(writtenContent).toContain('customElements.whenDefined("moz-nav")');
+    expect(writtenContent).toContain('Test the moz-nav custom element');
+    expect(writtenContent).toContain('test_moz_nav_defined');
+    expect(writtenContent).not.toContain('moz-sidebar');
+    expect(writtenContent).not.toContain('test_moz_sidebar_defined');
+    expect(mockRemoveFile).toHaveBeenCalledWith(oldTestPath);
+
+    // Chrome.toml entry is updated in place.
+    const tomlWriteCall = mockWriteText.mock.calls.find((c) => c[0] === chromeTomlPath);
+    expect(tomlWriteCall).toBeDefined();
+    const tomlContent = tomlWriteCall?.[1] ?? '';
+    expect(tomlContent).toContain('["test_moz-nav.html"]');
+    expect(tomlContent).not.toContain('["test_moz-sidebar.html"]');
+  });
+
+  it('no-ops when the mochikit scaffold was never created', async () => {
+    // Projects that used `furnace create --test-style=browser-chrome` or
+    // `--test-style=none` don't have the mochikit files at all; rename
+    // must not fail trying to clean something that was never there.
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path === '/project/engine/toolkit/content/tests/widgets') return Promise.resolve(false);
+      if (path.includes('customElements.js')) return Promise.resolve(true);
+      if (path.includes('jar.mn')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+
+    await expect(furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav')).resolves.not.toThrow();
   });
 });

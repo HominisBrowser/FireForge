@@ -981,4 +981,119 @@ describe('statusCommand', () => {
       expect(infoMessages()).not.toContain('No modified files');
     });
   });
+
+  describe('cross-patch ownership conflicts surface in --json (Finding #15)', () => {
+    it('classifies files claimed by two patches as "conflict" with a claimedBy list', async () => {
+      // Pre-0.16.0 `--json` treated conflicted files as `unmanaged`, so
+      // scripts downstream of the JSON view mis-diagnosed the true
+      // ownership state and took the wrong corrective action. The
+      // ownership multimap now feeds the classifier so JSON and
+      // `--ownership` agree on the same drift semantics.
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: ' M', file: 'browser/base/jar.mn' },
+      ]);
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '002-ui-workbench-chrome-doc.patch',
+            order: 2,
+            category: 'ui',
+            name: 'workbench-chrome-doc',
+            description: '',
+            createdAt: '2026-04-21T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/jar.mn'],
+          },
+          {
+            filename: '003-ui-browser-wire-eval-hook.patch',
+            order: 3,
+            category: 'ui',
+            name: 'browser-wire-eval-hook',
+            description: '',
+            createdAt: '2026-04-21T00:00:01.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/jar.mn'],
+          },
+        ],
+      });
+
+      const writes: string[] = [];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+
+      try {
+        await statusCommand(projectRoot, { json: true });
+      } finally {
+        stdoutSpy.mockRestore();
+      }
+
+      const payload = JSON.parse(writes.join('')) as Array<{
+        file: string;
+        classification: string;
+        claimedBy?: string[];
+      }>;
+      expect(payload).toHaveLength(1);
+      expect(payload[0]?.file).toBe('browser/base/jar.mn');
+      expect(payload[0]?.classification).toBe('conflict');
+      expect(payload[0]?.claimedBy).toEqual([
+        '002-ui-workbench-chrome-doc.patch',
+        '003-ui-browser-wire-eval-hook.patch',
+      ]);
+    });
+
+    it('leaves single-owner patch-backed entries without a claimedBy field', async () => {
+      // Non-conflict entries must stay byte-identical to the pre-0.16.0
+      // JSON shape so parsers that do not know about the new `claimedBy`
+      // field continue to work.
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: ' M', file: 'browser/base/foo.js' },
+      ]);
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-foo.patch',
+            order: 1,
+            category: 'ui',
+            name: 'foo',
+            description: '',
+            createdAt: '2026-04-21T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/foo.js'],
+          },
+        ],
+      });
+      // Content matches expected patch content → `patch-backed`.
+      vi.mocked(computePatchedContent).mockResolvedValue('ok');
+      vi.mocked(readText).mockResolvedValue('ok');
+
+      const writes: string[] = [];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+
+      try {
+        await statusCommand(projectRoot, { json: true });
+      } finally {
+        stdoutSpy.mockRestore();
+      }
+
+      const payload = JSON.parse(writes.join('')) as Array<{
+        file: string;
+        classification: string;
+        claimedBy?: string[];
+      }>;
+      expect(payload).toHaveLength(1);
+      expect(payload[0]?.classification).toBe('patch-backed');
+      expect(payload[0]).not.toHaveProperty('claimedBy');
+    });
+  });
 });

@@ -24,7 +24,19 @@ describe('mochikit templates', () => {
     expect(html).toContain('chrome://mochikit/content/tests/SimpleTest/SimpleTest.js');
     expect(html).toContain('chrome://global/content/elements/moz-widget.mjs');
     expect(html).toContain('customElements.whenDefined("moz-widget")');
-    expect(html).toContain('SimpleTest.waitForExplicitFinish');
+    expect(html).toContain('add_task(');
+  });
+
+  it('omits SimpleTest.waitForExplicitFinish so add_task can finish the test on its own', () => {
+    // 2026-04-21 eval: a generated scaffold combining `waitForExplicitFinish`
+    // with `add_task` and no explicit `SimpleTest.finish()` hung forever in
+    // `fireforge test --headless`. `add_task` already calls `finish()` when
+    // every task resolves, so dropping `waitForExplicitFinish()` is the
+    // minimum fix that makes the scaffold terminate without requiring
+    // operators to remember to add a `finish()` call.
+    const html = generateMochikitTestContent('moz-widget');
+    expect(html).not.toContain('waitForExplicitFinish');
+    expect(html).not.toContain('SimpleTest.finish');
   });
 
   it('chrome.toml skeleton has an empty [DEFAULT] stanza', () => {

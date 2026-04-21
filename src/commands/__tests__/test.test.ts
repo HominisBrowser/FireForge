@@ -54,6 +54,16 @@ vi.mock('../../core/marionette-preflight.js', () => ({
   reportMarionettePreflight: vi.fn(),
 }));
 
+// Default to "port is free" so every existing test case proceeds
+// through the probe to the mach invocation. The dedicated port-probe
+// tests in `src/core/__tests__/marionette-port.test.ts` exercise the
+// holder detection and error shape in isolation.
+vi.mock('../../core/marionette-port.js', () => ({
+  assertMarionettePortAvailable: vi.fn(() => Promise.resolve()),
+  probeMarionettePort: vi.fn(() => Promise.resolve({ inUse: false })),
+  DEFAULT_MARIONETTE_PORT: 2828,
+}));
+
 vi.mock('../../core/test-stale-check.js', () => ({
   checkStaleBuildForTest: vi.fn(() =>
     Promise.resolve({ stale: false, changedPaths: [], truncated: 0, baseline: undefined })

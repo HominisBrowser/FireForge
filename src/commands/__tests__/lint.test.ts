@@ -32,9 +32,19 @@ vi.mock('../../core/git-diff.js', () => ({
 }));
 
 vi.mock('../../core/git-status.js', () => ({
+  getModifiedFiles: vi.fn(() => Promise.resolve([])),
   getModifiedFilesInDir: vi.fn(() => Promise.resolve([])),
   getUntrackedFiles: vi.fn(() => Promise.resolve([])),
   getUntrackedFilesInDir: vi.fn(() => Promise.resolve([])),
+}));
+
+vi.mock('../../core/branding.js', () => ({
+  // Pass-through branding check that maps `browser/branding/<binary>/`
+  // to true; the aggregate-mode exclusion uses this to partition the
+  // dirty tree into lintable vs tool-managed branding buckets.
+  isBrandingManagedPath: vi.fn((path: string, binaryName: string) =>
+    path.startsWith(`browser/branding/${binaryName}/`)
+  ),
 }));
 
 vi.mock('../../core/patch-apply.js', () => ({
@@ -71,9 +81,11 @@ vi.mock('../../utils/logger.js', () => ({
 import type { Stats } from 'node:fs';
 import { stat } from 'node:fs/promises';
 
+import { loadConfig } from '../../core/config.js';
 import { getStatusWithCodes, hasChanges } from '../../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import {
+  getModifiedFiles,
   getModifiedFilesInDir,
   getUntrackedFiles,
   getUntrackedFilesInDir,
@@ -579,5 +591,104 @@ describe('lintCommand — engine/ prefix normalization (Finding #4)', () => {
     await lintCommand('/project', ['engine/browser/base/content']);
 
     expect(getModifiedFilesInDir).toHaveBeenCalledWith('/project/engine', 'browser/base/content');
+  });
+});
+
+describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
+  // 2026-04-21 eval: running `fireforge lint` on a fresh-setup
+  // workspace immediately failed `large-patch-lines`,
+  // `large-patch-files`, and `missing-license-header` on the
+  // tool-managed branding tree. Status classifies that content as
+  // `branding`; default lint now partitions the dirty tree the same
+  // way and leaves branding out of the aggregate diff. Explicit
+  // `fireforge lint <path>` still lints branding when the operator
+  // asks for it.
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'My Browser',
+      vendor: 'Acme',
+      appId: 'org.acme.browser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+    });
+    vi.mocked(lintExportedPatch).mockResolvedValue([]);
+  });
+
+  it('filters branding-managed paths out of the default aggregate diff', async () => {
+    vi.mocked(getModifiedFiles).mockResolvedValue([
+      'browser/branding/mybrowser/locales/en-US/brand.ftl',
+      'browser/branding/mybrowser/configure.sh',
+      'browser/base/content/myhook.js',
+    ]);
+    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+    await lintCommand('/project', []);
+
+    // The diff handed to `lintExportedPatch` must exclude branding paths.
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+      'browser/base/content/myhook.js',
+    ]);
+    // The operator sees a one-line note telling them what was excluded.
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Excluded 2 tool-managed branding file')
+    );
+  });
+
+  it('passes through unchanged when no branding files are dirty', async () => {
+    vi.mocked(getModifiedFiles).mockResolvedValue(['browser/base/content/myhook.js']);
+    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+    await lintCommand('/project', []);
+
+    // No branding exclusion note fires when there's nothing to exclude.
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Excluded'));
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+      'browser/base/content/myhook.js',
+    ]);
+  });
+
+  it('short-circuits when every dirty file is branding', async () => {
+    vi.mocked(getModifiedFiles).mockResolvedValue([
+      'browser/branding/mybrowser/locales/en-US/brand.ftl',
+      'browser/branding/mybrowser/configure.sh',
+    ]);
+    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+
+    await lintCommand('/project', []);
+
+    // With nothing to lint after exclusion, the command surfaces a
+    // targeted "nothing to lint" banner and does NOT call
+    // lintExportedPatch.
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('No non-branding changes'));
+    expect(lintExportedPatch).not.toHaveBeenCalled();
+  });
+
+  it('does not filter branding when the caller supplies explicit paths', async () => {
+    // Explicit-path mode is the operator's signal that they want to
+    // lint exactly these files; the aggregate branding exclusion does
+    // not apply.
+    vi.mocked(stat).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(getStatusWithCodes).mockResolvedValue([
+      {
+        status: 'M',
+        file: 'browser/branding/mybrowser/locales/en-US/brand.ftl',
+      },
+    ]);
+    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+    await lintCommand('/project', ['browser/branding/mybrowser/locales/en-US/brand.ftl']);
+
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+      'browser/branding/mybrowser/locales/en-US/brand.ftl',
+    ]);
+    // No "Excluded …" banner in file-list mode.
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Excluded'));
   });
 });

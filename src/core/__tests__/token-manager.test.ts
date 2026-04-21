@@ -355,6 +355,62 @@ describe('addToken', () => {
     expect(darkValueIdx).toBeGreaterThan(darkMediaIdx);
   });
 
+  it('inserts dark value inside the nested :root { } of the dark @media block', async () => {
+    // 2026-04-21 eval: `token add --mode override --dark-value ...` inserted
+    // the dark declaration after the nested `:root { }` had already closed,
+    // producing a declaration outside any rule block. This test pins the
+    // post-fix invariant: the dark declaration must live between the inner
+    // `:root {` and its matching `}`, not between the inner `}` and the
+    // outer `@media {` close.
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await addToken('/project', {
+      tokenName: '--testbrowser-canvas-dark-anchor',
+      value: '#fff',
+      category: 'Colors — Canvas',
+      mode: 'override',
+      darkValue: '#000',
+    });
+
+    const cssCall = mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'));
+    expect(cssCall).toBeDefined();
+    const cssContent = cssCall?.[1] ?? '';
+
+    const lines = cssContent.split('\n');
+    const darkMediaOpenIdx = lines.findIndex((line) => /prefers-color-scheme:\s*dark/.test(line));
+    expect(darkMediaOpenIdx).toBeGreaterThanOrEqual(0);
+    const rootOpenIdx = lines.findIndex(
+      (line, idx) => idx > darkMediaOpenIdx && /:root\s*\{/.test(line)
+    );
+    expect(rootOpenIdx).toBeGreaterThan(darkMediaOpenIdx);
+    const darkEntryIdx = lines.findIndex(
+      (line, idx) => idx >= rootOpenIdx && line.includes('--testbrowser-canvas-dark-anchor: #000')
+    );
+    expect(darkEntryIdx).toBeGreaterThan(rootOpenIdx);
+    // First `}` after the inner `:root {` is the nested root's own close;
+    // the dark entry must appear before it. The depth counter is the
+    // reliable way to find "the brace that closes the inner :root" — any
+    // `}` after `rootOpenIdx` that brings depth back to 0 is the one.
+    let depth = 0;
+    let innerRootCloseIdx = -1;
+    for (let i = rootOpenIdx; i < lines.length; i++) {
+      const line = lines[i] ?? '';
+      for (const ch of line) {
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            innerRootCloseIdx = i;
+            break;
+          }
+        }
+      }
+      if (innerRootCloseIdx !== -1) break;
+    }
+    expect(innerRootCloseIdx).toBeGreaterThan(rootOpenIdx);
+    expect(darkEntryIdx).toBeLessThan(innerRootCloseIdx);
+  });
+
   it('handles multi-line category block headers', async () => {
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS_MULTILINE, MOCK_TOKENS_DOC));
 

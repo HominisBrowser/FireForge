@@ -589,16 +589,39 @@ export async function stampFurnaceOverrideBaseVersions(
 
 /**
  * Creates a default furnace configuration.
- * @returns A valid empty FurnaceConfig
+ *
+ * When a `binaryName` is provided, the default config carries a
+ * `tokenPrefix` derived as `--<binaryName>-`. Without that default,
+ * `fireforge token coverage` on a fresh project reports `0 tokens` and
+ * labels every custom-property reference as `unknown` — the scan has
+ * no prefix to key off. The 2026-04-21 eval walked directly into this
+ * state (`furnace init` → `token add` → `token coverage` → zero
+ * tokens), and only recovered after hand-editing furnace.json. Deriving
+ * the prefix from the binary name matches the convention the scaffolded
+ * tokens CSS already uses for its `--<binaryName>-*` declarations.
+ *
+ * `validateFurnaceConfig` treats `tokenPrefix` as optional, so callers
+ * on the legacy no-arg call shape (existing tests, programmatic callers
+ * bootstrapping from a not-yet-loaded config) still get a valid config
+ * without a prefix; the CLI init path always has a `binaryName` from
+ * `fireforge.json` and always sets one.
+ *
+ * @param options - Optional init context; pass `{ binaryName }` to
+ *   derive the token prefix.
+ * @returns A valid FurnaceConfig
  */
-export function createDefaultFurnaceConfig(): FurnaceConfig {
-  return {
+export function createDefaultFurnaceConfig(options: { binaryName?: string } = {}): FurnaceConfig {
+  const config: FurnaceConfig = {
     version: 1,
     componentPrefix: 'moz-',
     stock: [],
     overrides: {},
     custom: {},
   };
+  if (options.binaryName && options.binaryName.length > 0) {
+    config.tokenPrefix = `--${options.binaryName}-`;
+  }
+  return config;
 }
 
 /**

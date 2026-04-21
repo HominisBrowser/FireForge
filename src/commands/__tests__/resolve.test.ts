@@ -332,4 +332,84 @@ describe('resolveCommand', () => {
       })
     );
   });
+
+  describe('non-interactive --yes flag (Finding #18/#19)', () => {
+    const patchFilename = '001-test.patch';
+
+    beforeEach(() => {
+      vi.mocked(loadState).mockResolvedValue({
+        pendingResolution: { patchFilename, originalError: 'error' },
+      });
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: patchFilename,
+            filesAffected: ['file1.js'],
+            order: 1,
+            category: 'ui',
+            name: 'test',
+            description: '',
+            createdAt: '',
+            sourceEsrVersion: '128.0esr',
+          },
+        ],
+      });
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getStagedDiffForFiles).mockResolvedValue(fakeUnifiedDiff(['file1.js']));
+    });
+
+    it('still refuses in non-interactive mode without --yes', async () => {
+      process.stdin.isTTY = false;
+      try {
+        await expect(resolveCommand(projectRoot)).rejects.toThrow(/non-interactive mode/i);
+      } finally {
+        process.stdin.isTTY = true;
+      }
+    });
+
+    it('completes in non-interactive mode when --yes is passed', async () => {
+      // 2026-04-21 eval: scripted recovery flows hit the unconditional
+      // TTY refusal even after the operator had manually merged. The
+      // `--yes` escape hatch lets the same flow continue without
+      // forcing the operator back into a terminal.
+      process.stdin.isTTY = false;
+      try {
+        await resolveCommand(projectRoot, { yes: true });
+      } finally {
+        process.stdin.isTTY = true;
+      }
+
+      // Confirmation prompt must not have fired (that would require a TTY anyway).
+      expect(vi.mocked(confirm)).not.toHaveBeenCalled();
+      // The refresh still ran — `updatePatchAndMetadata` is the
+      // observable effect of a completed resolve.
+      expect(updatePatchAndMetadata).toHaveBeenCalled();
+    });
+
+    it('skips the confirmation prompt even in a TTY when --yes is passed', async () => {
+      process.stdin.isTTY = true;
+      await resolveCommand(projectRoot, { yes: true });
+      expect(vi.mocked(confirm)).not.toHaveBeenCalled();
+      expect(updatePatchAndMetadata).toHaveBeenCalled();
+    });
+
+    it('surfaces clearer two-step continuation messaging on success', async () => {
+      // The post-fix info line must name the second-step command and
+      // explain explicitly that resolve does not continue the queue
+      // itself — the help text previously read "...and continue" which
+      // implied a one-step flow.
+      process.stdin.isTTY = false;
+      try {
+        await resolveCommand(projectRoot, { yes: true });
+      } finally {
+        process.stdin.isTTY = true;
+      }
+
+      const infoCalls = vi.mocked(info).mock.calls.map((call) => call[0]);
+      expect(
+        infoCalls.some((msg) => /resume the queue/.test(msg) && /fireforge import/.test(msg))
+      ).toBe(true);
+    });
+  });
 });

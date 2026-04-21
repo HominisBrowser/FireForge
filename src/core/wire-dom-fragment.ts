@@ -90,6 +90,58 @@ export function legacyAddDomFragment(content: string, includeDirective: string):
 }
 
 /**
+ * Dry-run precheck for `addDomFragment`. Reads the resolved chrome
+ * document and verifies it either already contains the `#include`
+ * directive (the idempotent-skip case) OR offers a locatable insertion
+ * point via {@link addDomFragmentTokenized} / {@link legacyAddDomFragment}.
+ * Throws the same `Could not find insertion point in chrome document`
+ * error the real run would throw when neither condition holds.
+ *
+ * Motivating case (2026-04-21 eval, Finding #12): `fireforge wire ...
+ * --dry-run` previewed a plausible mutation plan against
+ * `tokenHostDocuments[0]`, then `fireforge wire ...` without
+ * `--dry-run` threw `Could not find insertion point in chrome document`
+ * on the same arguments. The real run had always called the insertion
+ * helpers; dry-run did not. This helper runs the same check in the
+ * preview pass so plan and execution disagree less.
+ */
+export async function probeDomFragmentInsertionPoint(
+  engineDir: string,
+  domFilePath: string,
+  targetPath: string = DEFAULT_DOM_TARGET
+): Promise<void> {
+  const targetAbsPath = join(engineDir, targetPath);
+  if (!(await pathExists(targetAbsPath))) {
+    // The callers in `wire.ts` run their own existence probe before
+    // invoking this helper, but a well-behaved probe is paranoid — if
+    // something changed between the two checks, fail with the same
+    // error the real run would surface.
+    throw new GeneralError(`${targetPath} not found in engine`);
+  }
+
+  const safeDomFilePath = toRootRelativePath(engineDir, domFilePath);
+  const targetDir = dirname(targetPath);
+  const includePath = relative(targetDir, safeDomFilePath).replace(/\\/g, '/');
+  const includeDirective = `#include ${includePath}`;
+
+  const content = await readText(targetAbsPath);
+  if (new RegExp(`^${escapeRegex(includeDirective)}$`, 'm').test(content)) {
+    // Already wired — the real run would idempotent-skip here, so
+    // dry-run is allowed to proceed too.
+    return;
+  }
+
+  // Check the tokenised and legacy insertion paths symmetrically with
+  // the real run. Either helper returning without throwing is sufficient
+  // evidence that the real run can land the directive.
+  withParserFallback(
+    () => addDomFragmentTokenized(content, includeDirective),
+    () => legacyAddDomFragment(content, includeDirective),
+    targetPath
+  );
+}
+
+/**
  * Inserts a `#include` directive for an `.inc.xhtml` file into the top-level
  * chrome document (default: `browser/base/content/browser.xhtml`), before
  * `#include browser-sets.inc`.

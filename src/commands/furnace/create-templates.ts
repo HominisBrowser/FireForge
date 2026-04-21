@@ -246,6 +246,17 @@ export function mochikitTestFileName(name: string): string {
  * depend on the component's shape; operators can extend the test using
  * the same SimpleTest APIs upstream toolkit widgets (moz-button, etc.)
  * rely on.
+ *
+ * The template deliberately omits `SimpleTest.waitForExplicitFinish()`.
+ * `add_task` owns the test lifecycle: when every queued task resolves,
+ * the task harness calls `SimpleTest.finish()` on its own. Combining
+ * `waitForExplicitFinish()` with `add_task` *and* no explicit
+ * `SimpleTest.finish()` inside the task body makes the harness wait
+ * forever, which the 2026-04-21 eval run tripped into as an indefinite
+ * hang on a `fireforge test --headless` against a scaffolded widget
+ * test. Leaving `waitForExplicitFinish()` out matches the convention
+ * upstream toolkit widget tests use (see `test_moz-button.html` and
+ * siblings under `toolkit/content/tests/widgets/`).
  */
 export function generateMochikitTestContent(name: string): string {
   return `<!DOCTYPE html>
@@ -262,8 +273,6 @@ export function generateMochikitTestContent(name: string): string {
     <pre id="test"></pre>
     <script type="module">
       import "chrome://global/content/elements/${name}.mjs";
-
-      SimpleTest.waitForExplicitFinish();
 
       add_task(async function test_${name.replace(/-/g, '_')}_defined() {
         const ctor = await customElements.whenDefined("${name}");

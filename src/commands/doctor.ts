@@ -496,9 +496,24 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
           ctx.paths.patches,
           ctx.config.firefox.version
         );
+        // 2026-04-21 eval (Finding #17): the repair path silently
+        // overwrote useful human-written descriptions on recovered
+        // entries, leaving the queue less trustworthy as an audit
+        // trail. The rebuilder now returns the list of filenames
+        // whose metadata was entirely invented, and we name them
+        // explicitly here so the operator knows exactly which
+        // patches to review. Names that DID have a preserved entry
+        // (only `filesAffected` / ordering drifted) are not flagged.
+        if (repaired.recoveredFilenames.length > 0) {
+          for (const filename of repaired.recoveredFilenames) {
+            warn(
+              `Recovered manifest entry for ${filename} with generic description and mtime-based createdAt. Edit patches.json to restore the original description if you have it backed up.`
+            );
+          }
+        }
         return warning(
           'Patch manifest consistency',
-          `Rebuilt patches.json from ${repaired.patches.length} patch${repaired.patches.length === 1 ? '' : 'es'}. Review recovered metadata before release.`
+          `Rebuilt patches.json from ${repaired.manifest.patches.length} patch${repaired.manifest.patches.length === 1 ? '' : 'es'}${repaired.recoveredFilenames.length > 0 ? ` (${repaired.recoveredFilenames.length} with reconstructed metadata — see warnings above)` : ''}. Review recovered metadata before release.`
         );
       } catch (err: unknown) {
         return failure(

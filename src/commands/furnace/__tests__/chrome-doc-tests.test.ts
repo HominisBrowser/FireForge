@@ -50,21 +50,31 @@ describe('generateChromeDocPackagingTest', () => {
     const test = generateChromeDocPackagingTest('mybrowser', '// LICENSE');
     // Primary (dist/bin/browser with firefox-appdir honoured):
     //   <AppDir>/chrome/browser/content/browser/<name>.xhtml
-    //   <AppDir>/chrome/browser/skin/classic/browser/<name>-chrome.css
+    //   <AppDir>/chrome/browser/content/browser/<name>-chrome.css
+    //
+    // The scoped CSS is registered through `jar.inc.mn` at
+    // `content/browser/<name>-chrome.css` (see
+    // `chromeDocJarIncMnCssEntry` in `chrome-doc-templates.ts`), so the
+    // packaged file lands under `content/browser/`, not under
+    // `skin/classic/browser/`. The 2026-04-21 eval's first
+    // `fireforge test --build` run against a scaffolded chrome-doc
+    // reported a false failure because the probe had been pinned to the
+    // skin layout from an earlier draft of the jar entry.
     expect(test).toContain('"chrome", "browser", "content", "browser", "mybrowser.xhtml"');
-    expect(test).toContain(
-      '"chrome", "browser", "skin", "classic", "browser", "mybrowser-chrome.css"'
-    );
+    expect(test).toContain('"chrome", "browser", "content", "browser", "mybrowser-chrome.css"');
     // Fallback (macOS app bundle and some ESR layouts where XCurProcD
     // sits one level above `browser/`):
     //   <AppDir>/browser/chrome/browser/content/browser/<name>.xhtml
-    //   <AppDir>/browser/chrome/browser/skin/classic/browser/<name>-chrome.css
+    //   <AppDir>/browser/chrome/browser/content/browser/<name>-chrome.css
     expect(test).toContain(
       '"browser", "chrome", "browser", "content", "browser", "mybrowser.xhtml"'
     );
     expect(test).toContain(
-      '"browser", "chrome", "browser", "skin", "classic", "browser", "mybrowser-chrome.css"'
+      '"browser", "chrome", "browser", "content", "browser", "mybrowser-chrome.css"'
     );
+    // The CSS probe must not point at the skin layout any more — a
+    // regression guard for the 0.16.0 path fix.
+    expect(test).not.toContain('skin", "classic", "browser", "mybrowser-chrome.css"');
     // `probeEither` is the helper name that checks both candidates.
     expect(test).toContain('probeEither');
   });

@@ -9,12 +9,15 @@
  *   config-state.ts    — state file management
  */
 
+import { basename } from 'node:path';
+
 import { ConfigError, ConfigNotFoundError } from '../errors/config.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { getProjectPaths } from './config-paths.js';
 import { validateConfig } from './config-validate.js';
+import { createSiblingLockPath, withFileLock } from './file-lock.js';
 
 // ---- re-exports ----
 
@@ -122,6 +125,14 @@ export async function writeConfig(root: string, config: FireForgeConfig): Promis
  * Writes a raw config document to fireforge.json.
  * This is used by CLI `config --force`, where callers may intentionally write
  * keys or value shapes outside the validated FireForgeConfig schema.
+ *
+ * Individual writes are atomic via {@link writeJson} (temp file + rename),
+ * but atomicity alone does not prevent lost updates across concurrent
+ * writers: each writer reads an old copy, mutates its own in-memory view,
+ * and writes it back, so the second writer's rename clobbers the first
+ * writer's changes. Callers that do read → mutate → write must hold
+ * {@link withConfigFileLock} for the full round-trip to serialise
+ * against other writers.
  */
 export async function writeConfigDocument(
   root: string,
@@ -129,4 +140,40 @@ export async function writeConfigDocument(
 ): Promise<void> {
   const paths = getProjectPaths(root);
   await writeJson(paths.config, config);
+}
+
+/**
+ * Runs an operation while holding a sidecar lock on `fireforge.json`.
+ *
+ * Motivating case (2026-04-21 eval): two concurrent `fireforge config
+ * <key> <value>` invocations each ran load → mutate → writeJson against
+ * the same on-disk fireforge.json. The second rename landed after the
+ * first, silently dropping the first writer's key — both commands exited
+ * `0`, but only one change survived. This helper turns the same
+ * read-modify-write sequence into a serialised operation so a concurrent
+ * writer now waits for the lock rather than racing on the document.
+ *
+ * Reads (`loadConfig`, `loadRawConfigDocument`) stay lock-free: writers
+ * always use `writeJson`'s atomic temp-file + rename, so a reader observes
+ * either the pre- or post-write document but never a torn file. The lock
+ * only serialises writers against other writers.
+ *
+ * The lock is a sidecar directory `${config}.fireforge-config.lock`, and
+ * `withFileLock` handles stale-lock recovery (PID-alive probe, age-based
+ * fallback) — a crashed writer does not permanently block future writes.
+ *
+ * @param root - Root directory of the project
+ * @param operation - Async function to run while holding the lock
+ * @returns Whatever the operation returns
+ */
+export async function withConfigFileLock<T>(root: string, operation: () => Promise<T>): Promise<T> {
+  const paths = getProjectPaths(root);
+  return withFileLock(createSiblingLockPath(paths.config, '.fireforge-config.lock'), operation, {
+    onTimeoutMessage:
+      `Timed out waiting to update ${basename(paths.config)}. ` +
+      'If no other fireforge process is running, remove the stale lock directory and retry.',
+    onStaleLockMessage: (ageMs) =>
+      `Removing stale FireForge config lock for ${basename(paths.config)} ` +
+      `(age: ${Math.round(ageMs / 1000)}s). A previous fireforge process may have crashed.`,
+  });
 }

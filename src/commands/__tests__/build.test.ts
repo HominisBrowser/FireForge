@@ -16,6 +16,11 @@ vi.mock('../../core/mach.js', () => ({
   buildArtifactMismatchMessage: vi.fn(),
   attemptMozinfoRewrite: vi.fn(),
   runMach: vi.fn(),
+  // Build lock added in 0.16.0; the tests below exercise buildCommand
+  // which wraps build/buildUI in `withBuildLock`. A pass-through stub
+  // keeps focus on the command-level behaviour — dedicated lock tests
+  // live in `src/core/__tests__/build-lock.integration.test.ts`.
+  withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
 }));
 
 vi.mock('../../utils/fs.js', () => ({

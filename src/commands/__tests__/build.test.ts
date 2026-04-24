@@ -103,8 +103,8 @@ describe('buildCommand', () => {
       furnaceApplied: 0,
       reconfigured: false,
     });
-    vi.mocked(build).mockResolvedValue(0);
-    vi.mocked(buildUI).mockResolvedValue(0);
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
   });
 
   it('fails before starting when the engine checkout is missing', async () => {
@@ -245,7 +245,7 @@ describe('buildCommand', () => {
   });
 
   it('wraps non-zero mach exits as build failures', async () => {
-    vi.mocked(build).mockResolvedValue(2);
+    vi.mocked(build).mockResolvedValue({ exitCode: 2, stdout: '', stderr: '' });
 
     await expect(buildCommand('/project', { jobs: 8 })).rejects.toThrow(
       'Build failed with exit code 2'
@@ -253,6 +253,27 @@ describe('buildCommand', () => {
 
     expect(build).toHaveBeenCalledWith('/project/engine', 8);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Build failed after'));
+  });
+
+  it('annotates a successful build whose captured output warns about a stale config.status', async () => {
+    // Eval finding (E1-#2, E2): mach prints "config.status is out of
+    // date … Be sure to run |mach build|" at the tail of a successful
+    // build when tool-managed branding edits landed on moz.configure
+    // before the build. Operators read that as "build is incomplete"
+    // and either rebuilt unnecessarily or doubted the Fireforge footer.
+    const staleStdout = [
+      'Your build was successful!',
+      'config.status is out of date with respect to browser/moz.configure',
+      'Configure complete!',
+      'Be sure to run |mach build| to pick up any changes',
+    ].join('\n');
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: staleStdout, stderr: '' });
+
+    await expect(buildCommand('/project', { jobs: 4 })).resolves.toBeUndefined();
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('tool-managed branding edits applied before the build')
+    );
   });
 
   it('wraps startup failures before mach returns an exit code', async () => {
@@ -307,8 +328,8 @@ describe('registerBuild', () => {
       furnaceApplied: 0,
       reconfigured: false,
     });
-    vi.mocked(build).mockResolvedValue(0);
-    vi.mocked(buildUI).mockResolvedValue(0);
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
   });
 
   it('routes parsed CLI options through the registered action', async () => {

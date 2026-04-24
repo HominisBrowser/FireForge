@@ -94,19 +94,58 @@ async function printUnregisteredWarnings(
   if (newFiles.length === 0) return;
 
   const registrableFiles = newFiles.filter((f) => matchesRegistrablePattern(f.file, binaryName));
+  // `isFileRegistered` throws `GeneralError("Manifest not found: ...")` when a
+  // rule sees a file whose parent manifest does not yet exist on disk — e.g.
+  // a brand-new `browser/modules/<binary>/` directory with no `moz.build`.
+  // `status` is a read-only reporter; before 0.18.1 the rejected promise
+  // bubbled through `Promise.all` and exited status with code 1, breaking the
+  // "use status --unmanaged to discover new files before running register"
+  // workflow. We now bucket missing-manifest cases into a distinct warning
+  // list while still surfacing the same actionable signal. Other error
+  // shapes continue to propagate (permission denied, corrupt file, etc.) so
+  // we do not silently hide anything surprising.
   const registrationChecks = await Promise.all(
-    registrableFiles.map(async (f) => ({
-      file: f.file,
-      registered: await isFileRegistered(projectRoot, f.file),
-    }))
+    registrableFiles.map(async (f) => {
+      try {
+        return {
+          file: f.file,
+          registered: await isFileRegistered(projectRoot, f.file),
+          manifestMissing: false as const,
+          manifestMissingMessage: undefined as string | undefined,
+        };
+      } catch (err: unknown) {
+        if (err instanceof GeneralError && /^Manifest not found:/i.test(err.message)) {
+          return {
+            file: f.file,
+            registered: false,
+            manifestMissing: true as const,
+            manifestMissingMessage: err.message,
+          };
+        }
+        throw err;
+      }
+    })
   );
-  const unregistered = registrationChecks.filter((f) => !f.registered);
+  const unregistered = registrationChecks.filter((f) => !f.registered && !f.manifestMissing);
+  const manifestMissing = registrationChecks.filter((f) => f.manifestMissing);
 
   if (unregistered.length > 0) {
     info('');
     warn('Potentially unregistered files:');
     for (const f of unregistered) {
       info(`  ${f.file} — run 'fireforge register ${f.file}'`);
+    }
+  }
+
+  if (manifestMissing.length > 0) {
+    info('');
+    warn('Files whose registration manifest does not exist yet:');
+    for (const f of manifestMissing) {
+      // `manifestMissingMessage` is always the specific
+      // "Manifest not found: <path>" string when manifestMissing is
+      // true (see the catch branch above that sets them together).
+      info(`  ${f.file} — ${f.manifestMissingMessage}`);
+      info(`    Create the parent manifest, then run 'fireforge register ${f.file}'.`);
     }
   }
 }

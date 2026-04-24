@@ -36,6 +36,10 @@ vi.mock('../../core/git-status.js', () => ({
   getModifiedFilesInDir: vi.fn(() => Promise.resolve([])),
   getUntrackedFiles: vi.fn(() => Promise.resolve([])),
   getUntrackedFilesInDir: vi.fn(() => Promise.resolve([])),
+  getWorkingTreeStatus: vi.fn(() => Promise.resolve([])),
+  expandUntrackedDirectoryEntries: vi.fn((_dir: string, entries: unknown[]) =>
+    Promise.resolve(entries)
+  ),
 }));
 
 vi.mock('../../core/branding.js', () => ({
@@ -86,10 +90,10 @@ import { loadConfig } from '../../core/config.js';
 import { getStatusWithCodes, hasChanges } from '../../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import {
-  getModifiedFiles,
   getModifiedFilesInDir,
   getUntrackedFiles,
   getUntrackedFilesInDir,
+  getWorkingTreeStatus,
 } from '../../core/git-status.js';
 import {
   buildPatchQueueContext,
@@ -645,13 +649,40 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
     vi.mocked(lintExportedPatch).mockResolvedValue([]);
   });
 
+  function statusEntry(
+    status: string,
+    file: string
+  ): {
+    status: string;
+    indexStatus: string;
+    worktreeStatus: string;
+    file: string;
+    isUntracked: boolean;
+    isRenameOrCopy: boolean;
+    isDeleted: boolean;
+  } {
+    return {
+      status,
+      indexStatus: status[0] ?? ' ',
+      worktreeStatus: status[1] ?? status[0] ?? ' ',
+      file,
+      isUntracked: status.includes('?'),
+      isRenameOrCopy: false,
+      isDeleted: status.includes('D'),
+    };
+  }
+
   it('filters branding-managed paths out of the default aggregate diff', async () => {
-    vi.mocked(getModifiedFiles).mockResolvedValue([
-      'browser/branding/mybrowser/locales/en-US/brand.ftl',
-      'browser/branding/mybrowser/configure.sh',
-      'browser/base/content/myhook.js',
+    // Post-0.17 the aggregate-mode branding branch sources paths via
+    // `getWorkingTreeStatus` + `expandUntrackedDirectoryEntries` so it
+    // can expand `?? dir/` entries before the diff pass. The older
+    // `getModifiedFiles`/`getUntrackedFiles` blend tripped EISDIR in
+    // the eval's imported patch stacks.
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      statusEntry(' M', 'browser/branding/mybrowser/locales/en-US/brand.ftl'),
+      statusEntry(' M', 'browser/branding/mybrowser/configure.sh'),
+      statusEntry(' M', 'browser/base/content/myhook.js'),
     ]);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
     vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
 
     await lintCommand('/project', []);
@@ -667,8 +698,9 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
   });
 
   it('passes through unchanged when no branding files are dirty', async () => {
-    vi.mocked(getModifiedFiles).mockResolvedValue(['browser/base/content/myhook.js']);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      statusEntry(' M', 'browser/base/content/myhook.js'),
+    ]);
     vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
 
     await lintCommand('/project', []);
@@ -681,11 +713,10 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
   });
 
   it('short-circuits when every dirty file is branding', async () => {
-    vi.mocked(getModifiedFiles).mockResolvedValue([
-      'browser/branding/mybrowser/locales/en-US/brand.ftl',
-      'browser/branding/mybrowser/configure.sh',
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      statusEntry(' M', 'browser/branding/mybrowser/locales/en-US/brand.ftl'),
+      statusEntry(' M', 'browser/branding/mybrowser/configure.sh'),
     ]);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
 
     await lintCommand('/project', []);
 

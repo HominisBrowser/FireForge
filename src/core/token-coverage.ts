@@ -9,6 +9,22 @@ import { countRawCssColors } from '../utils/regex.js';
 import { loadFurnaceConfig } from './furnace-config.js';
 
 /**
+ * Default platform prefixes treated as allowlisted upstream vars. Any
+ * `var(--moz-*)` usage in a fork's CSS is a Firefox platform variable
+ * that the fork does not own and should not be counted as an unknown.
+ * 2026-04-21 eval (Finding #5): a `furnace override moz-button -t
+ * css-only` + one fork token produced 1% coverage because the 84
+ * upstream `--moz-*` vars in the copied baseline counted as unknown.
+ *
+ * Forks that want to opt out can override this via
+ * `furnace.json.platformPrefixes = []`; forks that want more can
+ * extend it (e.g. `['--moz-', '--in-content-']`). The config is
+ * additive — nothing is removed from the defaults unless the operator
+ * explicitly writes a shorter list.
+ */
+const DEFAULT_PLATFORM_PREFIXES: readonly string[] = ['--moz-'];
+
+/**
  * Measures design token coverage across CSS files.
  *
  * Counts var(--{prefix}*) usages, allowlisted vars, unknown vars, and raw
@@ -26,12 +42,16 @@ export async function measureTokenCoverage(
   // Load furnace config gracefully
   let tokenPrefix: string | undefined;
   let tokenAllowlist: Set<string> | undefined;
+  let platformPrefixes: readonly string[] = DEFAULT_PLATFORM_PREFIXES;
   try {
     const root = projectRoot ?? join(repoDir, '..');
     const config = await loadFurnaceConfig(root);
     if (config.tokenPrefix) {
       tokenPrefix = config.tokenPrefix;
       tokenAllowlist = new Set(config.tokenAllowlist ?? []);
+    }
+    if (config.platformPrefixes !== undefined) {
+      platformPrefixes = config.platformPrefixes;
     }
   } catch (error: unknown) {
     verbose(
@@ -66,6 +86,10 @@ export async function measureTokenCoverage(
       if (tokenPrefix && prop.startsWith(tokenPrefix)) {
         tokenUsages++;
       } else if (tokenAllowlist?.has(prop)) {
+        allowlisted++;
+      } else if (platformPrefixes.some((prefix) => prop.startsWith(prefix))) {
+        // Platform vars (upstream `--moz-*`) are counted as allowlisted
+        // so they don't drag the fork-owned coverage percentage down.
         allowlisted++;
       } else {
         unknownVars++;

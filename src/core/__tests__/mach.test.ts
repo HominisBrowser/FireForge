@@ -644,9 +644,9 @@ describe('mach command execution', () => {
       stderr: '',
       exitCode: 0,
     });
-    await expect(build('/engine', 4)).resolves.toBe(0);
-    await expect(build('/engine')).resolves.toBe(0);
-    await expect(buildUI('/engine')).resolves.toBe(0);
+    await expect(build('/engine', 4)).resolves.toMatchObject({ exitCode: 0 });
+    await expect(build('/engine')).resolves.toMatchObject({ exitCode: 0 });
+    await expect(buildUI('/engine')).resolves.toMatchObject({ exitCode: 0 });
     await expect(runBrowser('/engine', ['--safe-mode'])).resolves.toBe(0);
     await expect(machPackage('/engine')).resolves.toBe(0);
     await expect(watch('/engine')).resolves.toBe(0);
@@ -798,7 +798,7 @@ describe('mach command execution', () => {
     const warnMock = vi.mocked(warn);
     warnMock.mockClear();
 
-    await expect(build('/engine')).resolves.toBe(1);
+    await expect(build('/engine')).resolves.toMatchObject({ exitCode: 1 });
     expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('JS_PREFERENCE_FILES'));
   });
 
@@ -816,7 +816,7 @@ describe('mach command execution', () => {
     const warnMock = vi.mocked(warn);
     warnMock.mockClear();
 
-    await expect(buildUI('/engine')).resolves.toBe(2);
+    await expect(buildUI('/engine')).resolves.toMatchObject({ exitCode: 2 });
     expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('JS_PREFERENCE_FILES'));
   });
 
@@ -833,7 +833,7 @@ describe('mach command execution', () => {
     const warnMock = vi.mocked(warn);
     warnMock.mockClear();
 
-    await expect(build('/engine')).resolves.toBe(1);
+    await expect(build('/engine')).resolves.toMatchObject({ exitCode: 1 });
     expect(warnMock).not.toHaveBeenCalled();
   });
 
@@ -855,7 +855,7 @@ describe('mach command execution', () => {
     const warnMock = vi.mocked(warn);
     warnMock.mockClear();
 
-    await expect(build('/engine')).resolves.toBe(2);
+    await expect(build('/engine')).resolves.toMatchObject({ exitCode: 2 });
     expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('gecko-profiler'));
   });
 
@@ -879,7 +879,7 @@ describe('mach command execution', () => {
     const warnMock = vi.mocked(warn);
     warnMock.mockClear();
 
-    await expect(build('/engine')).resolves.toBe(2);
+    await expect(build('/engine')).resolves.toMatchObject({ exitCode: 2 });
     expect(warnMock).toHaveBeenCalledWith(
       expect.stringContaining('post-failure configure summary')
     );

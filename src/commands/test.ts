@@ -12,7 +12,11 @@ import {
   testWithOutput,
 } from '../core/mach.js';
 import { assertMarionettePortAvailable } from '../core/marionette-port.js';
-import { reportMarionettePreflight, runMarionettePreflight } from '../core/marionette-preflight.js';
+import {
+  formatMarionettePreflightLine,
+  reportMarionettePreflight,
+  runMarionettePreflight,
+} from '../core/marionette-preflight.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import {
   operatorAlreadySetAppPath,
@@ -24,7 +28,7 @@ import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, outro, spinner, warn } from '../utils/logger.js';
+import { info, intro, outro, spinner, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 
@@ -77,6 +81,39 @@ function hasStaleBuildArtifactsSignal(output: string): boolean {
   );
 }
 
+/**
+ * Fork-module-not-registered signal. 2026-04-21 eval Finding #14:
+ * a hominis test failed with `Failed to load resource:///modules/hominis/
+ * HominisStore.sys.mjs`. The branding pattern happened to also match
+ * because the test harness printed a branding warning during its
+ * teardown, and the stale-build branch won by precedence — telling the
+ * operator to rebuild when the real fix is to register the module in
+ * the fork's `browser/modules/<binary>/moz.build`. Match a
+ * `resource:///modules/<binaryName>/` pattern so fork-owned module
+ * failures surface the right diagnosis.
+ */
+function hasForkModuleSignal(output: string, binaryName: string): boolean {
+  const pattern = new RegExp(
+    `Failed to load resource:\\/\\/\\/modules\\/${binaryName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\/`,
+    'i'
+  );
+  return pattern.test(output);
+}
+
+function buildForkModuleMessage(binaryName: string): string {
+  return (
+    `Test failed to load a fork-owned module at resource:///modules/${binaryName}/*.sys.mjs.\n\n` +
+    'This is almost always a module-registration issue, not a stale build. The fork module directory is missing an entry that maps its file into the resource URI tree, so `ChromeUtils.importESModule` cannot resolve it.\n\n' +
+    'Check that:\n' +
+    `  - browser/modules/${binaryName}/moz.build lists the missing module in EXTRA_JS_MODULES.\n` +
+    `  - browser/modules/moz.build references the ${binaryName}/ subdirectory (DIRS += [...]).\n` +
+    '  - The last `fireforge build` (or `fireforge build --ui`) completed successfully against the current manifests. If the registration is new, the UI-faster build path may not pick it up — a full build may be required.\n\n' +
+    'Use `fireforge register browser/modules/' +
+    binaryName +
+    '/<file>.sys.mjs` to add the EXTRA_JS_MODULES entry if it is missing.'
+  );
+}
+
 // Detects the broader xpcshell symptom where every `resource:///modules/...`
 // import fails — the signature of xpcshell running with the wrong app-dir on
 // a manifest that sets `firefox-appdir = "browser"`. Checked AFTER the
@@ -87,18 +124,23 @@ function hasXpcshellAppdirSignal(output: string): boolean {
 }
 
 function buildXpcshellAppdirMessage(injectionAttempted: boolean): string {
+  const isMacos = process.platform === 'darwin';
+  const macosNote = isMacos
+    ? 'Detected: macOS host. On macOS the xpcshell harness binds `-a` to `<obj>/dist/<App>.app/Contents/Resources` by default and frequently ignores `--app-path` overrides when the `.app` bundle is present — the surest fix is the `<appname>-appdir` migration below rather than trying to force a different path.\n\n'
+    : '';
   const triggerLines = injectionAttempted
-    ? 'FireForge auto-injected `--app-path=<absolute>` against the resolved obj-dir before mach test ran, but the failure persists. The injected path either does not match the appdir layout your harness expects, or the harness was built against a layout FireForge cannot probe (omni.ja-packed tree, alternate `dist/` shape).\n\n'
+    ? 'FireForge auto-injected `--app-path=<absolute>` against the resolved obj-dir before mach test ran, but the failure persists. The injected path either does not match the appdir layout your harness expects, or (on macOS) the harness bound `-a` to the `.app/Contents/Resources` default and ignored the override.\n\n'
     : 'Likely triggers:\n' +
       '  - The nearest xpcshell.toml sets `firefox-appdir = "browser"` but the harness reads `<appname>-appdir` instead — the literal `firefox-appdir` directive is silently ignored on rebranded forks (appname != "firefox").\n' +
       '  - FireForge could not find an xpcshell.toml above the test path, so the auto-injection never ran.\n\n';
   return (
     'xpcshell failed to load core resource:///modules/*.sys.mjs imports.\n\n' +
     'This is the canonical symptom of xpcshell running with the wrong app directory: the runtime resolves `resource:///modules/` against the parent of the expected app root, so every `ChromeUtils.importESModule("resource:///modules/…")` throws.\n\n' +
+    macosNote +
     triggerLines +
     'Options:\n' +
-    '  - Add `<appname>-appdir = "browser"` alongside `firefox-appdir = "browser"` in the xpcshell.toml [DEFAULT] so the harness reads the appname-keyed value directly.\n' +
-    '  - Pass overrides through `fireforge test <path> --mach-arg="--app-path=<absolute>"` to inject the path verbatim (operator overrides always win over auto-injection).\n' +
+    '  - Add `<appname>-appdir = "browser"` alongside `firefox-appdir = "browser"` in the xpcshell.toml [DEFAULT] so the harness reads the appname-keyed value directly. This is the most reliable fix on rebranded macOS builds.\n' +
+    '  - Pass overrides through `fireforge test <path> --mach-arg="--app-path=<absolute>"` to inject the path verbatim (operator overrides always win over auto-injection, but see the macOS caveat above).\n' +
     '  - Remove `firefox-appdir = "browser"` from the xpcshell.toml [DEFAULT] and move browser-chrome dependencies into a browser-chrome mochitest (see `fireforge furnace create --test-style=browser-chrome`).\n' +
     '  - If the test only touches toolkit chrome (chrome://global/*), drop the `firefox-appdir` setting entirely — toolkit chrome is registered without it.'
   );
@@ -128,12 +170,22 @@ function buildMochitestHttp3ServerMessage(): string {
 function handleNonZeroTestExit(
   result: { stdout: string; stderr: string; exitCode: number },
   normalizedPaths: string[],
-  appdirInjectionAttempted: boolean
+  appdirInjectionAttempted: boolean,
+  binaryName: string
 ): void {
   if (result.exitCode === 0 || result.exitCode === 130) return;
   const combinedOutput = `${result.stdout}\n${result.stderr}`;
   if (/UNKNOWN TEST\b/i.test(combinedOutput)) {
     throw new GeneralError(buildUnknownTestMessage(normalizedPaths));
+  }
+  // Fork-owned module load failures must beat the branding stale-build
+  // branch: 2026-04-21 eval (Finding #14) saw a hominis test fail with
+  // `Failed to load resource:///modules/hominis/HominisStore.sys.mjs`
+  // while the harness teardown printed a branding warning that the old
+  // stale-build pattern matched, so the operator was told to rebuild
+  // when the real fix is to register the missing module.
+  if (hasForkModuleSignal(combinedOutput, binaryName)) {
+    throw new GeneralError(buildForkModuleMessage(binaryName));
   }
   // Branding-specific stale-build signals keep priority over the broader
   // xpcshell-appdir hint: when `chrome://branding/locale/brand.properties`
@@ -215,8 +267,8 @@ export async function testCommand(
   if (options.build) {
     await prepareBuildEnvironment(projectRoot, paths, projectConfig);
     const s = spinner('Running incremental build...');
-    const buildExitCode = await buildUI(paths.engine);
-    if (buildExitCode !== 0) {
+    const buildResult = await buildUI(paths.engine);
+    if (buildResult.exitCode !== 0) {
       s.error('Pre-test build failed');
       throw new BuildError('Pre-test build failed', 'mach build faster');
     }
@@ -252,20 +304,32 @@ export async function testCommand(
   // no paths are supplied this is the only step — it's the fastest way to tell
   // marionette-wedged apart from test-discovery-failure.
   if (options.doctor) {
+    // Write the "Running marionette preflight..." banner via
+    // `process.stdout.write` directly before `info()` so non-TTY captures
+    // always see the banner even if clack's renderer defers output in
+    // pipe mode. `info()` is still called so TTY users keep the normal
+    // clack box-drawing framing.
+    process.stdout.write('Running marionette preflight...\n');
     info('Running marionette preflight...');
     const preflight = await runMarionettePreflight(paths.engine);
+    // 2026-04-24 eval Finding 7: the pre-0.18.1 code used
+    // `success()` + `outro()` + a direct `process.stdout.write` as a
+    // belt-and-suspenders but still reproducibly dropped the PASS summary
+    // under non-TTY capture (observed: `tee`-wrapped eval output saw only
+    // the intro). The fix writes the authoritative PASS/FAIL line via
+    // `process.stdout.write` as the very first output after the probe
+    // returns, so the captured stream has an unambiguous summary no
+    // matter what clack does on top. The clack-rendered banner
+    // (`info`/`warn`) is retained so TTY users keep the visual framing.
+    const directLine = formatMarionettePreflightLine(preflight);
+    process.stdout.write(`${directLine}\n`);
     reportMarionettePreflight(preflight);
     if (testPaths.length === 0) {
       if (!preflight.ok) {
         throw new GeneralError('Marionette preflight reported FAIL — see output above.');
       }
-      // Close the intro frame explicitly. Without an outro, clack's
-      // grouped-output mode left the PASS line hanging inside an
-      // unclosed tree — in the eval's non-TTY capture the info line
-      // itself failed to render, so `test --doctor` looked like it had
-      // exited silently after the spinner start line. The outro also
-      // gives scripts a deterministic "done" marker to parse.
-      outro(`Marionette preflight: PASS (${preflight.durationMs}ms)`);
+      success(directLine);
+      outro('Test completed');
       return;
     }
     if (!preflight.ok) {
@@ -333,7 +397,7 @@ export async function testCommand(
     );
   }
 
-  handleNonZeroTestExit(result, normalizedPaths, appdirInjection);
+  handleNonZeroTestExit(result, normalizedPaths, appdirInjection, projectConfig.binaryName);
 }
 
 /**

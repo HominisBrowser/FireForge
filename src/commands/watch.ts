@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { delimiter, dirname } from 'node:path';
+
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
@@ -15,8 +17,8 @@ import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, outro, spinner } from '../utils/logger.js';
-import { exec, executableExists } from '../utils/process.js';
+import { info, intro, outro, spinner, verbose } from '../utils/logger.js';
+import { exec, findExecutable } from '../utils/process.js';
 
 const WATCHMAN_PROBE_TIMEOUT_MS = 5000;
 
@@ -75,15 +77,22 @@ function buildWatchmanConfigureTimeMessage(): string {
 /**
  * Builds the generic unsupported-watch failure message.
  * @param exitCode - Exit code returned by `mach watch`
+ * @param watchmanPath - Optional absolute path to the resolved watchman binary; surfaced in the guidance so the operator can see whether FireForge actually found one.
  * @returns User-facing failure guidance
  */
-function buildUnsupportedWatchMessage(exitCode: number): string {
+function buildUnsupportedWatchMessage(exitCode: number, watchmanPath: string | undefined): string {
+  const watchmanLine = watchmanPath
+    ? `  - FireForge resolved watchman at ${watchmanPath} and prepended its directory to the mach subprocess PATH. If mach still did not see it, ensure that path is stable between runs.\n`
+    : '';
   return (
     `Watch failed with exit code ${exitCode}. Check the output above for details.\n\n` +
     'Common causes:\n' +
     '  - watchman is not installed or not in PATH right now\n' +
     '  - watchman was installed only after the current obj-* directory was configured; delete obj-* and rebuild\n' +
-    '  - mach watch is unsupported in the current objdir or build environment'
+    '  - mach watch is unsupported in the current objdir or build environment\n' +
+    watchmanLine +
+    '\n' +
+    'If the failure referenced `watch-project` / `FasterBuildException: timed out`, watchman is likely reachable via `which watchman` from your shell but missing from the subprocess PATH. FireForge now prepends the resolved watchman directory automatically; confirm your watchman install is on a stable path (e.g. /opt/homebrew/bin/watchman on macOS).'
   );
 }
 
@@ -117,7 +126,17 @@ export async function watchCommand(projectRoot: string): Promise<void> {
     throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
   }
 
-  if (!(await executableExists('watchman'))) {
+  // Resolve the watchman binary to an absolute path up-front so we can
+  // (a) refuse fast when it is missing AND (b) prepend its directory to
+  // the mach subprocess PATH. 2026-04-24 eval Finding 12: on macOS,
+  // `which watchman` from the interactive shell returns
+  // `/opt/homebrew/bin/watchman`, but the Node subprocess PATH
+  // frequently omits `/opt/homebrew/bin`, so the shell probe passed and
+  // mach's `watch-project` call then timed out because its own PATH
+  // lookup for watchman failed. Threading the directory through the
+  // subprocess env fixes it.
+  const watchmanPath = await findExecutable('watchman');
+  if (!watchmanPath) {
     throw new GeneralError(
       'Watch mode requires watchman to be installed and available in PATH.\n\n' +
         'Install watchman first, then rerun "fireforge watch".'
@@ -187,10 +206,28 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   info('Starting watch mode...');
   info('Press Ctrl+C to stop\n');
 
+  // Compose the subprocess env: start from the parent process env, then
+  // prepend the resolved watchman directory to PATH so the mach
+  // subprocess sees the same binary our probe just validated. Without
+  // this, a watchman install on `/opt/homebrew/bin` (the default
+  // homebrew prefix on Apple Silicon) is absent from the PATH Node
+  // inherits on spawn, and `mach watch` fails at the `watch-project`
+  // subscription step.
+  const watchmanDir = dirname(watchmanPath);
+  const existingPath = process.env['PATH'] ?? '';
+  const pathSegments = existingPath.split(delimiter).filter((segment) => segment.length > 0);
+  const watchmanEnv: Record<string, string> = pathSegments.includes(watchmanDir)
+    ? ({ ...process.env } as Record<string, string>)
+    : ({
+        ...process.env,
+        PATH: [watchmanDir, ...pathSegments].join(delimiter),
+      } as Record<string, string>);
+  verbose(`watch: resolved watchman at ${watchmanPath}; forwarding directory in subprocess PATH.`);
+
   let result: Awaited<ReturnType<typeof watchWithOutput>>;
 
   try {
-    result = await watchWithOutput(paths.engine);
+    result = await watchWithOutput(paths.engine, { env: watchmanEnv });
   } catch (error: unknown) {
     throw new BuildError(
       'Watch process failed to start',
@@ -206,7 +243,7 @@ export async function watchCommand(projectRoot: string): Promise<void> {
     }
 
     // 130 is SIGINT (Ctrl+C), which is expected
-    throw new BuildError(buildUnsupportedWatchMessage(result.exitCode), 'mach watch');
+    throw new BuildError(buildUnsupportedWatchMessage(result.exitCode, watchmanPath), 'mach watch');
   }
 
   outro('Watch mode stopped');

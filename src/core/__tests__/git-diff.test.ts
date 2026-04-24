@@ -26,6 +26,7 @@ vi.mock('../git-file-ops.js', () => ({
 
 vi.mock('../git-status.js', () => ({
   getUntrackedFiles: vi.fn(),
+  getUntrackedFilesInDir: vi.fn(),
 }));
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -44,7 +45,7 @@ import {
   getStagedDiffForFiles,
 } from '../git-diff.js';
 import { fileExistsInHead } from '../git-file-ops.js';
-import { getUntrackedFiles } from '../git-status.js';
+import { getUntrackedFiles, getUntrackedFilesInDir } from '../git-status.js';
 
 const mockExec = vi.mocked(exec);
 const mockGit = vi.mocked(git);
@@ -52,6 +53,7 @@ const mockPathExists = vi.mocked(pathExists);
 const mockReadText = vi.mocked(readText);
 const mockFileExistsInHead = vi.mocked(fileExistsInHead);
 const mockGetUntrackedFiles = vi.mocked(getUntrackedFiles);
+const mockGetUntrackedFilesInDir = vi.mocked(getUntrackedFilesInDir);
 const mockMkdtemp = vi.mocked(mkdtemp);
 const mockWriteFile = vi.mocked(writeFile);
 const mockRm = vi.mocked(rm);
@@ -267,6 +269,26 @@ describe('getDiffForFilesAgainstHead', () => {
 
     await getDiffForFilesAgainstHead('/repo', ['a.txt', 'a.txt']);
     expect(mockGit).toHaveBeenCalledTimes(1);
+  });
+
+  it('expands untracked directory entries before diffing', async () => {
+    // `git status --porcelain=v1 -z` reports collapsed untracked dirs as
+    // `?? dir/`; a caller that hands that entry to this function used to
+    // crash with EISDIR reading the directory as a file.
+    mockGetUntrackedFilesInDir.mockResolvedValue([
+      'browser/modules/fork/Foo.sys.mjs',
+      'browser/modules/fork/Bar.sys.mjs',
+    ]);
+    mockFileExistsInHead.mockResolvedValue(false);
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('content\n');
+    mockGit.mockResolvedValue('abc1234567\n');
+
+    const result = await getDiffForFilesAgainstHead('/repo', ['browser/modules/fork/']);
+
+    expect(mockGetUntrackedFilesInDir).toHaveBeenCalledWith('/repo', 'browser/modules/fork/');
+    expect(result).toContain('diff --git a/browser/modules/fork/Bar.sys.mjs');
+    expect(result).toContain('diff --git a/browser/modules/fork/Foo.sys.mjs');
   });
 });
 

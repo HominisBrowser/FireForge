@@ -36,7 +36,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 - **Python 3** (required by Firefox's `mach` build system).
 - **Git**
 - Platform build tools: Xcode on macOS, `build-essential` on Linux, Visual Studio Build Tools on Windows.
-- **Watchman** (optional, only required by `fireforge watch`). Install via `brew install watchman` (macOS), `dnf install watchman` (Fedora), or follow the upstream [Meta docs](https://facebook.github.io/watchman/). `fireforge doctor` surfaces a warning row when it is not on `PATH` so the dependency is visible during the usual onboarding sweep rather than at the watch-mode failure site.
+- **Watchman** (optional, only required by `fireforge watch`). Install via `brew install watchman` (macOS), `dnf install watchman` (Fedora), or follow the upstream [Meta docs](https://facebook.github.io/watchman/). `fireforge doctor` surfaces a warning row when it is not on `PATH` so the dependency is visible during the usual onboarding sweep rather than at the watch-mode failure site. `fireforge watch` resolves watchman's absolute path via `which` / `where` and prepends its directory to the subprocess `PATH` it hands mach, so a homebrew-installed watchman at `/opt/homebrew/bin/watchman` (absent from the Node subprocess's default `PATH` on macOS) is still visible to `mach watch` without the operator having to re-export `PATH` manually.
 
 ### Setup
 
@@ -82,6 +82,10 @@ npx fireforge import              # --dry-run to preview without applying
 npx fireforge download --force
 npx fireforge rebase
 ```
+
+`fireforge download` indexes the extracted Firefox source into a fresh git repository — a one-time 1–3 minute pass on a cold SSD, longer on slow or loaded disks. The monolithic `git add -A` is capped at 10 minutes by default and falls back to a per-directory chunked pass (30 minutes per chunk) when the cap hits. If indexing still times out, the command now raises `GitIndexingTimeoutError` with recovery guidance: extend the cap via `FIREFORGE_GIT_ADD_TIMEOUT_MS` (monolithic) and/or `FIREFORGE_GIT_ADD_CHUNK_TIMEOUT_MS` (chunked) in milliseconds, e.g. `FIREFORGE_GIT_ADD_TIMEOUT_MS=1800000 fireforge download --force` for a 30-minute monolithic budget, then re-run `fireforge download --force` — the resume path picks up from the partial git state so the repeat is not wasted work.
+
+`fireforge rebase --dry-run` refuses when the engine has no baseline commit yet (e.g. the aftermath of an aborted `download --force`), so dry-run and real-run preconditions stay in sync.
 
 ## Patch Workflow
 
@@ -259,17 +263,18 @@ fireforge status --json             # machine-readable classified output
 
 Then fix with the appropriate primitive:
 
-| Problem                                        | Fix                                                                   |
-| ---------------------------------------------- | --------------------------------------------------------------------- |
-| Two patches each creating the same file        | `fireforge patch delete <duplicate>` or `fireforge re-export --files` |
-| A patch imports from a module in a later patch | `fireforge patch reorder <later> --before <importer>`                 |
-| Wrong patch ordering                           | `fireforge patch reorder <patch> --to <N>`                            |
-| Ordinal gaps after deletes/splits              | `fireforge patch compact`                                             |
-| A patch claims files that belong elsewhere     | `fireforge re-export --files <subset> <patch>`                        |
-| Manifest references a missing patch file       | `fireforge doctor --repair-patches-manifest`                          |
-| Unmanaged changes you want to discard          | `fireforge discard <file>` or `fireforge reset`                       |
+| Problem                                        | Fix                                                                                                          |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Two patches each creating the same file        | `fireforge patch delete <duplicate>` or `fireforge re-export --files`                                        |
+| A patch imports from a module in a later patch | `fireforge patch reorder <later> --before <importer>`                                                        |
+| Wrong patch ordering                           | `fireforge patch reorder <patch> --to <N>`                                                                   |
+| Ordinal gaps after deletes/splits              | `fireforge patch compact`                                                                                    |
+| A patch claims files that belong elsewhere     | `fireforge re-export --files <subset> <patch>`                                                               |
+| Manifest references a missing patch file       | `fireforge doctor --repair-patches-manifest`                                                                 |
+| Dangling widget / locale registration in patch | Re-run `fireforge export` without `--exclude-furnace` to capture the source files, or revert furnace changes |
+| Unmanaged changes you want to discard          | `fireforge discard <file>` or `fireforge reset`                                                              |
 
-Every destructive command defaults to an interactive confirmation with a change summary. `--dry-run` previews without writing; `--yes` skips the prompt for CI; `--force-unsafe` bypasses structural refusals when you have context the linter cannot see. Do not hand-edit `patches.json` as the file is owned by FireForge.
+Every destructive command defaults to an interactive confirmation with a change summary. `--dry-run` previews without writing; `--yes` skips the prompt for CI; `--force-unsafe` bypasses structural refusals when you have context the linter cannot see. Do not hand-edit `patches.json` as the file is owned by FireForge — `doctor --repair-patches-manifest` reconstructs missing metadata, and `fireforge re-export <filename> --description "<text>"` overwrites recovered entries with operator-supplied metadata through the tool. `fireforge verify` cross-checks every registration hunk in each patch body against the files the queue and engine supply, so a patch that registers a widget / locale without carrying its source surfaces as a `dangling-registration` error rather than slipping through as "Verify clean"; `fireforge export-all --exclude-furnace` refuses up-front when it would produce that shape.
 
 ## Wiring Custom Code
 
@@ -433,6 +438,8 @@ fireforge patch reorder 003-ui-sidebar.patch --before 001-branding-logo.patch
 fireforge patch compact
 ```
 
+`delete` and `reorder` accept three identifier forms for their target: the ordinal number (`fireforge patch reorder 3 --to 1`), the full filename (`003-ui-sidebar-tweaks.patch`), or the manifest `name` handle the patch was exported with (`ui-sidebar-tweaks`). Anchors passed to `--before` / `--after` accept the same three forms.
+
 All subcommands support `--dry-run` and `--yes`.
 
 ### Additional workflow commands
@@ -469,6 +476,8 @@ fireforge lint --since main --only-introduced
 ```
 
 The failure message reports how many cumulative errors were suppressed by the flag so a branch that passed only because of the flag still tells the operator what was hidden. Without `--since`, `--only-introduced` is rejected up-front — there is no introduced-vs-cumulative distinction to scope to.
+
+Aggregate patch-size findings (`large-patch-files`, `large-patch-lines`) describe the whole diff rather than a single file. Under `--since` + a non-empty diff they tag `[introduced]` (the aggregate IS the introduced work); with an empty diff they tag `[cumulative]` (the finding describes drift accumulated across earlier commits).
 
 ### Post-build audit and auto-configure
 
@@ -557,6 +566,18 @@ Design tokens imported from the fork's palette are enforced by `tokenPrefix`, bu
 
 Both rules compose with the existing `tokenPrefix` / `tokenAllowlist` checks and apply to both component validation and patch-stack lint.
 
+### Platform variables in Furnace (token coverage)
+
+`fireforge token coverage` partitions `var(--…)` usages into three buckets: fork-owned tokens (matching `tokenPrefix`), allowlisted exceptions (explicit `tokenAllowlist` entries, plus platform prefixes), and unknown. Platform prefixes default to `['--moz-']` so upstream Firefox variables in copied baselines (e.g. the CSS that lands under `toolkit/content/widgets/<name>/` after `furnace override <name> -t css-only`) don't drag the fork-owned coverage percentage down.
+
+```json
+{
+  "platformPrefixes": ["--moz-", "--in-content-"]
+}
+```
+
+Set this in `furnace.json` to extend the list (forks with additional platform prefixes) or pass an empty array to restore the pre-0.18 strict contract where `--moz-*` counted as unknown. Allowlisted usages are reported separately and are NOT counted toward the coverage denominator, so a 100% fork-owned project with a copied upstream baseline reads as `100%` instead of `1%`.
+
 ### Test harness options
 
 `fireforge furnace create --with-tests` scaffolds a **browser-chrome mochitest**. Use this when the component renders UI that depends on the tab strip (`openLinkIn` → `URILoadingHelper`, `gBrowser`, etc.).
@@ -575,9 +596,9 @@ The two flags can be combined — `--with-tests --xpcshell` writes both harnesse
 
 ### xpcshell appdir auto-injection on rebranded forks
 
-`fireforge test` auto-resolves and injects `--app-path=<absolute>` into the underlying `mach test` invocation when the nearest `xpcshell.toml` sets `firefox-appdir = "browser"` and the active build's `appname` is anything other than `firefox`. Without this, every `resource:///modules/<name>.sys.mjs` import inside the harness throws `Failed to load resource:///modules/…` because the upstream xpcshell harness reads the appdir override under the appname-keyed manifest field (`<appname>-appdir`) — the literal `firefox-appdir = "browser"` directive is silently ignored on rebranded forks, `appPath` falls back to `xrePath`, and `resource:///` resolves one level above the real app root. The resolver walks each test path to its nearest manifest, reads `mozinfo.json` for the active appname, prefers any `<appname>-appdir` already in the manifest, and otherwise probes `<objDir>/dist/bin/<value>` and `<objDir>/dist/<bundle>.app/Contents/Resources/<value>` for the absolute target. Operator overrides via `--mach-arg=--app-path=…` always win and skip the resolver silently. Mismatches across multiple test paths and unresolvable manifest values surface as warnings rather than guesses, so triage reaches the underlying cause.
+`fireforge test` auto-resolves and injects `--app-path=<absolute>` into the underlying `mach test` invocation when the nearest `xpcshell.toml` sets `firefox-appdir = "browser"` and the active build's `appname` is anything other than `firefox`. Without this, every `resource:///modules/<name>.sys.mjs` import inside the harness throws `Failed to load resource:///modules/…` because the upstream xpcshell harness reads the appdir override under the appname-keyed manifest field (`<appname>-appdir`) — the literal `firefox-appdir = "browser"` directive is silently ignored on rebranded forks, `appPath` falls back to `xrePath`, and `resource:///` resolves one level above the real app root. The resolver walks each test path to its nearest manifest, reads `mozinfo.json` for the active appname, prefers any `<appname>-appdir` already in the manifest, and otherwise probes the platform-appropriate layout for the absolute target: on macOS, `<objDir>/dist/<bundle>.app/Contents/Resources/<value>` is preferred over `<objDir>/dist/bin/<value>` (the `dist/bin` symlink on Darwin points at the binaries directory, not the Resources tree where modules live); on other platforms `dist/bin/<value>` is preferred and the macOS bundle layout is the fallback. Operator overrides via `--mach-arg=--app-path=…` always win and skip the resolver silently. Mismatches across multiple test paths and unresolvable manifest values surface as warnings rather than guesses, so triage reaches the underlying cause.
 
-The durable fix is to add `<appname>-appdir = "browser"` alongside `firefox-appdir = "browser"` in the manifest — the harness then reads the appname-keyed value directly without auto-injection. The xpcshell appdir hint that fires when the symptom persists despite injection lists this option first.
+The durable fix is to add `<appname>-appdir = "browser"` alongside `firefox-appdir = "browser"` in the manifest — the harness then reads the appname-keyed value directly without auto-injection. This is the most reliable fix on rebranded macOS builds where mach's xpcshell runner binds `-a` to the `.app/Contents/Resources` default and may not honour `--app-path` overrides. The xpcshell appdir hint that fires when the symptom persists despite injection lists this option first.
 
 ### Smoke-run mode (`fireforge run --smoke-exit`)
 

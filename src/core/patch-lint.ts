@@ -17,6 +17,7 @@ import {
 } from './license-headers.js';
 import { runCheckJs } from './patch-lint-checkjs.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
+import { AGGREGATE_PATCH_FILE } from './patch-lint-diff-tag.js';
 import { validateExportJsDoc } from './patch-lint-jsdoc.js';
 import { resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
 
@@ -601,7 +602,7 @@ export function lintPatchSize(
 
   if (filesAffected.length > 5) {
     issues.push({
-      file: '(patch)',
+      file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-files',
       message: `Patch affects ${filesAffected.length} files (recommended: ≤5). Consider splitting into smaller, focused patches.`,
       severity: 'warning',
@@ -627,21 +628,21 @@ export function lintPatchSize(
 
   if (lineCount >= thresholds.error) {
     issues.push({
-      file: '(patch)',
+      file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',
       message: `Patch is ${lineCount} lines (hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
       severity: 'error',
     });
   } else if (lineCount >= thresholds.warning) {
     issues.push({
-      file: '(patch)',
+      file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',
       message: `Patch is ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
       severity: 'warning',
     });
   } else if (lineCount >= thresholds.notice) {
     issues.push({
-      file: '(patch)',
+      file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',
       message: `Patch is ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
       severity: 'notice',

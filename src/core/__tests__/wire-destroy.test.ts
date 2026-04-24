@@ -55,7 +55,7 @@ describe('wire-destroy', () => {
     expect(updated.indexOf('DockController.destroy();')).toBeLessThan(
       updated.indexOf('ExistingThing.destroy();')
     );
-    expect(updated).toContain('// DockController destroy');
+    expect(updated).toContain('// FIREFORGE: wire-destroy DockController');
     expect(updated).toContain('if (typeof DockController !== "undefined")');
   });
 
@@ -106,7 +106,7 @@ const gBrowserInit = {
     expect(updated.indexOf('DockController.destroy();')).toBeLessThan(
       updated.indexOf('ExistingThing.destroy();')
     );
-    expect(updated).toContain('// DockController destroy');
+    expect(updated).toContain('// FIREFORGE: wire-destroy DockController');
   });
 
   it('legacy insertion throws when onUnload is absent', () => {

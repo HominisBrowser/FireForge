@@ -51,7 +51,16 @@ export function getRules(binaryName: string): PatternRule[] {
       // proposed a bogus jar.mn entry. The lookahead blocks the match so
       // `getUnregistrableAdvice` gets a chance to emit the correct
       // guidance for the `.inc.xhtml` case.
-      pattern: /^browser\/base\/content\/(?!.+\.inc\.xhtml$)(.+\.(?:js|mjs|xhtml|css))$/,
+      //
+      // Test implementation files under `browser/base/content/test/` are
+      // also excluded: they belong in the nearest `browser.toml` manifest,
+      // not in jar.mn. 2026-04-23 eval 2: `status --unmanaged` proposed
+      // `fireforge register browser/base/content/test/<dir>/browser_*.js`
+      // which would have clutter-registered a test file as browser
+      // chrome content. The negative lookahead routes those paths to
+      // `getUnregistrableAdvice`, which returns the correct
+      // browser.toml-centric guidance.
+      pattern: /^browser\/base\/content\/(?!.+\.inc\.xhtml$)(?!test\/)(.+\.(?:js|mjs|xhtml|css))$/,
       isRegistered: (engineDir, fileName) => isBrowserContentRegistered(engineDir, fileName),
       register: (engineDir, after, dryRun, fileName) =>
         registerBrowserContent(engineDir, fileName, after, undefined, dryRun),

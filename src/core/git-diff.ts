@@ -10,7 +10,7 @@ import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
 import { ensureGit, git } from './git-base.js';
 import { fileExistsInHead } from './git-file-ops.js';
-import { getUntrackedFiles } from './git-status.js';
+import { getUntrackedFiles, getUntrackedFilesInDir } from './git-status.js';
 
 async function execGitWithAllowedExitCodes(
   repoDir: string,
@@ -229,7 +229,26 @@ export async function getDiffForFilesAgainstHead(
 ): Promise<string> {
   await ensureGit();
 
-  const uniqueFiles = [...new Set(files)].sort();
+  // Expand any directory entries (paths ending with `/`) into their
+  // individual untracked files before diffing. `git status --porcelain=v1`
+  // reports collapsed untracked directories as `?? dir/`, and every caller
+  // that feeds the aggregate working-tree state into this function must
+  // not trigger an EISDIR when the diff pass reads `dir/` as if it were a
+  // file. Belt-and-suspenders: the caller-side expansion in `lint.ts`
+  // and `export-all.ts` covers the common path, but a single bad call
+  // site re-introduced the bug in 0.17.0 — guarding here makes the
+  // regression impossible at this layer.
+  const expandedFiles: string[] = [];
+  for (const file of files) {
+    if (file.endsWith('/')) {
+      const inner = await getUntrackedFilesInDir(repoDir, file);
+      for (const entry of inner) expandedFiles.push(entry);
+      continue;
+    }
+    expandedFiles.push(file);
+  }
+
+  const uniqueFiles = [...new Set(expandedFiles)].sort();
   const diffs: string[] = [];
 
   for (const file of uniqueFiles) {

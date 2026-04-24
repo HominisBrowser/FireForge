@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { removeCustomFtlJarMnEntry } from '../../core/furnace-apply-ftl.js';
 import {
   extractComponentChecksums,
   getOverrideEngineTargetPath,
@@ -457,6 +458,19 @@ export async function furnaceRemoveCommand(
             await removeFile(ftlPath);
             info(`Deleted localized file engine/${ftlRel}`);
           }
+          // Drop the locale jar.mn chrome registration that `applyCustomFtlFile`
+          // wrote during deploy — otherwise the engine is left with a
+          // `locale/.../${name}.ftl` entry pointing at a file we just
+          // deleted. 2026-04-21 eval (Finding #1): `furnace remove` left
+          // `browser/locales/jar.mn` referencing the missing FTL, which
+          // would break the next package-manifest validation.
+          await removeCustomFtlJarMnEntry(
+            paths.engine,
+            `${name}.ftl`,
+            ftlDir,
+            customConfig,
+            journal
+          );
         }
       }
 

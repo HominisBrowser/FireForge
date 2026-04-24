@@ -5,7 +5,6 @@ import { configExists, getProjectPaths, loadConfig, loadState } from '../core/co
 import { furnaceConfigExists as checkFurnaceConfigExists } from '../core/furnace-config.js';
 import { getCurrentBranch, getHead, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { ensureGit } from '../core/git-base.js';
-import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { ensureMach, ensurePython } from '../core/mach.js';
 import { countPatches } from '../core/patch-apply.js';
 import {
@@ -23,6 +22,7 @@ import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, success, warn } from '../utils/logger.js';
 import { executableExists } from '../utils/process.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
+import { inspectEngineWorkingTree } from './doctor-working-tree.js';
 
 /**
  * Shared state available to every doctor check during a single run.
@@ -169,10 +169,6 @@ async function executeCheck(
   }
 }
 
-function summarizeWorkingTreeChangeCount(changeCount: number): string {
-  return `Engine working tree has ${changeCount} local change${changeCount === 1 ? '' : 's'}. Some FireForge commands assume a clean baseline and may behave differently until these are exported, discarded, or committed.`;
-}
-
 /**
  * Runs the subset of engine checks that depend on a healthy git repository
  * and HEAD. This group shares mutable state (currentHead, canValidateBranch),
@@ -216,18 +212,9 @@ async function runEngineGitChecks(ctx: DoctorCheckContext): Promise<DoctorCheck[
     }
   }
 
-  const rawStatus = await getWorkingTreeStatus(paths.engine);
-  const workingTreeStatus = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
-  if (workingTreeStatus.length > 0) {
-    rows.push(
-      warning(
-        'Engine working tree',
-        summarizeWorkingTreeChangeCount(workingTreeStatus.length),
-        'Use "fireforge status" to review changes, then export, discard, or reset them as appropriate.'
-      )
-    );
-  } else {
-    rows.push(ok('Engine working tree'));
+  const workingTreeRow = await inspectEngineWorkingTree(ctx);
+  if (workingTreeRow) {
+    rows.push(workingTreeRow);
   }
 
   let branch: string | undefined;
@@ -386,6 +373,11 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
   {
     name: 'Engine is git repository',
     skipIf: (ctx) => !ctx.engineExists,
+    // runEngineGitChecks consults ctx.config for ownership-aware
+    // working-tree classification; declare the dependency so a future
+    // reorder doesn't silently regress the doctor back to the
+    // count-only fallback.
+    dependsOn: ['fireforge.json is valid'],
     run: async (ctx) => {
       const isRepo = await isGitRepository(ctx.paths.engine);
       if (!isRepo) {

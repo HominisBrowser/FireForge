@@ -22,6 +22,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import type { CheckResult, DoctorCheckDefinition } from './doctor.js';
 import { failure, ok, warning } from './doctor.js';
+import { furnaceManifestSyncCheck } from './doctor-furnace-manifest-sync.js';
 
 const ENGINE_REPAIRABLE_OPERATIONS: readonly FurnacePendingRepairOperation[] = [
   'preview-teardown',
@@ -657,4 +658,5 @@ export const FURNACE_DOCTOR_CHECKS: readonly DoctorCheckDefinition[] = [
   furnaceStaleLockCheck,
   furnaceEngineStateCheck,
   furnaceComponentValidationCheck,
+  furnaceManifestSyncCheck,
 ];

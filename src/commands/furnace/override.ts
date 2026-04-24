@@ -125,15 +125,12 @@ async function copyOverrideFiles(
 }
 
 /**
- * Writes override metadata to disk and updates furnace.json with the new override entry.
- * @param projectRoot - Root directory of the project
- * @param destDir - Override component directory
- * @param componentName - Component tag name
- * @param overrideType - Override mode that was created
- * @param description - Human-readable override description
- * @param details - Source component metadata from the engine scan
- * @param firefoxVersion - Firefox version recorded in the workspace config
- * @param config - Mutable Furnace config object to update
+ * Writes override metadata to disk and updates furnace.json with the new
+ * override entry. Re-reads the current on-disk furnace.json inside the
+ * operation lock and splices the new entry onto the fresh state so two
+ * concurrent `furnace override` commands cannot race their read-modify
+ * -write cycles into a single surviving entry (eval 2: parallel overrides
+ * both reported success but furnace.json kept only the second writer).
  */
 async function saveOverrideConfig(
   projectRoot: string,
@@ -143,7 +140,6 @@ async function saveOverrideConfig(
   description: string,
   details: { sourcePath: string },
   firefoxVersion: string,
-  config: Awaited<ReturnType<typeof loadAuthoringFurnaceConfig>>,
   journal: RollbackJournal,
   baseCommit?: string
 ): Promise<void> {
@@ -159,15 +155,28 @@ async function saveOverrideConfig(
   await snapshotFile(journal, overrideJsonPath);
   await writeJson(overrideJsonPath, overrideJson);
 
-  config.overrides[componentName] = {
+  // Re-read the current furnace.json inside the lock. The outer caller
+  // loaded a snapshot before entering `runFurnaceMutation`, but another
+  // furnace mutation (override / init / sync) may have landed in between
+  // — writing back the stale snapshot would drop that concurrent write.
+  const freshConfig = await loadAuthoringFurnaceConfig(projectRoot);
+  freshConfig.overrides[componentName] = {
     type: overrideType,
     description,
     basePath: details.sourcePath,
     baseVersion: firefoxVersion,
     ...(baseCommit ? { baseCommit } : {}),
   };
+  // Promote from the stock bucket here, against the fresh state, so the
+  // stock→override transition survives even when another concurrent
+  // override already rewrote furnace.json between the outer read and
+  // this write.
+  const stockIndex = freshConfig.stock.indexOf(componentName);
+  if (stockIndex !== -1) {
+    freshConfig.stock.splice(stockIndex, 1);
+  }
 
-  await writeFurnaceConfig(projectRoot, config);
+  await writeFurnaceConfig(projectRoot, freshConfig);
 }
 
 /**
@@ -220,7 +229,6 @@ async function performOverrideMutations(args: {
           args.description,
           args.details,
           args.firefoxVersion,
-          args.config,
           journal,
           args.baseCommit
         );

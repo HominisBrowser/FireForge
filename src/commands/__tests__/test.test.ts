@@ -42,6 +42,7 @@ vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   info: vi.fn(),
   outro: vi.fn(),
+  success: vi.fn(),
   warn: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
@@ -92,7 +93,7 @@ import { operatorAlreadySetAppPath, resolveXpcshellAppdirArg } from '../../core/
 import { GeneralError } from '../../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { pathExists } from '../../utils/fs.js';
-import { outro, warn } from '../../utils/logger.js';
+import { outro, success, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 
 describe('testCommand', () => {
@@ -101,7 +102,7 @@ describe('testCommand', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(buildUI).mockResolvedValue(0);
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
   });
 
   it('fails before invoking mach when a requested test path does not exist', async () => {
@@ -139,6 +140,24 @@ describe('testCommand', () => {
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'])
     ).rejects.toThrow(/stale build artifacts/i);
+  });
+
+  it('routes fork-module load failures to the module-registration hint (Eval 1 Finding #14)', async () => {
+    // Both the fork-module signal AND the branding-stale signal fire
+    // because the harness teardown prints a branding warning. The
+    // fork-module diagnosis must win — telling the operator to rebuild
+    // when the module is missing from moz.build sends them in a loop.
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout:
+        'ERROR Error: Failed to load resource:///modules/mybrowser/MybrowserStore.sys.mjs\n' +
+        'No chrome package registered for chrome://branding/locale/brand.properties',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_mybrowser_store.js'])
+    ).rejects.toThrow(/module-registration issue/i);
   });
 
   it('rewrites missing generated branding moz.build failures into the same rebuild hint', async () => {
@@ -202,7 +221,7 @@ describe('testCommand', () => {
   });
 
   it('throws a BuildError when the incremental pre-test build fails', async () => {
-    vi.mocked(buildUI).mockResolvedValue(1);
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
 
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
@@ -285,12 +304,15 @@ describe('testCommand', () => {
     expect(runMarionettePreflight).toHaveBeenCalledWith('/project/engine');
     expect(reportMarionettePreflight).toHaveBeenCalled();
     expect(testWithOutput).not.toHaveBeenCalled();
-    // Finding #14: the doctor-only success path now closes the intro
-    // frame with an outro so the PASS line renders and automation sees
-    // a deterministic "done" marker. Without the outro, clack's
-    // grouped-output mode was dropping the trailing info line in
-    // non-TTY captures.
-    expect(outro).toHaveBeenCalledWith(expect.stringMatching(/Marionette preflight: PASS/));
+    // Finding #14 + eval 2: the doctor-only success path emits the
+    // PASS line through clack's `success` AND closes the intro frame
+    // with `outro('Test completed')` AND writes the summary directly
+    // to stdout. The triple-path emission covers a non-TTY clack
+    // quirk where the trailing info line was occasionally dropped
+    // from captured output, and also gives scripts a deterministic
+    // "done" marker to parse.
+    expect(success).toHaveBeenCalledWith(expect.stringMatching(/Marionette preflight: PASS/));
+    expect(outro).toHaveBeenCalledWith('Test completed');
   });
 
   it('surfaces a FAIL preflight as an actionable error and does not invoke mach test', async () => {

@@ -433,6 +433,8 @@ fireforge patch reorder 003-ui-sidebar.patch --before 001-branding-logo.patch
 fireforge patch compact
 ```
 
+`delete` and `reorder` accept three identifier forms for their target: the ordinal number (`fireforge patch reorder 3 --to 1`), the full filename (`003-ui-sidebar-tweaks.patch`), or the manifest `name` handle the patch was exported with (`ui-sidebar-tweaks`). Anchors passed to `--before` / `--after` accept the same three forms.
+
 All subcommands support `--dry-run` and `--yes`.
 
 ### Additional workflow commands
@@ -556,6 +558,18 @@ Design tokens imported from the fork's palette are enforced by `tokenPrefix`, bu
 - **`furnace.json.runtimeVariables`** — explicit allowlist for names that are _written_ in JS and _read_ in a different file's CSS (cross-component runtime channels that the CSS-only auto-exempt cannot see). Entries must start with `--`.
 
 Both rules compose with the existing `tokenPrefix` / `tokenAllowlist` checks and apply to both component validation and patch-stack lint.
+
+### Platform variables in Furnace (token coverage)
+
+`fireforge token coverage` partitions `var(--…)` usages into three buckets: fork-owned tokens (matching `tokenPrefix`), allowlisted exceptions (explicit `tokenAllowlist` entries, plus platform prefixes), and unknown. Platform prefixes default to `['--moz-']` so upstream Firefox variables in copied baselines (e.g. the CSS that lands under `toolkit/content/widgets/<name>/` after `furnace override <name> -t css-only`) don't drag the fork-owned coverage percentage down.
+
+```json
+{
+  "platformPrefixes": ["--moz-", "--in-content-"]
+}
+```
+
+Set this in `furnace.json` to extend the list (forks with additional platform prefixes) or pass an empty array to restore the pre-0.18 strict contract where `--moz-*` counted as unknown. Allowlisted usages are reported separately and are NOT counted toward the coverage denominator, so a 100% fork-owned project with a copied upstream baseline reads as `100%` instead of `1%`.
 
 ### Test harness options
 

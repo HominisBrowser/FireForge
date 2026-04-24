@@ -57,6 +57,14 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // DoctorCheckDefinition values that doctor.ts splices into its
   // registry; no top-level register* is exported and none is wanted.
   'doctor-furnace.ts',
+  // Orphan-override detection split out of doctor-furnace.ts to keep
+  // that file under the max-lines threshold. Exports a single
+  // `DoctorCheckDefinition` consumed by doctor-furnace.ts.
+  'doctor-furnace-manifest-sync.ts',
+  // Ownership-aware working-tree inspector split out of doctor.ts so
+  // that file stays under max-lines. Exports an async helper that
+  // `doctor.ts` calls from inside its git-checks group.
+  'doctor-working-tree.ts',
   // The --files path for re-export, extracted from re-export.ts to keep
   // it under the max-lines threshold. Consumed by re-export.ts; no
   // top-level registrar.

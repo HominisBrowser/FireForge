@@ -103,6 +103,10 @@ vi.mock('../../core/furnace-registration.js', () => ({
   removeJarMnEntries: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../../core/furnace-apply-ftl.js', () => ({
+  removeCustomFtlJarMnEntry: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(() => Promise.resolve([])),
   unlink: vi.fn(() => Promise.resolve()),
@@ -129,6 +133,7 @@ import { readdir, unlink } from 'node:fs/promises';
 
 import * as clack from '@clack/prompts';
 
+import { removeCustomFtlJarMnEntry } from '../../core/furnace-apply-ftl.js';
 import {
   loadFurnaceConfig,
   loadFurnaceState,
@@ -578,6 +583,46 @@ describe('furnaceRemoveCommand', () => {
     expect(removeFile).toHaveBeenCalledWith(ftlPath);
     expect(info).toHaveBeenCalledWith(
       expect.stringContaining('engine/toolkit/locales/en-US/toolkit/global/moz-audit-widget.ftl')
+    );
+  });
+
+  it('drops the locale jar.mn registration for localized custom components', async () => {
+    // Eval 1 Finding #1: `furnace remove --yes` deleted the .ftl but left
+    // `browser/locales/jar.mn` referencing the now-missing file. Fix plumbs
+    // the existing removeCustomFtlJarMnEntry helper through the remove
+    // pipeline so the locale registration and the file delete travel
+    // together inside the rollback journal.
+    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-audit-widget': {
+          description: 'Audit widget',
+          targetPath: 'toolkit/content/widgets/moz-audit-widget',
+          register: true,
+          localized: true,
+        },
+      },
+    });
+    const ftlPath = '/project/engine/toolkit/locales/en-US/toolkit/global/moz-audit-widget.ftl';
+    vi.mocked(pathExists).mockImplementation((target: string) =>
+      Promise.resolve(
+        target === '/project/components/custom/moz-audit-widget' ||
+          target === '/project/engine/toolkit/content/widgets/moz-audit-widget' ||
+          target === ftlPath
+      )
+    );
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(removeCustomFtlJarMnEntry).toHaveBeenCalledWith(
+      '/project/engine',
+      'moz-audit-widget.ftl',
+      'toolkit/locales/en-US/toolkit/global',
+      expect.objectContaining({ localized: true }),
+      expect.anything()
     );
   });
 

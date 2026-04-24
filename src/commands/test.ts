@@ -24,7 +24,7 @@ import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, outro, spinner, warn } from '../utils/logger.js';
+import { info, intro, outro, spinner, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 
@@ -74,6 +74,39 @@ function hasStaleBuildArtifactsSignal(output: string): boolean {
   return (
     /chrome:\/\/branding\/locale\/brand\.properties/i.test(output) ||
     /browser\/branding\/[^/\s]+\/moz\.build/i.test(output)
+  );
+}
+
+/**
+ * Fork-module-not-registered signal. 2026-04-21 eval Finding #14:
+ * a hominis test failed with `Failed to load resource:///modules/hominis/
+ * HominisStore.sys.mjs`. The branding pattern happened to also match
+ * because the test harness printed a branding warning during its
+ * teardown, and the stale-build branch won by precedence — telling the
+ * operator to rebuild when the real fix is to register the module in
+ * the fork's `browser/modules/<binary>/moz.build`. Match a
+ * `resource:///modules/<binaryName>/` pattern so fork-owned module
+ * failures surface the right diagnosis.
+ */
+function hasForkModuleSignal(output: string, binaryName: string): boolean {
+  const pattern = new RegExp(
+    `Failed to load resource:\\/\\/\\/modules\\/${binaryName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\/`,
+    'i'
+  );
+  return pattern.test(output);
+}
+
+function buildForkModuleMessage(binaryName: string): string {
+  return (
+    `Test failed to load a fork-owned module at resource:///modules/${binaryName}/*.sys.mjs.\n\n` +
+    'This is almost always a module-registration issue, not a stale build. The fork module directory is missing an entry that maps its file into the resource URI tree, so `ChromeUtils.importESModule` cannot resolve it.\n\n' +
+    'Check that:\n' +
+    `  - browser/modules/${binaryName}/moz.build lists the missing module in EXTRA_JS_MODULES.\n` +
+    `  - browser/modules/moz.build references the ${binaryName}/ subdirectory (DIRS += [...]).\n` +
+    '  - The last `fireforge build` (or `fireforge build --ui`) completed successfully against the current manifests. If the registration is new, the UI-faster build path may not pick it up — a full build may be required.\n\n' +
+    'Use `fireforge register browser/modules/' +
+    binaryName +
+    '/<file>.sys.mjs` to add the EXTRA_JS_MODULES entry if it is missing.'
   );
 }
 
@@ -128,12 +161,22 @@ function buildMochitestHttp3ServerMessage(): string {
 function handleNonZeroTestExit(
   result: { stdout: string; stderr: string; exitCode: number },
   normalizedPaths: string[],
-  appdirInjectionAttempted: boolean
+  appdirInjectionAttempted: boolean,
+  binaryName: string
 ): void {
   if (result.exitCode === 0 || result.exitCode === 130) return;
   const combinedOutput = `${result.stdout}\n${result.stderr}`;
   if (/UNKNOWN TEST\b/i.test(combinedOutput)) {
     throw new GeneralError(buildUnknownTestMessage(normalizedPaths));
+  }
+  // Fork-owned module load failures must beat the branding stale-build
+  // branch: 2026-04-21 eval (Finding #14) saw a hominis test fail with
+  // `Failed to load resource:///modules/hominis/HominisStore.sys.mjs`
+  // while the harness teardown printed a branding warning that the old
+  // stale-build pattern matched, so the operator was told to rebuild
+  // when the real fix is to register the missing module.
+  if (hasForkModuleSignal(combinedOutput, binaryName)) {
+    throw new GeneralError(buildForkModuleMessage(binaryName));
   }
   // Branding-specific stale-build signals keep priority over the broader
   // xpcshell-appdir hint: when `chrome://branding/locale/brand.properties`
@@ -215,8 +258,8 @@ export async function testCommand(
   if (options.build) {
     await prepareBuildEnvironment(projectRoot, paths, projectConfig);
     const s = spinner('Running incremental build...');
-    const buildExitCode = await buildUI(paths.engine);
-    if (buildExitCode !== 0) {
+    const buildResult = await buildUI(paths.engine);
+    if (buildResult.exitCode !== 0) {
       s.error('Pre-test build failed');
       throw new BuildError('Pre-test build failed', 'mach build faster');
     }
@@ -259,13 +302,19 @@ export async function testCommand(
       if (!preflight.ok) {
         throw new GeneralError('Marionette preflight reported FAIL — see output above.');
       }
-      // Close the intro frame explicitly. Without an outro, clack's
-      // grouped-output mode left the PASS line hanging inside an
-      // unclosed tree — in the eval's non-TTY capture the info line
-      // itself failed to render, so `test --doctor` looked like it had
-      // exited silently after the spinner start line. The outro also
-      // gives scripts a deterministic "done" marker to parse.
-      outro(`Marionette preflight: PASS (${preflight.durationMs}ms)`);
+      // Belt-and-suspenders: write the PASS footer via `success()`
+      // AND `outro()` AND a direct stdout write. The eval
+      // reproducibly captured the intro + info line but nothing
+      // after the preflight returned, which we believe is a
+      // non-TTY clack rendering quirk that occasionally swallows
+      // the last log line before process exit. `success()` routes
+      // through a different clack entry point than `info()`, and
+      // `process.stdout.write` bypasses clack entirely so the
+      // PASS status is always visible in the captured output.
+      const summary = `Marionette preflight: PASS (${preflight.durationMs}ms)`;
+      success(summary);
+      outro('Test completed');
+      process.stdout.write(`${summary}\n`);
       return;
     }
     if (!preflight.ok) {
@@ -333,7 +382,7 @@ export async function testCommand(
     );
   }
 
-  handleNonZeroTestExit(result, normalizedPaths, appdirInjection);
+  handleNonZeroTestExit(result, normalizedPaths, appdirInjection, projectConfig.binaryName);
 }
 
 /**

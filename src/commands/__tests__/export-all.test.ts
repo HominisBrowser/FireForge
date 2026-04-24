@@ -31,6 +31,9 @@ vi.mock('../../core/git-diff.js', () => ({
 
 vi.mock('../../core/git-status.js', () => ({
   getWorkingTreeStatus: vi.fn().mockResolvedValue([]),
+  expandUntrackedDirectoryEntries: vi.fn((_dir: string, entries: unknown[]) =>
+    Promise.resolve(entries)
+  ),
 }));
 
 vi.mock('../../core/patch-apply.js', () => ({

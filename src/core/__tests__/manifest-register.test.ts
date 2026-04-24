@@ -567,6 +567,25 @@ describe('matchesRegistrablePattern — .inc.xhtml carve-out', () => {
       true
     );
   });
+
+  it('returns false for browser-chrome test files (Eval 2)', () => {
+    // `status --unmanaged` used to flag `browser_<fork>_<case>.js`
+    // under `browser/base/content/test/<dir>/` as "potentially
+    // unregistered", and `register` would then add it to jar.mn as
+    // chrome content — the wrong manifest (the right one is the
+    // sibling browser.toml). The pattern now excludes the test
+    // subtree so these paths fall through to the browser.toml advice
+    // in `getUnregistrableAdvice`.
+    expect(
+      matchesRegistrablePattern(
+        'browser/base/content/test/forgeqa/browser_forgeqa_qa_browser.js',
+        'mybrowser'
+      )
+    ).toBe(false);
+    expect(
+      matchesRegistrablePattern('browser/base/content/test/forgeqa/head.js', 'mybrowser')
+    ).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { hasChanges, isGitRepository } from '../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
-import { getWorkingTreeStatus } from '../core/git-status.js';
+import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { commitExportedPatch, findAllPatchesForFiles } from '../core/patch-export.js';
 import {
@@ -68,7 +68,14 @@ async function resolveFurnaceExclusionPolicy(
   const prefixes = await collectFurnaceManagedPrefixes(projectRoot);
   if (prefixes.size === 0) return new Set();
 
-  const changedFiles = await getWorkingTreeStatus(paths.engine);
+  // Expand collapsed `?? dir/` entries before matching against Furnace
+  // prefixes — otherwise a Furnace-introduced directory slips past the
+  // filter and later lands in the non-Furnace path list that feeds the
+  // aggregate diff, where `getDiffForFilesAgainstHead` crashes with
+  // EISDIR (eval finding: export-all unusable on a fresh project with
+  // Furnace scaffolding).
+  const rawStatus = await getWorkingTreeStatus(paths.engine);
+  const changedFiles = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
   const furnaceManagedFiles = changedFiles
     .flatMap((entry) =>
       [entry.file, entry.originalPath].filter((value): value is string => !!value)
@@ -185,7 +192,8 @@ export async function exportAllCommand(
   // output shape aligned with the single-file `export` command.
   let diff: string;
   if (furnaceExcluded.size > 0) {
-    const allChanged = await getWorkingTreeStatus(paths.engine);
+    const rawChanged = await getWorkingTreeStatus(paths.engine);
+    const allChanged = await expandUntrackedDirectoryEntries(paths.engine, rawChanged);
     const nonFurnacePaths = [
       ...new Set(
         allChanged

@@ -802,4 +802,124 @@ describe('reExportCommand - --scan flag', () => {
       expect(call?.[6]).toBeUndefined();
     });
   });
+
+  describe('--tier and --lint-ignore flags', () => {
+    it('writes tier="branding" into the metadata update when --tier is set', async () => {
+      const patch = makePatch('001-branding-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], { tier: 'branding' });
+
+      expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
+      expect(updates).toMatchObject({ tier: 'branding' });
+    });
+
+    it('passes the new tier through to the lint pass on the same invocation', async () => {
+      // 2026-04-25 finding #2: setting --tier branding must take effect on
+      // the lint pass of the SAME re-export, not just the next one. Without
+      // this pre-emption, an operator running `re-export --tier branding`
+      // on a patch that crosses 15904 lines would still see a
+      // `large-patch-lines` error fire under the general thresholds before
+      // the new tier is even committed.
+      const patch = makePatch('001-branding-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], { tier: 'branding' });
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(1);
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      expect(call?.[6]).toBe('branding');
+    });
+
+    it('appends --lint-ignore values to the existing lintIgnore list (union)', async () => {
+      const patch = makePatch('001-branding-test.patch', ['a.js']);
+      patch.lintIgnore = ['large-patch-lines'];
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {
+        lintIgnore: ['large-patch-files'],
+      });
+
+      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
+      expect(updates?.lintIgnore).toEqual(
+        expect.arrayContaining(['large-patch-lines', 'large-patch-files'])
+      );
+      expect(updates?.lintIgnore).toHaveLength(2);
+    });
+
+    it('de-duplicates --lint-ignore values that are already in the list', async () => {
+      const patch = makePatch('001-branding-test.patch', ['a.js']);
+      patch.lintIgnore = ['large-patch-lines'];
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {
+        lintIgnore: ['large-patch-lines'],
+      });
+
+      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
+      expect(updates?.lintIgnore).toEqual(['large-patch-lines']);
+    });
+
+    it('forwards the merged lintIgnore set to the lint pass on the same invocation', async () => {
+      const patch = makePatch('001-branding-test.patch', ['a.js']);
+      patch.lintIgnore = ['large-patch-lines'];
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {
+        lintIgnore: ['large-patch-files'],
+      });
+
+      const call = vi.mocked(lintExportedPatch).mock.calls[0];
+      const ignoreSet = call?.[5];
+      expect(ignoreSet).toBeInstanceOf(Set);
+      expect(ignoreSet?.has('large-patch-lines')).toBe(true);
+      expect(ignoreSet?.has('large-patch-files')).toBe(true);
+    });
+
+    it('rejects --tier when combined with --all', async () => {
+      const patch1 = makePatch('001-a.patch', ['a.js']);
+      const patch2 = makePatch('002-b.patch', ['b.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+
+      await expect(
+        reExportCommand('/fake/root', [], { all: true, tier: 'branding' })
+      ).rejects.toThrow(/cannot be combined with --all/);
+
+      expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+    });
+
+    it('rejects --lint-ignore when combined with --all', async () => {
+      const patch1 = makePatch('001-a.patch', ['a.js']);
+      const patch2 = makePatch('002-b.patch', ['b.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+
+      await expect(
+        reExportCommand('/fake/root', [], {
+          all: true,
+          lintIgnore: ['large-patch-files'],
+        })
+      ).rejects.toThrow(/cannot be combined with --all/);
+
+      expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+    });
+
+    it('does not include tier or lintIgnore in the metadata update when neither flag is passed', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await reExportCommand('/fake/root', ['001'], {});
+
+      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
+      expect(updates).toBeDefined();
+      expect(updates).not.toHaveProperty('tier');
+      expect(updates).not.toHaveProperty('lintIgnore');
+    });
+  });
 });

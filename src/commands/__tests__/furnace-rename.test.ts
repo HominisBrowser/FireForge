@@ -54,6 +54,8 @@ vi.mock('../../core/furnace-constants.js', () => ({
       .join('')
   ),
   resolveFtlDir: vi.fn(() => 'toolkit/locales/en-US/toolkit/global'),
+  resolveFtlChromeSubPath: vi.fn(() => 'toolkit/global'),
+  resolveFtlLocaleJarMnPath: vi.fn(() => 'toolkit/locales/jar.mn'),
 }));
 
 vi.mock('../../core/furnace-operation.js', () => ({
@@ -74,8 +76,10 @@ vi.mock('../../core/furnace-operation.js', () => ({
 vi.mock('../../core/furnace-registration.js', () => ({
   addCustomElementRegistration: vi.fn(),
   addJarMnEntries: vi.fn(),
+  addLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(1)),
   removeCustomElementRegistration: vi.fn(),
   removeJarMnEntries: vi.fn(),
+  removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../core/furnace-registration-validate.js', () => ({
@@ -113,8 +117,10 @@ import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
 import {
   addCustomElementRegistration,
   addJarMnEntries,
+  addLocaleFtlJarMnEntry,
   removeCustomElementRegistration,
   removeJarMnEntries,
+  removeLocaleFtlJarMnEntry,
 } from '../../core/furnace-registration.js';
 import { restoreRollbackJournalOrThrow, snapshotFile } from '../../core/furnace-rollback.js';
 import { InvalidArgumentError } from '../../errors/base.js';
@@ -578,6 +584,63 @@ describe('furnaceRenameCommand engine registrations', () => {
     expect(ftlWriteCall?.[1]).toBe('sidebar-title = Sidebar\nsidebar-close = Close sidebar');
 
     expect(mockRemoveFile).toHaveBeenCalledWith(oldFtlPath);
+  });
+
+  it('rewires the locale jar.mn chrome registration on localized renames', async () => {
+    // Eval 1 Finding #15: after `furnace rename` on a localized custom
+    // component, the engine's `toolkit/locales/jar.mn` still carried the
+    // old-name FTL registration while the deploy-side rename wrote the
+    // new .ftl file. `furnace validate` passed regardless, hiding the
+    // drift until a later packaging step tripped over the dead entry.
+    mockLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-sidebar': {
+          description: 'Localized sidebar widget',
+          targetPath: 'toolkit/content/widgets/moz-sidebar',
+          register: true,
+          localized: true,
+        },
+      },
+    });
+    const localeJarRel = 'toolkit/locales/jar.mn';
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path.includes('customElements.js')) return Promise.resolve(true);
+      if (path.endsWith('toolkit/content/jar.mn')) return Promise.resolve(true);
+      if (path.endsWith(localeJarRel)) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    expect(vi.mocked(removeLocaleFtlJarMnEntry)).toHaveBeenCalledWith(
+      '/project/engine',
+      localeJarRel,
+      'moz-sidebar',
+      'toolkit/global'
+    );
+    expect(vi.mocked(addLocaleFtlJarMnEntry)).toHaveBeenCalledWith(
+      '/project/engine',
+      localeJarRel,
+      'moz-nav',
+      'toolkit/global'
+    );
+  });
+
+  it('leaves the locale jar.mn alone on non-localized renames', async () => {
+    // Belt check against regressions that would fire the locale jar.mn
+    // re-wire even when the component is not localized — which would
+    // touch a file the apply pipeline never registered.
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    expect(vi.mocked(removeLocaleFtlJarMnEntry)).not.toHaveBeenCalled();
+    expect(vi.mocked(addLocaleFtlJarMnEntry)).not.toHaveBeenCalled();
   });
 });
 

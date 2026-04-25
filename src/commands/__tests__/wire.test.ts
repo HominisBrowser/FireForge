@@ -90,6 +90,29 @@ describe('wireCommand', () => {
     });
   });
 
+  it('warns in dry-run when the subscript file is absent (Eval 2)', async () => {
+    // The "wire first, create file after" workflow is legitimate so
+    // dry-run keeps the plan preview. But pre-fix, a missing subscript
+    // was invisible in the preview and the real run later refused
+    // with `Subscript file not found`. Surface the mismatch as a
+    // notice in the dry-run output so the operator sees it before
+    // re-running without --dry-run.
+    vi.mocked(pathExists).mockImplementation((path: string) => {
+      if (path === '/project/engine/browser/components/custom/ghost.js') {
+        return Promise.resolve(false);
+      }
+      return Promise.resolve(true);
+    });
+
+    await expect(
+      wireCommand('/project', 'ghost', { init: 'Ghost.init()', dryRun: true })
+    ).resolves.toBeUndefined();
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('browser/components/custom/ghost.js does not exist yet')
+    );
+  });
+
   it('shows an accurate dry-run plan using the configured subscript directory', async () => {
     await expect(
       wireCommand('/project', 'panel', {

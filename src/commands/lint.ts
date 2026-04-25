@@ -6,13 +6,15 @@ import { Command } from 'commander';
 
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getStatusWithCodes, hasChanges, isGitRepository } from '../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import {
-  getModifiedFiles,
+  expandUntrackedDirectoryEntries,
   getModifiedFilesInDir,
   getUntrackedFiles,
   getUntrackedFilesInDir,
+  getWorkingTreeStatus,
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import {
@@ -101,7 +103,8 @@ export interface LintCommandOptions {
 async function resolveLintDiff(
   engineDir: string,
   files: string[],
-  binaryName?: string
+  binaryName?: string,
+  furnacePrefixes?: ReadonlySet<string>
 ): Promise<string | null> {
   if (files.length > 0) {
     const collectedFiles = new Set<string>();
@@ -171,23 +174,47 @@ async function resolveLintDiff(
   // survive in the patch queue as-is. The exclusion mirrors the
   // `branding` bucket in `fireforge status` so the two views stay
   // consistent.
+  //
+  // `expandUntrackedDirectoryEntries` promotes collapsed `?? dir/`
+  // status rows to individual file entries before the diff pass.
+  // Without it, a patch that introduces a new directory shows up as
+  // `?? browser/modules/<fork>/` and `getDiffForFilesAgainstHead`
+  // crashed with EISDIR reading the directory as if it were a file
+  // (eval finding: aggregate lint unusable on a real imported queue).
   if (binaryName) {
-    const modified = await getModifiedFiles(engineDir);
-    const untracked = await getUntrackedFiles(engineDir);
-    const allPaths = [...new Set([...modified, ...untracked])];
+    const rawStatus = await getWorkingTreeStatus(engineDir);
+    const expanded = await expandUntrackedDirectoryEntries(engineDir, rawStatus);
+    const allPaths = [...new Set(expanded.map((entry) => entry.file))];
     const nonBrandingPaths = allPaths.filter((path) => !isBrandingManagedPath(path, binaryName));
-    const excludedCount = allPaths.length - nonBrandingPaths.length;
-    if (excludedCount > 0) {
+    const brandingExcluded = allPaths.length - nonBrandingPaths.length;
+    // Drop Furnace-managed paths the same way branding is dropped: their
+    // contents are tool output (overrides, custom widgets, preview-
+    // generated stories) that the operator did not author and never
+    // intended to land on the patch queue. Without this carve-out, a
+    // post-`furnace preview` aggregate `lint` failed with one
+    // `missing-license-header` error per generated story file (eval
+    // Finding 19) — each story is intentionally header-less because it's
+    // re-generated from component metadata on every preview run.
+    const filteredPaths = furnacePrefixes
+      ? nonBrandingPaths.filter((path) => ![...furnacePrefixes].some((p) => path.startsWith(p)))
+      : nonBrandingPaths;
+    const furnaceExcluded = nonBrandingPaths.length - filteredPaths.length;
+    if (brandingExcluded > 0) {
       info(
-        `Excluded ${excludedCount} tool-managed branding file${excludedCount === 1 ? '' : 's'} from lint. Pass the path explicitly or use \`fireforge lint <path>\` to include them.`
+        `Excluded ${brandingExcluded} tool-managed branding file${brandingExcluded === 1 ? '' : 's'} from lint. Pass the path explicitly or use \`fireforge lint <path>\` to include them.`
       );
     }
-    if (nonBrandingPaths.length === 0) {
-      info('No non-branding changes to lint.');
+    if (furnaceExcluded > 0) {
+      info(
+        `Excluded ${furnaceExcluded} Furnace-managed file${furnaceExcluded === 1 ? '' : 's'} from lint (deployed components and preview-generated stories). Pass the path explicitly to include them.`
+      );
+    }
+    if (filteredPaths.length === 0) {
+      info('No non-branding, non-Furnace changes to lint.');
       outro('Nothing to lint');
       return null;
     }
-    const diff = await getDiffForFilesAgainstHead(engineDir, nonBrandingPaths.sort());
+    const diff = await getDiffForFilesAgainstHead(engineDir, filteredPaths.sort());
     if (!diff.trim()) {
       info('No diff content to lint.');
       outro('Nothing to lint');
@@ -267,7 +294,13 @@ export async function lintCommand(
   // the diff was resolved; hoisting it is cheap and keeps the two
   // call sites close together.
   const config = await loadConfig(projectRoot);
-  const diff = await resolveLintDiff(paths.engine, files, config.binaryName);
+  // Pull the Furnace-managed prefix set up-front so aggregate lint can
+  // mirror the branding exclusion for Furnace material — without it,
+  // preview-generated stories under `browser/components/storybook/
+  // stories/furnace/` show up as license-header errors on every
+  // post-preview lint run.
+  const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
+  const diff = await resolveLintDiff(paths.engine, files, config.binaryName, furnacePrefixes);
   if (diff === null) return;
 
   const filesAffected = extractAffectedFiles(diff);
@@ -392,7 +425,21 @@ export async function lintCommand(
     );
   }
 
-  outro('Lint passed with warnings');
+  // Notices are advisory and don't count as warnings — emitting "passed
+  // with warnings" when only notices fired contradicts the preceding
+  // `0 warning(s)` summary line and reads as a regression. Distinguish
+  // the three pass states explicitly. Errors suppressed by
+  // --only-introduced still warrant the "with warnings" outro — they
+  // print as ERROR rows but no longer fail the run, which is the same
+  // contract the operator gets from a real warning.
+  const suppressedErrors = options.onlyIntroduced && errors.length > 0;
+  if (warnings.length > 0 || suppressedErrors) {
+    outro('Lint passed with warnings');
+  } else if (notices.length > 0) {
+    outro('Lint passed with notices');
+  } else {
+    outro('Lint passed');
+  }
 }
 
 /**
@@ -487,7 +534,13 @@ async function lintPerPatch(
     );
   }
 
-  outro('Lint passed with warnings');
+  if (warnings.length > 0) {
+    outro('Lint passed with warnings');
+  } else if (notices.length > 0) {
+    outro('Lint passed with notices');
+  } else {
+    outro('Lint passed');
+  }
 }
 
 /** Registers the lint command on the CLI program. */

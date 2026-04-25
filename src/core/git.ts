@@ -2,7 +2,12 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { GitError, GitIndexLockError, PatchApplyError } from '../errors/git.js';
+import {
+  GitError,
+  GitIndexingTimeoutError,
+  GitIndexLockError,
+  PatchApplyError,
+} from '../errors/git.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
@@ -11,6 +16,7 @@ import {
   configureGitPerformance,
   ensureGit,
   git,
+  GIT_ADD_CHUNK_TIMEOUT_ENV_VAR,
   GIT_ADD_CHUNK_TIMEOUT_MS,
   GIT_ADD_TIMEOUT_MS,
 } from './git-base.js';
@@ -53,11 +59,18 @@ const GIT_ADD_ENV = { GIT_INDEX_THREADS: '0' };
 
 /**
  * Returns true when the error looks like a process killed by the spawn timeout
- * (SIGTERM → exit code 143).
+ * (SIGTERM → exit code 143) OR an AbortError raised by
+ * `AbortSignal.timeout`. The AbortSignal path is the one observed during
+ * the 2026-04-24 eval (Finding 10): Node's `child_process` layer
+ * rejects with an AbortError when the signal fires, so the timeout
+ * detection here needs to recognise that shape too.
  */
 function isTimeoutError(error: unknown): boolean {
+  if (error instanceof Error && error.name === 'AbortError') return true;
   if (!(error instanceof GitError)) return false;
-  return /SIGTERM|timed out|exit code 143/i.test(error.message);
+  if (/SIGTERM|timed out|exit code 143/i.test(error.message)) return true;
+  if (error.cause instanceof Error && error.cause.name === 'AbortError') return true;
+  return false;
 }
 
 /**
@@ -75,6 +88,12 @@ async function cleanupIndexLock(dir: string): Promise<void> {
  * Stages every file by walking top-level directories one at a time.
  * This avoids a single monolithic `git add -A` that may time out on
  * very large (~300 K file) trees like Firefox.
+ *
+ * 2026-04-24 eval Finding 10: a chunked pass that hits its own timeout
+ * now raises a typed {@link GitIndexingTimeoutError} rather than the
+ * opaque `AbortError: The operation was aborted` the caller otherwise
+ * saw. The typed error carries the environment-variable override so the
+ * operator can extend the budget and re-run.
  */
 async function stageAllFilesChunked(
   dir: string,
@@ -86,22 +105,36 @@ async function stageAllFilesChunked(
     .map((e) => e.name)
     .sort();
 
+  async function runChunk(args: string[], label: string): Promise<void> {
+    try {
+      await git(args, dir, {
+        timeout: GIT_ADD_CHUNK_TIMEOUT_MS,
+        env: GIT_ADD_ENV,
+      });
+    } catch (error: unknown) {
+      if (isTimeoutError(error)) {
+        throw new GitIndexingTimeoutError(
+          'chunked',
+          GIT_ADD_CHUNK_TIMEOUT_MS,
+          GIT_ADD_CHUNK_TIMEOUT_ENV_VAR,
+          error instanceof Error ? error : undefined
+        );
+      }
+      verbose(`Chunked staging failed on ${label}: ${toError(error).message}`);
+      throw error;
+    }
+  }
+
   for (const dirName of directories) {
     options.onProgress?.(`Staging directory: ${dirName}/...`);
-    await git(['add', '--', dirName], dir, {
-      timeout: GIT_ADD_CHUNK_TIMEOUT_MS,
-      env: GIT_ADD_ENV,
-    });
+    await runChunk(['add', '--', dirName], dirName);
   }
 
   // Stage any top-level files
   const topLevelFiles = entries.filter((e) => e.isFile()).map((e) => e.name);
   if (topLevelFiles.length > 0) {
     options.onProgress?.('Staging top-level files...');
-    await git(['add', '--', ...topLevelFiles], dir, {
-      timeout: GIT_ADD_CHUNK_TIMEOUT_MS,
-      env: GIT_ADD_ENV,
-    });
+    await runChunk(['add', '--', ...topLevelFiles], 'top-level files');
   }
 }
 
@@ -149,13 +182,27 @@ export async function stageAllFiles(
       if (!isTimeoutError(error)) {
         throw await maybeWrapIndexLockError(dir, error);
       }
-      options.onProgress?.('Monolithic git add timed out; falling back to chunked staging...');
+      // 2026-04-24 eval Finding 10: the fallback transition used to be
+      // an implementation detail invisible to operators watching the
+      // spinner. Emit a loud, one-line banner so non-TTY log scrapers
+      // and TTY operators both see that the monolithic attempt lost and
+      // the chunked pass is starting. This was the missing signal in
+      // the eval log where the heartbeat went quiet for ~600s between
+      // the monolithic timeout and the chunked-pass failure.
+      options.onProgress?.(
+        `Monolithic git add reached the ${Math.round(timeout / 1000)}s timeout; falling back to chunked staging. This pass may take several more minutes on a large tree.`
+      );
     }
 
     // The killed process may have left an index lock
     await cleanupIndexLock(dir);
 
-    await stageAllFilesChunked(dir, options);
+    try {
+      await stageAllFilesChunked(dir, options);
+    } catch (error: unknown) {
+      if (error instanceof GitIndexingTimeoutError) throw error;
+      throw error;
+    }
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
   }

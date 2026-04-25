@@ -94,19 +94,58 @@ async function printUnregisteredWarnings(
   if (newFiles.length === 0) return;
 
   const registrableFiles = newFiles.filter((f) => matchesRegistrablePattern(f.file, binaryName));
+  // `isFileRegistered` throws `GeneralError("Manifest not found: ...")` when a
+  // rule sees a file whose parent manifest does not yet exist on disk — e.g.
+  // a brand-new `browser/modules/<binary>/` directory with no `moz.build`.
+  // `status` is a read-only reporter; before 0.18.1 the rejected promise
+  // bubbled through `Promise.all` and exited status with code 1, breaking the
+  // "use status --unmanaged to discover new files before running register"
+  // workflow. We now bucket missing-manifest cases into a distinct warning
+  // list while still surfacing the same actionable signal. Other error
+  // shapes continue to propagate (permission denied, corrupt file, etc.) so
+  // we do not silently hide anything surprising.
   const registrationChecks = await Promise.all(
-    registrableFiles.map(async (f) => ({
-      file: f.file,
-      registered: await isFileRegistered(projectRoot, f.file),
-    }))
+    registrableFiles.map(async (f) => {
+      try {
+        return {
+          file: f.file,
+          registered: await isFileRegistered(projectRoot, f.file),
+          manifestMissing: false as const,
+          manifestMissingMessage: undefined as string | undefined,
+        };
+      } catch (err: unknown) {
+        if (err instanceof GeneralError && /^Manifest not found:/i.test(err.message)) {
+          return {
+            file: f.file,
+            registered: false,
+            manifestMissing: true as const,
+            manifestMissingMessage: err.message,
+          };
+        }
+        throw err;
+      }
+    })
   );
-  const unregistered = registrationChecks.filter((f) => !f.registered);
+  const unregistered = registrationChecks.filter((f) => !f.registered && !f.manifestMissing);
+  const manifestMissing = registrationChecks.filter((f) => f.manifestMissing);
 
   if (unregistered.length > 0) {
     info('');
     warn('Potentially unregistered files:');
     for (const f of unregistered) {
       info(`  ${f.file} — run 'fireforge register ${f.file}'`);
+    }
+  }
+
+  if (manifestMissing.length > 0) {
+    info('');
+    warn('Files whose registration manifest does not exist yet:');
+    for (const f of manifestMissing) {
+      // `manifestMissingMessage` is always the specific
+      // "Manifest not found: <path>" string when manifestMissing is
+      // true (see the catch branch above that sets them together).
+      info(`  ${f.file} — ${f.manifestMissingMessage}`);
+      info(`    Create the parent manifest, then run 'fireforge register ${f.file}'.`);
     }
   }
 }
@@ -298,6 +337,16 @@ async function assertEngineHasBaselineCommit(
       warn(guidance);
       outro('Engine baseline missing — re-run download --force');
     }
+    if (options.json) {
+      // Mirror `--json`'s contract: errors must be machine-parseable too.
+      // Without this branch the human guidance above is suppressed but the
+      // throw still falls through to the styled error renderer in
+      // withErrorHandling, leaving JSON consumers with non-JSON output on
+      // exactly the failure mode they care about catching.
+      process.stdout.write(
+        JSON.stringify({ error: guidance, code: 'engine-baseline-missing' }) + '\n'
+      );
+    }
     throw new GeneralError(guidance);
   }
 }
@@ -326,6 +375,20 @@ export async function statusCommand(
 
   const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
+
+  // `--json` mode contracts to machine-parseable output on every code path,
+  // including failure modes. Before this guard, errors raised below
+  // ("Firefox source not found", "engine is not a git repository") flowed
+  // through the normal styled error renderer in `withErrorHandling`, so
+  // scripts piping `status --json | jq` broke precisely when the engine was
+  // missing. Surface a structured `{ "error": ..., "code": ... }` payload
+  // and exit non-zero via GeneralError so the exit code still reflects the
+  // failure but stdout remains valid JSON. The same guard runs for
+  // ownership mode below because that path also throws on missing engine.
+  const emitJsonError = (code: string, message: string): never => {
+    process.stdout.write(JSON.stringify({ error: message, code }) + '\n');
+    throw new GeneralError(message);
+  };
 
   // Ownership mode is a flat file→patch table; sources are the manifest's
   // filesAffected, any worktree drift, and the cross-patch
@@ -385,11 +448,20 @@ export async function statusCommand(
 
   // Check if engine exists
   if (!(await pathExists(paths.engine))) {
+    if (options.json) {
+      emitJsonError('engine-missing', 'Firefox source not found. Run "fireforge download" first.');
+    }
     throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
   }
 
   // Check if it's a git repository
   if (!(await isGitRepository(paths.engine))) {
+    if (options.json) {
+      emitJsonError(
+        'engine-not-git',
+        'Engine directory is not a git repository. Run "fireforge download" to initialize.'
+      );
+    }
     throw new GeneralError(
       'Engine directory is not a git repository. Run "fireforge download" to initialize.'
     );

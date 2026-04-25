@@ -23,6 +23,109 @@ import { info, outro, success, warn } from '../utils/logger.js';
 import { runPatchLint } from './export-shared.js';
 
 /**
+ * Computes the effective `tier` and `lintIgnore` carrying both the
+ * patch's existing values and the CLI flag overrides. Pure helper —
+ * extracted from {@link reExportFilesInPlace} both to share with the
+ * standard re-export path conceptually and to keep the orchestrator
+ * function under the per-file LOC budget.
+ *
+ * Tier resolution: the CLI flag takes precedence; the patch's existing
+ * tier is the fallback. Lint-ignore resolution: union of the patch's
+ * existing list and the CLI flag values, de-duplicated; an empty
+ * result returns `undefined` so the caller can drop the field rather
+ * than write an empty array.
+ */
+function resolveEffectiveTierAndLintIgnore(
+  target: PatchMetadata,
+  options: ReExportOptions
+): {
+  effectiveTier: 'branding' | undefined;
+  effectiveLintIgnore: string[] | undefined;
+  flagIgnoreSet: Set<string>;
+} {
+  const existingIgnoreSet = new Set<string>(target.lintIgnore ?? []);
+  const flagIgnoreSet = new Set<string>(options.lintIgnore ?? []);
+  const mergedIgnoreSet = new Set<string>([...existingIgnoreSet, ...flagIgnoreSet]);
+  const effectiveLintIgnore = mergedIgnoreSet.size > 0 ? [...mergedIgnoreSet] : undefined;
+  const effectiveTier = options.tier ?? target.tier;
+  return { effectiveTier, effectiveLintIgnore, flagIgnoreSet };
+}
+
+/**
+ * Projects the cross-patch context (replace the target entry with its
+ * shrunken self), runs the patch-queue lint against the projection,
+ * and returns a conflict report only for regressions introduced *by*
+ * this shrink. Pre-existing cross-patch errors are surfaced as a
+ * non-blocking warning so the user does not walk away thinking the
+ * queue is clean. Extracted from {@link reExportFilesInPlace} to keep
+ * the orchestrator function under the per-file LOC budget.
+ */
+async function runProjectedCrossPatchLint(
+  patchesDir: string,
+  targetFilename: string,
+  projectedDiff: string
+): Promise<ConflictReport | null> {
+  const baseCtx = await buildPatchQueueContext(patchesDir);
+  const projectedNewFiles = new Map<string, string>();
+  for (const path of detectNewFilesInDiff(projectedDiff)) {
+    projectedNewFiles.set(path, extractNewFileContentFromDiff(projectedDiff, path));
+  }
+  const projectedModifiedFileAdditions = buildModifiedFileAdditionsFromDiff(projectedDiff);
+  const projectedEntries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
+    if (entry.filename !== targetFilename) return entry;
+    return {
+      ...entry,
+      diff: projectedDiff,
+      newFiles: projectedNewFiles,
+      modifiedFileAdditions: projectedModifiedFileAdditions,
+    };
+  });
+
+  const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
+  const projectedIssues = lintPatchQueue({ entries: projectedEntries }).filter(
+    (i) => i.severity === 'error'
+  );
+  const regressions = computeProjectedLintRegressions(baselineIssues, projectedIssues);
+
+  if (baselineIssues.length > 0 && regressions.length === 0) {
+    warn(
+      `Note: projected queue still has ${baselineIssues.length} pre-existing ` +
+        `cross-patch error(s) unrelated to this shrink. Run "fireforge verify" to list them.`
+    );
+  }
+
+  if (regressions.length === 0) return null;
+  return {
+    reason: `projected --files state introduces ${regressions.length} new cross-patch lint error(s)`,
+    details: regressions.map((i) => `[${i.check}] ${i.file}: ${i.message}`),
+  };
+}
+
+/**
+ * Builds the `Partial<PatchMetadata>` payload for the `--files` write,
+ * folding in the CLI flag overrides for `tier` and `lintIgnore` only
+ * when the operator actually asked for them. Extracted to keep
+ * {@link reExportFilesInPlace} under the per-file LOC budget.
+ */
+function buildFilesModeMetadataUpdates(
+  actualProjectedFiles: string[],
+  options: ReExportOptions,
+  effectiveLintIgnore: string[] | undefined,
+  flagIgnoreSet: Set<string>
+): Partial<PatchMetadata> {
+  const updates: Partial<PatchMetadata> = {
+    filesAffected: actualProjectedFiles,
+  };
+  if (options.tier !== undefined) {
+    updates.tier = options.tier;
+  }
+  if (effectiveLintIgnore !== undefined && flagIgnoreSet.size > 0) {
+    updates.lintIgnore = effectiveLintIgnore;
+  }
+  return updates;
+}
+
+/**
  * Handles `re-export --files` end-to-end: computes the projected diff,
  * runs the per-patch and cross-patch lint against a context in which the
  * target patch has been replaced with the projected state, gates on
@@ -106,7 +209,15 @@ export async function reExportFilesInPlace(
   // have to choose between `--skip-lint` (blunt) and the full rebase path.
   // `target.tier` threads the explicit branding-threshold opt-in for
   // the branding patch that also touches a non-allowlisted sibling.
-  const ignoreChecks = target.lintIgnore?.length ? new Set<string>(target.lintIgnore) : undefined;
+  // CLI flags `--tier` and `--lint-ignore` participate too, with
+  // append/union semantics on the lint-ignore list (matching the
+  // standard re-export path).
+  const { effectiveTier, effectiveLintIgnore, flagIgnoreSet } = resolveEffectiveTierAndLintIgnore(
+    target,
+    options
+  );
+  const ignoreChecks = effectiveLintIgnore ? new Set<string>(effectiveLintIgnore) : undefined;
+
   await runPatchLint(
     paths.engine,
     actualProjectedFiles,
@@ -115,57 +226,10 @@ export async function reExportFilesInPlace(
     options.skipLint,
     undefined,
     ignoreChecks,
-    target.tier
+    effectiveTier
   );
 
-  // Project the cross-patch context: replace the target entry with its
-  // would-be shrunken self (new diff + new newFiles + new
-  // modifiedFileAdditions). The projected entry must repopulate both
-  // source-site maps so the forward-import rule sees imports the
-  // shrunken diff would add — or stop adding — consistently with how a
-  // real rebuild would see them.
-  const baseCtx = await buildPatchQueueContext(paths.patches);
-  const projectedNewFiles = new Map<string, string>();
-  for (const path of detectNewFilesInDiff(projectedDiff)) {
-    projectedNewFiles.set(path, extractNewFileContentFromDiff(projectedDiff, path));
-  }
-  const projectedModifiedFileAdditions = buildModifiedFileAdditionsFromDiff(projectedDiff);
-  const projectedEntries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
-    if (entry.filename !== target.filename) return entry;
-    return {
-      ...entry,
-      diff: projectedDiff,
-      newFiles: projectedNewFiles,
-      modifiedFileAdditions: projectedModifiedFileAdditions,
-    };
-  });
-
-  // Baseline-vs-projected diffing: only regressions introduced *by* this
-  // shrink should block. A pre-existing cross-patch error elsewhere in
-  // the queue must not prevent the user from shrinking an unrelated
-  // patch (which is often exactly the tool they reach for to repair
-  // such a queue).
-  const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
-  const projectedIssues = lintPatchQueue({ entries: projectedEntries }).filter(
-    (i) => i.severity === 'error'
-  );
-  const regressions = computeProjectedLintRegressions(baselineIssues, projectedIssues);
-  const conflicts: ConflictReport | null =
-    regressions.length > 0
-      ? {
-          reason: `projected --files state introduces ${regressions.length} new cross-patch lint error(s)`,
-          details: regressions.map((i) => `[${i.check}] ${i.file}: ${i.message}`),
-        }
-      : null;
-
-  // Surface pre-existing errors as a non-blocking warning so the user
-  // doesn't walk away thinking the queue is clean.
-  if (baselineIssues.length > 0 && regressions.length === 0) {
-    warn(
-      `Note: projected queue still has ${baselineIssues.length} pre-existing ` +
-        `cross-patch error(s) unrelated to this shrink. Run "fireforge verify" to list them.`
-    );
-  }
+  const conflicts = await runProjectedCrossPatchLint(paths.patches, target.filename, projectedDiff);
 
   // Shrinks are destructive (previously-owned files become unmanaged).
   // Additive-only changes still deserve a prompt because --files asserts
@@ -212,11 +276,17 @@ export async function reExportFilesInPlace(
   // directory lock as the mutation (via the onCommitted hook) so two
   // concurrent re-exports cannot interleave records and a crash between
   // mutation and append cannot orphan the audit trail.
+  const filesUpdates = buildFilesModeMetadataUpdates(
+    actualProjectedFiles,
+    options,
+    effectiveLintIgnore,
+    flagIgnoreSet
+  );
   await updatePatchAndMetadata(
     paths.patches,
     target.filename,
     projectedDiff,
-    { filesAffected: actualProjectedFiles },
+    filesUpdates,
     async () => {
       await appendHistory(paths.patches, {
         operation: 're-export-files',

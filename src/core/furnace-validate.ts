@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { ComponentType, FurnaceConfig, ValidationIssue } from '../types/furnace.js';
 import { pathExists } from '../utils/fs.js';
-import { loadConfig } from './config.js';
+import { getProjectPaths, loadConfig } from './config.js';
 import { getFurnacePaths, loadFurnaceConfig } from './furnace-config.js';
+import { xpcshellTestParentDir } from './furnace-constants.js';
 import { detectComposesCycles, validateComposesReferences } from './furnace-graph-utils.js';
 import {
   validateAccessibility,
@@ -221,5 +223,74 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
     results.set(issue.component, existing);
   }
 
+  // 2026-04-24 eval Finding 5: orphan xpcshell scaffold detection.
+  // `furnace create --with-tests --xpcshell` scaffolds a test directory
+  // at `browser/base/content/test/<binary>-xpcshell/<name>/`, and prior
+  // `furnace remove` + `furnace rename` flows did not touch that tree.
+  // A leftover scaffold whose `<name>` is not in furnace.json is almost
+  // always the aftermath of one of those incomplete flows; flag it as
+  // an `orphan-xpcshell-scaffold` error so operators know to delete or
+  // re-create the scaffold instead of discovering the mismatch only at
+  // test run time. Missing engine or missing scaffold parent directory
+  // both degrade silently — this check never introduces noise on a
+  // project that never used xpcshell scaffolding.
+  try {
+    const orphanIssues = await findOrphanXpcshellScaffolds(root, config);
+    for (const issue of orphanIssues) {
+      const existing = results.get(issue.component) ?? [];
+      existing.push(issue);
+      results.set(issue.component, existing);
+    }
+  } catch {
+    // Validation degrades gracefully — the absence of an engine
+    // directory, permission denial reading the scaffold tree, or any
+    // other transient fs issue should never cascade into false
+    // "orphan" reports.
+  }
+
   return results;
+}
+
+/**
+ * Scans the per-binary xpcshell scaffold directory for entries whose
+ * component name is not present in furnace.json, and returns an
+ * `orphan-xpcshell-scaffold` issue for each one.
+ */
+async function findOrphanXpcshellScaffolds(
+  root: string,
+  config: FurnaceConfig
+): Promise<ValidationIssue[]> {
+  const forgeConfig = await loadConfig(root);
+  const paths = getProjectPaths(root);
+  const parentRel = xpcshellTestParentDir(forgeConfig.binaryName);
+  const parentAbs = join(paths.engine, parentRel);
+  if (!(await pathExists(parentAbs))) return [];
+
+  let entries: string[];
+  try {
+    const dirents = await readdir(parentAbs, { withFileTypes: true });
+    entries = dirents.filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    return [];
+  }
+
+  const known = new Set<string>([
+    ...Object.keys(config.custom),
+    ...Object.keys(config.overrides),
+    ...config.stock,
+  ]);
+
+  const issues: ValidationIssue[] = [];
+  for (const entry of entries) {
+    if (known.has(entry)) continue;
+    issues.push({
+      component: entry,
+      severity: 'error',
+      check: 'orphan-xpcshell-scaffold',
+      message:
+        `Stale xpcshell test scaffold at ${parentRel}/${entry}/ — no matching component is declared in furnace.json. ` +
+        'Delete the scaffold directory manually, or re-run `fireforge furnace create --with-tests --xpcshell` for an existing component with the same name.',
+    });
+  }
+  return issues;
 }

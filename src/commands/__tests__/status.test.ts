@@ -638,6 +638,32 @@ describe('statusCommand', () => {
       expect(infoMessages()).toContain('No unmanaged changes');
       expect(outro).toHaveBeenCalledWith('No unmanaged changes');
     });
+
+    // 2026-04-24 eval Finding 2: a new engine module directory whose parent
+    // `browser/modules/<binary>/moz.build` does not yet exist used to fail
+    // `status --unmanaged` with exit code 1 because `isFileRegistered`
+    // throws `GeneralError("Manifest not found: …")` synchronously and the
+    // `Promise.all` in `printUnregisteredWarnings` re-threw it out of the
+    // command. Status is a read-only reporter; it should surface the
+    // missing-manifest case as a warning line and still exit cleanly so it
+    // remains usable in scripted discovery workflows.
+    it('tolerates a missing parent moz.build when reporting new unmanaged files', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: 'browser/modules/freshforge/FreshQA.sys.mjs' },
+      ]);
+      vi.mocked(matchesRegistrablePattern).mockReturnValue(true);
+      vi.mocked(isFileRegistered).mockRejectedValue(
+        new GeneralError('Manifest not found: browser/modules/freshforge/moz.build')
+      );
+
+      await expect(statusCommand(projectRoot, { unmanaged: true })).resolves.toBeUndefined();
+
+      expect(warnMessages()).toContain('Files whose registration manifest does not exist yet:');
+      const missingLine = infoMessages().find((m) =>
+        m.includes('browser/modules/freshforge/FreshQA.sys.mjs')
+      );
+      expect(missingLine).toBeDefined();
+    });
   });
 
   describe('flag validation', () => {

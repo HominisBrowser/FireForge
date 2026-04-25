@@ -106,6 +106,11 @@ vi.mock('../../core/git.js', () => ({
   isGitRepository: isGitRepositoryMock,
   resetChanges: resetChangesMock,
   hasChanges: hasChangesMock,
+  isMissingHeadError: (err: unknown) =>
+    err instanceof Error &&
+    /(ambiguous argument 'HEAD'|unknown revision or path not in the working tree)/i.test(
+      err.message
+    ),
 }));
 
 vi.mock('../../core/git-diff.js', () => ({
@@ -316,6 +321,43 @@ describe('fireforge rebase', () => {
 
     await rebaseCommand('/project', { dryRun: true });
 
+    expect(resetChangesMock).not.toHaveBeenCalled();
+    expect(saveRebaseSessionMock).not.toHaveBeenCalled();
+  });
+
+  // 2026-04-24 eval Finding 11: after an aborted `download --force`, the
+  // engine's `.git/` exists but has no valid HEAD. `rebase --dry-run` used
+  // to print "Dry run complete" suggesting the rebase was ready to run,
+  // then the real `rebase --yes` failed immediately with
+  // `fatal: ambiguous argument 'HEAD'`. Dry-run now mirrors the real-run
+  // baseline check and refuses with a clear recovery pointer.
+  it('dry-run refuses when engine HEAD is unborn (post-aborted-download baseline)', async () => {
+    hasActiveRebaseSessionMock.mockResolvedValue(false);
+    getHeadMock.mockRejectedValueOnce(
+      new Error(
+        "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree."
+      )
+    );
+
+    await expect(rebaseCommand('/project', { dryRun: true })).rejects.toThrow(
+      /Engine repository has no baseline commit yet/i
+    );
+    expect(loadPatchesManifestMock).not.toHaveBeenCalled();
+    expect(resetChangesMock).not.toHaveBeenCalled();
+    expect(saveRebaseSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('non-dry-run also refuses with the same message when HEAD is unborn', async () => {
+    hasActiveRebaseSessionMock.mockResolvedValue(false);
+    getHeadMock.mockRejectedValueOnce(
+      new Error(
+        "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree."
+      )
+    );
+
+    await expect(rebaseCommand('/project', { yes: true })).rejects.toThrow(
+      /Engine repository has no baseline commit yet/i
+    );
     expect(resetChangesMock).not.toHaveBeenCalled();
     expect(saveRebaseSessionMock).not.toHaveBeenCalled();
   });

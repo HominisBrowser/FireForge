@@ -252,7 +252,7 @@ describe('importCommand drift handling', () => {
       untilFilename: undefined,
     });
     expect(info).toHaveBeenCalledWith(
-      'Patch-backed materialized files already match the stored patch stack.'
+      'Patch-touched files already match the stored patch stack — no engine resync needed before re-applying.'
     );
   });
 

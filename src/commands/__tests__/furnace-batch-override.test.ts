@@ -124,9 +124,30 @@ import { info, isCancel, note, outro, warn } from '../../utils/logger.js';
 import { furnaceBatchOverrideCommand } from '../furnace/override.js';
 
 describe('furnace batch override', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     vi.mocked(pathExists).mockResolvedValue(false);
+    // Reset the per-test furnace-config implementations to their module-
+    // level defaults. One of the promotion tests below installs stateful
+    // mocks (shared sharedState + writeFurnaceConfig implementation) that
+    // would otherwise leak across tests since `clearAllMocks` does not
+    // reset implementations.
+    const {
+      createDefaultFurnaceConfig,
+      furnaceConfigExists,
+      loadFurnaceConfig,
+      writeFurnaceConfig,
+    } = await import('../../core/furnace-config.js');
+    vi.mocked(createDefaultFurnaceConfig).mockReturnValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+    vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+    vi.mocked(loadFurnaceConfig).mockReset();
+    vi.mocked(writeFurnaceConfig).mockResolvedValue(undefined);
   });
 
   it('rejects batch without --type', async () => {
@@ -187,13 +208,31 @@ describe('furnace batch override', () => {
       if (probedPath.includes('components/overrides/')) return Promise.resolve(false);
       return Promise.resolve(true);
     });
-    const { createDefaultFurnaceConfig } = await import('../../core/furnace-config.js');
-    vi.mocked(createDefaultFurnaceConfig).mockReturnValueOnce({
-      version: 1,
+    // Post-0.17 `saveOverrideConfig` re-reads fresh furnace state
+    // inside the operation lock to survive concurrent-writer races
+    // (eval 2). The test therefore has to persist each write so the
+    // next re-read sees the prior write instead of resetting to the
+    // empty default. `sharedState` replays the mutations between
+    // loader calls in the same way the filesystem would.
+    const { createDefaultFurnaceConfig, furnaceConfigExists, loadFurnaceConfig } =
+      await import('../../core/furnace-config.js');
+    let sharedState = {
+      version: 1 as const,
       componentPrefix: 'moz-',
       stock: ['moz-button', 'moz-card'],
       overrides: {},
       custom: {},
+    };
+    vi.mocked(createDefaultFurnaceConfig).mockImplementation(
+      () => JSON.parse(JSON.stringify(sharedState)) as typeof sharedState
+    );
+    vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+    vi.mocked(loadFurnaceConfig).mockImplementation(() =>
+      Promise.resolve(JSON.parse(JSON.stringify(sharedState)) as typeof sharedState)
+    );
+    vi.mocked(writeFurnaceConfig).mockImplementation((_root: string, nextConfig: unknown) => {
+      sharedState = JSON.parse(JSON.stringify(nextConfig)) as typeof sharedState;
+      return Promise.resolve();
     });
 
     await expect(

@@ -3,7 +3,8 @@ import { join } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
-import { getStatusWithCodes, isGitRepository } from '../core/git.js';
+import { isGitRepository } from '../core/git.js';
+import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { measureTokenCoverage } from '../core/token-coverage.js';
 import { getTokensCssPath } from '../core/token-manager.js';
 import { GeneralError } from '../errors/base.js';
@@ -32,8 +33,14 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
   const config = await loadConfig(projectRoot);
   const tokensCssPath = getTokensCssPath(config.binaryName);
 
-  const files = await getStatusWithCodes(paths.engine);
-  const statusCssFiles = files
+  // Expand collapsed `?? dir/` untracked entries so untracked CSS files
+  // inside a new patch-added directory are included in coverage. Before
+  // this, an imported fork that added a new CSS tree saw "No modified
+  // CSS files" because `git status --porcelain` collapsed the directory
+  // and the file-extension filter could not see the .css inside.
+  const rawStatus = await getWorkingTreeStatus(paths.engine);
+  const expandedStatus = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
+  const statusCssFiles = expandedStatus
     .filter((f) => f.file.endsWith('.css') && f.file !== tokensCssPath)
     .map((f) => f.file);
 

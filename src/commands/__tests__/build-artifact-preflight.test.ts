@@ -69,7 +69,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/process.js', () => ({
+  // `watch` uses `findExecutable` to resolve watchman's absolute path
+  // so it can prepend the directory to the mach subprocess PATH
+  // (2026-04-24 eval Finding 12). Other callers still use
+  // `executableExists` for a simple "is it available" probe.
   executableExists: vi.fn(() => Promise.resolve(true)),
+  findExecutable: vi.fn(() => Promise.resolve('/opt/homebrew/bin/watchman')),
   exec: vi.fn(() => Promise.resolve({ stdout: '2024.01.15.00\n', stderr: '', exitCode: 0 })),
 }));
 
@@ -98,7 +103,7 @@ import {
   hasBuildArtifacts,
   watchWithOutput,
 } from '../../core/mach.js';
-import { executableExists } from '../../utils/process.js';
+import { executableExists, findExecutable } from '../../utils/process.js';
 import { buildCommand } from '../build.js';
 import { packageCommand } from '../package.js';
 import { testCommand } from '../test.js';
@@ -114,6 +119,7 @@ describe('build artifact preflight', () => {
     });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
     vi.mocked(executableExists).mockResolvedValue(true);
+    vi.mocked(findExecutable).mockResolvedValue('/opt/homebrew/bin/watchman');
     vi.mocked(watchWithOutput).mockResolvedValue({ stdout: '', stderr: '', exitCode: 130 });
   });
 
@@ -128,7 +134,7 @@ describe('build artifact preflight', () => {
   });
 
   it('watchCommand fails early when watchman is not installed', async () => {
-    vi.mocked(executableExists).mockResolvedValue(false);
+    vi.mocked(findExecutable).mockResolvedValue(undefined);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
 
     await expect(watchCommand('/project')).rejects.toThrow(/requires watchman/i);

@@ -154,8 +154,16 @@ export async function registerSharedCSS(
 
   const content = await readText(manifestPath);
 
-  // Idempotency check
-  if (content.includes(`skin/classic/browser/${name}.css`)) {
+  // Idempotency check. `furnace chrome-doc create` writes its CSS as a
+  // `content/browser/<name>.css` entry rather than the canonical
+  // `skin/classic/browser/<name>.css` form `register` produces; recognise
+  // both shapes so a follow-up `register` invocation against an
+  // already-chrome-doc-registered file reports `skipped` instead of
+  // appending a duplicate `skin/classic/browser/...` row.
+  if (
+    content.includes(`skin/classic/browser/${name}.css`) ||
+    content.includes(`content/browser/${name}.css`)
+  ) {
     return { manifest, entry, skipped: true };
   }
 

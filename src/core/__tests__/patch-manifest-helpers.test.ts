@@ -10,12 +10,14 @@ vi.mock('../git-file-ops.js', () => ({
 }));
 
 import { writeFiles } from '../../test-utils/index.js';
+import type { PatchMetadata } from '../../types/commands/index.js';
 import { fileExistsInHead } from '../git-file-ops.js';
 import {
   addPatchToManifest,
   checkVersionCompatibility,
   findPatchesAffectingFile,
   loadPatchesManifest,
+  resolvePatchIdentifier,
   validatePatchIntegrity,
 } from '../patch-manifest.js';
 
@@ -238,5 +240,61 @@ describe('patch manifest helper coverage', () => {
       '001-ui-first.patch:first-new',
       '002-ui-second.patch:second',
     ]);
+  });
+});
+
+describe('resolvePatchIdentifier', () => {
+  const fixturePatches: PatchMetadata[] = [
+    {
+      filename: '001-infra-bindgen-basic-string-workaround.patch',
+      order: 1,
+      category: 'infra',
+      name: 'bindgen-basic-string-workaround',
+      description: 'bindgen workaround',
+      createdAt: '2026-04-21T00:00:00.000Z',
+      sourceEsrVersion: '140.9.0esr',
+      filesAffected: ['tools/profiler/rust-api/build.rs'],
+    },
+    {
+      filename: '002-ui-eval-furnace-token-override.patch',
+      order: 2,
+      category: 'ui',
+      name: 'eval-furnace-token-override',
+      description: 'Furnace CSS override',
+      createdAt: '2026-04-21T00:00:00.000Z',
+      sourceEsrVersion: '140.9.0esr',
+      filesAffected: ['toolkit/content/widgets/moz-button/moz-button.css'],
+    },
+  ];
+
+  it('resolves by ordinal number', () => {
+    expect(resolvePatchIdentifier('2', fixturePatches)).toMatchObject({
+      filename: '002-ui-eval-furnace-token-override.patch',
+    });
+  });
+
+  it('resolves by full filename with .patch suffix', () => {
+    expect(
+      resolvePatchIdentifier('002-ui-eval-furnace-token-override.patch', fixturePatches)
+    ).toMatchObject({ name: 'eval-furnace-token-override' });
+  });
+
+  it('resolves by filename without the .patch suffix', () => {
+    expect(
+      resolvePatchIdentifier('002-ui-eval-furnace-token-override', fixturePatches)
+    ).toMatchObject({ name: 'eval-furnace-token-override' });
+  });
+
+  it('resolves by manifest `name` field (Eval 1 Finding #6)', () => {
+    // The eval showed `patch reorder eval-furnace-token-override` being
+    // rejected because the resolver only knew filenames. Accepting the
+    // `name` handle matches the CLI help and `patches.json` schema.
+    expect(resolvePatchIdentifier('eval-furnace-token-override', fixturePatches)).toMatchObject({
+      filename: '002-ui-eval-furnace-token-override.patch',
+    });
+  });
+
+  it('returns null for an unknown identifier', () => {
+    expect(resolvePatchIdentifier('does-not-exist', fixturePatches)).toBeNull();
   });
 });

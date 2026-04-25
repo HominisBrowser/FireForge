@@ -27,12 +27,21 @@ import {
 } from './wire-utils.js';
 
 const BROWSER_MAIN_JS = 'browser/base/content/browser-main.js';
+const DEFAULT_MARKER = 'FIREFORGE:';
 
 /**
  * AST-based implementation: finds the last try/catch containing
  * `loadSubScript` and inserts a new try/catch block after it.
+ *
+ * The inserted block carries a `// <MARKER>: wire-subscript ...` comment
+ * so the emitted edit satisfies `lintModificationComments` (eval 1
+ * Finding #9).
  */
-export function addSubscriptAST(content: string, name: string): string {
+export function addSubscriptAST(
+  content: string,
+  name: string,
+  marker: string = DEFAULT_MARKER
+): string {
   const ast = parseScript(content);
   const ms = new MagicString(content);
 
@@ -78,6 +87,7 @@ export function addSubscriptAST(content: string, name: string): string {
   }
 
   const block = [
+    `${indent}// ${marker} wire-subscript ${name}`,
     `${indent}try {`,
     `${indent}  Services.scriptloader.loadSubScript("chrome://browser/content/${name}.js", this);`,
     `${indent}} catch (e) {`,
@@ -92,7 +102,11 @@ export function addSubscriptAST(content: string, name: string): string {
 /**
  * Legacy regex/line-based implementation preserved as fallback.
  */
-export function legacyAddSubscript(content: string, name: string): string {
+export function legacyAddSubscript(
+  content: string,
+  name: string,
+  marker: string = DEFAULT_MARKER
+): string {
   const lines = content.split('\n');
 
   let lastSubScriptLine = -1;
@@ -128,6 +142,7 @@ export function legacyAddSubscript(content: string, name: string): string {
   const inner = ind + '  ';
 
   const block = [
+    `${ind}// ${marker} wire-subscript ${name}`,
     `${ind}try {`,
     `${inner}Services.scriptloader.loadSubScript("chrome://browser/content/${name}.js", this);`,
     `${ind}} catch (e) {`,
@@ -146,7 +161,11 @@ export function legacyAddSubscript(content: string, name: string): string {
  * @param name - Subscript name (without .js extension)
  * @returns true if added, false if already present
  */
-export async function addSubscriptToBrowserMain(engineDir: string, name: string): Promise<boolean> {
+export async function addSubscriptToBrowserMain(
+  engineDir: string,
+  name: string,
+  marker: string = DEFAULT_MARKER
+): Promise<boolean> {
   validateWireName(name, 'subscript name');
   const filePath = join(engineDir, BROWSER_MAIN_JS);
 
@@ -162,8 +181,8 @@ export async function addSubscriptToBrowserMain(engineDir: string, name: string)
   }
 
   const { value, usedFallback } = withParserFallback(
-    () => addSubscriptAST(content, name),
-    () => legacyAddSubscript(content, name),
+    () => addSubscriptAST(content, name, marker),
+    () => legacyAddSubscript(content, name, marker),
     BROWSER_MAIN_JS
   );
 

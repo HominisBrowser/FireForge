@@ -160,4 +160,27 @@ describe('registerCommand', () => {
       '[dry-run] Would register browser/base/content/new-widget.js'
     );
   });
+
+  it('reports idempotency in dry-run mode when the entry is already registered (Eval 1 Finding #8)', async () => {
+    // The eval showed `register --dry-run` planning a registration for
+    // a file that was already registered; the real command then said
+    // "Already registered". Automation that trusted the dry-run was
+    // mis-planning. Dry-run now mirrors the real idempotency outcome.
+    vi.mocked(registerFile).mockResolvedValue({
+      manifest: 'browser/base/jar.mn',
+      entry: 'content/browser/new-widget.js',
+      skipped: true,
+    });
+
+    await expect(
+      registerCommand('/project', 'browser/base/content/new-widget.js', { dryRun: true })
+    ).resolves.toBeUndefined();
+
+    expect(info).toHaveBeenCalledWith(
+      '[dry-run] Already registered: browser/base/content/new-widget.js in browser/base/jar.mn'
+    );
+    expect(info).not.toHaveBeenCalledWith(
+      '[dry-run] Would register browser/base/content/new-widget.js'
+    );
+  });
 });

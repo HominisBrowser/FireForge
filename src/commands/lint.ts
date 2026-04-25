@@ -9,10 +9,11 @@ import { getProjectPaths, loadConfig } from '../core/config.js';
 import { getStatusWithCodes, hasChanges, isGitRepository } from '../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import {
-  getModifiedFiles,
+  expandUntrackedDirectoryEntries,
   getModifiedFilesInDir,
   getUntrackedFiles,
   getUntrackedFilesInDir,
+  getWorkingTreeStatus,
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import {
@@ -171,10 +172,17 @@ async function resolveLintDiff(
   // survive in the patch queue as-is. The exclusion mirrors the
   // `branding` bucket in `fireforge status` so the two views stay
   // consistent.
+  //
+  // `expandUntrackedDirectoryEntries` promotes collapsed `?? dir/`
+  // status rows to individual file entries before the diff pass.
+  // Without it, a patch that introduces a new directory shows up as
+  // `?? browser/modules/<fork>/` and `getDiffForFilesAgainstHead`
+  // crashed with EISDIR reading the directory as if it were a file
+  // (eval finding: aggregate lint unusable on a real imported queue).
   if (binaryName) {
-    const modified = await getModifiedFiles(engineDir);
-    const untracked = await getUntrackedFiles(engineDir);
-    const allPaths = [...new Set([...modified, ...untracked])];
+    const rawStatus = await getWorkingTreeStatus(engineDir);
+    const expanded = await expandUntrackedDirectoryEntries(engineDir, rawStatus);
+    const allPaths = [...new Set(expanded.map((entry) => entry.file))];
     const nonBrandingPaths = allPaths.filter((path) => !isBrandingManagedPath(path, binaryName));
     const excludedCount = allPaths.length - nonBrandingPaths.length;
     if (excludedCount > 0) {

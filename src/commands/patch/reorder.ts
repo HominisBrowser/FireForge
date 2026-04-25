@@ -372,8 +372,13 @@ export async function patchReorderCommand(
 
   const target = resolvePatchIdentifier(identifier, manifest.patches);
   if (!target) {
+    const available = manifest.patches
+      .map((p) =>
+        p.name && p.name !== p.filename ? `${p.filename} (name: ${p.name})` : p.filename
+      )
+      .join(', ');
     throw new InvalidArgumentError(
-      `Patch "${identifier}" not found. Available: ${manifest.patches.map((p) => p.filename).join(', ')}`,
+      `Patch "${identifier}" not found. Accepted identifiers: ordinal (e.g. 2), filename (e.g. 002-ui-foo.patch), or manifest name (e.g. ui-foo). Available: ${available}`,
       identifier
     );
   }

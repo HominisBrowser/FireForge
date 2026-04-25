@@ -3,10 +3,14 @@ import { Command, Option } from 'commander';
 
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
+import {
+  collectFurnaceManagedPrefixes,
+  furnaceConfigExists,
+  loadFurnaceConfig,
+} from '../core/furnace-config.js';
 import { hasChanges, isGitRepository } from '../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
-import { getWorkingTreeStatus } from '../core/git-status.js';
+import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { commitExportedPatch, findAllPatchesForFiles } from '../core/patch-export.js';
 import {
@@ -14,6 +18,7 @@ import {
   collectNewFileCreatorsByPath,
   detectNewFilesInDiff,
 } from '../core/patch-lint.js';
+import { collectPatchRegistrationReferences } from '../core/patch-registration-refs.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions, PatchCategory } from '../types/commands/index.js';
@@ -68,7 +73,14 @@ async function resolveFurnaceExclusionPolicy(
   const prefixes = await collectFurnaceManagedPrefixes(projectRoot);
   if (prefixes.size === 0) return new Set();
 
-  const changedFiles = await getWorkingTreeStatus(paths.engine);
+  // Expand collapsed `?? dir/` entries before matching against Furnace
+  // prefixes — otherwise a Furnace-introduced directory slips past the
+  // filter and later lands in the non-Furnace path list that feeds the
+  // aggregate diff, where `getDiffForFilesAgainstHead` crashes with
+  // EISDIR (eval finding: export-all unusable on a fresh project with
+  // Furnace scaffolding).
+  const rawStatus = await getWorkingTreeStatus(paths.engine);
+  const changedFiles = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
   const furnaceManagedFiles = changedFiles
     .flatMap((entry) =>
       [entry.file, entry.originalPath].filter((value): value is string => !!value)
@@ -86,6 +98,70 @@ async function resolveFurnaceExclusionPolicy(
       'These files are deployed by "fireforge furnace apply" and should be managed through the Furnace workflow. ' +
       'Review them with "fireforge status" or "fireforge furnace status", ' +
       'or pass --exclude-furnace to export the non-Furnace subset of the diff.'
+  );
+}
+
+/**
+ * Refuses the export when the resulting patch would register furnace
+ * component source files it does not itself carry. 2026-04-24 eval
+ * Finding 1: operators running `export-all --exclude-furnace` after
+ * `furnace create --localized --with-tests` ended up with patches that
+ * added `toolkit/content/widgets/moz-qa-panel/*` via jar.mn /
+ * customElements.js / locale jar.mn but excluded the component source
+ * files themselves. The resulting patch queue was structurally broken
+ * and `fireforge verify` stayed silent. We now detect the condition
+ * pre-write and ask the operator to either include the component
+ * sources (skip `--exclude-furnace`) or revert the furnace changes
+ * before exporting.
+ *
+ * The check runs against the synthesised patch body before
+ * `commitExportedPatch` writes anything, so no broken patch is left on
+ * disk when the refusal fires.
+ */
+async function checkDanglingFurnaceRegistrations(
+  projectRoot: string,
+  diff: string,
+  furnaceExcluded: Set<string>
+): Promise<void> {
+  if (furnaceExcluded.size === 0) return;
+  if (!(await furnaceConfigExists(projectRoot))) return;
+
+  const refs = collectPatchRegistrationReferences(diff);
+  if (refs.length === 0) return;
+
+  const config = await loadFurnaceConfig(projectRoot);
+  // Build the set of furnace-managed component names so we can tell
+  // "registers moz-qa-panel (furnace-managed)" apart from "registers
+  // moz-button (an upstream widget this patch legitimately touches)".
+  const furnaceComponentNames = new Set<string>([
+    ...Object.keys(config.custom),
+    ...Object.keys(config.overrides),
+    ...config.stock,
+  ]);
+
+  const dangling: Array<{ component: string; targetPath: string; source: string }> = [];
+  for (const ref of refs) {
+    if (!furnaceExcluded.has(ref.targetPath)) continue;
+    const tagMatch = /toolkit\/content\/widgets\/([a-z][a-z0-9-]*)\//.exec(ref.targetPath);
+    const ftlMatch = /toolkit\/locales\/en-US\/toolkit\/global\/([a-z][a-z0-9-]*)\.ftl$/.exec(
+      ref.targetPath
+    );
+    const component = tagMatch?.[1] ?? ftlMatch?.[1];
+    if (!component || !furnaceComponentNames.has(component)) continue;
+    dangling.push({ component, targetPath: ref.targetPath, source: ref.source });
+  }
+
+  if (dangling.length === 0) return;
+
+  const summary = dangling
+    .map((d) => `  • ${d.component} — registered via ${d.source} → ${d.targetPath}`)
+    .join('\n');
+  throw new GeneralError(
+    'Export-all --exclude-furnace would produce a patch that registers furnace-managed components without including their source files.\n\n' +
+      `Dangling registrations:\n${summary}\n\n` +
+      'To proceed, either:\n' +
+      '  1. Drop the --exclude-furnace flag so the source files are captured alongside the registration edits.\n' +
+      '  2. Revert the registration hunks (or the whole furnace workflow) before re-running export-all — registrations belong with their components, and splitting them across separate patches is what "verify" catches post-hoc as a dangling-registration error.'
   );
 }
 
@@ -185,7 +261,8 @@ export async function exportAllCommand(
   // output shape aligned with the single-file `export` command.
   let diff: string;
   if (furnaceExcluded.size > 0) {
-    const allChanged = await getWorkingTreeStatus(paths.engine);
+    const rawChanged = await getWorkingTreeStatus(paths.engine);
+    const allChanged = await expandUntrackedDirectoryEntries(paths.engine, rawChanged);
     const nonFurnacePaths = [
       ...new Set(
         allChanged
@@ -222,6 +299,12 @@ export async function exportAllCommand(
   // the aggregate would newly create, so it runs here instead of alongside
   // the branding / furnace guards that operate on the raw status list.
   await checkDuplicateNewFileCreations(paths, diff);
+
+  // Dangling-furnace-registration preflight (Finding 1). Runs after the
+  // diff is assembled so we can inspect the exact hunks the operator is
+  // about to land; runs BEFORE any write so a refusal leaves the
+  // patches directory untouched.
+  await checkDanglingFurnaceRegistrations(projectRoot, diff, furnaceExcluded);
 
   // Check for non-interactive mode
   const isInteractive = process.stdin.isTTY && process.stdout.isTTY;

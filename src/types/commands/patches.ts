@@ -91,11 +91,12 @@ export interface PatchMetadata {
    * limit on what is legitimately one branding diff.
    *
    * Declaring `tier: "branding"` here forces the branding thresholds
-   * (notice 3000 / warning 8000 / error 20000) regardless of
-   * `filesAffected`. The tier is the weaker claim than test — a patch
-   * of all-tests still lands in the test tier even if this field is
-   * set, because the test-tier thresholds are already more permissive
-   * and a test that is also branding-shaped is vanishingly rare.
+   * (notice 8000 / warning 18000 / error 30000 lines, ≤60 files)
+   * regardless of `filesAffected`. The tier is the weaker claim than
+   * test — a patch of all-tests still lands in the test tier even if
+   * this field is set, because the test-tier thresholds are already
+   * more permissive and a test that is also branding-shaped is
+   * vanishingly rare.
    *
    * Only `"branding"` is currently recognised. Unknown values are
    * rejected by the manifest validator, not silently stripped.

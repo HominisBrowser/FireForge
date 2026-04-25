@@ -605,6 +605,126 @@ describe('registerExport', () => {
       })
     );
   });
+
+  it('writes tier="branding" into commitExportedPatch input when --tier branding is passed', async () => {
+    const program = createProgram();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'export',
+      'browser/base/content/browser.js',
+      '--name',
+      'tier-export',
+      '--category',
+      'branding',
+      '--tier',
+      'branding',
+    ]);
+
+    expect(commitExportedPatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tier: 'branding',
+      })
+    );
+  });
+
+  it('writes lintIgnore array into commitExportedPatch input when --lint-ignore is passed', async () => {
+    const program = createProgram();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'export',
+      'browser/base/content/browser.js',
+      '--name',
+      'ignore-export',
+      '--category',
+      'ui',
+      '--lint-ignore',
+      'large-patch-files',
+    ]);
+
+    expect(commitExportedPatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lintIgnore: ['large-patch-files'],
+      })
+    );
+  });
+
+  it('accumulates repeated --lint-ignore flags into the same array', async () => {
+    const program = createProgram();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'export',
+      'browser/base/content/browser.js',
+      '--name',
+      'multi-ignore',
+      '--category',
+      'ui',
+      '--lint-ignore',
+      'large-patch-files',
+      '--lint-ignore',
+      'large-patch-lines',
+    ]);
+
+    expect(commitExportedPatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lintIgnore: ['large-patch-files', 'large-patch-lines'],
+      })
+    );
+  });
+
+  it('rejects --tier values other than "branding" at the Commander layer', async () => {
+    const program = createProgram();
+    // Cascade exitOverride to subcommands so Commander throws CommanderError
+    // instead of calling process.exit() when the choices() validation fires.
+    program.exitOverride();
+    for (const cmd of program.commands) {
+      cmd.exitOverride();
+    }
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'test',
+        'export',
+        'browser/base/content/browser.js',
+        '--name',
+        'invalid-tier',
+        '--category',
+        'ui',
+        '--tier',
+        'general',
+      ])
+    ).rejects.toThrow();
+
+    // The handler must NOT have run if the choices guard rejected the
+    // invocation up-front.
+    expect(commitExportedPatch).not.toHaveBeenCalled();
+  });
+
+  it('omits tier and lintIgnore from the commit input when neither flag is passed', async () => {
+    const program = createProgram();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'export',
+      'browser/base/content/browser.js',
+      '--name',
+      'no-flags',
+      '--category',
+      'ui',
+    ]);
+
+    const callArgs = vi.mocked(commitExportedPatch).mock.calls[0]?.[0];
+    expect(callArgs).toBeDefined();
+    expect(callArgs).not.toHaveProperty('tier');
+    expect(callArgs).not.toHaveProperty('lintIgnore');
+  });
 });
 
 describe('exportCommand — engine/ prefix normalization (Finding #4)', () => {

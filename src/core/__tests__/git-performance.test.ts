@@ -91,7 +91,15 @@ describe('stageAllFiles', () => {
 
     // Should have been called: 1 (monolithic fail) + 2 (dirs) + 1 (top-level files) = 4
     expect(execMock.mock.calls.length).toBe(4);
-    expect(progress).toHaveBeenCalledWith(expect.stringContaining('Monolithic git add timed out'));
+    // 2026-04-24 eval Finding 10: the fallback transition banner now
+    // names the elapsed timeout so non-TTY log scrapers can see exactly
+    // why the monolithic attempt lost.
+    expect(progress).toHaveBeenCalledWith(
+      expect.stringMatching(/Monolithic git add reached the \d+s timeout/)
+    );
+    expect(progress).toHaveBeenCalledWith(
+      expect.stringContaining('falling back to chunked staging')
+    );
   });
 
   it('re-throws non-timeout errors', async () => {
@@ -102,6 +110,29 @@ describe('stageAllFiles', () => {
     });
 
     await expect(stageAllFiles('/repo')).rejects.toBeInstanceOf(GitError);
+  });
+
+  // 2026-04-24 eval Finding 10: the chunked fallback used to re-throw
+  // the low-level AbortError when its own timeout fired. Operators saw
+  // a generic "The operation was aborted" with no recovery direction;
+  // the typed error carries the environment-variable override so the
+  // next `download --force` is guided by the error message itself.
+  it('raises GitIndexingTimeoutError when the chunked fallback itself times out', async () => {
+    const { GitIndexingTimeoutError } = await import('../../errors/git.js');
+    // Monolithic SIGTERM timeout → fall through to chunked.
+    execMock.mockResolvedValueOnce({ exitCode: 143, stdout: '', stderr: 'SIGTERM' });
+    pathExistsMock.mockResolvedValue(false);
+    readdirMock.mockResolvedValueOnce([
+      { name: 'browser', isDirectory: () => true, isFile: () => false },
+    ] as never);
+    // Chunked add on `browser/` aborts with a canonical AbortError
+    // (matches what Node's child_process layer raises when
+    // `AbortSignal.timeout` fires).
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    execMock.mockRejectedValueOnce(abortError);
+
+    await expect(stageAllFiles('/repo')).rejects.toBeInstanceOf(GitIndexingTimeoutError);
   });
 });
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
-import { tokenizeJarMn } from '../manifest-tokenizers.js';
+import { tokenizeJarMn, tokenizeMozBuildList } from '../manifest-tokenizers.js';
 
 describe('tokenizeJarMn', () => {
   it('tokenizes a well-formed jar.mn file', () => {
@@ -152,5 +152,42 @@ describe('tokenizeJarMn', () => {
     expect(entries).toHaveLength(2);
     expect(entries[0]?.parsed?.target).toBe('content/global/elements/a.js');
     expect(entries[1]?.parsed?.target).toBe('content/browser/foo.js');
+  });
+});
+
+describe('tokenizeMozBuildList', () => {
+  it('tokenizes a typical multi-line list', () => {
+    const lines = ['EXTRA_JS_MODULES += [', '    "Foo.sys.mjs",', '    "Bar.sys.mjs",', ']'];
+    const result = tokenizeMozBuildList(lines, /EXTRA_JS_MODULES/);
+    expect(result).not.toBeNull();
+    expect(result?.startLine).toBe(0);
+    expect(result?.endLine).toBe(3);
+    const items = result?.tokens.filter((t) => t.type === 'list-item') ?? [];
+    expect(items).toHaveLength(2);
+    expect(items[0]?.parsed?.value).toBe('Foo.sys.mjs');
+    expect(items[1]?.parsed?.value).toBe('Bar.sys.mjs');
+  });
+
+  it('expands a single-line empty list into the canonical multi-line shape (Eval 2)', () => {
+    // Freshly scaffolded moz.build files sometimes write the empty
+    // list as `EXTRA_JS_MODULES += []` on one line. Pre-fix, the
+    // tokenizer returned null because no line started with `]`, so
+    // `register` refused with "Could not find module list section" —
+    // blocking the documented browser/modules/<fork>/ workflow.
+    const lines = ['EXTRA_JS_MODULES += []'];
+    const result = tokenizeMozBuildList(lines, /EXTRA_JS_MODULES/);
+    expect(result).not.toBeNull();
+    // The tokenizer rewrites `lines` in place to the multi-line form
+    // so that `lines.splice(insertIndex, 0, entry)` in the caller
+    // lands inside the list body rather than after the closed list.
+    expect(lines).toEqual(['EXTRA_JS_MODULES += [', ']']);
+    expect(result?.startLine).toBe(0);
+    expect(result?.endLine).toBe(1);
+    expect(result?.tokens.map((t) => t.type)).toEqual(['list-open', 'list-close']);
+  });
+
+  it('returns null when the pattern does not match any line', () => {
+    const lines = ['SOURCES += [', '    "foo.c",', ']'];
+    expect(tokenizeMozBuildList(lines, /EXTRA_JS_MODULES/)).toBeNull();
   });
 });

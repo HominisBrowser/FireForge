@@ -39,7 +39,8 @@ Workflow:
                                     sourceEsrVersion by default — use --stamp or
                                     run rebase for version stamping.
   patch                             Manage individual patches in the queue
-                                    (compact, delete, reorder)
+                                    (compact, delete, lint-ignore, reorder,
+                                    tier)
   rebase [options]                  Semi-automated ESR version upgrade — apply
                                     patches with fuzz and re-export
   package [options]                 Create distribution package

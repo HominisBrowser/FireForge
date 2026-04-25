@@ -95,6 +95,54 @@ describe('measureTokenCoverage', () => {
     });
   });
 
+  it('counts --moz-* platform vars as allowlisted by default, not unknown', async () => {
+    // Eval 1 Finding #5: a fork that overrides moz-button (CSS-only)
+    // declared one fork-owned token but the copied upstream baseline
+    // referenced 84 `--moz-*` platform vars; coverage reported 1%
+    // because those upstream vars counted as unknown. The default
+    // allowlist maps them to the platform bucket so fork-owned
+    // coverage is not dragged down by untouched upstream material.
+    mockedLoadFurnaceConfig.mockResolvedValue({
+      tokenPrefix: '--freshforge-',
+      tokenAllowlist: [],
+    } as unknown as Awaited<ReturnType<typeof loadFurnaceConfig>>);
+    mockedPathExists.mockResolvedValue(true);
+    mockedReadText.mockResolvedValue(
+      [
+        '.button {',
+        '  border-radius: var(--freshforge-button-radius);',
+        '  padding: var(--moz-button-padding);',
+        '  color: var(--moz-color-primary);',
+        '}',
+      ].join('\n')
+    );
+
+    const report = await measureTokenCoverage('/repo/engine', ['moz-button.css'], '/repo');
+
+    expect(report.tokenUsages).toBe(1);
+    expect(report.allowlistedUsages).toBe(2);
+    expect(report.unknownVarUsages).toBe(0);
+  });
+
+  it('respects an explicit furnace.json platformPrefixes override', async () => {
+    // Forks that host multiple platform-style prefixes (e.g. their own
+    // `--in-content-*` fork) can extend the default list. An explicit
+    // empty list re-classifies `--moz-*` as unknown (the pre-0.17.x
+    // contract) for forks that want the stricter count.
+    mockedLoadFurnaceConfig.mockResolvedValue({
+      tokenPrefix: '--freshforge-',
+      tokenAllowlist: [],
+      platformPrefixes: [],
+    } as unknown as Awaited<ReturnType<typeof loadFurnaceConfig>>);
+    mockedPathExists.mockResolvedValue(true);
+    mockedReadText.mockResolvedValue('.button { color: var(--moz-color-primary); }');
+
+    const report = await measureTokenCoverage('/repo/engine', ['moz-button.css'], '/repo');
+
+    expect(report.allowlistedUsages).toBe(0);
+    expect(report.unknownVarUsages).toBe(1);
+  });
+
   it('treats all custom properties as unknown when furnace config cannot be loaded', async () => {
     mockedLoadFurnaceConfig.mockRejectedValue(new Error('missing furnace config'));
     mockedPathExists.mockResolvedValue(true);

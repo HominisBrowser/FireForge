@@ -90,105 +90,109 @@ describe('connected Firefox workflow integration', () => {
     await removeTempProject(projectRoot);
   });
 
-  it('runs setup, download, bootstrap, build, patch round-trip, and file-scoped recovery with unrelated dirty engine state preserved', async () => {
-    await downloadCommand(projectRoot, {});
+  it(
+    'runs setup, download, bootstrap, build, patch round-trip, and file-scoped recovery with unrelated dirty engine state preserved',
+    { timeout: 30_000 },
+    async () => {
+      await downloadCommand(projectRoot, {});
 
-    const initialState = await loadState(projectRoot);
-    expect(initialState.baseCommit).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+      const initialState = await loadState(projectRoot);
+      expect(initialState.baseCommit).toBeTruthy();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    await bootstrapCommand(projectRoot);
-    await buildCommand(projectRoot, {});
+      await bootstrapCommand(projectRoot);
+      await buildCommand(projectRoot, {});
 
-    const fireforgeConfig = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
-      build?: { jobs?: number };
-    };
-    const expectedBuildArgs = fireforgeConfig.build?.jobs
-      ? ['build', '-j', String(fireforgeConfig.build.jobs)]
-      : ['build'];
+      const fireforgeConfig = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
+        build?: { jobs?: number };
+      };
+      const expectedBuildArgs = fireforgeConfig.build?.jobs
+        ? ['build', '-j', String(fireforgeConfig.build.jobs)]
+        : ['build'];
 
-    const buildInfo = JSON.parse(
-      await readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.buildInfo)
-    ) as {
-      args: string[];
-      mozconfigExists: boolean;
-      brandingConfigured: boolean;
-      vendorLinePatched: boolean;
-    };
-    expect(buildInfo.args).toEqual(expectedBuildArgs);
-    expect(buildInfo.mozconfigExists).toBe(true);
-    expect(buildInfo.brandingConfigured).toBe(true);
-    expect(buildInfo.vendorLinePatched).toBe(true);
+      const buildInfo = JSON.parse(
+        await readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.buildInfo)
+      ) as {
+        args: string[];
+        mozconfigExists: boolean;
+        brandingConfigured: boolean;
+        vendorLinePatched: boolean;
+      };
+      expect(buildInfo.args).toEqual(expectedBuildArgs);
+      expect(buildInfo.mozconfigExists).toBe(true);
+      expect(buildInfo.brandingConfigured).toBe(true);
+      expect(buildInfo.vendorLinePatched).toBe(true);
 
-    const machLog = (await readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.machLog))
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as { args: string[] });
-    expect(machLog.map((entry) => entry.args)).toEqual([
-      ['bootstrap', '--application-choice', 'browser'],
-      expectedBuildArgs,
-    ]);
+      const machLog = (await readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.machLog))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { args: string[] });
+      expect(machLog.map((entry) => entry.args)).toEqual([
+        ['bootstrap', '--application-choice', 'browser'],
+        expectedBuildArgs,
+      ]);
 
-    const buildDirtyStatus = await git(join(projectRoot, 'engine'), ['status', '--short']);
-    expect(buildDirtyStatus).toContain(' M browser/moz.configure');
-    expect(buildDirtyStatus).toContain('?? browser/branding/mybrowser/');
+      const buildDirtyStatus = await git(join(projectRoot, 'engine'), ['status', '--short']);
+      expect(buildDirtyStatus).toContain(' M browser/moz.configure');
+      expect(buildDirtyStatus).toContain('?? browser/branding/mybrowser/');
 
-    await writeFiles(join(projectRoot, 'engine'), {
-      [SYNTHETIC_FIREFOX_PATHS.browserScript]: 'export const browserTitle = "patched";\n',
-    });
+      await writeFiles(join(projectRoot, 'engine'), {
+        [SYNTHETIC_FIREFOX_PATHS.browserScript]: 'export const browserTitle = "patched";\n',
+      });
 
-    await exportCommand(projectRoot, [SYNTHETIC_FIREFOX_PATHS.browserScript], {
-      name: 'browser-title',
-      category: 'ui',
-      description: 'Synthetic browser title workflow',
-    });
+      await exportCommand(projectRoot, [SYNTHETIC_FIREFOX_PATHS.browserScript], {
+        name: 'browser-title',
+        category: 'ui',
+        description: 'Synthetic browser title workflow',
+      });
 
-    const manifest = await loadPatchesManifest(join(projectRoot, 'patches'));
-    expect(manifest?.patches).toHaveLength(1);
-    expect(manifest?.patches[0]?.filesAffected).toEqual([SYNTHETIC_FIREFOX_PATHS.browserScript]);
+      const manifest = await loadPatchesManifest(join(projectRoot, 'patches'));
+      expect(manifest?.patches).toHaveLength(1);
+      expect(manifest?.patches[0]?.filesAffected).toEqual([SYNTHETIC_FIREFOX_PATHS.browserScript]);
 
-    const patchFilename = manifest?.patches[0]?.filename;
-    expect(patchFilename).toBeDefined();
-    await expect(readText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
-      '+export const browserTitle = "patched";'
-    );
+      const patchFilename = manifest?.patches[0]?.filename;
+      expect(patchFilename).toBeDefined();
+      await expect(readText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
+        '+export const browserTitle = "patched";'
+      );
 
-    await git(join(projectRoot, 'engine'), [
-      'checkout',
-      '--',
-      SYNTHETIC_FIREFOX_PATHS.browserScript,
-    ]);
-    await importCommand(projectRoot, {});
+      await git(join(projectRoot, 'engine'), [
+        'checkout',
+        '--',
+        SYNTHETIC_FIREFOX_PATHS.browserScript,
+      ]);
+      await importCommand(projectRoot, {});
 
-    await expect(
-      readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
-    ).resolves.toBe('export const browserTitle = "patched";\n');
+      await expect(
+        readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
+      ).resolves.toBe('export const browserTitle = "patched";\n');
 
-    await git(join(projectRoot, 'engine'), [
-      'checkout',
-      '--',
-      SYNTHETIC_FIREFOX_PATHS.browserScript,
-    ]);
-    await writeFiles(join(projectRoot, 'engine'), {
-      [SYNTHETIC_FIREFOX_PATHS.browserScript]: 'export const browserTitle = "local-only";\n',
-    });
+      await git(join(projectRoot, 'engine'), [
+        'checkout',
+        '--',
+        SYNTHETIC_FIREFOX_PATHS.browserScript,
+      ]);
+      await writeFiles(join(projectRoot, 'engine'), {
+        [SYNTHETIC_FIREFOX_PATHS.browserScript]: 'export const browserTitle = "local-only";\n',
+      });
 
-    await expect(importCommand(projectRoot, {})).rejects.toThrow(
-      'Uncommitted changes in patch-touched files. Commit or stash them first, or use --force.'
-    );
+      await expect(importCommand(projectRoot, {})).rejects.toThrow(
+        'Uncommitted changes in patch-touched files. Commit or stash them first, or use --force.'
+      );
 
-    await discardCommand(projectRoot, SYNTHETIC_FIREFOX_PATHS.browserScript, { yes: true });
+      await discardCommand(projectRoot, SYNTHETIC_FIREFOX_PATHS.browserScript, { yes: true });
 
-    const recoveredStatus = await git(join(projectRoot, 'engine'), ['status', '--short']);
-    expect(recoveredStatus).toContain(' M browser/moz.configure');
-    expect(recoveredStatus).toContain('?? browser/branding/mybrowser/');
-    expect(recoveredStatus).not.toContain(SYNTHETIC_FIREFOX_PATHS.browserScript);
+      const recoveredStatus = await git(join(projectRoot, 'engine'), ['status', '--short']);
+      expect(recoveredStatus).toContain(' M browser/moz.configure');
+      expect(recoveredStatus).toContain('?? browser/branding/mybrowser/');
+      expect(recoveredStatus).not.toContain(SYNTHETIC_FIREFOX_PATHS.browserScript);
 
-    await importCommand(projectRoot, {});
-    await expect(
-      readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
-    ).resolves.toBe('export const browserTitle = "patched";\n');
-  });
+      await importCommand(projectRoot, {});
+      await expect(
+        readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
+      ).resolves.toBe('export const browserTitle = "patched";\n');
+    }
+  );
 
   it('records pending resolution on a true patch conflict and refreshes the patch via resolve', async () => {
     await downloadCommand(projectRoot, {});

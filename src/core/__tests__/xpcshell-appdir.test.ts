@@ -184,6 +184,7 @@ describe('readMozinfoAppname', () => {
 
 describe('resolveAbsoluteAppPath', () => {
   let workspace: string;
+  const isMacos = process.platform === 'darwin';
 
   beforeEach(async () => {
     workspace = await mkdtemp(join(tmpdir(), 'fireforge-resolve-'));
@@ -193,29 +194,39 @@ describe('resolveAbsoluteAppPath', () => {
     await rm(workspace, { recursive: true, force: true });
   });
 
-  it('returns dist/bin/<value> when that directory exists', async () => {
+  it('returns dist/bin/<value> when only that directory exists', async () => {
+    // Works on every platform: no `.app` bundle in dist/, so the macOS
+    // probe branch falls through to the `dist/bin/<value>` fallback and
+    // the Linux branch returns it directly.
     const target = join(workspace, 'dist/bin/browser');
     await ensureDir(target);
     expect(await resolveAbsoluteAppPath(workspace, 'browser')).toBe(target);
   });
 
-  it('falls back to dist/<bundle>.app/Contents/Resources/<value>', async () => {
+  it('returns dist/<bundle>.app/Contents/Resources/<value> when only that layout exists', async () => {
     const macTarget = join(workspace, 'dist/Hominis.app/Contents/Resources/browser');
     await ensureDir(macTarget);
     expect(await resolveAbsoluteAppPath(workspace, 'browser')).toBe(macTarget);
   });
 
-  it('prefers dist/bin over a coexisting .app bundle (Linux primary)', async () => {
-    // When BOTH layouts are populated (a packaged macOS build with the
-    // dist/bin symlink in place) the Linux-style probe wins because it
-    // matches what the upstream harness computes for the most common
-    // layout. Behaviour is observable only when the two roots diverge,
-    // which happens in test fixtures rather than real builds.
+  // 2026-04-24 eval Finding 8: on macOS, preferring `dist/bin/browser`
+  // resolved to `<App>.app/Contents/MacOS/browser/` via the convenience
+  // symlink — that is the *binaries* directory, not the Resources tree
+  // where `resource:///modules/` is rooted. The probe must prefer the
+  // `.app/Contents/Resources/<value>` path on macOS so the injected
+  // appdir matches where modules actually live. Non-macOS hosts keep the
+  // historical `dist/bin`-first order.
+  it('prefers the platform-correct layout when both dist/bin and a .app bundle exist', async () => {
     const linuxTarget = join(workspace, 'dist/bin/browser');
     const macTarget = join(workspace, 'dist/Hominis.app/Contents/Resources/browser');
     await ensureDir(linuxTarget);
     await ensureDir(macTarget);
-    expect(await resolveAbsoluteAppPath(workspace, 'browser')).toBe(linuxTarget);
+    const resolved = await resolveAbsoluteAppPath(workspace, 'browser');
+    if (isMacos) {
+      expect(resolved).toBe(macTarget);
+    } else {
+      expect(resolved).toBe(linuxTarget);
+    }
   });
 
   it('returns null when neither candidate exists', async () => {
@@ -227,10 +238,12 @@ describe('resolveAbsoluteAppPath', () => {
     expect(await resolveAbsoluteAppPath(workspace, 'browser')).toBeNull();
   });
 
-  it('follows a dist/bin symlink (the macOS convenience symlink)', async () => {
-    // Some macOS builds ship a dist/bin -> dist/<App>.app/Contents/MacOS
-    // symlink. The probe must treat that as a real candidate. Skip on
-    // platforms where symlinks are restricted (Windows without dev-mode).
+  it('follows a dist/bin symlink on non-macOS hosts (the Linux convenience symlink case)', async () => {
+    // On Linux this symlink is a legitimate probe candidate (dist/bin is
+    // the canonical appdir root). On macOS the new probe order prefers
+    // the Resources path regardless of whether `dist/bin` is a real dir
+    // or a symlink chain, because following the symlink produces the
+    // MacOS binaries directory — not the Resources tree.
     const realDir = join(workspace, 'dist/Hominis.app/Contents/Resources/browser');
     await ensureDir(realDir);
     try {
@@ -242,9 +255,16 @@ describe('resolveAbsoluteAppPath', () => {
       // Symlinks unavailable — skip this assertion rather than failing.
       return;
     }
-    expect(await resolveAbsoluteAppPath(workspace, 'browser')).toBe(
-      join(workspace, 'dist/bin/browser')
-    );
+    const resolved = await resolveAbsoluteAppPath(workspace, 'browser');
+    if (isMacos) {
+      // macOS: prefer the real `.app/Contents/Resources/<value>` path so
+      // the injected `--app-path` matches where modules actually live.
+      expect(resolved).toBe(realDir);
+    } else {
+      // Non-macOS: keep the historical behaviour and return the
+      // `dist/bin/<value>` symlink target.
+      expect(resolved).toBe(join(workspace, 'dist/bin/browser'));
+    }
   });
 });
 

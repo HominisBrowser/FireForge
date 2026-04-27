@@ -3,8 +3,9 @@ import { join, relative } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
+import { verbose } from '../utils/logger.js';
 import { toRootRelativePath } from '../utils/paths.js';
-import { getProjectPaths } from './config.js';
+import { getProjectPaths, loadConfig } from './config.js';
 import { createRollbackJournal, restoreRollbackJournal, snapshotFile } from './furnace-rollback.js';
 import type { RegisterResult } from './manifest-register.js';
 import { registerBrowserContent } from './manifest-register.js';
@@ -126,20 +127,38 @@ export async function wireSubscript(
   }
   await snapshotFile(journal, join(engineDir, 'browser/base/jar.mn'));
 
+  // Compute the project-scoped patch-lint marker (`// <BINARY>:`) so
+  // every wire mutator can stamp it into the emitted comment block.
+  // Without this, `lintModificationComments` trips
+  // `missing-modification-comment` on wire-generated edits the next
+  // time the operator exports — the same tool wrote the code and a
+  // sibling tool then rejected it (eval 1 Finding #9). A broken config
+  // should not block the wire, so the fallback marker keeps the
+  // previous lint-friendly default when the config cannot be loaded.
+  let marker = 'FIREFORGE:';
+  try {
+    const config = await loadConfig(root);
+    marker = `${config.binaryName.toUpperCase()}:`;
+  } catch (error: unknown) {
+    verbose(
+      `Using default wire marker because fireforge.json could not be loaded: ${toError(error).message}`
+    );
+  }
+
   try {
     // 1. Add subscript to browser-main.js
-    const subscriptAdded = await addSubscriptToBrowserMain(engineDir, name);
+    const subscriptAdded = await addSubscriptToBrowserMain(engineDir, name, marker);
 
     // 2. Add init expression to browser-init.js (if provided)
     let initAdded = false;
     if (options.init) {
-      initAdded = await addInitToBrowserInit(engineDir, options.init, options.after);
+      initAdded = await addInitToBrowserInit(engineDir, options.init, options.after, marker);
     }
 
     // 3. Add destroy expression to browser-init.js onUnload() (if provided)
     let destroyAdded = false;
     if (options.destroy) {
-      destroyAdded = await addDestroyToBrowserInit(engineDir, options.destroy);
+      destroyAdded = await addDestroyToBrowserInit(engineDir, options.destroy, marker);
     }
 
     // 4. Add #include directive to the top-level chrome document (if provided)

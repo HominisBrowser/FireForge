@@ -5,6 +5,7 @@ import {
   jarIncMnEntryForChromeDoc,
   jarMnEntriesForChromeDoc,
   localeJarMnEntryForChromeDoc,
+  localesFtlWildcardCapturesScaffoldedName,
 } from '../chrome-doc-templates.js';
 
 describe('chrome-doc jar.mn templates', () => {
@@ -31,6 +32,38 @@ describe('chrome-doc jar.mn templates', () => {
     expect(jarIncMnEntryForChromeDoc('fresh-lab')).toBe(
       '    content/browser/fresh-lab-chrome.css           (../shared/fresh-lab-chrome.css)'
     );
+  });
+
+  it('detects [localization] wildcards rooted at %browser/ that would capture the scaffolded FTL', () => {
+    // Recursive shape (the upstream pattern).
+    expect(
+      localesFtlWildcardCapturesScaffoldedName(
+        '[localization] @AB_CD@.jar:\n  browser (%browser/**/*.ftl)\n'
+      )
+    ).toBe(true);
+    // Flat shape — also captures top-level browser/<name>.ftl.
+    expect(
+      localesFtlWildcardCapturesScaffoldedName(
+        '[localization] @AB_CD@.jar:\n  browser (%browser/*.ftl)\n'
+      )
+    ).toBe(true);
+  });
+
+  it('does not treat narrower wildcards as a capture of browser/<name>.ftl', () => {
+    // A subdirectory-scoped wildcard like browser/about/*.ftl would NOT
+    // pick up a top-level browser/<name>.ftl, so the per-file entry must
+    // still be written.
+    expect(
+      localesFtlWildcardCapturesScaffoldedName(
+        '[localization] @AB_CD@.jar:\n  browser (%browser/about/*.ftl)\n'
+      )
+    ).toBe(false);
+    // An explicit per-file reference (no `*`) is not a wildcard.
+    expect(
+      localesFtlWildcardCapturesScaffoldedName('  locale/browser/foo.ftl (%browser/foo.ftl)\n')
+    ).toBe(false);
+    // Empty file — nothing to capture.
+    expect(localesFtlWildcardCapturesScaffoldedName('')).toBe(false);
   });
 
   it('emits the locale FTL entry with a browser/ subdirectory source path (Finding #11)', () => {

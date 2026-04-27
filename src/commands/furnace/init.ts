@@ -11,6 +11,7 @@ import {
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { DEFAULT_LICENSE } from '../../core/license-headers.js';
+import { registerSharedCSS } from '../../core/register-shared-css.js';
 import { getTokensCssPath } from '../../core/token-manager.js';
 import { generateDefaultTokensCss } from '../../core/token-scaffold.js';
 import { FurnaceError } from '../../errors/furnace.js';
@@ -217,9 +218,11 @@ export async function furnaceInitCommand(
 
   info(
     'Next steps:\n' +
-      '  fireforge furnace scan        — discover engine components\n' +
+      '  fireforge furnace scan         — discover engine components\n' +
       '  fireforge furnace create       — create a new custom component\n' +
-      '  fireforge furnace override     — fork an existing component'
+      '  fireforge furnace override     — fork an existing component\n' +
+      '  fireforge token add            — define a token in the scaffolded tokens CSS\n' +
+      '  fireforge export <tokens.css>  — capture the tokens CSS + its registration in a patch'
   );
 
   outro('Init complete');
@@ -296,6 +299,31 @@ async function scaffoldTokensCss(projectRoot: string): Promise<{ tokensCssPath?:
     warn(
       `Could not register tokens CSS in patchLint.rawColorAllowlist: ${toError(error).message}. ` +
         `Add "${tokensCssPath}" manually under patchLint.rawColorAllowlist in fireforge.json if lint flags its contents.`
+    );
+  }
+
+  // 2026-04-26 eval Finding 2: register the tokens CSS in
+  // browser/themes/shared/jar.inc.mn so the file is owned end-to-end by
+  // tooling. Pre-fix, `furnace init` only scaffolded + allowlisted the
+  // file, so the very next `fireforge status` correctly flagged it as
+  // unmanaged + unregistered and `furnace deploy --dry-run` reported
+  // nothing to deploy — a documented init command turned a clean
+  // project into an unclean one. The CSS lives at the canonical
+  // `browser/themes/shared/<binaryName>-tokens.css` path that the
+  // shared-CSS rule already targets, so the tokens file gets the same
+  // `skin/classic/browser/<name>.css (../shared/<name>.css)` jar.inc.mn
+  // entry as any other shared CSS. Idempotent — running
+  // `furnace init --force` against a registered tree is a no-op.
+  try {
+    const fileBase = `${forgeConfig.binaryName}-tokens.css`;
+    const result = await registerSharedCSS(paths.engine, fileBase, undefined, false);
+    if (!result.skipped) {
+      info(`Registered ${fileBase} in browser/themes/shared/jar.inc.mn`);
+    }
+  } catch (error: unknown) {
+    warn(
+      `Could not register tokens CSS in browser/themes/shared/jar.inc.mn: ${toError(error).message}. ` +
+        `Run "fireforge register browser/themes/shared/${forgeConfig.binaryName}-tokens.css" once jar.inc.mn is reachable.`
     );
   }
 

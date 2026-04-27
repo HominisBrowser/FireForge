@@ -103,8 +103,8 @@ describe('buildCommand', () => {
       furnaceApplied: 0,
       reconfigured: false,
     });
-    vi.mocked(build).mockResolvedValue(0);
-    vi.mocked(buildUI).mockResolvedValue(0);
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
   });
 
   it('fails before starting when the engine checkout is missing', async () => {
@@ -245,7 +245,7 @@ describe('buildCommand', () => {
   });
 
   it('wraps non-zero mach exits as build failures', async () => {
-    vi.mocked(build).mockResolvedValue(2);
+    vi.mocked(build).mockResolvedValue({ exitCode: 2, stdout: '', stderr: '' });
 
     await expect(buildCommand('/project', { jobs: 8 })).rejects.toThrow(
       'Build failed with exit code 2'
@@ -253,6 +253,85 @@ describe('buildCommand', () => {
 
     expect(build).toHaveBeenCalledWith('/project/engine', 8);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Build failed after'));
+  });
+
+  it('annotates a successful build whose captured output warns about a stale config.status', async () => {
+    // Eval finding (E1-#2, E2): mach prints "config.status is out of
+    // date … Be sure to run |mach build|" at the tail of a successful
+    // build when tool-managed branding edits landed on moz.configure
+    // before the build. Operators read that as "build is incomplete"
+    // and either rebuilt unnecessarily or doubted the Fireforge footer.
+    const staleStdout = [
+      'Your build was successful!',
+      'config.status is out of date with respect to browser/moz.configure',
+      'Configure complete!',
+      'Be sure to run |mach build| to pick up any changes',
+    ].join('\n');
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: staleStdout, stderr: '' });
+
+    await expect(buildCommand('/project', { jobs: 4 })).resolves.toBeUndefined();
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('tool-managed branding edits applied before the build')
+    );
+  });
+
+  it('annotates a successful build whose tail is mach\'s "Config object not found" banner (Finding 8)', async () => {
+    // 2026-04-26 eval Finding 8: a successful build can end with
+    // mach's "Config object not found by mach. / Configure complete! /
+    // Be sure to run |mach build|" banner without the
+    // "config.status is out of date" line that the 0.18.0 fix keyed
+    // on. Operators on this path saw the contradictory tail
+    // unannotated. Both shapes now route through the same info
+    // banner so the explanation always appears before FireForge's
+    // own outro.
+    const staleStdout = [
+      'Your build was successful!',
+      'Config object not found by mach.',
+      'Configure complete!',
+      'Be sure to run |mach build| to pick up any changes',
+    ].join('\n');
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: staleStdout, stderr: '' });
+
+    await expect(buildCommand('/project', { jobs: 4 })).resolves.toBeUndefined();
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('tool-managed branding edits applied before the build')
+    );
+  });
+
+  it('emits the configure-banner annotation BEFORE the FireForge "Build completed" outro (Finding 8)', async () => {
+    // The pre-fix order on the merged tail read:
+    //   [mach's confusing banner] / [FireForge's "Build completed" outro]
+    // with the explanation either missing (Finding 8 second shape) or
+    // landing in a less prominent spot. The fix guarantees that when
+    // the annotation fires it lands BEFORE the outro so the operator's
+    // very last terminal line is the explanation, not the unannotated
+    // confusing tail. Asserts the recorded mock-call order: the info
+    // call must precede the outro call.
+    const staleStdout = [
+      'Your build was successful!',
+      'Config object not found by mach.',
+      'Configure complete!',
+    ].join('\n');
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: staleStdout, stderr: '' });
+
+    await expect(buildCommand('/project', { jobs: 4 })).resolves.toBeUndefined();
+
+    const infoIdx = vi
+      .mocked(info)
+      .mock.calls.findIndex((c) =>
+        c[0].includes('tool-managed branding edits applied before the build')
+      );
+    const outroIdx = vi.mocked(outro).mock.calls.findIndex((c) => c[0].includes('Build completed'));
+    expect(infoIdx).toBeGreaterThanOrEqual(0);
+    expect(outroIdx).toBeGreaterThanOrEqual(0);
+    const infoOrder = vi.mocked(info).mock.invocationCallOrder[infoIdx];
+    const outroOrder = vi.mocked(outro).mock.invocationCallOrder[outroIdx];
+    if (infoOrder === undefined || outroOrder === undefined) {
+      throw new Error('expected both invocationCallOrder entries to be populated');
+    }
+    expect(infoOrder).toBeLessThan(outroOrder);
   });
 
   it('wraps startup failures before mach returns an exit code', async () => {
@@ -307,8 +386,8 @@ describe('registerBuild', () => {
       furnaceApplied: 0,
       reconfigured: false,
     });
-    vi.mocked(build).mockResolvedValue(0);
-    vi.mocked(buildUI).mockResolvedValue(0);
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
   });
 
   it('routes parsed CLI options through the registered action', async () => {

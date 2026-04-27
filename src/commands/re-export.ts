@@ -2,7 +2,7 @@
 import { dirname, join } from 'node:path';
 
 import { confirm, multiselect } from '@clack/prompts';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { isGitRepository } from '../core/git.js';
@@ -272,7 +272,19 @@ async function reExportSinglePatch(
   // The paired `patch.tier` threads the explicit branding-threshold
   // opt-in the same way, for the branding patch that also touches a
   // non-allowlisted registration sibling.
-  const ignoreChecks = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
+  //
+  // The CLI flags `--tier` and `--lint-ignore` participate too, with
+  // append/union semantics on the lint-ignore list (the operator's
+  // intuition for "I want this patch to also suppress X" — explicit
+  // removal lives on the `fireforge patch lint-ignore` subcommand).
+  // Computed before the lint pass so the new intent takes effect on
+  // this invocation, not the next one.
+  const existingIgnoreSet = new Set<string>(patch.lintIgnore ?? []);
+  const flagIgnoreSet = new Set<string>(options.lintIgnore ?? []);
+  const mergedIgnoreSet = new Set<string>([...existingIgnoreSet, ...flagIgnoreSet]);
+  const effectiveLintIgnore = mergedIgnoreSet.size > 0 ? [...mergedIgnoreSet] : undefined;
+  const ignoreChecks = effectiveLintIgnore ? new Set<string>(effectiveLintIgnore) : undefined;
+  const effectiveTier = options.tier ?? patch.tier;
 
   await runPatchLint(
     paths.engine,
@@ -282,20 +294,34 @@ async function reExportSinglePatch(
     options.skipLint,
     undefined,
     ignoreChecks,
-    patch.tier
+    effectiveTier
   );
 
   if (isDryRun) {
     info(`[dry-run] ${patch.filename}: ${existingFiles.length} file(s)`);
+    if (effectiveTier !== undefined && effectiveTier !== patch.tier) {
+      info(`[dry-run] ${patch.filename}: tier would become ${effectiveTier}`);
+    }
+    const addedIgnores = [...flagIgnoreSet].filter((id) => !existingIgnoreSet.has(id));
+    if (addedIgnores.length > 0) {
+      info(`[dry-run] ${patch.filename}: lintIgnore would gain ${addedIgnores.join(', ')}`);
+    }
   } else {
     // Atomic body + manifest update under a single patch-directory lock.
     // A split `updatePatch` (lock-free) + `updatePatchMetadata` (lock-guarded)
     // sequence allows a concurrent `resolve` / `rebase --continue` / `patch
     // compact` / `patch reorder` to rewrite the manifest between the two
     // writes and leave patch body and `filesAffected` disagreeing.
-    await updatePatchAndMetadata(paths.patches, patch.filename, diffContent, {
+    const updates: Partial<PatchMetadata> = {
       filesAffected: currentFilesAffected,
-    });
+    };
+    if (options.tier !== undefined) {
+      updates.tier = options.tier;
+    }
+    if (effectiveLintIgnore !== undefined && flagIgnoreSet.size > 0) {
+      updates.lintIgnore = effectiveLintIgnore;
+    }
+    await updatePatchAndMetadata(paths.patches, patch.filename, diffContent, updates);
 
     // Keep the in-memory manifest in sync so subsequent iterations (notably
     // `--all --scan`, where `getClaimedFiles` reads from this manifest) see
@@ -307,7 +333,7 @@ async function reExportSinglePatch(
       if (existingEntry) {
         manifest.patches[patchIndex] = {
           ...existingEntry,
-          filesAffected: currentFilesAffected,
+          ...updates,
         };
       }
     }
@@ -396,6 +422,19 @@ export async function reExportCommand(
         '--files'
       );
     }
+  }
+
+  // --tier and --lint-ignore are per-patch metadata edits; combining them
+  // with --all silently rewrites every patch's tier/ignore list, which is
+  // virtually always wrong (different patches have different shapes).
+  // Refuse the combination so the operator must enumerate the targets.
+  const usingTierFlag = options.tier !== undefined;
+  const usingLintIgnoreFlag = options.lintIgnore !== undefined && options.lintIgnore.length > 0;
+  if (options.all && (usingTierFlag || usingLintIgnoreFlag)) {
+    throw new InvalidArgumentError(
+      '--tier and --lint-ignore require explicit patch identifiers and cannot be combined with --all (different patches typically need different metadata).',
+      '--all'
+    );
   }
 
   const paths = getProjectPaths(projectRoot);
@@ -537,6 +576,18 @@ export function registerReExport(
       '--stamp',
       "After every selected patch refreshes cleanly, stamp each re-exported patch's sourceEsrVersion in patches.json to firefox.version from fireforge.json. No effect on a partial run."
     )
+    .addOption(
+      new Option(
+        '--tier <tier>',
+        'Force a tier override on the selected patch (only "branding" recognised). Mutually exclusive with --all.'
+      ).choices(['branding'])
+    )
+    .option(
+      '--lint-ignore <check-id>',
+      'Append a lint check ID to the patch\'s PatchMetadata.lintIgnore (union, de-duped, repeatable). Mutually exclusive with --all. Use "fireforge patch lint-ignore" for --remove / --clear.',
+      (value: string, prev: string[]) => [...prev, value],
+      [] as string[]
+    )
     .action(
       withErrorHandling(
         async (
@@ -550,9 +601,16 @@ export function registerReExport(
             yes?: boolean;
             forceUnsafe?: boolean;
             stamp?: boolean;
+            tier?: string;
+            lintIgnore?: string[];
           }
         ) => {
-          await reExportCommand(getProjectRoot(), patches, pickDefined(options));
+          const { tier, lintIgnore, ...rest } = options;
+          await reExportCommand(getProjectRoot(), patches, {
+            ...pickDefined(rest),
+            ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
+            ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
+          });
         }
       )
     );

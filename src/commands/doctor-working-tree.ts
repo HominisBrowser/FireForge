@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: EUPL-1.2
+/**
+ * Ownership-aware working-tree check for `fireforge doctor`.
+ *
+ * Partitions engine-tree dirtiness into `branding`, `patch-backed`,
+ * `furnace`, `conflict`, and `unmanaged` buckets, and only warns on the
+ * last two — everything else is tool-managed state that the operator
+ * did not author directly.
+ *
+ * Split out of `doctor.ts` so that file stays under the per-file LOC
+ * budget; see the call site in `runEngineGitChecks`.
+ */
+
+import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
+import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
+import { classifyFiles } from '../core/status-classify.js';
+import type { DoctorCheck } from '../types/commands/index.js';
+import type { DoctorCheckContext } from './doctor.js';
+import { ok, warning } from './doctor.js';
+
+function summarizeWorkingTreeChangeCount(changeCount: number): string {
+  return `Engine working tree has ${changeCount} local change${changeCount === 1 ? '' : 's'}. Some FireForge commands assume a clean baseline and may behave differently until these are exported, discarded, or committed.`;
+}
+
+function formatManagedDetail(counts: {
+  branding: number;
+  furnace: number;
+  patchBacked: number;
+}): string {
+  return [
+    counts.patchBacked > 0 ? `${counts.patchBacked} patch-backed` : null,
+    counts.branding > 0 ? `${counts.branding} branding` : null,
+    counts.furnace > 0 ? `${counts.furnace} furnace` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(', ');
+}
+
+/**
+ * Inspects the engine working tree and returns a single
+ * `DoctorCheck`. Ownership-aware: patch-backed / branding / furnace
+ * rows are reported as OK with an ownership summary; unmanaged drift
+ * warns; cross-patch conflicts warn loudly with a pointer at
+ * `fireforge status --ownership` + `fireforge verify`.
+ *
+ * Before 0.16.1 this check warned on every dirty row regardless of
+ * ownership and told the operator to export/discard/reset — advice
+ * that was actively destructive on a patch-backed import (eval
+ * Finding: a correctly imported 126-file patch stack was reported as
+ * unhealthy and the suggested fix would have dropped the entire
+ * import). Returns `undefined` when the worktree is clean so the
+ * caller can emit its own ok() row.
+ */
+export async function inspectEngineWorkingTree(
+  ctx: DoctorCheckContext
+): Promise<DoctorCheck | undefined> {
+  const { paths } = ctx;
+  const rawStatus = await getWorkingTreeStatus(paths.engine);
+  const workingTreeStatus = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
+  if (workingTreeStatus.length === 0) {
+    return ok('Engine working tree');
+  }
+
+  if (!ctx.config) {
+    return warning(
+      'Engine working tree',
+      summarizeWorkingTreeChangeCount(workingTreeStatus.length),
+      'Use "fireforge status" to review changes, then export, discard, or reset them as appropriate.'
+    );
+  }
+
+  const furnacePrefixes = await collectFurnaceManagedPrefixes(ctx.projectRoot);
+  const classified = await classifyFiles(
+    workingTreeStatus.map((entry) => ({ status: entry.status, file: entry.file })),
+    paths.engine,
+    paths.patches,
+    ctx.config.binaryName,
+    furnacePrefixes
+  );
+
+  const counts = {
+    branding: 0,
+    furnace: 0,
+    patchBacked: 0,
+    conflict: 0,
+    unmanaged: 0,
+  };
+  for (const entry of classified) {
+    if (entry.classification === 'branding') counts.branding++;
+    else if (entry.classification === 'furnace') counts.furnace++;
+    else if (entry.classification === 'patch-backed') counts.patchBacked++;
+    else if (entry.classification === 'conflict') counts.conflict++;
+    else counts.unmanaged++;
+  }
+
+  if (counts.conflict > 0) {
+    return warning(
+      'Engine working tree',
+      `Engine working tree has ${counts.conflict} cross-patch ownership conflict${counts.conflict === 1 ? '' : 's'}. Multiple patches in patches.json claim the same file.`,
+      'Run "fireforge status --ownership" to see the conflicting patches, then run "fireforge verify" and resolve the overlap.'
+    );
+  }
+
+  const managedTotal = counts.branding + counts.furnace + counts.patchBacked;
+
+  if (counts.unmanaged === 0) {
+    const managedDetail = formatManagedDetail(counts);
+    return {
+      name: 'Engine working tree',
+      passed: true,
+      severity: 'ok',
+      message: `${managedTotal} tool-managed change${managedTotal === 1 ? '' : 's'} (${managedDetail}), 0 unmanaged. Use "fireforge status --ownership" for details.`,
+    };
+  }
+
+  const managedTail =
+    managedTotal > 0
+      ? ` (${managedTotal} other change${managedTotal === 1 ? '' : 's'} are tool-managed: ${formatManagedDetail(counts)}).`
+      : '';
+  return warning(
+    'Engine working tree',
+    `Engine working tree has ${counts.unmanaged} unmanaged change${counts.unmanaged === 1 ? '' : 's'}.${managedTail}`,
+    'Use "fireforge status --ownership" to separate patch-backed from unmanaged files, then export, discard, or reset only the unmanaged set.'
+  );
+}

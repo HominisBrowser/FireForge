@@ -375,6 +375,48 @@ describe('patch reorder', () => {
     expect(history).toContain('patch-reorder');
   });
 
+  it('reorders a two-patch swap atomically and leaves the queue verifiable (Eval 1 Finding #7)', async () => {
+    // Reproduces the exact eval scenario: two patches at orders 1 and 2,
+    // move the second to position 1 with `--yes`. The eval saw the
+    // manifest end up with renamed filenames while the on-disk files
+    // stayed at their pre-reorder names — `verify` then failed ENOENT
+    // opening the manifest-renamed file. The postcondition assert added
+    // to `renumberPatchesInManifest` guarantees the disk and manifest
+    // stay in agreement (or the whole reorder aborts).
+    restoreTTY = setInteractiveMode(false);
+    await seed(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-bindgen.patch', 1, ['tools/profiler/rust-api/build.rs']),
+        body: createDiff('tools/profiler/rust-api/build.rs', 'export const A = 1;'),
+      },
+      {
+        metadata: makeMetadata('002-ui-furnace-override.patch', 2, [
+          'toolkit/content/widgets/moz-button/moz-button.css',
+        ]),
+        body: createDiff(
+          'toolkit/content/widgets/moz-button/moz-button.css',
+          '.moz-button { padding: 0; }'
+        ),
+      },
+    ]);
+
+    await patchReorderCommand(projectRoot, '002-ui-furnace-override.patch', { to: 1, yes: true });
+
+    const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
+    expect(entries).toEqual(['001-ui-furnace-override.patch', '002-infra-bindgen.patch']);
+
+    const manifest = JSON.parse(
+      await readFile(join(patchesDir, 'patches.json'), 'utf-8')
+    ) as PatchesManifest;
+    const filenames = manifest.patches.map((p) => p.filename).sort();
+    expect(filenames).toEqual(['001-ui-furnace-override.patch', '002-infra-bindgen.patch']);
+    // Every filename recorded in the manifest must exist on disk —
+    // this is precisely the invariant the eval reported as broken.
+    for (const filename of filenames) {
+      expect(await pathExists(join(patchesDir, filename))).toBe(true);
+    }
+  });
+
   it('--dry-run does not mutate anything', async () => {
     restoreTTY = setInteractiveMode(false);
     await seed(patchesDir, [

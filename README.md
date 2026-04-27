@@ -36,7 +36,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 - **Python 3** (required by Firefox's `mach` build system).
 - **Git**
 - Platform build tools: Xcode on macOS, `build-essential` on Linux, Visual Studio Build Tools on Windows.
-- **Watchman** (optional, only required by `fireforge watch`). Install via `brew install watchman` (macOS), `dnf install watchman` (Fedora), or follow the upstream [Meta docs](https://facebook.github.io/watchman/). `fireforge doctor` surfaces a warning row when it is not on `PATH` so the dependency is visible during the usual onboarding sweep rather than at the watch-mode failure site.
+- **Watchman** (optional, only required by `fireforge watch`). Install via `brew install watchman` (macOS), `dnf install watchman` (Fedora), or follow the upstream [Meta docs](https://facebook.github.io/watchman/). `fireforge doctor` surfaces a warning row when it is not on `PATH` so the dependency is visible during the usual onboarding sweep rather than at the watch-mode failure site. `fireforge watch` resolves watchman's absolute path via `which` / `where` and prepends its directory to the subprocess `PATH` it hands mach, so a homebrew-installed watchman at `/opt/homebrew/bin/watchman` (absent from the Node subprocess's default `PATH` on macOS) is still visible to `mach watch` without the operator having to re-export `PATH` manually.
 
 ### Setup
 
@@ -82,6 +82,10 @@ npx fireforge import              # --dry-run to preview without applying
 npx fireforge download --force
 npx fireforge rebase
 ```
+
+`fireforge download` indexes the extracted Firefox source into a fresh git repository — a one-time 1–3 minute pass on a cold SSD, longer on slow or loaded disks. The monolithic `git add -A` is capped at 10 minutes by default and falls back to a per-directory chunked pass (30 minutes per chunk) when the cap hits. If indexing still times out, the command now raises `GitIndexingTimeoutError` with recovery guidance: extend the cap via `FIREFORGE_GIT_ADD_TIMEOUT_MS` (monolithic) and/or `FIREFORGE_GIT_ADD_CHUNK_TIMEOUT_MS` (chunked) in milliseconds, e.g. `FIREFORGE_GIT_ADD_TIMEOUT_MS=1800000 fireforge download --force` for a 30-minute monolithic budget, then re-run `fireforge download --force` — the resume path picks up from the partial git state so the repeat is not wasted work.
+
+`fireforge rebase --dry-run` refuses when the engine has no baseline commit yet (e.g. the aftermath of an aborted `download --force`), so dry-run and real-run preconditions stay in sync.
 
 ## Patch Workflow
 
@@ -139,6 +143,9 @@ fireforge re-export --all --scan
 # Preview what an export would do without writing
 fireforge export browser/base/content/browser.js --dry-run
 
+# Same preview surface for the aggregate path
+fireforge export-all --name "all-changes" --category ui --dry-run
+
 # Insert a new patch at a specific position
 fireforge export browser/base/content/browser.js --order 3 --name "inserted" --category ui
 fireforge export browser/base/content/browser.js --before 005-ui-sidebar.patch --name "prelim"
@@ -154,7 +161,7 @@ fireforge re-export --files browser/base/content/browser.js 002-ui-toolbar
 fireforge re-export --all --scan --stamp
 ```
 
-`export` refuses when the new patch's `filesAffected` would overlap with files already claimed by another non-superseded patch. Repartitioning ownership is a deliberate operation: the message points at `fireforge re-export --files <paths> <patch>` as the safe primitive. Pass `--allow-overlap` to acknowledge the conflict and proceed anyway — the resulting queue will fail `fireforge verify` immediately, so this is an intentional escape hatch, not a default.
+`export` refuses when the new patch's `filesAffected` would overlap with files already claimed by another non-superseded patch. Repartitioning ownership is a deliberate operation: the message points at `fireforge re-export --files <paths> <patch>` as the safe primitive. Pass `--allow-overlap` to acknowledge the conflict and proceed anyway — the resulting queue will fail `fireforge verify` immediately, so this is an intentional escape hatch, not a default. The flag covers cross-patch _modification_ overlap, where two patches both edit the same file. It does NOT bypass the new-file creation guard: two patches creating the same path on `/dev/null` cannot coexist in any apply order, so that case stays a hard refusal regardless of `--allow-overlap`.
 
 `re-export --scan` also prompts before broadening a patch with more than a handful of newly discovered files or with files spanning multiple directories. The gate keeps the common refresh case frictionless (small, same-directory additions) while catching the failure mode where `--scan` silently pulls an adjacent feature into the wrong patch. Non-interactive mode requires `--yes` to acknowledge a broad expansion; dry-run previews never require confirmation.
 
@@ -206,7 +213,11 @@ This re-exports the fixed patch and clears the conflict state. The command is de
 
 The optional `lintIgnore` field lists lint check IDs to suppress for that patch specifically. Useful for the class of patch that is advisory-noisy by nature — a cohesive branding bundle, a localised-resource pack, an auto-generated manifest — where `--skip-lint` is too blunt and a per-line marker cannot exist (the `.patch` body is regenerated on every export). Threaded through `export`, `re-export`, `re-export --files`, and `lint --per-patch`. Unknown check IDs are a no-op.
 
-The optional `tier` field (only `"branding"` recognised) forces the branding threshold tier for the `large-patch-lines` rule regardless of what `filesAffected` looks like. The automatic branding-tier detection already fires when every file is under `browser/branding/` plus a narrow allowlist of branding-registration siblings (`browser/moz.configure`, `browser/confvars.sh`) — covering the canonical Firefox fork shape. Declare `tier: "branding"` only when the patch legitimately also touches a non-allowlisted sibling the auto-detector cannot reach (a fork-specific theme override under `browser/themes/<name>/`, a vendor-specific icon resource, etc.). Precedence is `test > branding > general`: a patch of all-tests always gets the more permissive test-tier thresholds even if it declares `tier: "branding"`. Unknown tier values are rejected at load time rather than silently stripped, so a typo surfaces as a loader error. Prefer `tier` over `lintIgnore: ["large-patch-lines"]` when the patch is legitimately branding-shaped — `tier` keeps the rule running at the correct thresholds (so the warning still surfaces if the patch crosses them); `lintIgnore` drops the rule entirely.
+Settable through the CLI in two places. `fireforge export --lint-ignore <check-id>` (repeatable) writes the field on creation; `fireforge re-export <name> --lint-ignore <check-id>` (repeatable, append/union semantics, de-duplicated) adds entries to an existing patch on the next refresh. For metadata-only edits that should **not** regenerate the `.patch` body — including the inverse `--remove` and `--clear` modes that re-export's append-only flag cannot express — use `fireforge patch lint-ignore <name> --add <id> | --remove <id> | --clear`.
+
+The optional `tier` field (only `"branding"` recognised) forces the branding threshold tier for the `large-patch-files` and `large-patch-lines` rules regardless of what `filesAffected` looks like. The automatic branding-tier detection already fires when every file is under `browser/branding/` plus a narrow allowlist of branding-registration siblings (`browser/moz.configure`, `browser/confvars.sh`) — covering the canonical Firefox fork shape. Declare `tier: "branding"` only when the patch legitimately also touches a non-allowlisted sibling the auto-detector cannot reach (a fork-specific theme override under `browser/themes/<name>/`, a vendor-specific icon resource, etc.). Precedence is `test > branding > general`: a patch of all-tests always gets the more permissive test-tier thresholds even if it declares `tier: "branding"`. Unknown tier values are rejected at load time rather than silently stripped, so a typo surfaces as a loader error. Prefer `tier` over `lintIgnore: ["large-patch-lines"]` when the patch is legitimately branding-shaped — `tier` keeps the rule running at the correct thresholds (so the warning still surfaces if the patch crosses them); `lintIgnore` drops the rule entirely.
+
+Settable via `fireforge export --tier branding` on creation, `fireforge re-export <name> --tier branding` on refresh, and `fireforge patch tier <name> --tier branding | --clear` for a metadata-only edit that does not rewrite the `.patch` body. The CLI rejects values other than `branding` up-front (matching the validator's strictness), and `re-export --tier` / `--lint-ignore` refuse `--all` because mass tier/ignore edits across a heterogeneous queue are virtually always footguns.
 
 If the manifest drifts after an interrupted export or manual edits, `fireforge import` will stop rather then silently applying a stale stack. Use `fireforge doctor --repair-patches-manifest` to rebuild it from disk. Because the rebuild is deterministic, the result will always be consistent with what is actually on the filesystem.
 
@@ -219,24 +230,24 @@ If the manifest drifts after an interrupted export or manual edits, `fireforge i
 
 By default, a standalone `fireforge lint` (no arguments) lints the **aggregate** `git diff HEAD` — i.e. every applied patch summed — with tool-managed branding paths (`browser/branding/<binaryName>/`) excluded. A fresh-setup workspace carries a large generated branding diff that operators did not author directly, and letting it through tripped the patch-size and license-header rules on content that matches the `branding` bucket in `fireforge status`. When the exclusion fires the command prints a one-line note naming the excluded count so the filter is visible. On a repo where `fireforge import` or `fireforge rebase` has just applied the full queue, the patch-size rules (`large-patch-lines`, `large-patch-files`) fire against the sum, which reads as "my queue is broken" when it is really an artefact of aggregation. Use `fireforge lint --per-patch` to rescope the diff to each patch's own `filesAffected`, honouring the patch's own `lintIgnore`. Cross-patch rules (`duplicate-new-file-creation`, `forward-import`) still run once over the whole queue either way. Pass explicit file paths to narrow the scope further — explicit-path mode does lint branding files (the operator's explicit request wins over the branding exclusion); the three modes (aggregate, file-scoped, per-patch) are mutually exclusive.
 
-| Check                          | Scope                                                                                           | Severity                 |
-| ------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------ |
-| `missing-license-header`       | New files (JS/CSS/FTL)                                                                          | error                    |
-| `relative-import`              | JS/MJS files                                                                                    | error                    |
-| `token-prefix-violation`       | CSS files (with furnace)                                                                        | error                    |
-| `raw-color-value`              | Introduced CSS color values (allowlist via `patchLint.rawColorAllowlist`)                       | error                    |
-| `duplicate-new-file-creation`  | Same path created by multiple patches                                                           | error                    |
-| `forward-import`               | Patch imports from a later-patch file                                                           | error                    |
-| `missing-jsdoc`                | Exports in patch-owned `.sys.mjs`                                                               | error                    |
-| `jsdoc-param-mismatch`         | Exports in patch-owned `.sys.mjs`                                                               | error                    |
-| `jsdoc-missing-returns`        | Exports in patch-owned `.sys.mjs`                                                               | error                    |
-| `checkjs-type-error`           | Patch-owned `.sys.mjs` (opt-in)                                                                 | error                    |
-| `missing-modification-comment` | Modified upstream JS/MJS                                                                        | warning                  |
-| `modified-file-missing-header` | Modified upstream files (JS/CSS/FTL)                                                            | warning                  |
-| `file-too-large`               | New files (tiered: 500/750/900 general, 1200/1400/1600 test)                                    | notice / warning / error |
-| `observer-topic-naming`        | Observer topics with binaryName                                                                 | warning                  |
-| `large-patch-files`            | Patches affecting >5 files                                                                      | warning                  |
-| `large-patch-lines`            | Patch line count (tiered: 800/1500/3000 general, 1500/3000/6000 test, 3000/8000/20000 branding) | notice / warning / error |
+| Check                          | Scope                                                                                            | Severity                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------ | ------------------------ |
+| `missing-license-header`       | New files (JS/CSS/FTL)                                                                           | error                    |
+| `relative-import`              | JS/MJS files                                                                                     | error                    |
+| `token-prefix-violation`       | CSS files (with furnace)                                                                         | error                    |
+| `raw-color-value`              | Introduced CSS color values (allowlist via `patchLint.rawColorAllowlist`)                        | error                    |
+| `duplicate-new-file-creation`  | Same path created by multiple patches                                                            | error                    |
+| `forward-import`               | Patch imports from a later-patch file                                                            | error                    |
+| `missing-jsdoc`                | Exports in patch-owned `.sys.mjs`                                                                | error                    |
+| `jsdoc-param-mismatch`         | Exports in patch-owned `.sys.mjs`                                                                | error                    |
+| `jsdoc-missing-returns`        | Exports in patch-owned `.sys.mjs`                                                                | error                    |
+| `checkjs-type-error`           | Patch-owned `.sys.mjs` (opt-in)                                                                  | error                    |
+| `missing-modification-comment` | Modified upstream JS/MJS                                                                         | warning                  |
+| `modified-file-missing-header` | Modified upstream files (JS/CSS/FTL)                                                             | warning                  |
+| `file-too-large`               | New files (tiered: 500/750/900 general, 1200/1400/1600 test)                                     | notice / warning / error |
+| `observer-topic-naming`        | Observer topics with binaryName                                                                  | warning                  |
+| `large-patch-files`            | Patches affecting many files (tiered: >5 general, >5 test, >60 branding)                         | warning                  |
+| `large-patch-lines`            | Patch line count (tiered: 800/1500/3000 general, 1500/3000/6000 test, 8000/18000/30000 branding) | notice / warning / error |
 
 **JSDoc validation** uses AST-based analysis (Acorn) to validate exported APIs in patch-owned `.sys.mjs` files. A file is "patch-owned" if it was newly created by the current diff or by an existing patch in the queue. Functions must document every `@param` (names must match) and include `@returns` when the function returns a value. Exported constants and classes require a JSDoc block.
 
@@ -259,17 +270,18 @@ fireforge status --json             # machine-readable classified output
 
 Then fix with the appropriate primitive:
 
-| Problem                                        | Fix                                                                   |
-| ---------------------------------------------- | --------------------------------------------------------------------- |
-| Two patches each creating the same file        | `fireforge patch delete <duplicate>` or `fireforge re-export --files` |
-| A patch imports from a module in a later patch | `fireforge patch reorder <later> --before <importer>`                 |
-| Wrong patch ordering                           | `fireforge patch reorder <patch> --to <N>`                            |
-| Ordinal gaps after deletes/splits              | `fireforge patch compact`                                             |
-| A patch claims files that belong elsewhere     | `fireforge re-export --files <subset> <patch>`                        |
-| Manifest references a missing patch file       | `fireforge doctor --repair-patches-manifest`                          |
-| Unmanaged changes you want to discard          | `fireforge discard <file>` or `fireforge reset`                       |
+| Problem                                        | Fix                                                                                                              |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Two patches each creating the same file        | `fireforge patch delete <duplicate>` or `fireforge re-export --files`                                            |
+| A patch imports from a module in a later patch | `fireforge patch reorder <later> --before <importer>`                                                            |
+| Wrong patch ordering                           | `fireforge patch reorder <patch> --to <N>`                                                                       |
+| Ordinal gaps after deletes/splits              | `fireforge patch compact`                                                                                        |
+| A patch claims files that belong elsewhere     | `fireforge re-export --files <subset> <patch>`                                                                   |
+| Manifest references a missing patch file       | `fireforge doctor --repair-patches-manifest`                                                                     |
+| Dangling widget / locale registration in patch | Re-run `fireforge export` without `--exclude-furnace` to capture the source files, or revert furnace changes     |
+| Unmanaged changes you want to discard          | `fireforge discard <file>` (also accepts a directory path to discard everything beneath it) or `fireforge reset` |
 
-Every destructive command defaults to an interactive confirmation with a change summary. `--dry-run` previews without writing; `--yes` skips the prompt for CI; `--force-unsafe` bypasses structural refusals when you have context the linter cannot see. Do not hand-edit `patches.json` as the file is owned by FireForge.
+Every destructive command defaults to an interactive confirmation with a change summary. `--dry-run` previews without writing; `--yes` skips the prompt for CI; `--force-unsafe` bypasses structural refusals when you have context the linter cannot see. Do not hand-edit `patches.json` as the file is owned by FireForge — `doctor --repair-patches-manifest` reconstructs missing metadata, and `fireforge re-export <filename> --description "<text>"` overwrites recovered entries with operator-supplied metadata through the tool. `fireforge verify` cross-checks every registration hunk in each patch body against the files the queue and engine supply, so a patch that registers a widget / locale without carrying its source surfaces as a `dangling-registration` error rather than slipping through as "Verify clean"; `fireforge export-all --exclude-furnace` refuses up-front when it would produce that shape.
 
 ## Wiring Custom Code
 
@@ -346,11 +358,11 @@ fireforge furnace chrome-doc create mybrowser --with-tests # + xpcshell packagin
 
 The command writes:
 
-- `engine/browser/base/content/<name>.xhtml` — XHTML shell, optional titlebar-buttonbox, Fluent `<link>`.
+- `engine/browser/base/content/<name>.xhtml` — XHTML shell. `data-l10n-id` is bound on the leaf `<title>` only (binding it on the root `<window>` would let Fluent's first-paint translation pass overwrite the entire body subtree, the standard `data-l10n-id`-on-non-leaf failure mode). The `<head>` loads `chrome://global/content/customElements.js` ahead of the per-doc subscript so any `<moz-*>` widget the author drops into the body resolves through the toolkit registry instead of silently degrading to `HTMLUnknownElement` — matches the `webrtcIndicator.xhtml` shape upstream uses for non-`browser.xhtml` chrome documents. Under `--with-titlebar` (the default) the root carries the `navigator:browser` minimum attribute set: `windowtype="navigator:browser"`, `customtitlebar="true"`, default `width="1024"` / `height="640"`, and `persist="screenX screenY width height sizemode"` so XULStore remembers geometry across restarts; without these a fork shipping the scaffold verbatim opens at the OS intrinsic minimum size on first launch and forgets the user's window position.
 - `engine/browser/base/content/<name>.js` — startup-topic observer fired on first idle.
-- `engine/browser/themes/shared/<name>-chrome.css` — scoped CSS; emits the macOS `.titlebar-button { display: none }` carve-out under `--no-titlebar`.
+- `engine/browser/themes/shared/<name>-chrome.css` — scoped CSS. Under `--with-titlebar` the buttonbox container is a `-moz-window-dragging: drag` region and `.titlebar-buttonbox` opts into the platform-native `-moz-window-button-box` appearance so the OS renders traffic-light / minimize-maximize-close controls in their canonical positions; under `--no-titlebar` the macOS `.titlebar-button { display: none }` carve-out is emitted instead so frameless overlays don't inherit the platform window controls `global.css` applies by default.
 - `engine/browser/locales/en-US/browser/<name>.ftl` — Fluent stub keyed on `<name>-window-title`.
-- Appends the corresponding `jar.mn` / `jar.inc.mn` / `locales/jar.mn` entries.
+- Appends the corresponding `jar.mn` / `jar.inc.mn` entries. The locales/jar.mn append is suppressed when the fork's existing `engine/browser/locales/jar.mn` already carries a `[localization] (%browser/**/*.ftl)` (or `(%browser/*.ftl)`) wildcard that would already pick up the scaffolded FTL — on those forks a per-file `locale/<name>.ftl` entry would be dead weight at best and an outright build break when the fork has dropped the `% locale browser …` registration the per-file entry depends on. Forks still on the legacy registration get the per-file entry as before.
 - When `--with-tests` is set, also scaffolds an xpcshell test + `xpcshell.toml` under `engine/browser/base/content/test/<binary>-xpcshell/<name>/` that probes the packaged app directory (`Services.dirsvc.get("XCurProcD")/chrome/browser/...`) directly rather than going through `chrome://` URI resolution — see "Platform module compatibility" and the xpcshell chrome-URI note further down for why direct filesystem probing is the reliable way to verify chrome-doc packaging. Registration in `XPCSHELL_TESTS_MANIFESTS` is left to the operator because the owning moz.build depends on the fork layout.
 
 Writes are transactional: a SIGINT mid-scaffold rolls back every touched file. Requires an existing engine — run `fireforge download` first.
@@ -417,6 +429,8 @@ fireforge config customKey "value" --force
 
 Writes are serialised behind a sidecar lock — two concurrent `fireforge config` invocations against the same `fireforge.json` (for example, parallel automation steps) queue instead of racing the read-modify-write. The lock is released automatically on process exit; stale locks from a crashed earlier command are reclaimed on the next invocation via the PID-alive probe.
 
+Re-setting a key to its current value is a no-op: `fireforge.json` is not rewritten, key ordering is preserved, and the success log surfaces `<key> = <value> (unchanged)` instead of a fresh `Set …` line. This means automation that idempotently runs `fireforge config <key> <value>` no longer produces spurious diffs in `fireforge.json`.
+
 ### Patch queue management
 
 ```bash
@@ -431,9 +445,21 @@ fireforge patch reorder 003-ui-sidebar.patch --before 001-branding-logo.patch
 
 # Close ordinal gaps after deletes or splits (e.g. 1, 3, 7 → 1, 2, 3)
 fireforge patch compact
+
+# Set or clear the threshold-tier override on a single patch
+# (no .patch body rewrite — manifest entry only)
+fireforge patch tier 001-branding-assets.patch --tier branding
+fireforge patch tier 001-branding-assets.patch --clear
+
+# Edit the lintIgnore list on a single patch (one mode per invocation)
+fireforge patch lint-ignore 001-branding-assets.patch --add large-patch-lines --add large-patch-files
+fireforge patch lint-ignore 001-branding-assets.patch --remove large-patch-lines
+fireforge patch lint-ignore 001-branding-assets.patch --clear
 ```
 
-All subcommands support `--dry-run` and `--yes`.
+All `patch <verb>` subcommands accept three identifier forms for their target: the ordinal number (`fireforge patch reorder 3 --to 1`), the full filename (`003-ui-sidebar-tweaks.patch`), or the manifest `name` handle the patch was exported with (`ui-sidebar-tweaks`). Anchors passed to `--before` / `--after` accept the same three forms. All subcommands support `--dry-run` and `--yes`.
+
+`patch tier` and `patch lint-ignore` are metadata-only edits: they update `patches/patches.json` under the patch directory lock and never rewrite the `.patch` body. Reach for them when an operator-visible advisory (e.g. `large-patch-files` firing on a 56-file fresh-fork branding bundle) needs the threshold-tier override or a per-patch lint suppression but the patch body is already correct — running `re-export` for that case wastes an engine read + diff regeneration. `patch lint-ignore` modes (`--add` / `--remove` / `--clear`) are mutually exclusive; `patch tier` rejects `--tier` and `--clear` together. The history log records each invocation under `operation: "patch-tier"` / `"patch-lint-ignore"` for audit.
 
 ### Additional workflow commands
 
@@ -445,10 +471,14 @@ fireforge package
 fireforge watch
 
 # Add a CSS design token (requires `fireforge furnace init` first; see the Furnace/Tokens section below)
-fireforge token add --category 'Colors — General' -- --my-color 'light-dark(#fff, #000)'
+# The `--` separator is required because the token name itself starts with `--`,
+# which Commander would otherwise read as an option flag. Bare names without `--`
+# are accepted directly and get the configured `tokenPrefix` prepended.
+fireforge token add --category 'Colors — General' --mode static -- --my-color 'light-dark(#fff, #000)'
+fireforge token add --category 'Colors — General' --mode static my-color   '#fff'   # bare-name form
 ```
 
-Tokens live in the Furnace-managed tokens CSS file (`engine/browser/themes/shared/<binaryName>-tokens.css`), scaffolded by `fireforge furnace init` alongside `furnace.json`. The scaffold seeds a default set of categories (`Colors — General`, `Colors — Canvas`, `Colors — Experiment`, `Spacing`); add a category by hand as a `/* = My Category = */` comment inside the `:root { … }` block if you need another. `fireforge furnace init` also registers the tokens CSS path in `patchLint.rawColorAllowlist` so raw color literals inside it are not flagged by `fireforge lint`, and derives `tokenPrefix: --<binaryName>-` from `fireforge.json`'s `binaryName` so `fireforge token coverage` has a prefix to key off on the very first run. Projects that prefer a different prefix can override it in `furnace.json` after init.
+Tokens live in the Furnace-managed tokens CSS file (`engine/browser/themes/shared/<binaryName>-tokens.css`), scaffolded by `fireforge furnace init` alongside `furnace.json`. The scaffold seeds a default set of categories (`Colors — General`, `Colors — Canvas`, `Colors — Experiment`, `Spacing`); add a category by hand as a `/* = My Category = */` comment inside the `:root { … }` block if you need another. `fireforge furnace init` does three more things in the same step so the file is owned end-to-end by tooling: it registers the tokens CSS path in `patchLint.rawColorAllowlist` (so raw color literals inside it are not flagged by `fireforge lint`); it adds the matching `skin/classic/browser/<binaryName>-tokens.css (../shared/<binaryName>-tokens.css)` entry to `browser/themes/shared/jar.inc.mn` (so `fireforge status` does not flag the file as unmanaged or unregistered); and it derives `tokenPrefix: --<binaryName>-` from `fireforge.json`'s `binaryName` so `fireforge token coverage` has a prefix to key off on the very first run. Projects that prefer a different prefix can override it in `furnace.json` after init.
 
 ### Diff-scoped lint (`lint --since`)
 
@@ -470,6 +500,8 @@ fireforge lint --since main --only-introduced
 
 The failure message reports how many cumulative errors were suppressed by the flag so a branch that passed only because of the flag still tells the operator what was hidden. Without `--since`, `--only-introduced` is rejected up-front — there is no introduced-vs-cumulative distinction to scope to.
 
+Aggregate patch-size findings (`large-patch-files`, `large-patch-lines`) describe the whole diff rather than a single file. Under `--since` + a non-empty diff they tag `[introduced]` (the aggregate IS the introduced work); with an empty diff they tag `[cumulative]` (the finding describes drift accumulated across earlier commits).
+
 ### Post-build audit and auto-configure
 
 `fireforge build` is a transactional step: after a successful mach build it audits the dist bundle against engine-relative paths touched since the last successful build, and warns per file that is packageable-by-convention (`.js`/`.mjs`/`.css`/`.ftl`/`.xhtml`/`app/profile/…`) but has no matching artifact or whose dist mtime is older than the source. Ends every build with a `Packaged: N updated, M stale, K missing, S skipped` summary. The audit is warn-only — it never fails a build that mach reported green.
@@ -487,6 +519,10 @@ The audit applies seven routing rules to suppress false positives that previousl
 The build also auto-runs `mach configure` before the mach build step when any `moz.build`, `moz.configure`, or `Makefile.in` changed since the last successful build. Prevents incremental builds from silently skipping work against a stale recursive-make backend. Emits a `Backend config changed; running mach configure first...` banner when it fires.
 
 Mach build failures with known-cryptic mozbuild errors now print actionable hints. Example: a `JS_PREFERENCE_PP_FILES` entry with no `#filter` / `#expand` directives now prints `Hint: ...use JS_PREFERENCE_FILES instead, or add at least one #filter / #expand directive to the file.` alongside the raw mach traceback.
+
+When mach prints a post-build `config.status is out of date …` or `Config object not found by mach. / Configure complete!` banner on a successful build, FireForge surfaces a one-line annotation immediately before its own `Build completed in Xm Ys!` outro explaining that the banner is a known side effect of tool-managed branding edits applied before the build and that the build does not need to be re-run. The FireForge exit code remains authoritative regardless of the mach guard text.
+
+The reported `Build completed in Xm Ys!` duration is wall-clock measured with `Date.now()`, so it includes any time the host spent suspended (laptop sleep, system idle) during the build. Treat it as wall-clock-with-sleep, not active CPU time, when comparing builds across machines or sessions.
 
 ### Relocated workspaces: `fireforge build --rewrite-mozinfo`
 
@@ -557,6 +593,18 @@ Design tokens imported from the fork's palette are enforced by `tokenPrefix`, bu
 
 Both rules compose with the existing `tokenPrefix` / `tokenAllowlist` checks and apply to both component validation and patch-stack lint.
 
+### Platform variables in Furnace (token coverage)
+
+`fireforge token coverage` partitions `var(--…)` usages into three buckets: fork-owned tokens (matching `tokenPrefix`), allowlisted exceptions (explicit `tokenAllowlist` entries, plus platform prefixes), and unknown. Platform prefixes default to `['--moz-']` so upstream Firefox variables in copied baselines (e.g. the CSS that lands under `toolkit/content/widgets/<name>/` after `furnace override <name> -t css-only`) don't drag the fork-owned coverage percentage down.
+
+```json
+{
+  "platformPrefixes": ["--moz-", "--in-content-"]
+}
+```
+
+Set this in `furnace.json` to extend the list (forks with additional platform prefixes) or pass an empty array to restore the pre-0.18 strict contract where `--moz-*` counted as unknown. Allowlisted usages are reported separately and are NOT counted toward the coverage denominator, so a 100% fork-owned project with a copied upstream baseline reads as `100%` instead of `1%`.
+
 ### Test harness options
 
 `fireforge furnace create --with-tests` scaffolds a **browser-chrome mochitest**. Use this when the component renders UI that depends on the tab strip (`openLinkIn` → `URILoadingHelper`, `gBrowser`, etc.).
@@ -575,9 +623,9 @@ The two flags can be combined — `--with-tests --xpcshell` writes both harnesse
 
 ### xpcshell appdir auto-injection on rebranded forks
 
-`fireforge test` auto-resolves and injects `--app-path=<absolute>` into the underlying `mach test` invocation when the nearest `xpcshell.toml` sets `firefox-appdir = "browser"` and the active build's `appname` is anything other than `firefox`. Without this, every `resource:///modules/<name>.sys.mjs` import inside the harness throws `Failed to load resource:///modules/…` because the upstream xpcshell harness reads the appdir override under the appname-keyed manifest field (`<appname>-appdir`) — the literal `firefox-appdir = "browser"` directive is silently ignored on rebranded forks, `appPath` falls back to `xrePath`, and `resource:///` resolves one level above the real app root. The resolver walks each test path to its nearest manifest, reads `mozinfo.json` for the active appname, prefers any `<appname>-appdir` already in the manifest, and otherwise probes `<objDir>/dist/bin/<value>` and `<objDir>/dist/<bundle>.app/Contents/Resources/<value>` for the absolute target. Operator overrides via `--mach-arg=--app-path=…` always win and skip the resolver silently. Mismatches across multiple test paths and unresolvable manifest values surface as warnings rather than guesses, so triage reaches the underlying cause.
+`fireforge test` auto-resolves and injects `--app-path=<absolute>` into the underlying `mach test` invocation when the nearest `xpcshell.toml` sets `firefox-appdir = "browser"` and the active build's `appname` is anything other than `firefox`. Without this, every `resource:///modules/<name>.sys.mjs` import inside the harness throws `Failed to load resource:///modules/…` because the upstream xpcshell harness reads the appdir override under the appname-keyed manifest field (`<appname>-appdir`) — the literal `firefox-appdir = "browser"` directive is silently ignored on rebranded forks, `appPath` falls back to `xrePath`, and `resource:///` resolves one level above the real app root. The resolver walks each test path to its nearest manifest, reads `mozinfo.json` for the active appname, prefers any `<appname>-appdir` already in the manifest, and otherwise probes the platform-appropriate layout for the absolute target: on macOS, `<objDir>/dist/<bundle>.app/Contents/Resources/<value>` is preferred over `<objDir>/dist/bin/<value>` (the `dist/bin` symlink on Darwin points at the binaries directory, not the Resources tree where modules live); on other platforms `dist/bin/<value>` is preferred and the macOS bundle layout is the fallback. Operator overrides via `--mach-arg=--app-path=…` always win and skip the resolver silently. Mismatches across multiple test paths and unresolvable manifest values surface as warnings rather than guesses, so triage reaches the underlying cause.
 
-The durable fix is to add `<appname>-appdir = "browser"` alongside `firefox-appdir = "browser"` in the manifest — the harness then reads the appname-keyed value directly without auto-injection. The xpcshell appdir hint that fires when the symptom persists despite injection lists this option first.
+The durable fix is to add `<appname>-appdir = "browser"` alongside `firefox-appdir = "browser"` in the manifest — the harness then reads the appname-keyed value directly without auto-injection. This is the most reliable fix on rebranded macOS builds where mach's xpcshell runner binds `-a` to the `.app/Contents/Resources` default and may not honour `--app-path` overrides. The xpcshell appdir hint that fires when the symptom persists despite injection lists this option first.
 
 ### Smoke-run mode (`fireforge run --smoke-exit`)
 

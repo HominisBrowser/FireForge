@@ -294,6 +294,15 @@ export async function wireCommand(
   // dry-run is meant to preview the mutation plan without requiring
   // the subscript to already exist, matching the "plan before write"
   // pattern operators rely on for setup scripts).
+  //
+  // Dry-run keeps the existence check advisory rather than fatal: the
+  // "wire first, create file after" workflow is a legitimate use of
+  // preview, but operators who run dry-run over a typo were surprised
+  // when the real command then refused with `Subscript file not
+  // found`. 2026-04-23 eval (Finding in eval 2): dry-run produced a
+  // plausible plan and the non-dry-run invocation then errored. The
+  // info line surfaces the mismatch in preview mode so the operator
+  // can act on the warning before re-running without --dry-run.
   if (!options.dryRun) {
     const paths = getProjectPaths(projectRoot);
     const subscriptPath = join(paths.engine, subscriptDir, `${name}.js`);
@@ -302,6 +311,14 @@ export async function wireCommand(
         `Subscript file not found: ${subscriptDir}/${name}.js\n` +
           'Create the file in engine/ before wiring.',
         'name'
+      );
+    }
+  } else {
+    const paths = getProjectPaths(projectRoot);
+    const subscriptPath = join(paths.engine, subscriptDir, `${name}.js`);
+    if (!(await pathExists(subscriptPath))) {
+      info(
+        `Note: ${subscriptDir}/${name}.js does not exist yet — the real wire command will require it before writing. Create the file before re-running without --dry-run.`
       );
     }
   }

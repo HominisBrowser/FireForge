@@ -147,6 +147,7 @@ export async function configCommand(
     const parsedValue = parseValue(value, key);
     const keyIsKnown = (SUPPORTED_CONFIG_PATHS as readonly string[]).includes(key);
 
+    let unchanged: boolean;
     try {
       // Serialise the read → mutate → write round-trip behind the sidecar
       // config lock so two concurrent `fireforge config` invocations can't
@@ -158,7 +159,22 @@ export async function configCommand(
       // were never enough on their own — the lost update happens before
       // the rename, inside the read-modify step. Readers stay lock-free
       // (see `withConfigFileLock` docstring).
-      await withConfigFileLock(projectRoot, async () => {
+      unchanged = await withConfigFileLock(projectRoot, async () => {
+        // 2026-04-26 eval Finding 11: short-circuit when the new value
+        // matches the current on-disk value. Pre-fix, every set ran
+        // through `mutateConfig` + `writeConfig`, which round-trips
+        // through `JSON.stringify` and rewrites the file even when no
+        // semantic change happened — the rewrite reorders top-level
+        // keys (`license`, `markerComment`, etc.) on every harmless
+        // re-set, producing diff churn for no reason. The check uses
+        // the raw on-disk document so forced-keys round-trip the same
+        // as known keys.
+        const rawConfig = await loadRawConfigDocument(projectRoot);
+        const currentValue = getNestedValue(rawConfig, key);
+        if (deepEqual(currentValue, parsedValue)) {
+          return true;
+        }
+
         // `--force` is intended as an escape hatch for *unknown* keys; it
         // should not also let the user write a structurally invalid value
         // for a *known* key. Apply strict validation whenever the key is
@@ -169,7 +185,6 @@ export async function configCommand(
           // keys (which `validateConfig` would strip) survive the round-trip.
           // Without this, writing a second --force key would silently drop
           // every earlier forced key from fireforge.json.
-          const rawConfig = await loadRawConfigDocument(projectRoot);
           const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
           await writeConfigDocument(projectRoot, updatedConfig);
         } else {
@@ -177,14 +192,45 @@ export async function configCommand(
           const updatedConfig = mutateConfig(config, key, parsedValue);
           await writeConfig(projectRoot, updatedConfig);
         }
+        return false;
       });
     } catch (error: unknown) {
       throw new InvalidArgumentError(`Invalid value for "${key}": ${toError(error).message}`, key);
     }
-    success(`Set ${key} = ${formatValue(parsedValue)}`);
+    if (unchanged) {
+      info(`${key} = ${formatValue(parsedValue)} (unchanged)`);
+    } else {
+      success(`Set ${key} = ${formatValue(parsedValue)}`);
+    }
   }
 
   outro('');
+}
+
+/**
+ * Structural equality check covering the shapes that
+ * `fireforge config` accepts: primitives (strings, numbers, booleans),
+ * `null`, arrays of primitives, and nested objects. Used to short-circuit
+ * no-op writes (Finding 11) — when the parsed value matches the current
+ * on-disk value, skip the mutate + write step entirely.
+ */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return a === b;
+  if (typeof a !== typeof b) return false;
+  if (typeof a !== 'object') return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    return a.every((v, i) => deepEqual(v, b[i]));
+  }
+  if (Array.isArray(b)) return false;
+  const ar = a as Record<string, unknown>;
+  const br = b as Record<string, unknown>;
+  const keysA = Object.keys(ar);
+  const keysB = Object.keys(br);
+  if (keysA.length !== keysB.length) return false;
+  return keysA.every((k) => deepEqual(ar[k], br[k]));
 }
 
 /** Registers the config command on the CLI program. */

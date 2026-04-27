@@ -49,6 +49,33 @@ vi.mock('../../core/git-status.js', () => ({
   ),
 }));
 
+vi.mock('../../core/status-classify.js', () => ({
+  // Default classifier mirrors the real contract just enough for the doctor
+  // tests: anything under browser/branding/ or browser/moz.configure becomes
+  // `branding`; other entries become `unmanaged`. Individual tests override
+  // this with a custom implementation when they need to exercise the
+  // patch-backed / furnace / conflict buckets.
+  classifyFiles: vi.fn(
+    (
+      entries: Array<{ status: string; file: string }>,
+      _engineDir: string,
+      _patchesDir: string,
+      binaryName: string
+    ) =>
+      Promise.resolve(
+        entries.map((entry) => {
+          const isBranding =
+            entry.file === 'browser/moz.configure' ||
+            entry.file.startsWith(`browser/branding/${binaryName}/`);
+          return {
+            ...entry,
+            classification: isBranding ? ('branding' as const) : ('unmanaged' as const),
+          };
+        })
+      )
+  ),
+}));
+
 vi.mock('../../core/mach.js', () => ({
   ensurePython: vi.fn(() => Promise.resolve()),
   ensureMach: vi.fn(() => Promise.resolve()),
@@ -78,6 +105,18 @@ vi.mock('../../core/furnace-config.js', () => ({
   ),
   loadFurnaceState: vi.fn(() => Promise.resolve({})),
   updateFurnaceState: vi.fn(() => Promise.resolve()),
+  writeFurnaceConfig: vi.fn(() => Promise.resolve()),
+  // Non-furnace projects contribute no managed prefixes — mirror the
+  // real helper's contract so the ownership-aware doctor check can call
+  // it unconditionally.
+  collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set<string>())),
+}));
+
+vi.mock('node:fs/promises', () => ({
+  readdir: vi.fn(() => Promise.resolve([])),
+  stat: vi.fn(() => Promise.reject(new Error('not found'))),
+  readFile: vi.fn(() => Promise.reject(new Error('not found'))),
+  rm: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../core/furnace-apply.js', () => ({
@@ -121,13 +160,19 @@ vi.mock('../../core/patch-manifest.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
+  readJson: vi.fn(() => Promise.reject(new Error('not found'))),
 }));
 
 vi.mock('../../utils/process.js', () => ({
   // Default to "watchman is installed" so the new check shows ok for the
   // broad swath of existing tests that don't care about watch mode. The
   // specific regression test for the missing-watchman branch overrides
-  // this with mockResolvedValueOnce(false).
+  // this with mockResolvedValueOnce(undefined).
+  // Doctor switched from `executableExists` (boolean) to `findExecutable`
+  // (returns the resolved path or undefined) so the OK row can name the
+  // path it actually found — see the 2026-04-25 eval finding where the
+  // operator's interactive shell saw no watchman but doctor reported OK.
+  findExecutable: vi.fn(() => Promise.resolve('/usr/local/bin/watchman')),
   executableExists: vi.fn(() => Promise.resolve(true)),
 }));
 
@@ -140,6 +185,8 @@ vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
+import { readdir } from 'node:fs/promises';
+
 import { configExists, loadConfig, loadState } from '../../core/config.js';
 import { applyAllComponents } from '../../core/furnace-apply.js';
 import { hasCustomEngineDrift, hasOverrideEngineDrift } from '../../core/furnace-apply-helpers.js';
@@ -148,6 +195,7 @@ import {
   loadFurnaceConfig,
   loadFurnaceState,
   updateFurnaceState,
+  writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { validateAllComponents } from '../../core/furnace-validate.js';
@@ -160,8 +208,9 @@ import {
   validatePatchesManifestConsistency,
   validatePatchIntegrity,
 } from '../../core/patch-manifest.js';
+import { classifyFiles } from '../../core/status-classify.js';
 import type { FurnaceState } from '../../types/furnace.js';
-import { pathExists } from '../../utils/fs.js';
+import { pathExists, readJson } from '../../utils/fs.js';
 import { error, outro, success, warn } from '../../utils/logger.js';
 import {
   DOCTOR_CHECK_ORDER,
@@ -241,7 +290,7 @@ describe('doctorCommand', () => {
         status: ' M',
         indexStatus: ' ',
         worktreeStatus: 'M',
-        file: 'browser/moz.configure',
+        file: 'toolkit/content/unmanaged.mjs',
         isUntracked: false,
         isRenameOrCopy: false,
         isDeleted: false,
@@ -254,9 +303,66 @@ describe('doctorCommand', () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it('degrades the summary and exit code for drifted and dirty engine state', async () => {
-    vi.mocked(loadState).mockResolvedValue({ baseCommit: 'baseline' });
-    vi.mocked(getHead).mockResolvedValue('moved-head');
+  it('reports a patch-backed imported queue as passing with an ownership summary', async () => {
+    // Motivating case (eval 2): `fireforge import` on hominis applied 126
+    // patches. Every dirty row was patch-backed. The old check still
+    // warned "126 local changes" and told the operator to export/discard
+    // /reset — advice that would have dropped the entire import.
+    const patchBackedEntries = Array.from({ length: 126 }).map((_, i) => ({
+      status: ' M',
+      indexStatus: ' ' as const,
+      worktreeStatus: 'M' as const,
+      file: `browser/components/patch-backed-${i}.js`,
+      isUntracked: false,
+      isRenameOrCopy: false,
+      isDeleted: false,
+    }));
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue(patchBackedEntries);
+    vi.mocked(classifyFiles).mockResolvedValueOnce(
+      patchBackedEntries.map((entry) => ({ ...entry, classification: 'patch-backed' as const }))
+    );
+
+    const result = await doctorCommand('/project');
+
+    expect(outro).toHaveBeenCalledWith('All 15 checks passed!');
+    expect(
+      vi.mocked(success).mock.calls.some(([message]) => message.includes('126 tool-managed'))
+    ).toBe(true);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('surfaces cross-patch ownership conflicts via the working-tree row', async () => {
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      {
+        status: ' M',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        file: 'browser/base/jar.mn',
+        isUntracked: false,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+    ]);
+    vi.mocked(classifyFiles).mockResolvedValueOnce([
+      {
+        status: ' M',
+        file: 'browser/base/jar.mn',
+        classification: 'conflict',
+        claimedBy: ['010-ui-a.patch', '011-ui-b.patch'],
+      },
+    ]);
+
+    const result = await doctorCommand('/project');
+
+    expect(
+      vi
+        .mocked(warn)
+        .mock.calls.some(([message]) => message.includes('cross-patch ownership conflict'))
+    ).toBe(true);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('reports branding-only dirty tree as passing with an ownership summary', async () => {
     vi.mocked(getWorkingTreeStatus).mockResolvedValue([
       {
         status: ' M',
@@ -271,10 +377,36 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
+    expect(outro).toHaveBeenCalledWith('All 15 checks passed!');
+    expect(
+      vi.mocked(success).mock.calls.some(([message]) => message.includes('tool-managed change'))
+    ).toBe(true);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('degrades the summary and exit code for drifted and dirty engine state', async () => {
+    vi.mocked(loadState).mockResolvedValue({ baseCommit: 'baseline' });
+    vi.mocked(getHead).mockResolvedValue('moved-head');
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      {
+        status: ' M',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        file: 'toolkit/content/unmanaged.mjs',
+        isUntracked: false,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+    ]);
+
+    const result = await doctorCommand('/project');
+
     expect(
       vi
         .mocked(warn)
-        .mock.calls.some(([message]) => message.includes('Engine working tree has 1 local change'))
+        .mock.calls.some(([message]) =>
+          message.includes('Engine working tree has 1 unmanaged change')
+        )
     ).toBe(true);
     expect(
       vi.mocked(error).mock.calls.some(([message]) => message.includes('Engine state consistency'))
@@ -315,9 +447,9 @@ describe('doctorCommand', () => {
     // module beforeEach clears call history but preserves mock
     // implementations, so a permanent override would turn unrelated tests'
     // accounting (warning counts, passed-checks counts) sideways.
-    const { executableExists } = await import('../../utils/process.js');
-    vi.mocked(executableExists).mockImplementationOnce((name: string) =>
-      Promise.resolve(name !== 'watchman')
+    const { findExecutable } = await import('../../utils/process.js');
+    vi.mocked(findExecutable).mockImplementationOnce((name: string) =>
+      Promise.resolve(name === 'watchman' ? undefined : '/usr/local/bin/' + name)
     );
 
     const result = await doctorCommand('/project');
@@ -546,6 +678,32 @@ describe('doctorCommand', () => {
             message.includes('Recovered manifest entry for 001-ui-toolbar.patch') &&
             message.includes('generic description')
         )
+    ).toBe(true);
+    // 2026-04-24 eval Finding 6: the repair warning used to tell the
+    // operator to hand-edit patches.json, which contradicts the README
+    // that treats the manifest as FireForge-owned. Assert that the new
+    // message points at `re-export` / `export` instead and explicitly
+    // warns against hand-editing.
+    const repairWarnings = vi
+      .mocked(warn)
+      .mock.calls.map(([message]) => message)
+      .filter((m): m is string => typeof m === 'string');
+    const noHandEditHint = repairWarnings.find(
+      (m) =>
+        m.includes('Recovered manifest entry') &&
+        (m.includes('re-export') ||
+          m.includes('fireforge re-export') ||
+          m.includes('fireforge export'))
+    );
+    expect(noHandEditHint).toBeDefined();
+    expect(
+      repairWarnings.some((m) => m.includes('Edit patches.json to restore the original'))
+    ).toBe(false);
+    expect(
+      repairWarnings.some(
+        (m) =>
+          m.includes('Recovered manifest entry') && m.includes('Avoid hand-editing patches.json')
+      )
     ).toBe(true);
   });
 
@@ -1045,6 +1203,94 @@ describe('doctorCommand', () => {
       ).toBe(true);
     });
 
+    it('surfaces orphaned override directories not listed in furnace.json', async () => {
+      // Eval 2: a concurrent-override race left components/overrides/<name>
+      // on disk but dropped its furnace.json entry. `doctor` now lists the
+      // orphan so the operator sees it before the next apply fails.
+      vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+      });
+      vi.mocked(readdir).mockImplementation(((
+        path: string
+      ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
+        if (typeof path === 'string' && path.endsWith('overrides')) {
+          return Promise.resolve([
+            {
+              name: 'moz-button',
+              isDirectory: () => true,
+              isFile: () => false,
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      }) as unknown as typeof readdir);
+
+      const result = await doctorCommand('/project');
+
+      expect(
+        vi
+          .mocked(warn)
+          .mock.calls.some(
+            ([message]) =>
+              message.includes('Furnace manifest sync') && message.includes('moz-button')
+          )
+      ).toBe(true);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('repairs orphan overrides from their override.json sidecars', async () => {
+      vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+      });
+      vi.mocked(readdir).mockImplementation(((
+        path: string
+      ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
+        if (typeof path === 'string' && path.endsWith('overrides')) {
+          return Promise.resolve([
+            {
+              name: 'moz-button',
+              isDirectory: () => true,
+              isFile: () => false,
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      }) as unknown as typeof readdir);
+      vi.mocked(readJson).mockImplementation(((path: string): Promise<unknown> => {
+        if (typeof path === 'string' && path.endsWith('moz-button/override.json')) {
+          return Promise.resolve({
+            type: 'css-only',
+            description: 'Recovered',
+            basePath: 'toolkit/content/widgets/moz-button',
+            baseVersion: '145.0',
+          });
+        }
+        return Promise.reject(new Error('not found'));
+      }) as unknown as typeof readJson);
+
+      const result = await doctorCommand('/project', { repairFurnace: true });
+
+      expect(vi.mocked(writeFurnaceConfig)).toHaveBeenCalled();
+      const writeCall = vi.mocked(writeFurnaceConfig).mock.calls[0];
+      expect(writeCall?.[0]).toBe('/project');
+      const written = writeCall?.[1] as
+        | { overrides?: Record<string, { type?: string; description?: string }> }
+        | undefined;
+      expect(written?.overrides?.['moz-button']?.type).toBe('css-only');
+      expect(written?.overrides?.['moz-button']?.description).toBe('Recovered');
+      expect(result.exitCode).toBe(0);
+    });
+
     it('refuses to clear authoring rollback markers while validation errors remain', async () => {
       vi.mocked(loadFurnaceState).mockResolvedValue({
         pendingRepair: {
@@ -1214,6 +1460,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
       'Furnace lock',
       'Furnace engine state',
       'Furnace component validation',
+      'Furnace manifest sync',
       'Configs directory exists',
     ]);
   });

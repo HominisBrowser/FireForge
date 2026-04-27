@@ -28,7 +28,12 @@ vi.mock('../../utils/logger.js', () => ({
   success: vi.fn(),
   note: vi.fn(),
   cancel: vi.fn(),
+  warn: vi.fn(),
   isCancel: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock('../../core/register-shared-css.js', () => ({
+  registerSharedCSS: vi.fn(),
 }));
 
 vi.mock('@clack/prompts', () => ({
@@ -108,7 +113,9 @@ import {
   furnaceConfigExists,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { cancel, info, isCancel, note, success } from '../../utils/logger.js';
+import { registerSharedCSS } from '../../core/register-shared-css.js';
+import { pathExists } from '../../utils/fs.js';
+import { cancel, info, isCancel, note, success, warn } from '../../utils/logger.js';
 import { furnaceInitCommand } from '../furnace/init.js';
 
 describe('furnaceInitCommand', () => {
@@ -306,6 +313,98 @@ describe('furnaceInitCommand', () => {
       '/project',
       expect.objectContaining({ tokenPrefix: '--mybrowser-' })
     );
+  });
+
+  it('registers the scaffolded tokens CSS in jar.inc.mn (Finding 2)', async () => {
+    // Pre-fix: `furnace init` scaffolded the tokens CSS file and added
+    // it to `patchLint.rawColorAllowlist`, but did not register it in
+    // `browser/themes/shared/jar.inc.mn`. The next `fireforge status`
+    // therefore correctly flagged the file as unmanaged + unregistered,
+    // and `furnace deploy --dry-run` reported "No components to
+    // deploy" — a documented init command turned a clean project into
+    // an unclean one. The fix calls `registerSharedCSS` so the file is
+    // owned end-to-end.
+    vi.mocked(pathExists).mockImplementation((path: string) => {
+      // engine/ exists; tokens CSS does not yet exist (so we exercise
+      // the scaffold + register path).
+      if (path === '/project/engine') return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    vi.mocked(registerSharedCSS).mockResolvedValue({
+      manifest: 'browser/themes/shared/jar.inc.mn',
+      entry: '  skin/classic/browser/mybrowser-tokens.css    (../shared/mybrowser-tokens.css)',
+      skipped: false,
+    });
+
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    try {
+      await furnaceInitCommand('/project');
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    }
+
+    expect(vi.mocked(registerSharedCSS)).toHaveBeenCalledWith(
+      '/project/engine',
+      'mybrowser-tokens.css',
+      undefined,
+      false
+    );
+    expect(vi.mocked(info)).toHaveBeenCalledWith(
+      expect.stringContaining('Registered mybrowser-tokens.css in browser/themes/shared/jar.inc.mn')
+    );
+  });
+
+  it('treats already-registered tokens CSS as a silent no-op', async () => {
+    // `furnace init --force` against a project where the tokens CSS is
+    // already registered must be idempotent: the registration helper
+    // returns `skipped: true`, so no info banner is emitted.
+    vi.mocked(pathExists).mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    vi.mocked(registerSharedCSS).mockResolvedValue({
+      manifest: 'browser/themes/shared/jar.inc.mn',
+      entry: '  skin/classic/browser/mybrowser-tokens.css    (../shared/mybrowser-tokens.css)',
+      skipped: true,
+    });
+
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    try {
+      await furnaceInitCommand('/project');
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    }
+
+    const infoCalls = vi.mocked(info).mock.calls.map((c) => c[0]);
+    expect(infoCalls).not.toContain(
+      expect.stringContaining('Registered mybrowser-tokens.css in browser/themes/shared/jar.inc.mn')
+    );
+  });
+
+  it('warns but does not fail when tokens CSS registration throws', async () => {
+    // jar.inc.mn might not exist yet (the engine has not been fully
+    // populated, or the operator is testing). Failure to register must
+    // be a soft warning, never a hard failure that aborts init.
+    vi.mocked(pathExists).mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    vi.mocked(registerSharedCSS).mockRejectedValue(
+      new Error('Manifest not found: browser/themes/shared/jar.inc.mn')
+    );
+
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    try {
+      await furnaceInitCommand('/project');
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    }
+
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(
+      expect.stringContaining('Could not register tokens CSS in browser/themes/shared/jar.inc.mn')
+    );
+    // Init still completed — `success("Created furnace.json")` fired.
+    expect(vi.mocked(success)).toHaveBeenCalledWith('Created furnace.json');
   });
 
   it('falls back to the prefix-less default when fireforge.json cannot be loaded', async () => {

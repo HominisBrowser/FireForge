@@ -140,6 +140,61 @@ describe('furnacePreviewCommand', () => {
     expect(cleanStories).toHaveBeenCalledWith('/project/engine');
   });
 
+  // 2026-04-24 eval Finding 13: `mach storybook` runs an ~1000-package
+  // `npm install` when the Storybook workspace's node_modules/ is
+  // absent, and its raw stderr prints a wall of `UNMET DEPENDENCY`
+  // lines that look like a failure before the install completes.
+  // Preview now emits a framing banner when it detects the missing
+  // node_modules so the npm noise is clearly identified as expected
+  // first-run progress rather than an error.
+  it('prints a first-run banner when the Storybook workspace has no node_modules', async () => {
+    const { info } = await import('../../utils/logger.js');
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/project/engine' ||
+          path === '/project/engine/browser/components/storybook' ||
+          path === '/project/engine/.cargo/config.toml'
+        // Note: '/project/engine/browser/components/storybook/node_modules' absent.
+      )
+    );
+    vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 130 });
+
+    await expect(furnacePreviewCommand('/project')).resolves.toBeUndefined();
+
+    const infoCalls = vi.mocked(info).mock.calls.map(([msg]) => msg);
+    expect(
+      infoCalls.some(
+        (msg) =>
+          typeof msg === 'string' &&
+          msg.includes('Storybook workspace dependencies are not yet installed')
+      )
+    ).toBe(true);
+  });
+
+  it('skips the first-run banner when node_modules is already present', async () => {
+    const { info } = await import('../../utils/logger.js');
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/project/engine' ||
+          path === '/project/engine/browser/components/storybook' ||
+          path === '/project/engine/browser/components/storybook/node_modules' ||
+          path === '/project/engine/.cargo/config.toml'
+      )
+    );
+    vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 130 });
+
+    await expect(furnacePreviewCommand('/project')).resolves.toBeUndefined();
+
+    const infoCalls = vi.mocked(info).mock.calls.map(([msg]) => msg);
+    expect(
+      infoCalls.some(
+        (msg) =>
+          typeof msg === 'string' &&
+          msg.includes('Storybook workspace dependencies are not yet installed')
+      )
+    ).toBe(false);
+  });
+
   it('rewrites missing backend/storybook paths into a focused error', async () => {
     vi.mocked(runMachCapture).mockResolvedValue({
       stdout: '',

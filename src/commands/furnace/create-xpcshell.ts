@@ -7,6 +7,7 @@
 
 import { join } from 'node:path';
 
+import { xpcshellTestParentDir } from '../../core/furnace-constants.js';
 import {
   recordCreatedDir,
   type RollbackJournal,
@@ -44,8 +45,10 @@ export async function scaffoldXpcshellTestFiles(
   paths: { engine: string },
   journal?: RollbackJournal
 ): Promise<string[]> {
-  const parentDirName = `${forgeConfig.binaryName}-xpcshell`;
-  const testDir = join(paths.engine, 'browser/base/content/test', parentDirName, componentName);
+  const parentRelDir = xpcshellTestParentDir(forgeConfig.binaryName);
+  const parentDirName =
+    parentRelDir.split('/').slice(-1)[0] ?? `${forgeConfig.binaryName}-xpcshell`;
+  const testDir = join(paths.engine, parentRelDir, componentName);
   if (journal && !(await pathExists(testDir))) {
     recordCreatedDir(journal, testDir);
   }

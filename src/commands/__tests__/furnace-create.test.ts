@@ -815,7 +815,7 @@ describe('interactive mode', () => {
     const { text } = await import('@clack/prompts');
     const { isCancel, cancel } = await import('../../utils/logger.js');
     const cancelSymbol = Symbol('cancel');
-    vi.mocked(text).mockResolvedValueOnce(cancelSymbol as never);
+    vi.mocked(text).mockResolvedValueOnce(cancelSymbol);
     vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
 
     await furnaceCreateCommand('/project');
@@ -829,7 +829,7 @@ describe('interactive mode', () => {
     const { isCancel, cancel } = await import('../../utils/logger.js');
     vi.mocked(text).mockResolvedValueOnce('moz-test-widget').mockResolvedValueOnce('desc');
     const cancelSymbol = Symbol('cancel');
-    vi.mocked(multiselect).mockResolvedValueOnce(cancelSymbol as never);
+    vi.mocked(multiselect).mockResolvedValueOnce(cancelSymbol);
     vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
     mockIsComponentInEngine.mockResolvedValue(false);
     mockPathExists.mockImplementation((path: string) => {

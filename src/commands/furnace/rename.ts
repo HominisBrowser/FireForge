@@ -11,15 +11,19 @@ import {
 } from '../../core/furnace-config.js';
 import {
   isComponentSourceFile,
+  resolveFtlChromeSubPath,
   resolveFtlDir,
+  resolveFtlLocaleJarMnPath,
   tagNameToClassName,
 } from '../../core/furnace-constants.js';
 import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
   addCustomElementRegistration,
   addJarMnEntries,
+  addLocaleFtlJarMnEntry,
   removeCustomElementRegistration,
   removeJarMnEntries,
+  removeLocaleFtlJarMnEntry,
 } from '../../core/furnace-registration.js';
 import {
   CUSTOM_ELEMENT_TAG_PATTERN,
@@ -46,6 +50,7 @@ import {
   writeText,
 } from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
+import { renameXpcshellTestFiles } from './rename-xpcshell.js';
 
 /** Escapes regex metacharacters so a user-supplied name is literal inside a RegExp. */
 function escapeRegex(input: string): string {
@@ -374,7 +379,16 @@ async function performRenameMutations(args: {
       // 3. Update engine registrations (custom components only)
       if (isCustom && config.custom[newName]?.register && (await pathExists(args.engineDir))) {
         const ftlDir = resolveFtlDir(config.ftlBasePath);
-        await updateEngineRegistrations(args.engineDir, oldName, newName, newDir, ftlDir, journal);
+        const isLocalized = config.custom[newName].localized;
+        await updateEngineRegistrations(
+          args.engineDir,
+          oldName,
+          newName,
+          newDir,
+          ftlDir,
+          isLocalized,
+          journal
+        );
       }
 
       // 4. Re-key furnace-state.json checksums from old name to new name
@@ -404,6 +418,14 @@ async function performRenameMutations(args: {
         // either failed the test run outright or (worse) passed for the
         // wrong component.
         await renameMochikitTestFiles(args.engineDir, oldName, newName, journal);
+        // 2026-04-24 eval Finding 5: xpcshell scaffolds live in yet
+        // another tree (`browser/base/content/test/<binary>-xpcshell/
+        // <name>/`). Before this call, renaming a component scaffolded
+        // with `--with-tests --xpcshell` left a directory whose name
+        // still referenced the pre-rename component, plus a test file
+        // whose underscored name referenced the old tag — both of
+        // which then failed to match the new component.
+        await renameXpcshellTestFiles(args.engineDir, projectRoot, oldName, newName, journal);
         // Clear the stale deployed component directory so the next
         // `furnace apply` is the single writer of the new name's
         // deployment. Without this, eval runs showed the old widget
@@ -481,6 +503,7 @@ async function updateEngineRegistrations(
   newName: string,
   newDir: string,
   ftlDir: string,
+  isLocalized: boolean,
   journal: ReturnType<typeof createRollbackJournal>
 ): Promise<void> {
   const customElementsPath = join(engineDir, 'toolkit/content/customElements.js');
@@ -516,6 +539,25 @@ async function updateEngineRegistrations(
     const ftlContent = await readText(oldFtlPath);
     await writeText(newFtlPath, ftlContent);
     await removeFile(oldFtlPath);
+  }
+
+  // Re-wire the locale jar.mn chrome registration when the component is
+  // localized. Before this, `updateEngineRegistrations` renamed the .ftl
+  // file on disk but left the locale jar.mn pointing at
+  // `locale/.../${oldName}.ftl`, so `furnace validate` passed while the
+  // engine still carried a stale registration for the now-missing file
+  // (eval finding: stale old-name registration after rename).
+  if (isLocalized) {
+    const chromeSubPath = resolveFtlChromeSubPath(ftlDir);
+    const localeJarRel = resolveFtlLocaleJarMnPath(ftlDir);
+    if (chromeSubPath !== undefined && localeJarRel !== undefined) {
+      const localeJarAbs = join(engineDir, localeJarRel);
+      if (await pathExists(localeJarAbs)) {
+        await snapshotFile(journal, localeJarAbs);
+        await removeLocaleFtlJarMnEntry(engineDir, localeJarRel, oldName, chromeSubPath);
+        await addLocaleFtlJarMnEntry(engineDir, localeJarRel, newName, chromeSubPath);
+      }
+    }
   }
 }
 

@@ -241,6 +241,18 @@ export async function renumberPatchesInManifest(
         );
       }
       await rename(join(patchesDir, staged), targetPath);
+      // Postcondition assert: confirm the target actually exists on
+      // disk before we mark the rename complete. A silent rename
+      // failure would leave the manifest and the filesystem
+      // disagreeing — exactly what the eval 1 Finding #7 report
+      // described: manifest rewrote to new filenames while the old
+      // files stayed on disk. If the assert ever fires, the Phase 2
+      // rollback will undo prior moves before re-throwing.
+      if (!(await pathExists(targetPath))) {
+        throw new Error(
+          `Rename postcondition failed: expected ${toEntry.newFilename} to exist after rename, but it was not found on disk.`
+        );
+      }
       completedFinalRenames.push(stagedEntry);
     }
   } catch (error: unknown) {

@@ -174,6 +174,47 @@ describe('configCommand', () => {
     Reflect.deleteProperty(Object.prototype, pollutionProbeKey);
   });
 
+  it('skips the file rewrite when the value is unchanged (Finding 11)', async () => {
+    // 2026-04-26 eval Finding 11: pre-fix, `fireforge config <key>
+    // <current-value>` always ran loadConfig → mutateConfig →
+    // writeConfig, which round-trips the file through
+    // `JSON.stringify` and reorders top-level keys (license,
+    // markerComment, …) on every harmless re-set. Operators saw diff
+    // churn on what should have been a no-op. The new short-circuit
+    // keeps the file untouched (mtime stays equal) and surfaces an
+    // explicit "(unchanged)" marker in the success log.
+    const { stat } = await import('node:fs/promises');
+    await configCommand(projectRoot, 'firefox.version', '140.9.0esr');
+    const beforeStat = await stat(`${projectRoot}/fireforge.json`);
+    // Synthetic delay would matter only if mtime resolution masks the
+    // before-state; a real rewrite would still update mtime by at
+    // least one millisecond on every supported filesystem.
+
+    vi.mocked(info).mockClear();
+    await configCommand(projectRoot, 'firefox.version', '140.9.0esr');
+    const afterStat = await stat(`${projectRoot}/fireforge.json`);
+
+    // mtimeMs must be equal — the file was not rewritten.
+    expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+    expect(info).toHaveBeenCalledWith('firefox.version = 140.9.0esr (unchanged)');
+  });
+
+  it('detects no-op writes for forced unknown keys', async () => {
+    // The short-circuit also covers --force writes: re-setting a
+    // previously forced key to its current value must not rewrite the
+    // file or duplicate the success line.
+    await configCommand(projectRoot, 'arbitraryUnknown', 'one', { force: true });
+    const { stat } = await import('node:fs/promises');
+    const beforeStat = await stat(`${projectRoot}/fireforge.json`);
+
+    vi.mocked(info).mockClear();
+    await configCommand(projectRoot, 'arbitraryUnknown', 'one', { force: true });
+    const afterStat = await stat(`${projectRoot}/fireforge.json`);
+
+    expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+    expect(info).toHaveBeenCalledWith('arbitraryUnknown = one (unchanged)');
+  });
+
   it('preserves earlier forced keys when subsequent --force writes land', async () => {
     // Pre-0.16.0 the `--force` write path seeded mutation from
     // `loadConfig` (which strips unknowns), so writing a second forced

@@ -15,7 +15,7 @@ import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { getFurnacePaths, updateFurnaceState } from '../../core/furnace-config.js';
-import { getHead, isGitRepository, resetChanges } from '../../core/git.js';
+import { getHead, isGitRepository, isMissingHeadError, resetChanges } from '../../core/git.js';
 import { discoverPatches } from '../../core/patch-files.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import type { RebaseSession } from '../../core/rebase-session.js';
@@ -54,6 +54,26 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
     throw new GeneralError(
       'Engine directory is not a git repository. Run "fireforge download" to initialize.'
     );
+  }
+
+  // 2026-04-24 eval Finding 11: `rebase --dry-run` used to print
+  // "Dry run complete" without validating that the engine had a valid
+  // HEAD. A previous `download --force` abort could leave `.git/`
+  // initialized but unborn (no baseline commit); the real rebase then
+  // failed immediately with `fatal: ambiguous argument 'HEAD'` on the
+  // first `git rev-parse HEAD` call. Replicate the same baseline check
+  // here so dry-run mirrors the real-run preconditions and operators
+  // cannot mistake a broken baseline for a ready-to-rebase tree.
+  try {
+    await getHead(paths.engine);
+  } catch (err: unknown) {
+    if (isMissingHeadError(err)) {
+      throw new GeneralError(
+        'Engine repository has no baseline commit yet — a previous "fireforge download" was interrupted before git created the initial Firefox source commit. ' +
+          'Re-run "fireforge download --force" to recreate the baseline repository cleanly, then retry the rebase.'
+      );
+    }
+    throw err;
   }
 
   const config = await loadConfig(projectRoot);

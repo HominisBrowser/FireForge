@@ -137,6 +137,15 @@ export function isPackageablePath(sourcePath: string): boolean {
     if (sourcePath.includes(fragment)) return false;
   }
   if (BUILD_INPUT_BASENAMES.has(basename(sourcePath))) return false;
+  // `.inc.xhtml` fragments are consumed via `#include` from a registered
+  // chrome document and resolved at packaging time — they never ship as
+  // a standalone packaged artifact. 2026-04-21 eval (Finding #11):
+  // `fireforge build --ui` after `wire --dom` flagged the wired
+  // `*.inc.xhtml` as "missing packaged artifact" even though
+  // `register` correctly refuses to register it and the operator
+  // followed the documented workflow. Mirror the same carve-out the
+  // register rules apply.
+  if (sourcePath.endsWith('.inc.xhtml')) return false;
   for (const ext of PACKAGEABLE_EXTENSIONS) {
     if (sourcePath.endsWith(ext)) return true;
   }

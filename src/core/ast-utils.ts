@@ -64,7 +64,7 @@ export function walkAST(
   ast: AcornESTreeNode<estree.Program>,
   visitors: Parameters<typeof walk>[1]
 ): ReturnType<typeof walk> {
-  return walk(ast as unknown as estree.Node, visitors);
+  return walk(ast, visitors);
 }
 
 /**

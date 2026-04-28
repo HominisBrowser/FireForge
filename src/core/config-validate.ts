@@ -4,7 +4,7 @@
  */
 
 import { ConfigError } from '../errors/config.js';
-import type { FireForgeConfig, ProjectLicense } from '../types/config.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { verbose } from '../utils/logger.js';
 import { parseObject } from '../utils/parse.js';
 import { isContainedRelativePath, isExplicitAbsolutePath } from '../utils/paths.js';
@@ -151,7 +151,7 @@ export function validateConfig(data: unknown): FireForgeConfig {
         `Config field "license" must be one of: ${PROJECT_LICENSES.join(', ')}`
       );
     }
-    config.license = licenseRaw as ProjectLicense;
+    config.license = licenseRaw;
   }
 
   // Marker comment — appended to lines FireForge writes into upstream files.

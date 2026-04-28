@@ -936,6 +936,91 @@ describe('lintPatchSize', () => {
     expect(issues.find((i) => i.check === 'large-patch-files')?.severity).toBe('warning');
   });
 
+  it('does not warn on file count when a branding-shaped patch has 6 files', () => {
+    // 2026-04-25 finding: the file-count check ignored the branding tier
+    // entirely. A real-world fresh-fork branding bundle is 56 files (icon
+    // assets in 7+ sizes, MSIX manifests, locale .ftl files); the >5
+    // threshold fired on every minimum branding diff.
+    const brandingFiles = [
+      'browser/branding/hominis/content/aboutDialog.css',
+      'browser/branding/hominis/locales/en-US/brand.ftl',
+      'browser/branding/hominis/pref/firefox-branding.js',
+      'browser/branding/hominis/default16.png',
+      'browser/branding/hominis/default32.png',
+      'browser/branding/hominis/default48.png',
+    ];
+    const issues = lintPatchSize(brandingFiles, 50);
+    expect(issues.some((i) => i.check === 'large-patch-files')).toBe(false);
+  });
+
+  it('does not warn on file count when a branding patch has 56 files (operator data point)', () => {
+    // The 2026-04-25 operator data point: a freshly-setup hominis branding
+    // patch landed at exactly 56 files. Pin this against regression so the
+    // documented threshold actually accommodates the canonical floor.
+    const brandingFiles = Array.from(
+      { length: 56 },
+      (_, i) => `browser/branding/hominis/asset${i}.png`
+    );
+    brandingFiles[0] = 'browser/branding/hominis/content/aboutDialog.css'; // ≥1 branding-prefixed file required by isBrandingOnlyPatch
+    const issues = lintPatchSize(brandingFiles, 100);
+    expect(issues.some((i) => i.check === 'large-patch-files')).toBe(false);
+  });
+
+  it('warns on file count when a branding patch crosses the elevated threshold (61 files)', () => {
+    const brandingFiles = Array.from(
+      { length: 61 },
+      (_, i) => `browser/branding/hominis/asset${i}.png`
+    );
+    brandingFiles[0] = 'browser/branding/hominis/content/aboutDialog.css';
+    const issues = lintPatchSize(brandingFiles, 100);
+    const fileIssue = issues.find((i) => i.check === 'large-patch-files');
+    expect(fileIssue?.severity).toBe('warning');
+    // Message must reference the branding tier's threshold (60), not the
+    // general default of 5 — operators reading the warning need to see the
+    // limit the rule actually applied.
+    expect(fileIssue?.message).toContain('≤60');
+  });
+
+  it('applies the branding file-count tier on explicit patchTier opt-in', () => {
+    // A branding patch that also touches a non-allowlisted sibling
+    // (e.g. a vendor-specific icon resource the auto-detector cannot
+    // reach) declares `tier: "branding"` in patches.json. The file-count
+    // check honors that opt-in just like the line-count check does.
+    const filesWithUnrelated = Array.from(
+      { length: 10 },
+      (_, i) => `browser/themes/hominis-shared/asset${i}.css`
+    );
+    expect(
+      lintPatchSize(filesWithUnrelated, 100, 'branding').some(
+        (i) => i.check === 'large-patch-files'
+      )
+    ).toBe(false);
+  });
+
+  it('warning message names the tier-specific threshold for general patches', () => {
+    const files = ['a.js', 'b.js', 'c.js', 'd.js', 'e.js', 'f.js'];
+    const issues = lintPatchSize(files, 10);
+    const fileIssue = issues.find((i) => i.check === 'large-patch-files');
+    expect(fileIssue?.message).toContain('≤5');
+  });
+
+  it('keeps the general 5-file threshold for test patches', () => {
+    // Test tier elevates the line-count thresholds (a table-driven
+    // regression test legitimately runs into the thousands of lines) but
+    // file fan-out remains general — a single test rarely spans many
+    // files. Six test files is still suspicious, even if six general .js
+    // files would be flagged the same way.
+    const testFiles = [
+      'test/test_a.js',
+      'test/test_b.js',
+      'test/test_c.js',
+      'test/test_d.js',
+      'test/test_e.js',
+      'test/test_f.js',
+    ];
+    expect(lintPatchSize(testFiles, 100).some((i) => i.check === 'large-patch-files')).toBe(true);
+  });
+
   it('returns notice when patch reaches 800 lines', () => {
     const issues = lintPatchSize(['a.js'], 800);
 
@@ -994,29 +1079,30 @@ describe('lintPatchSize', () => {
     // 15904 lines (localized brand.ftl across many locales + SVG path data +
     // copied upstream CSS). The general hard limit of 3000 fired an error,
     // but the patch already represented the minimum branding diff. The
-    // branding tier moves the hard limit to 20000 so the warning still
-    // surfaces at 8000 lines but non-actionable first-export branding
-    // passes.
+    // 2026-04-25 calibration moves the bands to {8000/18000/30000} so the
+    // typical 15904-line baseline lands as a soft `notice` rather than a
+    // `warning`, matching the docstring's "loud but not actionable" intent.
     const brandingFiles = [
       'browser/branding/hominis/content/aboutDialog.css',
       'browser/branding/hominis/locales/en-US/brand.ftl',
       'browser/branding/hominis/pref/firefox-branding.js',
     ];
-    expect(lintPatchSize(brandingFiles, 2999).some((i) => i.check === 'large-patch-lines')).toBe(
+    expect(lintPatchSize(brandingFiles, 7999).some((i) => i.check === 'large-patch-lines')).toBe(
       false
     );
     expect(
-      lintPatchSize(brandingFiles, 3000).find((i) => i.check === 'large-patch-lines')?.severity
-    ).toBe('notice');
-    expect(
       lintPatchSize(brandingFiles, 8000).find((i) => i.check === 'large-patch-lines')?.severity
-    ).toBe('warning');
-    // 15904 was the exact eval data point.
+    ).toBe('notice');
+    // 15904 was the exact eval data point — must surface as `notice`, not
+    // `warning`, after the 2026-04-25 recalibration.
     expect(
       lintPatchSize(brandingFiles, 15904).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('notice');
+    expect(
+      lintPatchSize(brandingFiles, 18000).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('warning');
     expect(
-      lintPatchSize(brandingFiles, 20000).find((i) => i.check === 'large-patch-lines')?.severity
+      lintPatchSize(brandingFiles, 30000).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('error');
   });
 
@@ -1037,7 +1123,7 @@ describe('lintPatchSize', () => {
     expect(
       lintPatchSize(brandingWithRegistration, 15904).find((i) => i.check === 'large-patch-lines')
         ?.severity
-    ).toBe('warning');
+    ).toBe('notice');
   });
 
   it('uses the branding tier when branding files + browser/confvars.sh registration', () => {
@@ -1049,7 +1135,7 @@ describe('lintPatchSize', () => {
       lintPatchSize(brandingWithLegacyRegistration, 15904).find(
         (i) => i.check === 'large-patch-lines'
       )?.severity
-    ).toBe('warning');
+    ).toBe('notice');
   });
 
   it('does not apply the branding tier when a non-allowlisted sibling is mixed in', () => {
@@ -1092,7 +1178,7 @@ describe('lintPatchSize', () => {
       lintPatchSize(filesWithUnrelated, 15904, 'branding').find(
         (i) => i.check === 'large-patch-lines'
       )?.severity
-    ).toBe('warning');
+    ).toBe('notice');
   });
 
   it('tests still beat branding when both apply', () => {

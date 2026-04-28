@@ -28,6 +28,17 @@ vi.mock('../config.js', () => ({
       firefox: { version: '145.0', product: 'firefox' },
     })
   ),
+  getProjectPaths: vi.fn(() => ({
+    root: '/project',
+    engine: '/project/engine',
+    config: '/project/fireforge.json',
+    fireforgeDir: '/project/.fireforge',
+    state: '/project/.fireforge/state.json',
+    patches: '/project/patches',
+    configs: '/project/configs',
+    src: '/project/src',
+    componentsDir: '/project/components',
+  })),
 }));
 
 vi.mock('../furnace-validate-checks.js', () => ({

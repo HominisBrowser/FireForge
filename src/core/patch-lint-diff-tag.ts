@@ -62,6 +62,14 @@ export async function collectDiffFilePaths(engineDir: string, rev: string): Prom
 }
 
 /**
+ * Synthetic "file" value used by aggregate patch-size rules
+ * (`large-patch-files` / `large-patch-lines`) to flag that a finding
+ * describes the whole diff rather than a single path. Exported so callers
+ * can keep the tagging contract visible in one place.
+ */
+export const AGGREGATE_PATCH_FILE = '(patch)';
+
+/**
  * Annotates a list of lint issues with `introduced` / `cumulative` tags
  * based on whether the issue's file is part of the supplied diff set.
  * Mutates each issue in place AND returns the list for chaining.
@@ -70,13 +78,31 @@ export async function collectDiffFilePaths(engineDir: string, rev: string): Prom
  * describe queue-wide state — are always `cumulative` under `--since`
  * because they describe drift accumulated across many commits, not a
  * single current-task edit.
+ *
+ * Aggregate patch-size rules emit `issue.file === AGGREGATE_PATCH_FILE`,
+ * which is a synthetic placeholder that will never appear in a real
+ * `diffFiles` set. Without special-casing, `large-patch-files` /
+ * `large-patch-lines` were always tagged `[cumulative]` under
+ * `--only-introduced` even when the diff WAS the aggregate the rules
+ * measured — the eval (Finding #4) reported a stack of 20+ imported
+ * patches whose aggregate-size warnings printed as `[cumulative]` under
+ * `lint --since HEAD --only-introduced`, which reads as "this pre-existed"
+ * to an operator asking "what did this diff introduce?" We promote the
+ * aggregate tag to `introduced` whenever the diff set has any content —
+ * non-empty `diffFiles` means the operator asked about a specific diff
+ * scope and the aggregate-rule finding describes exactly that scope.
  * @param issues Issues returned by the lint orchestrator.
  * @param diffFiles File paths touched since the user's revision.
  */
 export function tagLintIssues(issues: PatchLintIssue[], diffFiles: Set<string>): PatchLintIssue[] {
+  const hasDiffContent = diffFiles.size > 0;
   for (const issue of issues) {
     if (!issue.file) {
       issue.tag = 'cumulative';
+      continue;
+    }
+    if (issue.file === AGGREGATE_PATCH_FILE) {
+      issue.tag = hasDiffContent ? 'introduced' : 'cumulative';
       continue;
     }
     issue.tag = diffFiles.has(issue.file) ? 'introduced' : 'cumulative';

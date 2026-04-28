@@ -101,11 +101,7 @@ function isInsideDOMContentLoaded(ancestors: estree.Node[], content: string): bo
       call.callee.property.name === 'addEventListener'
     ) {
       const firstArg = call.arguments[0];
-      if (
-        firstArg &&
-        firstArg.type === 'Literal' &&
-        (firstArg as estree.Literal).value === 'DOMContentLoaded'
-      ) {
+      if (firstArg && firstArg.type === 'Literal' && firstArg.value === 'DOMContentLoaded') {
         return true;
       }
       // Check if "DOMContentLoaded" appears in the call's source (handles edge cases)
@@ -236,7 +232,7 @@ function addRegistrationAST(
     const entryArr = el as AcornESTreeNode<estree.ArrayExpression>;
     const firstEl = entryArr.elements[0];
     if (!firstEl || firstEl.type !== 'Literal') continue;
-    const tag = String((firstEl as estree.Literal).value);
+    const tag = String(firstEl.value);
 
     // Detect if this entry is multi-line
     const entrySrc = getNodeSource(content, entryArr);

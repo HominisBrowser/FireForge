@@ -9,13 +9,7 @@
  */
 
 import type * as acorn from 'acorn';
-import type {
-  ClassDeclaration,
-  ExportNamedDeclaration,
-  FunctionDeclaration,
-  Node,
-  VariableDeclaration,
-} from 'estree';
+import type { ClassDeclaration, FunctionDeclaration, Node, VariableDeclaration } from 'estree';
 
 import type { AcornESTreeNode } from './ast-utils.js';
 import { parseModule } from './ast-utils.js';
@@ -136,16 +130,16 @@ function findLocalDeclaration(
 ): TopLevelDeclaration | undefined {
   for (const stmt of body) {
     if (stmt.type === 'FunctionDeclaration') {
-      const fn = stmt as AcornESTreeNode<FunctionDeclaration>;
-      if (fn.id.name === name) return stmt as TopLevelDeclaration;
+      const fn = stmt;
+      if (fn.id.name === name) return stmt;
     } else if (stmt.type === 'ClassDeclaration') {
-      const cls = stmt as AcornESTreeNode<ClassDeclaration>;
-      if (cls.id.name === name) return stmt as TopLevelDeclaration;
+      const cls = stmt;
+      if (cls.id.name === name) return stmt;
     } else if (stmt.type === 'VariableDeclaration') {
-      const varDecl = stmt as AcornESTreeNode<VariableDeclaration>;
+      const varDecl = stmt;
       for (const d of varDecl.declarations) {
         if (d.id.type === 'Identifier' && d.id.name === name) {
-          return varDecl as TopLevelDeclaration;
+          return varDecl;
         }
       }
     }
@@ -285,36 +279,18 @@ export function validateExportJsDoc(source: string): JsDocIssue[] {
 
   for (const node of body) {
     if (node.type !== 'ExportNamedDeclaration') continue;
-    const exportNode = node as AcornESTreeNode<ExportNamedDeclaration>;
+    const exportNode = node;
 
     // Case 1: inline export declaration — JSDoc attaches to `export`
     if (exportNode.declaration) {
       const decl = exportNode.declaration as AcornESTreeNode;
       const exportStart = exportNode.start;
       if (decl.type === 'FunctionDeclaration') {
-        validateFunctionDecl(
-          decl as AcornESTreeNode<FunctionDeclaration>,
-          comments,
-          source,
-          issues,
-          exportStart
-        );
+        validateFunctionDecl(decl, comments, source, issues, exportStart);
       } else if (decl.type === 'ClassDeclaration') {
-        validateClassDecl(
-          decl as AcornESTreeNode<ClassDeclaration>,
-          comments,
-          source,
-          issues,
-          exportStart
-        );
+        validateClassDecl(decl, comments, source, issues, exportStart);
       } else if (decl.type === 'VariableDeclaration') {
-        validateVariableDecl(
-          decl as AcornESTreeNode<VariableDeclaration>,
-          comments,
-          source,
-          issues,
-          exportStart
-        );
+        validateVariableDecl(decl, comments, source, issues, exportStart);
       }
       continue;
     }
@@ -329,26 +305,11 @@ export function validateExportJsDoc(source: string): JsDocIssue[] {
         if (!localDecl) continue;
 
         if (localDecl.type === 'FunctionDeclaration') {
-          validateFunctionDecl(
-            localDecl as AcornESTreeNode<FunctionDeclaration>,
-            comments,
-            source,
-            issues
-          );
+          validateFunctionDecl(localDecl, comments, source, issues);
         } else if (localDecl.type === 'ClassDeclaration') {
-          validateClassDecl(
-            localDecl as AcornESTreeNode<ClassDeclaration>,
-            comments,
-            source,
-            issues
-          );
+          validateClassDecl(localDecl, comments, source, issues);
         } else {
-          validateVariableDecl(
-            localDecl as AcornESTreeNode<VariableDeclaration>,
-            comments,
-            source,
-            issues
-          );
+          validateVariableDecl(localDecl, comments, source, issues);
         }
       }
     }

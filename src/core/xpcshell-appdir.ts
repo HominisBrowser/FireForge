@@ -188,33 +188,59 @@ export async function readMozinfoAppname(objDirPath: string): Promise<string> {
  * (which fails with a different error than the original `firefox-appdir`
  * symptom and confuses triage).
  *
- * Probe order matches the on-disk layouts FireForge supports today:
- *  1. `<objDir>/dist/bin/<value>` — Linux primary, also macOS via the
- *     `dist/bin -> dist/<App>.app/Contents/MacOS/` symlink.
- *  2. `<objDir>/dist/<bundle>.app/Contents/Resources/<value>` — macOS
- *     packaged layout, where `dist/bin/` may not exist as a directory.
+ * Probe order differs by host platform:
+ *
+ * - **macOS (`darwin`)**: prefer `<objDir>/dist/<App>.app/Contents/Resources/
+ *   <value>` FIRST, then fall back to `<objDir>/dist/bin/<value>`.
+ *   2026-04-24 eval Finding 8: on macOS `dist/bin` is symlinked to
+ *   `dist/<App>.app/Contents/MacOS/` (the *binaries* directory), so
+ *   `dist/bin/browser` actually resolves to `<App>.app/Contents/MacOS/
+ *   browser/`. That is NOT where `resource:///modules/` is rooted — on
+ *   macOS, `-a` for xpcshell must point at the `.app/Contents/Resources/
+ *   <value>` subtree where modules / chrome.manifest live. Returning
+ *   `dist/bin/browser` caused the injected `--app-path` to look
+ *   successful (the info log showed it) but pointed at a directory
+ *   without the modules tree, so every `resource:///modules/…` import
+ *   still threw.
+ * - **non-macOS**: keep the historical order — `dist/bin/<value>` first,
+ *   `.app/Contents/Resources/<value>` as fallback.
+ *
+ * On both platforms the final `.app` fallback iterates every `*.app`
+ * entry because a rebranded fork may pick an arbitrary app name.
  */
 export async function resolveAbsoluteAppPath(
   objDirAbs: string,
   relativeAppdir: string
 ): Promise<string | null> {
   const distBinCandidate = join(objDirAbs, 'dist', 'bin', relativeAppdir);
-  if (await pathExists(distBinCandidate)) return distBinCandidate;
-
   const distDir = join(objDirAbs, 'dist');
-  if (!(await pathExists(distDir))) return null;
-  let entries: string[];
-  try {
-    entries = await readdir(distDir);
-  } catch {
+  const isMacos = process.platform === 'darwin';
+
+  async function probeMacAppBundle(): Promise<string | null> {
+    if (!(await pathExists(distDir))) return null;
+    let entries: string[];
+    try {
+      entries = await readdir(distDir);
+    } catch {
+      return null;
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.app')) continue;
+      const candidate = join(distDir, entry, 'Contents', 'Resources', relativeAppdir);
+      if (await pathExists(candidate)) return candidate;
+    }
     return null;
   }
-  for (const entry of entries) {
-    if (!entry.endsWith('.app')) continue;
-    const candidate = join(distDir, entry, 'Contents', 'Resources', relativeAppdir);
-    if (await pathExists(candidate)) return candidate;
+
+  if (isMacos) {
+    const appBundle = await probeMacAppBundle();
+    if (appBundle) return appBundle;
+    if (await pathExists(distBinCandidate)) return distBinCandidate;
+    return null;
   }
-  return null;
+
+  if (await pathExists(distBinCandidate)) return distBinCandidate;
+  return probeMacAppBundle();
 }
 
 /**

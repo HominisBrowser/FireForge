@@ -31,6 +31,9 @@ vi.mock('../../core/git-diff.js', () => ({
 
 vi.mock('../../core/git-status.js', () => ({
   getWorkingTreeStatus: vi.fn().mockResolvedValue([]),
+  expandUntrackedDirectoryEntries: vi.fn((_dir: string, entries: unknown[]) =>
+    Promise.resolve(entries)
+  ),
 }));
 
 vi.mock('../../core/patch-apply.js', () => ({
@@ -71,6 +74,21 @@ vi.mock('../../utils/fs.js', () => ({
 
 vi.mock('../../core/furnace-config.js', () => ({
   collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set())),
+  // 2026-04-24 eval Finding 1: export-all now consults
+  // `furnaceConfigExists` + `loadFurnaceConfig` to refuse patches that
+  // would register furnace-managed components without carrying their
+  // source files. Default to "no furnace config" so tests that don't
+  // opt in stay on the legacy (pre-refusal) happy path.
+  furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
+  loadFurnaceConfig: vi.fn(() =>
+    Promise.resolve({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+    })
+  ),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -551,7 +569,7 @@ describe('exportAllCommand', () => {
     );
     vi.mocked(buildPatchQueueContext).mockResolvedValue({
       entries: [{ filename: '001-infra-hello.patch', metadata: {} as never, diff: '' } as never],
-    } as never);
+    });
     vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(
       new Map([['browser/modules/labforge/Hello.sys.mjs', ['001-infra-hello.patch']]])
     );
@@ -576,7 +594,7 @@ describe('exportAllCommand', () => {
     );
     vi.mocked(buildPatchQueueContext).mockResolvedValue({
       entries: [{ filename: '001-infra-other.patch', metadata: {} as never, diff: '' } as never],
-    } as never);
+    });
     // Queue has creators recorded for an unrelated path — ours is not in the map.
     vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(
       new Map([['browser/modules/labforge/Unrelated.sys.mjs', ['001-infra-other.patch']]])

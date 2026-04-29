@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { removeCustomFtlJarMnEntry } from '../../core/furnace-apply-ftl.js';
 import {
   extractComponentChecksums,
   getOverrideEngineTargetPath,
@@ -18,7 +19,7 @@ import {
   updateFurnaceState,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { resolveFtlDir } from '../../core/furnace-constants.js';
+import { resolveFtlDir, xpcshellTestParentDir } from '../../core/furnace-constants.js';
 import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
   removeCustomElementRegistration,
@@ -256,6 +257,140 @@ async function cleanupCustomTestFiles(
   return { partialFailures };
 }
 
+/**
+ * Removes the MochiKit test scaffold a `furnace create --with-tests
+ * --test-style mochikit` produced for the component (matches the rename
+ * counterpart in `rename.ts`). The test file is `test_<name>.html` under
+ * `engine/toolkit/content/tests/widgets/` and the registration is the
+ * `["test_<name>.html"]` entry in the same directory's `chrome.toml`.
+ *
+ * 2026-04-25 eval Finding 13: the prior cleanup only handled the
+ * browser-chrome mochitest layout under `browser/base/content/test/
+ * <binary>/`, which left mochikit-style scaffolds and their toml entries
+ * orphaned after `furnace remove`. The post-rename name passed in here
+ * is the canonical one written to disk by deploy/rename, so the file
+ * basenames match without needing to re-derive from the old name.
+ *
+ * Best-effort: each step warns on failure rather than throwing so the
+ * rest of the remove transaction proceeds. The journal still snapshots
+ * touched files so the outer rollback can restore them on a later
+ * failure in the same operation.
+ */
+async function cleanupCustomMochikitTestFiles(
+  name: string,
+  projectRoot: string,
+  journal: RollbackJournal
+): Promise<{ partialFailures: string[] }> {
+  const partialFailures: string[] = [];
+
+  const paths = getProjectPaths(projectRoot);
+  const widgetsTestDir = join(paths.engine, 'toolkit/content/tests/widgets');
+  if (!(await pathExists(widgetsTestDir))) {
+    return { partialFailures };
+  }
+
+  const testFileName = `test_${name}.html`;
+  const testFilePath = join(widgetsTestDir, testFileName);
+  try {
+    if (await pathExists(testFilePath)) {
+      await snapshotFile(journal, testFilePath);
+      await unlink(testFilePath);
+      info(`Deleted mochikit test file: toolkit/content/tests/widgets/${testFileName}`);
+    }
+  } catch (error: unknown) {
+    const msg = `Could not delete mochikit test file ${testFileName} — ${toError(error).message}. Remove it manually if needed.`;
+    warn(msg);
+    partialFailures.push(msg);
+  }
+
+  const chromeTomlPath = join(widgetsTestDir, 'chrome.toml');
+  try {
+    if (await pathExists(chromeTomlPath)) {
+      const toml = await readText(chromeTomlPath);
+      const headerLine = `["${testFileName}"]`;
+      if (toml.includes(headerLine)) {
+        await snapshotFile(journal, chromeTomlPath);
+        await writeText(chromeTomlPath, removeTomlSection(toml, testFileName));
+      }
+    }
+  } catch (error: unknown) {
+    const msg = `Could not update widgets chrome.toml — ${toError(error).message}. Remove the test entry manually if needed.`;
+    warn(msg);
+    partialFailures.push(msg);
+  }
+
+  return { partialFailures };
+}
+
+/**
+ * Removes generated xpcshell test scaffolds associated with a custom
+ * component. 2026-04-24 eval Finding 5: `furnace remove` handled
+ * browser mochitests via `cleanupCustomTestFiles` but never touched the
+ * xpcshell scaffold tree, so an operator who ran
+ * `furnace create --with-tests --xpcshell` followed by `furnace remove`
+ * was left with orphan `xpcshell.toml` + `test_<name>_packaged.js`
+ * files still referencing the removed component. This cleanup pass
+ * mirrors the mochitest one — snapshot before removal, warn-and-
+ * continue semantics, explicit summary when partial failures occur.
+ */
+async function cleanupCustomXpcshellTestFiles(
+  name: string,
+  projectRoot: string,
+  journal: RollbackJournal
+): Promise<{ partialFailures: string[] }> {
+  const partialFailures: string[] = [];
+
+  let forgeConfig;
+  try {
+    forgeConfig = await loadConfig(projectRoot);
+  } catch (error: unknown) {
+    const msg = `Could not load config for xpcshell test cleanup — ${toError(error).message}. Remove xpcshell test files manually if needed.`;
+    warn(msg);
+    partialFailures.push(msg);
+    return { partialFailures };
+  }
+
+  const paths = getProjectPaths(projectRoot);
+  const xpcshellRoot = join(paths.engine, xpcshellTestParentDir(forgeConfig.binaryName));
+  const componentXpcshellDir = join(xpcshellRoot, name);
+
+  if (!(await pathExists(componentXpcshellDir))) return { partialFailures };
+
+  try {
+    await snapshotDir(journal, componentXpcshellDir);
+    await removeDir(componentXpcshellDir);
+    info(
+      `Deleted xpcshell test scaffold directory: ${componentXpcshellDir.replace(paths.engine + '/', 'engine/')}`
+    );
+  } catch (error: unknown) {
+    const msg = `Could not delete xpcshell test scaffold — ${toError(error).message}. Remove it manually if needed.`;
+    warn(msg);
+    partialFailures.push(msg);
+  }
+
+  // If the xpcshell parent directory is now empty (no other components
+  // had scaffolds), drop it too so `furnace validate` stays quiet about
+  // the empty per-binary tree. Warn-and-continue on any failure.
+  try {
+    if (await pathExists(xpcshellRoot)) {
+      const remaining = await readdir(xpcshellRoot);
+      if (remaining.length === 0) {
+        await snapshotDir(journal, xpcshellRoot);
+        await removeDir(xpcshellRoot);
+        info(
+          `Deleted empty xpcshell parent directory: ${xpcshellRoot.replace(paths.engine + '/', 'engine/')}`
+        );
+      }
+    }
+  } catch (error: unknown) {
+    const msg = `Could not clean up xpcshell parent directory — ${toError(error).message}. Remove it manually if needed.`;
+    warn(msg);
+    partialFailures.push(msg);
+  }
+
+  return { partialFailures };
+}
+
 function dropChecksumsByPrefix(state: FurnaceState, prefix: string): FurnaceState {
   const result = { ...state };
   if (state.appliedChecksums) {
@@ -457,6 +592,19 @@ export async function furnaceRemoveCommand(
             await removeFile(ftlPath);
             info(`Deleted localized file engine/${ftlRel}`);
           }
+          // Drop the locale jar.mn chrome registration that `applyCustomFtlFile`
+          // wrote during deploy — otherwise the engine is left with a
+          // `locale/.../${name}.ftl` entry pointing at a file we just
+          // deleted. 2026-04-21 eval (Finding #1): `furnace remove` left
+          // `browser/locales/jar.mn` referencing the missing FTL, which
+          // would break the next package-manifest validation.
+          await removeCustomFtlJarMnEntry(
+            paths.engine,
+            `${name}.ftl`,
+            ftlDir,
+            customConfig,
+            journal
+          );
         }
       }
 
@@ -464,6 +612,24 @@ export async function furnaceRemoveCommand(
       if (type === 'custom') {
         const result = await cleanupCustomTestFiles(name, projectRoot, journal);
         testCleanupFailures = result.partialFailures;
+        // 2026-04-24 eval Finding 5: also clean up xpcshell scaffolds
+        // generated by `furnace create --with-tests --xpcshell`. The
+        // mochitest cleanup above covers `browser/base/content/test/
+        // <binary>/`, but xpcshell scaffolds live in the sibling
+        // `<binary>-xpcshell/` directory and were orphaned by prior
+        // versions.
+        const xpcshellResult = await cleanupCustomXpcshellTestFiles(name, projectRoot, journal);
+        testCleanupFailures.push(...xpcshellResult.partialFailures);
+        // 2026-04-25 eval Finding 13: mochikit-style scaffolds
+        // (`--test-style mochikit`) live under
+        // `engine/toolkit/content/tests/widgets/` with `chrome.toml`
+        // entries — neither the browser-chrome path nor the xpcshell
+        // path touches them. Without this pass, a `furnace create
+        // --with-tests --test-style mochikit` followed by `furnace
+        // remove` left the test file and its toml entry referencing a
+        // component that no longer exists.
+        const mochikitResult = await cleanupCustomMochikitTestFiles(name, projectRoot, journal);
+        testCleanupFailures.push(...mochikitResult.partialFailures);
       }
 
       // Remove entry from furnace.json

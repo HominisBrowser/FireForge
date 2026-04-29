@@ -59,6 +59,8 @@ export const SUPPORTED_CONFIG_PATHS = [
   'patchLint',
   'patchLint.checkJs',
   'patchLint.rawColorAllowlist',
+  'patchLint.jsdocClassMethods',
+  'patchLint.testAssertionFloor',
   'markerComment',
 ] as const;
 

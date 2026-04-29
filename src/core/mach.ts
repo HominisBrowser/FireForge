@@ -205,12 +205,17 @@ function surfaceMachErrorHints(result: MachCommandResult): void {
 /**
  * Runs a full mach build. On a non-zero exit, any matched error hints are
  * surfaced on top of the raw mach output so operators get an actionable
- * nudge alongside the cryptic mozbuild traceback.
+ * nudge alongside the cryptic mozbuild traceback. Returns the captured
+ * result so the caller (e.g. `fireforge build`) can inspect the tail
+ * for post-build diagnostics that mach prints AFTER "Your build was
+ * successful!" — notably the stale `config.status is out of date`
+ * notice that mach emits when a tool-managed edit landed on
+ * `moz.configure` before the build.
  * @param engineDir - Path to the engine directory
  * @param jobs - Number of parallel jobs (optional)
- * @returns Exit code
+ * @returns Captured mach result (stdout tail, stderr tail, exit code)
  */
-export async function build(engineDir: string, jobs?: number): Promise<number> {
+export async function build(engineDir: string, jobs?: number): Promise<MachCommandResult> {
   const args = ['build'];
 
   if (jobs !== undefined) {
@@ -221,21 +226,22 @@ export async function build(engineDir: string, jobs?: number): Promise<number> {
   if (result.exitCode !== 0) {
     surfaceMachErrorHints(result);
   }
-  return result.exitCode;
+  return result;
 }
 
 /**
  * Runs a fast UI-only build. On a non-zero exit, any matched error hints are
- * surfaced on top of the raw mach output.
+ * surfaced on top of the raw mach output. See {@link build} for why the
+ * full captured result is returned rather than just the exit code.
  * @param engineDir - Path to the engine directory
- * @returns Exit code
+ * @returns Captured mach result
  */
-export async function buildUI(engineDir: string): Promise<number> {
+export async function buildUI(engineDir: string): Promise<MachCommandResult> {
   const result = await runMachInheritCapture(['build', 'faster'], engineDir);
   if (result.exitCode !== 0) {
     surfaceMachErrorHints(result);
   }
-  return result.exitCode;
+  return result;
 }
 
 /**
@@ -373,10 +379,23 @@ export async function watch(engineDir: string): Promise<number> {
 /**
  * Runs mach watch while preserving stdin and capturing emitted output.
  * @param engineDir - Path to the engine directory
+ * @param options - Optional environment overrides merged into the mach subprocess env
  * @returns Captured output and exit code
+ *
+ * 2026-04-24 eval Finding 12: the pre-0.18.1 shape accepted no options
+ * and so never forwarded the detected watchman path into the mach
+ * subprocess env. `fireforge watch` could locate `watchman` via PATH
+ * (the probe's `which` succeeded) but the mach subprocess spawned with
+ * the parent's PATH only — on macOS that typically omits
+ * `/opt/homebrew/bin`, so `mach watch` failed at the `watch-project`
+ * subscription step. Accepting `env` here lets the caller prepend the
+ * resolved watchman directory to PATH in a way mach inherits.
  */
-export async function watchWithOutput(engineDir: string): Promise<MachCommandResult> {
-  return runMachInheritCapture(['watch'], engineDir);
+export async function watchWithOutput(
+  engineDir: string,
+  options: { env?: Record<string, string> } = {}
+): Promise<MachCommandResult> {
+  return runMachInheritCapture(['watch'], engineDir, options.env ? { env: options.env } : {});
 }
 
 /**

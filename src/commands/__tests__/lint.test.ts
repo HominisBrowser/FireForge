@@ -36,6 +36,10 @@ vi.mock('../../core/git-status.js', () => ({
   getModifiedFilesInDir: vi.fn(() => Promise.resolve([])),
   getUntrackedFiles: vi.fn(() => Promise.resolve([])),
   getUntrackedFilesInDir: vi.fn(() => Promise.resolve([])),
+  getWorkingTreeStatus: vi.fn(() => Promise.resolve([])),
+  expandUntrackedDirectoryEntries: vi.fn((_dir: string, entries: unknown[]) =>
+    Promise.resolve(entries)
+  ),
 }));
 
 vi.mock('../../core/branding.js', () => ({
@@ -45,6 +49,13 @@ vi.mock('../../core/branding.js', () => ({
   isBrandingManagedPath: vi.fn((path: string, binaryName: string) =>
     path.startsWith(`browser/branding/${binaryName}/`)
   ),
+}));
+
+// Mock furnace-config so lint can import collectFurnaceManagedPrefixes
+// without dragging in the real furnace.json loader (which would trip the
+// FIREFORGE_DIR import on the test config mock).
+vi.mock('../../core/furnace-config.js', () => ({
+  collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set<string>())),
 }));
 
 vi.mock('../../core/patch-apply.js', () => ({
@@ -86,10 +97,10 @@ import { loadConfig } from '../../core/config.js';
 import { getStatusWithCodes, hasChanges } from '../../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import {
-  getModifiedFiles,
   getModifiedFilesInDir,
   getUntrackedFiles,
   getUntrackedFilesInDir,
+  getWorkingTreeStatus,
 } from '../../core/git-status.js';
 import {
   buildPatchQueueContext,
@@ -570,8 +581,66 @@ describe('lintCommand — branch coverage', () => {
       await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
 
       expect(lintExportedPatch).not.toHaveBeenCalled();
+      // 2026-04-26 eval Finding 7: the success line now names the
+      // skipped patch count so operators can tell "queue clean" from
+      // "queue not yet applied".
       expect(vi.mocked(success)).toHaveBeenCalledWith(
-        expect.stringContaining('No lint issues found across 0 patch(es)')
+        expect.stringContaining('No lint issues found across 0 patch(es) (1 skipped')
+      );
+    });
+
+    it('points at fireforge import when the entire queue is unapplied (Finding 7)', async () => {
+      // Pre-fix: an unapplied 29-patch queue produced
+      // `No lint issues found across 0 patch(es).` with no hint that
+      // *nothing* had been linted. The new info banner names the
+      // missing prerequisite (`fireforge import`) so the operator can
+      // tell that the success line is structurally meaningful, not a
+      // misleading clean bill of health.
+      const a = makePatch('001-ui-a.patch', ['a.ts']);
+      const b = makePatch('002-ui-b.patch', ['b.ts']);
+      const c = makePatch('003-ui-c.patch', ['c.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a, b, c]));
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        // engine/ exists but none of the filesAffected do — every
+        // patch is filtered out of the lint pass.
+        if (p === '/project/engine') return Promise.resolve(true);
+        if (p.endsWith('.ts')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(vi.mocked(info)).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'No patches in the queue have been applied to engine/. Run "fireforge import" first'
+        )
+      );
+      expect(vi.mocked(success)).toHaveBeenCalledWith(
+        expect.stringContaining('No lint issues found across 0 patch(es) (3 skipped')
+      );
+    });
+
+    it('does not emit the unapplied-queue hint when at least one patch was linted', async () => {
+      // The hint must only fire on the all-skipped case. A queue
+      // where one patch was applied and another was not should still
+      // surface the skipped count (visibility) but not the
+      // import-first banner (false alarm).
+      const applied = makePatch('001-ui-applied.patch', ['applied.ts']);
+      const missing = makePatch('002-ui-missing.patch', ['missing.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([applied, missing]));
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('/missing.ts')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+      vi.mocked(lintExportedPatch).mockResolvedValue([]);
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      const infoCalls = vi.mocked(info).mock.calls.map((c) => c[0]);
+      expect(infoCalls.some((m) => m.includes('Run "fireforge import" first'))).toBe(false);
+      expect(vi.mocked(success)).toHaveBeenCalledWith(
+        expect.stringContaining('No lint issues found across 1 patch(es) (1 skipped')
       );
     });
   });
@@ -645,13 +714,40 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
     vi.mocked(lintExportedPatch).mockResolvedValue([]);
   });
 
+  function statusEntry(
+    status: string,
+    file: string
+  ): {
+    status: string;
+    indexStatus: string;
+    worktreeStatus: string;
+    file: string;
+    isUntracked: boolean;
+    isRenameOrCopy: boolean;
+    isDeleted: boolean;
+  } {
+    return {
+      status,
+      indexStatus: status[0] ?? ' ',
+      worktreeStatus: status[1] ?? status[0] ?? ' ',
+      file,
+      isUntracked: status.includes('?'),
+      isRenameOrCopy: false,
+      isDeleted: status.includes('D'),
+    };
+  }
+
   it('filters branding-managed paths out of the default aggregate diff', async () => {
-    vi.mocked(getModifiedFiles).mockResolvedValue([
-      'browser/branding/mybrowser/locales/en-US/brand.ftl',
-      'browser/branding/mybrowser/configure.sh',
-      'browser/base/content/myhook.js',
+    // Post-0.17 the aggregate-mode branding branch sources paths via
+    // `getWorkingTreeStatus` + `expandUntrackedDirectoryEntries` so it
+    // can expand `?? dir/` entries before the diff pass. The older
+    // `getModifiedFiles`/`getUntrackedFiles` blend tripped EISDIR in
+    // the eval's imported patch stacks.
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      statusEntry(' M', 'browser/branding/mybrowser/locales/en-US/brand.ftl'),
+      statusEntry(' M', 'browser/branding/mybrowser/configure.sh'),
+      statusEntry(' M', 'browser/base/content/myhook.js'),
     ]);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
     vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
 
     await lintCommand('/project', []);
@@ -667,8 +763,9 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
   });
 
   it('passes through unchanged when no branding files are dirty', async () => {
-    vi.mocked(getModifiedFiles).mockResolvedValue(['browser/base/content/myhook.js']);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      statusEntry(' M', 'browser/base/content/myhook.js'),
+    ]);
     vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
 
     await lintCommand('/project', []);
@@ -681,18 +778,21 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
   });
 
   it('short-circuits when every dirty file is branding', async () => {
-    vi.mocked(getModifiedFiles).mockResolvedValue([
-      'browser/branding/mybrowser/locales/en-US/brand.ftl',
-      'browser/branding/mybrowser/configure.sh',
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      statusEntry(' M', 'browser/branding/mybrowser/locales/en-US/brand.ftl'),
+      statusEntry(' M', 'browser/branding/mybrowser/configure.sh'),
     ]);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
 
     await lintCommand('/project', []);
 
     // With nothing to lint after exclusion, the command surfaces a
     // targeted "nothing to lint" banner and does NOT call
-    // lintExportedPatch.
-    expect(info).toHaveBeenCalledWith(expect.stringContaining('No non-branding changes'));
+    // lintExportedPatch. The wording covers both branding and Furnace
+    // exclusions now that the aggregate-mode filter drops both buckets
+    // (see lint.ts: "No non-branding, non-Furnace changes to lint.").
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('No non-branding, non-Furnace changes')
+    );
     expect(lintExportedPatch).not.toHaveBeenCalled();
   });
 

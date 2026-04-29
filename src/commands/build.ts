@@ -6,6 +6,7 @@ import { auditBuildArtifacts } from '../core/build-audit.js';
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import type { MachCommandResult } from '../core/mach.js';
 import {
   attemptMozinfoRewrite,
   build,
@@ -171,7 +172,7 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   info(''); // Empty line before build output
 
   const startTime = Date.now();
-  let exitCode: number;
+  let result: MachCommandResult;
 
   try {
     // Hold the per-project build lock across the mach invocation so two
@@ -183,7 +184,7 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
     // backend — not a clue that a concurrent build was the cause. The
     // lock turns the second invocation's failure into an explicit
     // refusal naming the holder PID.
-    exitCode = await withBuildLock(projectRoot, async () => {
+    result = await withBuildLock(projectRoot, async () => {
       if (options.ui) {
         return buildUI(paths.engine);
       }
@@ -202,11 +203,43 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   const seconds = Math.floor((duration % 60000) / 1000);
   const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 
-  if (exitCode !== 0) {
+  if (result.exitCode !== 0) {
     error(`Build failed after ${timeStr}`);
     throw new BuildError(
-      `Build failed with exit code ${exitCode}`,
+      `Build failed with exit code ${result.exitCode}`,
       options.ui ? 'mach build faster' : 'mach build'
+    );
+  }
+
+  // Tool-managed branding edits that land on `browser/moz.configure`
+  // before the build cause mach's post-build guard to print one of two
+  // banners that read like build failures even though the build
+  // completed cleanly:
+  //
+  //   1) "config.status is out of date with respect to ..."
+  //   2) "Config object not found by mach. / Configure complete! /
+  //      Be sure to run |mach build| to pick up any changes."
+  //
+  // 2026-04-21 eval covered (1); 2026-04-26 eval Finding 8 reproduced
+  // (2) on a successful build. The pre-fix pattern only matched (1),
+  // so operators on the (2) path saw mach's own "Configure complete!"
+  // and "run |mach build|" lines unexplained between mach's
+  // "Your build was successful!" and FireForge's own "Build completed
+  // in Xm Ys" outro — a contradictory tail. Both shapes now route
+  // through the same annotation, emitted BEFORE FireForge's outro so
+  // the operator's last terminal line is the explanation, not the
+  // confusing mach guard text.
+  const staleConfigurePatterns: RegExp[] = [
+    /config\.status is out of date/i,
+    /Config object not found by mach\.[\s\S]*Configure complete!/i,
+  ];
+  const captured = `${result.stdout}\n${result.stderr}`;
+  if (staleConfigurePatterns.some((p) => p.test(captured))) {
+    info(
+      'Note: mach printed a post-build "Configure complete!" / "config.status is out of date" ' +
+        'banner. That is a known side effect of tool-managed branding edits applied before the ' +
+        'build and does not mean the build is stale or that you need to rerun mach — the FireForge ' +
+        'exit code is authoritative.'
     );
   }
 

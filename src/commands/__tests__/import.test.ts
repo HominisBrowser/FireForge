@@ -252,7 +252,7 @@ describe('importCommand drift handling', () => {
       untilFilename: undefined,
     });
     expect(info).toHaveBeenCalledWith(
-      'Patch-backed materialized files already match the stored patch stack.'
+      'Patch-touched files already match the stored patch stack — no engine resync needed before re-applying.'
     );
   });
 
@@ -465,7 +465,7 @@ describe('importCommand drift handling', () => {
     expect(typeof updater).toBe('function');
     const applied = (updater as (current: typeof state) => typeof state)({
       baseCommit: 'base-commit-refreshed',
-    } as typeof state);
+    });
     expect(applied).toEqual({
       baseCommit: 'base-commit-refreshed',
       pendingResolution: {

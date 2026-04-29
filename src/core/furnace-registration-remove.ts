@@ -121,7 +121,7 @@ function isEntryArrayFor(
   if (!node || node.type !== 'ArrayExpression') return false;
   const [first] = node.elements;
   if (!first || first.type !== 'Literal') return false;
-  const literal = first as estree.Literal;
+  const literal = first;
   return literal.value === tagName;
 }
 
@@ -140,7 +140,7 @@ function isStandaloneCallbackCallFor(
   if (prop.type !== 'Identifier' || prop.name !== 'setElementCreationCallback') return false;
   const [tagArg] = call.arguments;
   if (!tagArg || tagArg.type !== 'Literal') return false;
-  return (tagArg as estree.Literal).value === tagName;
+  return tagArg.value === tagName;
 }
 
 /**

@@ -122,3 +122,50 @@ export class GitIndexLockError extends GitError {
     );
   }
 }
+
+/**
+ * Error thrown when `git add` (monolithic or chunked) exceeds the
+ * configured timeout while indexing the Firefox source tree.
+ *
+ * 2026-04-24 eval Finding 10: a 140.10.0esr bump on a previously-working
+ * 140.9.0esr workspace aborted after ~854s with a generic
+ * `AbortError: The operation was aborted`. The root cause was the
+ * `git add` timeout firing, but the surfaced error was indistinguishable
+ * from any other AbortError and gave the operator no actionable
+ * direction. This typed error carries the elapsed budget and the
+ * environment-variable override so the recovery path is
+ * self-documenting.
+ */
+export class GitIndexingTimeoutError extends GitError {
+  constructor(
+    public readonly phase: 'monolithic' | 'chunked',
+    public readonly timeoutMs: number,
+    public readonly envVar: string,
+    cause?: Error
+  ) {
+    super(
+      `Git ${phase} indexing exceeded the ${Math.round(timeoutMs / 1000)}s timeout`,
+      'add -A',
+      cause
+    );
+  }
+
+  override get userMessage(): string {
+    const minutes = Math.max(1, Math.round(this.timeoutMs / 60_000));
+    const phaseDescription =
+      this.phase === 'monolithic'
+        ? 'the monolithic `git add -A` pass'
+        : 'one of the chunked `git add -- <dir>` passes';
+    return (
+      `Git Error: ${phaseDescription} exceeded the ${minutes}-minute timeout while indexing the Firefox source tree.\n\n` +
+      'Common triggers:\n' +
+      '  - Slow or loaded disk (an external volume, encrypted filesystem, or heavily-used SSD under load).\n' +
+      '  - A Firefox source tree that has grown beyond what the default timeout accommodates.\n' +
+      '  - A background process (antivirus, backup, indexing) holding the working directory.\n\n' +
+      'To recover:\n' +
+      `  1. Extend the timeout via the ${this.envVar} environment variable (milliseconds; e.g. "export ${this.envVar}=1800000" for 30 minutes).\n` +
+      '  2. Re-run "fireforge download --force" — the resume path resumes from the partial initialisation, so the repeat pass is not wasted work.\n' +
+      '  3. If the problem persists, check disk throughput and free space; Firefox source indexing on a cold SSD typically completes in 1–3 minutes.'
+    );
+  }
+}

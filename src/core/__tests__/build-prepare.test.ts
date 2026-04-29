@@ -117,7 +117,7 @@ beforeEach(() => {
   mockGenerateMozconfig.mockResolvedValue(undefined);
   mockCleanStories.mockResolvedValue(0);
   mockPathExists.mockResolvedValue(false);
-  mockLoadFurnaceState.mockResolvedValue({} as never);
+  mockLoadFurnaceState.mockResolvedValue({});
   mockSpinner.mockReturnValue({
     message: vi.fn(),
     stop: vi.fn(),
@@ -300,7 +300,7 @@ describe('prepareBuildEnvironment', () => {
       applied: [],
       errors: [],
       skipped: [],
-    } as never);
+    });
 
     await prepareBuildEnvironment('/project', paths, config);
 
@@ -321,7 +321,7 @@ describe('prepareBuildEnvironment', () => {
       applied: [],
       errors: [],
       skipped: [],
-    } as never);
+    });
 
     const result = await prepareBuildEnvironment('/project', paths, config);
     expect(result.furnaceApplied).toBe(0);
@@ -346,7 +346,7 @@ describe('prepareBuildEnvironment', () => {
         { name: 'comp-b', error: 'missing dir' },
       ],
       skipped: [],
-    } as never);
+    });
 
     await expect(prepareBuildEnvironment('/project', paths, config)).rejects.toThrow(
       /2 components failed to apply cleanly/

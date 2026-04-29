@@ -55,7 +55,22 @@ describe('wire-init', () => {
     expect(updated.indexOf('DockController.init();')).toBeLessThan(
       updated.indexOf('FirefoxInit.init();')
     );
-    expect(updated).toContain('// DockController init');
+    expect(updated).toContain('// FIREFORGE: wire-init DockController');
+  });
+
+  it('uses the caller-supplied marker so patch-lint recognises wire-generated edits (Eval 1 Finding #9)', () => {
+    // A fork whose `binaryName` is `freshforge` expects the marker to
+    // be `FRESHFORGE:`; the emitted comment must include the
+    // project-specific token so `lintModificationComments` does not
+    // trip `missing-modification-comment` on the wire-generated block.
+    const updated = addInitAST(
+      BASE_BROWSER_INIT,
+      'DockController.init()',
+      undefined,
+      'FRESHFORGE:'
+    );
+    expect(updated).toContain('// FRESHFORGE: wire-init DockController');
+    expect(updated).not.toContain('// FIREFORGE: wire-init DockController');
   });
 
   it('falls back to the last fireforge block when the requested --after target is missing', () => {
@@ -163,7 +178,7 @@ const gBrowserInit = {
     expect(updated.indexOf('DockController.init();')).toBeLessThan(
       updated.indexOf('FirefoxInit.init();')
     );
-    expect(updated).toContain('DockController init');
+    expect(updated).toContain('FIREFORGE: wire-init DockController');
   });
 
   it('legacy insertion recognizes a commented try block when inserting after a target', () => {

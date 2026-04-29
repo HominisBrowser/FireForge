@@ -2,7 +2,12 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { GitError, GitIndexLockError, PatchApplyError } from '../errors/git.js';
+import {
+  GitError,
+  GitIndexingTimeoutError,
+  GitIndexLockError,
+  PatchApplyError,
+} from '../errors/git.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
@@ -11,6 +16,7 @@ import {
   configureGitPerformance,
   ensureGit,
   git,
+  GIT_ADD_CHUNK_TIMEOUT_ENV_VAR,
   GIT_ADD_CHUNK_TIMEOUT_MS,
   GIT_ADD_TIMEOUT_MS,
 } from './git-base.js';
@@ -53,11 +59,18 @@ const GIT_ADD_ENV = { GIT_INDEX_THREADS: '0' };
 
 /**
  * Returns true when the error looks like a process killed by the spawn timeout
- * (SIGTERM → exit code 143).
+ * (SIGTERM → exit code 143) OR an AbortError raised by
+ * `AbortSignal.timeout`. The AbortSignal path is the one observed during
+ * the 2026-04-24 eval (Finding 10): Node's `child_process` layer
+ * rejects with an AbortError when the signal fires, so the timeout
+ * detection here needs to recognise that shape too.
  */
 function isTimeoutError(error: unknown): boolean {
+  if (error instanceof Error && error.name === 'AbortError') return true;
   if (!(error instanceof GitError)) return false;
-  return /SIGTERM|timed out|exit code 143/i.test(error.message);
+  if (/SIGTERM|timed out|exit code 143/i.test(error.message)) return true;
+  if (error.cause instanceof Error && error.cause.name === 'AbortError') return true;
+  return false;
 }
 
 /**
@@ -72,9 +85,43 @@ async function cleanupIndexLock(dir: string): Promise<void> {
 }
 
 /**
+ * Returns true when {@link relativePath} is ignored by `.gitignore` (or
+ * any other exclusion mechanism git considers, e.g. `.git/info/exclude`,
+ * core.excludesFile). Used by the chunked staging fallback to skip
+ * entries that would otherwise fail `git add -- <path>` with the fatal
+ * "The following paths are ignored by one of your .gitignore files"
+ * error — a state the monolithic `git add -A` path silently handles.
+ *
+ * Implementation: `git check-ignore -q -- <path>` exits 0 when the path
+ * is ignored, 1 when it isn't, and >=128 on real failures. Treat
+ * anything other than 0/1 as "unknown" and conservatively return false
+ * so the chunk runs and any real underlying failure surfaces normally.
+ *
+ * 2026-04-26 eval Finding 4: a Firefox checkout's top-level `.vscode/`
+ * is gitignored by the source tree's own `.gitignore`. Pre-fix, the
+ * chunked `git add -- .vscode` invocation aborted the entire fallback
+ * and turned a recoverable monolithic timeout into a hard setup
+ * failure that required `fireforge download --force`.
+ */
+async function isPathIgnored(dir: string, relativePath: string): Promise<boolean> {
+  const result = await exec('git', ['check-ignore', '-q', '--', relativePath], { cwd: dir });
+  if (result.exitCode === 0) return true;
+  if (result.exitCode === 1) return false;
+  // Any other shape is "we don't know" — let the caller proceed and
+  // surface the real error if `git add` rejects the path.
+  return false;
+}
+
+/**
  * Stages every file by walking top-level directories one at a time.
  * This avoids a single monolithic `git add -A` that may time out on
  * very large (~300 K file) trees like Firefox.
+ *
+ * 2026-04-24 eval Finding 10: a chunked pass that hits its own timeout
+ * now raises a typed {@link GitIndexingTimeoutError} rather than the
+ * opaque `AbortError: The operation was aborted` the caller otherwise
+ * saw. The typed error carries the environment-variable override so the
+ * operator can extend the budget and re-run.
  */
 async function stageAllFilesChunked(
   dir: string,
@@ -86,22 +133,51 @@ async function stageAllFilesChunked(
     .map((e) => e.name)
     .sort();
 
-  for (const dirName of directories) {
-    options.onProgress?.(`Staging directory: ${dirName}/...`);
-    await git(['add', '--', dirName], dir, {
-      timeout: GIT_ADD_CHUNK_TIMEOUT_MS,
-      env: GIT_ADD_ENV,
-    });
+  async function runChunk(args: string[], label: string): Promise<void> {
+    try {
+      await git(args, dir, {
+        timeout: GIT_ADD_CHUNK_TIMEOUT_MS,
+        env: GIT_ADD_ENV,
+      });
+    } catch (error: unknown) {
+      if (isTimeoutError(error)) {
+        throw new GitIndexingTimeoutError(
+          'chunked',
+          GIT_ADD_CHUNK_TIMEOUT_MS,
+          GIT_ADD_CHUNK_TIMEOUT_ENV_VAR,
+          error instanceof Error ? error : undefined
+        );
+      }
+      verbose(`Chunked staging failed on ${label}: ${toError(error).message}`);
+      throw error;
+    }
   }
 
-  // Stage any top-level files
-  const topLevelFiles = entries.filter((e) => e.isFile()).map((e) => e.name);
+  for (const dirName of directories) {
+    if (await isPathIgnored(dir, dirName)) {
+      options.onProgress?.(`Skipping gitignored: ${dirName}/`);
+      continue;
+    }
+    options.onProgress?.(`Staging directory: ${dirName}/...`);
+    await runChunk(['add', '--', dirName], dirName);
+  }
+
+  // Stage any top-level files (excluding gitignored ones — `git add`
+  // on an explicit ignored path errors out, which would otherwise
+  // abort the chunked fallback after the monolithic path has already
+  // timed out).
+  const topLevelCandidates = entries.filter((e) => e.isFile()).map((e) => e.name);
+  const topLevelFiles: string[] = [];
+  for (const name of topLevelCandidates) {
+    if (await isPathIgnored(dir, name)) {
+      options.onProgress?.(`Skipping gitignored: ${name}`);
+      continue;
+    }
+    topLevelFiles.push(name);
+  }
   if (topLevelFiles.length > 0) {
     options.onProgress?.('Staging top-level files...');
-    await git(['add', '--', ...topLevelFiles], dir, {
-      timeout: GIT_ADD_CHUNK_TIMEOUT_MS,
-      env: GIT_ADD_ENV,
-    });
+    await runChunk(['add', '--', ...topLevelFiles], 'top-level files');
   }
 }
 
@@ -127,16 +203,24 @@ export async function stageAllFiles(
   const timeout = options.timeout ?? GIT_ADD_TIMEOUT_MS;
   const reportProgress = options.onProgress;
 
-  const heartbeatStartedAt = Date.now();
-  // Periodic heartbeat so non-TTY log scrapers (CI, tail -f) AND operators
-  // watching a spinner both see that the add is still making progress
-  // rather than a dead process. Each tick reports elapsed seconds so the
-  // expected 1–3 minute window (see `download.ts`' info banner) is
-  // observable as it unfolds.
+  // 2026-04-26 eval Finding 5: the pre-fix heartbeat used a single
+  // `heartbeatStartedAt` set at function entry and reported cumulative
+  // elapsed for the whole `stageAllFiles` invocation. After a
+  // monolithic timeout, the chunked-phase ticks therefore named
+  // numbers that already included the entire monolithic budget plus
+  // any host-sleep time, with no way for an operator watching the log
+  // to tell where the monolithic attempt ended and the chunked pass
+  // began. The heartbeat now tracks a per-phase start timestamp and
+  // labels each tick with the phase, so the chunked pass reports its
+  // own elapsed window and the monolithic→chunked handoff is visible.
+  let phase: 'monolithic' | 'chunked' = 'monolithic';
+  let phaseStartedAt = Date.now();
+
   const heartbeatTimer = reportProgress
     ? setInterval(() => {
-        const elapsedS = Math.round((Date.now() - heartbeatStartedAt) / 1000);
-        reportProgress(`Indexing Firefox source (still staging, ${elapsedS}s elapsed)`);
+        const elapsedS = Math.round((Date.now() - phaseStartedAt) / 1000);
+        const label = phase === 'monolithic' ? 'monolithic' : 'chunked staging';
+        reportProgress(`Indexing Firefox source (${label}, ${elapsedS}s elapsed)`);
       }, GIT_ADD_HEARTBEAT_MS)
     : null;
   heartbeatTimer?.unref();
@@ -149,13 +233,33 @@ export async function stageAllFiles(
       if (!isTimeoutError(error)) {
         throw await maybeWrapIndexLockError(dir, error);
       }
-      options.onProgress?.('Monolithic git add timed out; falling back to chunked staging...');
+      // 2026-04-24 eval Finding 10: the fallback transition used to be
+      // an implementation detail invisible to operators watching the
+      // spinner. Emit a loud, one-line banner so non-TTY log scrapers
+      // and TTY operators both see that the monolithic attempt lost and
+      // the chunked pass is starting. This was the missing signal in
+      // the eval log where the heartbeat went quiet for ~600s between
+      // the monolithic timeout and the chunked-pass failure.
+      options.onProgress?.(
+        `Monolithic git add reached the ${Math.round(timeout / 1000)}s timeout; falling back to chunked staging. This pass may take several more minutes on a large tree.`
+      );
     }
 
     // The killed process may have left an index lock
     await cleanupIndexLock(dir);
 
-    await stageAllFilesChunked(dir, options);
+    // Reset elapsed accounting for the chunked phase so its heartbeat
+    // names a believable per-phase number rather than rolling the
+    // monolithic budget forward.
+    phase = 'chunked';
+    phaseStartedAt = Date.now();
+
+    try {
+      await stageAllFilesChunked(dir, options);
+    } catch (error: unknown) {
+      if (error instanceof GitIndexingTimeoutError) throw error;
+      throw error;
+    }
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
   }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.0
+
+### Features
+
+- **`patchLint.checkJsStrict` and `patchLint.checkJsCompilerOptions`.** The patch-lint `checkJs` pass now defaults to the historical loose preset (`strict: false`, `noImplicitAny: false`). Set `"patchLint": { "checkJs": true, "checkJsStrict": true }` to enforce `strict` and `noImplicitAny` on patch-owned `.sys.mjs` so implicit-any parameters surface as `checkjs-type-error`, aligning with strict whole-project checkJs without changing module resolution (`noResolve` and `resource://` suppression unchanged). Optional `checkJsCompilerOptions` (requires `checkJsStrict`) merges allowlisted boolean compiler overrides — for example `{ "strictNullChecks": false }` — after the strict preset for gradual adoption. The Firefox globals shim and `SUPPRESSED_DIAGNOSTIC_CODES` remain shared with `fireforge typecheck` via `typecheck-shim.ts`.
+
 ## 0.18.0
 
 ### Compatibility

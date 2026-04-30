@@ -65,6 +65,57 @@ describe('runCheckJs', () => {
     }
   });
 
+  it('does not flag implicit-any parameters when strict mode is off', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-loose-'));
+    const filePath = join(tmpDir, 'Loose.sys.mjs');
+    await writeFile(filePath, 'export function f(x) {\n  return x;\n}\n');
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(tmpDir, new Set(['Loose.sys.mjs']));
+      expect(issues.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('flags implicit-any parameters when strict mode is on', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-strict-'));
+    const filePath = join(tmpDir, 'Strict.sys.mjs');
+    await writeFile(filePath, 'export function f(x) {\n  return x;\n}\n');
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(tmpDir, new Set(['Strict.sys.mjs']), undefined, undefined, {
+        strict: true,
+      });
+      expect(issues.some((i) => i.check === 'checkjs-type-error')).toBe(true);
+      expect(
+        issues.some(
+          (i) =>
+            /implicitly has an 'any' type/i.test(i.message) ||
+            /Parameter 'x' implicitly/i.test(i.message)
+        )
+      ).toBe(true);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('honours patchLint.checkJsExtraShim by appending it to the built-in shim', async () => {
     // The fixture declares `MozHTMLElement`. Without the extra shim, a
     // file referencing it should produce no diagnostic about the symbol

@@ -15,7 +15,7 @@ import {
   hasAnyLicenseHeader,
   hasAnyLicenseHeaderAnyStyle,
 } from './license-headers.js';
-import { runCheckJs } from './patch-lint-checkjs.js';
+import { invokePatchLintCheckJs } from './patch-lint-checkjs.js';
 import { lintChromeScriptJsDocForFile } from './patch-lint-chrome-jsdoc.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
 import { AGGREGATE_PATCH_FILE } from './patch-lint-diff-tag.js';
@@ -30,27 +30,10 @@ import { resolvePatchOwnedChromeScripts, resolvePatchOwnedSysMjs } from './patch
 // creation and forward-import rules, ignore marker) lives in
 // `patch-lint-cross.ts` so the per-patch and cross-patch rule bodies can
 // each stay within the project's per-file line budget. Re-export the
-// public surface so callers continue to import from a single module.
+// public surface from `patch-lint-reexports.ts` so callers continue to
+// import from a single module.
 
-export { runCheckJs } from './patch-lint-checkjs.js';
-export {
-  buildPatchQueueContext,
-  collectNewFileCreatorsByPath,
-  type ExtractedSpecifier,
-  extractImportSpecifiers,
-  extractImportSpecifiersWithLines,
-  findForwardImportIgnoreLines,
-  FORWARD_IMPORT_IGNORE_MARKER,
-  isForwardImportableFile,
-  lintPatchQueue,
-  lintPatchQueueDuplicateCreations,
-  lintPatchQueueForwardImports,
-  type PatchQueueContext,
-  type PatchQueueEntry,
-} from './patch-lint-cross.js';
-export { buildModifiedFileAdditionsFromDiff, detectNewFilesInDiff } from './patch-lint-diff.js';
-export { type JsDocCheck, type JsDocIssue, validateExportJsDoc } from './patch-lint-jsdoc.js';
-export { resolvePatchOwnedChromeScripts, resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
+export * from './patch-lint-reexports.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -873,12 +856,15 @@ export async function lintExportedPatch(
     ...modCommentIssues,
   ];
 
-  // Optional checkJs pass — only when explicitly enabled in config.
-  // `checkJsExtraShim` is project-relative; resolve against the
-  // project root (dirname(engine) by getProjectPaths convention).
   if (config.patchLint?.checkJs) {
-    const extraShim = config.patchLint.checkJsExtraShim;
-    issues.push(...(await runCheckJs(repoDir, patchOwnedFiles, extraShim, dirname(repoDir))));
+    issues.push(
+      ...(await invokePatchLintCheckJs(
+        repoDir,
+        patchOwnedFiles,
+        config.patchLint,
+        dirname(repoDir)
+      ))
+    );
   }
 
   // Filter out ignored checks last so every rule still runs (keeps the

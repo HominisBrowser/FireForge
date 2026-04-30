@@ -4,7 +4,12 @@
  */
 
 import { ConfigError } from '../errors/config.js';
-import type { FireForgeConfig, PatchLintSeverityGate, TypecheckConfig } from '../types/config.js';
+import type {
+  FireForgeConfig,
+  PatchLintCheckJsCompilerOptions,
+  PatchLintSeverityGate,
+  TypecheckConfig,
+} from '../types/config.js';
 import { verbose } from '../utils/logger.js';
 import { parseObject } from '../utils/parse.js';
 import { isContainedRelativePath, isExplicitAbsolutePath } from '../utils/paths.js';
@@ -254,6 +259,42 @@ function optionalConfigObject(
 
 const SEVERITY_GATE_VALUES: readonly PatchLintSeverityGate[] = ['off', 'warning', 'error'];
 
+/** Allowlisted keys for `patchLint.checkJsCompilerOptions` (boolean overrides only). */
+const PATCH_LINT_CHECKJS_COMPILER_OPTION_KEYS = [
+  'strictNullChecks',
+  'strictFunctionTypes',
+  'strictBindCallApply',
+  'noImplicitThis',
+  'useUnknownInCatchVariables',
+  'strictPropertyInitialization',
+  'noUnusedLocals',
+  'noUnusedParameters',
+] as const satisfies readonly (keyof PatchLintCheckJsCompilerOptions)[];
+
+function parsePatchLintCheckJsCompilerOptions(raw: unknown): PatchLintCheckJsCompilerOptions {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new ConfigError('Config field "patchLint.checkJsCompilerOptions" must be a plain object');
+  }
+  const rec = raw as Record<string, unknown>;
+  const allowed = new Set<string>(PATCH_LINT_CHECKJS_COMPILER_OPTION_KEYS);
+  const out: PatchLintCheckJsCompilerOptions = {};
+  for (const key of Object.keys(rec)) {
+    if (!allowed.has(key)) {
+      throw new ConfigError(
+        `Config field "patchLint.checkJsCompilerOptions" has unknown key "${key}"`
+      );
+    }
+    const val = rec[key];
+    if (typeof val !== 'boolean') {
+      throw new ConfigError(
+        `Config field "patchLint.checkJsCompilerOptions.${key}" must be a boolean`
+      );
+    }
+    (out as Record<string, boolean>)[key] = val;
+  }
+  return out;
+}
+
 function parseSeverityGate(raw: unknown, label: string): PatchLintSeverityGate | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'string' || !(SEVERITY_GATE_VALUES as readonly string[]).includes(raw)) {
@@ -275,6 +316,19 @@ function parsePatchLintBlock(
       throw new ConfigError('Config field "patchLint.checkJs" must be a boolean');
     }
     out.checkJs = checkJs;
+  }
+
+  const checkJsStrict = rec.raw('checkJsStrict');
+  if (checkJsStrict !== undefined) {
+    if (typeof checkJsStrict !== 'boolean') {
+      throw new ConfigError('Config field "patchLint.checkJsStrict" must be a boolean');
+    }
+    out.checkJsStrict = checkJsStrict;
+  }
+
+  const checkJsCompilerOptionsRaw = rec.raw('checkJsCompilerOptions');
+  if (checkJsCompilerOptionsRaw !== undefined) {
+    out.checkJsCompilerOptions = parsePatchLintCheckJsCompilerOptions(checkJsCompilerOptionsRaw);
   }
 
   const checkJsExtraShim = rec.raw('checkJsExtraShim');
@@ -317,6 +371,17 @@ function parsePatchLintBlock(
   );
   if (chromeScriptJsDoc !== undefined) {
     out.chromeScriptJsDoc = chromeScriptJsDoc;
+  }
+
+  if (out.checkJsStrict === true && out.checkJs !== true) {
+    throw new ConfigError(
+      'Config field "patchLint.checkJsStrict" requires "patchLint.checkJs": true'
+    );
+  }
+  if (out.checkJsCompilerOptions !== undefined && out.checkJsStrict !== true) {
+    throw new ConfigError(
+      'Config field "patchLint.checkJsCompilerOptions" requires "patchLint.checkJsStrict": true'
+    );
   }
 
   return out;

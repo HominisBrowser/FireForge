@@ -8,6 +8,24 @@ export const JAR_MN = 'toolkit/content/jar.mn';
 /** Default Fluent localization directory for toolkit global components, relative to engine root */
 export const FTL_DIR = 'toolkit/locales/en-US/toolkit/global';
 
+/**
+ * Suffix for the per-binary xpcshell scaffold parent directory. Components
+ * created with `furnace create --with-tests --xpcshell` land at
+ * `browser/base/content/test/<binaryName>${XPCSHELL_TEST_DIR_SUFFIX}/<component>/`.
+ * Centralised so `create` / `remove` / `rename` / `validate` all agree on
+ * the path template (2026-04-24 eval Finding 5).
+ */
+export const XPCSHELL_TEST_DIR_SUFFIX = '-xpcshell';
+
+/**
+ * Returns the engine-relative directory that holds xpcshell scaffolds for
+ * a given binary. Matches the form `create-xpcshell.ts` writes and the
+ * path `remove.ts` / `rename.ts` / `validate.ts` must clean up.
+ */
+export function xpcshellTestParentDir(binaryName: string): string {
+  return `browser/base/content/test/${binaryName}${XPCSHELL_TEST_DIR_SUFFIX}`;
+}
+
 /** File extensions that constitute a Furnace component's source files. */
 export const COMPONENT_FILE_EXTENSIONS = ['.mjs', '.css', '.ftl'] as const;
 

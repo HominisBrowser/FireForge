@@ -354,10 +354,10 @@ describe('registerToken', () => {
     const program = createProgram();
     const originalWrite = process.stdout.write.bind(process.stdout);
     let captured = '';
-    process.stdout.write = ((chunk: string | Uint8Array) => {
+    process.stdout.write = (chunk: string | Uint8Array) => {
       captured += typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
       return true;
-    }) as typeof process.stdout.write;
+    };
 
     try {
       await program.parseAsync(['node', 'fireforge', 'token']);

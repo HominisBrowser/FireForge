@@ -15,14 +15,17 @@
  * treat the output as pass/fail.
  */
 
+import { join } from 'node:path';
+
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
 import { buildPatchQueueContext, lintPatchQueue } from '../core/patch-lint.js';
 import { loadPatchesManifest, validatePatchesManifestConsistency } from '../core/patch-manifest.js';
+import { collectPatchRegistrationReferences } from '../core/patch-registration-refs.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
-import { pathExists } from '../utils/fs.js';
+import { pathExists, readText } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 
 /**
@@ -32,6 +35,77 @@ import { info, intro, outro, success, warn } from '../utils/logger.js';
  * surfaces that here so it can be caught before `export`, `re-export`, or
  * `rebase` hit it.
  */
+interface DanglingRegistrationIssue {
+  patchFilename: string;
+  targetPath: string;
+  source: string;
+}
+
+/**
+ * Walks each patch body in the manifest, extracts the set of
+ * component-shaped registration references it adds (widget paths
+ * implied by jar.mn + customElements.js; FTL paths implied by locale
+ * jar.mn), and confirms every reference is either created by some
+ * patch in the queue OR present as a tracked file in engine/. Any
+ * unreachable reference is a dangling-registration error — the patch
+ * registers a file that nothing in the world supplies, which fails at
+ * install time.
+ */
+async function detectDanglingRegistrations(
+  patchesDir: string,
+  engineDir: string,
+  patches: ReadonlyArray<{ filename: string; filesAffected: string[] }>
+): Promise<DanglingRegistrationIssue[]> {
+  // Aggregate the set of all paths that any patch in the queue is
+  // responsible for (per `filesAffected`). We deliberately do NOT parse
+  // individual patch bodies for new-file creations here: `filesAffected`
+  // is already the contract manifest callers rely on, and
+  // `validatePatchesManifestConsistency` has already ensured the two
+  // are in sync. Using that list keeps this validator fast.
+  const coveredByPatches = new Set<string>();
+  for (const patch of patches) {
+    for (const file of patch.filesAffected) {
+      coveredByPatches.add(file);
+    }
+  }
+
+  const issues: DanglingRegistrationIssue[] = [];
+  for (const patch of patches) {
+    const patchPath = join(patchesDir, patch.filename);
+    if (!(await pathExists(patchPath))) continue;
+
+    let body: string;
+    try {
+      body = await readText(patchPath);
+    } catch {
+      // Bad file read is surfaced by the manifest consistency check
+      // already — skipping here avoids double-reporting the same issue.
+      continue;
+    }
+
+    const refs = collectPatchRegistrationReferences(body);
+    if (refs.length === 0) continue;
+
+    for (const ref of refs) {
+      if (coveredByPatches.has(ref.targetPath)) continue;
+      // Engine existence check: if the target file is already present
+      // in engine/ (e.g. upstream Firefox ships it, or a separate
+      // baseline branch has it), the registration is not dangling.
+      // We cannot sanely probe "is this tracked by git" without a git
+      // round-trip; existence on disk is a close-enough proxy for
+      // verify's read-only context.
+      if (await pathExists(join(engineDir, ref.targetPath))) continue;
+      issues.push({
+        patchFilename: patch.filename,
+        targetPath: ref.targetPath,
+        source: ref.source,
+      });
+    }
+  }
+
+  return issues;
+}
+
 function detectCrossPatchFileClaims(
   manifestPatches: ReadonlyArray<{ filename: string; filesAffected: string[] }>
 ): Array<{ path: string; filenames: string[] }> {
@@ -107,6 +181,33 @@ export async function verifyCommand(projectRoot: string): Promise<void> {
       warn(`  ${label} [${issue.check}] ${issue.file}: ${issue.message}`);
       if (issue.severity === 'error') errorCount += 1;
       else if (issue.severity === 'warning') warningCount += 1;
+    }
+  }
+
+  // 4. Registration-consequence consistency: walk each patch body and
+  // confirm that every widget / locale registration it adds has a
+  // corresponding file body covered by the patch queue OR present in
+  // the engine working tree. 2026-04-24 eval Finding 1: a patch
+  // produced by `export-all --exclude-furnace` referenced
+  // `toolkit/content/widgets/moz-qa-panel/*.mjs` via jar.mn /
+  // customElements.js edits, but the source files themselves were
+  // excluded from the patch. `verify` used to report "clean"; it now
+  // flags each dangling reference as a `dangling-registration` error
+  // naming the specific patch and target path.
+  if (manifest) {
+    const registrationIssues = await detectDanglingRegistrations(
+      paths.patches,
+      paths.engine,
+      manifest.patches
+    );
+    if (registrationIssues.length > 0) {
+      warn(`Dangling registration references (${registrationIssues.length}):`);
+      for (const issue of registrationIssues) {
+        warn(
+          `  ${issue.patchFilename}: registers ${issue.targetPath} via ${issue.source}, but no patch body or engine file supplies it`
+        );
+        errorCount += 1;
+      }
     }
   }
 

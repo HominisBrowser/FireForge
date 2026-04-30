@@ -11,8 +11,9 @@
 import type * as acorn from 'acorn';
 import type {
   ClassDeclaration,
-  ExportNamedDeclaration,
   FunctionDeclaration,
+  FunctionExpression,
+  MethodDefinition,
   Node,
   VariableDeclaration,
 } from 'estree';
@@ -24,12 +25,27 @@ import { parseModule } from './ast-utils.js';
 // Types
 // ---------------------------------------------------------------------------
 
-export type JsDocCheck = 'missing-jsdoc' | 'jsdoc-param-mismatch' | 'jsdoc-missing-returns';
+export type JsDocCheck =
+  | 'missing-jsdoc'
+  | 'jsdoc-param-mismatch'
+  | 'jsdoc-missing-returns'
+  | 'missing-jsdoc-class-method'
+  | 'jsdoc-class-method-param-mismatch'
+  | 'jsdoc-class-method-missing-returns';
 
 export interface JsDocIssue {
   line: number;
   check: JsDocCheck;
   message: string;
+  /** Optional severity hint. When undefined, callers default to 'error'. */
+  severity?: 'error' | 'warning';
+}
+
+export type ClassMethodMode = 'off' | 'warning' | 'error';
+
+export interface ValidateExportJsDocOptions {
+  /** Gate for class-method JSDoc enforcement. Default 'off' (no walking). */
+  classMethodMode?: ClassMethodMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +96,10 @@ function hasReturnsTag(jsDoc: string): boolean {
   return /@returns?\b/.test(jsDoc);
 }
 
+function hasPrivateOrInternalTag(jsDoc: string): boolean {
+  return /@(?:private|internal)\b/.test(jsDoc);
+}
+
 // ---------------------------------------------------------------------------
 // Return-statement detection
 // ---------------------------------------------------------------------------
@@ -89,7 +109,7 @@ function hasReturnsTag(jsDoc: string): boolean {
  * has a non-null argument. Does not recurse into nested functions or
  * arrow expressions which have their own return semantics.
  */
-function functionReturnsValue(node: FunctionDeclaration): boolean {
+function functionReturnsValue(node: FunctionDeclaration | FunctionExpression): boolean {
   return walkForReturn(node.body);
 }
 
@@ -136,16 +156,16 @@ function findLocalDeclaration(
 ): TopLevelDeclaration | undefined {
   for (const stmt of body) {
     if (stmt.type === 'FunctionDeclaration') {
-      const fn = stmt as AcornESTreeNode<FunctionDeclaration>;
-      if (fn.id.name === name) return stmt as TopLevelDeclaration;
+      const fn = stmt;
+      if (fn.id.name === name) return stmt;
     } else if (stmt.type === 'ClassDeclaration') {
-      const cls = stmt as AcornESTreeNode<ClassDeclaration>;
-      if (cls.id.name === name) return stmt as TopLevelDeclaration;
+      const cls = stmt;
+      if (cls.id.name === name) return stmt;
     } else if (stmt.type === 'VariableDeclaration') {
-      const varDecl = stmt as AcornESTreeNode<VariableDeclaration>;
+      const varDecl = stmt;
       for (const d of varDecl.declarations) {
         if (d.id.type === 'Identifier' && d.id.name === name) {
-          return varDecl as TopLevelDeclaration;
+          return varDecl;
         }
       }
     }
@@ -166,10 +186,86 @@ function lineAt(source: string, offset: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Core validation
+// Shared param/returns checker
 // ---------------------------------------------------------------------------
 
-function validateFunctionDecl(
+interface ParamsReturnsContext {
+  /** Human-readable subject (e.g. `'function "foo"'`, `'method "Cls.bar"'`). */
+  label: string;
+  line: number;
+  paramCheck: JsDocCheck;
+  returnsCheck: JsDocCheck;
+  severity?: 'error' | 'warning';
+  /** Skip @param matching (used for getters which take no params anyway). */
+  skipParams?: boolean;
+  /** Skip @returns enforcement (used for setters, getters, constructors). */
+  skipReturns?: boolean;
+}
+
+/**
+ * Validates @param name matching and @returns presence on a function-like
+ * node that already has an attached JSDoc comment. Destructured, default-
+ * valued, and rest params are silently skipped to match historical behavior
+ * of the top-level export check.
+ */
+function validateParamsAndReturns(
+  fnNode: AcornESTreeNode<FunctionDeclaration | FunctionExpression>,
+  jsDoc: acorn.Comment,
+  issues: JsDocIssue[],
+  ctx: ParamsReturnsContext
+): void {
+  const docText = jsDoc.value;
+
+  if (!ctx.skipParams) {
+    const actualParams = fnNode.params
+      .map((p) => (p.type === 'Identifier' ? p.name : null))
+      .filter((n): n is string => n !== null);
+
+    if (actualParams.length > 0) {
+      const docParams = extractParamNames(docText);
+      for (const param of actualParams) {
+        if (!docParams.includes(param)) {
+          issues.push({
+            line: ctx.line,
+            check: ctx.paramCheck,
+            message: `Exported ${ctx.label} at line ${ctx.line}: @param "${param}" is missing or misnamed in JSDoc.`,
+            ...(ctx.severity ? { severity: ctx.severity } : {}),
+          });
+        }
+      }
+    }
+  }
+
+  if (!ctx.skipReturns && functionReturnsValue(fnNode) && !hasReturnsTag(docText)) {
+    issues.push({
+      line: ctx.line,
+      check: ctx.returnsCheck,
+      message: `Exported ${ctx.label} at line ${ctx.line} returns a value but JSDoc is missing @returns.`,
+      ...(ctx.severity ? { severity: ctx.severity } : {}),
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Top-level export validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates a top-level function declaration: requires an attached JSDoc
+ * comment, then checks @param name matching and @returns presence. Exported
+ * so the chrome-subscript validator (`patch-lint-chrome-jsdoc.ts`) can reuse
+ * it on `parseScript`-produced declarations — the rule shape is identical
+ * between ES-module exports and chrome-subscript top-level declarations.
+ *
+ * @param fn - FunctionDeclaration AST node
+ * @param comments - All Acorn comments collected from the source
+ * @param source - Original source text (for line-number resolution)
+ * @param issues - Output sink for JSDoc issues
+ * @param lookupStart - Optional offset to use when locating the attached
+ *   JSDoc (defaults to `fn.start`). Used by the export-walker so the JSDoc
+ *   is found relative to the `export` keyword rather than the inner decl.
+ */
+export function validateFunctionDecl(
   fn: AcornESTreeNode<FunctionDeclaration>,
   comments: acorn.Comment[],
   source: string,
@@ -190,35 +286,21 @@ function validateFunctionDecl(
     return;
   }
 
-  const docText = jsDoc.value;
-
-  const actualParams = fn.params
-    .map((p) => (p.type === 'Identifier' ? p.name : null))
-    .filter((n): n is string => n !== null);
-
-  if (actualParams.length > 0) {
-    const docParams = extractParamNames(docText);
-    for (const param of actualParams) {
-      if (!docParams.includes(param)) {
-        issues.push({
-          line,
-          check: 'jsdoc-param-mismatch',
-          message: `Exported function "${name}" at line ${line}: @param "${param}" is missing or misnamed in JSDoc.`,
-        });
-      }
-    }
-  }
-
-  if (functionReturnsValue(fn) && !hasReturnsTag(docText)) {
-    issues.push({
-      line,
-      check: 'jsdoc-missing-returns',
-      message: `Exported function "${name}" at line ${line} returns a value but JSDoc is missing @returns.`,
-    });
-  }
+  validateParamsAndReturns(fn, jsDoc, issues, {
+    label: `function "${name}"`,
+    line,
+    paramCheck: 'jsdoc-param-mismatch',
+    returnsCheck: 'jsdoc-missing-returns',
+  });
 }
 
-function validateClassDecl(
+/**
+ * Validates a top-level class declaration: requires an attached JSDoc
+ * comment on the class itself. Method-level checks live in
+ * {@link validateClassMethods}. Exported for reuse in the chrome-subscript
+ * validator.
+ */
+export function validateClassDecl(
   cls: AcornESTreeNode<ClassDeclaration>,
   comments: acorn.Comment[],
   source: string,
@@ -262,6 +344,101 @@ function validateVariableDecl(
 }
 
 // ---------------------------------------------------------------------------
+// Class-method validation (opt-in via classMethodMode)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the method's identifier name when statically resolvable, or
+ * undefined for computed keys (e.g. `[Symbol.iterator]()`). Private fields
+ * (`#name`) are treated as private-by-syntax and surface as undefined here
+ * so the walker skips them up front.
+ */
+function staticMethodName(method: MethodDefinition): string | undefined {
+  if (method.computed) return undefined;
+  const key = method.key as { type: string; name?: string };
+  if (key.type !== 'Identifier') return undefined;
+  return key.name;
+}
+
+function isPrivateMethodKey(method: MethodDefinition): boolean {
+  return (method.key as { type: string }).type === 'PrivateIdentifier';
+}
+
+function classMethodLabel(className: string, method: MethodDefinition, name: string): string {
+  if (method.kind === 'constructor') return `constructor of class "${className}"`;
+  const prefix = method.static ? 'static ' : '';
+  if (method.kind === 'get') return `${prefix}getter "${className}.${name}"`;
+  if (method.kind === 'set') return `${prefix}setter "${className}.${name}"`;
+  return `${prefix}method "${className}.${name}"`;
+}
+
+/**
+ * Walks an exported class body and emits class-method JSDoc issues per
+ * the configured severity. Skip rules (in evaluation order):
+ *   1. private syntax (`#foo`) and underscore-prefixed names
+ *   2. zero-parameter constructors
+ *   3. methods whose JSDoc carries `@private` or `@internal`
+ *
+ * Pure-override skip (`super.method(...args)`-only bodies bypassing the
+ * @returns check) is deferred — V1 keeps the rule simple.
+ */
+export function validateClassMethods(
+  cls: AcornESTreeNode<ClassDeclaration>,
+  comments: acorn.Comment[],
+  source: string,
+  issues: JsDocIssue[],
+  severity: 'warning' | 'error'
+): void {
+  const className = cls.id.name;
+
+  for (const member of cls.body.body) {
+    if (member.type !== 'MethodDefinition') continue;
+    const method = member as AcornESTreeNode<MethodDefinition>;
+
+    if (isPrivateMethodKey(method)) continue;
+    const name = staticMethodName(method);
+    if (name === undefined) continue;
+    if (method.kind !== 'constructor' && name.startsWith('_')) continue;
+
+    if (method.kind === 'constructor' && method.value.params.length === 0) continue;
+
+    const methodStart = method.start;
+    const line = lineAt(source, methodStart);
+    const jsDoc = findAttachedJsDoc(comments, methodStart, source);
+
+    if (jsDoc && hasPrivateOrInternalTag(jsDoc.value)) continue;
+
+    const label = classMethodLabel(className, method, name);
+
+    if (!jsDoc) {
+      issues.push({
+        line,
+        check: 'missing-jsdoc-class-method',
+        message: `Exported ${label} at line ${line} is missing a JSDoc comment.`,
+        severity,
+      });
+      continue;
+    }
+
+    if (method.kind === 'get') {
+      // Presence already verified; getter expression is the contract.
+      continue;
+    }
+
+    const skipReturns = method.kind === 'constructor' || method.kind === 'set';
+
+    validateParamsAndReturns(method.value as AcornESTreeNode<FunctionExpression>, jsDoc, issues, {
+      label,
+      line,
+      paramCheck: 'jsdoc-class-method-param-mismatch',
+      returnsCheck: 'jsdoc-class-method-missing-returns',
+      severity,
+      skipReturns,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -269,9 +446,14 @@ function validateVariableDecl(
  * Validates JSDoc on exported declarations in a `.sys.mjs` source file.
  *
  * @param source - File content
+ * @param options - Optional gates for opt-in checks (e.g. class-method JSDoc)
  * @returns Array of JSDoc issues found
  */
-export function validateExportJsDoc(source: string): JsDocIssue[] {
+export function validateExportJsDoc(
+  source: string,
+  options?: ValidateExportJsDocOptions
+): JsDocIssue[] {
+  const classMethodMode = options?.classMethodMode ?? 'off';
   const comments: acorn.Comment[] = [];
   let ast: AcornESTreeNode<import('estree').Program>;
   try {
@@ -285,36 +467,21 @@ export function validateExportJsDoc(source: string): JsDocIssue[] {
 
   for (const node of body) {
     if (node.type !== 'ExportNamedDeclaration') continue;
-    const exportNode = node as AcornESTreeNode<ExportNamedDeclaration>;
+    const exportNode = node;
 
     // Case 1: inline export declaration — JSDoc attaches to `export`
     if (exportNode.declaration) {
       const decl = exportNode.declaration as AcornESTreeNode;
       const exportStart = exportNode.start;
       if (decl.type === 'FunctionDeclaration') {
-        validateFunctionDecl(
-          decl as AcornESTreeNode<FunctionDeclaration>,
-          comments,
-          source,
-          issues,
-          exportStart
-        );
+        validateFunctionDecl(decl, comments, source, issues, exportStart);
       } else if (decl.type === 'ClassDeclaration') {
-        validateClassDecl(
-          decl as AcornESTreeNode<ClassDeclaration>,
-          comments,
-          source,
-          issues,
-          exportStart
-        );
+        validateClassDecl(decl, comments, source, issues, exportStart);
+        if (classMethodMode !== 'off') {
+          validateClassMethods(decl, comments, source, issues, classMethodMode);
+        }
       } else if (decl.type === 'VariableDeclaration') {
-        validateVariableDecl(
-          decl as AcornESTreeNode<VariableDeclaration>,
-          comments,
-          source,
-          issues,
-          exportStart
-        );
+        validateVariableDecl(decl, comments, source, issues, exportStart);
       }
       continue;
     }
@@ -329,26 +496,14 @@ export function validateExportJsDoc(source: string): JsDocIssue[] {
         if (!localDecl) continue;
 
         if (localDecl.type === 'FunctionDeclaration') {
-          validateFunctionDecl(
-            localDecl as AcornESTreeNode<FunctionDeclaration>,
-            comments,
-            source,
-            issues
-          );
+          validateFunctionDecl(localDecl, comments, source, issues);
         } else if (localDecl.type === 'ClassDeclaration') {
-          validateClassDecl(
-            localDecl as AcornESTreeNode<ClassDeclaration>,
-            comments,
-            source,
-            issues
-          );
+          validateClassDecl(localDecl, comments, source, issues);
+          if (classMethodMode !== 'off') {
+            validateClassMethods(localDecl, comments, source, issues, classMethodMode);
+          }
         } else {
-          validateVariableDecl(
-            localDecl as AcornESTreeNode<VariableDeclaration>,
-            comments,
-            source,
-            issues
-          );
+          validateVariableDecl(localDecl, comments, source, issues);
         }
       }
     }

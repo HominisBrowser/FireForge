@@ -45,6 +45,14 @@ describe('isPackageablePath', () => {
     ['browser/moz.build', false],
     ['browser/app/Makefile.in', false],
     ['build/moz.configure', false],
+    // `.inc.xhtml` fragments are consumed via `#include` from a
+    // registered chrome document; they never ship as a standalone
+    // packaged artifact. 2026-04-21 eval (Finding #11): `wire --dom`
+    // generated a `.inc.xhtml`, the build audit then flagged it as
+    // "missing packaged artifact" on the next UI build. The carve-out
+    // keeps the two sibling checks (`register` + `build audit`)
+    // consistent about this file type.
+    ['browser/base/content/freshforge-sidebar.inc.xhtml', false],
   ])('returns false for non-packaged path %s', (path, expected) => {
     expect(isPackageablePath(path)).toBe(expected);
   });

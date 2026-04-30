@@ -34,15 +34,24 @@ const MAX_SCAN_DEPTH = 12;
  * Heuristic test for "this looks like a packaged-test source file" — the
  * audit routes such paths to `_tests/` instead of `dist/`. Matches
  * mochitest / xpcshell / browser-chrome conventions: any source under a
- * `/test/` or `/tests/` directory, or with a `browser_` / `test_` prefix
- * on a `.js`/`.toml` basename. Test manifests (`*.toml`, `*.list`,
- * `*.ini`) under those directories also qualify.
+ * `/test/` or `/tests/` directory, anywhere under a `testing/` subtree
+ * (which holds mochitest / marionette / xpcshell harness sources), or
+ * with a `browser_` / `test_` prefix on a `.js`/`.toml` basename. Test
+ * manifests (`*.toml`, `*.list`, `*.ini`) under those directories also
+ * qualify.
  *
  * @param sourcePath Engine-relative POSIX path
  * @returns True when the file belongs to the test tree, not the bundle
  */
 export function isTestPath(sourcePath: string): boolean {
   if (sourcePath.includes('/test/') || sourcePath.includes('/tests/')) {
+    return true;
+  }
+  // `testing/{mochitest,marionette,xpcshell,...}` are test-infrastructure
+  // trees that ship under `_tests/`, not `dist/`. Match both as a root
+  // segment (e.g. `testing/mochitest/api.js`) and as an interior segment
+  // (e.g. a vendored harness under `third_party/.../testing/...`).
+  if (sourcePath.startsWith('testing/') || sourcePath.includes('/testing/')) {
     return true;
   }
   const name = basename(sourcePath);

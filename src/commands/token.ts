@@ -152,7 +152,9 @@ export function registerToken(
 
   token
     .command('add <token-name> <value>')
-    .description('Add a design token to CSS and documentation')
+    .description(
+      'Add a design token to CSS and documentation. The token name is a positional argument, but most tokens start with `--` (CSS custom property syntax), which Commander reads as an option flag. Use the standard `--` separator to mark the end of options before the token name, e.g. `fireforge token add --mode static --category Colors -- --my-token "#fff"`. Bare names without `--` are accepted directly and prefixed using the configured Furnace `tokenPrefix`.'
+    )
     .requiredOption('--category <cat>', 'Token category (e.g., "Colors — Canvas", "Spacing")')
     .addOption(
       // Use Commander's .choices() so invalid --mode values are rejected with

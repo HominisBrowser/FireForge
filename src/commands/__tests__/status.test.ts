@@ -638,6 +638,32 @@ describe('statusCommand', () => {
       expect(infoMessages()).toContain('No unmanaged changes');
       expect(outro).toHaveBeenCalledWith('No unmanaged changes');
     });
+
+    // 2026-04-24 eval Finding 2: a new engine module directory whose parent
+    // `browser/modules/<binary>/moz.build` does not yet exist used to fail
+    // `status --unmanaged` with exit code 1 because `isFileRegistered`
+    // throws `GeneralError("Manifest not found: …")` synchronously and the
+    // `Promise.all` in `printUnregisteredWarnings` re-threw it out of the
+    // command. Status is a read-only reporter; it should surface the
+    // missing-manifest case as a warning line and still exit cleanly so it
+    // remains usable in scripted discovery workflows.
+    it('tolerates a missing parent moz.build when reporting new unmanaged files', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: 'browser/modules/freshforge/FreshQA.sys.mjs' },
+      ]);
+      vi.mocked(matchesRegistrablePattern).mockReturnValue(true);
+      vi.mocked(isFileRegistered).mockRejectedValue(
+        new GeneralError('Manifest not found: browser/modules/freshforge/moz.build')
+      );
+
+      await expect(statusCommand(projectRoot, { unmanaged: true })).resolves.toBeUndefined();
+
+      expect(warnMessages()).toContain('Files whose registration manifest does not exist yet:');
+      const missingLine = infoMessages().find((m) =>
+        m.includes('browser/modules/freshforge/FreshQA.sys.mjs')
+      );
+      expect(missingLine).toBeDefined();
+    });
   });
 
   describe('flag validation', () => {
@@ -1094,6 +1120,57 @@ describe('statusCommand', () => {
       expect(payload).toHaveLength(1);
       expect(payload[0]?.classification).toBe('patch-backed');
       expect(payload[0]).not.toHaveProperty('claimedBy');
+    });
+  });
+
+  describe('--json error paths emit exactly one JSON line (Finding 1)', () => {
+    it('engine-missing: stdout carries only the JSON object, never the human banner', async () => {
+      // Pre-fix: emitJsonError wrote the JSON line and then threw a
+      // GeneralError. withErrorHandling routed that through `logError`
+      // (clack `p.log.error`), which prints the styled "■ Firefox source
+      // not found …" banner to stdout. Scripts piping `status --json` to
+      // jq broke on every engine-missing exit. The fix throws a
+      // CommandError instead, which withErrorHandling does not log —
+      // bin/fireforge.ts catches the CommandError and exits with the
+      // carried code, so stdout stays a single JSON line.
+      vi.mocked(pathExists).mockImplementation((path: string) => {
+        // engine/ missing — every other path is irrelevant for the
+        // engine-missing branch.
+        if (path === '/fake/engine') return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      const writes: string[] = [];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+
+      let caught: unknown;
+      try {
+        await statusCommand(projectRoot, { json: true });
+      } catch (err: unknown) {
+        caught = err;
+      } finally {
+        stdoutSpy.mockRestore();
+      }
+
+      // CommandError carries the exit code without going through the
+      // FireForgeError logging path.
+      expect(caught).toBeDefined();
+      expect((caught as { name?: string }).name).toBe('CommandError');
+
+      const combined = writes.join('');
+      const lines = combined.trim().split('\n');
+      expect(lines).toHaveLength(1);
+      const firstLine = lines[0] ?? '';
+      const parsed = JSON.parse(firstLine) as { error: string; code: string };
+      expect(parsed.code).toBe('engine-missing');
+      expect(parsed.error).toMatch(/Firefox source not found/);
+      // Human banner must not appear on stdout.
+      expect(combined).not.toContain('■');
     });
   });
 });

@@ -21,6 +21,13 @@ vi.mock('../../core/git.js', () => ({
   isGitRepository: vi.fn(),
 }));
 
+vi.mock('../../core/git-status.js', () => ({
+  getWorkingTreeStatus: vi.fn(() => Promise.resolve([])),
+  expandUntrackedDirectoryEntries: vi.fn((_dir: string, entries: unknown[]) =>
+    Promise.resolve(entries)
+  ),
+}));
+
 vi.mock('../../core/token-coverage.js', () => ({
   measureTokenCoverage: vi.fn(),
 }));
@@ -44,6 +51,7 @@ vi.mock('../../utils/logger.js', () => ({
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { getStatusWithCodes, isGitRepository } from '../../core/git.js';
+import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../../core/git-status.js';
 import { measureTokenCoverage } from '../../core/token-coverage.js';
 import { getTokensCssPath } from '../../core/token-manager.js';
 import { pathExists } from '../../utils/fs.js';
@@ -52,7 +60,37 @@ import { tokenCoverageCommand } from '../token-coverage.js';
 
 const mockedGetProjectPaths = vi.mocked(getProjectPaths);
 const mockedGetStatusWithCodes = vi.mocked(getStatusWithCodes);
+const mockedGetWorkingTreeStatus = vi.mocked(getWorkingTreeStatus);
 const mockedIsGitRepository = vi.mocked(isGitRepository);
+
+/**
+ * Shapes a lightweight `{ status, file }` tuple into the richer
+ * `GitStatusEntry` the real `getWorkingTreeStatus` returns. Centralised
+ * so each test can stay focused on the token-coverage logic rather
+ * than the parsing that the tokeniser already covers.
+ */
+function statusEntry(
+  status: string,
+  file: string
+): {
+  status: string;
+  indexStatus: string;
+  worktreeStatus: string;
+  file: string;
+  isUntracked: boolean;
+  isRenameOrCopy: boolean;
+  isDeleted: boolean;
+} {
+  return {
+    status,
+    indexStatus: status[0] ?? ' ',
+    worktreeStatus: status[1] ?? status[0] ?? ' ',
+    file,
+    isUntracked: status.includes('?'),
+    isRenameOrCopy: false,
+    isDeleted: status.includes('D'),
+  };
+}
 const mockedLoadConfig = vi.mocked(loadConfig);
 const mockedMeasureTokenCoverage = vi.mocked(measureTokenCoverage);
 const mockedGetTokensCssPath = vi.mocked(getTokensCssPath);
@@ -82,6 +120,7 @@ describe('tokenCoverageCommand', () => {
     >);
     mockedGetTokensCssPath.mockReturnValue('browser/themes/shared/mybrowser-tokens.css');
     mockedGetStatusWithCodes.mockResolvedValue([]);
+    mockedGetWorkingTreeStatus.mockResolvedValue([]);
     // Default: no furnace.json, so the baseline tests that predate the
     // furnace-aware discovery still exercise the old git-status-only path.
     mockedFurnaceConfigExists.mockResolvedValue(false);
@@ -95,10 +134,56 @@ describe('tokenCoverageCommand', () => {
     expect(mockedMeasureTokenCoverage).not.toHaveBeenCalled();
   });
 
+  it('includes CSS files inside untracked directories', async () => {
+    // Eval 1 Finding #13: an imported patch stack added new CSS under
+    // `browser/themes/shared/` and the engine worktree reported
+    // `?? browser/themes/shared/` (collapsed). The old command scanned
+    // status codes directly and reported "No modified CSS files"
+    // because the directory path did not end in `.css`. Expanding
+    // untracked directories picks up the files inside.
+    vi.mocked(expandUntrackedDirectoryEntries).mockResolvedValueOnce([
+      statusEntry('??', 'browser/themes/shared/hominis-tokens.css'),
+      statusEntry('??', 'browser/themes/shared/hominis-spacing.css'),
+    ]);
+    mockedMeasureTokenCoverage.mockResolvedValue({
+      filesScanned: 2,
+      tokenUsages: 4,
+      allowlistedUsages: 0,
+      unknownVarUsages: 0,
+      rawColorCount: 0,
+      files: [
+        {
+          file: 'browser/themes/shared/hominis-tokens.css',
+          tokenUsages: 3,
+          allowlisted: 0,
+          unknownVars: 0,
+          rawColors: 0,
+        },
+        {
+          file: 'browser/themes/shared/hominis-spacing.css',
+          tokenUsages: 1,
+          allowlisted: 0,
+          unknownVars: 0,
+          rawColors: 0,
+        },
+      ],
+    });
+
+    await tokenCoverageCommand('/project');
+
+    expect(mockedMeasureTokenCoverage).toHaveBeenCalledWith(
+      '/project/engine',
+      expect.arrayContaining([
+        'browser/themes/shared/hominis-tokens.css',
+        'browser/themes/shared/hominis-spacing.css',
+      ])
+    );
+  });
+
   it('returns early when there are no modified CSS files to measure', async () => {
-    mockedGetStatusWithCodes.mockResolvedValue([
-      { status: 'M', file: 'browser/components/app/app.js' },
-      { status: 'M', file: 'browser/themes/shared/mybrowser-tokens.css' },
+    mockedGetWorkingTreeStatus.mockResolvedValue([
+      statusEntry(' M', 'browser/components/app/app.js'),
+      statusEntry(' M', 'browser/themes/shared/mybrowser-tokens.css'),
     ]);
 
     await tokenCoverageCommand('/project');
@@ -109,10 +194,10 @@ describe('tokenCoverageCommand', () => {
   });
 
   it('reports per-file stats and warns when coverage is incomplete', async () => {
-    mockedGetStatusWithCodes.mockResolvedValue([
-      { status: 'M', file: 'browser/themes/shared/panel.css' },
-      { status: 'M', file: 'browser/themes/shared/mybrowser-tokens.css' },
-      { status: 'M', file: 'browser/components/app/app.js' },
+    mockedGetWorkingTreeStatus.mockResolvedValue([
+      statusEntry(' M', 'browser/themes/shared/panel.css'),
+      statusEntry(' M', 'browser/themes/shared/mybrowser-tokens.css'),
+      statusEntry(' M', 'browser/components/app/app.js'),
     ]);
     mockedMeasureTokenCoverage.mockResolvedValue({
       filesScanned: 1,
@@ -151,8 +236,8 @@ describe('tokenCoverageCommand', () => {
     // Finding #10: the eval had a deployed `moz-eval-card.css` that was
     // untracked in git but present in the engine, and coverage missed it
     // entirely because the old discovery path only read git status.
-    mockedGetStatusWithCodes.mockResolvedValue([
-      { status: 'M', file: 'browser/themes/shared/panel.css' },
+    mockedGetWorkingTreeStatus.mockResolvedValue([
+      statusEntry(' M', 'browser/themes/shared/panel.css'),
     ]);
     mockedFurnaceConfigExists.mockResolvedValue(true);
     mockedLoadFurnaceConfig.mockResolvedValue({
@@ -207,9 +292,9 @@ describe('tokenCoverageCommand', () => {
   });
 
   it('reports success when all measured usages are token-backed', async () => {
-    mockedGetStatusWithCodes.mockResolvedValue([
-      { status: 'M', file: 'browser/themes/shared/panel.css' },
-      { status: 'M', file: 'browser/themes/shared/dialog.css' },
+    mockedGetWorkingTreeStatus.mockResolvedValue([
+      statusEntry(' M', 'browser/themes/shared/panel.css'),
+      statusEntry(' M', 'browser/themes/shared/dialog.css'),
     ]);
     mockedMeasureTokenCoverage.mockResolvedValue({
       filesScanned: 2,

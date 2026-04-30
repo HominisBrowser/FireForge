@@ -25,11 +25,21 @@ import {
 
 const BROWSER_INIT_JS = 'browser/base/content/browser-init.js';
 
+const DEFAULT_MARKER = 'FIREFORGE:';
+
 /**
  * AST-based implementation: finds onUnload()/uninit() method body and
  * inserts the destroy block at the top (LIFO ordering).
+ *
+ * `marker` is prefixed to the generated comment so wire-generated
+ * edits carry the patch-lint `// <MARKER>:` signature
+ * `lintModificationComments` looks for (eval 1 Finding #9).
  */
-export function addDestroyAST(content: string, expression: string): string {
+export function addDestroyAST(
+  content: string,
+  expression: string,
+  marker: string = DEFAULT_MARKER
+): string {
   const name = extractNameFromExpression(expression);
   // See wire-init.ts for the rationale: the template interpolates the
   // expression verbatim, so a bare `Foo.bar` compiled to `Foo.bar;`
@@ -60,7 +70,7 @@ export function addDestroyAST(content: string, expression: string): string {
   }
 
   const block = [
-    `${indent}// ${name} destroy`,
+    `${indent}// ${marker} wire-destroy ${name}`,
     `${indent}try {`,
     `${indent}  if (typeof ${name} !== "undefined") {`,
     `${indent}    ${callExpression};`,
@@ -77,7 +87,11 @@ export function addDestroyAST(content: string, expression: string): string {
 /**
  * Legacy regex/line-based implementation preserved as fallback.
  */
-export function legacyAddDestroy(content: string, expression: string): string {
+export function legacyAddDestroy(
+  content: string,
+  expression: string,
+  marker: string = DEFAULT_MARKER
+): string {
   const name = extractNameFromExpression(expression);
   // Match the AST path on the call-coercion contract so fallback vs AST
   // emits identical blocks (see wire-init.ts).
@@ -97,7 +111,7 @@ export function legacyAddDestroy(content: string, expression: string): string {
   const insertIndex = found.braceIndex + 1;
 
   const block = [
-    `    // ${name} destroy`,
+    `    // ${marker} wire-destroy ${name}`,
     `    try {`,
     `      if (typeof ${name} !== "undefined") {`,
     `        ${callExpression};`,
@@ -121,7 +135,8 @@ export function legacyAddDestroy(content: string, expression: string): string {
  */
 export async function addDestroyToBrowserInit(
   engineDir: string,
-  expression: string
+  expression: string,
+  marker: string = DEFAULT_MARKER
 ): Promise<boolean> {
   validateWireName(expression, 'destroy expression');
   const filePath = join(engineDir, BROWSER_INIT_JS);
@@ -143,8 +158,8 @@ export async function addDestroyToBrowserInit(
   }
 
   const { value, usedFallback } = withParserFallback(
-    () => addDestroyAST(content, expression),
-    () => legacyAddDestroy(content, expression),
+    () => addDestroyAST(content, expression, marker),
+    () => legacyAddDestroy(content, expression, marker),
     BROWSER_INIT_JS
   );
 

@@ -109,6 +109,15 @@ export interface FurnaceConfig {
   /** Custom properties allowed even though they don't match tokenPrefix (e.g. ["--background-color-box"]) */
   tokenAllowlist?: string[];
   /**
+   * CSS custom-property prefixes that identify upstream / platform
+   * variables the fork does not own. `token coverage` counts matches
+   * as `allowlisted` rather than `unknown` so a copied upstream
+   * baseline doesn't drag fork-owned coverage percentages down.
+   * Defaults to `['--moz-']` when unset. Pass an explicit empty array
+   * to restore the pre-0.18.0 strict contract.
+   */
+  platformPrefixes?: string[];
+  /**
    * Custom properties used as runtime state channels — written and read by the
    * component itself (e.g. per-frame camera/tile positions) rather than
    * consumed as design tokens. Listed names are exempt from the

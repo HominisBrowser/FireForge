@@ -29,7 +29,10 @@ Workflow:
   status [options]                  Show modified files in engine/
   reset [options]                   Reset engine/ to clean state
   discard [options] <file>          Discard changes to a specific file (deletes
-                                    untracked files)
+                                    untracked files). Pass a directory path to
+                                    discard every modified or untracked file
+                                    beneath it; the operation walks the status
+                                    output and reverts each match individually.
   export [options] <paths...>       Export new changes as a patch (use re-export
                                     to update existing patches)
   export-all [options]              Export all changes as a patch
@@ -39,7 +42,8 @@ Workflow:
                                     sourceEsrVersion by default — use --stamp or
                                     run rebase for version stamping.
   patch                             Manage individual patches in the queue
-                                    (compact, delete, reorder)
+                                    (compact, delete, lint-ignore, reorder,
+                                    tier)
   rebase [options]                  Semi-automated ESR version upgrade — apply
                                     patches with fuzz and re-export
   package [options]                 Create distribution package

@@ -4,7 +4,7 @@
  */
 
 import { ConfigError } from '../errors/config.js';
-import type { FireForgeConfig, ProjectLicense } from '../types/config.js';
+import type { FireForgeConfig, PatchLintSeverityGate } from '../types/config.js';
 import { verbose } from '../utils/logger.js';
 import { parseObject } from '../utils/parse.js';
 import { isContainedRelativePath, isExplicitAbsolutePath } from '../utils/paths.js';
@@ -151,7 +151,7 @@ export function validateConfig(data: unknown): FireForgeConfig {
         `Config field "license" must be one of: ${PROJECT_LICENSES.join(', ')}`
       );
     }
-    config.license = licenseRaw as ProjectLicense;
+    config.license = licenseRaw;
   }
 
   // Marker comment — appended to lines FireForge writes into upstream files.
@@ -163,26 +163,7 @@ export function validateConfig(data: unknown): FireForgeConfig {
   // PatchLint
   const patchLintRec = optionalConfigObject(rec, 'patchLint');
   if (patchLintRec) {
-    config.patchLint = {};
-    const checkJs = patchLintRec.raw('checkJs');
-    if (checkJs !== undefined) {
-      if (typeof checkJs !== 'boolean') {
-        throw new ConfigError('Config field "patchLint.checkJs" must be a boolean');
-      }
-      config.patchLint.checkJs = checkJs;
-    }
-    const rawColorAllowlist = patchLintRec.raw('rawColorAllowlist');
-    if (rawColorAllowlist !== undefined) {
-      if (
-        !Array.isArray(rawColorAllowlist) ||
-        rawColorAllowlist.some((v: unknown) => typeof v !== 'string')
-      ) {
-        throw new ConfigError(
-          'Config field "patchLint.rawColorAllowlist" must be an array of strings'
-        );
-      }
-      config.patchLint.rawColorAllowlist = rawColorAllowlist as string[];
-    }
+    config.patchLint = parsePatchLintBlock(patchLintRec);
   }
 
   // Warn on unknown root keys
@@ -263,4 +244,69 @@ function optionalConfigObject(
   } catch {
     throw new ConfigError(`Config field "${key}" must be an object`);
   }
+}
+
+const SEVERITY_GATE_VALUES: readonly PatchLintSeverityGate[] = ['off', 'warning', 'error'];
+
+function parseSeverityGate(raw: unknown, label: string): PatchLintSeverityGate | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !(SEVERITY_GATE_VALUES as readonly string[]).includes(raw)) {
+    throw new ConfigError(
+      `Config field "${label}" must be one of: ${SEVERITY_GATE_VALUES.join(', ')}`
+    );
+  }
+  return raw as PatchLintSeverityGate;
+}
+
+function parsePatchLintBlock(
+  rec: ReturnType<typeof parseObject>
+): NonNullable<FireForgeConfig['patchLint']> {
+  const out: NonNullable<FireForgeConfig['patchLint']> = {};
+
+  const checkJs = rec.raw('checkJs');
+  if (checkJs !== undefined) {
+    if (typeof checkJs !== 'boolean') {
+      throw new ConfigError('Config field "patchLint.checkJs" must be a boolean');
+    }
+    out.checkJs = checkJs;
+  }
+
+  const rawColorAllowlist = rec.raw('rawColorAllowlist');
+  if (rawColorAllowlist !== undefined) {
+    if (
+      !Array.isArray(rawColorAllowlist) ||
+      rawColorAllowlist.some((v: unknown) => typeof v !== 'string')
+    ) {
+      throw new ConfigError(
+        'Config field "patchLint.rawColorAllowlist" must be an array of strings'
+      );
+    }
+    out.rawColorAllowlist = rawColorAllowlist as string[];
+  }
+
+  const jsdocClassMethods = parseSeverityGate(
+    rec.raw('jsdocClassMethods'),
+    'patchLint.jsdocClassMethods'
+  );
+  if (jsdocClassMethods !== undefined) {
+    out.jsdocClassMethods = jsdocClassMethods;
+  }
+
+  const testAssertionFloor = parseSeverityGate(
+    rec.raw('testAssertionFloor'),
+    'patchLint.testAssertionFloor'
+  );
+  if (testAssertionFloor !== undefined) {
+    out.testAssertionFloor = testAssertionFloor;
+  }
+
+  const chromeScriptJsDoc = parseSeverityGate(
+    rec.raw('chromeScriptJsDoc'),
+    'patchLint.chromeScriptJsDoc'
+  );
+  if (chromeScriptJsDoc !== undefined) {
+    out.chromeScriptJsDoc = chromeScriptJsDoc;
+  }
+
+  return out;
 }

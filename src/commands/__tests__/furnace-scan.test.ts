@@ -333,7 +333,7 @@ describe('furnaceScanCommand', () => {
     ]);
 
     const cancelSymbol = Symbol('cancel');
-    vi.mocked(prompts.confirm).mockResolvedValue(cancelSymbol as never);
+    vi.mocked(prompts.confirm).mockResolvedValue(cancelSymbol);
     const { isCancel, cancel } = await import('../../utils/logger.js');
     vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
 
@@ -358,7 +358,7 @@ describe('furnaceScanCommand', () => {
     vi.mocked(prompts.confirm).mockResolvedValue(true);
 
     const cancelSymbol = Symbol('cancel');
-    vi.mocked(prompts.multiselect).mockResolvedValue(cancelSymbol as never);
+    vi.mocked(prompts.multiselect).mockResolvedValue(cancelSymbol);
     const { isCancel, cancel } = await import('../../utils/logger.js');
     vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
 

@@ -33,7 +33,7 @@ function getInstalledStdoutErrorHandler(
     throw new Error('Broken-pipe handler was not installed on stdout');
   }
 
-  return handler as (error: NodeJS.ErrnoException) => void;
+  return handler;
 }
 
 describe('installBrokenPipeHandler', () => {

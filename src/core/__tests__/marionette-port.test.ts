@@ -23,6 +23,8 @@ import { exec } from '../../utils/process.js';
 import {
   assertMarionettePortAvailable,
   DEFAULT_MARIONETTE_PORT,
+  extractForwardedMarionettePort,
+  isMarionetteFlavor,
   probeMarionettePort,
 } from '../marionette-port.js';
 
@@ -206,5 +208,97 @@ describe('assertMarionettePortAvailable', () => {
       const message = error instanceof Error ? error.message : String(error);
       expect(message).toMatch(/kill 12345/);
     }
+  });
+
+  it('probes the supplied port instead of the default when one is given', async () => {
+    mockExec.mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
+    await assertMarionettePortAvailable(2838);
+    // The first exec call is the lsof probe; verify it targeted 2838 not 2828.
+    expect(mockExec.mock.calls[0]?.[1]).toContain('tcp:2838');
+    expect(mockExec.mock.calls[0]?.[1]).not.toContain('tcp:2828');
+  });
+
+  it('names the supplied port in the browser-holder error message', async () => {
+    mockExec
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: `p99\nc firefox\nn*:2838\n`,
+        stderr: '',
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: '/usr/bin/firefox -marionette\n',
+        stderr: '',
+      });
+
+    await expect(assertMarionettePortAvailable(2838)).rejects.toThrow(/port 2838/);
+  });
+});
+
+describe('extractForwardedMarionettePort', () => {
+  it('returns undefined when no recognised arg is present', () => {
+    expect(extractForwardedMarionettePort([])).toBeUndefined();
+    expect(extractForwardedMarionettePort(['--headless', '--keep-open'])).toBeUndefined();
+  });
+
+  it('parses the equals form', () => {
+    expect(extractForwardedMarionettePort(['--marionette-port=2838'])).toBe(2838);
+  });
+
+  it('parses the two-token form', () => {
+    expect(extractForwardedMarionettePort(['--marionette-port', '2838'])).toBe(2838);
+  });
+
+  it('parses the setpref form', () => {
+    expect(extractForwardedMarionettePort(['--setpref=marionette.port=2838'])).toBe(2838);
+  });
+
+  it('returns undefined for malformed values', () => {
+    expect(extractForwardedMarionettePort(['--marionette-port=notaport'])).toBeUndefined();
+    expect(extractForwardedMarionettePort(['--marionette-port'])).toBeUndefined();
+  });
+
+  it('finds the arg even when surrounded by other args', () => {
+    expect(
+      extractForwardedMarionettePort([
+        '--headless',
+        '--app-path=/some/path',
+        '--marionette-port=2838',
+        '--setpref=foo=bar',
+      ])
+    ).toBe(2838);
+  });
+});
+
+describe('isMarionetteFlavor', () => {
+  it('returns true for browser_*.js paths', () => {
+    expect(isMarionetteFlavor(['browser/base/content/test/general/browser_focus.js'], [])).toBe(
+      true
+    );
+  });
+
+  it('returns true when no test paths are given (default "run all" shape)', () => {
+    expect(isMarionetteFlavor([], [])).toBe(true);
+  });
+
+  it('returns false for an explicit xpcshell flavor', () => {
+    expect(isMarionetteFlavor([], ['--flavor=xpcshell'])).toBe(false);
+    expect(
+      isMarionetteFlavor(
+        ['browser/base/content/test/general/browser_focus.js'],
+        ['--flavor=xpcshell']
+      )
+    ).toBe(false);
+  });
+
+  it('returns true for an explicit browser-chrome / mochitest flavor', () => {
+    expect(isMarionetteFlavor([], ['--flavor=browser-chrome'])).toBe(true);
+    expect(isMarionetteFlavor([], ['--flavor=mochitest'])).toBe(true);
+  });
+
+  it('returns false for xpcshell-shaped test paths with no marionette signal', () => {
+    expect(isMarionetteFlavor(['toolkit/components/tests/xpcshell/test_observer.js'], [])).toBe(
+      false
+    );
   });
 });

@@ -17,6 +17,7 @@ import {
   updateFurnaceState,
 } from '../../core/furnace-config.js';
 import { resolveFtlDir } from '../../core/furnace-constants.js';
+import { resolveFurnaceMarkerComment } from '../../core/furnace-marker.js';
 import {
   type FurnaceOperationContext,
   recordFurnaceRollbackFailure,
@@ -452,6 +453,14 @@ export async function furnaceDeployCommand(
   // the plan before deciding whether to refresh the override or acknowledge
   // the new baseline in furnace.json.
   const forgeConfig = await loadConfig(projectRoot);
+  // 2026-04-26 eval Finding 6: when `markerComment` is unset in
+  // fireforge.json, default it to `binaryName.toUpperCase()` so the
+  // furnace-emitted edits to upstream files satisfy
+  // `lintModificationComments` on the next `lint`/`export` round-trip.
+  // The lint rule keys on the same uppercased binaryName, so the
+  // implicit default is identical to what the rule expects. Threaded
+  // through `applyNamedComponent` below.
+  const resolvedMarkerComment = resolveFurnaceMarkerComment(forgeConfig);
   const driftEntries = findOverrideBaseVersionDrift(config, forgeConfig.firefox.version);
   const force = options.force ?? false;
   const scopedDrift = name ? driftEntries.filter((entry) => entry.name === name) : driftEntries;
@@ -484,7 +493,7 @@ export async function furnaceDeployCommand(
           isDryRun,
           ctx,
           projectRoot,
-          forgeConfig.markerComment
+          resolvedMarkerComment
         );
 
         if (namedApplyResult === 'stock') {

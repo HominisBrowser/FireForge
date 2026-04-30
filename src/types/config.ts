@@ -67,6 +67,12 @@ export interface WireConfig {
 }
 
 /**
+ * Severity gate for opt-in patch-lint rules. `'off'` disables the rule;
+ * `'warning'` and `'error'` emit issues at the matching severity.
+ */
+export type PatchLintSeverityGate = 'off' | 'warning' | 'error';
+
+/**
  * Configuration for patch lint rules.
  */
 export interface PatchLintConfig {
@@ -74,6 +80,21 @@ export interface PatchLintConfig {
   checkJs?: boolean;
   /** File paths exempt from the raw-color-value check (exact or basename match) */
   rawColorAllowlist?: string[];
+  /** Enforce JSDoc on class-method exports in patch-owned .sys.mjs files. Default: 'off'. */
+  jsdocClassMethods?: PatchLintSeverityGate;
+  /** Require ≥1 assertion in any patch-touched browser_*.js test file (new or modified). Default: 'off'. */
+  testAssertionFloor?: PatchLintSeverityGate;
+  /**
+   * Enforce JSDoc on top-level classes (and their methods) and functions
+   * in patch-owned chrome subscripts (`.js` files loaded via
+   * `Services.scriptloader.loadSubScript`, e.g.
+   * `browser/base/content/<binaryName>*.js`). Distinct from
+   * `jsdocClassMethods` because chrome subscripts are parsed as scripts,
+   * not ES modules — using one flag for both would silently disable the
+   * rule when a chrome subscript was fed to the module parser. Default:
+   * 'off'.
+   */
+  chromeScriptJsDoc?: PatchLintSeverityGate;
 }
 
 /**

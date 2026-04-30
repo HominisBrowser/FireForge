@@ -70,6 +70,12 @@ export function tokenizeJarMn(lines: string[]): JarMnToken[] {
 /**
  * Tokenizes a moz.build Python list block, returning the tokens and their
  * line range within the file.
+ *
+ * Supports both multi-line lists (the common shape) and single-line
+ * empty lists of the form `EXTRA_JS_MODULES += []` — the eval-2 finding
+ * case where a freshly-scaffolded module directory's `moz.build`
+ * started with an empty list and the tokenizer returned `null`,
+ * leaving `register` unable to add the first entry.
  */
 export function tokenizeMozBuildList(
   lines: string[],
@@ -84,6 +90,28 @@ export function tokenizeMozBuildList(
 
     if (startLine === -1) {
       if (listPattern.test(raw)) {
+        // Single-line empty-list handling: a fresh scaffold sometimes
+        // writes `EXTRA_JS_MODULES += []` on one line. The pre-fix
+        // tokenizer returned `null` because it never saw a line
+        // starting with `]`, which stranded `register` with a "Could
+        // not find module list section" error against the documented
+        // browser/modules/<fork>/ scaffold (eval 2).
+        //
+        // The in-place split rewrites the single-line form into the
+        // canonical multi-line shape so the caller's
+        // `lines.splice(insertIndex, 0, entry)` lands inside the list
+        // body. The tokens are emitted to mirror the new structure.
+        const singleLineMatch = /^([^[]*\[)\s*\]\s*$/.exec(raw);
+        if (singleLineMatch) {
+          const openPart = singleLineMatch[1] ?? '';
+          lines[i] = openPart;
+          lines.splice(i + 1, 0, ']');
+          startLine = i;
+          endLine = i + 1;
+          tokens.push({ type: 'list-open', raw: openPart, lineIndex: i });
+          tokens.push({ type: 'list-close', raw: ']', lineIndex: i + 1 });
+          break;
+        }
         startLine = i;
         tokens.push({ type: 'list-open', raw, lineIndex: i });
       }

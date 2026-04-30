@@ -74,12 +74,26 @@ export function getLicenseHeader(license: ProjectLicense, style: CommentStyle): 
  * Returns true if `content` starts with any known license header for the
  * given comment style.
  *
+ * For `js` files, MPL-2.0 is also accepted in the upstream Mozilla block-
+ * comment form (`/* ... *\/`) used by the Firefox source tree, not just the
+ * `// ` line-comment form `getLicenseHeader` emits. Without that, a new JS
+ * file copied from upstream Firefox (or written to match the surrounding
+ * code's convention) hit `missing-license-header` even with a verbatim
+ * standard MPL header — operators were forced to `--skip-lint` over a real
+ * false positive.
+ *
  * @param content - File content to check
  * @param style   - Comment syntax of the file
  */
 export function hasAnyLicenseHeader(content: string, style: CommentStyle): boolean {
   const licenses = Object.keys(HEADER_LINES) as ProjectLicense[];
-  return licenses.some((license) => content.startsWith(getLicenseHeader(license, style)));
+  if (licenses.some((license) => content.startsWith(getLicenseHeader(license, style)))) {
+    return true;
+  }
+  if (style === 'js' && content.startsWith(getLicenseHeader('MPL-2.0', 'css'))) {
+    return true;
+  }
+  return false;
 }
 
 /**

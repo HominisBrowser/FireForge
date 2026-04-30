@@ -36,6 +36,7 @@ import { registerSetup } from './setup.js';
 import { registerStatus } from './status.js';
 import { registerTest } from './test.js';
 import { registerToken } from './token.js';
+import { registerTypecheck } from './typecheck.js';
 import { registerVerify } from './verify.js';
 import { registerWatch } from './watch.js';
 import { registerWire } from './wire.js';
@@ -90,6 +91,7 @@ export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = [
   { name: 'wire', group: 'workflow', register: registerWire },
   { name: 'token', group: 'components', register: registerToken },
   { name: 'lint', group: 'diagnostics', register: registerLint },
+  { name: 'typecheck', group: 'diagnostics', register: registerTypecheck },
   { name: 'verify', group: 'diagnostics', register: registerVerify },
   { name: 'furnace', group: 'components', register: registerFurnace },
 ];

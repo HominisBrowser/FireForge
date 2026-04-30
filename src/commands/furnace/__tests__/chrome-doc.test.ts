@@ -25,7 +25,66 @@ describe('chrome-doc templates', () => {
     expect(xhtml).toContain('SPDX-License-Identifier: MPL-2.0');
     expect(xhtml).toContain('windowtype="navigator:browser"');
     expect(xhtml).toContain('titlebar-buttonbox');
-    expect(xhtml).toContain('data-l10n-id="mybrowser-window-title"');
+    // data-l10n-id stays only on the leaf <title>. Binding it on the root
+    // <window> would let Fluent's first-paint pass overwrite the entire
+    // body subtree (the Mozilla "data-l10n-id non-leaf" failure mode); the
+    // FTL stub gives the message a value rather than an attribute-only
+    // shape, so a root-level binding really would replace children.
+    const occurrences = xhtml.match(/data-l10n-id="mybrowser-window-title"/g) ?? [];
+    expect(occurrences).toHaveLength(1);
+    expect(xhtml).toContain('<title data-l10n-id="mybrowser-window-title"></title>');
+  });
+
+  it('does not emit data-l10n-id on the root <window> element', () => {
+    // Regression guard for the "Fluent translation wipes body subtree"
+    // failure mode (see the leaf-only assertion above for the why).
+    const xhtml = generateChromeDocXhtml('mybrowser', true, 'MPL-2.0');
+    const rootMatch = /<window[^>]*>/.exec(xhtml);
+    expect(rootMatch).not.toBeNull();
+    if (rootMatch) {
+      expect(rootMatch[0]).not.toContain('data-l10n-id');
+    }
+    const framelessXhtml = generateChromeDocXhtml('overlay', false, 'MPL-2.0');
+    const framelessRoot = /<window[^>]*>/.exec(framelessXhtml);
+    expect(framelessRoot).not.toBeNull();
+    if (framelessRoot) {
+      expect(framelessRoot[0]).not.toContain('data-l10n-id');
+    }
+  });
+
+  it('emits the navigator:browser minimum attribute set under --with-titlebar', () => {
+    // Without these attributes a fork that ships the scaffold output
+    // verbatim opens at the OS intrinsic minimum size on first launch and
+    // forgets geometry across restarts. `customtitlebar="true"` pairs with
+    // the buttonbox CSS the css template emits; `persist=...` lets
+    // XULStore remember the user's last-known geometry.
+    const xhtml = generateChromeDocXhtml('mybrowser', true, 'MPL-2.0');
+    expect(xhtml).toContain('customtitlebar="true"');
+    expect(xhtml).toContain('width="1024"');
+    expect(xhtml).toContain('height="640"');
+    expect(xhtml).toContain('persist="screenX screenY width height sizemode"');
+  });
+
+  it('does not leak navigator:browser minimums when titlebar is disabled', () => {
+    const xhtml = generateChromeDocXhtml('overlay', false, 'MPL-2.0');
+    expect(xhtml).not.toContain('customtitlebar');
+    expect(xhtml).not.toContain('persist=');
+    expect(xhtml).not.toContain('width="1024"');
+    expect(xhtml).not.toContain('height="640"');
+  });
+
+  it('loads the toolkit customElements.js registry ahead of the per-doc subscript', () => {
+    // Without customElements.js, every <moz-*> the author drops into the
+    // body silently degrades to HTMLUnknownElement and the upstream
+    // a11y/keyboard semantics are lost. Matches the webrtcIndicator.xhtml
+    // shape upstream uses for non-browser.xhtml chrome documents.
+    const xhtml = generateChromeDocXhtml('mybrowser', true, 'MPL-2.0');
+    expect(xhtml).toContain('<script src="chrome://global/content/customElements.js"></script>');
+    const registryIdx = xhtml.indexOf('chrome://global/content/customElements.js');
+    const subscriptIdx = xhtml.indexOf('chrome://browser/content/mybrowser.js');
+    expect(registryIdx).toBeGreaterThan(-1);
+    expect(subscriptIdx).toBeGreaterThan(-1);
+    expect(registryIdx).toBeLessThan(subscriptIdx);
   });
 
   it('omits the windowtype and titlebar markup when titlebar is disabled', () => {
@@ -58,9 +117,31 @@ describe('chrome-doc templates', () => {
   it('emits the titlebar carve-out only when titlebar is disabled', () => {
     const withTitlebar = generateChromeDocCss('mybrowser', true, '/* */');
     const frameless = generateChromeDocCss('mybrowser', false, '/* */');
-    expect(withTitlebar).not.toContain('.titlebar-button');
-    expect(frameless).toContain('.titlebar-button');
+    // Frameless overlays still need to suppress the platform titlebar
+    // buttons that global.css inherits on macOS.
+    expect(frameless).toContain(':root[windowtype="navigator:browser"] .titlebar-button');
     expect(frameless).toContain('display: none');
+    // The full-titlebar variant should NOT carry the suppression rule —
+    // emitting it would silently hide the buttons it just paid the cost
+    // of styling.
+    expect(withTitlebar).not.toContain(':root[windowtype="navigator:browser"] .titlebar-button');
+  });
+
+  it('emits navigator:browser titlebar styling under --with-titlebar', () => {
+    // Pairs with the navigator:browser minimum attribute set that the
+    // XHTML template emits. -moz-window-dragging makes the buttonbox
+    // container a drag region; -moz-window-button-box opts the inner
+    // buttonbox into the platform-native traffic-light appearance.
+    const css = generateChromeDocCss('mybrowser', true, '/* */');
+    expect(css).toContain('-moz-window-dragging: drag');
+    expect(css).toContain('.titlebar-buttonbox-container');
+    expect(css).toContain('-moz-default-appearance: -moz-window-button-box');
+  });
+
+  it('does not emit navigator:browser titlebar styling when titlebar is disabled', () => {
+    const css = generateChromeDocCss('overlay', false, '/* */');
+    expect(css).not.toContain('-moz-window-dragging');
+    expect(css).not.toContain('-moz-window-button-box');
   });
 
   it('emits an FTL stub keyed on the document name', () => {
@@ -283,6 +364,54 @@ describe('furnaceChromeDocCreateCommand', () => {
     expect(await pathExists(join(engineDir, 'browser/base/content/test/mybrowser-xpcshell'))).toBe(
       false
     );
+  });
+
+  it('skips the locale jar.mn per-file entry when a [localization] wildcard already captures the FTL', async () => {
+    // Forks that have migrated to a `(%browser/**/*.ftl)` wildcard already
+    // pick up the scaffolded FTL automatically; appending a per-file
+    // `locale/...` entry is dead weight (and a build break on forks that
+    // dropped the `% locale browser` registration). The scaffolder must
+    // detect the wildcard and skip.
+    const engineDir = join(projectRoot, 'engine');
+    await ensureDir(join(engineDir, 'browser/base/content'));
+    await ensureDir(join(engineDir, 'browser/themes/shared'));
+    await ensureDir(join(engineDir, 'browser/locales/en-US/browser'));
+    await writeText(join(engineDir, 'browser/base/jar.mn'), '# header\n');
+    await writeText(join(engineDir, 'browser/themes/shared/jar.inc.mn'), '# header\n');
+    await writeText(
+      join(engineDir, 'browser/locales/jar.mn'),
+      '# header\n[localization] @AB_CD@.jar:\n  browser (%browser/**/*.ftl)\n'
+    );
+
+    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser');
+
+    const localeJarMn = await readFile(join(engineDir, 'browser/locales/jar.mn'), 'utf8');
+    // The wildcard line stays as-is and the per-file entry is NOT appended.
+    expect(localeJarMn).toContain('browser (%browser/**/*.ftl)');
+    expect(localeJarMn).not.toContain('locale/browser/mybrowser.ftl');
+    // Sanity: the rest of the scaffold did write — the skip is targeted,
+    // not a wholesale abort.
+    const xhtml = await readFile(join(engineDir, 'browser/base/content/mybrowser.xhtml'), 'utf8');
+    expect(xhtml).toContain('mybrowser-window-title');
+  });
+
+  it('still appends the per-file locale jar.mn entry when no wildcard is present', async () => {
+    // Regression guard: forks on the legacy `% locale browser ...`
+    // registration with no `[localization]` wildcard still get the
+    // per-file entry.
+    const engineDir = join(projectRoot, 'engine');
+    await ensureDir(join(engineDir, 'browser/base/content'));
+    await ensureDir(join(engineDir, 'browser/themes/shared'));
+    await ensureDir(join(engineDir, 'browser/locales/en-US/browser'));
+    await writeText(join(engineDir, 'browser/base/jar.mn'), '# header\n');
+    await writeText(join(engineDir, 'browser/themes/shared/jar.inc.mn'), '# header\n');
+    await writeText(join(engineDir, 'browser/locales/jar.mn'), '# header\n');
+
+    await furnaceChromeDocCreateCommand(projectRoot, 'legacyfork');
+
+    const localeJarMn = await readFile(join(engineDir, 'browser/locales/jar.mn'), 'utf8');
+    expect(localeJarMn).toContain('locale/browser/legacyfork.ftl');
+    expect(localeJarMn).toContain('(%browser/legacyfork.ftl)');
   });
 
   it('refuses to clobber an existing xhtml with the same name', async () => {

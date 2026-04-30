@@ -167,8 +167,8 @@ export interface RunnableBundleCheck {
  *
  * Platform layout:
  * - macOS: `<objDir>/dist/*.app/Contents/MacOS/<binaryName>` (the `.app`
- *   display casing can differ from `binaryName` — e.g. `Hominis.app` for
- *   binary `hominis`, so we enumerate the `*.app` bundles rather than
+ *   display casing can differ from `binaryName` — e.g. `MyBrowser.app` for
+ *   binary `mybrowser`, so we enumerate the `*.app` bundles rather than
  *   compute the name.
  * - Linux: `<objDir>/dist/bin/<binaryName>`.
  * - Windows: `<objDir>/dist/bin/<binaryName>.exe`.

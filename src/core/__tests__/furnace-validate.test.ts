@@ -239,28 +239,28 @@ describe('validateAccessibility', () => {
   });
 
   it('does not warn when the wrapper composes a native-interactive tag', async () => {
-    // Hominis dock pattern: a custom wrapper renders a synthetic-looking
+    // MyBrowser dock pattern: a custom wrapper renders a synthetic-looking
     // host element whose activation delegates to the composed moz-button
     // inner element. The wrapper tag itself is not in
     // NATIVE_CLICK_INTERACTIVE_TAGS, so the template scan cannot tell —
     // the config has to declare the composition.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`
-      class HominisDockButton extends MozLitElement {
+      class MyBrowserDockButton extends MozLitElement {
         static shadowRootOptions = { mode: 'open', delegatesFocus: true };
 
         render() {
-          return html\`<hominis-dock-button @click=\${() => doSomething()}>Open</hominis-dock-button>\`;
+          return html\`<mybrowser-dock-button @click=\${() => doSomething()}>Open</mybrowser-dock-button>\`;
         }
       }
     `);
 
     const issues = await validateAccessibility(
-      '/components/hominis-dock-button',
-      'hominis-dock-button',
+      '/components/mybrowser-dock-button',
+      'mybrowser-dock-button',
       {
         description: 'Dock button wrapper',
-        targetPath: 'toolkit/content/widgets/hominis-dock-button',
+        targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
         register: true,
         localized: false,
         composes: ['moz-button'],

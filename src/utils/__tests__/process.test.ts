@@ -29,7 +29,7 @@ function makeChild(): MockChildProcess {
     stderr: new MockStream(),
     exitCode: null as number | null,
     signalCode: null as NodeJS.Signals | null,
-    kill: vi.fn() as unknown as (signal?: NodeJS.Signals) => boolean,
+    kill: vi.fn(),
   });
   return child;
 }

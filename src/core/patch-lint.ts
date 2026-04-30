@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
@@ -16,9 +16,11 @@ import {
   hasAnyLicenseHeaderAnyStyle,
 } from './license-headers.js';
 import { runCheckJs } from './patch-lint-checkjs.js';
+import { lintChromeScriptJsDocForFile } from './patch-lint-chrome-jsdoc.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
+import { AGGREGATE_PATCH_FILE } from './patch-lint-diff-tag.js';
 import { validateExportJsDoc } from './patch-lint-jsdoc.js';
-import { resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
+import { resolvePatchOwnedChromeScripts, resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
 
 // ---------------------------------------------------------------------------
 // Cross-patch lint re-exports
@@ -48,7 +50,7 @@ export {
 } from './patch-lint-cross.js';
 export { buildModifiedFileAdditionsFromDiff, detectNewFilesInDiff } from './patch-lint-diff.js';
 export { type JsDocCheck, type JsDocIssue, validateExportJsDoc } from './patch-lint-jsdoc.js';
-export { resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
+export { resolvePatchOwnedChromeScripts, resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -98,14 +100,56 @@ const PATCH_LINE_THRESHOLDS = {
    * Branding patches have a legitimate reason to be large: they include
    * every locale's `brand.ftl`, copied upstream CSS/PNG assets, and the
    * fork-specific `configure.sh` / `brand.properties` under a single
-   * `browser/branding/<name>/` subtree. The general hard limit of 3000
-   * lines fires on even a first-export branding patch (the eval saw 15904
-   * lines for a freshly-setup fork), which is loud but not actionable —
-   * the patch already is the minimum branding diff. A dedicated tier keeps
-   * the size guidance while moving the hard limit to a threshold that
-   * corresponds to "something other than branding is bundled in here too".
+   * `browser/branding/<name>/` subtree. Calibrated against:
+   *
+   * - The 2026-04-21 eval baseline: a fresh-fork branding export landed
+   *   at 15904 lines (localized brand.ftl across many locales + SVG path
+   *   data + copied upstream CSS).
+   * - The 2026-04-25 operator data point: a freshly setup branding patch
+   *   (post-binary-exclusion, after Phase 1+2 patch splits) landed at
+   *   15650 lines — within 2% of the eval baseline.
+   *
+   * Both data points need to surface as a soft `notice` rather than a
+   * `warning`, since they represent the *minimum* branding diff. The
+   * pre-2026-04-25 calibration {3000/8000/20000} put 15904 firmly in the
+   * `warning` band, contradicting the docstring's "loud but not
+   * actionable" intent. The current calibration moves the warning band
+   * above the eval baseline (with ~13% headroom) and the error band to
+   * roughly 2× the baseline — reaching `error` strongly suggests
+   * non-branding work is bundled in.
+   *
+   * Permissive thresholds are safe because the *gate* into this tier is
+   * narrow (auto-detect requires every file under `browser/branding/`
+   * plus a tight registration allowlist, or an explicit
+   * `PatchMetadata.tier: "branding"` opt-in). A non-branding patch
+   * cannot accidentally land here.
    */
-  branding: { notice: 3000, warning: 8000, error: 20000 },
+  branding: { notice: 8000, warning: 18000, error: 30000 },
+} as const;
+
+/**
+ * File-count thresholds for the `large-patch-files` rule, mirroring the
+ * tier shape of {@link PATCH_LINE_THRESHOLDS}. A single warning-only
+ * threshold per tier is intentional — file count expresses scope, not
+ * blast radius, and there is no error band that would block export.
+ *
+ * The branding tier sits well above the typical floor because branding
+ * patches inherently span many files: PNG/ICO icon assets in 7+ sizes,
+ * MSIX manifests, channel-specific configs, locale `.ftl` files,
+ * Windows/macOS launcher resources. The 2026-04-25 operator data point
+ * reported a 56-file fresh-fork branding bundle as the minimum shape;
+ * 60 leaves headroom for additional channels/locales while still firing
+ * on a genuinely bloated patch.
+ *
+ * Test tier matches general because a test-only patch rarely touches
+ * many files (a single regression test usually adds 1–3 fixtures); the
+ * elevation in {@link PATCH_LINE_THRESHOLDS.test} addresses big
+ * table-driven test bodies, not file fan-out.
+ */
+const PATCH_FILES_THRESHOLDS = {
+  general: 5,
+  test: 5,
+  branding: 60,
 } as const;
 
 /**
@@ -170,6 +214,19 @@ export function isTestFile(file: string): boolean {
   if (file.includes('/test/')) return true;
   const basename = file.split('/').pop() ?? '';
   return /^(?:browser_|test_|xpcshell_).*\.js$/.test(basename);
+}
+
+/**
+ * Narrower scope than `isTestFile` — only browser-chrome test files
+ * (`browser_*.js` under a `/test/` or `/tests/` directory). Excludes
+ * `head.js` and `head_*.js` test helpers.
+ */
+function isBrowserChromeTestFile(file: string): boolean {
+  if (!file.endsWith('.js')) return false;
+  if (!/\/(?:test|tests)\//.test(file)) return false;
+  const basename = file.split('/').pop() ?? '';
+  if (basename === 'head.js' || /^head_.*\.js$/.test(basename)) return false;
+  return basename.startsWith('browser_');
 }
 
 /**
@@ -368,6 +425,13 @@ export async function lintNewFileHeaders(
     // with `--skip-lint` (hiding real issues elsewhere).
     if (content.startsWith(expectedHeader)) continue;
     if (file.startsWith('browser/branding/') && hasAnyLicenseHeader(content, style)) continue;
+    // Accept the MPL-2.0 block-comment form (`/* ... */` with leading `*`)
+    // for any JS file — that is the canonical upstream Firefox header
+    // shape, and `hasAnyLicenseHeader` above also recognises it. The
+    // explicit guard mirrors the branding carve-out so operators using the
+    // standard Mozilla header on a JS file (e.g. one copied from upstream
+    // browser/base/content) do not need `--skip-lint` to land it.
+    if (license === 'MPL-2.0' && hasAnyLicenseHeader(content, style)) continue;
 
     issues.push({
       file,
@@ -393,6 +457,11 @@ export async function lintNewFileHeaders(
  * @param newFiles - Set of files that are newly created in this patch
  * @param config - Project configuration
  * @param patchOwnedFiles - Optional set of patch-owned `.sys.mjs` paths for scoped JSDoc enforcement
+ * @param patchOwnedChromeScripts - Optional set of patch-owned chrome
+ *   subscripts (`.js` non-`.sys.mjs`) for scoped chrome-script JSDoc
+ *   enforcement. Built by {@link resolvePatchOwnedChromeScripts}; passed
+ *   separately from `patchOwnedFiles` so the `runCheckJs` consumer (which
+ *   only accepts `.sys.mjs`) is not silently broadened.
  * @returns Array of lint issues
  */
 export async function lintPatchedJs(
@@ -400,7 +469,8 @@ export async function lintPatchedJs(
   affectedFiles: string[],
   newFiles: Set<string>,
   config: FireForgeConfig,
-  patchOwnedFiles?: Set<string>
+  patchOwnedFiles?: Set<string>,
+  patchOwnedChromeScripts?: Set<string>
 ): Promise<PatchLintIssue[]> {
   const jsFiles = affectedFiles.filter(isJsFile);
   if (jsFiles.length === 0) return [];
@@ -466,13 +536,45 @@ export async function lintPatchedJs(
     // 3. JSDoc on exports (patch-owned .sys.mjs files)
     const isOwned = patchOwnedFiles ? patchOwnedFiles.has(file) : isNew;
     if (isOwned && isSysMjs) {
-      const jsdocIssues = validateExportJsDoc(content);
+      const classMethodMode = config.patchLint?.jsdocClassMethods;
+      const jsdocIssues = validateExportJsDoc(
+        content,
+        classMethodMode ? { classMethodMode } : undefined
+      );
       for (const jsdocIssue of jsdocIssues) {
         issues.push({
           file,
           check: jsdocIssue.check,
           message: jsdocIssue.message,
-          severity: 'error',
+          severity: jsdocIssue.severity ?? 'error',
+        });
+      }
+    }
+
+    // 3a. JSDoc on top-level declarations in patch-owned chrome subscripts.
+    // Dispatched out-of-line to keep this file under the per-file line
+    // budget. See `patch-lint-chrome-jsdoc.ts` for the rule body.
+    const isChromeOwned =
+      file.endsWith('.js') &&
+      !isSysMjs &&
+      (patchOwnedChromeScripts ? patchOwnedChromeScripts.has(file) : isNew);
+    const chromeMode = config.patchLint?.chromeScriptJsDoc;
+    issues.push(...lintChromeScriptJsDocForFile(file, content, isChromeOwned, chromeMode));
+
+    // 3b. Assertion floor for browser-chrome tests touched by this patch
+    // (covers both newly introduced files and modified upstream tests —
+    // a patch that strips the last `Assert.equal` from an existing
+    // browser_*.js silently passed under the old `isNew` gate).
+    const assertionFloor = config.patchLint?.testAssertionFloor;
+    if (assertionFloor && assertionFloor !== 'off' && isBrowserChromeTestFile(file)) {
+      const ASSERTION_TOKENS = ['Assert.', 'ok(', 'is(', 'isnot(', 'isDeeply('];
+      const hasAssertion = ASSERTION_TOKENS.some((tok) => strippedContent.includes(tok));
+      if (!hasAssertion) {
+        issues.push({
+          file,
+          check: 'test-needs-assertion',
+          message: `Test file ${file} contains no assertions (Assert.*, ok(), is(), isnot(), isDeeply()). Smoke-only tests do not count as coverage. Add at least one assertion that pins user-visible behavior, or remove the file.`,
+          severity: assertionFloor,
         });
       }
     }
@@ -599,51 +701,60 @@ export function lintPatchSize(
 ): PatchLintIssue[] {
   const issues: PatchLintIssue[] = [];
 
-  if (filesAffected.length > 5) {
-    issues.push({
-      file: '(patch)',
-      check: 'large-patch-files',
-      message: `Patch affects ${filesAffected.length} files (recommended: ≤5). Consider splitting into smaller, focused patches.`,
-      severity: 'warning',
-    });
-  }
-
   // Tier selection: test > branding > general. Tests keep their elevated
   // thresholds because a big regression test is legitimate (table-driven
-  // harnesses run into the thousands of lines). Branding patches get their
-  // own tier so a first-export of setup-generated branding doesn't fire
-  // the general hard limit — see `PATCH_LINE_THRESHOLDS.branding` above
-  // for the eval data motivating this tier. An explicit `patchTier`
-  // opt-in forces branding even when `isBrandingOnlyPatch` cannot reach
-  // the patch's actual shape (a branding patch that also touches a
-  // non-allowlisted sibling like a vendor-specific icon resource).
+  // harnesses run into the thousands of lines). Branding patches get
+  // their own tier so a first-export of setup-generated branding doesn't
+  // fire the general hard limit — see `PATCH_LINE_THRESHOLDS.branding`
+  // and `PATCH_FILES_THRESHOLDS.branding` above for the eval data
+  // motivating this tier. An explicit `patchTier` opt-in forces branding
+  // even when `isBrandingOnlyPatch` cannot reach the patch's actual
+  // shape (a branding patch that also touches a non-allowlisted sibling
+  // like a vendor-specific icon resource). Both checks read off the
+  // same decision so the file-count and line-count rules cannot
+  // disagree about which tier applies.
   const decision = resolvePatchSizeTier(filesAffected, patchTier);
-  const thresholds =
+  const fileThreshold =
+    decision.tier === 'test'
+      ? PATCH_FILES_THRESHOLDS.test
+      : decision.tier === 'branding'
+        ? PATCH_FILES_THRESHOLDS.branding
+        : PATCH_FILES_THRESHOLDS.general;
+  const lineThresholds =
     decision.tier === 'test'
       ? PATCH_LINE_THRESHOLDS.test
       : decision.tier === 'branding'
         ? PATCH_LINE_THRESHOLDS.branding
         : PATCH_LINE_THRESHOLDS.general;
 
-  if (lineCount >= thresholds.error) {
+  if (filesAffected.length > fileThreshold) {
     issues.push({
-      file: '(patch)',
-      check: 'large-patch-lines',
-      message: `Patch is ${lineCount} lines (hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
-      severity: 'error',
-    });
-  } else if (lineCount >= thresholds.warning) {
-    issues.push({
-      file: '(patch)',
-      check: 'large-patch-lines',
-      message: `Patch is ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
+      file: AGGREGATE_PATCH_FILE,
+      check: 'large-patch-files',
+      message: `Patch affects ${filesAffected.length} files (recommended: ≤${fileThreshold}). Consider splitting into smaller, focused patches.`,
       severity: 'warning',
     });
-  } else if (lineCount >= thresholds.notice) {
+  }
+
+  if (lineCount >= lineThresholds.error) {
     issues.push({
-      file: '(patch)',
+      file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',
-      message: `Patch is ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider splitting into smaller, focused patches.`,
+      message: `Patch is ${lineCount} lines (hard limit: ${lineThresholds.error}). Consider splitting into smaller, focused patches.`,
+      severity: 'error',
+    });
+  } else if (lineCount >= lineThresholds.warning) {
+    issues.push({
+      file: AGGREGATE_PATCH_FILE,
+      check: 'large-patch-lines',
+      message: `Patch is ${lineCount} lines (soft limit: ${lineThresholds.warning}, hard limit: ${lineThresholds.error}). Consider splitting into smaller, focused patches.`,
+      severity: 'warning',
+    });
+  } else if (lineCount >= lineThresholds.notice) {
+    issues.push({
+      file: AGGREGATE_PATCH_FILE,
+      check: 'large-patch-lines',
+      message: `Patch is ${lineCount} lines (soft limit: ${lineThresholds.warning}, hard limit: ${lineThresholds.error}). Consider splitting into smaller, focused patches.`,
       severity: 'notice',
     });
   }
@@ -734,11 +845,19 @@ export async function lintExportedPatch(
   const newFiles = detectNewFilesInDiff(diffContent);
   const { textLines: lineCount } = countNonBinaryDiffLines(diffContent);
   const patchOwnedFiles = resolvePatchOwnedSysMjs(newFiles, patchQueueCtx);
+  const patchOwnedChromeScripts = resolvePatchOwnedChromeScripts(newFiles, patchQueueCtx);
 
   const [cssIssues, headerIssues, jsIssues, modifiedHeaderIssues] = await Promise.all([
     lintPatchedCss(repoDir, affectedFiles, diffContent, config),
     lintNewFileHeaders(repoDir, [...newFiles], config),
-    lintPatchedJs(repoDir, affectedFiles, newFiles, config, patchOwnedFiles),
+    lintPatchedJs(
+      repoDir,
+      affectedFiles,
+      newFiles,
+      config,
+      patchOwnedFiles,
+      patchOwnedChromeScripts
+    ),
     lintModifiedFileHeaders(repoDir, affectedFiles, newFiles),
   ]);
 
@@ -754,10 +873,12 @@ export async function lintExportedPatch(
     ...modCommentIssues,
   ];
 
-  // Optional checkJs pass — only when explicitly enabled in config
+  // Optional checkJs pass — only when explicitly enabled in config.
+  // `checkJsExtraShim` is project-relative; resolve against the
+  // project root (dirname(engine) by getProjectPaths convention).
   if (config.patchLint?.checkJs) {
-    const checkJsIssues = await runCheckJs(repoDir, patchOwnedFiles);
-    issues.push(...checkJsIssues);
+    const extraShim = config.patchLint.checkJsExtraShim;
+    issues.push(...(await runCheckJs(repoDir, patchOwnedFiles, extraShim, dirname(repoDir))));
   }
 
   // Filter out ignored checks last so every rule still runs (keeps the

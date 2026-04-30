@@ -680,6 +680,21 @@ export async function updateFurnaceState(
 }
 
 /**
+ * Engine-relative path of the directory `furnace preview` writes its
+ * generated Storybook story files into. Treated as Furnace-managed so
+ * `status` does not flag them as unmanaged and `lint` does not fail on
+ * their (intentionally bare) license headers.
+ *
+ * 2026-04-25 eval Finding 19: a successful `furnace preview` run synced
+ * 23 stories under this prefix; afterwards `status` showed all 23 as
+ * untracked unmanaged changes and aggregate `lint` failed with 23
+ * `missing-license-header` errors. The files are tool output — operators
+ * are not expected to commit or hand-edit them — so the right shape is
+ * to bucket them with the rest of Furnace's managed material.
+ */
+const FURNACE_STORYBOOK_STORIES_PREFIX = 'browser/components/storybook/stories/furnace/';
+
+/**
  * Collects engine-relative path prefixes that are managed by the Furnace
  * component system (overrides, custom components, and their Fluent l10n
  * files). Used by `status` and `export-all` to classify engine changes
@@ -710,6 +725,12 @@ export async function collectFurnaceManagedPrefixes(root: string): Promise<Set<s
       prefixes.add(ftlDir.endsWith('/') ? ftlDir : ftlDir + '/');
     }
   }
+
+  // Always include the preview-generated stories prefix when furnace is
+  // initialised. The directory may not exist yet (no preview ever ran),
+  // but classifying it as furnace-managed is safe even when empty —
+  // status simply has nothing to bucket.
+  prefixes.add(FURNACE_STORYBOOK_STORIES_PREFIX);
 
   return prefixes;
 }

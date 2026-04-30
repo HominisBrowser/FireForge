@@ -91,7 +91,7 @@ describe('explainMachError', () => {
     // `pub type basic_string___self_view = …<_CharT>;` into gecko-profiler's
     // generated bindings.rs against some macOS libc++ SDKs, and the Rust
     // compile fails with "cannot find type `_CharT` in this scope". The
-    // hint points operators at Hominis' 990-infra-bindgen workaround
+    // hint points operators at the 990-infra-bindgen workaround
     // patch + the file-level recovery.
     const stderr = [
       'error[E0425]: cannot find type `_CharT` in this scope',

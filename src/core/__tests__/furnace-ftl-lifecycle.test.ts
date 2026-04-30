@@ -158,21 +158,21 @@ describe('FTL localization lifecycle', () => {
       // file. Registering a new locale jar.mn line would either duplicate
       // the shared one or orphan the per-component entry on removal.
       mockReaddir.mockResolvedValueOnce([
-        fakeEntry('hominis-dock-button.mjs'),
-        fakeEntry('hominis-dock-button.ftl'),
+        fakeEntry('mybrowser-dock-button.mjs'),
+        fakeEntry('mybrowser-dock-button.ftl'),
       ] as never);
       mockPathExists.mockResolvedValue(true);
 
       await applyCustomComponent(
         '/engine',
-        'hominis-dock-button',
-        '/comp/hominis-dock-button',
+        'mybrowser-dock-button',
+        '/comp/mybrowser-dock-button',
         {
           description: 'Dock button',
-          targetPath: 'toolkit/content/widgets/hominis-dock-button',
+          targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
           register: false,
           localized: true,
-          sharedFtl: 'browser/hominis-dock.ftl',
+          sharedFtl: 'browser/mybrowser-dock.ftl',
         },
         FTL_DIR
       );

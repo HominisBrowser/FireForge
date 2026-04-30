@@ -104,17 +104,17 @@ describe('formatDryRunPlan', () => {
     // preview that reality or operators will see a file listed that the
     // real command then does not produce.
     const plan = formatDryRunPlan({
-      componentName: 'hominis-dock-button',
+      componentName: 'mybrowser-dock-button',
       localized: true,
       register: true,
       composes: undefined,
-      sharedFtl: 'browser/hominis-dock.ftl',
+      sharedFtl: 'browser/mybrowser-dock.ftl',
       testStyle: 'none',
       description: 'Dock button',
-      binaryName: 'hominis',
+      binaryName: 'mybrowser',
     });
-    expect(plan).not.toContain('hominis-dock-button.ftl');
-    expect(plan).toContain('sharedFtl: browser/hominis-dock.ftl');
+    expect(plan).not.toContain('mybrowser-dock-button.ftl');
+    expect(plan).toContain('sharedFtl: browser/mybrowser-dock.ftl');
     expect(plan).toContain('localized: true');
   });
 });

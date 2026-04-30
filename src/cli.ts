@@ -22,7 +22,7 @@ type FireForgeProcess = NodeJS.Process & {
 };
 
 function getProcessState(): FireForgeProcess {
-  return process as FireForgeProcess;
+  return process;
 }
 
 function getBrokenPipeHandler(state: FireForgeProcess): (error: NodeJS.ErrnoException) => void {

@@ -41,6 +41,7 @@ import {
   jarIncMnEntryForChromeDoc,
   jarMnEntriesForChromeDoc,
   localeJarMnEntryForChromeDoc,
+  localesFtlWildcardCapturesScaffoldedName,
 } from './chrome-doc-templates.js';
 import {
   chromeDocPackagingTestFileName,
@@ -198,7 +199,38 @@ async function performChromeDocMutations(args: {
     written.push('browser/themes/shared/jar.inc.mn');
 
     const localeJarMnPath = join(args.engineDir, 'browser/locales/jar.mn');
-    await appendJarEntryIfAbsent(localeJarMnPath, localeJarMnEntryForChromeDoc(args.name), journal);
+    // Forks that have migrated to a `[localization] (%browser/**/*.ftl)`
+    // wildcard already pick up the scaffolded FTL automatically — appending
+    // a per-file `locale/...` entry on top is at best dead weight and at
+    // worst a build error when the fork has dropped the `% locale browser`
+    // registration the per-file entry depends on. The wildcard predicate
+    // is intentionally narrow: only `%browser/`-rooted globs that end in
+    // `*.ftl` count as a capture.
+    if (await pathExists(localeJarMnPath)) {
+      const existingLocaleJar = await readText(localeJarMnPath);
+      if (localesFtlWildcardCapturesScaffoldedName(existingLocaleJar)) {
+        note(
+          `Locale jar.mn already carries a [localization] wildcard that captures browser/${args.name}.ftl — skipping the per-file entry.`,
+          args.name
+        );
+      } else {
+        await appendJarEntryIfAbsent(
+          localeJarMnPath,
+          localeJarMnEntryForChromeDoc(args.name),
+          journal
+        );
+      }
+    } else {
+      // Preserve the existing "missing locale jar.mn" failure mode: pretend
+      // we still want to append so appendJarEntryIfAbsent surfaces the same
+      // FurnaceError it does for the other two jars. Forks that move the
+      // file deserve the same explicit complaint everywhere.
+      await appendJarEntryIfAbsent(
+        localeJarMnPath,
+        localeJarMnEntryForChromeDoc(args.name),
+        journal
+      );
+    }
     written.push('browser/locales/jar.mn');
 
     // --with-tests scaffolds an xpcshell packaging verification. All writes

@@ -25,6 +25,13 @@ vi.mock('../../core/config.js', () => ({
 
 vi.mock('../../core/mach.js', () => ({
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
+  // Default to "launchable bundle present" so existing tests keep passing
+  // through the new runnable-bundle preflight added for finding 17. The
+  // dedicated regression test for the missing-binary branch overrides
+  // this with mockResolvedValueOnce({ runnable: false, ... }).
+  hasRunnableBundle: vi.fn(() =>
+    Promise.resolve({ runnable: true, expectedPath: 'obj-debug/dist/bin/firefox' })
+  ),
   buildArtifactMismatchMessage: vi.fn(() => undefined),
   buildUI: vi.fn(),
   testWithOutput: vi.fn(),
@@ -42,6 +49,7 @@ vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   info: vi.fn(),
   outro: vi.fn(),
+  success: vi.fn(),
   warn: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
@@ -52,17 +60,30 @@ vi.mock('../../utils/logger.js', () => ({
 vi.mock('../../core/marionette-preflight.js', () => ({
   runMarionettePreflight: vi.fn(),
   reportMarionettePreflight: vi.fn(),
+  formatMarionettePreflightLine: (result: { ok: boolean; durationMs: number; detail: string }) => {
+    const status = result.ok ? 'PASS' : 'FAIL';
+    return `Marionette preflight: ${status} (${result.durationMs}ms) — ${result.detail}`;
+  },
 }));
 
 // Default to "port is free" so every existing test case proceeds
 // through the probe to the mach invocation. The dedicated port-probe
 // tests in `src/core/__tests__/marionette-port.test.ts` exercise the
 // holder detection and error shape in isolation.
-vi.mock('../../core/marionette-port.js', () => ({
-  assertMarionettePortAvailable: vi.fn(() => Promise.resolve()),
-  probeMarionettePort: vi.fn(() => Promise.resolve({ inUse: false })),
-  DEFAULT_MARIONETTE_PORT: 2828,
-}));
+vi.mock('../../core/marionette-port.js', async () => {
+  // Use the real `extractForwardedMarionettePort` and `isMarionetteFlavor`
+  // helpers — they are pure parsing utilities and exercising them through
+  // the test command keeps the integration honest. Mock only the I/O-shaped
+  // probe so the mach invocation is reached.
+  const actual = await vi.importActual<typeof import('../../core/marionette-port.js')>(
+    '../../core/marionette-port.js'
+  );
+  return {
+    ...actual,
+    assertMarionettePortAvailable: vi.fn(() => Promise.resolve()),
+    probeMarionettePort: vi.fn(() => Promise.resolve({ inUse: false })),
+  };
+});
 
 vi.mock('../../core/test-stale-check.js', () => ({
   checkStaleBuildForTest: vi.fn(() =>
@@ -83,6 +104,7 @@ import {
   hasBuildArtifacts,
   testWithOutput,
 } from '../../core/mach.js';
+import { assertMarionettePortAvailable } from '../../core/marionette-port.js';
 import {
   reportMarionettePreflight,
   runMarionettePreflight,
@@ -92,7 +114,7 @@ import { operatorAlreadySetAppPath, resolveXpcshellAppdirArg } from '../../core/
 import { GeneralError } from '../../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { pathExists } from '../../utils/fs.js';
-import { outro, warn } from '../../utils/logger.js';
+import { outro, success, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 
 describe('testCommand', () => {
@@ -101,7 +123,7 @@ describe('testCommand', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(buildUI).mockResolvedValue(0);
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
   });
 
   it('fails before invoking mach when a requested test path does not exist', async () => {
@@ -139,6 +161,24 @@ describe('testCommand', () => {
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'])
     ).rejects.toThrow(/stale build artifacts/i);
+  });
+
+  it('routes fork-module load failures to the module-registration hint (Eval 1 Finding #14)', async () => {
+    // Both the fork-module signal AND the branding-stale signal fire
+    // because the harness teardown prints a branding warning. The
+    // fork-module diagnosis must win — telling the operator to rebuild
+    // when the module is missing from moz.build sends them in a loop.
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout:
+        'ERROR Error: Failed to load resource:///modules/mybrowser/MybrowserStore.sys.mjs\n' +
+        'No chrome package registered for chrome://branding/locale/brand.properties',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_mybrowser_store.js'])
+    ).rejects.toThrow(/module-registration issue/i);
   });
 
   it('rewrites missing generated branding moz.build failures into the same rebuild hint', async () => {
@@ -202,7 +242,7 @@ describe('testCommand', () => {
   });
 
   it('throws a BuildError when the incremental pre-test build fails', async () => {
-    vi.mocked(buildUI).mockResolvedValue(1);
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
 
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
@@ -279,18 +319,33 @@ describe('testCommand', () => {
       durationMs: 200,
       detail: 'handshake',
     });
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    await expect(testCommand('/project', [], { doctor: true })).resolves.toBeUndefined();
+    try {
+      await expect(testCommand('/project', [], { doctor: true })).resolves.toBeUndefined();
 
-    expect(runMarionettePreflight).toHaveBeenCalledWith('/project/engine');
-    expect(reportMarionettePreflight).toHaveBeenCalled();
-    expect(testWithOutput).not.toHaveBeenCalled();
-    // Finding #14: the doctor-only success path now closes the intro
-    // frame with an outro so the PASS line renders and automation sees
-    // a deterministic "done" marker. Without the outro, clack's
-    // grouped-output mode was dropping the trailing info line in
-    // non-TTY captures.
-    expect(outro).toHaveBeenCalledWith(expect.stringMatching(/Marionette preflight: PASS/));
+      expect(runMarionettePreflight).toHaveBeenCalledWith('/project/engine');
+      expect(reportMarionettePreflight).toHaveBeenCalled();
+      expect(testWithOutput).not.toHaveBeenCalled();
+      // 2026-04-24 eval Finding 7: the doctor-only success path now writes
+      // the PASS line via `process.stdout.write` as the authoritative
+      // emission so non-TTY captures always see the summary. The clack
+      // `success()` + `outro('Test completed')` calls stay for TTY users
+      // who rely on the visual framing.
+      expect(success).toHaveBeenCalledWith(expect.stringMatching(/Marionette preflight: PASS/));
+      expect(outro).toHaveBeenCalledWith('Test completed');
+      const rawWrites = writeSpy.mock.calls
+        .map((args) => args[0])
+        .filter((chunk): chunk is string => typeof chunk === 'string');
+      expect(rawWrites.some((chunk) => /Running marionette preflight\.\.\./.test(chunk))).toBe(
+        true
+      );
+      expect(rawWrites.some((chunk) => /Marionette preflight: PASS \(200ms\)/.test(chunk))).toBe(
+        true
+      );
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 
   it('surfaces a FAIL preflight as an actionable error and does not invoke mach test', async () => {
@@ -312,7 +367,7 @@ describe('testCommand', () => {
   it('warns up-front when the stale-build preflight reports packageable engine changes', async () => {
     vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce({
       stale: true,
-      changedPaths: ['browser/base/content/hominis.xhtml', 'browser/base/content/hominis.js'],
+      changedPaths: ['browser/base/content/mybrowser.xhtml', 'browser/base/content/mybrowser.js'],
       truncated: 0,
       baseline: {
         engineHeadSha: 'abc123',
@@ -408,7 +463,7 @@ describe('testCommand', () => {
     // `resource:///modules/distribution.sys.mjs` on its own — that literal
     // was producing false-positive "rebuild" advice for fork-custom
     // module-load failures (the eval saw this for
-    // `HominisStore.sys.mjs`, which was actually an appdir issue). A
+    // `MyBrowserStore.sys.mjs`, which was actually an appdir issue). A
     // generic `Failed to load resource:///modules/…` now routes straight
     // to the xpcshell-appdir hint, which is the right first guess in
     // practice. Branding-specific stale signals (brand.properties,
@@ -426,21 +481,23 @@ describe('testCommand', () => {
   });
 
   it('routes fork-custom resource module failures to the xpcshell-appdir hint', async () => {
-    // Eval regression: the hominis
-    // `Failed to load resource:///modules/hominis/HominisStore.sys.mjs`
-    // failure surfaced as "rebuild" advice before the narrowing, because
-    // `distribution.sys.mjs` wasn't there but the broader pattern caught
-    // any `resource:///modules/…`. After the narrowing the right hint
-    // wins — app-path injection, not rebuild.
+    // A fork-shaped resource path whose module subdirectory does NOT match
+    // this project's binaryName ("mybrowser") used to surface as "rebuild"
+    // advice via the broader `resource:///modules/…` pattern. After the
+    // 0.16.0 narrowing the right hint wins — app-path injection, not
+    // rebuild — when the fork-module signal does not match the configured
+    // binaryName.
     vi.mocked(testWithOutput).mockResolvedValue({
       exitCode: 1,
       stdout: '',
       stderr:
-        'ERROR Unexpected exception Error: Failed to load resource:///modules/hominis/HominisStore.sys.mjs',
+        'ERROR Unexpected exception Error: Failed to load resource:///modules/otherfork/OtherForkStore.sys.mjs',
     });
 
     await expect(
-      testCommand('/project', ['browser/components/tests/unit/test_browserGlue_hominis_startup.js'])
+      testCommand('/project', [
+        'browser/components/tests/unit/test_browserGlue_otherfork_startup.js',
+      ])
     ).rejects.toThrow(/xpcshell failed to load core resource/i);
   });
 
@@ -637,5 +694,120 @@ describe('testCommand', () => {
     await expect(
       testCommand('/project', ['browser/modules/mybrowser/test/unit/test_something.js'])
     ).rejects.toThrow(/literal `firefox-appdir` directive is silently ignored/);
+  });
+
+  // ── --marionette-port option ──────────────────────────────────────────
+
+  it('passes --marionette-port through to the stale-browser probe', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
+        marionettePort: 2838,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(assertMarionettePortAvailable).toHaveBeenCalledWith(
+      2838,
+      expect.objectContaining({ binaryName: 'mybrowser' })
+    );
+  });
+
+  it('auto-forwards --setpref=marionette.port=N to mach for browser-chrome paths', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
+        marionettePort: 2838,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/general/browser_focus.js'],
+      ['--setpref=marionette.port=2838']
+    );
+  });
+
+  it('does not auto-forward when the operator already passed the port via --mach-arg', async () => {
+    // The forwarded mach-arg is recognised by extractForwardedMarionettePort;
+    // the wrapper preflight then targets 2838 too, but the auto-forward must
+    // not duplicate the operator's arg in extraArgs.
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
+        marionettePort: 2838,
+        machArg: ['--marionette-port=2838'],
+      })
+    ).resolves.toBeUndefined();
+
+    expect(assertMarionettePortAvailable).toHaveBeenCalledWith(
+      2838,
+      expect.objectContaining({ binaryName: 'mybrowser' })
+    );
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/general/browser_focus.js'],
+      ['--marionette-port=2838']
+    );
+  });
+
+  it('parses a forwarded --mach-arg --marionette-port=N as the effective port (no first-class option)', async () => {
+    // The documented workaround: operator passes the port via --mach-arg.
+    // Pre-fix, the wrapper preflight checked the default 2828 before the
+    // forwarded arg ever reached mach. Now extractForwardedMarionettePort
+    // surfaces the value to the probe so the workaround actually works.
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
+        machArg: ['--marionette-port=2838'],
+      })
+    ).resolves.toBeUndefined();
+
+    expect(assertMarionettePortAvailable).toHaveBeenCalledWith(
+      2838,
+      expect.objectContaining({ binaryName: 'mybrowser' })
+    );
+  });
+
+  it('does not auto-forward to mach for an explicit xpcshell flavor', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['toolkit/components/tests/xpcshell/test_observer.js'], {
+        marionettePort: 2838,
+        machArg: ['--flavor=xpcshell'],
+      })
+    ).resolves.toBeUndefined();
+
+    expect(assertMarionettePortAvailable).toHaveBeenCalledWith(
+      2838,
+      expect.objectContaining({ binaryName: 'mybrowser' })
+    );
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['toolkit/components/tests/xpcshell/test_observer.js'],
+      ['--flavor=xpcshell']
+    );
+  });
+
+  it('passes --marionette-port through to the doctor preflight', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: true,
+      durationMs: 12_000,
+      detail: 'handshake ok',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
+        doctor: true,
+        marionettePort: 2838,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(runMarionettePreflight).toHaveBeenCalledWith('/project/engine', { port: 2838 });
   });
 });

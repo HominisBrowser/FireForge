@@ -28,6 +28,15 @@ vi.mock('../config.js', () => ({
     src: '/project/src',
     componentsDir: '/project/components',
   })),
+  loadConfig: vi.fn(() =>
+    Promise.resolve({
+      name: 'MyBrowser',
+      vendor: 'MyVendor',
+      appId: 'org.example.mybrowser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+    })
+  ),
 }));
 
 vi.mock('../manifest-register.js', () => ({
@@ -54,6 +63,7 @@ vi.mock('../furnace-rollback.js', () => ({
 
 vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
+  verbose: vi.fn(),
 }));
 
 import { pathExists, readText, writeText } from '../../utils/fs.js';

@@ -49,6 +49,8 @@ export interface FireForgeConfig {
   wire?: WireConfig;
   /** Patch lint configuration */
   patchLint?: PatchLintConfig;
+  /** Typecheck command configuration (CI-grade, whole-project) */
+  typecheck?: TypecheckConfig;
   /**
    * Project marker prefix appended to lines FireForge writes into
    * upstream Firefox source files (e.g. the `customElements.js` tag list).
@@ -56,6 +58,30 @@ export interface FireForgeConfig {
    * Keeps modifications discoverable and re-applies idempotent.
    */
   markerComment?: string;
+}
+
+/**
+ * Configuration for the `fireforge typecheck` command. Distinct from
+ * `patchLint.checkJs`: patch-lint runs every time `fireforge lint` runs
+ * and is scoped to patch-owned `.sys.mjs`; typecheck runs whole projects
+ * the operator points at via `projects` and is intended as a CI gate.
+ */
+export interface TypecheckConfig {
+  /**
+   * Project-relative paths to jsconfig.json (or tsconfig.json) files
+   * the typecheck command should run. Must be non-empty when the
+   * `typecheck` block is present — an empty array would silently turn
+   * the command into a no-op.
+   */
+  projects: string[];
+  /**
+   * Optional project-relative path to an additional `.d.ts` file whose
+   * contents are concatenated to the built-in `FIREFOX_GLOBALS_SHIM`.
+   * Lets projects declare component patterns like `MozLitElement` /
+   * `MozXULElement` once instead of per-file. Concat order is
+   * built-in shim first, extraShim second — augment, don't redeclare.
+   */
+  extraShim?: string;
 }
 
 /**
@@ -67,13 +93,42 @@ export interface WireConfig {
 }
 
 /**
+ * Severity gate for opt-in patch-lint rules. `'off'` disables the rule;
+ * `'warning'` and `'error'` emit issues at the matching severity.
+ */
+export type PatchLintSeverityGate = 'off' | 'warning' | 'error';
+
+/**
  * Configuration for patch lint rules.
  */
 export interface PatchLintConfig {
   /** Enable TypeScript checkJs pass on patch-owned .sys.mjs files */
   checkJs?: boolean;
+  /**
+   * Project-relative path to an additional `.d.ts` file whose contents
+   * are concatenated to the built-in `FIREFOX_GLOBALS_SHIM` for the
+   * `patchLint.checkJs` pass. Same semantics as `typecheck.extraShim`
+   * but scoped to the patch-hygiene flow. Default unset = current
+   * behaviour (built-in shim only).
+   */
+  checkJsExtraShim?: string;
   /** File paths exempt from the raw-color-value check (exact or basename match) */
   rawColorAllowlist?: string[];
+  /** Enforce JSDoc on class-method exports in patch-owned .sys.mjs files. Default: 'off'. */
+  jsdocClassMethods?: PatchLintSeverityGate;
+  /** Require ≥1 assertion in any patch-touched browser_*.js test file (new or modified). Default: 'off'. */
+  testAssertionFloor?: PatchLintSeverityGate;
+  /**
+   * Enforce JSDoc on top-level classes (and their methods) and functions
+   * in patch-owned chrome subscripts (`.js` files loaded via
+   * `Services.scriptloader.loadSubScript`, e.g.
+   * `browser/base/content/<binaryName>*.js`). Distinct from
+   * `jsdocClassMethods` because chrome subscripts are parsed as scripts,
+   * not ES modules — using one flag for both would silently disable the
+   * rule when a chrome subscript was fed to the module parser. Default:
+   * 'off'.
+   */
+  chromeScriptJsDoc?: PatchLintSeverityGate;
 }
 
 /**

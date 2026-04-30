@@ -31,7 +31,7 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/process.js', () => ({
-  executableExists: vi.fn(),
+  findExecutable: vi.fn(),
   exec: vi.fn(),
 }));
 
@@ -65,7 +65,7 @@ import {
 } from '../../core/mach.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, outro } from '../../utils/logger.js';
-import { exec, executableExists } from '../../utils/process.js';
+import { exec, findExecutable } from '../../utils/process.js';
 import { watchCommand } from '../watch.js';
 
 describe('watchCommand', () => {
@@ -79,7 +79,7 @@ describe('watchCommand', () => {
       firefox: { version: '140.9.0esr', product: 'firefox-esr' },
     } as never);
     vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(executableExists).mockResolvedValue(true);
+    vi.mocked(findExecutable).mockResolvedValue('/opt/homebrew/bin/watchman');
     vi.mocked(exec).mockResolvedValue({
       stdout: '2024.01.15.00\n',
       stderr: '',
@@ -96,7 +96,7 @@ describe('watchCommand', () => {
   });
 
   it('requires watchman to be installed before starting watch mode', async () => {
-    vi.mocked(executableExists).mockResolvedValue(false);
+    vi.mocked(findExecutable).mockResolvedValue(undefined);
 
     await expect(watchCommand('/project')).rejects.toThrow(
       'Watch mode requires watchman to be installed and available in PATH.'
@@ -136,8 +136,69 @@ describe('watchCommand', () => {
       '/project/engine',
       expect.anything()
     );
-    expect(watchWithOutput).toHaveBeenCalledWith('/project/engine');
+    // Watch now threads a subprocess env into mach so the resolved
+    // watchman directory is visible on PATH (2026-04-24 eval Finding
+    // 12). Assert the call happened and inspect the env directly rather
+    // than via matchers so the types stay concrete for the compiler.
+    const call = vi.mocked(watchWithOutput).mock.calls[0];
+    expect(call?.[0]).toBe('/project/engine');
+    const envPath = call?.[1]?.env?.['PATH'];
+    expect(envPath).toBeDefined();
+    expect(envPath).toContain('/opt/homebrew/bin');
     expect(outro).toHaveBeenCalledWith('Watch mode stopped');
+  });
+
+  // 2026-04-24 eval Finding 12: on macOS `which watchman` from the
+  // interactive shell returns `/opt/homebrew/bin/watchman`, but the
+  // subprocess PATH inherited by `mach watch` frequently omits
+  // `/opt/homebrew/bin`. Without forwarding the resolved watchman
+  // directory, `mach watch` failed at the `watch-project` subscription
+  // step with a `FasterBuildException: timed out`. The fix prepends the
+  // resolved directory to the subprocess PATH so mach sees the same
+  // binary the probe just validated.
+  it('forwards the resolved watchman directory to the mach subprocess PATH', async () => {
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = '/usr/bin:/bin';
+    try {
+      vi.mocked(findExecutable).mockResolvedValue('/opt/homebrew/bin/watchman');
+      await expect(watchCommand('/project')).resolves.toBeUndefined();
+
+      const call = vi.mocked(watchWithOutput).mock.calls[0];
+      expect(call).toBeDefined();
+      const passedOptions = call?.[1];
+      expect(passedOptions).toBeDefined();
+      const passedEnv = passedOptions?.env;
+      expect(passedEnv).toBeDefined();
+      expect(passedEnv?.['PATH']).toMatch(/^\/opt\/homebrew\/bin/);
+      expect(passedEnv?.['PATH']).toContain('/usr/bin');
+    } finally {
+      if (originalPath !== undefined) {
+        process.env['PATH'] = originalPath;
+      } else {
+        delete process.env['PATH'];
+      }
+    }
+  });
+
+  it('does not duplicate the watchman directory when it is already on PATH', async () => {
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = '/opt/homebrew/bin:/usr/bin';
+    try {
+      vi.mocked(findExecutable).mockResolvedValue('/opt/homebrew/bin/watchman');
+      await expect(watchCommand('/project')).resolves.toBeUndefined();
+
+      const call = vi.mocked(watchWithOutput).mock.calls[0];
+      const passedPath = call?.[1]?.env?.['PATH'];
+      // The helper only prepends when the directory is not already
+      // present; it leaves the existing PATH untouched otherwise.
+      expect(passedPath).toBe('/opt/homebrew/bin:/usr/bin');
+    } finally {
+      if (originalPath !== undefined) {
+        process.env['PATH'] = originalPath;
+      } else {
+        delete process.env['PATH'];
+      }
+    }
   });
 
   it('refuses to start when watchman is in PATH but does not respond', async () => {

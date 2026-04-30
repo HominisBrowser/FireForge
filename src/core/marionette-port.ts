@@ -3,7 +3,7 @@
  * Marionette port probe.
  *
  * Gecko's Marionette control channel binds `127.0.0.1:2828` when a
- * Firefox / ForgeFresh / Hominis instance is launched with
+ * Firefox / ForgeFresh / fork instance is launched with
  * `-marionette`. The `fireforge test` harness spawns the browser with
  * that flag, so any test run needs the port to be free at start.
  *
@@ -44,7 +44,7 @@ const BROWSER_BASENAMES = new Set([
   'firefox-bin',
   'firefox-esr',
   'forgefresh',
-  'hominis',
+  'mybrowser',
   'thunderbird',
 ]);
 
@@ -85,8 +85,8 @@ export interface MarionettePortProbeResult {
  * warning.
  *
  * Includes the operator-provided `binaryName` from `fireforge.json`
- * so a fork that ships under a custom name (e.g. Hominis'
- * `hominis-nightly`) is still recognised as a browser.
+ * so a fork that ships under a custom name (e.g.
+ * `mybrowser-nightly`) is still recognised as a browser.
  */
 function isBrowserHolder(holder: MarionettePortHolder, binaryName?: string): boolean {
   if (/\s-marionette(?:\s|$)/.test(holder.commandLine)) {
@@ -248,4 +248,79 @@ export async function assertMarionettePortAvailable(
     `Marionette port ${port} is already in use by ${holder.command} (PID ${holder.pid}). ` +
       `This is not a FireForge-launched browser; stop the holder process or free the port before rerunning.`
   );
+}
+
+/**
+ * Extracts a `--marionette-port=N` (or `--marionette-port N`) argument from
+ * a list of forwarded mach args, if present. Used so an operator passing the
+ * port via `--mach-arg --marionette-port=NNNN` gets the same preflight
+ * override they would from a first-class `--marionette-port` option, rather
+ * than the wrapper probing the default port and refusing.
+ *
+ * Also recognises `--setpref=marionette.port=NNNN` since that is the path
+ * the test command auto-forwards to mach.
+ *
+ * @param machArgs - Forwarded mach args as they would appear on the command
+ *   line (one element per token; `--foo=bar` and `--foo bar` both supported).
+ * @returns The integer port if a recognised arg is present and parses; else
+ *   `undefined`.
+ */
+export function extractForwardedMarionettePort(machArgs: string[]): number | undefined {
+  for (let i = 0; i < machArgs.length; i++) {
+    const arg = machArgs[i];
+    if (arg === undefined) continue;
+
+    // `--marionette-port=NNNN`
+    let match = /^--marionette-port=(\d+)$/.exec(arg);
+    if (match?.[1]) {
+      const n = Number.parseInt(match[1], 10);
+      if (Number.isFinite(n)) return n;
+    }
+    // `--marionette-port NNNN` (two tokens)
+    if (arg === '--marionette-port') {
+      const next = machArgs[i + 1];
+      if (next !== undefined) {
+        const n = Number.parseInt(next, 10);
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    // `--setpref=marionette.port=NNNN` — the auto-forward shape; recognised
+    // here so a duplicate check at the call site can spot operator-supplied
+    // setprefs without re-implementing the parse.
+    match = /^--setpref=marionette\.port=(\d+)$/.exec(arg);
+    if (match?.[1]) {
+      const n = Number.parseInt(match[1], 10);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Heuristic: do the test paths or forwarded mach args indicate a flavour
+ * that actually launches a Marionette-driven browser? Browser-chrome and
+ * mochitest do; xpcshell does not. Used to decide whether to auto-forward
+ * `--setpref=marionette.port=<n>` to mach when the operator passed
+ * `--marionette-port`. A no-paths invocation (the default "run all tests"
+ * shape) is treated as marionette-relevant since it includes browser-chrome.
+ *
+ * @param testPaths - Engine-relative paths after `stripEnginePrefix`.
+ * @param machArgs - Forwarded mach args (post-`--mach-arg`).
+ * @returns `true` when the run is likely to bind a Marionette listener.
+ */
+export function isMarionetteFlavor(testPaths: string[], machArgs: string[]): boolean {
+  for (const arg of machArgs) {
+    if (/^--flavor=xpcshell\b/.test(arg) || arg === '--flavor=xpcshell-tests') return false;
+  }
+  for (const arg of machArgs) {
+    if (/^--flavor=(browser-chrome|mochitest|chrome|a11y)\b/.test(arg)) return true;
+  }
+  if (testPaths.length === 0) return true;
+  for (const path of testPaths) {
+    const base = path.split('/').pop() ?? path;
+    if (/^browser_.+\.(js|ini|toml)$/.test(base)) return true;
+    if (path.includes('/mochitest/') || path.startsWith('mochitest/')) return true;
+    if (path.includes('/browser-chrome/') || path.startsWith('browser-chrome/')) return true;
+  }
+  return false;
 }

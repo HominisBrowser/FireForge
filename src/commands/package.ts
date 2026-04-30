@@ -77,7 +77,7 @@ export async function packageCommand(projectRoot: string, options: PackageOption
     // only, so a targeted hint translator could not see the failure text.
     // The captured stderr is fed through `explainMachError` below so
     // recognised failure modes (notably the `packager.py` NoneType trip
-    // the evaluator hit on `hominis/`) get an actionable hint prepended
+    // the evaluator hit on `mybrowser/`) get an actionable hint prepended
     // to the raw mach output the operator already saw.
     result = await machPackageCapture(paths.engine);
   } catch (error: unknown) {

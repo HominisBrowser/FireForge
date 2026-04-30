@@ -436,6 +436,10 @@ export interface DryRunPreviewInput {
   filesAffected: string[];
   sourceEsrVersion: string;
   explicitSupersede: boolean;
+  /** Optional `PatchMetadata.tier` opt-in carried from the CLI. */
+  tier?: 'branding';
+  /** Optional `PatchMetadata.lintIgnore` carried from the CLI. */
+  lintIgnore?: string[];
 }
 
 /**
@@ -455,6 +459,8 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     description: input.description,
     filesAffected: input.filesAffected,
     sourceEsrVersion: input.sourceEsrVersion,
+    ...(input.tier !== undefined ? { tier: input.tier } : {}),
+    ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
   });
 
   info(`\n[dry-run] Would write: patches/${plan.patchFilename}`);
@@ -464,6 +470,12 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
   info(
     `  filesAffected (${plan.metadata.filesAffected.length}): ${plan.metadata.filesAffected.join(', ')}`
   );
+  if (plan.metadata.tier !== undefined) {
+    info(`  tier: ${plan.metadata.tier}`);
+  }
+  if (plan.metadata.lintIgnore !== undefined && plan.metadata.lintIgnore.length > 0) {
+    info(`  lintIgnore: ${plan.metadata.lintIgnore.join(', ')}`);
+  }
 
   if (supersedeDetails.length > 0) {
     info(`\n[dry-run] Would supersede ${supersedeDetails.length} existing patch(es):`);

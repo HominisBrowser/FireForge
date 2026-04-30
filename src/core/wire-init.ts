@@ -28,11 +28,29 @@ import {
 const BROWSER_INIT_JS = 'browser/base/content/browser-init.js';
 
 /**
+ * Default patch-lint marker used when a caller does not supply a
+ * project-specific one. Kept as a constant so test fixtures and
+ * fallback code paths agree on the shape.
+ */
+const DEFAULT_MARKER = 'FIREFORGE:';
+
+/**
  * AST-based implementation: finds onLoad() method body, locates existing
  * fireforge init blocks (TryStatements containing typeof guards), and inserts
  * after the correct position.
+ *
+ * `marker` is prepended (uppercased) to the generated comment line so the
+ * emitted block carries the patch-lint `// <MARKER>:` signature that
+ * `lintModificationComments` looks for. Otherwise the first export after
+ * `wire` trips `missing-modification-comment` on wire-generated edits —
+ * exactly the eval 1 Finding #9 regression.
  */
-export function addInitAST(content: string, expression: string, after?: string): string {
+export function addInitAST(
+  content: string,
+  expression: string,
+  after?: string,
+  marker: string = DEFAULT_MARKER
+): string {
   const name = extractNameFromExpression(expression);
   // `validateWireName` accepts both `Foo.bar` and `Foo.bar()` shapes. The
   // template below interpolates the value verbatim, so a bare property
@@ -112,7 +130,7 @@ export function addInitAST(content: string, expression: string, after?: string):
   }
 
   const block = [
-    `${indent}// ${name} init — must be first, before Firefox subsystem`,
+    `${indent}// ${marker} wire-init ${name} — must be first, before Firefox subsystem`,
     `${indent}// inits that reference native UI elements we hide.`,
     `${indent}try {`,
     `${indent}  if (typeof ${name} !== "undefined") {`,
@@ -130,7 +148,12 @@ export function addInitAST(content: string, expression: string, after?: string):
 /**
  * Legacy regex/line-based implementation preserved as fallback.
  */
-export function legacyAddInit(content: string, expression: string, after?: string): string {
+export function legacyAddInit(
+  content: string,
+  expression: string,
+  after?: string,
+  marker: string = DEFAULT_MARKER
+): string {
   const name = extractNameFromExpression(expression);
   // See `addInitAST` for the rationale — the AST and fallback paths must
   // agree on whether the emitted block is a function call, otherwise
@@ -196,7 +219,7 @@ export function legacyAddInit(content: string, expression: string, after?: strin
   const inner2 = inner + '  ';
 
   const block = [
-    `${baseIndent}// ${name} init — must be first, before Firefox subsystem`,
+    `${baseIndent}// ${marker} wire-init ${name} — must be first, before Firefox subsystem`,
     `${baseIndent}// inits that reference native UI elements we hide.`,
     `${baseIndent}try {`,
     `${inner}if (typeof ${name} !== "undefined") {`,
@@ -223,7 +246,8 @@ export function legacyAddInit(content: string, expression: string, after?: strin
 export async function addInitToBrowserInit(
   engineDir: string,
   expression: string,
-  after?: string
+  after?: string,
+  marker: string = DEFAULT_MARKER
 ): Promise<boolean> {
   validateWireName(expression, 'init expression');
   const filePath = join(engineDir, BROWSER_INIT_JS);
@@ -245,8 +269,8 @@ export async function addInitToBrowserInit(
   }
 
   const { value, usedFallback } = withParserFallback(
-    () => addInitAST(content, expression, after),
-    () => legacyAddInit(content, expression, after),
+    () => addInitAST(content, expression, after, marker),
+    () => legacyAddInit(content, expression, after, marker),
     BROWSER_INIT_JS
   );
 

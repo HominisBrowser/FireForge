@@ -4,7 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PatchLintIssue } from '../../types/commands/index.js';
 import * as gitBase from '../git-base.js';
 import * as gitStatus from '../git-status.js';
-import { collectDiffFilePaths, tagLintIssues } from '../patch-lint-diff-tag.js';
+import {
+  AGGREGATE_PATCH_FILE,
+  collectDiffFilePaths,
+  tagLintIssues,
+} from '../patch-lint-diff-tag.js';
 
 describe('collectDiffFilePaths', () => {
   beforeEach(() => {
@@ -60,5 +64,48 @@ describe('tagLintIssues', () => {
     ];
     const result = tagLintIssues(issues, new Set(['touched.js']));
     expect(result).toBe(issues);
+  });
+
+  // 2026-04-24 eval Finding 4: aggregate patch-size findings have the
+  // synthetic `(patch)` file which never appeared in a real diff set, so
+  // they were always tagged `[cumulative]` under `--only-introduced` even
+  // when the aggregate IS the diff the operator asked about. Tagging now
+  // promotes the aggregate finding to `introduced` whenever the diff set
+  // is non-empty.
+  it('tags aggregate patch-size findings as introduced when diff set is non-empty', () => {
+    const issues: PatchLintIssue[] = [
+      {
+        file: AGGREGATE_PATCH_FILE,
+        check: 'large-patch-files',
+        message: 'Patch affects 63 files (recommended: ≤5).',
+        severity: 'warning',
+      },
+      {
+        file: AGGREGATE_PATCH_FILE,
+        check: 'large-patch-lines',
+        message: 'Patch is 21759 lines (hard limit: 3000).',
+        severity: 'warning',
+      },
+    ];
+    tagLintIssues(issues, new Set(['browser/modules/mybrowser/MyBrowserStore.sys.mjs']));
+    expect(issues[0]?.tag).toBe('introduced');
+    expect(issues[1]?.tag).toBe('introduced');
+  });
+
+  it('keeps aggregate findings as cumulative when diff set is empty', () => {
+    // Empty diff set means `lint --since HEAD` ran but the caller is not
+    // introducing any change — a clean branch whose only lint noise is
+    // pre-existing cumulative queue state. An aggregate finding here
+    // genuinely describes drift, not current work.
+    const issues: PatchLintIssue[] = [
+      {
+        file: AGGREGATE_PATCH_FILE,
+        check: 'large-patch-lines',
+        message: 'Patch is 5000 lines.',
+        severity: 'warning',
+      },
+    ];
+    tagLintIssues(issues, new Set());
+    expect(issues[0]?.tag).toBe('cumulative');
   });
 });

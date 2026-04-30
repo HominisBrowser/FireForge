@@ -157,4 +157,69 @@ describe('verify command', () => {
 
     await expect(verifyCommand(projectRoot)).rejects.toBeInstanceOf(GeneralError);
   });
+
+  // 2026-04-24 eval Finding 1: `export-all --exclude-furnace` landed a
+  // patch that registered `moz-qa-panel` via jar.mn / customElements.js
+  // edits but excluded the widget source files themselves. Verify used
+  // to report "Verify clean" because the manifest was internally
+  // consistent. The new dangling-registration check walks each patch
+  // body, extracts component-shaped references, and fails when the
+  // referenced path is not supplied by any patch AND does not exist in
+  // engine/.
+  it('fails on a patch that registers a widget it does not itself carry', async () => {
+    const registrationBody = [
+      'diff --git a/toolkit/content/jar.mn b/toolkit/content/jar.mn',
+      'index abc..def 100644',
+      '--- a/toolkit/content/jar.mn',
+      '+++ b/toolkit/content/jar.mn',
+      '@@ -126,6 +126,7 @@ toolkit.jar:',
+      '    content/global/elements/moz-label.mjs       (widgets/moz-label/moz-label.mjs)',
+      '+   content/global/elements/moz-qa-panel.mjs  (widgets/moz-qa-panel/moz-qa-panel.mjs)',
+      '',
+    ].join('\n');
+
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: makeMetadata('001-ui-registration.patch', 1, ['toolkit/content/jar.mn']),
+        body: registrationBody,
+      },
+    ]);
+
+    await expect(verifyCommand(projectRoot)).rejects.toThrow(/fireforge verify found/i);
+  });
+
+  it('passes when the registration references a file another patch in the queue creates', async () => {
+    // Patch 1 creates the widget source; patch 2 registers it via
+    // jar.mn. The cross-patch coverage set (union of filesAffected)
+    // satisfies the reference, so verify stays quiet.
+    const widgetDiff = createDiff(
+      'toolkit/content/widgets/moz-qa-panel/moz-qa-panel.mjs',
+      'export class MozQaPanel {}'
+    );
+    const registrationBody = [
+      'diff --git a/toolkit/content/jar.mn b/toolkit/content/jar.mn',
+      'index abc..def 100644',
+      '--- a/toolkit/content/jar.mn',
+      '+++ b/toolkit/content/jar.mn',
+      '@@ -126,6 +126,7 @@ toolkit.jar:',
+      '    content/global/elements/moz-label.mjs       (widgets/moz-label/moz-label.mjs)',
+      '+   content/global/elements/moz-qa-panel.mjs  (widgets/moz-qa-panel/moz-qa-panel.mjs)',
+      '',
+    ].join('\n');
+
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: makeMetadata('001-ui-widget.patch', 1, [
+          'toolkit/content/widgets/moz-qa-panel/moz-qa-panel.mjs',
+        ]),
+        body: widgetDiff,
+      },
+      {
+        metadata: makeMetadata('002-ui-registration.patch', 2, ['toolkit/content/jar.mn']),
+        body: registrationBody,
+      },
+    ]);
+
+    await expect(verifyCommand(projectRoot)).resolves.toBeUndefined();
+  });
 });

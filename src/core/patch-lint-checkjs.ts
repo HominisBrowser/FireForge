@@ -9,7 +9,10 @@
  * how to fix it.
  *
  * Separated from `patch-lint.ts` to keep both files within the
- * project's per-file line budget.
+ * project's per-file line budget. The shim itself and the suppressed
+ * diagnostic code list now live in `typecheck-shim.ts` and are shared
+ * with the whole-project `fireforge typecheck` command — keeping a
+ * single source of truth for the Firefox-globals coverage.
  */
 
 import { resolve } from 'node:path';
@@ -17,80 +20,7 @@ import { resolve } from 'node:path';
 import type { PatchLintIssue } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
-
-// ---------------------------------------------------------------------------
-// Firefox globals shim
-// ---------------------------------------------------------------------------
-
-const SHIM_FILENAME = '__fireforge_firefox_globals.d.ts';
-
-/**
- * Minimal `.d.ts` shim for Firefox privileged-scope globals.
- *
- * Firefox source is plain JS — no TypeScript allowed. The shim lets
- * `checkJs` run without reporting "cannot find name" for the most
- * common Mozilla APIs. Types are intentionally loose (`any`) because
- * full Firefox type coverage is out of scope.
- *
- * Notable patterns that require shimming:
- * - `const lazy = {};` + `ChromeUtils.defineESModuleGetters(lazy, { ... })`
- *   populates `lazy` at runtime; we declare it as `Record<string, any>`.
- * - `Services.obs`, `Services.prefs`, etc. are XPCOM service accessors.
- * - `Ci`, `Cc`, `Cr`, `Cu` are XPCOM component shortcuts.
- * - Browser chrome globals like `gBrowser`, `gURLBar` are common in
- *   content scripts wired via `browser.js`.
- */
-const FIREFOX_GLOBALS_SHIM = `
-declare var Services: any;
-declare var ChromeUtils: {
-  defineESModuleGetters(target: any, modules: Record<string, string>): void;
-  importESModule(specifier: string): any;
-  import(specifier: string): any;
-  defineModuleGetter(target: any, name: string, specifier: string): void;
-  generateQI(interfaces: any[]): Function;
-  isClassInfo(obj: any): boolean;
-};
-declare var Cu: any;
-declare var Ci: any;
-declare var Cc: any;
-declare var Cr: any;
-declare var Components: any;
-declare var XPCOMUtils: any;
-declare var lazy: Record<string, any>;
-declare var PathUtils: any;
-declare var IOUtils: any;
-declare var FileUtils: any;
-declare var gBrowser: any;
-declare var gURLBar: any;
-declare var gNavigatorBundle: any;
-declare var AppConstants: any;
-`;
-
-// ---------------------------------------------------------------------------
-// Diagnostic filtering
-// ---------------------------------------------------------------------------
-
-/**
- * TS diagnostic codes to suppress because they are inherent to
- * checking Firefox JS files outside of Mozilla's own build system.
- *
- * Firefox uses `resource://` and `chrome://` URL schemes for module
- * imports. TypeScript's module resolver cannot follow these, so every
- * import from an upstream Firefox module produces a spurious
- * "Cannot find module" error. Filtering these out is essential to
- * keep the checkJs pass usable — otherwise every file with an import
- * would be buried in false positives.
- */
-const SUPPRESSED_DIAGNOSTIC_CODES = new Set([
-  2307, // Cannot find module '{0}' or its corresponding type declarations.
-  2306, // File '{0}' is not a module.
-  2305, // Module '{0}' has no exported member '{1}'.
-  2792, // Cannot find module '{0}'. Did you mean to set the 'moduleResolution' option...
-  2304, // Cannot find name '{0}'. (for globals we missed in the shim)
-  2552, // Cannot find name '{0}'. Did you mean '{1}'?
-  2580, // Cannot find name '{0}'. Do you need to install type definitions...
-  7016, // Could not find a declaration file for module '{0}'.
-]);
+import { composeShimSource, SHIM_FILENAME, SUPPRESSED_DIAGNOSTIC_CODES } from './typecheck-shim.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -101,11 +31,22 @@ const SUPPRESSED_DIAGNOSTIC_CODES = new Set([
  *
  * @param repoDir - Absolute path to the engine (repository) directory
  * @param patchOwnedFiles - Set of patch-owned `.sys.mjs` file paths (relative to repoDir)
+ * @param extraShimPath - Optional project-relative path to an additional
+ *   `.d.ts` file whose contents are concatenated to the built-in
+ *   Firefox-globals shim. Sourced from `patchLint.checkJsExtraShim`.
+ *   Resolved against `projectRoot` (one level up from `repoDir` is the
+ *   wrong root — patches sit inside `engine/` while the shim lives at
+ *   the project root, so the caller passes both).
+ * @param projectRoot - Absolute project root for resolving `extraShimPath`.
+ *   Defaults to `repoDir` for back-compat with callers that don't
+ *   pass an extra shim (no resolution actually happens in that case).
  * @returns Array of lint issues from TS diagnostics
  */
 export async function runCheckJs(
   repoDir: string,
-  patchOwnedFiles: Set<string>
+  patchOwnedFiles: Set<string>,
+  extraShimPath?: string,
+  projectRoot?: string
 ): Promise<PatchLintIssue[]> {
   if (patchOwnedFiles.size === 0) return [];
 
@@ -139,6 +80,29 @@ export async function runCheckJs(
 
   if (rootFiles.length === 0) return [];
 
+  // Compose the shim. `extraShimPath` is project-relative (validated
+  // by config-validate); resolve it against `projectRoot`. When the
+  // caller passes neither, fall back to `repoDir` — the only way the
+  // shim path is ever read in that case is when extraShimPath is
+  // also undefined, so the resolution target is irrelevant.
+  let shimSource: string;
+  try {
+    const composed = await composeShimSource(projectRoot ?? repoDir, extraShimPath);
+    shimSource = composed.source;
+    if (composed.extraShimAppended) {
+      verbose(`checkJs: extra shim ${extraShimPath ?? ''} appended to Firefox globals shim`);
+    }
+  } catch (err) {
+    return [
+      {
+        file: extraShimPath ?? '(checkJs)',
+        check: 'checkjs-type-error',
+        message: err instanceof Error ? err.message : String(err),
+        severity: 'error',
+      },
+    ];
+  }
+
   const shimPath = resolve(repoDir, SHIM_FILENAME);
   rootFiles.push(shimPath);
 
@@ -171,7 +135,7 @@ export async function runCheckJs(
     ...defaultHost,
     getSourceFile(fileName, languageVersion, onError) {
       if (fileName === shimPath) {
-        return ts.createSourceFile(fileName, FIREFOX_GLOBALS_SHIM, languageVersion, true);
+        return ts.createSourceFile(fileName, shimSource, languageVersion, true);
       }
       if (ownedAbsolute.has(fileName)) {
         return defaultHost.getSourceFile(fileName, languageVersion, onError);
@@ -191,7 +155,7 @@ export async function runCheckJs(
       return defaultHost.fileExists(fileName);
     },
     readFile(fileName) {
-      if (fileName === shimPath) return FIREFOX_GLOBALS_SHIM;
+      if (fileName === shimPath) return shimSource;
       return defaultHost.readFile(fileName);
     },
   };

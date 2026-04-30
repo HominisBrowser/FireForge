@@ -172,7 +172,7 @@ describe('promptExportPatchMetadata', () => {
 
   it('returns null when name prompt is cancelled', async () => {
     vi.mocked(isCancel).mockReturnValueOnce(true);
-    vi.mocked(clack.text).mockResolvedValueOnce(Symbol('cancel') as unknown as string);
+    vi.mocked(clack.text).mockResolvedValueOnce(Symbol('cancel'));
 
     const result = await promptExportPatchMetadata({}, true, 'export');
 
@@ -185,7 +185,7 @@ describe('promptExportPatchMetadata', () => {
     vi.mocked(isCancel)
       .mockReturnValueOnce(false) // name not cancelled
       .mockReturnValueOnce(true); // category cancelled
-    vi.mocked(clack.select).mockResolvedValueOnce(Symbol('cancel') as unknown as string);
+    vi.mocked(clack.select).mockResolvedValueOnce(Symbol('cancel'));
 
     const result = await promptExportPatchMetadata({}, true, 'export');
 
@@ -210,7 +210,7 @@ describe('promptExportPatchMetadata', () => {
   it('uses empty description when description prompt is cancelled', async () => {
     vi.mocked(clack.text)
       .mockResolvedValueOnce('my-change')
-      .mockResolvedValueOnce(Symbol('cancel') as unknown as string);
+      .mockResolvedValueOnce(Symbol('cancel'));
     vi.mocked(clack.select).mockResolvedValueOnce('ui');
     vi.mocked(isCancel)
       .mockReturnValueOnce(false) // name
@@ -262,7 +262,7 @@ describe('confirmSupersedePatches', () => {
       { path: '/patches/old.patch', filename: 'old.patch', order: 1 },
     ]);
     vi.mocked(isCancel).mockReturnValueOnce(true);
-    vi.mocked(clack.confirm).mockResolvedValueOnce(Symbol('cancel') as unknown as boolean);
+    vi.mocked(clack.confirm).mockResolvedValueOnce(Symbol('cancel'));
 
     const result = await confirmSupersedePatches(
       '/patches',

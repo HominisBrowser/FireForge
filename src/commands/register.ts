@@ -63,6 +63,17 @@ export async function registerCommand(
   const result = await registerFile(projectRoot, engineRelativePath, options.dryRun, options.after);
 
   if (options.dryRun) {
+    // 2026-04-21 eval (Finding #8): dry-run always said "Would
+    // register" even when the rule's idempotency check already knew
+    // the entry was present, so automation read the plan as "work to
+    // do" and the following real run then reported "Already
+    // registered". Surface the idempotency decision in dry-run too so
+    // the plan mirrors the real command's outcome.
+    if (result.skipped) {
+      info(`[dry-run] Already registered: ${engineRelativePath} in ${result.manifest}`);
+      outro('Dry run complete');
+      return;
+    }
     info(`[dry-run] Would register ${engineRelativePath}`);
     info(`  manifest: ${result.manifest}`);
     info(`  entry: ${result.entry}`);

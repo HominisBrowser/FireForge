@@ -13,7 +13,7 @@ import {
 
 describe('expectedChromeSuffix', () => {
   it.each([
-    ['browser/base/content/hominis.js', 'chrome/browser/content/browser/hominis.js'],
+    ['browser/base/content/mybrowser.js', 'chrome/browser/content/browser/mybrowser.js'],
     [
       'browser/base/content/deep/nested/foo.css',
       'chrome/browser/content/browser/deep/nested/foo.css',
@@ -60,21 +60,21 @@ describe('resolveArtifactByKnownTransform', () => {
   });
 
   it('picks the expected chrome artifact even when an unrelated same-basename file exists', async () => {
-    // Simulates the Hominis regression: `engine/browser/base/content/hominis.js`
-    // packages at `chrome/browser/content/browser/hominis.js`, but an unrelated
-    // `browser/defaults/preferences/hominis.js` (a pref file shipped by a
-    // separate patch) sits at `bin/browser/defaults/preferences/hominis.js` in
+    // Simulates the MyBrowser regression: `engine/browser/base/content/mybrowser.js`
+    // packages at `chrome/browser/content/browser/mybrowser.js`, but an unrelated
+    // `browser/defaults/preferences/mybrowser.js` (a pref file shipped by a
+    // separate patch) sits at `bin/browser/defaults/preferences/mybrowser.js` in
     // dist. The scorer tied both candidates at score=10 before this fix and
     // the structural-relation check rejected both because every source segment
     // is in the "generic" list.
-    const correct = join(root, 'chrome/browser/content/browser/hominis.js');
-    const wrong = join(root, 'bin/browser/defaults/preferences/hominis.js');
+    const correct = join(root, 'chrome/browser/content/browser/mybrowser.js');
+    const wrong = join(root, 'bin/browser/defaults/preferences/mybrowser.js');
     await ensureDir(join(root, 'chrome/browser/content/browser'));
     await ensureDir(join(root, 'bin/browser/defaults/preferences'));
     await writeText(correct, '// content');
     await writeText(wrong, '// pref');
 
-    const resolved = await resolveArtifactByKnownTransform('browser/base/content/hominis.js', [
+    const resolved = await resolveArtifactByKnownTransform('browser/base/content/mybrowser.js', [
       root,
     ]);
     expect(resolved).toBe(correct);
@@ -84,11 +84,11 @@ describe('resolveArtifactByKnownTransform', () => {
     // No file exists at the chrome suffix, so the transform does NOT match
     // the unrelated pref file. The caller falls back to the similarity
     // heuristic which will still report the real packaging drop as missing.
-    const wrong = join(root, 'bin/browser/defaults/preferences/hominis.js');
+    const wrong = join(root, 'bin/browser/defaults/preferences/mybrowser.js');
     await ensureDir(join(root, 'bin/browser/defaults/preferences'));
     await writeText(wrong, '// pref');
 
-    const resolved = await resolveArtifactByKnownTransform('browser/base/content/hominis.js', [
+    const resolved = await resolveArtifactByKnownTransform('browser/base/content/mybrowser.js', [
       root,
     ]);
     expect(resolved).toBeUndefined();
@@ -112,10 +112,10 @@ describe('resolveArtifactByKnownTransform', () => {
     const second = join(root, 'second');
     await ensureDir(first);
     await ensureDir(join(second, 'chrome/browser/content/browser'));
-    const correct = join(second, 'chrome/browser/content/browser/hominis.js');
+    const correct = join(second, 'chrome/browser/content/browser/mybrowser.js');
     await writeText(correct, '// content');
 
-    const resolved = await resolveArtifactByKnownTransform('browser/base/content/hominis.js', [
+    const resolved = await resolveArtifactByKnownTransform('browser/base/content/mybrowser.js', [
       first,
       second,
     ]);

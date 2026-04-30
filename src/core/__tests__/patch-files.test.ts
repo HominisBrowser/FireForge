@@ -55,16 +55,16 @@ describe('patch-files parsing', () => {
     // `filesAffected` to the text-only subset, hiding the true scope.
     vi.mocked(readText).mockResolvedValueOnce(
       [
-        'diff --git a/browser/branding/hominis/content/about-logo.png b/browser/branding/hominis/content/about-logo.png',
+        'diff --git a/browser/branding/mybrowser/content/about-logo.png b/browser/branding/mybrowser/content/about-logo.png',
         'new file mode 100644',
         'index 0000000..abc1234',
         'GIT binary patch',
         'literal 1024',
         'zcmeFzHere',
         '',
-        'diff --git a/browser/branding/hominis/locales/en-US/brand.ftl b/browser/branding/hominis/locales/en-US/brand.ftl',
-        '--- a/browser/branding/hominis/locales/en-US/brand.ftl',
-        '+++ b/browser/branding/hominis/locales/en-US/brand.ftl',
+        'diff --git a/browser/branding/mybrowser/locales/en-US/brand.ftl b/browser/branding/mybrowser/locales/en-US/brand.ftl',
+        '--- a/browser/branding/mybrowser/locales/en-US/brand.ftl',
+        '+++ b/browser/branding/mybrowser/locales/en-US/brand.ftl',
         '@@ -1 +1 @@',
         '-old',
         '+new',
@@ -73,8 +73,8 @@ describe('patch-files parsing', () => {
     );
 
     await expect(getAllTargetFilesFromPatch('/patches/002.patch')).resolves.toEqual([
-      'browser/branding/hominis/content/about-logo.png',
-      'browser/branding/hominis/locales/en-US/brand.ftl',
+      'browser/branding/mybrowser/content/about-logo.png',
+      'browser/branding/mybrowser/locales/en-US/brand.ftl',
     ]);
   });
 

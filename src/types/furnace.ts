@@ -75,7 +75,7 @@ export interface CustomComponentConfig {
   /**
    * Path of a pre-existing feature-scoped Fluent bundle this component
    * participates in, in the same form used by `insertFTLIfNeeded` (for
-   * example `browser/hominis-dock.ftl`). When set:
+   * example `browser/mybrowser-dock.ftl`). When set:
    *
    *   - `furnace create --localized` does NOT scaffold a per-component
    *     `.ftl` stub — the component shares the feature bundle.
@@ -108,6 +108,15 @@ export interface FurnaceConfig {
   tokenPrefix?: string;
   /** Custom properties allowed even though they don't match tokenPrefix (e.g. ["--background-color-box"]) */
   tokenAllowlist?: string[];
+  /**
+   * CSS custom-property prefixes that identify upstream / platform
+   * variables the fork does not own. `token coverage` counts matches
+   * as `allowlisted` rather than `unknown` so a copied upstream
+   * baseline doesn't drag fork-owned coverage percentages down.
+   * Defaults to `['--moz-']` when unset. Pass an explicit empty array
+   * to restore the pre-0.18.0 strict contract.
+   */
+  platformPrefixes?: string[];
   /**
    * Custom properties used as runtime state channels — written and read by the
    * component itself (e.g. per-frame camera/tile positions) rather than

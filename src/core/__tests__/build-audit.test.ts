@@ -45,6 +45,14 @@ describe('isPackageablePath', () => {
     ['browser/moz.build', false],
     ['browser/app/Makefile.in', false],
     ['build/moz.configure', false],
+    // `.inc.xhtml` fragments are consumed via `#include` from a
+    // registered chrome document; they never ship as a standalone
+    // packaged artifact. 2026-04-21 eval (Finding #11): `wire --dom`
+    // generated a `.inc.xhtml`, the build audit then flagged it as
+    // "missing packaged artifact" on the next UI build. The carve-out
+    // keeps the two sibling checks (`register` + `build audit`)
+    // consistent about this file type.
+    ['browser/base/content/freshforge-sidebar.inc.xhtml', false],
   ])('returns false for non-packaged path %s', (path, expected) => {
     expect(isPackageablePath(path)).toBe(expected);
   });
@@ -676,9 +684,9 @@ describe('auditBuildArtifacts', () => {
   });
 
   it('resolves chrome-tree artifacts via known packaging transforms when jar.mn is bare', async () => {
-    // Motivating case from dogfooding: `engine/browser/base/content/hominis.js`
-    // is packaged to `chrome/browser/content/browser/hominis.js` under dist/,
-    // but an unrelated `browser/defaults/preferences/hominis.js` pref file
+    // Motivating case from dogfooding: `engine/browser/base/content/mybrowser.js`
+    // is packaged to `chrome/browser/content/browser/mybrowser.js` under dist/,
+    // but an unrelated `browser/defaults/preferences/mybrowser.js` pref file
     // from an earlier patch also lands under dist/. The source's jar.mn has
     // no `(source)` annotation (a bare target line), so the
     // registration-aware resolver cannot help. Before this fix the scorer
@@ -690,14 +698,14 @@ describe('auditBuildArtifacts', () => {
     // `chrome/browser/content/browser/<basename>` suffix and returns the
     // chrome artifact before the scorer runs.
     await ensureDir(join(engineDir, 'browser/base/content'));
-    const source = 'browser/base/content/hominis.js';
+    const source = 'browser/base/content/mybrowser.js';
     await writeText(join(engineDir, source), 'content');
 
     const distRoot = join(engineDir, 'obj-debug', 'dist');
     await ensureDir(join(distRoot, 'bin/browser/chrome/browser/content/browser'));
     await ensureDir(join(distRoot, 'bin/browser/defaults/preferences'));
-    const correct = join(distRoot, 'bin/browser/chrome/browser/content/browser/hominis.js');
-    const unrelated = join(distRoot, 'bin/browser/defaults/preferences/hominis.js');
+    const correct = join(distRoot, 'bin/browser/chrome/browser/content/browser/mybrowser.js');
+    const unrelated = join(distRoot, 'bin/browser/defaults/preferences/mybrowser.js');
     await writeText(correct, 'content');
     await writeText(unrelated, 'pref');
 

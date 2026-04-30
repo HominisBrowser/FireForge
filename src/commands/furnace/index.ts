@@ -149,7 +149,7 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
     )
     .option(
       '--shared-ftl <path>',
-      'Participate in an existing feature-scoped .ftl at this path (e.g. "browser/hominis-dock.ftl"); skips the per-component .ftl scaffold (implies --localized)'
+      'Participate in an existing feature-scoped .ftl at this path (e.g. "browser/mybrowser-dock.ftl"); skips the per-component .ftl scaffold (implies --localized)'
     )
     .option('--dry-run', 'Show the planned file set and furnace.json changes without writing')
     .option(

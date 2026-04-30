@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -10,7 +10,7 @@ import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
 import { ensureGit, git } from './git-base.js';
 import { fileExistsInHead } from './git-file-ops.js';
-import { getUntrackedFiles } from './git-status.js';
+import { getUntrackedFiles, getUntrackedFilesInDir } from './git-status.js';
 
 async function execGitWithAllowedExitCodes(
   repoDir: string,
@@ -44,6 +44,21 @@ export async function getFileDiff(repoDir: string, filePath: string): Promise<st
  */
 export async function generateNewFileDiff(repoDir: string, filePath: string): Promise<string> {
   const fullPath = join(repoDir, filePath);
+
+  // Defensive check: a directory here means a caller bypassed the
+  // expansion layers and handed the leaf reader a path it cannot
+  // read. Surface it with an actionable message naming the offending
+  // path rather than the raw `EISDIR` that `readText` would throw —
+  // recurring bug class (see the belt-and-suspenders note in
+  // `getDiffForFilesAgainstHead`).
+  const fileStat = await stat(fullPath);
+  if (fileStat.isDirectory()) {
+    throw new GitError(
+      `expected a file but found a directory at '${filePath}' — caller must expand directory entries before diffing`,
+      `hash-object ${filePath}`
+    );
+  }
+
   const content = await readText(fullPath);
 
   // Compute the abbreviated git blob hash for the index line
@@ -229,7 +244,26 @@ export async function getDiffForFilesAgainstHead(
 ): Promise<string> {
   await ensureGit();
 
-  const uniqueFiles = [...new Set(files)].sort();
+  // Expand any directory entries (paths ending with `/`) into their
+  // individual untracked files before diffing. `git status --porcelain=v1`
+  // reports collapsed untracked directories as `?? dir/`, and every caller
+  // that feeds the aggregate working-tree state into this function must
+  // not trigger an EISDIR when the diff pass reads `dir/` as if it were a
+  // file. Belt-and-suspenders: the caller-side expansion in `lint.ts`
+  // and `export-all.ts` covers the common path, but a single bad call
+  // site re-introduced the bug in 0.17.0 — guarding here makes the
+  // regression impossible at this layer.
+  const expandedFiles: string[] = [];
+  for (const file of files) {
+    if (file.endsWith('/')) {
+      const inner = await getUntrackedFilesInDir(repoDir, file);
+      for (const entry of inner) expandedFiles.push(entry);
+      continue;
+    }
+    expandedFiles.push(file);
+  }
+
+  const uniqueFiles = [...new Set(expandedFiles)].sort();
   const diffs: string[] = [];
 
   for (const file of uniqueFiles) {
@@ -241,7 +275,33 @@ export async function getDiffForFilesAgainstHead(
       continue;
     }
 
-    if (!(await pathExists(join(repoDir, file)))) {
+    const fullPath = join(repoDir, file);
+    if (!(await pathExists(fullPath))) {
+      continue;
+    }
+
+    // Second defence against the EISDIR regression: a non-HEAD path
+    // that exists on disk is usually a new file, but can also be a
+    // directory that arrived without the trailing slash
+    // `expandUntrackedDirectoryEntries` would have produced (caller
+    // stripped it, submodule entry, tracked-file-replaced-by-dir).
+    // Expand it via the same helper used by the slash branch and
+    // recurse so each contained file is diffed individually; fail
+    // loud when the directory has no readable content rather than
+    // silently skipping it.
+    const fileStat = await stat(fullPath);
+    if (fileStat.isDirectory()) {
+      const innerFiles = await getUntrackedFilesInDir(repoDir, file);
+      if (innerFiles.length === 0) {
+        throw new GitError(
+          `'${file}' is a directory with no untracked content (submodule or gitignored?) — cannot diff as a file`,
+          `ls-files --others -- ${file}`
+        );
+      }
+      const innerDiff = await getDiffForFilesAgainstHead(repoDir, innerFiles);
+      if (innerDiff.trim()) {
+        diffs.push(innerDiff);
+      }
       continue;
     }
 

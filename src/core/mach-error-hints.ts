@@ -52,12 +52,11 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
     // inside gecko-profiler's generated `bindings.rs`, but `_CharT` is
     // not in scope where the alias lands — so the Rust compile fails
     // with "cannot find type `_CharT`". The symptom is obscure and the
-    // fix is external: Hominis ships
-    // `990-infra-bindgen-basic-string-workaround.patch` in its patch
-    // queue, which strips the offending alias line post-generation.
-    // This hint surfaces the workaround pointer alongside the raw
-    // bindgen output so operators don't have to reverse-engineer the
-    // failure.
+    // fix is external: a downstream consumer's patch queue may ship
+    // `990-infra-bindgen-basic-string-workaround.patch`, which strips
+    // the offending alias line post-generation. This hint surfaces the
+    // workaround pointer alongside the raw bindgen output so operators
+    // don't have to reverse-engineer the failure.
     pattern:
       /cannot find type `_CharT` in this scope[\s\S]*?gecko-profiler-|gecko-profiler-[\s\S]*?cannot find type `_CharT` in this scope/,
     hint:
@@ -65,8 +64,8 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
       'gecko-profiler/bindings.rs. This is an upstream bindgen output bug against some ' +
       'macOS libc++ SDK versions and needs a post-generation patch to strip the alias. ' +
       'The known-working workaround is the `990-infra-bindgen-basic-string-workaround.patch` ' +
-      "Hominis ships in its patch queue — import the equivalent into your fork's patches/, " +
-      'then re-run "fireforge import" + "fireforge build". If you do not use Hominis\' queue, ' +
+      "shipped by some downstream patch queues — import the equivalent into your fork's patches/, " +
+      'then re-run "fireforge import" + "fireforge build". If your fork does not carry such a patch, ' +
       'apply the following post-process to the generated file before the Rust compile: ' +
       'remove any `pub type basic_string___self_view = …<_CharT>;` line from ' +
       '`<objdir>/release/build/gecko-profiler-*/out/gecko/bindings.rs`.',

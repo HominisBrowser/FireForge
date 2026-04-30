@@ -159,7 +159,7 @@ describe('packageCommand', () => {
   });
 
   it('surfaces the packager NoneType hint on a matching failure (Finding #12)', async () => {
-    // The evaluator hit this on a real hominis/ tree: `mach package`
+    // The evaluator hit this on a real mybrowser/ tree: `mach package`
     // tripped an `AttributeError: 'NoneType' object has no attribute
     // 'open'` inside packager.py, and FireForge surfaced it as a
     // generic `Packaging failed`. With `explainMachError` wired into

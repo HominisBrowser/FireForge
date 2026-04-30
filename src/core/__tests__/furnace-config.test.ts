@@ -113,16 +113,16 @@ describe('furnace-config helpers', () => {
       stock: [],
       overrides: {},
       custom: {
-        'hominis-dock-button': {
+        'mybrowser-dock-button': {
           description: 'Dock button',
-          targetPath: 'toolkit/content/widgets/hominis-dock-button',
+          targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
           register: true,
           localized: true,
-          sharedFtl: 'browser/hominis-dock.ftl',
+          sharedFtl: 'browser/mybrowser-dock.ftl',
         },
       },
     });
-    expect(result.custom['hominis-dock-button']?.sharedFtl).toBe('browser/hominis-dock.ftl');
+    expect(result.custom['mybrowser-dock-button']?.sharedFtl).toBe('browser/mybrowser-dock.ftl');
   });
 
   it('rejects sharedFtl when localized is false', () => {

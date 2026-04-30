@@ -77,14 +77,16 @@ describe('checkStaleBuildForTest', () => {
       binaryName: 'mybrowser',
     });
     mockGit.mockResolvedValueOnce(
-      'browser/base/content/hominis.xhtml\n' + 'browser/base/content/hominis.js\n' + 'tools/ci.py\n'
+      'browser/base/content/mybrowser.xhtml\n' +
+        'browser/base/content/mybrowser.js\n' +
+        'tools/ci.py\n'
     );
 
     const result = await checkStaleBuildForTest('/project', '/project/engine');
     expect(result.stale).toBe(true);
     expect(result.changedPaths).toEqual([
-      'browser/base/content/hominis.js',
-      'browser/base/content/hominis.xhtml',
+      'browser/base/content/mybrowser.js',
+      'browser/base/content/mybrowser.xhtml',
     ]);
     expect(result.truncated).toBe(0);
   });
@@ -218,7 +220,7 @@ describe('formatStaleBuildWarning', () => {
   it('renders the list of changed paths and the recommended --build invocation', () => {
     const message = formatStaleBuildWarning({
       stale: true,
-      changedPaths: ['browser/base/content/hominis.xhtml', 'browser/base/content/hominis.js'],
+      changedPaths: ['browser/base/content/mybrowser.xhtml', 'browser/base/content/mybrowser.js'],
       truncated: 0,
       baseline: {
         engineHeadSha: 'abc',
@@ -226,8 +228,8 @@ describe('formatStaleBuildWarning', () => {
         binaryName: 'mybrowser',
       },
     });
-    expect(message).toContain('browser/base/content/hominis.xhtml');
-    expect(message).toContain('browser/base/content/hominis.js');
+    expect(message).toContain('browser/base/content/mybrowser.xhtml');
+    expect(message).toContain('browser/base/content/mybrowser.js');
     expect(message).toContain('fireforge test --build');
   });
 

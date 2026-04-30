@@ -137,16 +137,16 @@ describe('validateStructure', () => {
     // such component ships with a permanent error.
     mockPathExists.mockImplementation((p: string) => Promise.resolve(!p.endsWith('.ftl')));
     mockReaddir.mockResolvedValue([
-      { isFile: () => true, name: 'hominis-dock-button.mjs' },
-      { isFile: () => true, name: 'hominis-dock-button.css' },
+      { isFile: () => true, name: 'mybrowser-dock-button.mjs' },
+      { isFile: () => true, name: 'mybrowser-dock-button.css' },
     ] as never);
 
-    const issues = await validateStructure('/comp', 'hominis-dock-button', 'custom', {
+    const issues = await validateStructure('/comp', 'mybrowser-dock-button', 'custom', {
       description: 'Dock button sharing the feature bundle',
-      targetPath: 'toolkit/content/widgets/hominis-dock-button',
+      targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
       register: true,
       localized: true,
-      sharedFtl: 'browser/hominis-dock.ftl',
+      sharedFtl: 'browser/mybrowser-dock.ftl',
     });
 
     expect(issues.some((i) => i.check === 'missing-ftl')).toBe(false);

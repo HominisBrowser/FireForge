@@ -36,6 +36,10 @@ vi.mock('../../core/git-status.js', () => ({
   getModifiedFilesInDir: vi.fn(() => Promise.resolve([])),
   getUntrackedFiles: vi.fn(() => Promise.resolve([])),
   getUntrackedFilesInDir: vi.fn(() => Promise.resolve([])),
+  getWorkingTreeStatus: vi.fn(() => Promise.resolve([])),
+  expandUntrackedDirectoryEntries: vi.fn((_dir: string, entries: unknown[]) =>
+    Promise.resolve(entries)
+  ),
 }));
 
 vi.mock('../../core/branding.js', () => ({
@@ -45,6 +49,13 @@ vi.mock('../../core/branding.js', () => ({
   isBrandingManagedPath: vi.fn((path: string, binaryName: string) =>
     path.startsWith(`browser/branding/${binaryName}/`)
   ),
+}));
+
+// Mock furnace-config so lint can import collectFurnaceManagedPrefixes
+// without dragging in the real furnace.json loader (which would trip the
+// FIREFORGE_DIR import on the test config mock).
+vi.mock('../../core/furnace-config.js', () => ({
+  collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set<string>())),
 }));
 
 vi.mock('../../core/patch-apply.js', () => ({
@@ -86,10 +97,10 @@ import { loadConfig } from '../../core/config.js';
 import { getStatusWithCodes, hasChanges } from '../../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import {
-  getModifiedFiles,
   getModifiedFilesInDir,
   getUntrackedFiles,
   getUntrackedFilesInDir,
+  getWorkingTreeStatus,
 } from '../../core/git-status.js';
 import {
   buildPatchQueueContext,
@@ -102,7 +113,7 @@ import { GeneralError } from '../../errors/base.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
-import { lintCommand } from '../lint.js';
+import { applyAggregateLintIgnoreSuppression, lintCommand } from '../lint.js';
 
 function fakeStats(overrides: Partial<Stats>): Stats {
   return { isDirectory: () => false, isFile: () => true, ...overrides } as Stats;
@@ -570,8 +581,66 @@ describe('lintCommand — branch coverage', () => {
       await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
 
       expect(lintExportedPatch).not.toHaveBeenCalled();
+      // 2026-04-26 eval Finding 7: the success line now names the
+      // skipped patch count so operators can tell "queue clean" from
+      // "queue not yet applied".
       expect(vi.mocked(success)).toHaveBeenCalledWith(
-        expect.stringContaining('No lint issues found across 0 patch(es)')
+        expect.stringContaining('No lint issues found across 0 patch(es) (1 skipped')
+      );
+    });
+
+    it('points at fireforge import when the entire queue is unapplied (Finding 7)', async () => {
+      // Pre-fix: an unapplied 29-patch queue produced
+      // `No lint issues found across 0 patch(es).` with no hint that
+      // *nothing* had been linted. The new info banner names the
+      // missing prerequisite (`fireforge import`) so the operator can
+      // tell that the success line is structurally meaningful, not a
+      // misleading clean bill of health.
+      const a = makePatch('001-ui-a.patch', ['a.ts']);
+      const b = makePatch('002-ui-b.patch', ['b.ts']);
+      const c = makePatch('003-ui-c.patch', ['c.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a, b, c]));
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        // engine/ exists but none of the filesAffected do — every
+        // patch is filtered out of the lint pass.
+        if (p === '/project/engine') return Promise.resolve(true);
+        if (p.endsWith('.ts')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(vi.mocked(info)).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'No patches in the queue have been applied to engine/. Run "fireforge import" first'
+        )
+      );
+      expect(vi.mocked(success)).toHaveBeenCalledWith(
+        expect.stringContaining('No lint issues found across 0 patch(es) (3 skipped')
+      );
+    });
+
+    it('does not emit the unapplied-queue hint when at least one patch was linted', async () => {
+      // The hint must only fire on the all-skipped case. A queue
+      // where one patch was applied and another was not should still
+      // surface the skipped count (visibility) but not the
+      // import-first banner (false alarm).
+      const applied = makePatch('001-ui-applied.patch', ['applied.ts']);
+      const missing = makePatch('002-ui-missing.patch', ['missing.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([applied, missing]));
+      vi.mocked(pathExists).mockImplementation((p: string) => {
+        if (p.endsWith('/missing.ts')) return Promise.resolve(false);
+        return Promise.resolve(true);
+      });
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+      vi.mocked(lintExportedPatch).mockResolvedValue([]);
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      const infoCalls = vi.mocked(info).mock.calls.map((c) => c[0]);
+      expect(infoCalls.some((m) => m.includes('Run "fireforge import" first'))).toBe(false);
+      expect(vi.mocked(success)).toHaveBeenCalledWith(
+        expect.stringContaining('No lint issues found across 1 patch(es) (1 skipped')
       );
     });
   });
@@ -645,13 +714,40 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
     vi.mocked(lintExportedPatch).mockResolvedValue([]);
   });
 
+  function statusEntry(
+    status: string,
+    file: string
+  ): {
+    status: string;
+    indexStatus: string;
+    worktreeStatus: string;
+    file: string;
+    isUntracked: boolean;
+    isRenameOrCopy: boolean;
+    isDeleted: boolean;
+  } {
+    return {
+      status,
+      indexStatus: status[0] ?? ' ',
+      worktreeStatus: status[1] ?? status[0] ?? ' ',
+      file,
+      isUntracked: status.includes('?'),
+      isRenameOrCopy: false,
+      isDeleted: status.includes('D'),
+    };
+  }
+
   it('filters branding-managed paths out of the default aggregate diff', async () => {
-    vi.mocked(getModifiedFiles).mockResolvedValue([
-      'browser/branding/mybrowser/locales/en-US/brand.ftl',
-      'browser/branding/mybrowser/configure.sh',
-      'browser/base/content/myhook.js',
+    // Post-0.17 the aggregate-mode branding branch sources paths via
+    // `getWorkingTreeStatus` + `expandUntrackedDirectoryEntries` so it
+    // can expand `?? dir/` entries before the diff pass. The older
+    // `getModifiedFiles`/`getUntrackedFiles` blend tripped EISDIR in
+    // the eval's imported patch stacks.
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      statusEntry(' M', 'browser/branding/mybrowser/locales/en-US/brand.ftl'),
+      statusEntry(' M', 'browser/branding/mybrowser/configure.sh'),
+      statusEntry(' M', 'browser/base/content/myhook.js'),
     ]);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
     vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
 
     await lintCommand('/project', []);
@@ -667,8 +763,9 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
   });
 
   it('passes through unchanged when no branding files are dirty', async () => {
-    vi.mocked(getModifiedFiles).mockResolvedValue(['browser/base/content/myhook.js']);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      statusEntry(' M', 'browser/base/content/myhook.js'),
+    ]);
     vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
 
     await lintCommand('/project', []);
@@ -681,18 +778,21 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
   });
 
   it('short-circuits when every dirty file is branding', async () => {
-    vi.mocked(getModifiedFiles).mockResolvedValue([
-      'browser/branding/mybrowser/locales/en-US/brand.ftl',
-      'browser/branding/mybrowser/configure.sh',
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      statusEntry(' M', 'browser/branding/mybrowser/locales/en-US/brand.ftl'),
+      statusEntry(' M', 'browser/branding/mybrowser/configure.sh'),
     ]);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
 
     await lintCommand('/project', []);
 
     // With nothing to lint after exclusion, the command surfaces a
     // targeted "nothing to lint" banner and does NOT call
-    // lintExportedPatch.
-    expect(info).toHaveBeenCalledWith(expect.stringContaining('No non-branding changes'));
+    // lintExportedPatch. The wording covers both branding and Furnace
+    // exclusions now that the aggregate-mode filter drops both buckets
+    // (see lint.ts: "No non-branding, non-Furnace changes to lint.").
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('No non-branding, non-Furnace changes')
+    );
     expect(lintExportedPatch).not.toHaveBeenCalled();
   });
 
@@ -717,5 +817,157 @@ describe('lintCommand — default-mode branding exclusion (Finding #2)', () => {
     ]);
     // No "Excluded …" banner in file-list mode.
     expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Excluded'));
+  });
+});
+
+describe('applyAggregateLintIgnoreSuppression', () => {
+  // Use lightweight inline shapes; PatchQueueContext only exposes
+  // `entries[*].metadata.{lintIgnore, filesAffected}` for this code
+  // path, so we don't need the full PatchQueueEntry construction.
+  function ctx(
+    entries: Array<{ filename: string; lintIgnore?: string[]; filesAffected: string[] }>
+  ): import('../../core/patch-lint.js').PatchQueueContext {
+    return {
+      entries: entries.map((e, i) => ({
+        filename: e.filename,
+        order: i + 1,
+        diff: '',
+        newFiles: new Map<string, string>(),
+        modifiedFileAdditions: new Map<string, string>(),
+        metadata: {
+          filename: e.filename,
+          order: i + 1,
+          category: 'infra' as const,
+          name: e.filename,
+          description: '',
+          createdAt: '2026-04-30T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: e.filesAffected,
+          ...(e.lintIgnore !== undefined ? { lintIgnore: e.lintIgnore } : {}),
+        },
+      })),
+    };
+  }
+
+  it('drops issues whose owning patch waived the check via lintIgnore', () => {
+    const issues = [
+      {
+        file: 'browser/components/extensions/parent/ext-browser.js',
+        check: 'modified-file-missing-header',
+        message: 'Modified upstream file appears to be missing a recognized license header.',
+        severity: 'warning' as const,
+      },
+    ];
+    const queue = ctx([
+      {
+        filename: '0042-infra-marionette-tabbrowser-guards.patch',
+        lintIgnore: ['modified-file-missing-header'],
+        filesAffected: ['browser/components/extensions/parent/ext-browser.js'],
+      },
+    ]);
+
+    const result = applyAggregateLintIgnoreSuppression(issues, queue);
+
+    expect(result.dropped).toBe(1);
+    expect(result.issues).toEqual([]);
+  });
+
+  it('preserves issues whose check is not in the owning patch lintIgnore', () => {
+    const issues = [
+      {
+        file: 'browser/foo.js',
+        check: 'raw-color-value',
+        message: 'raw color',
+        severity: 'error' as const,
+      },
+    ];
+    const queue = ctx([
+      {
+        filename: '0001-ui-foo.patch',
+        lintIgnore: ['large-patch-files'],
+        filesAffected: ['browser/foo.js'],
+      },
+    ]);
+
+    const result = applyAggregateLintIgnoreSuppression(issues, queue);
+
+    expect(result.dropped).toBe(0);
+    expect(result.issues).toHaveLength(1);
+  });
+
+  it('preserves issues whose file is not in any patch filesAffected (no owner)', () => {
+    const issues = [
+      {
+        file: 'browser/unowned.js',
+        check: 'modified-file-missing-header',
+        message: 'header',
+        severity: 'warning' as const,
+      },
+    ];
+    const queue = ctx([
+      {
+        filename: '0001-ui-foo.patch',
+        lintIgnore: ['modified-file-missing-header'],
+        filesAffected: ['browser/something-else.js'],
+      },
+    ]);
+
+    const result = applyAggregateLintIgnoreSuppression(issues, queue);
+
+    expect(result.dropped).toBe(0);
+    expect(result.issues).toHaveLength(1);
+  });
+
+  it('drops when at least one of multiple owning patches waived the check', () => {
+    // The same file is touched by two patches; one waives the rule, one
+    // does not. Per the conservative contract, the issue is suppressed —
+    // mirrors per-patch mode where the waiving patch's slice would not
+    // produce the issue at all.
+    const issues = [
+      {
+        file: 'browser/shared.js',
+        check: 'modified-file-missing-header',
+        message: 'header',
+        severity: 'warning' as const,
+      },
+    ];
+    const queue = ctx([
+      {
+        filename: '0001-ui-creator.patch',
+        filesAffected: ['browser/shared.js'],
+      },
+      {
+        filename: '0002-ui-modifier.patch',
+        lintIgnore: ['modified-file-missing-header'],
+        filesAffected: ['browser/shared.js'],
+      },
+    ]);
+
+    const result = applyAggregateLintIgnoreSuppression(issues, queue);
+
+    expect(result.dropped).toBe(1);
+    expect(result.issues).toEqual([]);
+  });
+
+  it('returns the original list untouched when no patch carries lintIgnore', () => {
+    const issues = [
+      {
+        file: 'browser/foo.js',
+        check: 'modified-file-missing-header',
+        message: 'header',
+        severity: 'warning' as const,
+      },
+    ];
+    const queue = ctx([
+      {
+        filename: '0001-ui-foo.patch',
+        filesAffected: ['browser/foo.js'],
+      },
+    ]);
+
+    const result = applyAggregateLintIgnoreSuppression(issues, queue);
+
+    expect(result.dropped).toBe(0);
+    expect(result.issues).toBe(issues);
   });
 });

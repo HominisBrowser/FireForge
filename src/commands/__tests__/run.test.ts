@@ -405,7 +405,7 @@ describe('runCommand', () => {
 
     it('fails with SMOKE_EXIT_FAILURE when an unallowed error line fires', async () => {
       vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
-        opts.onStderrLine?.('JavaScript error: lazy.HominisEvents.HOMINIS_TOPICS is undefined');
+        opts.onStderrLine?.('JavaScript error: lazy.MyBrowserEvents.MYBROWSER_TOPICS is undefined');
         return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
       });
 

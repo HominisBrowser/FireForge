@@ -106,6 +106,26 @@ async function cleanPatchTouchedFiles(
 }
 
 /**
+ * Prints a one-line nudge pointing at `fireforge import` when the project
+ * carries a non-empty patch queue but the just-downloaded engine has not
+ * yet had any patches applied. The post-download spinner closes with
+ * "Patch-touched files already match baseline" because a fresh tree IS at
+ * baseline, but the 2026-04-25 eval saw operators read that as "patches
+ * are restored" and skip the import step. The note is suppressed when
+ * patches/ is missing or the manifest is empty so unconfigured projects
+ * stay quiet.
+ */
+async function noteUnappliedPatches(patchesDir: string): Promise<void> {
+  if (!(await pathExists(patchesDir))) return;
+  const manifest = await loadPatchesManifest(patchesDir);
+  if (!manifest || manifest.patches.length === 0) return;
+  const n = manifest.patches.length;
+  info(
+    `Note: ${n} patch${n === 1 ? '' : 'es'} in patches/ have not been applied to this fresh engine. Run "fireforge import" to apply them.`
+  );
+}
+
+/**
  * Stops `restoreSpinner` with a message that reflects what actually
  * happened. Three branches: empty queue → explicit no-op; queue present but
  * nothing dirty → "already clean"; queue with dirty files → the usual
@@ -202,6 +222,8 @@ export async function downloadCommand(
                 downloadedVersion: version,
                 baseCommit,
               });
+
+              await noteUnappliedPatches(paths.patches);
 
               outro(`Firefox ${version} is ready! (resumed from partial init)`);
               return;
@@ -372,6 +394,8 @@ export async function downloadCommand(
     downloadedVersion: version,
     baseCommit,
   });
+
+  await noteUnappliedPatches(paths.patches);
 
   outro(`Firefox ${version} is ready!`);
 }

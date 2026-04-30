@@ -340,7 +340,7 @@ describe('lintPatchedCss', () => {
     mockReadText.mockResolvedValue(':root { --bg: #2a2a2a; color: #ffffff; }');
 
     const issues = await lintPatchedCss('/engine', [
-      'browser/branding/hominis/content/aboutDialog.css',
+      'browser/branding/mybrowser/content/aboutDialog.css',
     ]);
 
     expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(0);
@@ -490,7 +490,7 @@ describe('lintNewFileHeaders', () => {
     const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
     const issues = await lintNewFileHeaders(
       '/engine',
-      ['browser/branding/hominis/content/aboutDialog.css'],
+      ['browser/branding/mybrowser/content/aboutDialog.css'],
       euplConfig
     );
     expect(issues.filter((i) => i.check === 'missing-license-header')).toHaveLength(0);
@@ -506,7 +506,7 @@ describe('lintNewFileHeaders', () => {
 
     const issues = await lintNewFileHeaders(
       '/engine',
-      ['browser/branding/hominis/content/aboutDialog.css'],
+      ['browser/branding/mybrowser/content/aboutDialog.css'],
       mockConfig
     );
     expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
@@ -794,6 +794,330 @@ describe('lintPatchedJs', () => {
 
     expect(issues).toEqual([]);
   });
+
+  // ── jsdocClassMethods knob — severity propagation ──────────────────────
+
+  it("propagates 'warning' severity when jsdocClassMethods is 'warning'", async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      '/** Store. */\nexport class Store {\n  save(key) {\n    return key;\n  }\n}\n'
+    );
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { jsdocClassMethods: 'warning' },
+    };
+    const issues = await lintPatchedJs(
+      '/engine',
+      ['Store.sys.mjs'],
+      new Set(['Store.sys.mjs']),
+      config
+    );
+
+    const methodIssue = issues.find((i) => i.check === 'missing-jsdoc-class-method');
+    expect(methodIssue).toBeDefined();
+    expect(methodIssue?.severity).toBe('warning');
+  });
+
+  it('does not emit class-method issues when jsdocClassMethods is absent', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      '/** Store. */\nexport class Store {\n  save(key) {\n    return key;\n  }\n}\n'
+    );
+
+    const issues = await lintPatchedJs(
+      '/engine',
+      ['Store.sys.mjs'],
+      new Set(['Store.sys.mjs']),
+      mockConfig
+    );
+
+    expect(issues.some((i) => i.check.includes('class-method'))).toBe(false);
+  });
+
+  // ── chromeScriptJsDoc — patch-owned chrome subscripts ─────────────────
+
+  it("flags a patch-owned chrome .js with no class JSDoc when chromeScriptJsDoc='warning'", async () => {
+    // Chrome subscripts (script form, no `export` keyword) are loaded via
+    // Services.scriptloader.loadSubScript and used to be review-only —
+    // the .sys.mjs gate excluded them. The chromeScriptJsDoc knob now
+    // covers them via a parseScript-based validator.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('class MyBrowserDock {\n  constructor() {}\n}\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { chromeScriptJsDoc: 'warning' },
+    };
+    const file = 'browser/base/content/mybrowserDock.js';
+    const issues = await lintPatchedJs(
+      '/engine',
+      [file],
+      new Set([file]),
+      config,
+      undefined,
+      new Set([file])
+    );
+
+    const issue = issues.find((i) => i.check === 'missing-jsdoc');
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe('warning');
+    expect(issue?.message).toContain('MyBrowserDock');
+  });
+
+  it('does not flag chrome scripts that are not patch-owned (upstream files modified by the patch)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('class UpstreamThing {}\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { chromeScriptJsDoc: 'warning' },
+    };
+    const file = 'browser/base/content/upstream.js';
+    const issues = await lintPatchedJs(
+      '/engine',
+      [file],
+      new Set<string>(), // not new
+      config,
+      undefined,
+      new Set<string>() // explicit empty patch-owned set
+    );
+
+    expect(issues.some((i) => i.check === 'missing-jsdoc')).toBe(false);
+  });
+
+  it("does not flag chrome scripts when chromeScriptJsDoc is 'off' or absent", async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('class MyBrowserDock {\n}\n');
+
+    const file = 'browser/base/content/mybrowserDock.js';
+    const issues = await lintPatchedJs(
+      '/engine',
+      [file],
+      new Set([file]),
+      mockConfig,
+      undefined,
+      new Set([file])
+    );
+
+    expect(issues.some((i) => i.check === 'missing-jsdoc')).toBe(false);
+  });
+
+  it('does not double-flag a .sys.mjs with both jsdocClassMethods and chromeScriptJsDoc set', async () => {
+    // The .sys.mjs path goes through validateExportJsDoc; chromeScriptJsDoc
+    // must not also emit issues for the same file (the dispatch gate
+    // requires `.js && !.sys.mjs`).
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      '/** Store. */\nexport class Store {\n  /** Save.\n   * @param key - key id\n   * @returns key\n   */\n  save(key) { return key; }\n}\n'
+    );
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { jsdocClassMethods: 'warning', chromeScriptJsDoc: 'warning' },
+    };
+    const file = 'browser/modules/Store.sys.mjs';
+    const issues = await lintPatchedJs(
+      '/engine',
+      [file],
+      new Set([file]),
+      config,
+      new Set([file]),
+      new Set<string>() // .sys.mjs is NOT in patchOwnedChromeScripts
+    );
+
+    expect(issues).toEqual([]);
+  });
+
+  // ── testAssertionFloor — Change B ──────────────────────────────────────
+
+  it('does not flag a browser_*.js test that contains Assert.equal', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('add_task(async function() {\n  Assert.equal(1, 1);\n});\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'warning' },
+    };
+    const file = 'browser/base/content/test/general/browser_focus.js';
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config);
+
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(false);
+  });
+
+  it('does not flag a browser_*.js test that contains ok(...)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('add_task(async function() {\n  ok(true);\n});\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'warning' },
+    };
+    const file = 'browser/base/content/test/general/browser_focus.js';
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config);
+
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(false);
+  });
+
+  it("flags a zero-assertion browser_*.js test at 'warning' when knob is 'warning'", async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      'add_task(async function() {\n  console.log("nothing pinned");\n});\n'
+    );
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'warning' },
+    };
+    const file = 'browser/base/content/test/general/browser_focus.js';
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config);
+
+    const issue = issues.find((i) => i.check === 'test-needs-assertion');
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe('warning');
+    expect(issue?.message).toContain(file);
+  });
+
+  it('flags a test whose only Assert.equal is inside a /* */ block comment', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      'add_task(async function() {\n  /* Assert.equal(1, 1); */\n  console.log("hi");\n});\n'
+    );
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'warning' },
+    };
+    const file = 'browser/base/content/test/general/browser_focus.js';
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config);
+
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(true);
+  });
+
+  it('skips head.js even with no assertions', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('// shared test helpers\nfunction helper() {}\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'warning' },
+    };
+    const file = 'browser/base/content/test/general/head.js';
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config);
+
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(false);
+  });
+
+  it('skips head_*.js helpers even with no assertions', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('function setup() {}\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'warning' },
+    };
+    const file = 'browser/base/content/test/general/head_helpers.js';
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config);
+
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(false);
+  });
+
+  it('flags modified (non-new) test files that lost their last assertion', async () => {
+    // The pre-0.18.x rule only fired for new test files (`isNew` gate),
+    // which let a patch strip the final `Assert.equal` from an existing
+    // browser_*.js without surfacing the regression. The rule now fires
+    // for any patch-touched browser_*.js, new or modified.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('add_task(async function() {});\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'warning' },
+    };
+    const file = 'browser/base/content/test/general/browser_focus.js';
+    // file is in affectedFiles but NOT in newFiles → modified upstream test
+    const issues = await lintPatchedJs('/engine', [file], new Set<string>(), config);
+
+    const issue = issues.find((i) => i.check === 'test-needs-assertion');
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe('warning');
+  });
+
+  it('does not flag a modified test that retains an Assert.* call', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('add_task(async function() {\n  Assert.equal(1, 1);\n});\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'warning' },
+    };
+    const file = 'browser/base/content/test/general/browser_focus.js';
+    const issues = await lintPatchedJs('/engine', [file], new Set<string>(), config);
+
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(false);
+  });
+
+  it("does not flag any test when testAssertionFloor is 'off' or absent", async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('add_task(async function() {});\n');
+
+    const file = 'browser/base/content/test/general/browser_focus.js';
+
+    // Absent
+    let issues = await lintPatchedJs('/engine', [file], new Set([file]), mockConfig);
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(false);
+
+    // Explicit 'off'
+    const configOff: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'off' },
+    };
+    issues = await lintPatchedJs('/engine', [file], new Set([file]), configOff);
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(false);
+  });
+
+  it("flags zero-assertion file at 'error' severity when knob is 'error'", async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('add_task(async function() {});\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'error' },
+    };
+    const file = 'browser/base/content/test/general/browser_focus.js';
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config);
+
+    const issue = issues.find((i) => i.check === 'test-needs-assertion');
+    expect(issue?.severity).toBe('error');
+  });
+
+  it('detects /tests/ (plural) as a valid browser-chrome test directory', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('add_task(async function() {});\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'warning' },
+    };
+    const file = 'browser/components/foo/tests/browser_qa.js';
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config);
+
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(true);
+  });
+
+  it('does not apply the assertion floor to non-browser-chrome JS files', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('export function helper() {}\n');
+
+    const config: FireForgeConfig = {
+      ...mockConfig,
+      patchLint: { testAssertionFloor: 'error' },
+    };
+    const file = 'browser/modules/testbrowser/Helper.sys.mjs';
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config);
+
+    expect(issues.some((i) => i.check === 'test-needs-assertion')).toBe(false);
+  });
 });
 
 describe('lintModificationComments', () => {
@@ -936,6 +1260,91 @@ describe('lintPatchSize', () => {
     expect(issues.find((i) => i.check === 'large-patch-files')?.severity).toBe('warning');
   });
 
+  it('does not warn on file count when a branding-shaped patch has 6 files', () => {
+    // 2026-04-25 finding: the file-count check ignored the branding tier
+    // entirely. A real-world fresh-fork branding bundle is 56 files (icon
+    // assets in 7+ sizes, MSIX manifests, locale .ftl files); the >5
+    // threshold fired on every minimum branding diff.
+    const brandingFiles = [
+      'browser/branding/mybrowser/content/aboutDialog.css',
+      'browser/branding/mybrowser/locales/en-US/brand.ftl',
+      'browser/branding/mybrowser/pref/firefox-branding.js',
+      'browser/branding/mybrowser/default16.png',
+      'browser/branding/mybrowser/default32.png',
+      'browser/branding/mybrowser/default48.png',
+    ];
+    const issues = lintPatchSize(brandingFiles, 50);
+    expect(issues.some((i) => i.check === 'large-patch-files')).toBe(false);
+  });
+
+  it('does not warn on file count when a branding patch has 56 files (operator data point)', () => {
+    // The 2026-04-25 operator data point: a freshly-setup mybrowser branding
+    // patch landed at exactly 56 files. Pin this against regression so the
+    // documented threshold actually accommodates the canonical floor.
+    const brandingFiles = Array.from(
+      { length: 56 },
+      (_, i) => `browser/branding/mybrowser/asset${i}.png`
+    );
+    brandingFiles[0] = 'browser/branding/mybrowser/content/aboutDialog.css'; // ≥1 branding-prefixed file required by isBrandingOnlyPatch
+    const issues = lintPatchSize(brandingFiles, 100);
+    expect(issues.some((i) => i.check === 'large-patch-files')).toBe(false);
+  });
+
+  it('warns on file count when a branding patch crosses the elevated threshold (61 files)', () => {
+    const brandingFiles = Array.from(
+      { length: 61 },
+      (_, i) => `browser/branding/mybrowser/asset${i}.png`
+    );
+    brandingFiles[0] = 'browser/branding/mybrowser/content/aboutDialog.css';
+    const issues = lintPatchSize(brandingFiles, 100);
+    const fileIssue = issues.find((i) => i.check === 'large-patch-files');
+    expect(fileIssue?.severity).toBe('warning');
+    // Message must reference the branding tier's threshold (60), not the
+    // general default of 5 — operators reading the warning need to see the
+    // limit the rule actually applied.
+    expect(fileIssue?.message).toContain('≤60');
+  });
+
+  it('applies the branding file-count tier on explicit patchTier opt-in', () => {
+    // A branding patch that also touches a non-allowlisted sibling
+    // (e.g. a vendor-specific icon resource the auto-detector cannot
+    // reach) declares `tier: "branding"` in patches.json. The file-count
+    // check honors that opt-in just like the line-count check does.
+    const filesWithUnrelated = Array.from(
+      { length: 10 },
+      (_, i) => `browser/themes/mybrowser-shared/asset${i}.css`
+    );
+    expect(
+      lintPatchSize(filesWithUnrelated, 100, 'branding').some(
+        (i) => i.check === 'large-patch-files'
+      )
+    ).toBe(false);
+  });
+
+  it('warning message names the tier-specific threshold for general patches', () => {
+    const files = ['a.js', 'b.js', 'c.js', 'd.js', 'e.js', 'f.js'];
+    const issues = lintPatchSize(files, 10);
+    const fileIssue = issues.find((i) => i.check === 'large-patch-files');
+    expect(fileIssue?.message).toContain('≤5');
+  });
+
+  it('keeps the general 5-file threshold for test patches', () => {
+    // Test tier elevates the line-count thresholds (a table-driven
+    // regression test legitimately runs into the thousands of lines) but
+    // file fan-out remains general — a single test rarely spans many
+    // files. Six test files is still suspicious, even if six general .js
+    // files would be flagged the same way.
+    const testFiles = [
+      'test/test_a.js',
+      'test/test_b.js',
+      'test/test_c.js',
+      'test/test_d.js',
+      'test/test_e.js',
+      'test/test_f.js',
+    ];
+    expect(lintPatchSize(testFiles, 100).some((i) => i.check === 'large-patch-files')).toBe(true);
+  });
+
   it('returns notice when patch reaches 800 lines', () => {
     const issues = lintPatchSize(['a.js'], 800);
 
@@ -994,29 +1403,30 @@ describe('lintPatchSize', () => {
     // 15904 lines (localized brand.ftl across many locales + SVG path data +
     // copied upstream CSS). The general hard limit of 3000 fired an error,
     // but the patch already represented the minimum branding diff. The
-    // branding tier moves the hard limit to 20000 so the warning still
-    // surfaces at 8000 lines but non-actionable first-export branding
-    // passes.
+    // 2026-04-25 calibration moves the bands to {8000/18000/30000} so the
+    // typical 15904-line baseline lands as a soft `notice` rather than a
+    // `warning`, matching the docstring's "loud but not actionable" intent.
     const brandingFiles = [
-      'browser/branding/hominis/content/aboutDialog.css',
-      'browser/branding/hominis/locales/en-US/brand.ftl',
-      'browser/branding/hominis/pref/firefox-branding.js',
+      'browser/branding/mybrowser/content/aboutDialog.css',
+      'browser/branding/mybrowser/locales/en-US/brand.ftl',
+      'browser/branding/mybrowser/pref/firefox-branding.js',
     ];
-    expect(lintPatchSize(brandingFiles, 2999).some((i) => i.check === 'large-patch-lines')).toBe(
+    expect(lintPatchSize(brandingFiles, 7999).some((i) => i.check === 'large-patch-lines')).toBe(
       false
     );
     expect(
-      lintPatchSize(brandingFiles, 3000).find((i) => i.check === 'large-patch-lines')?.severity
-    ).toBe('notice');
-    expect(
       lintPatchSize(brandingFiles, 8000).find((i) => i.check === 'large-patch-lines')?.severity
-    ).toBe('warning');
-    // 15904 was the exact eval data point.
+    ).toBe('notice');
+    // 15904 was the exact eval data point — must surface as `notice`, not
+    // `warning`, after the 2026-04-25 recalibration.
     expect(
       lintPatchSize(brandingFiles, 15904).find((i) => i.check === 'large-patch-lines')?.severity
+    ).toBe('notice');
+    expect(
+      lintPatchSize(brandingFiles, 18000).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('warning');
     expect(
-      lintPatchSize(brandingFiles, 20000).find((i) => i.check === 'large-patch-lines')?.severity
+      lintPatchSize(brandingFiles, 30000).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('error');
   });
 
@@ -1030,26 +1440,26 @@ describe('lintPatchSize', () => {
     // ("nothing outside branding + the one-line registration sibling")
     // while tolerating the edit every real branding patch must make.
     const brandingWithRegistration = [
-      'browser/branding/hominis/content/aboutDialog.css',
-      'browser/branding/hominis/locales/en-US/brand.ftl',
+      'browser/branding/mybrowser/content/aboutDialog.css',
+      'browser/branding/mybrowser/locales/en-US/brand.ftl',
       'browser/moz.configure',
     ];
     expect(
       lintPatchSize(brandingWithRegistration, 15904).find((i) => i.check === 'large-patch-lines')
         ?.severity
-    ).toBe('warning');
+    ).toBe('notice');
   });
 
   it('uses the branding tier when branding files + browser/confvars.sh registration', () => {
     const brandingWithLegacyRegistration = [
-      'browser/branding/hominis/content/aboutDialog.css',
+      'browser/branding/mybrowser/content/aboutDialog.css',
       'browser/confvars.sh',
     ];
     expect(
       lintPatchSize(brandingWithLegacyRegistration, 15904).find(
         (i) => i.check === 'large-patch-lines'
       )?.severity
-    ).toBe('warning');
+    ).toBe('notice');
   });
 
   it('does not apply the branding tier when a non-allowlisted sibling is mixed in', () => {
@@ -1059,8 +1469,8 @@ describe('lintPatchSize', () => {
     // so an operator bundling unrelated changes into a branding edit
     // continues to see the hard limit.
     const mixedFiles = [
-      'browser/branding/hominis/content/aboutDialog.css',
-      'browser/components/tests/unit/test_browserGlue_hominis_startup.js',
+      'browser/branding/mybrowser/content/aboutDialog.css',
+      'browser/components/tests/unit/test_browserGlue_mybrowser_startup.js',
     ];
     expect(
       lintPatchSize(mixedFiles, 15904).find((i) => i.check === 'large-patch-lines')?.severity
@@ -1085,14 +1495,14 @@ describe('lintPatchSize', () => {
     // under browser/themes/<name>/). The operator declares intent in
     // patches.json and the lint tier follows.
     const filesWithUnrelated = [
-      'browser/branding/hominis/content/aboutDialog.css',
-      'browser/themes/hominis-shared/tokens.css',
+      'browser/branding/mybrowser/content/aboutDialog.css',
+      'browser/themes/mybrowser-shared/tokens.css',
     ];
     expect(
       lintPatchSize(filesWithUnrelated, 15904, 'branding').find(
         (i) => i.check === 'large-patch-lines'
       )?.severity
-    ).toBe('warning');
+    ).toBe('notice');
   });
 
   it('tests still beat branding when both apply', () => {

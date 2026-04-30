@@ -124,7 +124,17 @@ async function checkUncommittedPatchFiles(
       const unmanagedDirtyFiles = await getUnmanagedDirtyFiles(engineDir, patchesDir, dirtyFiles);
 
       if (unmanagedDirtyFiles.length === 0) {
-        info('Patch-backed materialized files already match the stored patch stack.');
+        // Common path here: operator just ran `fireforge resolve` to
+        // regenerate a patch from manual conflict edits, so the engine
+        // already carries the patch's effects. The import below will
+        // still re-apply each patch (a no-op for files whose contents
+        // already match), so phrase the line as "no resync needed"
+        // rather than "patches already applied" — the latter contradicts
+        // the "Applied N patch(es)" summary `applyPatchesWithContinue`
+        // prints next, which the 2026-04-25 eval flagged as ambiguous.
+        info(
+          'Patch-touched files already match the stored patch stack — no engine resync needed before re-applying.'
+        );
       } else if (!forceImport) {
         warn('Uncommitted changes detected in files that patches will modify:');
         for (const file of unmanagedDirtyFiles) {

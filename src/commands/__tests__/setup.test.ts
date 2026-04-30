@@ -233,7 +233,7 @@ describe('setupCommand non-interactive', () => {
     registerSetup(program, {
       getProjectRoot: () => '/project',
       withErrorHandling,
-    } as never);
+    });
 
     await program.parseAsync([
       'node',

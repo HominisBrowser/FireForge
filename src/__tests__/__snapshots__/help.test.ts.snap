@@ -29,7 +29,10 @@ Workflow:
   status [options]                  Show modified files in engine/
   reset [options]                   Reset engine/ to clean state
   discard [options] <file>          Discard changes to a specific file (deletes
-                                    untracked files)
+                                    untracked files). Pass a directory path to
+                                    discard every modified or untracked file
+                                    beneath it; the operation walks the status
+                                    output and reverts each match individually.
   export [options] <paths...>       Export new changes as a patch (use re-export
                                     to update existing patches)
   export-all [options]              Export all changes as a patch
@@ -39,7 +42,8 @@ Workflow:
                                     sourceEsrVersion by default — use --stamp or
                                     run rebase for version stamping.
   patch                             Manage individual patches in the queue
-                                    (compact, delete, reorder)
+                                    (compact, delete, lint-ignore, rename,
+                                    reorder, tier)
   rebase [options]                  Semi-automated ESR version upgrade — apply
                                     patches with fuzz and re-export
   package [options]                 Create distribution package
@@ -62,6 +66,9 @@ Diagnostics:
                                     (every applied patch summed). Use
                                     --per-patch for per-patch scope, or pass
                                     explicit file paths to narrow to those.
+  typecheck [options]               Run TypeScript type checking against
+                                    project-owned jsconfig.json files (CI-grade,
+                                    whole-project)
   verify                            Read-only fsck for the patch queue (manifest
                                     + cross-patch lint)
 
@@ -121,7 +128,7 @@ Options:
   --compose <tags>          Record stock tags composed internally (metadata
                             only, comma-separated)
   --shared-ftl <path>       Participate in an existing feature-scoped .ftl at
-                            this path (e.g. "browser/hominis-dock.ftl"); skips
+                            this path (e.g. "browser/mybrowser-dock.ftl"); skips
                             the per-component .ftl scaffold (implies
                             --localized)
   --dry-run                 Show the planned file set and furnace.json changes

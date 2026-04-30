@@ -239,7 +239,25 @@ export async function exportCommand(
     // Extract affected files from diff
     const filesAffected = extractAffectedFiles(diff);
 
-    await runPatchLint(paths.engine, filesAffected, diff, config, options.skipLint);
+    // Apply the just-set --tier and --lint-ignore on the lint pass so the
+    // operator's intent takes effect on this invocation, not only on the
+    // next one. Without this, a fresh export with `--tier branding` would
+    // still hit general thresholds because the lint runs before the
+    // metadata is committed.
+    const exportIgnoreChecks =
+      options.lintIgnore && options.lintIgnore.length > 0
+        ? new Set<string>(options.lintIgnore)
+        : undefined;
+    await runPatchLint(
+      paths.engine,
+      filesAffected,
+      diff,
+      config,
+      options.skipLint,
+      undefined,
+      exportIgnoreChecks,
+      options.tier
+    );
 
     // Resolve placement (if any flag was given). Placement is mutually
     // exclusive with supersede — the semantics overlap confusingly.
@@ -306,6 +324,10 @@ export async function exportCommand(
         filesAffected,
         sourceEsrVersion: config.firefox.version,
         explicitSupersede: options.supersede === true,
+        ...(options.tier !== undefined ? { tier: options.tier } : {}),
+        ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
+          ? { lintIgnore: options.lintIgnore }
+          : {}),
       });
       outro('Dry run complete — no changes made');
       return;
@@ -325,6 +347,10 @@ export async function exportCommand(
         createdAt: new Date().toISOString(),
         sourceEsrVersion: config.firefox.version,
         filesAffected,
+        ...(options.tier !== undefined ? { tier: options.tier } : {}),
+        ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
+          ? { lintIgnore: options.lintIgnore }
+          : {}),
       };
       const committedPlan = await commitPlacementExport({
         patchesDir: paths.patches,
@@ -404,6 +430,10 @@ export async function exportCommand(
       diff,
       filesAffected,
       sourceEsrVersion: config.firefox.version,
+      ...(options.tier !== undefined ? { tier: options.tier } : {}),
+      ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
+        ? { lintIgnore: options.lintIgnore }
+        : {}),
     });
 
     for (const oldPatch of superseded) {
@@ -454,6 +484,18 @@ export function registerExport(
       '--allow-overlap',
       'Acknowledge cross-patch ownership overlap (default mode only; the resulting queue fails verify)'
     )
+    .addOption(
+      new Option(
+        '--tier <tier>',
+        'Force a tier override on the new patch (only "branding" recognised)'
+      ).choices(['branding'])
+    )
+    .option(
+      '--lint-ignore <check-id>',
+      'Suppress a lint check on this patch (writes to PatchMetadata.lintIgnore; repeatable)',
+      (value: string, prev: string[]) => [...prev, value],
+      [] as string[]
+    )
     .action(
       withErrorHandling(
         async (
@@ -472,12 +514,16 @@ export function registerExport(
             forceUnsafe?: boolean;
             excludeFurnace?: boolean;
             allowOverlap?: boolean;
+            tier?: string;
+            lintIgnore?: string[];
           }
         ) => {
-          const { category, ...rest } = options;
+          const { category, tier, lintIgnore, ...rest } = options;
           await exportCommand(getProjectRoot(), paths, {
             ...pickDefined(rest),
             ...(category !== undefined ? { category: category as PatchCategory } : {}),
+            ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
+            ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
           });
         }
       )

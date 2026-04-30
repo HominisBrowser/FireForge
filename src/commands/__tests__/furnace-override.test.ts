@@ -576,8 +576,15 @@ describe('furnaceOverrideCommand', () => {
       // the name out of the stock bucket in-memory and lets
       // `writeFurnaceConfig` persist the promotion atomically alongside
       // the new override entry.
-      vi.mocked(furnaceConfigExists).mockResolvedValueOnce(true);
-      vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+      // Persisted state returned by every load, including the fresh
+      // read inside `saveOverrideConfig` that the concurrent-race fix
+      // added. Using `mockResolvedValue` (not `mockResolvedValueOnce`)
+      // so both the outer load and the inner lock-side re-read see the
+      // same on-disk state — otherwise the fresh read returned the
+      // empty default from the module-level mock and the stock promotion
+      // silently vanished.
+      vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
         version: 1,
         componentPrefix: 'moz-',
         stock: ['moz-button', 'moz-checkbox'],
@@ -623,6 +630,62 @@ describe('furnaceOverrideCommand', () => {
       ).rejects.toThrow(/already registered as a custom component/);
 
       expect(writeFurnaceConfig).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('concurrent write-safety', () => {
+    it('re-reads furnace.json inside the lock to preserve concurrent overrides', async () => {
+      // Eval 2: two parallel `furnace override` calls exited 0 and both
+      // override directories landed on disk, but furnace.json kept only
+      // one entry. Root cause: the command loaded its config snapshot
+      // BEFORE entering the operation lock and wrote that stale snapshot
+      // back at the end — overwriting the other writer's addition.
+      //
+      // This test simulates the ordering: the first `loadFurnaceConfig`
+      // call (outer pre-lock) sees an empty-overrides snapshot; the
+      // second call (inner post-lock re-read) sees a snapshot that a
+      // concurrent process has already extended with `moz-card`.
+      // The final `writeFurnaceConfig` must preserve `moz-card` AND
+      // add `moz-button` — if it drops to the outer snapshot, the
+      // regression is re-introduced.
+      vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+      vi.mocked(loadFurnaceConfig)
+        .mockResolvedValueOnce({
+          version: 1,
+          componentPrefix: 'moz-',
+          stock: [],
+          overrides: {},
+          custom: {},
+        })
+        .mockResolvedValueOnce({
+          version: 1,
+          componentPrefix: 'moz-',
+          stock: [],
+          overrides: {
+            'moz-card': {
+              type: 'css-only',
+              description: 'Sibling writer',
+              basePath: 'toolkit/content/widgets/moz-card',
+              baseVersion: '145.0',
+            },
+          },
+          custom: {},
+        });
+
+      await furnaceOverrideCommand('/project', 'moz-button', {
+        type: 'full',
+        description: 'Second writer',
+      });
+
+      const writtenConfig = vi.mocked(writeFurnaceConfig).mock.calls.at(-1)?.[1];
+      expect(writtenConfig?.overrides['moz-button']).toMatchObject({
+        type: 'full',
+        description: 'Second writer',
+      });
+      expect(writtenConfig?.overrides['moz-card']).toMatchObject({
+        type: 'css-only',
+        description: 'Sibling writer',
+      });
     });
   });
 });

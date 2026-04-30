@@ -28,6 +28,17 @@ vi.mock('../config.js', () => ({
       firefox: { version: '145.0', product: 'firefox' },
     })
   ),
+  getProjectPaths: vi.fn(() => ({
+    root: '/project',
+    engine: '/project/engine',
+    config: '/project/fireforge.json',
+    fireforgeDir: '/project/.fireforge',
+    state: '/project/.fireforge/state.json',
+    patches: '/project/patches',
+    configs: '/project/configs',
+    src: '/project/src',
+    componentsDir: '/project/components',
+  })),
 }));
 
 vi.mock('../furnace-validate-checks.js', () => ({
@@ -159,9 +170,9 @@ describe('validateComponent', () => {
     const config: FurnaceConfig = {
       ...baseConfig,
       custom: {
-        'hominis-dock-button': {
+        'mybrowser-dock-button': {
           description: 'Dock button wrapping moz-button',
-          targetPath: 'toolkit/content/widgets/hominis-dock-button',
+          targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
           register: true,
           localized: false,
           composes: ['moz-button'],
@@ -170,16 +181,16 @@ describe('validateComponent', () => {
     };
 
     await validateComponent(
-      '/comp/hominis-dock-button',
-      'hominis-dock-button',
+      '/comp/mybrowser-dock-button',
+      'mybrowser-dock-button',
       'custom',
       config,
       '/project'
     );
 
     expect(mockValidateAccessibility).toHaveBeenCalledWith(
-      '/comp/hominis-dock-button',
-      'hominis-dock-button',
+      '/comp/mybrowser-dock-button',
+      'mybrowser-dock-button',
       expect.objectContaining({ composes: ['moz-button'] })
     );
   });

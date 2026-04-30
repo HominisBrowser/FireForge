@@ -52,18 +52,18 @@ describe('generateMjsContent', () => {
     // unchanged — no chrome-subpath prefixing, no tag-name rewriting —
     // otherwise insertFTLIfNeeded() points at a URI nobody registered.
     const mjs = generateMjsContent(
-      'hominis-dock-button',
-      'HominisDockButton',
+      'mybrowser-dock-button',
+      'MyBrowserDockButton',
       'Dock button',
       true,
       LICENSE,
       'toolkit/global',
-      'browser/hominis-dock.ftl'
+      'browser/mybrowser-dock.ftl'
     );
-    expect(mjs).toContain('insertFTLIfNeeded("browser/hominis-dock.ftl")');
+    expect(mjs).toContain('insertFTLIfNeeded("browser/mybrowser-dock.ftl")');
     // And must NOT emit the per-component path even though
     // ftlChromeSubPath is set — sharedFtl wins the precedence.
-    expect(mjs).not.toContain('insertFTLIfNeeded("toolkit/global/hominis-dock-button.ftl")');
+    expect(mjs).not.toContain('insertFTLIfNeeded("toolkit/global/mybrowser-dock-button.ftl")');
   });
 
   it('still emits the l10n.connectRoot lifecycle hooks when sharedFtl is used', () => {
@@ -71,13 +71,13 @@ describe('generateMjsContent', () => {
     // per-component bundle would; disabling the lifecycle hooks would
     // break l10n on the shadow root.
     const mjs = generateMjsContent(
-      'hominis-dock-button',
-      'HominisDockButton',
+      'mybrowser-dock-button',
+      'MyBrowserDockButton',
       'Dock button',
       true,
       LICENSE,
       'toolkit/global',
-      'browser/hominis-dock.ftl'
+      'browser/mybrowser-dock.ftl'
     );
     expect(mjs).toContain('l10n?.connectRoot(this.shadowRoot)');
     expect(mjs).toContain('l10n?.disconnectRoot(this.shadowRoot)');

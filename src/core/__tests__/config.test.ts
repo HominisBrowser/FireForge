@@ -200,6 +200,89 @@ describe('validateConfig', () => {
     );
   });
 
+  it('accepts patchLint.checkJsExtraShim and rejects malformed shim paths', () => {
+    expect(
+      validateConfig(
+        makeValidConfig({
+          patchLint: { checkJs: true, checkJsExtraShim: 'tools/types/extras.d.ts' },
+        })
+      ).patchLint?.checkJsExtraShim
+    ).toBe('tools/types/extras.d.ts');
+
+    expect(() => validateConfig(makeValidConfig({ patchLint: { checkJsExtraShim: '' } }))).toThrow(
+      'Config field "patchLint.checkJsExtraShim" must be a non-empty string'
+    );
+
+    expect(() =>
+      validateConfig(makeValidConfig({ patchLint: { checkJsExtraShim: 42 as never } }))
+    ).toThrow('Config field "patchLint.checkJsExtraShim" must be a non-empty string');
+
+    expect(() =>
+      validateConfig(makeValidConfig({ patchLint: { checkJsExtraShim: '../escape.d.ts' } }))
+    ).toThrow('Config field "patchLint.checkJsExtraShim" must be a project-relative path');
+
+    expect(() =>
+      validateConfig(makeValidConfig({ patchLint: { checkJsExtraShim: '/abs/extras.d.ts' } }))
+    ).toThrow('Config field "patchLint.checkJsExtraShim" must be a project-relative path');
+  });
+
+  it('accepts a well-formed typecheck block and surfaces field-level errors otherwise', () => {
+    const config = validateConfig({
+      ...makeValidConfig(),
+      typecheck: {
+        projects: ['components/custom/jsconfig.json', 'engine/browser/base/jsconfig.json'],
+        extraShim: 'tools/types/mybrowser-globals.d.ts',
+      },
+    });
+    expect(config.typecheck).toEqual({
+      projects: ['components/custom/jsconfig.json', 'engine/browser/base/jsconfig.json'],
+      extraShim: 'tools/types/mybrowser-globals.d.ts',
+    });
+
+    expect(() => validateConfig({ ...makeValidConfig(), typecheck: 'bad' })).toThrow(
+      'Config field "typecheck" must be an object'
+    );
+
+    expect(() => validateConfig({ ...makeValidConfig(), typecheck: {} })).toThrow(
+      'Config field "typecheck.projects" is required when "typecheck" is set'
+    );
+
+    expect(() => validateConfig({ ...makeValidConfig(), typecheck: { projects: 'bad' } })).toThrow(
+      'Config field "typecheck.projects" must be an array of strings'
+    );
+
+    expect(() => validateConfig({ ...makeValidConfig(), typecheck: { projects: [] } })).toThrow(
+      'Config field "typecheck.projects" must not be empty'
+    );
+
+    expect(() =>
+      validateConfig({ ...makeValidConfig(), typecheck: { projects: ['', 'b'] } })
+    ).toThrow('Config field "typecheck.projects[0]" must be a non-empty string');
+
+    expect(() =>
+      validateConfig({ ...makeValidConfig(), typecheck: { projects: ['ok', 42] } })
+    ).toThrow('Config field "typecheck.projects[1]" must be a non-empty string');
+
+    expect(() =>
+      validateConfig({ ...makeValidConfig(), typecheck: { projects: ['../escape/jsconfig.json'] } })
+    ).toThrow('Config field "typecheck.projects[0]" must be a project-relative path');
+
+    expect(() =>
+      validateConfig({ ...makeValidConfig(), typecheck: { projects: ['/abs/jsconfig.json'] } })
+    ).toThrow('Config field "typecheck.projects[0]" must be a project-relative path');
+
+    expect(() =>
+      validateConfig({
+        ...makeValidConfig(),
+        typecheck: { projects: ['ok/jsconfig.json'], extraShim: '../escape.d.ts' },
+      })
+    ).toThrow('Config field "typecheck.extraShim" must be a project-relative path');
+  });
+
+  it('returns config.typecheck === undefined when the block is absent (default-off)', () => {
+    expect(validateConfig(makeValidConfig()).typecheck).toBeUndefined();
+  });
+
   it('accepts a well-formed markerComment and rejects malformed values', () => {
     expect(validateConfig({ ...makeValidConfig(), markerComment: 'MYBROWSER' }).markerComment).toBe(
       'MYBROWSER'

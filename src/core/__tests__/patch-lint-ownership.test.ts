@@ -2,7 +2,10 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PatchQueueContext } from '../patch-lint-cross.js';
-import { resolvePatchOwnedSysMjs } from '../patch-lint-ownership.js';
+import {
+  resolvePatchOwnedChromeScripts,
+  resolvePatchOwnedSysMjs,
+} from '../patch-lint-ownership.js';
 
 describe('resolvePatchOwnedSysMjs', () => {
   it('returns current-diff new .sys.mjs files when no context is provided', () => {
@@ -93,6 +96,78 @@ describe('resolvePatchOwnedSysMjs', () => {
     };
 
     const result = resolvePatchOwnedSysMjs(newFiles, ctx);
+    expect(result.size).toBe(0);
+  });
+});
+
+describe('resolvePatchOwnedChromeScripts', () => {
+  it('returns current-diff new .js (non-.sys.mjs) files when no context is provided', () => {
+    const newFiles = new Set([
+      'browser/base/content/mybrowserDock.js',
+      'browser/modules/Foo.sys.mjs',
+      'browser/style.css',
+    ]);
+    const result = resolvePatchOwnedChromeScripts(newFiles);
+
+    expect(result).toEqual(new Set(['browser/base/content/mybrowserDock.js']));
+  });
+
+  it('excludes .sys.mjs files', () => {
+    const newFiles = new Set(['browser/modules/Foo.sys.mjs']);
+    const result = resolvePatchOwnedChromeScripts(newFiles);
+
+    expect(result.size).toBe(0);
+  });
+
+  it('includes patch-queue-created chrome scripts when context is provided', () => {
+    const newFiles = new Set<string>();
+    const ctx: PatchQueueContext = {
+      entries: [
+        {
+          filename: '0030-ui-mybrowser-chrome-shell.patch',
+          order: 30,
+          metadata: null,
+          diff:
+            'diff --git a/browser/base/content/mybrowserChromeShell.js b/browser/base/content/mybrowserChromeShell.js\n' +
+            'new file mode 100644\n' +
+            '--- /dev/null\n' +
+            '+++ b/browser/base/content/mybrowserChromeShell.js\n' +
+            '@@ -0,0 +1 @@\n' +
+            '+class MyBrowserChromeShell {}\n',
+          newFiles: new Map([
+            ['browser/base/content/mybrowserChromeShell.js', 'class MyBrowserChromeShell {}'],
+          ]),
+          modifiedFileAdditions: new Map(),
+        },
+      ],
+    };
+
+    const result = resolvePatchOwnedChromeScripts(newFiles, ctx);
+    expect(result.has('browser/base/content/mybrowserChromeShell.js')).toBe(true);
+  });
+
+  it('does not include .sys.mjs files from the queue', () => {
+    const newFiles = new Set<string>();
+    const ctx: PatchQueueContext = {
+      entries: [
+        {
+          filename: '001-module.patch',
+          order: 1,
+          metadata: null,
+          diff:
+            'diff --git a/browser/modules/Mod.sys.mjs b/browser/modules/Mod.sys.mjs\n' +
+            'new file mode 100644\n' +
+            '--- /dev/null\n' +
+            '+++ b/browser/modules/Mod.sys.mjs\n' +
+            '@@ -0,0 +1 @@\n' +
+            '+export const X = 1;\n',
+          newFiles: new Map([['browser/modules/Mod.sys.mjs', 'export const X = 1;']]),
+          modifiedFileAdditions: new Map(),
+        },
+      ],
+    };
+
+    const result = resolvePatchOwnedChromeScripts(newFiles, ctx);
     expect(result.size).toBe(0);
   });
 });

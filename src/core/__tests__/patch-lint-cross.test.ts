@@ -133,6 +133,26 @@ describe('lintPatchQueueForwardImports', () => {
     expect(issue?.severity).toBe('error');
   });
 
+  it('appends the closest legal ordinal to the refusal message', () => {
+    const importerContent = `import { B } from "resource:///modules/B.sys.mjs";`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, { 'foo/A.sys.mjs': importerContent }),
+        makeEntry('005-infra-b.patch', 5, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;\n',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues).toHaveLength(1);
+    // The dependency lives at order 5, so the closest legal placement
+    // for the importer is order 6 — operator turns "two attempts at
+    // --order N" into one shot.
+    expect(issues[0]?.message).toContain(
+      'Closest legal ordinal that satisfies this dependency: 6.'
+    );
+  });
+
   it('does not flag an import pointing to a file created by the same patch', () => {
     const importerContent = `import { B } from "resource:///modules/B.sys.mjs";`;
     const ctx: PatchQueueContext = {

@@ -41,9 +41,15 @@ export async function getNextPatchNumber(patchesDir: string): Promise<string> {
 }
 
 /**
- * Sanitizes a string for use in a filename.
+ * Sanitizes a human-readable name into a filename slug.
+ *
+ * Exported so `patch rename` can produce a filename slug from its
+ * `--to <new-name>` argument using the exact same convention `export`
+ * uses, without duplicating the lowercase + non-alnum collapse + length
+ * cap rules. Drift between the two would let an operator rename a patch
+ * to a slug `export` could never reach.
  */
-function sanitizeName(name: string): string {
+export function sanitizeName(name: string): string {
   return name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -77,6 +83,10 @@ export interface CommitExportedPatchInput {
   diff: string;
   filesAffected: string[];
   sourceEsrVersion: string;
+  /** Optional `PatchMetadata.tier` opt-in (only `"branding"` recognised). */
+  tier?: 'branding';
+  /** Optional `PatchMetadata.lintIgnore` (empty array treated as absent). */
+  lintIgnore?: string[];
 }
 
 export interface CommitExportedPatchResult {
@@ -104,6 +114,8 @@ export async function commitExportedPatch(
       description: input.description,
       filesAffected: input.filesAffected,
       sourceEsrVersion: input.sourceEsrVersion,
+      ...(input.tier !== undefined ? { tier: input.tier } : {}),
+      ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
     });
 
     const patchPath = plan.patchPath;
@@ -323,15 +335,67 @@ export async function updatePatchAndMetadata(
 }
 
 /**
+ * Optional `PatchMetadata` keys safe to clear via the helpers below.
+ * Required keys (filename, order, etc.) are excluded by construction so
+ * an over-eager `unsetFields: ['filename']` cannot delete a field the
+ * manifest validator requires. Add new keys here only when they become
+ * optional on the type.
+ */
+export type ClearablePatchMetadataField = 'tier' | 'lintIgnore';
+
+/**
+ * Merges `updates` onto `existing` and removes the listed `unset`
+ * fields. The unset path is an explicit switch over the
+ * {@link ClearablePatchMetadataField} union rather than a dynamic
+ * `delete obj[k]` so the typecheck-time guarantee that only optional
+ * fields can be cleared survives the runtime erasure — and so the lint
+ * rule against dynamic deletes does not have to be silenced. Adding a
+ * new clearable field requires extending both the union and this
+ * switch in lockstep, which is exactly the constraint we want.
+ */
+function applyMetadataUpdate(
+  existing: PatchMetadata,
+  updates: Partial<PatchMetadata>,
+  unset: ReadonlyArray<ClearablePatchMetadataField>
+): PatchMetadata {
+  const next: PatchMetadata = { ...existing, ...updates };
+  for (const field of unset) {
+    switch (field) {
+      case 'tier':
+        delete next.tier;
+        break;
+      case 'lintIgnore':
+        delete next.lintIgnore;
+        break;
+    }
+  }
+  return next;
+}
+
+/**
  * Updates metadata for a patch in the manifest.
+ *
+ * Required-field updates go through the `updates` partial. Clearing an
+ * optional field (e.g. removing the `tier` override) goes through
+ * `unsetFields` because TypeScript's `exactOptionalPropertyTypes` does
+ * not let `Partial<PatchMetadata>` carry an explicit `undefined` value
+ * for fields whose declared type does not include `undefined`. The
+ * implementation deletes the listed keys from the merged record before
+ * writing, so the on-disk JSON omits them and the validator's
+ * "preserve only when present" contract is preserved.
+ *
  * @param patchesDir - Path to the patches directory
  * @param filename - Patch filename
- * @param updates - Partial metadata updates
+ * @param updates - Field values to set. Pass an empty object when only
+ *   clearing fields.
+ * @param unsetFields - Optional fields to remove from the entry (so
+ *   serialization drops them).
  */
 export async function updatePatchMetadata(
   patchesDir: string,
   filename: string,
-  updates: Partial<PatchMetadata>
+  updates: Partial<PatchMetadata>,
+  unsetFields: ReadonlyArray<ClearablePatchMetadataField> = []
 ): Promise<void> {
   await withPatchDirectoryLock(patchesDir, async () => {
     const manifest = await loadPatchesManifest(patchesDir);
@@ -342,9 +406,70 @@ export async function updatePatchMetadata(
 
     const existingPatch = manifest.patches[patchIndex];
     if (existingPatch) {
-      manifest.patches[patchIndex] = { ...existingPatch, ...updates };
+      manifest.patches[patchIndex] = applyMetadataUpdate(existingPatch, updates, unsetFields);
       await savePatchesManifest(patchesDir, manifest);
     }
+  });
+}
+
+/**
+ * Return shape from a {@link mutatePatchMetadata} mutator.
+ */
+export interface PatchMetadataMutation {
+  /** Field values to set on the entry. */
+  set?: Partial<PatchMetadata>;
+  /** Optional fields to remove from the entry entirely. */
+  unset?: ReadonlyArray<ClearablePatchMetadataField>;
+}
+
+/**
+ * Result of a successful {@link mutatePatchMetadata} call.
+ */
+export interface PatchMetadataMutationResult {
+  /** Pre-mutation snapshot of the patch's metadata. */
+  before: PatchMetadata;
+  /** Post-mutation state of the patch's metadata. */
+  after: PatchMetadata;
+}
+
+/**
+ * Reads a patch's metadata under the directory lock, applies a mutator
+ * function to compute the update, and writes the result back — all
+ * under a single lock so a concurrent writer cannot interleave a
+ * read-modify-write cycle. Useful for operations that need to compute
+ * the new value from the old (e.g. unioning a `lintIgnore` list,
+ * removing a specific entry), which {@link updatePatchMetadata}'s flat
+ * merge cannot express on its own.
+ *
+ * The mutator returns `{ set, unset }` so it can both write fields
+ * and drop optional ones. `set` and `unset` are merged before write:
+ * `set` runs first via spread, then `unset` deletes the listed keys.
+ *
+ * @returns The pre/post metadata pair when the patch is found and the
+ *   write succeeds; `null` when the manifest is missing or the named
+ *   patch is not in it. Callers should treat `null` as "no-op, nothing
+ *   to log".
+ */
+export async function mutatePatchMetadata(
+  patchesDir: string,
+  filename: string,
+  mutator: (existing: PatchMetadata) => PatchMetadataMutation
+): Promise<PatchMetadataMutationResult | null> {
+  return await withPatchDirectoryLock(patchesDir, async () => {
+    const manifest = await loadPatchesManifest(patchesDir);
+    if (!manifest) return null;
+
+    const patchIndex = manifest.patches.findIndex((p) => p.filename === filename);
+    if (patchIndex === -1) return null;
+
+    const existingPatch = manifest.patches[patchIndex];
+    if (!existingPatch) return null;
+
+    const { set = {}, unset = [] } = mutator(existingPatch);
+    const updatedPatch = applyMetadataUpdate(existingPatch, set, unset);
+    manifest.patches[patchIndex] = updatedPatch;
+    await savePatchesManifest(patchesDir, manifest);
+    return { before: existingPatch, after: updatedPatch };
   });
 }
 
@@ -575,6 +700,19 @@ export interface PlanExportInput {
   description: string;
   filesAffected: string[];
   sourceEsrVersion: string;
+  /**
+   * Optional `PatchMetadata.tier` opt-in carried from the CLI flag.
+   * Only `"branding"` is currently recognised. When provided the field
+   * is written into the new patch's metadata; when absent the field
+   * stays unset and tier resolution falls back to auto-detection.
+   */
+  tier?: 'branding';
+  /**
+   * Optional `PatchMetadata.lintIgnore` carried from the CLI flag.
+   * Empty arrays are treated as "field absent" — the validator only
+   * preserves the field when it has at least one entry.
+   */
+  lintIgnore?: string[];
 }
 
 /**
@@ -615,6 +753,10 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
     createdAt: new Date().toISOString(),
     sourceEsrVersion: input.sourceEsrVersion,
     filesAffected: input.filesAffected,
+    ...(input.tier !== undefined ? { tier: input.tier } : {}),
+    ...(input.lintIgnore !== undefined && input.lintIgnore.length > 0
+      ? { lintIgnore: input.lintIgnore }
+      : {}),
   };
 
   const supersedeMatches = await findAllPatchesForFilesWithDetails(

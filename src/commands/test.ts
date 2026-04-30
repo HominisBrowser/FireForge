@@ -9,10 +9,19 @@ import {
   buildArtifactMismatchMessage,
   buildUI,
   hasBuildArtifacts,
+  hasRunnableBundle,
   testWithOutput,
 } from '../core/mach.js';
-import { assertMarionettePortAvailable } from '../core/marionette-port.js';
-import { reportMarionettePreflight, runMarionettePreflight } from '../core/marionette-preflight.js';
+import {
+  assertMarionettePortAvailable,
+  extractForwardedMarionettePort,
+  isMarionetteFlavor,
+} from '../core/marionette-port.js';
+import {
+  formatMarionettePreflightLine,
+  reportMarionettePreflight,
+  runMarionettePreflight,
+} from '../core/marionette-preflight.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import {
   operatorAlreadySetAppPath,
@@ -24,7 +33,7 @@ import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, outro, spinner, warn } from '../utils/logger.js';
+import { info, intro, outro, spinner, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 
@@ -77,6 +86,39 @@ function hasStaleBuildArtifactsSignal(output: string): boolean {
   );
 }
 
+/**
+ * Fork-module-not-registered signal. 2026-04-21 eval Finding #14:
+ * a hominis test failed with `Failed to load resource:///modules/hominis/
+ * HominisStore.sys.mjs`. The branding pattern happened to also match
+ * because the test harness printed a branding warning during its
+ * teardown, and the stale-build branch won by precedence — telling the
+ * operator to rebuild when the real fix is to register the module in
+ * the fork's `browser/modules/<binary>/moz.build`. Match a
+ * `resource:///modules/<binaryName>/` pattern so fork-owned module
+ * failures surface the right diagnosis.
+ */
+function hasForkModuleSignal(output: string, binaryName: string): boolean {
+  const pattern = new RegExp(
+    `Failed to load resource:\\/\\/\\/modules\\/${binaryName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\/`,
+    'i'
+  );
+  return pattern.test(output);
+}
+
+function buildForkModuleMessage(binaryName: string): string {
+  return (
+    `Test failed to load a fork-owned module at resource:///modules/${binaryName}/*.sys.mjs.\n\n` +
+    'This is almost always a module-registration issue, not a stale build. The fork module directory is missing an entry that maps its file into the resource URI tree, so `ChromeUtils.importESModule` cannot resolve it.\n\n' +
+    'Check that:\n' +
+    `  - browser/modules/${binaryName}/moz.build lists the missing module in EXTRA_JS_MODULES.\n` +
+    `  - browser/modules/moz.build references the ${binaryName}/ subdirectory (DIRS += [...]).\n` +
+    '  - The last `fireforge build` (or `fireforge build --ui`) completed successfully against the current manifests. If the registration is new, the UI-faster build path may not pick it up — a full build may be required.\n\n' +
+    'Use `fireforge register browser/modules/' +
+    binaryName +
+    '/<file>.sys.mjs` to add the EXTRA_JS_MODULES entry if it is missing.'
+  );
+}
+
 // Detects the broader xpcshell symptom where every `resource:///modules/...`
 // import fails — the signature of xpcshell running with the wrong app-dir on
 // a manifest that sets `firefox-appdir = "browser"`. Checked AFTER the
@@ -87,18 +129,23 @@ function hasXpcshellAppdirSignal(output: string): boolean {
 }
 
 function buildXpcshellAppdirMessage(injectionAttempted: boolean): string {
+  const isMacos = process.platform === 'darwin';
+  const macosNote = isMacos
+    ? 'Detected: macOS host. On macOS the xpcshell harness binds `-a` to `<obj>/dist/<App>.app/Contents/Resources` by default and frequently ignores `--app-path` overrides when the `.app` bundle is present — the surest fix is the `<appname>-appdir` migration below rather than trying to force a different path.\n\n'
+    : '';
   const triggerLines = injectionAttempted
-    ? 'FireForge auto-injected `--app-path=<absolute>` against the resolved obj-dir before mach test ran, but the failure persists. The injected path either does not match the appdir layout your harness expects, or the harness was built against a layout FireForge cannot probe (omni.ja-packed tree, alternate `dist/` shape).\n\n'
+    ? 'FireForge auto-injected `--app-path=<absolute>` against the resolved obj-dir before mach test ran, but the failure persists. The injected path either does not match the appdir layout your harness expects, or (on macOS) the harness bound `-a` to the `.app/Contents/Resources` default and ignored the override.\n\n'
     : 'Likely triggers:\n' +
       '  - The nearest xpcshell.toml sets `firefox-appdir = "browser"` but the harness reads `<appname>-appdir` instead — the literal `firefox-appdir` directive is silently ignored on rebranded forks (appname != "firefox").\n' +
       '  - FireForge could not find an xpcshell.toml above the test path, so the auto-injection never ran.\n\n';
   return (
     'xpcshell failed to load core resource:///modules/*.sys.mjs imports.\n\n' +
     'This is the canonical symptom of xpcshell running with the wrong app directory: the runtime resolves `resource:///modules/` against the parent of the expected app root, so every `ChromeUtils.importESModule("resource:///modules/…")` throws.\n\n' +
+    macosNote +
     triggerLines +
     'Options:\n' +
-    '  - Add `<appname>-appdir = "browser"` alongside `firefox-appdir = "browser"` in the xpcshell.toml [DEFAULT] so the harness reads the appname-keyed value directly.\n' +
-    '  - Pass overrides through `fireforge test <path> --mach-arg="--app-path=<absolute>"` to inject the path verbatim (operator overrides always win over auto-injection).\n' +
+    '  - Add `<appname>-appdir = "browser"` alongside `firefox-appdir = "browser"` in the xpcshell.toml [DEFAULT] so the harness reads the appname-keyed value directly. This is the most reliable fix on rebranded macOS builds.\n' +
+    '  - Pass overrides through `fireforge test <path> --mach-arg="--app-path=<absolute>"` to inject the path verbatim (operator overrides always win over auto-injection, but see the macOS caveat above).\n' +
     '  - Remove `firefox-appdir = "browser"` from the xpcshell.toml [DEFAULT] and move browser-chrome dependencies into a browser-chrome mochitest (see `fireforge furnace create --test-style=browser-chrome`).\n' +
     '  - If the test only touches toolkit chrome (chrome://global/*), drop the `firefox-appdir` setting entirely — toolkit chrome is registered without it.'
   );
@@ -128,12 +175,22 @@ function buildMochitestHttp3ServerMessage(): string {
 function handleNonZeroTestExit(
   result: { stdout: string; stderr: string; exitCode: number },
   normalizedPaths: string[],
-  appdirInjectionAttempted: boolean
+  appdirInjectionAttempted: boolean,
+  binaryName: string
 ): void {
   if (result.exitCode === 0 || result.exitCode === 130) return;
   const combinedOutput = `${result.stdout}\n${result.stderr}`;
   if (/UNKNOWN TEST\b/i.test(combinedOutput)) {
     throw new GeneralError(buildUnknownTestMessage(normalizedPaths));
+  }
+  // Fork-owned module load failures must beat the branding stale-build
+  // branch: 2026-04-21 eval (Finding #14) saw a hominis test fail with
+  // `Failed to load resource:///modules/hominis/HominisStore.sys.mjs`
+  // while the harness teardown printed a branding warning that the old
+  // stale-build pattern matched, so the operator was told to rebuild
+  // when the real fix is to register the missing module.
+  if (hasForkModuleSignal(combinedOutput, binaryName)) {
+    throw new GeneralError(buildForkModuleMessage(binaryName));
   }
   // Branding-specific stale-build signals keep priority over the broader
   // xpcshell-appdir hint: when `chrome://branding/locale/brand.properties`
@@ -211,12 +268,38 @@ export async function testCommand(
   // recognise a fork-branded browser holding the Marionette port).
   const projectConfig = await loadConfig(projectRoot);
 
+  // `hasBuildArtifacts` only confirms `obj-*/dist/` exists; a partial
+  // build (linker failed, packaging step interrupted, etc.) can satisfy
+  // that check without ever writing the launchable binary the marionette
+  // preflight needs to spawn. `fireforge run` already uses
+  // `hasRunnableBundle` to fail fast with a precise message; mirror that
+  // here so `test --doctor` against an incomplete build surfaces the
+  // missing-bundle path instead of a cryptic `Browser process exited
+  // during spawn (exit code 1, signal none). stderr tail: (empty)`.
+  if (buildCheck.objDir) {
+    const bundleCheck = await hasRunnableBundle(
+      paths.engine,
+      projectConfig.binaryName,
+      buildCheck.objDir
+    );
+    if (!bundleCheck.runnable) {
+      const expectedSuffix = bundleCheck.expectedPath
+        ? ` (expected at engine/${bundleCheck.expectedPath})`
+        : '';
+      throw new GeneralError(
+        `Tests require a complete launchable build${expectedSuffix}. ` +
+          'The obj-*/dist/ tree exists but the launchable binary is missing — typically the result of an interrupted or partially failed `fireforge build`.\n\n' +
+          'Run "fireforge build" again and let it finish before retrying "fireforge test".'
+      );
+    }
+  }
+
   // Run incremental build if requested
   if (options.build) {
     await prepareBuildEnvironment(projectRoot, paths, projectConfig);
     const s = spinner('Running incremental build...');
-    const buildExitCode = await buildUI(paths.engine);
-    if (buildExitCode !== 0) {
+    const buildResult = await buildUI(paths.engine);
+    if (buildResult.exitCode !== 0) {
       s.error('Pre-test build failed');
       throw new BuildError('Pre-test build failed', 'mach build faster');
     }
@@ -237,6 +320,21 @@ export async function testCommand(
     }
   }
 
+  // Resolve the effective Marionette port. Operator precedence:
+  //   1. `--marionette-port` (first-class option, parsed at the CLI layer)
+  //   2. forwarded `--mach-arg --marionette-port=NNNN` /
+  //      `--mach-arg --setpref=marionette.port=NNNN`
+  //   3. fall back to `DEFAULT_MARIONETTE_PORT` semantics inside the probes
+  //      (passed as `undefined`).
+  // Without (2), an operator working around a stale listener via the
+  // documented `--mach-arg --marionette-port=NNNN` workaround would still
+  // hit the wrapper preflight refusing on 2828 before the forwarded arg
+  // ever reached mach.
+  const forwardedPort = options.machArg
+    ? extractForwardedMarionettePort(options.machArg)
+    : undefined;
+  const effectivePort = options.marionettePort ?? forwardedPort;
+
   // Stale-browser probe: an interrupted earlier test run can leave a
   // Firefox/ForgeFresh/Hominis instance listening on the Marionette
   // control port, which breaks the next mach test launch with a
@@ -245,27 +343,42 @@ export async function testCommand(
   // generic bind failure. 2026-04-21 eval (Finding #20): a stale
   // `-marionette` process from `fresh/` poisoned a later test run in
   // the sibling `hominis/` workspace.
-  await assertMarionettePortAvailable(undefined, { binaryName: projectConfig.binaryName });
+  await assertMarionettePortAvailable(effectivePort, { binaryName: projectConfig.binaryName });
 
   // `--doctor` runs a short marionette handshake probe. When test paths are
   // supplied the probe gates the mach test invocation (a FAIL bails out). When
   // no paths are supplied this is the only step — it's the fastest way to tell
   // marionette-wedged apart from test-discovery-failure.
   if (options.doctor) {
+    // Write the "Running marionette preflight..." banner via
+    // `process.stdout.write` directly before `info()` so non-TTY captures
+    // always see the banner even if clack's renderer defers output in
+    // pipe mode. `info()` is still called so TTY users keep the normal
+    // clack box-drawing framing.
+    process.stdout.write('Running marionette preflight...\n');
     info('Running marionette preflight...');
-    const preflight = await runMarionettePreflight(paths.engine);
+    const preflight =
+      effectivePort !== undefined
+        ? await runMarionettePreflight(paths.engine, { port: effectivePort })
+        : await runMarionettePreflight(paths.engine);
+    // 2026-04-24 eval Finding 7: the pre-0.18.1 code used
+    // `success()` + `outro()` + a direct `process.stdout.write` as a
+    // belt-and-suspenders but still reproducibly dropped the PASS summary
+    // under non-TTY capture (observed: `tee`-wrapped eval output saw only
+    // the intro). The fix writes the authoritative PASS/FAIL line via
+    // `process.stdout.write` as the very first output after the probe
+    // returns, so the captured stream has an unambiguous summary no
+    // matter what clack does on top. The clack-rendered banner
+    // (`info`/`warn`) is retained so TTY users keep the visual framing.
+    const directLine = formatMarionettePreflightLine(preflight);
+    process.stdout.write(`${directLine}\n`);
     reportMarionettePreflight(preflight);
     if (testPaths.length === 0) {
       if (!preflight.ok) {
         throw new GeneralError('Marionette preflight reported FAIL — see output above.');
       }
-      // Close the intro frame explicitly. Without an outro, clack's
-      // grouped-output mode left the PASS line hanging inside an
-      // unclosed tree — in the eval's non-TTY capture the info line
-      // itself failed to render, so `test --doctor` looked like it had
-      // exited silently after the spinner start line. The outro also
-      // gives scripts a deterministic "done" marker to parse.
-      outro(`Marionette preflight: PASS (${preflight.durationMs}ms)`);
+      success(directLine);
+      outro('Test completed');
       return;
     }
     if (!preflight.ok) {
@@ -296,6 +409,33 @@ export async function testCommand(
   // keeps the override precedence predictable.
   if (options.machArg && options.machArg.length > 0) {
     extraArgs.push(...options.machArg);
+  }
+
+  // Auto-forward the Marionette port to mach when `--marionette-port` is
+  // set. We use `--setpref=marionette.port=<n>` because the marionette
+  // listener reads that pref before binding (browser-chrome / mochitest
+  // path); xpcshell never reads it, so the pref is a no-op there.
+  //
+  // Skip forwarding when the operator already supplied an equivalent arg
+  // via `--mach-arg` — duplicates would be confusing without changing
+  // semantics. Skip with a notice for clearly-non-marionette flavours
+  // (xpcshell, or paths that don't look browser-chrome/mochitest) so the
+  // operator knows the preflight took the override but mach was not
+  // auto-configured. Same escape valve applies: any mach arg can still
+  // be supplied via `--mach-arg`.
+  if (options.marionettePort !== undefined) {
+    const operatorAlreadyForwarded = forwardedPort !== undefined;
+    if (operatorAlreadyForwarded) {
+      info(
+        `--marionette-port=${options.marionettePort} set, but the same port is already forwarded via --mach-arg; skipping auto-forward.`
+      );
+    } else if (isMarionetteFlavor(normalizedPaths, options.machArg ?? [])) {
+      extraArgs.push(`--setpref=marionette.port=${options.marionettePort}`);
+    } else {
+      info(
+        `--marionette-port=${options.marionettePort} applied to the preflight probe, but the test paths do not look browser-chrome/mochitest — mach is not auto-configured. Pass --mach-arg --setpref=marionette.port=${options.marionettePort} explicitly if mach should also use this port.`
+      );
+    }
   }
 
   // xpcshell appdir auto-injection — see src/core/xpcshell-appdir.ts for the
@@ -333,7 +473,7 @@ export async function testCommand(
     );
   }
 
-  handleNonZeroTestExit(result, normalizedPaths, appdirInjection);
+  handleNonZeroTestExit(result, normalizedPaths, appdirInjection, projectConfig.binaryName);
 }
 
 /**
@@ -400,6 +540,17 @@ export function registerTest(
       },
       [] as string[]
     )
+    .option(
+      '--marionette-port <port>',
+      'Override the Marionette control port (default 2828) for the stale-browser probe, the --doctor preflight, and the auto-forwarded --setpref=marionette.port=<n> arg passed to mach. Use this when a stale process holds 2828 or a CI runner reserves a different port.',
+      (raw: string) => {
+        const n = Number.parseInt(raw, 10);
+        if (!Number.isFinite(n) || n < 1 || n > 65535) {
+          throw new GeneralError(`--marionette-port must be an integer in 1..65535 (got "${raw}")`);
+        }
+        return n;
+      }
+    )
     .action(
       withErrorHandling(
         async (
@@ -409,6 +560,7 @@ export function registerTest(
             build?: boolean;
             doctor?: boolean;
             machArg?: string[];
+            marionettePort?: number;
           }
         ) => {
           await testCommand(getProjectRoot(), paths, pickDefined(options));

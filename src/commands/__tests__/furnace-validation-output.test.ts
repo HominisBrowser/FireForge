@@ -124,7 +124,7 @@ describe('runDeployValidation', () => {
       message: vi.fn(),
       stop: vi.fn(),
       error: vi.fn(),
-    } as unknown as SpinnerHandle;
+    };
   }
 
   it('skips validation for failed components', async () => {

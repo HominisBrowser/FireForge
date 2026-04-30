@@ -79,6 +79,7 @@ vi.mock('../furnace-apply-helpers.js', () => ({
 
 import { FurnaceError } from '../../errors/furnace.js';
 import { pathExists } from '../../utils/fs.js';
+import { loadConfig } from '../config.js';
 import { applyAllComponents } from '../furnace-apply.js';
 import {
   applyCustomComponent,
@@ -650,5 +651,95 @@ describe('applyAllComponents', () => {
 
     expect(result.errors).toHaveLength(0);
     expect(applyCustomComponent).toHaveBeenCalled();
+  });
+
+  describe('markerComment defaulting (Finding 6)', () => {
+    it('defaults markerComment to binaryName.toUpperCase() when fireforge.json omits it', async () => {
+      // Pre-fix: when an operator's `fireforge.json` did not set
+      // `markerComment`, the furnace apply phase passed `undefined`
+      // through to `addCustomElementRegistration`, so the inserted
+      // lines in `customElements.js` carried no `// FRESHFORGE:`
+      // marker. The patch-lint rule `lintModificationComments` keys on
+      // `${binaryName.toUpperCase()}:` and therefore flagged every
+      // furnace-emitted edit as missing the marker on the next
+      // `lint`/`export` round-trip.
+      vi.mocked(loadConfig).mockResolvedValueOnce({
+        binaryName: 'freshforge',
+      } as unknown as Awaited<ReturnType<typeof loadConfig>>);
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'ff-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'ff-panel': {
+            description: 'Panel',
+            targetPath: 'browser/components/panel',
+            register: true,
+            localized: false,
+          },
+        },
+      });
+      vi.mocked(hasComponentChanged).mockResolvedValue(true);
+      vi.mocked(applyCustomComponent).mockResolvedValue({
+        affectedPaths: ['browser/components/panel/ff-panel.mjs'],
+        stepErrors: [],
+      });
+
+      await applyAllComponents('/project');
+
+      expect(applyCustomComponent).toHaveBeenCalledWith(
+        expect.anything(),
+        'ff-panel',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        { markerComment: 'FRESHFORGE' }
+      );
+    });
+
+    it('honours an explicit markerComment from fireforge.json over the binaryName default', async () => {
+      // An operator who has set `markerComment: "FRESHFORGE-CUSTOM"`
+      // (or any other string) explicitly must keep that value — the
+      // binaryName fallback is a default, not an override.
+      vi.mocked(loadConfig).mockResolvedValueOnce({
+        binaryName: 'freshforge',
+        markerComment: 'FRESHFORGE-CUSTOM',
+      } as unknown as Awaited<ReturnType<typeof loadConfig>>);
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'ff-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'ff-panel': {
+            description: 'Panel',
+            targetPath: 'browser/components/panel',
+            register: true,
+            localized: false,
+          },
+        },
+      });
+      vi.mocked(hasComponentChanged).mockResolvedValue(true);
+      vi.mocked(applyCustomComponent).mockResolvedValue({
+        affectedPaths: ['browser/components/panel/ff-panel.mjs'],
+        stepErrors: [],
+      });
+
+      await applyAllComponents('/project');
+
+      expect(applyCustomComponent).toHaveBeenCalledWith(
+        expect.anything(),
+        'ff-panel',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        { markerComment: 'FRESHFORGE-CUSTOM' }
+      );
+    });
   });
 });

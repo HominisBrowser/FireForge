@@ -18,6 +18,7 @@ import {
   type ConflictReport,
   type HistoryEntry,
 } from '../../core/destructive.js';
+import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import {
   buildPatchQueueContext,
   lintPatchQueue,
@@ -373,7 +374,7 @@ export async function patchReorderCommand(
   const target = resolvePatchIdentifier(identifier, manifest.patches);
   if (!target) {
     throw new InvalidArgumentError(
-      `Patch "${identifier}" not found. Available: ${manifest.patches.map((p) => p.filename).join(', ')}`,
+      formatPatchNotFoundError(identifier, manifest.patches),
       identifier
     );
   }

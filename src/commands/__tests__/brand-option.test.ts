@@ -28,8 +28,8 @@ vi.mock('../../core/config.js', () => ({
 
 vi.mock('../../core/mach.js', () => ({
   generateMozconfig: vi.fn(() => Promise.resolve()),
-  build: vi.fn(() => Promise.resolve(0)),
-  buildUI: vi.fn(() => Promise.resolve(0)),
+  build: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' })),
+  buildUI: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' })),
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
   buildArtifactMismatchMessage: vi.fn(() => undefined),
   // The package command switched to `machPackageCapture` in 0.16.0 so it

@@ -71,15 +71,73 @@ export function getLicenseHeader(license: ProjectLicense, style: CommentStyle): 
 }
 
 /**
+ * Single-line `/* ... *\/` block comments containing either an Emacs
+ * file-mode marker (`-*-`) or a vim modeline (`vim:`) — Mozilla's
+ * canonical first-line editor directives that legitimately precede the
+ * license header in many Firefox source files.
+ *
+ * Restricted to single-line blocks so a multi-line license header never
+ * gets accidentally consumed.
+ */
+const EDITOR_DIRECTIVE_BLOCK_COMMENT =
+  /^[ \t]*\/\*[^\r\n]*?(?:-\*-|\bvim:)[^\r\n]*?\*\/[ \t]*\r?\n?/;
+
+/**
+ * Strips any leading run of editor-directive block comments and blank
+ * lines, returning the remaining content.
+ *
+ * Mozilla's coding convention places editor directives like
+ * `/* -*- Mode: javascript; ... -*- *\/` and `/* vim: set ... *\/` on
+ * lines 1–2, with the canonical license header following on lines 3+.
+ * The raw `content.startsWith(...)` check used by {@link hasAnyLicenseHeader}
+ * never matches in that shape; this helper lets the caller test the
+ * post-directive prefix as a fallback.
+ *
+ * @param content - File content to strip
+ */
+function stripLeadingEditorDirectives(content: string): string {
+  let result = content;
+  let prev: string;
+  do {
+    prev = result;
+    result = result.replace(/^[ \t]*\r?\n/, '');
+    result = result.replace(EDITOR_DIRECTIVE_BLOCK_COMMENT, '');
+  } while (result !== prev);
+  return result;
+}
+
+/**
  * Returns true if `content` starts with any known license header for the
  * given comment style.
+ *
+ * For `js` files, MPL-2.0 is also accepted in the upstream Mozilla block-
+ * comment form (`/* ... *\/`) used by the Firefox source tree, not just the
+ * `// ` line-comment form `getLicenseHeader` emits. Without that, a new JS
+ * file copied from upstream Firefox (or written to match the surrounding
+ * code's convention) hit `missing-license-header` even with a verbatim
+ * standard MPL header — operators were forced to `--skip-lint` over a real
+ * false positive.
+ *
+ * Editor-directive block comments (`/* -*- ... -*- *\/`, `/* vim: ... *\/`)
+ * leading the file are tolerated — Mozilla's canonical layout puts those
+ * on lines 1–2 with the MPL header on lines 3+, which the raw
+ * `startsWith` check would otherwise miss.
  *
  * @param content - File content to check
  * @param style   - Comment syntax of the file
  */
 export function hasAnyLicenseHeader(content: string, style: CommentStyle): boolean {
+  const candidates = [content, stripLeadingEditorDirectives(content)];
   const licenses = Object.keys(HEADER_LINES) as ProjectLicense[];
-  return licenses.some((license) => content.startsWith(getLicenseHeader(license, style)));
+  for (const candidate of candidates) {
+    if (licenses.some((license) => candidate.startsWith(getLicenseHeader(license, style)))) {
+      return true;
+    }
+    if (style === 'js' && candidate.startsWith(getLicenseHeader('MPL-2.0', 'css'))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

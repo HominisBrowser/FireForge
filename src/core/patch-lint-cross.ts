@@ -489,6 +489,10 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
         .map((o) => `${o.filename}:${o.fullPath}`)
         .sort((a, b) => a.localeCompare(b))
         .join(',');
+      // Lowest ordinal that lands AFTER every later-ordered creator —
+      // turns the operator's "guess and re-run" loop into a single shot
+      // when the only fix is reordering.
+      const suggestedOrder = Math.max(...laterOwners.map((o) => o.order)) + 1;
 
       issues.push({
         file: sitePath,
@@ -499,7 +503,8 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
           `but the matching new file is created by a later patch: ${ownersSummary}. ` +
           'Reorder the patches so the dependency is created first, move the import ' +
           'into the later patch, or mark the import with ' +
-          `"// ${FORWARD_IMPORT_IGNORE_MARKER}" if the basename collision is a false positive.`,
+          `"// ${FORWARD_IMPORT_IGNORE_MARKER}" if the basename collision is a false positive. ` +
+          `Closest legal ordinal that satisfies this dependency: ${suggestedOrder}.`,
         severity: 'error',
       });
     }

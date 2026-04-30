@@ -106,6 +106,11 @@ vi.mock('../../core/git.js', () => ({
   isGitRepository: isGitRepositoryMock,
   resetChanges: resetChangesMock,
   hasChanges: hasChangesMock,
+  isMissingHeadError: (err: unknown) =>
+    err instanceof Error &&
+    /(ambiguous argument 'HEAD'|unknown revision or path not in the working tree)/i.test(
+      err.message
+    ),
 }));
 
 vi.mock('../../core/git-diff.js', () => ({
@@ -320,6 +325,43 @@ describe('fireforge rebase', () => {
     expect(saveRebaseSessionMock).not.toHaveBeenCalled();
   });
 
+  // 2026-04-24 eval Finding 11: after an aborted `download --force`, the
+  // engine's `.git/` exists but has no valid HEAD. `rebase --dry-run` used
+  // to print "Dry run complete" suggesting the rebase was ready to run,
+  // then the real `rebase --yes` failed immediately with
+  // `fatal: ambiguous argument 'HEAD'`. Dry-run now mirrors the real-run
+  // baseline check and refuses with a clear recovery pointer.
+  it('dry-run refuses when engine HEAD is unborn (post-aborted-download baseline)', async () => {
+    hasActiveRebaseSessionMock.mockResolvedValue(false);
+    getHeadMock.mockRejectedValueOnce(
+      new Error(
+        "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree."
+      )
+    );
+
+    await expect(rebaseCommand('/project', { dryRun: true })).rejects.toThrow(
+      /Engine repository has no baseline commit yet/i
+    );
+    expect(loadPatchesManifestMock).not.toHaveBeenCalled();
+    expect(resetChangesMock).not.toHaveBeenCalled();
+    expect(saveRebaseSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('non-dry-run also refuses with the same message when HEAD is unborn', async () => {
+    hasActiveRebaseSessionMock.mockResolvedValue(false);
+    getHeadMock.mockRejectedValueOnce(
+      new Error(
+        "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree."
+      )
+    );
+
+    await expect(rebaseCommand('/project', { yes: true })).rejects.toThrow(
+      /Engine repository has no baseline commit yet/i
+    );
+    expect(resetChangesMock).not.toHaveBeenCalled();
+    expect(saveRebaseSessionMock).not.toHaveBeenCalled();
+  });
+
   it('clears furnace state after engine reset on fresh start', async () => {
     hasActiveRebaseSessionMock.mockResolvedValue(false);
     loadPatchesManifestMock.mockResolvedValue({
@@ -464,7 +506,7 @@ describe('fireforge rebase --abort', () => {
       preRebaseCommit: 'abc123',
       patches: [],
       currentIndex: 0,
-    } as never);
+    });
 
     await rebaseCommand('/project', { abort: true });
     expect(resetChangesMock).toHaveBeenCalled();
@@ -476,8 +518,8 @@ describe('fireforge rebase --abort', () => {
     confirmMock.mockResolvedValue(false);
     const origStdin = process.stdin.isTTY;
     const origStdout = process.stdout.isTTY;
-    process.stdin.isTTY = true as never;
-    process.stdout.isTTY = true as never;
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
     loadRebaseSessionMock.mockResolvedValue({
       startedAt: '2026-01-01',
       fromVersion: '128.0esr',
@@ -485,15 +527,15 @@ describe('fireforge rebase --abort', () => {
       preRebaseCommit: 'abc123',
       patches: [],
       currentIndex: 0,
-    } as never);
+    });
 
     try {
       await rebaseCommand('/project', { abort: true });
       expect(confirmMock).toHaveBeenCalled();
       expect(resetChangesMock).not.toHaveBeenCalled();
     } finally {
-      process.stdin.isTTY = origStdin as never;
-      process.stdout.isTTY = origStdout as never;
+      process.stdin.isTTY = origStdin;
+      process.stdout.isTTY = origStdout;
     }
   });
 
@@ -506,7 +548,7 @@ describe('fireforge rebase --abort', () => {
       preRebaseCommit: 'abc123',
       patches: [],
       currentIndex: 0,
-    } as never);
+    });
 
     await rebaseCommand('/project', { abort: true, yes: true });
     expect(confirmMock).not.toHaveBeenCalled();
@@ -527,15 +569,15 @@ describe('fireforge rebase --abort', () => {
       preRebaseCommit: 'abc123',
       patches: [],
       currentIndex: 0,
-    } as never);
+    });
 
     try {
       await expect(rebaseCommand('/project', { abort: true })).rejects.toBeInstanceOf(
         InvalidArgumentError
       );
     } finally {
-      process.stdin.isTTY = origStdin as never;
-      process.stdout.isTTY = origStdout as never;
+      process.stdin.isTTY = origStdin;
+      process.stdout.isTTY = origStdout;
     }
   });
 
@@ -547,7 +589,7 @@ describe('fireforge rebase --abort', () => {
       preRebaseCommit: 'abc123',
       patches: [],
       currentIndex: 0,
-    } as never);
+    });
 
     await rebaseCommand('/project', { abort: true });
 
@@ -571,8 +613,8 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
     confirmMock.mockResolvedValue(false);
     const origStdin = process.stdin.isTTY;
     const origStdout = process.stdout.isTTY;
-    process.stdin.isTTY = true as never;
-    process.stdout.isTTY = true as never;
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
     hasActiveRebaseSessionMock.mockResolvedValue(false);
     loadPatchesManifestMock.mockResolvedValue({
       version: 1,
@@ -595,8 +637,8 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
       expect(confirmMock).toHaveBeenCalled();
       expect(resetChangesMock).not.toHaveBeenCalled();
     } finally {
-      process.stdin.isTTY = origStdin as never;
-      process.stdout.isTTY = origStdout as never;
+      process.stdin.isTTY = origStdin;
+      process.stdout.isTTY = origStdout;
     }
   });
 
@@ -656,8 +698,8 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
     try {
       await expect(rebaseCommand('/project')).rejects.toBeInstanceOf(InvalidArgumentError);
     } finally {
-      process.stdin.isTTY = origStdin as never;
-      process.stdout.isTTY = origStdout as never;
+      process.stdin.isTTY = origStdin;
+      process.stdout.isTTY = origStdout;
     }
   });
 

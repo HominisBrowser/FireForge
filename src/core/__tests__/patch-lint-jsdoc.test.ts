@@ -295,3 +295,237 @@ describe('validateExportJsDoc', () => {
     expect(issues.some((i) => i.check === 'jsdoc-missing-returns')).toBe(false);
   });
 });
+
+describe('validateExportJsDoc — class-method enforcement', () => {
+  // Common scaffold: a documented exported class with one method body to vary.
+  const wrapClass = (methodLines: string[]): string =>
+    ['/** Storage class. */', 'export class Store {', ...methodLines, '}', ''].join('\n');
+
+  it('passes a class with one fully documented method', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Save a value.',
+      '   * @param {string} key - The key',
+      '   * @returns {boolean} Whether save succeeded',
+      '   */',
+      '  save(key) {',
+      '    return true;',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues).toHaveLength(0);
+  });
+
+  it('flags method missing JSDoc as missing-jsdoc-class-method', () => {
+    const source = wrapClass(['  save(key) {', '    return true;', '  }']);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    const methodIssues = issues.filter((i) => i.check === 'missing-jsdoc-class-method');
+    expect(methodIssues).toHaveLength(1);
+    expect(methodIssues[0]?.message).toContain('Store.save');
+  });
+
+  it('flags @param name mismatch on a class method', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Save.',
+      '   * @param {string} wrong - Wrong name',
+      '   */',
+      '  save(key) {',
+      '    void key;',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    const paramIssues = issues.filter((i) => i.check === 'jsdoc-class-method-param-mismatch');
+    expect(paramIssues).toHaveLength(1);
+    expect(paramIssues[0]?.message).toContain('key');
+  });
+
+  it('flags missing @returns on a class method that returns a value', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Get value.',
+      '   * @param {string} key - The key',
+      '   */',
+      '  get(key) {',
+      '    return key;',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    const returnIssues = issues.filter((i) => i.check === 'jsdoc-class-method-missing-returns');
+    expect(returnIssues).toHaveLength(1);
+  });
+
+  it('skips methods whose name starts with an underscore', () => {
+    const source = wrapClass(['  _helper() {', '    return 1;', '  }']);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues).toHaveLength(0);
+  });
+
+  it('skips private-syntax methods (#name)', () => {
+    const source = wrapClass(['  #helper() {', '    return 1;', '  }']);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues).toHaveLength(0);
+  });
+
+  it('skips methods with @private in JSDoc', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Internal.',
+      '   * @private',
+      '   */',
+      '  helper(arg) {',
+      '    return arg;',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues).toHaveLength(0);
+  });
+
+  it('skips methods with @internal in JSDoc', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Internal.',
+      '   * @internal',
+      '   */',
+      '  helper(arg) {',
+      '    return arg;',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues).toHaveLength(0);
+  });
+
+  it('skips zero-parameter constructor without JSDoc', () => {
+    const source = wrapClass(['  constructor() {}']);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues).toHaveLength(0);
+  });
+
+  it('flags constructor with parameter missing @param', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Build a store.',
+      '   */',
+      '  constructor(opts) {',
+      '    this.opts = opts;',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    const paramIssues = issues.filter((i) => i.check === 'jsdoc-class-method-param-mismatch');
+    expect(paramIssues).toHaveLength(1);
+    expect(paramIssues[0]?.message).toContain('opts');
+  });
+
+  it('flags getter without JSDoc with only missing-jsdoc-class-method', () => {
+    const source = wrapClass(['  get size() {', '    return 0;', '  }']);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.check).toBe('missing-jsdoc-class-method');
+    expect(issues[0]?.message).toContain('getter');
+  });
+
+  it('flags setter missing @param for its parameter', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Set width.',
+      '   */',
+      '  set width(value) {',
+      '    this._w = value;',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    const paramIssues = issues.filter((i) => i.check === 'jsdoc-class-method-param-mismatch');
+    expect(paramIssues).toHaveLength(1);
+    expect(paramIssues[0]?.message).toContain('value');
+    expect(issues.some((i) => i.check === 'jsdoc-class-method-missing-returns')).toBe(false);
+  });
+
+  it('flags static method missing JSDoc', () => {
+    const source = wrapClass(['  static factory() {', '    return new Store();', '  }']);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    const methodIssues = issues.filter((i) => i.check === 'missing-jsdoc-class-method');
+    expect(methodIssues).toHaveLength(1);
+    expect(methodIssues[0]?.message).toContain('static method');
+  });
+
+  it('emits no class-method issues when classMethodMode is absent', () => {
+    const source = wrapClass(['  save(key) {', '    return key;', '  }']);
+
+    const issues = validateExportJsDoc(source);
+    expect(issues.filter((i) => i.check.startsWith('missing-jsdoc-class-method'))).toHaveLength(0);
+    expect(issues.filter((i) => i.check.includes('class-method'))).toHaveLength(0);
+  });
+
+  it("emits no class-method issues when classMethodMode is 'off'", () => {
+    const source = wrapClass(['  save(key) {', '    return key;', '  }']);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'off' });
+    expect(issues.filter((i) => i.check.includes('class-method'))).toHaveLength(0);
+  });
+
+  it("emits class-method issues at severity 'warning' when knob is 'warning'", () => {
+    const source = wrapClass(['  save(key) {', '    return key;', '  }']);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'warning' });
+    const methodIssues = issues.filter((i) => i.check === 'missing-jsdoc-class-method');
+    expect(methodIssues).toHaveLength(1);
+    expect(methodIssues[0]?.severity).toBe('warning');
+  });
+
+  it("emits class-method issues at severity 'error' when knob is 'error'", () => {
+    const source = wrapClass(['  save(key) {', '    return key;', '  }']);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    const methodIssues = issues.filter((i) => i.check === 'missing-jsdoc-class-method');
+    expect(methodIssues).toHaveLength(1);
+    expect(methodIssues[0]?.severity).toBe('error');
+  });
+
+  it('reports the method line, not the class line', () => {
+    const source = [
+      '/** Storage. */',
+      'export class Store {',
+      '',
+      '',
+      '  save(key) {',
+      '    return key;',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    const methodIssue = issues.find((i) => i.check === 'missing-jsdoc-class-method');
+    expect(methodIssue?.line).toBe(5);
+  });
+
+  it('walks methods on classes exported via named-export specifier', () => {
+    const source = [
+      '/** Store. */',
+      'class Store {',
+      '  save(key) {',
+      '    return key;',
+      '  }',
+      '}',
+      '',
+      'export { Store };',
+      '',
+    ].join('\n');
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues.some((i) => i.check === 'missing-jsdoc-class-method')).toBe(true);
+  });
+});

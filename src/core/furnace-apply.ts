@@ -34,6 +34,7 @@ import {
 } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN, resolveFtlDir } from './furnace-constants.js';
 import { topologicalSortCustom } from './furnace-graph-utils.js';
+import { resolveFurnaceMarkerComment } from './furnace-marker.js';
 import { type FurnaceOperationContext, recordFurnaceRollbackFailure } from './furnace-operation.js';
 import {
   addJarMnEntries,
@@ -502,9 +503,16 @@ export async function applyAllComponents(
   const { engine: engineDir } = getProjectPaths(root);
   const furnacePaths = getFurnacePaths(root);
   const ftlDir = resolveFtlDir(config.ftlBasePath);
-  const markerComment = await loadConfig(root)
-    .then((forgeConfig) => forgeConfig.markerComment)
-    .catch(() => undefined);
+  // 2026-04-26 eval Finding 6: when `markerComment` is unset in
+  // fireforge.json, default it to `binaryName.toUpperCase()` so the
+  // furnace-emitted edits to upstream files (e.g. customElements.js)
+  // carry a marker that satisfies `lintModificationComments` — that
+  // rule keys on `${binaryName.toUpperCase()}:` and was firing
+  // `[missing-modification-comment]` on every furnace-applied
+  // upstream edit because the implicit default was `undefined`. An
+  // explicit `markerComment` in fireforge.json still wins.
+  const forgeConfig = await loadConfig(root).catch(() => undefined);
+  const markerComment = resolveFurnaceMarkerComment(forgeConfig);
 
   if (!(await pathExists(engineDir))) {
     throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');

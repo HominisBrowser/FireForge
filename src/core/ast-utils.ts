@@ -18,12 +18,21 @@ export type AcornESTreeNode<T extends estree.Node = estree.Node> = T & {
  * Parse JavaScript source as a **script** (not an ES module).
  * All Mozilla chrome JS files (`browser-main.js`, `browser-init.js`,
  * `customElements.js`, etc.) are scripts that run in a privileged scope.
+ *
+ * @param content - Source text to parse
+ * @param onComment - Optional array that acorn fills with comment nodes
+ * @returns Parsed program AST with character-offset positions
  */
-export function parseScript(content: string): AcornESTreeNode<estree.Program> {
-  return acorn.parse(content, {
+export function parseScript(
+  content: string,
+  onComment?: acorn.Comment[]
+): AcornESTreeNode<estree.Program> {
+  const opts: acorn.Options = {
     sourceType: 'script',
     ecmaVersion: 'latest',
-  }) as unknown as AcornESTreeNode<estree.Program>;
+  };
+  if (onComment) opts.onComment = onComment;
+  return acorn.parse(content, opts) as unknown as AcornESTreeNode<estree.Program>;
 }
 
 /**
@@ -64,7 +73,7 @@ export function walkAST(
   ast: AcornESTreeNode<estree.Program>,
   visitors: Parameters<typeof walk>[1]
 ): ReturnType<typeof walk> {
-  return walk(ast as unknown as estree.Node, visitors);
+  return walk(ast, visitors);
 }
 
 /**

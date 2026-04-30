@@ -274,7 +274,7 @@ function execFilePortable(
     encoding: 'utf8',
     ...options,
     shell: options.shell ?? (process.platform === 'win32' && /\.(?:bat|cmd)$/i.test(file)),
-  }) as Promise<StringExecFileResult>;
+  });
 }
 
 function parsePackResult(stdout: string): Array<{

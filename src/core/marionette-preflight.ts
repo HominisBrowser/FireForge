@@ -385,3 +385,23 @@ export function reportMarionettePreflight(result: MarionettePreflightResult): vo
     warn(`Marionette preflight: FAIL (${result.durationMs}ms) — ${result.detail}`);
   }
 }
+
+/**
+ * Formats the PASS/FAIL banner as a plain string for direct
+ * `process.stdout.write` use — bypasses the clack logger entirely so
+ * operators running `fireforge test --doctor` under a non-TTY (pipe,
+ * CI, `tee`-wrapped capture) always see the final line even when the
+ * clack renderer swallows trailing log output just before process exit.
+ *
+ * 2026-04-24 eval Finding 7 reproducibly captured only the `"Running
+ * marionette preflight..."` intro and no PASS line at all — the
+ * `success()` + `outro()` + direct `stdout.write` belt-and-suspenders
+ * we used to ship still lost the summary under some non-TTY flush
+ * races. Returning the raw string here lets the caller compose a single
+ * authoritative write without any clack layer between the probe and
+ * the captured log.
+ */
+export function formatMarionettePreflightLine(result: MarionettePreflightResult): string {
+  const status = result.ok ? 'PASS' : 'FAIL';
+  return `Marionette preflight: ${status} (${result.durationMs}ms) — ${result.detail}`;
+}

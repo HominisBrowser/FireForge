@@ -1,0 +1,350 @@
+// SPDX-License-Identifier: EUPL-1.2
+/**
+ * `fireforge patch rename <name>` — relabels a patch's filename, manifest
+ * `name`, and (optionally) `description` without rewriting the `.patch`
+ * file body.
+ *
+ * Companion to `re-export --files <subset>`. Re-export shrinks the body
+ * + `filesAffected`, but leaves the patch's identity describing the
+ * pre-shrink scope. Before this verb existed, the only workaround for
+ * that drift was `delete` + re-export, which briefly removed the patch
+ * from the queue (any forward-import dependent would refuse the
+ * re-export until the deleted patch's siblings were rewritten).
+ *
+ * The filename rename and the manifest mutation happen under the patch
+ * directory lock so concurrent exports cannot allocate the new
+ * filename, and a filesystem rename failure rolls back before the
+ * manifest is touched.
+ */
+
+import { rename as fsRename } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import { Command } from 'commander';
+
+import { getProjectPaths } from '../../core/config.js';
+import { appendHistory, confirmDestructive } from '../../core/destructive.js';
+import { sanitizeName } from '../../core/patch-export.js';
+import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
+import { withPatchDirectoryLock } from '../../core/patch-lock.js';
+import {
+  loadPatchesManifest,
+  resolvePatchIdentifier,
+  savePatchesManifest,
+} from '../../core/patch-manifest.js';
+import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
+import type { CommandContext } from '../../types/cli.js';
+import type { PatchMetadata, PatchRenameOptions } from '../../types/commands/index.js';
+import { toError } from '../../utils/errors.js';
+import { pathExists } from '../../utils/fs.js';
+import { info, intro, outro, warn } from '../../utils/logger.js';
+import { pickDefined } from '../../utils/options.js';
+
+/**
+ * Pulls the ordinal-string + category prefix out of a patch filename so
+ * the rename keeps the existing ordinal padding verbatim. Returning the
+ * literal substring (rather than recomputing from the parsed integer)
+ * avoids any chance of the new filename's ordinal differing from the
+ * old by a leading-zero count.
+ */
+function splitPatchFilename(
+  filename: string
+): { ordinalStr: string; category: string; slug: string } | null {
+  const m = /^(\d+)-([a-z]+)-(.+)\.patch$/.exec(filename);
+  if (!m?.[1] || !m[2] || !m[3]) return null;
+  return { ordinalStr: m[1], category: m[2], slug: m[3] };
+}
+
+/**
+ * Inputs for {@link commitRenameUnderLock}. All shape validation and
+ * confirmation has already happened in the caller — this helper only
+ * owns the under-lock transactional dance.
+ */
+interface CommitRenameInput {
+  patchesDir: string;
+  target: PatchMetadata;
+  newFilename: string;
+  newName: string;
+  /** New description value, or `undefined` to leave the field unchanged. */
+  newDescription?: string;
+  filenameChanging: boolean;
+  nameChanging: boolean;
+  descriptionChanging: boolean;
+  /** Mirrors `--yes`; recorded in the history entry for audit consistency. */
+  yes?: boolean;
+}
+
+/**
+ * Performs the rename's transactional core under the patch directory
+ * lock: re-reads the manifest, re-checks for filename collisions,
+ * renames the `.patch` file on disk (when applicable), writes the
+ * updated manifest, and appends a history entry. Filesystem rename
+ * happens before the manifest save so an interrupted run never leaves
+ * the manifest pointing at a missing file; a manifest-save failure
+ * rolls the filesystem rename back.
+ */
+async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
+  const {
+    patchesDir,
+    target,
+    newFilename,
+    newName,
+    newDescription,
+    filenameChanging,
+    nameChanging,
+    descriptionChanging,
+  } = input;
+
+  await withPatchDirectoryLock(patchesDir, async () => {
+    const fresh = await loadPatchesManifest(patchesDir);
+    if (!fresh) {
+      throw new GeneralError('Manifest disappeared between resolution and rename.');
+    }
+    const idx = fresh.patches.findIndex((p) => p.filename === target.filename);
+    if (idx === -1) {
+      throw new GeneralError(
+        `Patch ${target.filename} disappeared from the manifest during rename. Re-run after investigating.`
+      );
+    }
+    const before = fresh.patches[idx];
+    if (!before) {
+      throw new GeneralError(
+        `Patch ${target.filename} disappeared from the manifest during rename.`
+      );
+    }
+
+    if (filenameChanging) {
+      const collisionInLock = fresh.patches.find(
+        (p) => p.filename === newFilename && p.filename !== target.filename
+      );
+      if (collisionInLock) {
+        throw new InvalidArgumentError(
+          `Cannot rename to "${newFilename}" — a different patch claimed that filename concurrently.`,
+          'patch rename'
+        );
+      }
+
+      const oldPath = join(patchesDir, target.filename);
+      const newPath = join(patchesDir, newFilename);
+
+      if (await pathExists(newPath)) {
+        throw new InvalidArgumentError(
+          `Cannot rename: ${newFilename} already exists on disk. Resolve manually before retrying.`,
+          'patch rename'
+        );
+      }
+      await fsRename(oldPath, newPath);
+
+      fresh.patches[idx] = {
+        ...before,
+        filename: newFilename,
+        name: newName,
+        ...(descriptionChanging ? { description: newDescription ?? '' } : {}),
+      };
+
+      try {
+        await savePatchesManifest(patchesDir, fresh);
+      } catch (saveError: unknown) {
+        try {
+          await fsRename(newPath, oldPath);
+        } catch (rollbackError: unknown) {
+          warn(
+            `Rollback warning: could not restore ${target.filename} after manifest write failure: ${toError(rollbackError).message}`
+          );
+        }
+        throw saveError;
+      }
+    } else {
+      fresh.patches[idx] = {
+        ...before,
+        ...(nameChanging ? { name: newName } : {}),
+        ...(descriptionChanging ? { description: newDescription ?? '' } : {}),
+      };
+      await savePatchesManifest(patchesDir, fresh);
+    }
+
+    try {
+      await appendHistory(patchesDir, {
+        operation: 'patch-rename',
+        args: {
+          oldFilename: target.filename,
+          newFilename,
+          oldName: target.name,
+          newName,
+          ...(descriptionChanging ? { oldDescription: target.description, newDescription } : {}),
+        },
+        ...(input.yes === true ? { yes: true } : {}),
+        result: 'ok',
+      });
+    } catch (historyError: unknown) {
+      warn(
+        `History log append failed after patch rename committed (${newFilename}): ${toError(historyError).message}`
+      );
+    }
+  });
+}
+
+/**
+ * Runs the `patch rename` command: relabels filename + manifest entry
+ * for a single patch atomically.
+ *
+ * @param projectRoot - Project root directory
+ * @param identifier - Patch filename, ordinal, or manifest `name`
+ * @param options - Command options (`--to <new-name>` is required)
+ */
+export async function patchRenameCommand(
+  projectRoot: string,
+  identifier: string,
+  options: PatchRenameOptions = {}
+): Promise<void> {
+  const isDryRun = options.dryRun === true;
+  intro(isDryRun ? 'FireForge patch rename (dry run)' : 'FireForge patch rename');
+
+  if (options.to === undefined || options.to.trim() === '') {
+    throw new InvalidArgumentError(
+      'Specify --to <new-name>. The new name is sanitised into the filename slug the same way `export --name` is.',
+      'patch rename'
+    );
+  }
+
+  const paths = getProjectPaths(projectRoot);
+  if (!(await pathExists(paths.patches))) {
+    throw new GeneralError('Patches directory not found.');
+  }
+
+  const manifest = await loadPatchesManifest(paths.patches);
+  if (!manifest || manifest.patches.length === 0) {
+    throw new GeneralError('No patches in manifest.');
+  }
+
+  const target = resolvePatchIdentifier(identifier, manifest.patches);
+  if (!target) {
+    throw new InvalidArgumentError(
+      formatPatchNotFoundError(identifier, manifest.patches),
+      identifier
+    );
+  }
+
+  const split = splitPatchFilename(target.filename);
+  if (!split) {
+    throw new GeneralError(
+      `Cannot rename ${target.filename}: filename does not match the expected {ordinal}-{category}-{slug}.patch convention. Re-export the patch instead.`
+    );
+  }
+
+  const newSlug = sanitizeName(options.to);
+  if (newSlug === '') {
+    throw new InvalidArgumentError(
+      '--to must contain at least one alphanumeric character after sanitisation.',
+      'patch rename'
+    );
+  }
+
+  const newFilename = `${split.ordinalStr}-${split.category}-${newSlug}.patch`;
+  const filenameChanging = newFilename !== target.filename;
+  const nameChanging = options.to !== target.name;
+  const descriptionChanging =
+    options.description !== undefined && options.description !== target.description;
+
+  if (!filenameChanging && !nameChanging && !descriptionChanging) {
+    info(`${target.filename}: name and description already match — nothing to change.`);
+    outro(isDryRun ? 'Dry run complete — no changes made' : 'Patch rename (no-op)');
+    return;
+  }
+
+  // Pre-flight collision check against the manifest snapshot we already
+  // loaded. The authoritative check happens again inside the lock to
+  // close the TOCTOU window — surface a helpful error here when the
+  // collision is obvious so the operator does not get surprised by a
+  // late refusal after a confirmation prompt.
+  if (filenameChanging) {
+    const collision = manifest.patches.find(
+      (p) => p.filename === newFilename && p.filename !== target.filename
+    );
+    if (collision) {
+      throw new InvalidArgumentError(
+        `Cannot rename to "${newFilename}" — a different patch already uses that filename.`,
+        'patch rename'
+      );
+    }
+  }
+
+  const summary: string[] = [];
+  if (filenameChanging) {
+    summary.push(`rename ${target.filename} → ${newFilename}`);
+  }
+  if (nameChanging) {
+    summary.push(`name: "${target.name}" → "${options.to}"`);
+  }
+  if (descriptionChanging) {
+    summary.push(
+      `description: "${target.description || '(none)'}" → "${options.description ?? '(none)'}"`
+    );
+  }
+
+  const decision = await confirmDestructive({
+    operation: 'patch-rename',
+    title: `Rename ${target.filename}`,
+    summary,
+    yes: options.yes === true,
+    dryRun: isDryRun,
+    conflicts: null,
+  });
+
+  if (decision === 'dry-run') {
+    outro('Dry run complete — no changes made');
+    return;
+  }
+  if (decision === 'cancelled') {
+    outro('Rename cancelled');
+    return;
+  }
+
+  await commitRenameUnderLock({
+    patchesDir: paths.patches,
+    target,
+    newFilename,
+    newName: options.to,
+    ...(options.description !== undefined ? { newDescription: options.description } : {}),
+    filenameChanging,
+    nameChanging,
+    descriptionChanging,
+    ...(options.yes === true ? { yes: true } : {}),
+  });
+
+  if (filenameChanging) {
+    info(`${target.filename} → ${newFilename}`);
+  } else {
+    info(`${target.filename}: metadata updated.`);
+  }
+  outro('Patch rename complete');
+}
+
+/**
+ * Registers the `patch rename` subcommand on the `patch` parent.
+ *
+ * @param parent - Parent Commander command
+ * @param context - Shared CLI registration context
+ */
+export function registerPatchRename(parent: Command, context: CommandContext): void {
+  const { getProjectRoot, withErrorHandling } = context;
+  parent
+    .command('rename <name>')
+    .description(
+      'Rename a patch: filename + manifest name (and optional description) update without rewriting the .patch body.'
+    )
+    .requiredOption('--to <new-name>', 'New human-readable name (sanitised into the filename slug)')
+    .option('--description <text>', 'Replacement description (omit to leave description unchanged)')
+    .option('--dry-run', 'Show what would change without writing')
+    .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
+    .action(
+      withErrorHandling(
+        async (
+          name: string,
+          options: { to?: string; description?: string; dryRun?: boolean; yes?: boolean }
+        ) => {
+          await patchRenameCommand(getProjectRoot(), name, pickDefined(options));
+        }
+      )
+    );
+}

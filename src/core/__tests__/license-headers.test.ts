@@ -57,6 +57,36 @@ describe('hasAnyLicenseHeader', () => {
     const jsHeader = getLicenseHeader('MPL-2.0', 'js');
     expect(hasAnyLicenseHeader(jsHeader + '\n', 'css')).toBe(false);
   });
+
+  it('tolerates a leading Emacs file-mode block comment before the MPL header', () => {
+    const content =
+      '/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; js-indent-level: 2 -*- */\n' +
+      '// This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      '// License, v. 2.0. If a copy of the MPL was not distributed with this\n' +
+      '// file, You can obtain one at http://mozilla.org/MPL/2.0/.\n' +
+      'const x = 1;\n';
+    expect(hasAnyLicenseHeader(content, 'js')).toBe(true);
+  });
+
+  it('tolerates Emacs + vim editor directives followed by the canonical block-form MPL header', () => {
+    // Mozilla's canonical layout for upstream Firefox source files —
+    // editor directives on lines 1–2, license block on lines 3+.
+    const cssStyleMpl = getLicenseHeader('MPL-2.0', 'css');
+    const content =
+      '/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; js-indent-level: 2 -*- */\n' +
+      '/* vim: set ts=8 sts=2 et sw=2 tw=80: */\n' +
+      cssStyleMpl +
+      '\n\nfunction f() {}\n';
+    expect(hasAnyLicenseHeader(content, 'js')).toBe(true);
+  });
+
+  it('returns false when only editor directives are present (no header)', () => {
+    const content =
+      '/* -*- Mode: javascript -*- */\n' +
+      '/* vim: set ts=8 sts=2 et sw=2 tw=80: */\n' +
+      'const x = 1;\n';
+    expect(hasAnyLicenseHeader(content, 'js')).toBe(false);
+  });
 });
 
 describe('hasAnyLicenseHeaderAnyStyle', () => {

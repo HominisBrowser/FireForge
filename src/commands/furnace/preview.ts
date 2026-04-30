@@ -205,6 +205,49 @@ async function assertPreviewPrerequisites(engineDir: string): Promise<void> {
 }
 
 /**
+ * Emits a framing banner when the Storybook workspace has not yet had
+ * its npm dependencies installed. `mach storybook` will drive the
+ * install internally and print ELSPROBLEMS / UNMET DEPENDENCY lines
+ * verbatim; without this banner operators reliably read the npm output
+ * as a failure (2026-04-24 eval Finding 13).
+ *
+ * Skipped when `--install` was explicitly requested — that path already
+ * runs `mach storybook upgrade` before the preview launches, so the npm
+ * output for the subsequent `mach storybook` invocation is a no-op.
+ */
+async function announceStorybookFirstRunIfNeeded(
+  engineDir: string,
+  installRequested: boolean
+): Promise<void> {
+  if (installRequested) return;
+  const storybookNodeModules = join(
+    engineDir,
+    'browser',
+    'components',
+    'storybook',
+    'node_modules'
+  );
+  const storybookDepsMissing = !(await pathExists(storybookNodeModules));
+  if (!storybookDepsMissing) return;
+  info(
+    'Storybook workspace dependencies are not yet installed. The next step will install ~1000 npm packages via `mach storybook`; expect npm error-style output below. This is a one-time first-run cost — Storybook will start once the install finishes.'
+  );
+}
+
+/**
+ * Surfaces an explicit success banner after a clean mach-storybook
+ * exit so the operator's scrollback visually terminates the npm noise
+ * from the first-run install. Only fires on expected exit codes — non-
+ * zero cases fall through to the existing
+ * `buildStorybookFailureMessage` classification.
+ */
+function announceStorybookCleanExitIfApplicable(exitCode: number): void {
+  if (exitCode === 0 || exitCode === 130 || exitCode === 143) {
+    info('Storybook stopped cleanly.');
+  }
+}
+
+/**
  * Runs the furnace preview command to start Storybook for component preview.
  * @param projectRoot - Root directory of the project
  * @param options - Command options
@@ -343,11 +386,19 @@ export async function furnacePreviewCommand(
         installSpinner.stop('Storybook dependencies reinstalled');
       }
 
+      // 2026-04-24 eval Finding 13: frame the npm noise that `mach
+      // storybook` emits on first-run as expected progress rather than a
+      // failure. The banner-before / banner-after helpers are extracted
+      // so the command body stays under the per-function LOC budget.
+      await announceStorybookFirstRunIfNeeded(paths.engine, options.install ?? false);
+
       // Start Storybook
       info('Starting Storybook...');
       info('Press Ctrl+C to stop\n');
 
       previewResult = await runMachCapture(['storybook'], paths.engine);
+
+      announceStorybookCleanExitIfApplicable(previewResult.exitCode);
     } catch (error: unknown) {
       primaryError = error;
     }

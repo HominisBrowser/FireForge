@@ -99,4 +99,30 @@ describe('registerFireForgeModule', () => {
 
     expect(result.entry).toBe('    "CharlieModule.sys.mjs",');
   });
+
+  it('inserts into a single-line empty EXTRA_JS_MODULES list (Eval 2)', async () => {
+    // The eval-2 repro: a freshly-scaffolded browser/modules/<fork>/moz.build
+    // started with `EXTRA_JS_MODULES += []` on one line. The register
+    // command used to refuse with "Could not find EXTRA_JS_MODULES in
+    // moz.build" even though the list was clearly present. The
+    // tokenizer now expands the single-line empty form into a
+    // canonical multi-line shape before insertion.
+    mockReadText.mockResolvedValue('EXTRA_JS_MODULES += []\n');
+
+    const result = await registerFireForgeModule(
+      '/engine',
+      'FirstModule.sys.mjs',
+      'browser/modules/testbrowser'
+    );
+
+    expect(result.skipped).toBe(false);
+    expect(result.entry).toBe('    "FirstModule.sys.mjs",');
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    // The written output must be a syntactically valid multi-line
+    // list — the new entry sits inside the brackets, not after them.
+    expect(written).toContain('EXTRA_JS_MODULES += [');
+    expect(written).toContain('    "FirstModule.sys.mjs",');
+    expect(written).toContain(']');
+    expect(written.indexOf('    "FirstModule.sys.mjs",')).toBeLessThan(written.indexOf(']'));
+  });
 });

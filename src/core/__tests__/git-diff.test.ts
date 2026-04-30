@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
+import type { Stats } from 'node:fs';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, writeFile: vi.fn(), mkdtemp: vi.fn(), rm: vi.fn() };
+  return { ...actual, writeFile: vi.fn(), mkdtemp: vi.fn(), rm: vi.fn(), stat: vi.fn() };
 });
 
 vi.mock('../../utils/process.js', () => ({
@@ -26,9 +28,10 @@ vi.mock('../git-file-ops.js', () => ({
 
 vi.mock('../git-status.js', () => ({
   getUntrackedFiles: vi.fn(),
+  getUntrackedFilesInDir: vi.fn(),
 }));
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 
 import { pathExists, readText } from '../../utils/fs.js';
 import { exec } from '../../utils/process.js';
@@ -44,7 +47,7 @@ import {
   getStagedDiffForFiles,
 } from '../git-diff.js';
 import { fileExistsInHead } from '../git-file-ops.js';
-import { getUntrackedFiles } from '../git-status.js';
+import { getUntrackedFiles, getUntrackedFilesInDir } from '../git-status.js';
 
 const mockExec = vi.mocked(exec);
 const mockGit = vi.mocked(git);
@@ -52,12 +55,19 @@ const mockPathExists = vi.mocked(pathExists);
 const mockReadText = vi.mocked(readText);
 const mockFileExistsInHead = vi.mocked(fileExistsInHead);
 const mockGetUntrackedFiles = vi.mocked(getUntrackedFiles);
+const mockGetUntrackedFilesInDir = vi.mocked(getUntrackedFilesInDir);
 const mockMkdtemp = vi.mocked(mkdtemp);
 const mockWriteFile = vi.mocked(writeFile);
 const mockRm = vi.mocked(rm);
+const mockStat = vi.mocked(stat);
+
+const makeStat = (isDir: boolean): Stats => ({ isDirectory: () => isDir }) as unknown as Stats;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: every `stat` lookup reports a regular file. The two tests
+  // that exercise the directory-detection paths override this.
+  mockStat.mockResolvedValue(makeStat(false));
 });
 
 describe('getFileDiff', () => {
@@ -112,6 +122,18 @@ describe('generateNewFileDiff', () => {
 
     const result = await generateNewFileDiff('/repo', 'test.txt');
     expect(result).toContain('index 0000000000..0000000000');
+  });
+
+  it('rejects a directory path with an actionable GitError', async () => {
+    // Guards against the EISDIR regression: if a caller ever hands a
+    // directory to the leaf reader, surface a named error instead of
+    // the raw `EISDIR: illegal operation on a directory, read` that
+    // `readText` would otherwise throw.
+    mockStat.mockResolvedValue(makeStat(true));
+
+    await expect(generateNewFileDiff('/repo', 'browser/modules/fork')).rejects.toThrow(
+      "expected a file but found a directory at 'browser/modules/fork'"
+    );
   });
 });
 
@@ -267,6 +289,66 @@ describe('getDiffForFilesAgainstHead', () => {
 
     await getDiffForFilesAgainstHead('/repo', ['a.txt', 'a.txt']);
     expect(mockGit).toHaveBeenCalledTimes(1);
+  });
+
+  it('expands untracked directory entries before diffing', async () => {
+    // `git status --porcelain=v1 -z` reports collapsed untracked dirs as
+    // `?? dir/`; a caller that hands that entry to this function used to
+    // crash with EISDIR reading the directory as a file.
+    mockGetUntrackedFilesInDir.mockResolvedValue([
+      'browser/modules/fork/Foo.sys.mjs',
+      'browser/modules/fork/Bar.sys.mjs',
+    ]);
+    mockFileExistsInHead.mockResolvedValue(false);
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('content\n');
+    mockGit.mockResolvedValue('abc1234567\n');
+
+    const result = await getDiffForFilesAgainstHead('/repo', ['browser/modules/fork/']);
+
+    expect(mockGetUntrackedFilesInDir).toHaveBeenCalledWith('/repo', 'browser/modules/fork/');
+    expect(result).toContain('diff --git a/browser/modules/fork/Bar.sys.mjs');
+    expect(result).toContain('diff --git a/browser/modules/fork/Foo.sys.mjs');
+  });
+
+  it('expands a directory path without a trailing slash', async () => {
+    // Regression for the 2026-04-24 eval finding (Core canvas viewport):
+    // aggregate lint crashed with raw `EISDIR` when a directory entry
+    // reached this function without the trailing slash the caller-side
+    // `expandUntrackedDirectoryEntries` would have emitted. The
+    // trailing-slash guard above misses it; the in-loop `stat` check
+    // expands it via the same helper.
+    mockFileExistsInHead.mockResolvedValue(false);
+    mockPathExists.mockResolvedValue(true);
+    mockStat.mockImplementation((path) =>
+      Promise.resolve(makeStat(typeof path === 'string' && path.endsWith('browser/modules/fork')))
+    );
+    mockGetUntrackedFilesInDir.mockResolvedValue([
+      'browser/modules/fork/Foo.sys.mjs',
+      'browser/modules/fork/Bar.sys.mjs',
+    ]);
+    mockReadText.mockResolvedValue('content\n');
+    mockGit.mockResolvedValue('abc1234567\n');
+
+    const result = await getDiffForFilesAgainstHead('/repo', ['browser/modules/fork']);
+
+    expect(mockGetUntrackedFilesInDir).toHaveBeenCalledWith('/repo', 'browser/modules/fork');
+    expect(result).toContain('diff --git a/browser/modules/fork/Bar.sys.mjs');
+    expect(result).toContain('diff --git a/browser/modules/fork/Foo.sys.mjs');
+  });
+
+  it('raises an actionable GitError when a non-slash directory has no readable content', async () => {
+    // Submodule / gitignored directory: `stat` reports a directory but
+    // `ls-files --others` returns nothing. Skipping silently would
+    // mask the real bug; fail loud with the path instead.
+    mockFileExistsInHead.mockResolvedValue(false);
+    mockPathExists.mockResolvedValue(true);
+    mockStat.mockResolvedValue(makeStat(true));
+    mockGetUntrackedFilesInDir.mockResolvedValue([]);
+
+    await expect(
+      getDiffForFilesAgainstHead('/repo', ['browser/modules/submodule'])
+    ).rejects.toThrow("'browser/modules/submodule' is a directory with no untracked content");
   });
 });
 

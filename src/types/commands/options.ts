@@ -99,6 +99,24 @@ export interface ExportOptions {
    * another patch, because the resulting queue fails `verify` immediately.
    */
   allowOverlap?: boolean;
+  /**
+   * Force a tier override on the new patch's `PatchMetadata.tier`. Only
+   * `"branding"` is currently recognised — Commander rejects other values
+   * before the handler runs. Use when a branding patch legitimately
+   * touches a non-allowlisted sibling that `isBrandingOnlyPatch` cannot
+   * reach (a fork-specific theme override under `browser/themes/<name>/`,
+   * a vendor-specific icon resource, etc.).
+   */
+  tier?: 'branding';
+  /**
+   * Lint check IDs to suppress on this patch. Writes to
+   * `PatchMetadata.lintIgnore`. Repeatable on the CLI; each occurrence
+   * appends to the list. Useful when a patch is advisory-noisy by nature
+   * (a cohesive branding bundle, an auto-generated manifest) and a
+   * specific check does not apply, but `--skip-lint` is too coarse a
+   * hammer.
+   */
+  lintIgnore?: string[];
 }
 
 /**
@@ -183,6 +201,57 @@ export interface ReExportOptions {
    * `rebase`.
    */
   stamp?: boolean;
+  /**
+   * Force a tier override on the selected patch(es). Only `"branding"` is
+   * currently recognised. Mutually exclusive with `--all` — mass tier
+   * changes are virtually always footguns, since different patches in
+   * the queue have different shapes.
+   */
+  tier?: 'branding';
+  /**
+   * Lint check IDs to suppress, **appended** (union) to the patch's
+   * existing `lintIgnore` list. De-duplicated. Mutually exclusive with
+   * `--all`. To remove an entry or clear the list entirely, use the
+   * `fireforge patch lint-ignore` subcommand (which has explicit
+   * `--add` / `--remove` / `--clear` modes); re-export's append-only
+   * semantics match the operator's most common intent ("I want this
+   * patch to also suppress X").
+   */
+  lintIgnore?: string[];
+}
+
+/**
+ * Options for the `fireforge patch tier` subcommand. Sets or clears the
+ * `PatchMetadata.tier` field on a single patch without rewriting the
+ * `.patch` file body — the manifest is the only thing that changes.
+ */
+export interface PatchTierOptions {
+  /** Force the named tier on the patch. Only `"branding"` is recognised. */
+  tier?: 'branding';
+  /** Remove the `tier` override entirely, restoring auto-detection. */
+  clear?: boolean;
+  /** Print the planned change without writing. */
+  dryRun?: boolean;
+  /** Skip the confirmation prompt (required for non-TTY). */
+  yes?: boolean;
+}
+
+/**
+ * Options for the `fireforge patch lint-ignore` subcommand. Modes are
+ * mutually exclusive — exactly one of `add`, `remove`, or `clear` must
+ * be set per invocation.
+ */
+export interface PatchLintIgnoreOptions {
+  /** Lint check IDs to add to the patch's `lintIgnore` list (union, de-duped). */
+  add?: string[];
+  /** Lint check IDs to remove from the patch's `lintIgnore` list. */
+  remove?: string[];
+  /** Drop the `lintIgnore` field entirely. */
+  clear?: boolean;
+  /** Print the planned change without writing. */
+  dryRun?: boolean;
+  /** Skip the confirmation prompt (required for non-TTY). */
+  yes?: boolean;
 }
 
 /**
@@ -263,6 +332,14 @@ export interface TestOptions {
    * values appear after `--headless` if both are set.
    */
   machArg?: string[];
+  /**
+   * Override the Marionette control port (default 2828) used by the
+   * stale-browser probe, the `--doctor` preflight, and the auto-forwarded
+   * `--setpref=marionette.port=<n>` arg passed to mach. Set this when a
+   * stale process holds the default port and `kill` is not an option, or
+   * when a CI runner reserves a different port for parallel test runs.
+   */
+  marionettePort?: number;
 }
 
 /**
@@ -451,6 +528,35 @@ export interface PatchDeleteOptions {
   dryRun?: boolean;
   /** Bypass the hard refusal when later patches depend on the target. */
   forceUnsafe?: boolean;
+}
+
+/**
+ * Options for the `fireforge patch rename` subcommand. Updates the
+ * patch's filename, manifest `name`, and (optionally) `description`
+ * atomically without rewriting the `.patch` file body. Companion to
+ * `re-export --files` for the case where the body is already correct
+ * but the patch's identity (filename + description) describes a
+ * pre-shrink scope; before this verb existed the only workaround was
+ * `delete` + re-export, which briefly dropped the patch from the queue.
+ */
+export interface PatchRenameOptions {
+  /**
+   * New human-readable name. Sanitised the same way `export --name`
+   * sanitises into the filename slug (lowercase, non-alphanumerics
+   * collapsed to `-`, length-capped). The patch's `name` field stores
+   * the raw value; the filename uses the sanitised slug.
+   */
+  to?: string;
+  /**
+   * Replacement description. Omit to leave the description unchanged
+   * (intentional — operators frequently want to relabel the slug
+   * without touching the description).
+   */
+  description?: string;
+  /** Print the planned change without writing. */
+  dryRun?: boolean;
+  /** Skip the confirmation prompt (required for non-TTY). */
+  yes?: boolean;
 }
 
 /**

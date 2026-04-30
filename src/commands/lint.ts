@@ -6,13 +6,15 @@ import { Command } from 'commander';
 
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getStatusWithCodes, hasChanges, isGitRepository } from '../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import {
-  getModifiedFiles,
+  expandUntrackedDirectoryEntries,
   getModifiedFilesInDir,
   getUntrackedFiles,
   getUntrackedFilesInDir,
+  getWorkingTreeStatus,
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import {
@@ -101,7 +103,8 @@ export interface LintCommandOptions {
 async function resolveLintDiff(
   engineDir: string,
   files: string[],
-  binaryName?: string
+  binaryName?: string,
+  furnacePrefixes?: ReadonlySet<string>
 ): Promise<string | null> {
   if (files.length > 0) {
     const collectedFiles = new Set<string>();
@@ -171,23 +174,47 @@ async function resolveLintDiff(
   // survive in the patch queue as-is. The exclusion mirrors the
   // `branding` bucket in `fireforge status` so the two views stay
   // consistent.
+  //
+  // `expandUntrackedDirectoryEntries` promotes collapsed `?? dir/`
+  // status rows to individual file entries before the diff pass.
+  // Without it, a patch that introduces a new directory shows up as
+  // `?? browser/modules/<fork>/` and `getDiffForFilesAgainstHead`
+  // crashed with EISDIR reading the directory as if it were a file
+  // (eval finding: aggregate lint unusable on a real imported queue).
   if (binaryName) {
-    const modified = await getModifiedFiles(engineDir);
-    const untracked = await getUntrackedFiles(engineDir);
-    const allPaths = [...new Set([...modified, ...untracked])];
+    const rawStatus = await getWorkingTreeStatus(engineDir);
+    const expanded = await expandUntrackedDirectoryEntries(engineDir, rawStatus);
+    const allPaths = [...new Set(expanded.map((entry) => entry.file))];
     const nonBrandingPaths = allPaths.filter((path) => !isBrandingManagedPath(path, binaryName));
-    const excludedCount = allPaths.length - nonBrandingPaths.length;
-    if (excludedCount > 0) {
+    const brandingExcluded = allPaths.length - nonBrandingPaths.length;
+    // Drop Furnace-managed paths the same way branding is dropped: their
+    // contents are tool output (overrides, custom widgets, preview-
+    // generated stories) that the operator did not author and never
+    // intended to land on the patch queue. Without this carve-out, a
+    // post-`furnace preview` aggregate `lint` failed with one
+    // `missing-license-header` error per generated story file (eval
+    // Finding 19) — each story is intentionally header-less because it's
+    // re-generated from component metadata on every preview run.
+    const filteredPaths = furnacePrefixes
+      ? nonBrandingPaths.filter((path) => ![...furnacePrefixes].some((p) => path.startsWith(p)))
+      : nonBrandingPaths;
+    const furnaceExcluded = nonBrandingPaths.length - filteredPaths.length;
+    if (brandingExcluded > 0) {
       info(
-        `Excluded ${excludedCount} tool-managed branding file${excludedCount === 1 ? '' : 's'} from lint. Pass the path explicitly or use \`fireforge lint <path>\` to include them.`
+        `Excluded ${brandingExcluded} tool-managed branding file${brandingExcluded === 1 ? '' : 's'} from lint. Pass the path explicitly or use \`fireforge lint <path>\` to include them.`
       );
     }
-    if (nonBrandingPaths.length === 0) {
-      info('No non-branding changes to lint.');
+    if (furnaceExcluded > 0) {
+      info(
+        `Excluded ${furnaceExcluded} Furnace-managed file${furnaceExcluded === 1 ? '' : 's'} from lint (deployed components and preview-generated stories). Pass the path explicitly to include them.`
+      );
+    }
+    if (filteredPaths.length === 0) {
+      info('No non-branding, non-Furnace changes to lint.');
       outro('Nothing to lint');
       return null;
     }
-    const diff = await getDiffForFilesAgainstHead(engineDir, nonBrandingPaths.sort());
+    const diff = await getDiffForFilesAgainstHead(engineDir, filteredPaths.sort());
     if (!diff.trim()) {
       info('No diff content to lint.');
       outro('Nothing to lint');
@@ -207,6 +234,65 @@ async function resolveLintDiff(
     return null;
   }
   return diff;
+}
+
+/**
+ * Result of {@link applyAggregateLintIgnoreSuppression}.
+ */
+export interface AggregateLintIgnoreResult {
+  /** Issues remaining after suppression. */
+  issues: PatchLintIssue[];
+  /** Number of issues dropped because an owning patch listed the check in `lintIgnore`. */
+  dropped: number;
+}
+
+/**
+ * Filters aggregate-mode lint issues against per-patch `lintIgnore`
+ * lists drawn from the manifest. An issue is dropped when at least one
+ * patch whose `filesAffected` covers `issue.file` lists `issue.check`
+ * in its `lintIgnore`.
+ *
+ * Mirrors the per-patch contract: `--per-patch` mode threads each
+ * patch's `lintIgnore` directly into `lintExportedPatch`, so a check
+ * the operator explicitly waived in `patches.json` does not surface.
+ * Aggregate `--since` mode previously rediscovered the suppressed
+ * warning every CI run because the diff was treated as a single unit
+ * with no patch-level scope. Attributing each issue's file to its
+ * owning patch via `filesAffected` re-establishes the same suppression
+ * semantics. Cross-patch findings (forward-import, duplicate-creation)
+ * still attribute via `issue.file` because the `file` field is the
+ * offending site, which is owned by some patch.
+ *
+ * Multiple owners: an issue is dropped if **any** owning patch waived
+ * the rule. Conservative — never adds new findings, only drops
+ * already-explicitly-waived ones.
+ *
+ * @param issues - Issues collected from the aggregate lint run.
+ * @param ctx - Patch queue context used to attribute file → patch.
+ * @returns Filtered issue list and the count of dropped findings.
+ */
+export function applyAggregateLintIgnoreSuppression(
+  issues: PatchLintIssue[],
+  ctx: import('../core/patch-lint.js').PatchQueueContext
+): AggregateLintIgnoreResult {
+  const suppressionsByFile = new Map<string, Set<string>>();
+  for (const entry of ctx.entries) {
+    const ignoreList = entry.metadata?.lintIgnore;
+    if (!ignoreList || ignoreList.length === 0) continue;
+    for (const f of entry.metadata?.filesAffected ?? []) {
+      let bucket = suppressionsByFile.get(f);
+      if (!bucket) {
+        bucket = new Set<string>();
+        suppressionsByFile.set(f, bucket);
+      }
+      for (const id of ignoreList) bucket.add(id);
+    }
+  }
+  if (suppressionsByFile.size === 0) {
+    return { issues, dropped: 0 };
+  }
+  const filtered = issues.filter((issue) => !suppressionsByFile.get(issue.file)?.has(issue.check));
+  return { issues: filtered, dropped: issues.length - filtered.length };
 }
 
 /**
@@ -267,7 +353,13 @@ export async function lintCommand(
   // the diff was resolved; hoisting it is cheap and keeps the two
   // call sites close together.
   const config = await loadConfig(projectRoot);
-  const diff = await resolveLintDiff(paths.engine, files, config.binaryName);
+  // Pull the Furnace-managed prefix set up-front so aggregate lint can
+  // mirror the branding exclusion for Furnace material — without it,
+  // preview-generated stories under `browser/components/storybook/
+  // stories/furnace/` show up as license-header errors on every
+  // post-preview lint run.
+  const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
+  const diff = await resolveLintDiff(paths.engine, files, config.binaryName, furnacePrefixes);
   if (diff === null) return;
 
   const filesAffected = extractAffectedFiles(diff);
@@ -279,7 +371,7 @@ export async function lintCommand(
     ctx = await buildPatchQueueContext(paths.patches);
   }
 
-  const issues: PatchLintIssue[] = [
+  let issues: PatchLintIssue[] = [
     ...(await lintExportedPatch(paths.engine, filesAffected, diff, config, ctx)),
   ];
 
@@ -288,6 +380,20 @@ export async function lintCommand(
   // and forward-import chains that the per-patch orchestrator cannot see.
   if (ctx) {
     issues.push(...lintPatchQueue(ctx));
+  }
+
+  // Honor per-patch `lintIgnore` in aggregate mode by attributing each
+  // issue's file to its owning patches via the manifest's
+  // `filesAffected`. Per-patch mode threads `lintIgnore` directly into
+  // `lintExportedPatch`; aggregate mode previously had no patch-level
+  // scope to consult, so a check an operator had explicitly waived in
+  // `patches.json` re-surfaced on every `--since` run (CI default).
+  if (ctx) {
+    const result = applyAggregateLintIgnoreSuppression(issues, ctx);
+    issues = result.issues;
+    if (result.dropped > 0) {
+      info(`Suppressed ${result.dropped} issue(s) via per-patch lintIgnore (aggregate mode).`);
+    }
   }
 
   // When a queue manifest exists AND files were NOT scoped explicitly, the
@@ -392,7 +498,21 @@ export async function lintCommand(
     );
   }
 
-  outro('Lint passed with warnings');
+  // Notices are advisory and don't count as warnings — emitting "passed
+  // with warnings" when only notices fired contradicts the preceding
+  // `0 warning(s)` summary line and reads as a regression. Distinguish
+  // the three pass states explicitly. Errors suppressed by
+  // --only-introduced still warrant the "with warnings" outro — they
+  // print as ERROR rows but no longer fail the run, which is the same
+  // contract the operator gets from a real warning.
+  const suppressedErrors = options.onlyIntroduced && errors.length > 0;
+  if (warnings.length > 0 || suppressedErrors) {
+    outro('Lint passed with warnings');
+  } else if (notices.length > 0) {
+    outro('Lint passed with notices');
+  } else {
+    outro('Lint passed');
+  }
 }
 
 /**
@@ -424,15 +544,22 @@ async function lintPerPatch(
 
   const issues: PatchLintIssue[] = [];
   let linted = 0;
+  let skipped = 0;
   for (const patch of manifest.patches) {
     const existing: string[] = [];
     for (const f of patch.filesAffected) {
       if (await pathExists(join(paths.engine, f))) existing.push(f);
     }
-    if (existing.length === 0) continue;
+    if (existing.length === 0) {
+      skipped++;
+      continue;
+    }
 
     const diff = await getDiffForFilesAgainstHead(paths.engine, existing);
-    if (!diff.trim()) continue;
+    if (!diff.trim()) {
+      skipped++;
+      continue;
+    }
 
     const ignore = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
     const decision = resolvePatchSizeTier(existing, patch.tier);
@@ -464,7 +591,24 @@ async function lintPerPatch(
   issues.push(...lintPatchQueue(ctx));
 
   if (issues.length === 0) {
-    success(`No lint issues found across ${linted} patch(es).`);
+    // 2026-04-26 eval Finding 7: pre-fix the success line read
+    // `No lint issues found across 0 patch(es).` whenever the queue
+    // had not been applied to the engine — every patch's
+    // `filesAffected` filtered out, so `existing` was empty and the
+    // patch was silently skipped. Operators read that as "the queue
+    // is clean" when in reality nothing was checked. Surface the
+    // skipped count and, when nothing was linted at all, point at
+    // `fireforge import` as the missing prerequisite.
+    if (linted === 0 && skipped > 0) {
+      info(
+        `No patches in the queue have been applied to engine/. Run "fireforge import" first if you want lint findings against the staged hunks; otherwise this is expected.`
+      );
+    }
+    const summary =
+      skipped > 0
+        ? `No lint issues found across ${linted} patch(es) (${skipped} skipped — files not present in engine/).`
+        : `No lint issues found across ${linted} patch(es).`;
+    success(summary);
     outro('Lint passed');
     return;
   }
@@ -487,7 +631,13 @@ async function lintPerPatch(
     );
   }
 
-  outro('Lint passed with warnings');
+  if (warnings.length > 0) {
+    outro('Lint passed with warnings');
+  } else if (notices.length > 0) {
+    outro('Lint passed with notices');
+  } else {
+    outro('Lint passed');
+  }
 }
 
 /** Registers the lint command on the CLI program. */

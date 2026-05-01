@@ -23,7 +23,7 @@ import {
   addCustomElementRegistration,
   addJarMnEntries,
   validateCustomElementRegistration,
-  validateJarMnEntries,
+  validateJarMnInsertionForFiles,
 } from './furnace-registration.js';
 import { recordCreatedDir, type RollbackJournal, snapshotFile } from './furnace-rollback.js';
 import { checkRegistrationConsistency } from './furnace-validate-registration.js';
@@ -462,7 +462,7 @@ async function buildCustomDryRunActions(
 
   if (copiedFileNames.length > 0) {
     try {
-      await validateJarMnEntries(engineDir, name, copiedFileNames);
+      await validateJarMnInsertionForFiles(engineDir, name, copiedFileNames);
     } catch (error: unknown) {
       stepErrors.push({
         step: 'jar.mn registration',

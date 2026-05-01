@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createTempProject,
-  git,
   initCommittedRepo,
-  readText,
+  readProjectText,
   removeTempProject,
+  runGit,
   setInteractiveMode,
   writeFiles,
   writeFireForgeConfig,
@@ -79,34 +79,40 @@ describe('reExportCommand integration', () => {
     await writeFiles(join(projectRoot, 'engine'), {
       'tracked.txt': 'changed\n',
     });
-    await git(join(projectRoot, 'engine'), ['add', 'tracked.txt']);
+    await runGit(join(projectRoot, 'engine'), ['add', 'tracked.txt']);
 
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe(
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe(
       'M  tracked.txt\n'
     );
 
     await reExportCommand(projectRoot, ['001'], {});
 
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe(
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe(
       'M  tracked.txt\n'
     );
-    await expect(readText(projectRoot, 'patches/001-ui-test.patch')).resolves.toContain('+changed');
+    await expect(readProjectText(projectRoot, 'patches/001-ui-test.patch')).resolves.toContain(
+      '+changed'
+    );
   });
 
   it('keeps dry-run side effect free for both git state and patch files', async () => {
     await writeFiles(join(projectRoot, 'engine'), {
       'tracked.txt': 'changed\n',
     });
-    await git(join(projectRoot, 'engine'), ['add', 'tracked.txt']);
+    await runGit(join(projectRoot, 'engine'), ['add', 'tracked.txt']);
 
-    const beforePatch = await readText(projectRoot, 'patches/001-ui-test.patch');
+    const beforePatch = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
 
     await reExportCommand(projectRoot, ['001'], { dryRun: true });
 
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe(
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe(
       'M  tracked.txt\n'
     );
-    await expect(readText(projectRoot, 'patches/001-ui-test.patch')).resolves.toBe(beforePatch);
-    await expect(readText(projectRoot, 'patches/patches.json')).resolves.toBe(makeManifest());
+    await expect(readProjectText(projectRoot, 'patches/001-ui-test.patch')).resolves.toBe(
+      beforePatch
+    );
+    await expect(readProjectText(projectRoot, 'patches/patches.json')).resolves.toBe(
+      makeManifest()
+    );
   });
 });

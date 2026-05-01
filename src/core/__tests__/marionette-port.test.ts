@@ -24,8 +24,11 @@ import {
   assertMarionettePortAvailable,
   DEFAULT_MARIONETTE_PORT,
   extractForwardedMarionettePort,
+  forwardedMachArgsIncludeMarionetteClient,
+  hasExplicitXpcshellFlavor,
   isMarionetteFlavor,
   probeMarionettePort,
+  shouldAutoForwardMarionettePortToMach,
 } from '../marionette-port.js';
 
 const mockExec = vi.mocked(exec);
@@ -270,6 +273,70 @@ describe('extractForwardedMarionettePort', () => {
   });
 });
 
+describe('forwardedMachArgsIncludeMarionetteClient', () => {
+  it('returns false when no marionette client arg is present', () => {
+    expect(forwardedMachArgsIncludeMarionetteClient([])).toBe(false);
+    expect(forwardedMachArgsIncludeMarionetteClient(['--headless'])).toBe(false);
+    expect(forwardedMachArgsIncludeMarionetteClient(['--marionette-port=2838'])).toBe(false);
+    expect(forwardedMachArgsIncludeMarionetteClient(['--marionette-port', '2838'])).toBe(false);
+  });
+
+  it('returns true for --marionette=host:port', () => {
+    expect(forwardedMachArgsIncludeMarionetteClient(['--marionette=127.0.0.1:2912'])).toBe(true);
+    expect(
+      forwardedMachArgsIncludeMarionetteClient([
+        '--headless',
+        '--marionette=127.0.0.1:2912',
+        '--keep-open',
+      ])
+    ).toBe(true);
+  });
+
+  it('returns true for two-token --marionette host:port', () => {
+    expect(forwardedMachArgsIncludeMarionetteClient(['--marionette', '127.0.0.1:2912'])).toBe(true);
+  });
+
+  it('does not treat --marionette-port as a client marionette flag', () => {
+    expect(
+      forwardedMachArgsIncludeMarionetteClient(['--marionette-port=2828', '--setpref=foo=bar'])
+    ).toBe(false);
+  });
+
+  it('returns false when --marionette is not followed by a host:port token', () => {
+    expect(forwardedMachArgsIncludeMarionetteClient(['--marionette'])).toBe(false);
+    expect(forwardedMachArgsIncludeMarionetteClient(['--marionette', '--flavor=mochitest'])).toBe(
+      false
+    );
+  });
+});
+
+describe('hasExplicitXpcshellFlavor', () => {
+  it('returns true for xpcshell flavor mach args', () => {
+    expect(hasExplicitXpcshellFlavor(['--flavor=xpcshell'])).toBe(true);
+    expect(hasExplicitXpcshellFlavor(['--flavor=xpcshell-tests'])).toBe(true);
+    expect(hasExplicitXpcshellFlavor(['--headless', '--flavor=xpcshell'])).toBe(true);
+  });
+
+  it('returns false otherwise', () => {
+    expect(hasExplicitXpcshellFlavor([])).toBe(false);
+    expect(hasExplicitXpcshellFlavor(['--flavor=mochitest'])).toBe(false);
+    expect(hasExplicitXpcshellFlavor(['--flavor=browser-chrome'])).toBe(false);
+  });
+});
+
+describe('shouldAutoForwardMarionettePortToMach', () => {
+  it('returns false when xpcshell flavor is explicit', () => {
+    expect(shouldAutoForwardMarionettePortToMach(['--flavor=xpcshell'])).toBe(false);
+    expect(shouldAutoForwardMarionettePortToMach(['--flavor=xpcshell-tests'])).toBe(false);
+  });
+
+  it('returns true for other mach arg shapes', () => {
+    expect(shouldAutoForwardMarionettePortToMach([])).toBe(true);
+    expect(shouldAutoForwardMarionettePortToMach(['--flavor=mochitest'])).toBe(true);
+    expect(shouldAutoForwardMarionettePortToMach(['--headless'])).toBe(true);
+  });
+});
+
 describe('isMarionetteFlavor', () => {
   it('returns true for browser_*.js paths', () => {
     expect(isMarionetteFlavor(['browser/base/content/test/general/browser_focus.js'], [])).toBe(
@@ -300,5 +367,11 @@ describe('isMarionetteFlavor', () => {
     expect(isMarionetteFlavor(['toolkit/components/tests/xpcshell/test_observer.js'], [])).toBe(
       false
     );
+  });
+
+  it('returns true for toolkit/content/tests widget HTML paths', () => {
+    expect(
+      isMarionetteFlavor(['toolkit/content/tests/widgets/test_moz-hominis-dock-shell.html'], [])
+    ).toBe(true);
   });
 });

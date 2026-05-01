@@ -8,7 +8,7 @@ import { getDownloadUrl, getTarballFilename } from '../../core/firefox.js';
 import {
   createTempProject,
   makeTarXzArchive,
-  readText,
+  readProjectText,
   removeTempProject,
   writeFiles,
   writeFireForgeConfig,
@@ -16,7 +16,7 @@ import {
 import { downloadCommand } from '../download.js';
 
 // The spinner mock tracks `message(...)` calls so tests can assert that
-// git-init progress flowed through the spinner — 0.16.0 removed the
+// runGit-init progress flowed through the spinner — 0.16.0 removed the
 // redundant `step(...)` call that the resume/init paths used to make
 // alongside `spinner.message(...)`, because the non-TTY spinner fallback
 // already emits `p.log.step(msg)` from `.message()`. Recording the
@@ -146,7 +146,10 @@ describe('downloadCommand integration', () => {
 
     await expect(readFile(cacheFile)).rejects.toThrow();
     await expect(
-      readText(projectRoot, '.fireforge/cache/firefox-firefox-esr-140.9.0esr.source.tar.xz.json')
+      readProjectText(
+        projectRoot,
+        '.fireforge/cache/firefox-firefox-esr-140.9.0esr.source.tar.xz.json'
+      )
     ).resolves.toContain('"archiveVersion": "140.9.0esr"');
     expect(spinnerMessageCalls.some((message) => /git add -A/i.test(message))).toBe(true);
   });
@@ -187,7 +190,7 @@ describe('downloadCommand integration', () => {
 
     await downloadCommand(projectRoot, {});
 
-    const versionFile = await readText(projectRoot, 'engine/browser/config/version.txt');
+    const versionFile = await readProjectText(projectRoot, 'engine/browser/config/version.txt');
     expect(versionFile).toBe('140.9.0esr\n');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

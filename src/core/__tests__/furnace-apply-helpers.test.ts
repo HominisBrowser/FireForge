@@ -29,7 +29,7 @@ vi.mock('../furnace-registration.js', () => ({
   addLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(0)),
   removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve()),
   validateCustomElementRegistration: vi.fn(),
-  validateJarMnEntries: vi.fn(),
+  validateJarMnInsertionForFiles: vi.fn(),
 }));
 
 vi.mock('../git.js', () => ({
@@ -67,7 +67,7 @@ import {
   addCustomElementRegistration,
   addJarMnEntries,
   validateCustomElementRegistration,
-  validateJarMnEntries,
+  validateJarMnInsertionForFiles,
 } from '../furnace-registration.js';
 import { isGitRepository } from '../git.js';
 import { fileExistsInHead, restoreTrackedPath } from '../git-file-ops.js';
@@ -80,7 +80,7 @@ const mockEnsureDir = vi.mocked(ensureDir);
 const mockAddCEReg = vi.mocked(addCustomElementRegistration);
 const mockAddJarMn = vi.mocked(addJarMnEntries);
 const mockValidateCEReg = vi.mocked(validateCustomElementRegistration);
-const mockValidateJarMn = vi.mocked(validateJarMnEntries);
+const mockValidateJarMn = vi.mocked(validateJarMnInsertionForFiles);
 
 function fakeEntry(name: string, isFile = true): import('node:fs').Dirent {
   return {

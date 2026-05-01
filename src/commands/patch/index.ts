@@ -17,13 +17,6 @@ import { registerPatchRename } from './rename.js';
 import { registerPatchReorder } from './reorder.js';
 import { registerPatchTier } from './tier.js';
 
-export { patchCompactCommand } from './compact.js';
-export { patchDeleteCommand } from './delete.js';
-export { patchLintIgnoreCommand } from './lint-ignore.js';
-export { patchRenameCommand } from './rename.js';
-export { patchReorderCommand } from './reorder.js';
-export { patchTierCommand } from './tier.js';
-
 /**
  * Registers the `patch` subcommand parent and its verbs on the CLI.
  *

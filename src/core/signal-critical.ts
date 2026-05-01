@@ -60,14 +60,6 @@ export async function runInSignalCriticalSection<T>(
 }
 
 /**
- * Returns true while any critical section is currently running. Used by the
- * bin entry point's signal handler to decide whether to await before exit.
- */
-export function hasActiveCriticalSection(): boolean {
-  return activeSections.size > 0;
-}
-
-/**
  * Waits for every active critical section to complete or for `timeoutMs` to
  * elapse, whichever comes first. Never rejects: a section that throws still
  * resolves from the registry's perspective because `runInSignalCriticalSection`
@@ -80,13 +72,4 @@ export async function waitForActiveCriticalSections(timeoutMs: number): Promise<
     Promise.allSettled(snapshot).then(() => undefined),
     new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
   ]);
-}
-
-/**
- * Test-only helper: clears the critical-section registry. Production code
- * must never call this — it voids the exit-ordering guarantee for any
- * section still in flight.
- */
-export function resetCriticalSectionsForTests(): void {
-  activeSections.clear();
 }

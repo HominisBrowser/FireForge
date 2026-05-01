@@ -7,7 +7,7 @@
 
 import { FurnaceError } from '../errors/furnace.js';
 import { isContainedRelativePath } from '../utils/paths.js';
-import { parseStringArray } from './furnace-config.js';
+import { parseStringArray } from './furnace-config-array-utils.js';
 
 /**
  * Validates a `tokenHostDocuments` raw value. Each entry must be a non-empty

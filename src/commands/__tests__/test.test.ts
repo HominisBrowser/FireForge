@@ -71,8 +71,9 @@ vi.mock('../../core/marionette-preflight.js', () => ({
 // tests in `src/core/__tests__/marionette-port.test.ts` exercise the
 // holder detection and error shape in isolation.
 vi.mock('../../core/marionette-port.js', async () => {
-  // Use the real `extractForwardedMarionettePort` and `isMarionetteFlavor`
-  // helpers — they are pure parsing utilities and exercising them through
+  // Use the real `extractForwardedMarionettePort` and
+  // `shouldAutoForwardMarionettePortToMach` helpers — they are pure parsing
+  // utilities and exercising them through
   // the test command keeps the integration honest. Mock only the I/O-shaped
   // probe so the mach invocation is reached.
   const actual = await vi.importActual<typeof import('../../core/marionette-port.js')>(
@@ -713,19 +714,51 @@ describe('testCommand', () => {
     );
   });
 
-  it('auto-forwards --setpref=marionette.port=N to mach for browser-chrome paths', async () => {
+  it('auto-forwards setpref and mochitest --marionette client for browser-chrome paths', async () => {
     vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
 
     await expect(
       testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
-        marionettePort: 2838,
+        marionettePort: 2912,
       })
     ).resolves.toBeUndefined();
 
     expect(testWithOutput).toHaveBeenCalledWith(
       '/project/engine',
       ['browser/base/content/test/general/browser_focus.js'],
-      ['--setpref=marionette.port=2838']
+      ['--setpref=marionette.port=2912', '--marionette=127.0.0.1:2912']
+    );
+  });
+
+  it('auto-forwards --setpref=marionette.port=N for toolkit widget HTML paths', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['toolkit/content/tests/widgets/test_moz-example.html'], {
+        marionettePort: 2838,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['toolkit/content/tests/widgets/test_moz-example.html'],
+      ['--setpref=marionette.port=2838', '--marionette=127.0.0.1:2838']
+    );
+  });
+
+  it('auto-forwards --setpref for xpcshell filesystem paths without --flavor=xpcshell', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['toolkit/components/tests/xpcshell/test_observer.js'], {
+        marionettePort: 2838,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['toolkit/components/tests/xpcshell/test_observer.js'],
+      ['--setpref=marionette.port=2838', '--marionette=127.0.0.1:2838']
     );
   });
 
@@ -749,7 +782,24 @@ describe('testCommand', () => {
     expect(testWithOutput).toHaveBeenCalledWith(
       '/project/engine',
       ['browser/base/content/test/general/browser_focus.js'],
-      ['--marionette-port=2838']
+      ['--marionette-port=2838', '--marionette=127.0.0.1:2838']
+    );
+  });
+
+  it('does not add a second --marionette when --mach-arg already sets the client endpoint', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
+        marionettePort: 2912,
+        machArg: ['--marionette=127.0.0.1:2912'],
+      })
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/general/browser_focus.js'],
+      ['--marionette=127.0.0.1:2912', '--setpref=marionette.port=2912']
     );
   });
 

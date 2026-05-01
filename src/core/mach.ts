@@ -20,14 +20,11 @@ import { getPython } from './mach-python.js';
 // Re-export sub-modules so existing `from './mach.js'` imports keep working.
 export {
   attemptMozinfoRewrite,
-  type BuildArtifactCheck,
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
   hasRunnableBundle,
-  type MozinfoRewriteResult,
-  type RunnableBundleCheck,
 } from './mach-build-artifacts.js';
-export { generateMozconfig, type MozconfigVariables } from './mach-mozconfig.js';
+export { generateMozconfig } from './mach-mozconfig.js';
 export { ensurePython, resetResolvedPython } from './mach-python.js';
 
 /**

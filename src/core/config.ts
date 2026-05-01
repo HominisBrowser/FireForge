@@ -24,17 +24,13 @@ import { createSiblingLockPath, withFileLock } from './file-lock.js';
 export { mutateConfig } from './config-mutate.js';
 export {
   CONFIG_FILENAME,
-  CONFIGS_DIR,
-  ENGINE_DIR,
   FIREFORGE_DIR,
   getProjectPaths,
-  PATCHES_DIR,
-  SRC_DIR,
   STATE_FILENAME,
   SUPPORTED_CONFIG_PATHS,
   SUPPORTED_CONFIG_ROOT_KEYS,
 } from './config-paths.js';
-export { loadState, saveState, updateState, validateFireForgeState } from './config-state.js';
+export { loadState, saveState, updateState } from './config-state.js';
 export { validateConfig } from './config-validate.js';
 
 // ---- config I/O (stays here because it bridges paths + validation) ----

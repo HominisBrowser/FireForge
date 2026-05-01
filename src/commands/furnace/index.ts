@@ -20,26 +20,6 @@ import { furnaceStatusCommand } from './status.js';
 import { furnaceSyncCommand } from './sync.js';
 import { furnaceValidateCommand } from './validate.js';
 
-export {
-  furnaceApplyCommand,
-  furnaceBatchOverrideCommand,
-  furnaceChromeDocCreateCommand,
-  furnaceCreateCommand,
-  furnaceDeployCommand,
-  furnaceDiffCommand,
-  furnaceInitCommand,
-  furnaceListCommand,
-  furnaceOverrideCommand,
-  furnacePreviewCommand,
-  furnaceRefreshCommand,
-  furnaceRemoveCommand,
-  furnaceRenameCommand,
-  furnaceScanCommand,
-  furnaceStatusCommand,
-  furnaceSyncCommand,
-  furnaceValidateCommand,
-};
-
 /**
  * Registers Furnace commands for querying component state: status, scan,
  * and action commands like apply, deploy, and create.

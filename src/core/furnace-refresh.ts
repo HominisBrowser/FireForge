@@ -25,11 +25,6 @@ export interface RefreshFileResult {
   conflictMarkers?: number;
 }
 
-export interface RefreshResult {
-  files: RefreshFileResult[];
-  newBaseVersion: string;
-}
-
 /**
  * Performs a three-way merge on a single file.
  *

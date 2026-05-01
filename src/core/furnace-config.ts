@@ -12,8 +12,9 @@ import type {
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
-import { isArray, isObject, isString } from '../utils/validation.js';
+import { isObject, isString } from '../utils/validation.js';
 import { FIREFORGE_DIR } from './config.js';
+import { parseStringArray } from './furnace-config-array-utils.js';
 import { parseCustomConfig } from './furnace-config-custom.js';
 import { validateRuntimeVariables, validateTokenHostDocuments } from './furnace-config-tokens.js';
 import { resolveFtlDir } from './furnace-constants.js';
@@ -84,22 +85,6 @@ export async function furnaceConfigExists(root: string): Promise<boolean> {
  * @param data - Raw data to validate
  * @param name - Component name for error messages
  */
-export function parseStringArray(value: unknown, fieldName: string): string[] {
-  if (!isArray(value)) {
-    throw new FurnaceError(`Furnace config: "${fieldName}" must be an array`);
-  }
-
-  const items: string[] = [];
-  for (const item of value) {
-    if (!isString(item)) {
-      throw new FurnaceError(`Furnace config: "${fieldName}" array must contain only strings`);
-    }
-    items.push(item);
-  }
-
-  return items;
-}
-
 function parseOverrideConfig(data: Record<string, unknown>, name: string): OverrideComponentConfig {
   const validTypes = ['css-only', 'full'];
   if (!isString(data['type']) || !validTypes.includes(data['type'])) {

@@ -33,6 +33,10 @@ export const SHIM_FILENAME = '__fireforge_firefox_globals.d.ts';
  * - `Ci`, `Cc`, `Cr`, `Cu` are XPCOM component shortcuts.
  * - Browser chrome globals like `gBrowser`, `gURLBar` are common in
  *   content scripts wired via `browser.js`.
+ * - Dynamic `import("resource:-…")` / `import("chrome:-…")` under patch
+ *   checkJs: the compiler sees empty stubs (`noResolve`); without URL
+ *   ambient modules namespaces degrade to unusable typings. Wildcards
+ *   keep Firefox URL imports pragmatically loose, same posture as globals.
  */
 export const FIREFOX_GLOBALS_SHIM = `
 declare var Services: any;
@@ -58,6 +62,13 @@ declare var gBrowser: any;
 declare var gURLBar: any;
 declare var gNavigatorBundle: any;
 declare var AppConstants: any;
+
+// Shorthand ambient modules — exports from matching URL imports are loosely typed,
+// avoiding noResolve empty-graph namespaces. (Named member access broke when we tried
+// export= Record under moduleResolution Bundler.)
+declare module 'resource:*';
+declare module 'chrome:*';
+
 `;
 
 /**

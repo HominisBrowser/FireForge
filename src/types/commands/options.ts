@@ -334,10 +334,12 @@ export interface TestOptions {
   machArg?: string[];
   /**
    * Override the Marionette control port (default 2828) used by the
-   * stale-browser probe, the `--doctor` preflight, and the auto-forwarded
-   * `--setpref=marionette.port=<n>` arg passed to mach. Set this when a
-   * stale process holds the default port and `kill` is not an option, or
-   * when a CI runner reserves a different port for parallel test runs.
+   * stale-browser probe, the `--doctor` preflight, and (unless mach args set
+   * `--flavor=xpcshell` / `xpcshell-tests`) auto-forwarded mach flags:
+   * `--setpref=marionette.port=<n>` for the browser listener and
+   * `--marionette=127.0.0.1:<n>` for the mochitest harness client. Omits the
+   * client flag when `--mach-arg` already passes `--marionette`. Set when a
+   * stale process holds the default port or CI uses another port.
    */
   marionettePort?: number;
 }

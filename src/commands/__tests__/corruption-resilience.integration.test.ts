@@ -9,7 +9,7 @@ import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflo
 import {
   createTempProject,
   initCommittedRepo,
-  readText,
+  readProjectText,
   removeTempProject,
   setInteractiveMode,
   writeFiles,
@@ -74,8 +74,8 @@ describe('corruption resilience integration', () => {
     });
 
     // Reset engine
-    const { git } = await import('../../test-utils/index.js');
-    await git(engineDir, ['checkout', '--', 'browser/base/content/browser.js']);
+    const { runGit } = await import('../../test-utils/index.js');
+    await runGit(engineDir, ['checkout', '--', 'browser/base/content/browser.js']);
 
     // Import should fail due to manifest corruption
     await expect(importCommand(projectRoot, {})).rejects.toThrow();
@@ -149,7 +149,7 @@ describe('corruption resilience integration', () => {
     });
 
     // Tamper: change filesAffected to a wrong value
-    const manifestContent = await readText(projectRoot, 'patches/patches.json');
+    const manifestContent = await readProjectText(projectRoot, 'patches/patches.json');
     const manifest = JSON.parse(manifestContent) as { patches: Array<{ filesAffected: string[] }> };
     const firstPatch = manifest.patches[0];
     if (firstPatch) firstPatch.filesAffected = ['browser/nonexistent/file.js'];

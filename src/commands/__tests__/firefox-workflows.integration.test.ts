@@ -10,10 +10,10 @@ import {
 } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
   createTempProject,
-  git,
   initCommittedRepo,
-  readText,
+  readProjectText,
   removeTempProject,
+  runGit,
   setInteractiveMode,
   writeFiles,
 } from '../../test-utils/index.js';
@@ -69,14 +69,14 @@ describe('Firefox workflow fixtures', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    await expect(readText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
+    await expect(readProjectText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
       '+export const browserTitle = "new";'
     );
 
-    await git(join(projectRoot, 'engine'), ['checkout', '--', fixture.exportPath]);
+    await runGit(join(projectRoot, 'engine'), ['checkout', '--', fixture.exportPath]);
     await importCommand(projectRoot, {});
 
-    await expect(readText(join(projectRoot, 'engine'), fixture.exportPath)).resolves.toBe(
+    await expect(readProjectText(join(projectRoot, 'engine'), fixture.exportPath)).resolves.toBe(
       fixture.expectedImportedContent
     );
   });
@@ -104,7 +104,7 @@ describe('Firefox workflow fixtures', () => {
 
     const manifestAfter = await loadPatchesManifest(join(projectRoot, 'patches'));
     expect(manifestAfter?.patches[0]?.filesAffected).toEqual(fixture.expectedFilesAffected);
-    await expect(readText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
+    await expect(readProjectText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
       '+++ b/browser/components/example/panel-helper.js'
     );
   });
@@ -113,18 +113,18 @@ describe('Firefox workflow fixtures', () => {
     const fixture = FIREFOX_WORKFLOW_FIXTURES.driftGuard;
     await initCommittedRepo(join(projectRoot, 'engine'), fixture.initialFiles);
 
-    const baseCommit = (await git(join(projectRoot, 'engine'), ['rev-parse', 'HEAD'])).trim();
+    const baseCommit = (await runGit(join(projectRoot, 'engine'), ['rev-parse', 'HEAD'])).trim();
     await writeFiles(projectRoot, {
       '.fireforge/state.json': `${JSON.stringify({ baseCommit }, null, 2)}\n`,
     });
 
     await writeFiles(join(projectRoot, 'engine'), fixture.modifiedFiles);
     await exportCommand(projectRoot, [fixture.exportPath], fixture.exportOptions);
-    await git(join(projectRoot, 'engine'), ['checkout', '--', fixture.exportPath]);
+    await runGit(join(projectRoot, 'engine'), ['checkout', '--', fixture.exportPath]);
 
     await writeFiles(join(projectRoot, 'engine'), fixture.driftFiles);
-    await git(join(projectRoot, 'engine'), ['add', '-A']);
-    await git(join(projectRoot, 'engine'), ['commit', '-m', 'upstream drift']);
+    await runGit(join(projectRoot, 'engine'), ['add', '-A']);
+    await runGit(join(projectRoot, 'engine'), ['commit', '-m', 'upstream drift']);
 
     await expect(importCommand(projectRoot, {})).rejects.toThrow(
       'Engine HEAD has drifted from base commit. Re-run with --force to bypass drift check.'
@@ -147,20 +147,20 @@ describe('Firefox workflow fixtures', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('new file mode');
     expect(patchContent).toContain('light-dark(');
 
     // Round-trip: add, commit, then reset to baseline and reimport
     const engineDir = join(projectRoot, 'engine');
     const cssPath = fixture.expectedFilesAffected[0];
-    await git(engineDir, ['add', cssPath]);
-    await git(engineDir, ['commit', '-m', 'add new file']);
-    await git(engineDir, ['rm', '-f', cssPath]);
-    await git(engineDir, ['commit', '-m', 'remove for reimport']);
+    await runGit(engineDir, ['add', cssPath]);
+    await runGit(engineDir, ['commit', '-m', 'add new file']);
+    await runGit(engineDir, ['rm', '-f', cssPath]);
+    await runGit(engineDir, ['commit', '-m', 'remove for reimport']);
     await importCommand(projectRoot, {});
 
-    await expect(readText(engineDir, cssPath)).resolves.toBe(fixture.modifiedFiles[cssPath]);
+    await expect(readProjectText(engineDir, cssPath)).resolves.toBe(fixture.modifiedFiles[cssPath]);
   });
 
   it('exports a multi-file theme patch touching 3 directories', async () => {
@@ -182,7 +182,7 @@ describe('Firefox workflow fixtures', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('+++ b/browser/modules/moz.build');
     expect(patchContent).toContain('+++ b/browser/themes/shared/browser.css');
     expect(patchContent).toContain('+++ b/browser/themes/shared/jar.inc.mn');
@@ -190,12 +190,12 @@ describe('Firefox workflow fixtures', () => {
     // Round-trip: reset all 3 files and reimport
     const engineDir = join(projectRoot, 'engine');
     for (const file of fixture.expectedFilesAffected) {
-      await git(engineDir, ['checkout', '--', file]);
+      await runGit(engineDir, ['checkout', '--', file]);
     }
     await importCommand(projectRoot, {});
 
     for (const [path, content] of Object.entries(fixture.modifiedFiles)) {
-      await expect(readText(engineDir, path)).resolves.toBe(content);
+      await expect(readProjectText(engineDir, path)).resolves.toBe(content);
     }
   });
 
@@ -214,20 +214,20 @@ describe('Firefox workflow fixtures', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('new file mode');
     expect(patchContent).toContain('ChromeUtils.defineESModuleGetters');
 
     // Round-trip: add, commit, then remove and reimport
     const engineDir = join(projectRoot, 'engine');
     const mjsPath = fixture.expectedFilesAffected[0];
-    await git(engineDir, ['add', mjsPath]);
-    await git(engineDir, ['commit', '-m', 'add new file']);
-    await git(engineDir, ['rm', '-f', mjsPath]);
-    await git(engineDir, ['commit', '-m', 'remove for reimport']);
+    await runGit(engineDir, ['add', mjsPath]);
+    await runGit(engineDir, ['commit', '-m', 'add new file']);
+    await runGit(engineDir, ['rm', '-f', mjsPath]);
+    await runGit(engineDir, ['commit', '-m', 'remove for reimport']);
     await importCommand(projectRoot, {});
 
-    await expect(readText(engineDir, mjsPath)).resolves.toBe(fixture.modifiedFiles[mjsPath]);
+    await expect(readProjectText(engineDir, mjsPath)).resolves.toBe(fixture.modifiedFiles[mjsPath]);
   });
 
   it('exports upstream BrowserGlue modification with marker comment', async () => {
@@ -242,15 +242,15 @@ describe('Firefox workflow fixtures', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('// MYBROWSER: sidebar');
 
     // Round-trip
     const engineDir = join(projectRoot, 'engine');
-    await git(engineDir, ['checkout', '--', fixture.exportPath]);
+    await runGit(engineDir, ['checkout', '--', fixture.exportPath]);
     await importCommand(projectRoot, {});
 
-    await expect(readText(engineDir, fixture.exportPath)).resolves.toBe(
+    await expect(readProjectText(engineDir, fixture.exportPath)).resolves.toBe(
       fixture.modifiedFiles[fixture.exportPath]
     );
   });
@@ -269,20 +269,22 @@ describe('Firefox workflow fixtures', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('new file mode');
     expect(patchContent).toContain('pref("mybrowser.sidebar.enabled", true)');
 
     // Round-trip: add, commit, then remove and reimport
     const engineDir = join(projectRoot, 'engine');
     const prefsPath = fixture.expectedFilesAffected[0];
-    await git(engineDir, ['add', prefsPath]);
-    await git(engineDir, ['commit', '-m', 'add new file']);
-    await git(engineDir, ['rm', '-f', prefsPath]);
-    await git(engineDir, ['commit', '-m', 'remove for reimport']);
+    await runGit(engineDir, ['add', prefsPath]);
+    await runGit(engineDir, ['commit', '-m', 'add new file']);
+    await runGit(engineDir, ['rm', '-f', prefsPath]);
+    await runGit(engineDir, ['commit', '-m', 'remove for reimport']);
     await importCommand(projectRoot, {});
 
-    await expect(readText(engineDir, prefsPath)).resolves.toBe(fixture.modifiedFiles[prefsPath]);
+    await expect(readProjectText(engineDir, prefsPath)).resolves.toBe(
+      fixture.modifiedFiles[prefsPath]
+    );
   });
 
   it('exports a test file alongside its manifest update', async () => {
@@ -298,7 +300,7 @@ describe('Firefox workflow fixtures', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     // .toml is modification, .js is new file
     expect(patchContent).toContain('+++ b/browser/components/mybrowser/test/browser.toml');
     expect(patchContent).toContain('new file mode');
@@ -306,21 +308,21 @@ describe('Firefox workflow fixtures', () => {
 
     // Round-trip: commit the new state, then reset to baseline
     const engineDir = join(projectRoot, 'engine');
-    await git(engineDir, ['add', '-A']);
-    await git(engineDir, ['commit', '-m', 'snapshot exported state']);
+    await runGit(engineDir, ['add', '-A']);
+    await runGit(engineDir, ['commit', '-m', 'snapshot exported state']);
     // Restore .toml to original and remove new .js
-    await git(engineDir, [
+    await runGit(engineDir, [
       'checkout',
       'HEAD~1',
       '--',
       'browser/components/mybrowser/test/browser.toml',
     ]);
-    await git(engineDir, ['rm', '-f', 'browser/components/mybrowser/test/browser_sidebar.js']);
-    await git(engineDir, ['commit', '-m', 'reset for reimport']);
+    await runGit(engineDir, ['rm', '-f', 'browser/components/mybrowser/test/browser_sidebar.js']);
+    await runGit(engineDir, ['commit', '-m', 'reset for reimport']);
     await importCommand(projectRoot, {});
 
     for (const [path, content] of Object.entries(fixture.modifiedFiles)) {
-      await expect(readText(engineDir, path)).resolves.toBe(content);
+      await expect(readProjectText(engineDir, path)).resolves.toBe(content);
     }
   });
 
@@ -337,7 +339,7 @@ describe('Firefox workflow fixtures', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('+        .opaque_type("std::.*basic_string")');
     expect(patchContent).toContain('+        .blocklist_item(".*basic_string___self_view")');
     // Rust file is not "new file mode" — it's a modification
@@ -345,10 +347,10 @@ describe('Firefox workflow fixtures', () => {
 
     // Round-trip
     const engineDir = join(projectRoot, 'engine');
-    await git(engineDir, ['checkout', '--', fixture.exportPath]);
+    await runGit(engineDir, ['checkout', '--', fixture.exportPath]);
     await importCommand(projectRoot, {});
 
-    await expect(readText(engineDir, fixture.exportPath)).resolves.toBe(
+    await expect(readProjectText(engineDir, fixture.exportPath)).resolves.toBe(
       fixture.modifiedFiles[fixture.exportPath]
     );
   });
@@ -366,7 +368,7 @@ describe('Firefox workflow fixtures', () => {
     if (!firstPatch) throw new Error('Expected exported patch');
     const patchFilename = firstPatch.filename;
 
-    await expect(readText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
+    await expect(readProjectText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
       '+export const MAX_WORKSPACES = 16;'
     );
 
@@ -376,7 +378,7 @@ describe('Firefox workflow fixtures', () => {
     // Re-export
     await reExportCommand(projectRoot, [String(firstPatch.order)], {});
 
-    const updatedPatch = await readText(projectRoot, `patches/${patchFilename}`);
+    const updatedPatch = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(updatedPatch).toContain('+export const MAX_WORKSPACES = 16;');
     expect(updatedPatch).toContain('+export const DEFAULT_DOCK_POSITION = "bottom";');
   });
@@ -459,7 +461,7 @@ describe('Firefox workflow fixtures', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
 
     // Should contain both hunks: lazy import near top AND startup hook below
     expect(patchContent).toContain(
@@ -473,10 +475,10 @@ describe('Firefox workflow fixtures', () => {
 
     // Round-trip
     const engineDir = join(projectRoot, 'engine');
-    await git(engineDir, ['checkout', '--', fixture.exportPath]);
+    await runGit(engineDir, ['checkout', '--', fixture.exportPath]);
     await importCommand(projectRoot, {});
 
-    await expect(readText(engineDir, fixture.exportPath)).resolves.toBe(
+    await expect(readProjectText(engineDir, fixture.exportPath)).resolves.toBe(
       fixture.modifiedFiles[fixture.exportPath]
     );
   });
@@ -514,14 +516,17 @@ describe('Firefox workflow fixtures', () => {
 
     // Reset engine to baseline and import both patches in order
     const engineDir = join(projectRoot, 'engine');
-    await git(engineDir, ['checkout', '--', 'browser/modules/moz.build']);
-    await git(engineDir, ['checkout', '--', 'browser/modules/mybrowser/FlushManager.sys.mjs']);
+    await runGit(engineDir, ['checkout', '--', 'browser/modules/moz.build']);
+    await runGit(engineDir, ['checkout', '--', 'browser/modules/mybrowser/FlushManager.sys.mjs']);
     await importCommand(projectRoot, {});
 
     // Both patches should be applied
-    const mozbuild = await readText(engineDir, 'browser/modules/moz.build');
+    const mozbuild = await readProjectText(engineDir, 'browser/modules/moz.build');
     expect(mozbuild).toContain('"mybrowser"');
-    const flush = await readText(engineDir, 'browser/modules/mybrowser/FlushManager.sys.mjs');
+    const flush = await readProjectText(
+      engineDir,
+      'browser/modules/mybrowser/FlushManager.sys.mjs'
+    );
     expect(flush).toContain('return 3000;');
   });
 
@@ -542,13 +547,13 @@ describe('Firefox workflow fixtures', () => {
     // Round-trip
     const engineDir = join(projectRoot, 'engine');
     const mjsPath = fixture.expectedFilesAffected[0];
-    await git(engineDir, ['add', mjsPath]);
-    await git(engineDir, ['commit', '-m', 'add new file']);
-    await git(engineDir, ['rm', '-f', mjsPath]);
-    await git(engineDir, ['commit', '-m', 'remove for reimport']);
+    await runGit(engineDir, ['add', mjsPath]);
+    await runGit(engineDir, ['commit', '-m', 'add new file']);
+    await runGit(engineDir, ['rm', '-f', mjsPath]);
+    await runGit(engineDir, ['commit', '-m', 'remove for reimport']);
     await importCommand(projectRoot, {});
 
-    await expect(readText(engineDir, mjsPath)).resolves.toBe(fixture.modifiedFiles[mjsPath]);
+    await expect(readProjectText(engineDir, mjsPath)).resolves.toBe(fixture.modifiedFiles[mjsPath]);
   });
 
   it('imports two overlapping patches modifying the same file in sequence', async () => {
@@ -608,16 +613,16 @@ describe('Firefox workflow fixtures', () => {
     expect(manifest?.patches).toHaveLength(2);
 
     // Reset both files to baseline
-    await git(engineDir, ['checkout', '--', 'browser/modules/moz.build']);
-    await git(engineDir, ['checkout', '--', 'browser/modules/mybrowser/Store.sys.mjs']);
+    await runGit(engineDir, ['checkout', '--', 'browser/modules/moz.build']);
+    await runGit(engineDir, ['checkout', '--', 'browser/modules/mybrowser/Store.sys.mjs']);
 
     // Import full stack — both patches should apply in order
     await importCommand(projectRoot, {});
 
     // Both changes present
-    const mozbuild = await readText(engineDir, 'browser/modules/moz.build');
+    const mozbuild = await readProjectText(engineDir, 'browser/modules/moz.build');
     expect(mozbuild).toContain('"mybrowser"');
-    const store = await readText(engineDir, 'browser/modules/mybrowser/Store.sys.mjs');
+    const store = await readProjectText(engineDir, 'browser/modules/mybrowser/Store.sys.mjs');
     expect(store).toContain('return true;');
   });
 

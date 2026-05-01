@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { GitIndexLockError } from '../../errors/git.js';
-import { git } from '../../test-utils/index.js';
+import { runGit } from '../../test-utils/index.js';
 import {
   commit,
   hasChanges,
@@ -120,22 +120,22 @@ describe('resetChanges', () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-test-'));
 
     try {
-      await git(repoDir, ['init']);
-      await git(repoDir, ['config', 'user.email', 'fireforge@example.test']);
-      await git(repoDir, ['config', 'user.name', 'FireForge Tests']);
+      await runGit(repoDir, ['init']);
+      await runGit(repoDir, ['config', 'user.email', 'fireforge@example.test']);
+      await runGit(repoDir, ['config', 'user.name', 'FireForge Tests']);
       await writeFile(join(repoDir, 'tracked.txt'), 'original\n', 'utf8');
-      await git(repoDir, ['add', 'tracked.txt']);
-      await git(repoDir, ['commit', '-m', 'initial']);
+      await runGit(repoDir, ['add', 'tracked.txt']);
+      await runGit(repoDir, ['commit', '-m', 'initial']);
 
       await writeFile(join(repoDir, 'tracked.txt'), 'changed\n', 'utf8');
       await writeFile(join(repoDir, 'staged-new.txt'), 'staged\n', 'utf8');
       await writeFile(join(repoDir, 'scratch.txt'), 'temp\n', 'utf8');
-      await git(repoDir, ['add', 'staged-new.txt']);
+      await runGit(repoDir, ['add', 'staged-new.txt']);
 
       await resetChanges(repoDir);
 
-      await expect(git(repoDir, ['status', '--short'])).resolves.toBe('');
-      await expect(git(repoDir, ['diff', 'HEAD', '--name-only'])).resolves.toBe('');
+      await expect(runGit(repoDir, ['status', '--short'])).resolves.toBe('');
+      await expect(runGit(repoDir, ['diff', 'HEAD', '--name-only'])).resolves.toBe('');
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }
@@ -170,7 +170,7 @@ describe('initRepository', () => {
 
     try {
       await writeFile(join(repoDir, 'tracked.txt'), 'initial\n', 'utf8');
-      await git(repoDir, ['init']);
+      await runGit(repoDir, ['init']);
       await writeFile(join(repoDir, '.git', 'index.lock'), '', 'utf8');
 
       await expect(initRepository(repoDir, 'firefox')).rejects.toBeInstanceOf(GitIndexLockError);
@@ -186,17 +186,17 @@ describe('resumeRepository', () => {
 
     try {
       // Set up a partially-initialized repo (init + orphan but no commit)
-      await git(repoDir, ['init']);
-      await git(repoDir, ['checkout', '--orphan', 'main']);
-      await git(repoDir, ['config', 'user.email', 'test@example.test']);
-      await git(repoDir, ['config', 'user.name', 'Test']);
+      await runGit(repoDir, ['init']);
+      await runGit(repoDir, ['checkout', '--orphan', 'main']);
+      await runGit(repoDir, ['config', 'user.email', 'test@example.test']);
+      await runGit(repoDir, ['config', 'user.name', 'Test']);
       await writeFile(join(repoDir, 'file.txt'), 'content\n', 'utf8');
 
       const progress: string[] = [];
       await resumeRepository(repoDir, { onProgress: (m) => progress.push(m) });
 
       // Should have created the initial commit
-      const log = await git(repoDir, ['log', '--oneline']);
+      const log = await runGit(repoDir, ['log', '--oneline']);
       expect(log).toContain('Initial Firefox source');
       expect(progress.length).toBeGreaterThan(0);
     } finally {
@@ -220,15 +220,15 @@ describe('stageAllFiles', () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-stage-'));
 
     try {
-      await git(repoDir, ['init']);
-      await git(repoDir, ['config', 'user.email', 'test@example.test']);
-      await git(repoDir, ['config', 'user.name', 'Test']);
+      await runGit(repoDir, ['init']);
+      await runGit(repoDir, ['config', 'user.email', 'test@example.test']);
+      await runGit(repoDir, ['config', 'user.name', 'Test']);
       await writeFile(join(repoDir, 'a.txt'), 'a\n', 'utf8');
       await writeFile(join(repoDir, 'b.txt'), 'b\n', 'utf8');
 
       await stageAllFiles(repoDir);
 
-      const status = await git(repoDir, ['status', '--porcelain']);
+      const status = await runGit(repoDir, ['status', '--porcelain']);
       expect(status).toContain('A  a.txt');
       expect(status).toContain('A  b.txt');
     } finally {
@@ -263,19 +263,19 @@ describe('commit', () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-commit-'));
 
     try {
-      await git(repoDir, ['init']);
-      await git(repoDir, ['config', 'user.email', 'test@example.test']);
-      await git(repoDir, ['config', 'user.name', 'Test']);
+      await runGit(repoDir, ['init']);
+      await runGit(repoDir, ['config', 'user.email', 'test@example.test']);
+      await runGit(repoDir, ['config', 'user.name', 'Test']);
       await writeFile(join(repoDir, 'initial.txt'), 'init\n', 'utf8');
-      await git(repoDir, ['add', '.']);
-      await git(repoDir, ['commit', '-m', 'initial']);
+      await runGit(repoDir, ['add', '.']);
+      await runGit(repoDir, ['commit', '-m', 'initial']);
 
       // Create a new file
       await writeFile(join(repoDir, 'new.txt'), 'new\n', 'utf8');
 
       await commit(repoDir, 'add new file');
 
-      const log = await git(repoDir, ['log', '--oneline']);
+      const log = await runGit(repoDir, ['log', '--oneline']);
       expect(log).toContain('add new file');
     } finally {
       await rm(repoDir, { recursive: true, force: true });
@@ -292,18 +292,18 @@ describe('getFileContentAtRef', () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-show-ref-'));
 
     try {
-      await git(repoDir, ['init']);
-      await git(repoDir, ['config', 'user.email', 'test@example.test']);
-      await git(repoDir, ['config', 'user.name', 'Test']);
+      await runGit(repoDir, ['init']);
+      await runGit(repoDir, ['config', 'user.email', 'test@example.test']);
+      await runGit(repoDir, ['config', 'user.name', 'Test']);
       await writeFile(join(repoDir, 'widget.css'), '.root { color: blue; }\n', 'utf8');
-      await git(repoDir, ['add', '.']);
-      await git(repoDir, ['commit', '-m', 'initial']);
-      const baseCommit = (await git(repoDir, ['rev-parse', 'HEAD'])).trim();
+      await runGit(repoDir, ['add', '.']);
+      await runGit(repoDir, ['commit', '-m', 'initial']);
+      const baseCommit = (await runGit(repoDir, ['rev-parse', 'HEAD'])).trim();
 
       // Simulate an override applied to the engine worktree and committed.
       await writeFile(join(repoDir, 'widget.css'), '.root { color: red; }\n', 'utf8');
-      await git(repoDir, ['add', '.']);
-      await git(repoDir, ['commit', '-m', 'override']);
+      await runGit(repoDir, ['add', '.']);
+      await runGit(repoDir, ['commit', '-m', 'override']);
 
       const pristine = await getFileContentAtRef(repoDir, 'widget.css', baseCommit);
       const head = await getFileContentAtRef(repoDir, 'widget.css');
@@ -321,13 +321,13 @@ describe('getFileContentAtRef', () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-show-missing-'));
 
     try {
-      await git(repoDir, ['init']);
-      await git(repoDir, ['config', 'user.email', 'test@example.test']);
-      await git(repoDir, ['config', 'user.name', 'Test']);
+      await runGit(repoDir, ['init']);
+      await runGit(repoDir, ['config', 'user.email', 'test@example.test']);
+      await runGit(repoDir, ['config', 'user.name', 'Test']);
       await writeFile(join(repoDir, 'existing.txt'), 'x\n', 'utf8');
-      await git(repoDir, ['add', '.']);
-      await git(repoDir, ['commit', '-m', 'initial']);
-      const baseCommit = (await git(repoDir, ['rev-parse', 'HEAD'])).trim();
+      await runGit(repoDir, ['add', '.']);
+      await runGit(repoDir, ['commit', '-m', 'initial']);
+      const baseCommit = (await runGit(repoDir, ['rev-parse', 'HEAD'])).trim();
 
       const content = await getFileContentAtRef(repoDir, 'not-there.txt', baseCommit);
       expect(content).toBeNull();
@@ -342,12 +342,12 @@ describe('hasChanges', () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-changes-'));
 
     try {
-      await git(repoDir, ['init']);
-      await git(repoDir, ['config', 'user.email', 'test@example.test']);
-      await git(repoDir, ['config', 'user.name', 'Test']);
+      await runGit(repoDir, ['init']);
+      await runGit(repoDir, ['config', 'user.email', 'test@example.test']);
+      await runGit(repoDir, ['config', 'user.name', 'Test']);
       await writeFile(join(repoDir, 'file.txt'), 'content\n', 'utf8');
-      await git(repoDir, ['add', '.']);
-      await git(repoDir, ['commit', '-m', 'initial']);
+      await runGit(repoDir, ['add', '.']);
+      await runGit(repoDir, ['commit', '-m', 'initial']);
 
       expect(await hasChanges(repoDir)).toBe(false);
     } finally {
@@ -359,12 +359,12 @@ describe('hasChanges', () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-changes-'));
 
     try {
-      await git(repoDir, ['init']);
-      await git(repoDir, ['config', 'user.email', 'test@example.test']);
-      await git(repoDir, ['config', 'user.name', 'Test']);
+      await runGit(repoDir, ['init']);
+      await runGit(repoDir, ['config', 'user.email', 'test@example.test']);
+      await runGit(repoDir, ['config', 'user.name', 'Test']);
       await writeFile(join(repoDir, 'file.txt'), 'content\n', 'utf8');
-      await git(repoDir, ['add', '.']);
-      await git(repoDir, ['commit', '-m', 'initial']);
+      await runGit(repoDir, ['add', '.']);
+      await runGit(repoDir, ['commit', '-m', 'initial']);
 
       await writeFile(join(repoDir, 'file.txt'), 'changed\n', 'utf8');
 

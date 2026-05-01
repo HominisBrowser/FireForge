@@ -31,17 +31,8 @@ export {
   isNewFilePatch,
 } from './patch-files.js';
 export { withPatchDirectoryLock } from './patch-lock.js';
-export {
-  extractAffectedFiles,
-  extractOrder,
-  isNewFileInPatch,
-  parseHunksForFile,
-} from './patch-parse.js';
-export {
-  applyPatchToContent,
-  extractNewFileContent,
-  extractNewFileContentFromDiff,
-} from './patch-transform.js';
+export { extractAffectedFiles, extractOrder, isNewFileInPatch } from './patch-parse.js';
+export { applyPatchToContent, extractNewFileContent } from './patch-transform.js';
 
 /**
  * Applies a single patch.

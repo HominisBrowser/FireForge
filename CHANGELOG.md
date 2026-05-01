@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.19.0
+
+### Features
+
+- **`patchLint.checkJsStrict` and `patchLint.checkJsCompilerOptions`.** The patch-lint `checkJs` pass now defaults to the historical loose preset (`strict: false`, `noImplicitAny: false`). Set `"patchLint": { "checkJs": true, "checkJsStrict": true }` to enforce `strict` and `noImplicitAny` on patch-owned `.sys.mjs` so implicit-any parameters surface as `checkjs-type-error`, aligning with strict whole-project checkJs without changing module resolution (`noResolve` and `resource://` suppression unchanged). Optional `checkJsCompilerOptions` (requires `checkJsStrict`) merges allowlisted boolean compiler overrides — for example `{ "strictNullChecks": false }` — after the strict preset for gradual adoption. The Firefox globals shim and `SUPPRESSED_DIAGNOSTIC_CODES` remain shared with `fireforge typecheck` via `typecheck-shim.ts`.
+- **`checkJs` — ambient modules for Firefox URL imports.** The shared shim in `typecheck-shim.ts` now includes shorthand `declare module 'resource:*'` and `declare module 'chrome:*'`, matching typical `resource://…` / `chrome://…` specifiers without the broken `Record` + `export=` shape under `moduleResolution` Bundler (which typed dynamic imports as `{ default: … }` and broke `.namedExport` access). Bulk `fireforge re-export` with `patchLint.checkJs` no longer routinely needs `--skip-lint` for `.sys.mjs` queues that lazily URL-import storage and infra helpers.
+
+### Hardening
+
+- **`modified-file-missing-header` — standard Mozilla MPL-2.0 block headers with wrapped line breaks.** The upstream fallback scan required a contiguous `Mozilla Public License` substring in the first few lines, so files that follow Mozilla’s usual `/* … Mozilla Public` / ` * License, v. 2.0 … */` wrap (including after Emacs/vim directive blocks) were warned despite a valid notice. `containsUpstreamLicenseText` in `src/core/license-headers.ts` now normalizes common block-comment continuation prefixes before matching, so forks need not add SPDX solely to satisfy patch lint.
+- **`fireforge test` — `--marionette-port` auto-forward matches toolkit mochitests and mixed suites.** Auto-forward of `--setpref=marionette.port=<n>` previously keyed off a path heuristic that missed `toolkit/content/tests/**` widget HTML tests (no `/mochitest/` segment), so the preflight could use the operator’s port while mach still defaulted to **2828**. Forwarding now runs whenever `--marionette-port` is set unless `--mach-arg` explicitly includes `--flavor=xpcshell` / `xpcshell-tests` (the pref is unused there). `isMarionetteFlavor` also treats `toolkit/content/tests/` paths as Marionette-relevant unless they sit under `/tests/xpcshell/`, for consistency with other callers of that helper.
+
+### Documentation
+
+- **README — mochitest timeouts vs Marionette.** The Test harness section documents long idle timeouts (~370s, `TEST_END: TIMEOUT`) on fork custom chrome, `--marionette-port` behaviour with xpcshell flavor, and pointers to fork-side prefs and investigation (for example Hominis `AGENT_RULES.md`).
+
 ## 0.18.0
 
 ### Compatibility

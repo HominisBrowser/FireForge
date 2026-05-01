@@ -1627,6 +1627,28 @@ describe('lintModifiedFileHeaders', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('passes when modified file has Firefox-wrapped block MPL after editor directives', async () => {
+    mockPathExists.mockResolvedValue(true);
+    const mpl =
+      '/* This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      ' * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      ' * You can obtain one at http://mozilla.org/MPL/2.0/. */\n';
+    mockReadText.mockResolvedValue(
+      '/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; js-indent-level: 2 -*- */\n' +
+        '/* vim: set ts=8 sts=2 et sw=2 tw=80: */\n' +
+        mpl +
+        '"use strict";\n'
+    );
+
+    const issues = await lintModifiedFileHeaders(
+      '/engine',
+      ['browser/components/extensions/parent/ext-browser.js'],
+      new Set()
+    );
+
+    expect(issues).toHaveLength(0);
+  });
+
   it('passes when upstream file contains SPDX identifier in non-standard format', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(

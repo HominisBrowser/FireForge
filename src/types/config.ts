@@ -99,11 +99,40 @@ export interface WireConfig {
 export type PatchLintSeverityGate = 'off' | 'warning' | 'error';
 
 /**
+ * Allowlisted TypeScript `compilerOptions` overrides for the patch
+ * `checkJs` pass when {@link PatchLintConfig.checkJsStrict} is true.
+ * Merged after the strict preset; only boolean flags — no `paths`,
+ * `rootDir`, or other options that would fight the synthetic program.
+ */
+export interface PatchLintCheckJsCompilerOptions {
+  strictNullChecks?: boolean;
+  strictFunctionTypes?: boolean;
+  strictBindCallApply?: boolean;
+  noImplicitThis?: boolean;
+  useUnknownInCatchVariables?: boolean;
+  strictPropertyInitialization?: boolean;
+  noUnusedLocals?: boolean;
+  noUnusedParameters?: boolean;
+}
+
+/**
  * Configuration for patch lint rules.
  */
 export interface PatchLintConfig {
   /** Enable TypeScript checkJs pass on patch-owned .sys.mjs files */
   checkJs?: boolean;
+  /**
+   * When true with `checkJs: true`, run checkJs with `strict` and
+   * `noImplicitAny` enabled (CI-style). Default false preserves the
+   * historical loose preset. Optional {@link checkJsCompilerOptions}
+   * can relax individual strict flags (e.g. `strictNullChecks: false`).
+   */
+  checkJsStrict?: boolean;
+  /**
+   * Boolean overrides merged after the strict preset; only valid when
+   * `checkJsStrict` is true. Requires `checkJs: true`.
+   */
+  checkJsCompilerOptions?: PatchLintCheckJsCompilerOptions;
   /**
    * Project-relative path to an additional `.d.ts` file whose contents
    * are concatenated to the built-in `FIREFOX_GLOBALS_SHIM` for the

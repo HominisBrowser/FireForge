@@ -59,6 +59,8 @@ export const SUPPORTED_CONFIG_PATHS = [
   'wire.subscriptDir',
   'patchLint',
   'patchLint.checkJs',
+  'patchLint.checkJsStrict',
+  'patchLint.checkJsCompilerOptions',
   'patchLint.checkJsExtraShim',
   'patchLint.rawColorAllowlist',
   'patchLint.jsdocClassMethods',

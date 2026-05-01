@@ -120,6 +120,31 @@ describe('containsUpstreamLicenseText', () => {
     expect(containsUpstreamLicenseText(content)).toBe(true);
   });
 
+  it('finds Mozilla MPL wrapped across block-comment continuation lines (Firefox ext-browser shape)', () => {
+    const mpl =
+      '/* This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      ' * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      ' * You can obtain one at http://mozilla.org/MPL/2.0/. */\n' +
+      '\n' +
+      '"use strict";\n';
+    const head = mpl.split('\n').slice(0, 6).join('\n');
+    expect(head.includes('Mozilla Public License')).toBe(false);
+    expect(containsUpstreamLicenseText(mpl)).toBe(true);
+  });
+
+  it('finds Mozilla MPL after Emacs and vim editor directive blocks', () => {
+    const mpl =
+      '/* This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      ' * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      ' * You can obtain one at http://mozilla.org/MPL/2.0/. */\n';
+    const content =
+      '/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; js-indent-level: 2 -*- */\n' +
+      '/* vim: set ts=8 sts=2 et sw=2 tw=80: */\n' +
+      mpl +
+      'export {};\n';
+    expect(containsUpstreamLicenseText(content)).toBe(true);
+  });
+
   it('returns false when no license text in the first 10 lines', () => {
     const lines = Array.from({ length: 15 }, (_, i) => `// line ${i}`);
     lines[12] = '// Mozilla Public License';

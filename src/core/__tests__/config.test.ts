@@ -226,6 +226,87 @@ describe('validateConfig', () => {
     ).toThrow('Config field "patchLint.checkJsExtraShim" must be a project-relative path');
   });
 
+  it('accepts patchLint.checkJsStrict with checkJs and validates checkJsCompilerOptions', () => {
+    expect(
+      validateConfig(
+        makeValidConfig({
+          patchLint: {
+            checkJs: true,
+            checkJsStrict: true,
+            checkJsCompilerOptions: { strictNullChecks: false },
+          },
+        })
+      ).patchLint
+    ).toEqual({
+      checkJs: true,
+      checkJsStrict: true,
+      checkJsCompilerOptions: { strictNullChecks: false },
+    });
+
+    expect(() => validateConfig(makeValidConfig({ patchLint: { checkJsStrict: true } }))).toThrow(
+      'Config field "patchLint.checkJsStrict" requires "patchLint.checkJs": true'
+    );
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          patchLint: { checkJs: false, checkJsStrict: true },
+        })
+      )
+    ).toThrow('Config field "patchLint.checkJsStrict" requires "patchLint.checkJs": true');
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          patchLint: {
+            checkJs: true,
+            checkJsCompilerOptions: { strictNullChecks: false },
+          },
+        })
+      )
+    ).toThrow(
+      'Config field "patchLint.checkJsCompilerOptions" requires "patchLint.checkJsStrict": true'
+    );
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          patchLint: { checkJs: true, checkJsStrict: true, checkJsCompilerOptions: 'bad' as never },
+        })
+      )
+    ).toThrow('Config field "patchLint.checkJsCompilerOptions" must be a plain object');
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          patchLint: {
+            checkJs: true,
+            checkJsStrict: true,
+            checkJsCompilerOptions: { noEmit: true } as never,
+          },
+        })
+      )
+    ).toThrow('Config field "patchLint.checkJsCompilerOptions" has unknown key "noEmit"');
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          patchLint: {
+            checkJs: true,
+            checkJsStrict: true,
+            checkJsCompilerOptions: { strictNullChecks: 'no' as never },
+          },
+        })
+      )
+    ).toThrow('Config field "patchLint.checkJsCompilerOptions.strictNullChecks" must be a boolean');
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({ patchLint: { checkJs: true, checkJsStrict: 'yes' as never } })
+      )
+    ).toThrow('Config field "patchLint.checkJsStrict" must be a boolean');
+  });
+
   it('accepts a well-formed typecheck block and surfaces field-level errors otherwise', () => {
     const config = validateConfig({
       ...makeValidConfig(),

@@ -77,7 +77,6 @@ function formatMarkerSuffix(markerComment: string | undefined): string {
 export { removeCustomElementRegistration } from './furnace-registration-remove.js';
 
 // Re-export constants so existing import sites continue working
-export { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

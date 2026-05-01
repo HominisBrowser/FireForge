@@ -213,11 +213,11 @@ import { pathExists, readJson } from '../../utils/fs.js';
 import { error, outro, success, warn } from '../../utils/logger.js';
 import {
   DOCTOR_CHECK_ORDER,
-  type DoctorCheckDefinition,
   doctorCommand,
   registerDoctor,
   validateCheckDependencies,
 } from '../doctor.js';
+import type { DoctorCheckDefinition } from '../doctor-check-core.js';
 
 function createProgram(): Command {
   const program = new Command();

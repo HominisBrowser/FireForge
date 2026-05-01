@@ -22,8 +22,6 @@ import {
 } from './git-base.js';
 import { getWorkingTreeStatus } from './git-status.js';
 
-export type { GitStatusEntry } from './git-base.js';
-
 // ── Functions that remain in this file ──
 
 /**

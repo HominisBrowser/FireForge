@@ -65,6 +65,10 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // that file stays under max-lines. Exports an async helper that
   // `doctor.ts` calls from inside its git-checks group.
   'doctor-working-tree.ts',
+  // Shared doctor check types and `ok` / `warning` / `failure` builders.
+  // Split out so `doctor-furnace.ts` and siblings import without cycling
+  // through `doctor.ts`.
+  'doctor-check-core.ts',
   // The --files path for re-export, extracted from re-export.ts to keep
   // it under the max-lines threshold. Consumed by re-export.ts; no
   // top-level registrar.

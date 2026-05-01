@@ -25,7 +25,6 @@ function detectJarMnIndent(lines: string[]): string {
 }
 
 // Re-export everything from the AST module so existing imports keep working
-export { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
 export {
   addCustomElementRegistration,
   removeCustomElementRegistration,
@@ -60,7 +59,7 @@ import { JAR_MN } from './furnace-constants.js';
  *
  * If Firefox upstream changes the jar.mn section ordering or switches to a
  * different resource registration mechanism, the preflight validation in
- * `validateJarMnEntries` will catch the format mismatch before any writes
+ * `validateJarMnInsertionForFiles` will catch the format mismatch before any writes
  * occur.
  *
  * @param engineDir - Path to the Firefox engine source root
@@ -303,7 +302,7 @@ export async function removeJarMnEntries(engineDir: string, tagName: string): Pr
  * Validates that jar.mn entries *could* be added without writing anything.
  * Used by dry-run to surface structural problems early.
  */
-export async function validateJarMnEntries(
+export async function validateJarMnInsertionForFiles(
   engineDir: string,
   tagName: string,
   files: string[]

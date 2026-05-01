@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createTempProject,
-  git,
   initCommittedRepo,
   removeTempProject,
+  runGit,
   setInteractiveMode,
   writeFiles,
   writeFireForgeConfig,
@@ -79,7 +79,7 @@ describe('Furnace rollback integration', () => {
       access(join(projectRoot, 'engine', 'browser', 'components', 'audit', 'moz-audit-widget.mjs'))
     ).rejects.toThrow();
     await expect(access(join(projectRoot, '.fireforge', 'furnace-state.json'))).rejects.toThrow();
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
   }
 
   it('restores touched engine files when furnace apply hits registration step errors', async () => {

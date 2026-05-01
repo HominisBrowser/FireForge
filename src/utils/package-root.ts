@@ -70,11 +70,6 @@ export function getPackageRoot(): string {
   }
 }
 
-/** Clears the cached package root for testing. */
-export function resetPackageRootCacheForTests(): void {
-  cachedPackageRoot = undefined;
-}
-
 /** @internal */
 export function isFireForgePackageMetadata(pkg: PackageMetadata): boolean {
   if (typeof pkg.bin !== 'object' || pkg.bin === null || Array.isArray(pkg.bin)) {

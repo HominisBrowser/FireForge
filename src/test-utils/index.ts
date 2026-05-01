@@ -65,7 +65,7 @@ export async function writeFireForgeConfig(
 }
 
 /** Runs a git command in the given repository and returns stdout. */
-export async function git(cwd: string, args: string[]): Promise<string> {
+export async function runGit(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', args, { cwd });
   return stdout;
 }
@@ -105,15 +105,15 @@ export async function initCommittedRepo(
   files: Record<string, string | Buffer>
 ): Promise<void> {
   await writeFiles(repoDir, files);
-  await git(repoDir, ['init']);
-  await git(repoDir, ['config', 'user.email', 'fireforge@example.test']);
-  await git(repoDir, ['config', 'user.name', 'FireForge Tests']);
-  await git(repoDir, ['add', '-A']);
-  await git(repoDir, ['commit', '-m', 'initial']);
+  await runGit(repoDir, ['init']);
+  await runGit(repoDir, ['config', 'user.email', 'fireforge@example.test']);
+  await runGit(repoDir, ['config', 'user.name', 'FireForge Tests']);
+  await runGit(repoDir, ['add', '-A']);
+  await runGit(repoDir, ['commit', '-m', 'initial']);
 }
 
-/** Reads a project file and normalizes newlines for stable assertions. */
-export async function readText(root: string, relativePath: string): Promise<string> {
+/** Reads a project file under `root` and normalizes newlines for stable assertions. */
+export async function readProjectText(root: string, relativePath: string): Promise<string> {
   const content = await readFile(join(root, relativePath), 'utf8');
   return content.replace(/\r\n/g, '\n');
 }

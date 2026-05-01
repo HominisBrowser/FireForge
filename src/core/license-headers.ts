@@ -152,6 +152,17 @@ export function hasAnyLicenseHeaderAnyStyle(content: string): boolean {
 }
 
 /**
+ * Collapses block-comment continuation lines (`\n` + ` * ` prefixes) so
+ * substring markers like `Mozilla Public License` match Mozilla's wrapped
+ * MPL boilerplate.
+ */
+function normalizeLicenseHeadForScan(head: string): string {
+  let s = head.replace(/\r\n?/g, '\n');
+  s = s.replace(/\n[ \t]*\*[ \t]*/g, ' ');
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Returns true if the first few lines of `content` contain a recognized
  * upstream license identifier string.
  *
@@ -160,6 +171,7 @@ export function hasAnyLicenseHeaderAnyStyle(content: string): boolean {
  */
 export function containsUpstreamLicenseText(content: string, maxLines = 10): boolean {
   const head = content.split('\n').slice(0, maxLines).join('\n');
+  const scanText = normalizeLicenseHeadForScan(head);
   const markers = [
     'Mozilla Public License',
     'SPDX-License-Identifier',
@@ -167,7 +179,7 @@ export function containsUpstreamLicenseText(content: string, maxLines = 10): boo
     'MIT License',
     'GNU General Public License',
   ];
-  return markers.some((marker) => head.includes(marker));
+  return markers.some((marker) => scanText.includes(marker));
 }
 
 /**

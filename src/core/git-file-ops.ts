@@ -9,15 +9,6 @@ import type { GitStatusEntry } from './git-base.js';
 import { ensureGit, git } from './git-base.js';
 
 /**
- * Discards changes to a specific file.
- * @param repoDir - Repository directory
- * @param filePath - Path to the file (relative to repo)
- */
-export async function discardFile(repoDir: string, filePath: string): Promise<void> {
-  await restoreTrackedPath(repoDir, filePath);
-}
-
-/**
  * Restores a tracked path from HEAD, including staged changes.
  * @param repoDir - Repository directory
  * @param filePath - Path to the file (relative to repo)

@@ -297,21 +297,46 @@ export function extractForwardedMarionettePort(machArgs: string[]): number | und
 }
 
 /**
+ * True when forwarded mach args explicitly select the xpcshell harness.
+ * Used so `--marionette-port` auto-forward skips `--setpref=marionette.port`
+ * for runs where the pref is ignored anyway.
+ */
+export function hasExplicitXpcshellFlavor(machArgs: string[]): boolean {
+  for (const arg of machArgs) {
+    if (/^--flavor=xpcshell\b/.test(arg) || arg === '--flavor=xpcshell-tests') return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `fireforge test` should append `--setpref=marionette.port=<n>` when
+ * the operator passed `--marionette-port`. Forwards for every harness except
+ * an explicit `--flavor=xpcshell` / `xpcshell-tests` (toolkit widget mochitests
+ * under `toolkit/content/tests/` do not match the older path-only heuristic
+ * but still launch a Marionette-driven browser).
+ */
+export function shouldAutoForwardMarionettePortToMach(machArgs: string[]): boolean {
+  return !hasExplicitXpcshellFlavor(machArgs);
+}
+
+/**
  * Heuristic: do the test paths or forwarded mach args indicate a flavour
  * that actually launches a Marionette-driven browser? Browser-chrome and
- * mochitest do; xpcshell does not. Used to decide whether to auto-forward
- * `--setpref=marionette.port=<n>` to mach when the operator passed
- * `--marionette-port`. A no-paths invocation (the default "run all tests"
- * shape) is treated as marionette-relevant since it includes browser-chrome.
+ * mochitest do; xpcshell does not. A no-paths invocation (the default "run
+ * all tests" shape) is treated as marionette-relevant since it includes
+ * browser-chrome.
+ *
+ * Note: `fireforge test` auto-forward of `--marionette-port` to mach uses
+ * {@link shouldAutoForwardMarionettePortToMach} (mach-arg flavor gate) rather
+ * than this function alone, so toolkit paths without `/mochitest/` still get
+ * the pref when appropriate.
  *
  * @param testPaths - Engine-relative paths after `stripEnginePrefix`.
  * @param machArgs - Forwarded mach args (post-`--mach-arg`).
  * @returns `true` when the run is likely to bind a Marionette listener.
  */
 export function isMarionetteFlavor(testPaths: string[], machArgs: string[]): boolean {
-  for (const arg of machArgs) {
-    if (/^--flavor=xpcshell\b/.test(arg) || arg === '--flavor=xpcshell-tests') return false;
-  }
+  if (hasExplicitXpcshellFlavor(machArgs)) return false;
   for (const arg of machArgs) {
     if (/^--flavor=(browser-chrome|mochitest|chrome|a11y)\b/.test(arg)) return true;
   }
@@ -321,6 +346,9 @@ export function isMarionetteFlavor(testPaths: string[], machArgs: string[]): boo
     if (/^browser_.+\.(js|ini|toml)$/.test(base)) return true;
     if (path.includes('/mochitest/') || path.startsWith('mochitest/')) return true;
     if (path.includes('/browser-chrome/') || path.startsWith('browser-chrome/')) return true;
+    if (path.includes('toolkit/content/tests/') && !path.includes('/tests/xpcshell/')) {
+      return true;
+    }
   }
   return false;
 }

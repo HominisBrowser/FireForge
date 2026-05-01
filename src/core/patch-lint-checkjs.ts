@@ -13,11 +13,15 @@
  * diagnostic code list now live in `typecheck-shim.ts` and are shared
  * with the whole-project `fireforge typecheck` command — keeping a
  * single source of truth for the Firefox-globals coverage.
+ * `patchLint.checkJsStrict` only tightens `strict` / `noImplicitAny`
+ * and optional allowlisted `checkJsCompilerOptions`; it does not change
+ * shim composition or suppressed diagnostic codes.
  */
 
 import { resolve } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
+import type { PatchLintCheckJsCompilerOptions, PatchLintConfig } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { composeShimSource, SHIM_FILENAME, SUPPRESSED_DIAGNOSTIC_CODES } from './typecheck-shim.js';
@@ -40,13 +44,18 @@ import { composeShimSource, SHIM_FILENAME, SUPPRESSED_DIAGNOSTIC_CODES } from '.
  * @param projectRoot - Absolute project root for resolving `extraShimPath`.
  *   Defaults to `repoDir` for back-compat with callers that don't
  *   pass an extra shim (no resolution actually happens in that case).
+ * @param mode - When `strict` is true, enables `strict` and `noImplicitAny`
+ *   (CI-style). Optional `compilerOptions` merges allowlisted boolean
+ *   overrides after that preset (from `patchLint.checkJsCompilerOptions`).
+ *   Omitted or `{ strict: false }` preserves the historical loose preset.
  * @returns Array of lint issues from TS diagnostics
  */
 export async function runCheckJs(
   repoDir: string,
   patchOwnedFiles: Set<string>,
   extraShimPath?: string,
-  projectRoot?: string
+  projectRoot?: string,
+  mode?: { strict: boolean; compilerOptions?: PatchLintCheckJsCompilerOptions }
 ): Promise<PatchLintIssue[]> {
   if (patchOwnedFiles.size === 0) return [];
 
@@ -106,11 +115,30 @@ export async function runCheckJs(
   const shimPath = resolve(repoDir, SHIM_FILENAME);
   rootFiles.push(shimPath);
 
+  const strict = mode?.strict === true;
+  const strictness: import('typescript').CompilerOptions = strict
+    ? { strict: true, noImplicitAny: true }
+    : {
+        // Loose default — implicit `any` is allowed unless `patchLint.checkJsStrict`.
+        strict: false,
+        noImplicitAny: false,
+      };
+
+  const overrides: import('typescript').CompilerOptions = {};
+  const co = mode?.compilerOptions;
+  if (co) {
+    for (const key of Object.keys(co) as (keyof PatchLintCheckJsCompilerOptions)[]) {
+      const v = co[key];
+      if (v !== undefined) {
+        (overrides as Record<string, boolean>)[key] = v;
+      }
+    }
+  }
+
   const options: import('typescript').CompilerOptions = {
     allowJs: true,
     checkJs: true,
     noEmit: true,
-    strict: false,
     target: ts.ScriptTarget.ESNext,
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
@@ -121,10 +149,8 @@ export async function runCheckJs(
     // resource:// and chrome:// import, flooding the output with
     // "Cannot find module" errors for upstream Firefox modules.
     noResolve: true,
-    // Suppress implicit-any noise — Firefox code rarely has full type
-    // annotations and drowning users in thousands of implicit-any
-    // errors defeats the purpose of a focused check.
-    noImplicitAny: false,
+    ...strictness,
+    ...overrides,
   };
 
   // Custom compiler host: reads patch-owned files from disk, returns
@@ -204,4 +230,22 @@ export async function runCheckJs(
 
   verbose(`checkJs: analyzed ${rootFiles.length - 1} file(s), found ${issues.length} issue(s)`);
   return issues;
+}
+
+/**
+ * Invokes {@link runCheckJs} for a `patchLint` block with `checkJs: true`.
+ * `projectRoot` is the FireForge project root (`dirname(engine)`).
+ */
+export async function invokePatchLintCheckJs(
+  repoDir: string,
+  patchOwnedFiles: Set<string>,
+  patchLint: PatchLintConfig,
+  projectRoot: string
+): Promise<PatchLintIssue[]> {
+  const strict = patchLint.checkJsStrict === true;
+  const mode =
+    strict && patchLint.checkJsCompilerOptions
+      ? { strict, compilerOptions: patchLint.checkJsCompilerOptions }
+      : { strict };
+  return runCheckJs(repoDir, patchOwnedFiles, patchLint.checkJsExtraShim, projectRoot, mode);
 }

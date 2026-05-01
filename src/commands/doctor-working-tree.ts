@@ -15,8 +15,8 @@ import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { classifyFiles } from '../core/status-classify.js';
 import type { DoctorCheck } from '../types/commands/index.js';
-import type { DoctorCheckContext } from './doctor.js';
-import { ok, warning } from './doctor.js';
+import type { DoctorCheckContext } from './doctor-check-core.js';
+import { ok, warning } from './doctor-check-core.js';
 
 function summarizeWorkingTreeChangeCount(changeCount: number): string {
   return `Engine working tree has ${changeCount} local change${changeCount === 1 ? '' : 's'}. Some FireForge commands assume a clean baseline and may behave differently until these are exported, discarded, or committed.`;

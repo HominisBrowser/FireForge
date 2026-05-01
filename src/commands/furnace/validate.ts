@@ -11,6 +11,7 @@ import {
 import { addCustomElementRegistration, addJarMnEntries } from '../../core/furnace-registration.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import type { FurnaceValidateOptions } from '../../types/commands/index.js';
 import type { ComponentType, ValidationIssue } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, success, warn } from '../../utils/logger.js';
@@ -115,7 +116,7 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
 export async function furnaceValidateCommand(
   projectRoot: string,
   name?: string,
-  options: { fix?: boolean } = {}
+  options: FurnaceValidateOptions = {}
 ): Promise<void> {
   intro('Furnace Validate');
 

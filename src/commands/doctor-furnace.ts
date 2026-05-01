@@ -20,8 +20,8 @@ import type {
 } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import type { CheckResult, DoctorCheckDefinition } from './doctor.js';
-import { failure, ok, warning } from './doctor.js';
+import type { CheckResult, DoctorCheckDefinition } from './doctor-check-core.js';
+import { failure, ok, warning } from './doctor-check-core.js';
 import { furnaceManifestSyncCheck } from './doctor-furnace-manifest-sync.js';
 
 const ENGINE_REPAIRABLE_OPERATIONS: readonly FurnacePendingRepairOperation[] = [

@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 
 import type { DoctorCheck } from '../types/commands/index.js';
-import { failure, warning } from './doctor.js';
+import { failure, warning } from './doctor-check-core.js';
 
 /** Tags representing distinct issues detected in bootstrap output. */
 export type BootstrapIssue = 'sdk-fetch-403' | 'python-traceback' | 'missing-origin-remote';

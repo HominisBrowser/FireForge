@@ -9,10 +9,10 @@ import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
   createTempProject,
-  git,
   initCommittedRepo,
-  readText,
+  readProjectText,
   removeTempProject,
+  runGit,
   setInteractiveMode,
   writeFiles,
 } from '../../test-utils/index.js';
@@ -86,12 +86,12 @@ describe('resolve integration', () => {
     expect(patchFilename).toBeDefined();
 
     // Reset engine, introduce a conflicting upstream change, then try to import
-    await git(engineDir, ['checkout', '--', '.']);
+    await runGit(engineDir, ['checkout', '--', '.']);
     await writeFiles(engineDir, {
       'browser/base/content/browser.js': 'export const title = "upstream";\n',
     });
-    await git(engineDir, ['add', '-A']);
-    await git(engineDir, ['commit', '-m', 'upstream change']);
+    await runGit(engineDir, ['add', '-A']);
+    await runGit(engineDir, ['commit', '-m', 'upstream change']);
 
     // Import fails — sets pendingResolution
     await expect(importCommand(projectRoot, { force: true })).rejects.toThrow();
@@ -114,7 +114,7 @@ describe('resolve integration', () => {
     expect(stateAfter.pendingResolution).toBeUndefined();
 
     // Patch updated — should contain both files
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('+++ b/browser/base/content/browser.js');
     expect(patchContent).toContain('+++ b/browser/modules/sidebar.js');
   });
@@ -152,8 +152,8 @@ describe('resolve integration', () => {
     await saveState(projectRoot, state);
 
     // Delete one of the affected files (simulating upstream removal)
-    await git(engineDir, ['rm', '-f', 'browser/modules/sidebar.js']);
-    await git(engineDir, ['commit', '-m', 'remove sidebar']);
+    await runGit(engineDir, ['rm', '-f', 'browser/modules/sidebar.js']);
+    await runGit(engineDir, ['commit', '-m', 'remove sidebar']);
 
     // Fix the remaining file
     await writeFiles(engineDir, {

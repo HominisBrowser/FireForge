@@ -90,16 +90,6 @@ export async function expandUntrackedDirectoryEntries(
 }
 
 /**
- * Gets the list of modified files.
- * @param repoDir - Repository directory
- * @returns List of modified file paths
- */
-export async function getModifiedFiles(repoDir: string): Promise<string[]> {
-  const entries = await getWorkingTreeStatus(repoDir);
-  return entries.map((entry) => entry.file);
-}
-
-/**
  * Gets all untracked files (including files inside untracked directories).
  * @param repoDir - Repository directory
  * @returns List of untracked file paths
@@ -160,26 +150,4 @@ export async function getDirtyFiles(repoDir: string, files: string[]): Promise<s
   const untracked = untrackedOutput.split('\n').filter((line) => line.trim().length > 0);
 
   return [...new Set([...tracked, ...untracked])].sort();
-}
-
-/**
- * Lists all files in a directory (tracked and untracked, respecting .gitignore).
- * Combines git ls-files for tracked files and --others for untracked files.
- * @param repoDir - Repository directory
- * @param dir - Directory path (relative to repo root)
- * @returns List of file paths relative to repo root
- */
-export async function listAllFilesInDir(repoDir: string, dir: string): Promise<string[]> {
-  await ensureGit();
-
-  const trackedOutput = await git(['ls-files', '--', dir], repoDir);
-  const trackedFiles = trackedOutput.split('\n').filter((line) => line.trim().length > 0);
-
-  const untrackedOutput = await git(
-    ['ls-files', '--others', '--exclude-standard', '--', dir],
-    repoDir
-  );
-  const untrackedFiles = untrackedOutput.split('\n').filter((line) => line.trim().length > 0);
-
-  return [...new Set([...trackedFiles, ...untrackedFiles])].sort();
 }

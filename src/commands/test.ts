@@ -15,7 +15,7 @@ import {
 import {
   assertMarionettePortAvailable,
   extractForwardedMarionettePort,
-  isMarionetteFlavor,
+  shouldAutoForwardMarionettePortToMach,
 } from '../core/marionette-port.js';
 import {
   formatMarionettePreflightLine,
@@ -418,22 +418,23 @@ export async function testCommand(
   //
   // Skip forwarding when the operator already supplied an equivalent arg
   // via `--mach-arg` — duplicates would be confusing without changing
-  // semantics. Skip with a notice for clearly-non-marionette flavours
-  // (xpcshell, or paths that don't look browser-chrome/mochitest) so the
-  // operator knows the preflight took the override but mach was not
-  // auto-configured. Same escape valve applies: any mach arg can still
-  // be supplied via `--mach-arg`.
+  // semantics. Skip when mach args explicitly request `--flavor=xpcshell`
+  // (or `xpcshell-tests`): the preflight still honours `--marionette-port`,
+  // but mach does not use the marionette.port pref on that harness. Any
+  // other arg shape still forwards so toolkit widget paths and mixed suites
+  // stay aligned with the probe without duplicate `--mach-arg` flags.
   if (options.marionettePort !== undefined) {
     const operatorAlreadyForwarded = forwardedPort !== undefined;
+    const machArgs = options.machArg ?? [];
     if (operatorAlreadyForwarded) {
       info(
         `--marionette-port=${options.marionettePort} set, but the same port is already forwarded via --mach-arg; skipping auto-forward.`
       );
-    } else if (isMarionetteFlavor(normalizedPaths, options.machArg ?? [])) {
+    } else if (shouldAutoForwardMarionettePortToMach(machArgs)) {
       extraArgs.push(`--setpref=marionette.port=${options.marionettePort}`);
     } else {
       info(
-        `--marionette-port=${options.marionettePort} applied to the preflight probe, but the test paths do not look browser-chrome/mochitest — mach is not auto-configured. Pass --mach-arg --setpref=marionette.port=${options.marionettePort} explicitly if mach should also use this port.`
+        `--marionette-port=${options.marionettePort} applied to the preflight probe, but --flavor=xpcshell is set — mach is not auto-configured with --setpref=marionette.port (xpcshell ignores that pref). Pass --mach-arg --setpref=marionette.port=${options.marionettePort} explicitly if you still need mach to see the port.`
       );
     }
   }
@@ -542,7 +543,7 @@ export function registerTest(
     )
     .option(
       '--marionette-port <port>',
-      'Override the Marionette control port (default 2828) for the stale-browser probe, the --doctor preflight, and the auto-forwarded --setpref=marionette.port=<n> arg passed to mach. Use this when a stale process holds 2828 or a CI runner reserves a different port.',
+      'Override the Marionette control port (default 2828) for the stale-browser probe, the --doctor preflight, and (unless --mach-arg includes --flavor=xpcshell) the auto-forwarded --setpref=marionette.port=<n> passed to mach. Use this when a stale process holds 2828 or a CI runner reserves a different port.',
       (raw: string) => {
         const n = Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n < 1 || n > 65535) {

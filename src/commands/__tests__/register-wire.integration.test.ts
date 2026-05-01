@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createTempProject,
-  readText,
+  readProjectText,
   removeTempProject,
   writeFiles,
   writeFireForgeConfig,
@@ -79,7 +79,7 @@ describe('registerCommand and wireCommand integration', () => {
     await registerCommand(projectRoot, 'browser/base/content/new-widget.js');
     await registerCommand(projectRoot, 'browser/base/content/new-widget.js');
 
-    const jarMn = await readText(join(projectRoot, 'engine'), 'browser/base/jar.mn');
+    const jarMn = await readProjectText(join(projectRoot, 'engine'), 'browser/base/jar.mn');
     expect(jarMn).toContain('content/browser/new-widget.js    (content/new-widget.js)');
     expect(
       jarMn.match(/content\/browser\/new-widget\.js\s+\(content\/new-widget\.js\)/g)
@@ -93,7 +93,7 @@ describe('registerCommand and wireCommand integration', () => {
   it('returns a dry-run preview for register without mutating manifests', async () => {
     await registerCommand(projectRoot, 'browser/base/content/new-widget.js', { dryRun: true });
 
-    const jarMn = await readText(join(projectRoot, 'engine'), 'browser/base/jar.mn');
+    const jarMn = await readProjectText(join(projectRoot, 'engine'), 'browser/base/jar.mn');
     expect(jarMn).not.toContain('new-widget.js');
     expect(logger.info).toHaveBeenCalledWith(
       '[dry-run] Would register browser/base/content/new-widget.js'
@@ -125,19 +125,19 @@ describe('registerCommand and wireCommand integration', () => {
       dom: domPath,
     });
 
-    const browserMain = await readText(
+    const browserMain = await readProjectText(
       join(projectRoot, 'engine'),
       'browser/base/content/browser-main.js'
     );
-    const browserInit = await readText(
+    const browserInit = await readProjectText(
       join(projectRoot, 'engine'),
       'browser/base/content/browser-init.js'
     );
-    const browserXhtml = await readText(
+    const browserXhtml = await readProjectText(
       join(projectRoot, 'engine'),
       'browser/base/content/browser.xhtml'
     );
-    const jarMn = await readText(join(projectRoot, 'engine'), 'browser/base/jar.mn');
+    const jarMn = await readProjectText(join(projectRoot, 'engine'), 'browser/base/jar.mn');
 
     expect(browserMain.match(/chrome:\/\/browser\/content\/my-widget\.js/g)).toHaveLength(1);
     expect(browserInit.match(/MyWidget\.init\(\);/g)).toHaveLength(1);
@@ -161,7 +161,7 @@ describe('registerCommand and wireCommand integration', () => {
       dryRun: true,
     });
 
-    const browserMain = await readText(
+    const browserMain = await readProjectText(
       join(projectRoot, 'engine'),
       'browser/base/content/browser-main.js'
     );

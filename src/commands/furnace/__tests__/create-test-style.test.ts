@@ -8,8 +8,8 @@ describe('resolveTestStyle', () => {
     expect(resolveTestStyle({})).toBe('none');
   });
 
-  it('defaults --with-tests alone to mochikit (the new non-tabbrowser-safe default)', () => {
-    expect(resolveTestStyle({ withTests: true })).toBe('mochikit');
+  it('defaults --with-tests alone to browser-chrome', () => {
+    expect(resolveTestStyle({ withTests: true })).toBe('browser-chrome');
   });
 
   it('treats --xpcshell alone as xpcshell for backwards compat', () => {

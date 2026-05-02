@@ -158,6 +158,53 @@ async function assertDomTargetIsWireable(
   }
 }
 
+async function resolveWireSubscriptDir(projectRoot: string, options: WireOptions): Promise<string> {
+  let subscriptDir = DEFAULT_BROWSER_SUBSCRIPT_DIR;
+  try {
+    const config = await loadConfig(projectRoot);
+    if (config.wire?.subscriptDir) {
+      subscriptDir = config.wire.subscriptDir;
+    }
+  } catch (error: unknown) {
+    warn(
+      `Using default wire.subscriptDir because fireforge.json could not be loaded: ${toError(error).message}`
+    );
+  }
+  if (options.subscriptDir) {
+    if (!isContainedRelativePath(options.subscriptDir)) {
+      throw new InvalidArgumentError(
+        `Subscript directory must stay within engine/: ${options.subscriptDir}`,
+        'subscriptDir'
+      );
+    }
+    subscriptDir = options.subscriptDir;
+  }
+  return subscriptDir;
+}
+
+async function ensureSubscriptSourceExists(
+  projectRoot: string,
+  subscriptDir: string,
+  name: string,
+  dryRun: boolean
+): Promise<void> {
+  const paths = getProjectPaths(projectRoot);
+  const subscriptPath = join(paths.engine, subscriptDir, `${name}.js`);
+  if (!(await pathExists(subscriptPath))) {
+    if (dryRun) {
+      info(
+        `Note: ${subscriptDir}/${name}.js does not exist yet — the real wire command will require it before writing. Create the file before re-running without --dry-run.`
+      );
+    } else {
+      throw new InvalidArgumentError(
+        `Subscript file not found: ${subscriptDir}/${name}.js\n` +
+          'Create the file in engine/ before wiring.',
+        'name'
+      );
+    }
+  }
+}
+
 /**
  * Wires a chrome subscript into the browser.
  *
@@ -198,27 +245,7 @@ export async function wireCommand(
 
   consumeParserFallbackEvents();
 
-  // Resolve subscript directory: CLI flag > fireforge.json > default
-  let subscriptDir = DEFAULT_BROWSER_SUBSCRIPT_DIR;
-  try {
-    const config = await loadConfig(projectRoot);
-    if (config.wire?.subscriptDir) {
-      subscriptDir = config.wire.subscriptDir;
-    }
-  } catch (error: unknown) {
-    warn(
-      `Using default wire.subscriptDir because fireforge.json could not be loaded: ${toError(error).message}`
-    );
-  }
-  if (options.subscriptDir) {
-    if (!isContainedRelativePath(options.subscriptDir)) {
-      throw new InvalidArgumentError(
-        `Subscript directory must stay within engine/: ${options.subscriptDir}`,
-        'subscriptDir'
-      );
-    }
-    subscriptDir = options.subscriptDir;
-  }
+  const subscriptDir = await resolveWireSubscriptDir(projectRoot, options);
 
   // Validate DOM fragment file exists and compute path relative to engine root.
   //
@@ -303,25 +330,7 @@ export async function wireCommand(
   // plausible plan and the non-dry-run invocation then errored. The
   // info line surfaces the mismatch in preview mode so the operator
   // can act on the warning before re-running without --dry-run.
-  if (!options.dryRun) {
-    const paths = getProjectPaths(projectRoot);
-    const subscriptPath = join(paths.engine, subscriptDir, `${name}.js`);
-    if (!(await pathExists(subscriptPath))) {
-      throw new InvalidArgumentError(
-        `Subscript file not found: ${subscriptDir}/${name}.js\n` +
-          'Create the file in engine/ before wiring.',
-        'name'
-      );
-    }
-  } else {
-    const paths = getProjectPaths(projectRoot);
-    const subscriptPath = join(paths.engine, subscriptDir, `${name}.js`);
-    if (!(await pathExists(subscriptPath))) {
-      info(
-        `Note: ${subscriptDir}/${name}.js does not exist yet — the real wire command will require it before writing. Create the file before re-running without --dry-run.`
-      );
-    }
-  }
+  await ensureSubscriptSourceExists(projectRoot, subscriptDir, name, options.dryRun ?? false);
 
   if (options.dryRun) {
     printWireDryRun(

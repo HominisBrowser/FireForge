@@ -20,26 +20,6 @@ import { furnaceStatusCommand } from './status.js';
 import { furnaceSyncCommand } from './sync.js';
 import { furnaceValidateCommand } from './validate.js';
 
-export {
-  furnaceApplyCommand,
-  furnaceBatchOverrideCommand,
-  furnaceChromeDocCreateCommand,
-  furnaceCreateCommand,
-  furnaceDeployCommand,
-  furnaceDiffCommand,
-  furnaceInitCommand,
-  furnaceListCommand,
-  furnaceOverrideCommand,
-  furnacePreviewCommand,
-  furnaceRefreshCommand,
-  furnaceRemoveCommand,
-  furnaceRenameCommand,
-  furnaceScanCommand,
-  furnaceStatusCommand,
-  furnaceSyncCommand,
-  furnaceValidateCommand,
-};
-
 /**
  * Registers Furnace commands for querying component state: status, scan,
  * and action commands like apply, deploy, and create.
@@ -125,14 +105,17 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
     .option('-d, --description <desc>', 'Component description')
     .option('--localized', 'Include Fluent l10n support')
     .option('--no-register', 'Skip customElements.js registration')
-    .option('--with-tests', 'Scaffold a test harness (defaults to MochiKit; see --test-style)')
+    .option(
+      '--with-tests',
+      'Scaffold a test harness (defaults to browser-chrome; use --test-style=mochikit for tabbrowser-less chrome — may be flaky on macOS)'
+    )
     .option(
       '--xpcshell',
       'Scaffold an xpcshell test harness (for storage-layer code on forks without tabbrowser); equivalent to --test-style=xpcshell. Note: xpcshell resolves chrome://global/* URIs but not chrome://browser/* — use --test-style=browser-chrome for browser-chrome-dependent tests.'
     )
     .option(
       '--test-style <style>',
-      "Override the harness written by --with-tests: mochikit (default, runs against non-tabbrowser chrome), browser-chrome (today's scaffold, needs tabbrowser), or xpcshell (headless)",
+      'Override the harness written by --with-tests: browser-chrome (default, needs tabbrowser), mochikit (toolkit/widgets, non-tabbrowser chrome), or xpcshell (headless)',
       (value: string) => {
         if (value !== 'mochikit' && value !== 'browser-chrome' && value !== 'xpcshell') {
           throw new Error(

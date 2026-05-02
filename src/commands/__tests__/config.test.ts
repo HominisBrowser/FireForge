@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createTempProject,
-  readText,
+  readProjectText,
   removeTempProject,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
@@ -38,7 +38,7 @@ describe('configCommand', () => {
     await configCommand(projectRoot, 'build.jobs', '16');
     await configCommand(projectRoot, 'build.jobs');
 
-    const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
       build?: { jobs?: number };
     };
     expect(config.build?.jobs).toBe(16);
@@ -50,7 +50,7 @@ describe('configCommand', () => {
     await configCommand(projectRoot, 'wire.subscriptDir', 'browser/components/custom');
     await configCommand(projectRoot, 'wire.subscriptDir');
 
-    const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
       wire?: { subscriptDir?: string };
     };
     expect(config.wire?.subscriptDir).toBe('browser/components/custom');
@@ -60,7 +60,7 @@ describe('configCommand', () => {
   it('keeps string-typed Firefox versions as strings without requiring JSON quoting', async () => {
     await configCommand(projectRoot, 'firefox.version', '140.9.0esr');
 
-    const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
       firefox?: { version?: string };
     };
     expect(config.firefox?.version).toBe('140.9.0esr');
@@ -110,7 +110,7 @@ describe('configCommand', () => {
   it('accepts unknown top-level keys with force', async () => {
     await configCommand(projectRoot, 'custom.key', '1', { force: true });
 
-    const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
       custom?: { key?: number };
     };
     expect(config.custom?.key).toBe(1);
@@ -125,7 +125,7 @@ describe('configCommand', () => {
       configCommand(projectRoot, 'build.jobs', '"oops"', { force: true })
     ).rejects.toThrow('Invalid value for "build.jobs"');
 
-    const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
       build?: { jobs?: number };
     };
     // The original value remains untouched.
@@ -223,7 +223,7 @@ describe('configCommand', () => {
     await configCommand(projectRoot, 'firstUnknown', 'one', { force: true });
     await configCommand(projectRoot, 'secondUnknown', 'two', { force: true });
 
-    const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as Record<
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as Record<
       string,
       unknown
     >;
@@ -256,7 +256,7 @@ describe('registerConfig', () => {
     await program.parseAsync(['node', 'test', 'config', 'build.jobs', '12']);
     await program.parseAsync(['node', 'test', 'config', 'build.jobs']);
 
-    const config = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
       build?: { jobs?: number };
     };
     expect(config.build?.jobs).toBe(12);

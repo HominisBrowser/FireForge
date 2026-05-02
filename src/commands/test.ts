@@ -15,7 +15,8 @@ import {
 import {
   assertMarionettePortAvailable,
   extractForwardedMarionettePort,
-  isMarionetteFlavor,
+  forwardedMachArgsIncludeMarionetteClient,
+  shouldAutoForwardMarionettePortToMach,
 } from '../core/marionette-port.js';
 import {
   formatMarionettePreflightLine,
@@ -412,29 +413,41 @@ export async function testCommand(
   }
 
   // Auto-forward the Marionette port to mach when `--marionette-port` is
-  // set. We use `--setpref=marionette.port=<n>` because the marionette
-  // listener reads that pref before binding (browser-chrome / mochitest
-  // path); xpcshell never reads it, so the pref is a no-op there.
+  // set. `--setpref=marionette.port=<n>` configures where the browser
+  // listener binds; `--marionette=127.0.0.1:<n>` tells the mochitest harness
+  // client to connect there (default client is 127.0.0.1:2828). xpcshell
+  // ignores both for browser Marionette.
   //
-  // Skip forwarding when the operator already supplied an equivalent arg
-  // via `--mach-arg` — duplicates would be confusing without changing
-  // semantics. Skip with a notice for clearly-non-marionette flavours
-  // (xpcshell, or paths that don't look browser-chrome/mochitest) so the
-  // operator knows the preflight took the override but mach was not
-  // auto-configured. Same escape valve applies: any mach arg can still
-  // be supplied via `--mach-arg`.
+  // Skip setpref forwarding when the operator already supplied an equivalent
+  // arg via `--mach-arg` — duplicates would be confusing without changing
+  // semantics. Skip when mach args explicitly request `--flavor=xpcshell`
+  // (or `xpcshell-tests`): the preflight still honours `--marionette-port`,
+  // but mach does not use the marionette.port pref on that harness. Any
+  // other arg shape still forwards so toolkit widget paths and mixed suites
+  // stay aligned with the probe without duplicate `--mach-arg` flags.
+  //
+  // Skip auto `--marionette=...` when `--mach-arg` already includes a client
+  // `--marionette=...` (or two-token `--marionette host:port`).
   if (options.marionettePort !== undefined) {
     const operatorAlreadyForwarded = forwardedPort !== undefined;
+    const machArgs = options.machArg ?? [];
     if (operatorAlreadyForwarded) {
       info(
         `--marionette-port=${options.marionettePort} set, but the same port is already forwarded via --mach-arg; skipping auto-forward.`
       );
-    } else if (isMarionetteFlavor(normalizedPaths, options.machArg ?? [])) {
+    } else if (shouldAutoForwardMarionettePortToMach(machArgs)) {
       extraArgs.push(`--setpref=marionette.port=${options.marionettePort}`);
     } else {
       info(
-        `--marionette-port=${options.marionettePort} applied to the preflight probe, but the test paths do not look browser-chrome/mochitest — mach is not auto-configured. Pass --mach-arg --setpref=marionette.port=${options.marionettePort} explicitly if mach should also use this port.`
+        `--marionette-port=${options.marionettePort} applied to the preflight probe, but --flavor=xpcshell is set — mach is not auto-configured with --setpref=marionette.port or --marionette (xpcshell ignores the browser Marionette path). Pass --mach-arg --setpref=marionette.port=${options.marionettePort} explicitly if you still need mach to see the port.`
       );
+    }
+
+    if (
+      shouldAutoForwardMarionettePortToMach(machArgs) &&
+      !forwardedMachArgsIncludeMarionetteClient(machArgs)
+    ) {
+      extraArgs.push(`--marionette=127.0.0.1:${options.marionettePort}`);
     }
   }
 
@@ -542,7 +555,7 @@ export function registerTest(
     )
     .option(
       '--marionette-port <port>',
-      'Override the Marionette control port (default 2828) for the stale-browser probe, the --doctor preflight, and the auto-forwarded --setpref=marionette.port=<n> arg passed to mach. Use this when a stale process holds 2828 or a CI runner reserves a different port.',
+      'Override the Marionette control port (default 2828) for the stale-browser probe, the --doctor preflight, and (unless --mach-arg includes --flavor=xpcshell) auto-forwarded mach args: --setpref=marionette.port=<n> (browser listener) and --marionette=127.0.0.1:<n> (mochitest client). Omits the client flag when --mach-arg already sets --marionette. Use when 2828 is busy or CI assigns another port.',
       (raw: string) => {
         const n = Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n < 1 || n > 65535) {

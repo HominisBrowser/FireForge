@@ -6,10 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createTempProject,
-  git,
   initCommittedRepo,
-  readText,
+  readProjectText,
   removeTempProject,
+  runGit,
   setInteractiveMode,
   writeFiles,
   writeFireForgeConfig,
@@ -59,8 +59,10 @@ describe('discardCommand and resetCommand integration', () => {
 
     await discardCommand(projectRoot, 'tracked.txt', { yes: true });
 
-    await expect(readText(join(projectRoot, 'engine'), 'tracked.txt')).resolves.toBe('original\n');
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
+    await expect(readProjectText(join(projectRoot, 'engine'), 'tracked.txt')).resolves.toBe(
+      'original\n'
+    );
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
   });
 
   it('deletes untracked files instead of running git restore', async () => {
@@ -71,7 +73,7 @@ describe('discardCommand and resetCommand integration', () => {
     await discardCommand(projectRoot, 'new.txt', { yes: true });
 
     await expect(access(join(projectRoot, 'engine', 'new.txt'))).rejects.toThrow();
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
   });
 
   it('discards a file inside an untracked directory', async () => {
@@ -82,21 +84,21 @@ describe('discardCommand and resetCommand integration', () => {
     await discardCommand(projectRoot, 'nested/new.txt', { yes: true });
 
     await expect(access(join(projectRoot, 'engine', 'nested', 'new.txt'))).rejects.toThrow();
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
   });
 
   it('handles staged renames using the original path', async () => {
-    await git(join(projectRoot, 'engine'), ['mv', 'rename-me.txt', 'renamed.txt']);
+    await runGit(join(projectRoot, 'engine'), ['mv', 'rename-me.txt', 'renamed.txt']);
 
     await discardCommand(projectRoot, 'rename-me.txt', { yes: true });
 
     await expect(access(join(projectRoot, 'engine', 'rename-me.txt'))).resolves.toBeUndefined();
     await expect(access(join(projectRoot, 'engine', 'renamed.txt'))).rejects.toThrow();
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
   });
 
   it('shows precise rename labels in reset dry-run output', async () => {
-    await git(join(projectRoot, 'engine'), ['mv', 'rename-me.txt', 'renamed.txt']);
+    await runGit(join(projectRoot, 'engine'), ['mv', 'rename-me.txt', 'renamed.txt']);
     await writeFiles(join(projectRoot, 'engine'), {
       'scratch.txt': 'temp\n',
     });
@@ -127,25 +129,27 @@ describe('discardCommand and resetCommand integration', () => {
       'staged-new.txt': 'staged\n',
       'scratch.txt': 'temp\n',
     });
-    await git(join(projectRoot, 'engine'), ['add', 'staged-new.txt']);
+    await runGit(join(projectRoot, 'engine'), ['add', 'staged-new.txt']);
 
     await resetCommand(projectRoot, { yes: true });
 
-    await expect(readText(join(projectRoot, 'engine'), 'tracked.txt')).resolves.toBe('original\n');
+    await expect(readProjectText(join(projectRoot, 'engine'), 'tracked.txt')).resolves.toBe(
+      'original\n'
+    );
     await expect(access(join(projectRoot, 'engine', 'staged-new.txt'))).rejects.toThrow();
     await expect(access(join(projectRoot, 'engine', 'scratch.txt'))).rejects.toThrow();
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
   });
 
   it('discards staged added files cleanly', async () => {
     await writeFiles(join(projectRoot, 'engine'), {
       'staged-new.txt': 'staged\n',
     });
-    await git(join(projectRoot, 'engine'), ['add', 'staged-new.txt']);
+    await runGit(join(projectRoot, 'engine'), ['add', 'staged-new.txt']);
 
     await discardCommand(projectRoot, 'staged-new.txt', { yes: true });
 
     await expect(access(join(projectRoot, 'engine', 'staged-new.txt'))).rejects.toThrow();
-    await expect(git(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
   });
 });

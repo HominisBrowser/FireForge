@@ -334,10 +334,12 @@ export interface TestOptions {
   machArg?: string[];
   /**
    * Override the Marionette control port (default 2828) used by the
-   * stale-browser probe, the `--doctor` preflight, and the auto-forwarded
-   * `--setpref=marionette.port=<n>` arg passed to mach. Set this when a
-   * stale process holds the default port and `kill` is not an option, or
-   * when a CI runner reserves a different port for parallel test runs.
+   * stale-browser probe, the `--doctor` preflight, and (unless mach args set
+   * `--flavor=xpcshell` / `xpcshell-tests`) auto-forwarded mach flags:
+   * `--setpref=marionette.port=<n>` for the browser listener and
+   * `--marionette=127.0.0.1:<n>` for the mochitest harness client. Omits the
+   * client flag when `--mach-arg` already passes `--marionette`. Set when a
+   * stale process holds the default port or CI uses another port.
    */
   marionettePort?: number;
 }
@@ -449,15 +451,15 @@ export interface FurnaceCreateOptions {
   /**
    * Test harness style to scaffold when `--with-tests` is set.
    *
-   * - `mochikit` (default when `--with-tests` is set alone) — a MochiKit
-   *   test at `engine/toolkit/content/tests/widgets/test_<tag>.html` that
-   *   loads the component module directly via `chrome://global/` and
-   *   asserts against `customElements`. Runs today on forks whose
-   *   top-level chrome document (e.g. `mybrowser.xhtml`) lacks a
-   *   `tabbrowser`, because it doesn't go through `URILoadingHelper`.
-   * - `browser-chrome` — today's browser-mochitest scaffold, requires a
-   *   working tabbrowser. Use for components that talk to the browser
-   *   window or open URLs.
+   * - `browser-chrome` (default when `--with-tests` is set without
+   *   `--test-style`) — browser mochitest scaffold; requires a working
+   *   `tabbrowser`. Prefer this for interactive chrome/widget coverage
+   *   (including on macOS).
+   * - `mochikit` — opt-in MochiKit test at
+   *   `engine/toolkit/content/tests/widgets/test_<tag>.html` that loads
+   *   the component via `chrome://global/`. Use when the top-level chrome
+   *   document lacks a `tabbrowser`; on macOS the toolkit mochitest-chrome
+   *   flavor can be unreliable (long idle timeout).
    * - `xpcshell` — equivalent to setting `--xpcshell`; headless, storage-only.
    */
   testStyle?: 'mochikit' | 'browser-chrome' | 'xpcshell';

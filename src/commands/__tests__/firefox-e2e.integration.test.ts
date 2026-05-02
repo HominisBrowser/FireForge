@@ -11,9 +11,9 @@ import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
   createTempProject,
-  git,
-  readText,
+  readProjectText,
   removeTempProject,
+  runGit,
   setInteractiveMode,
   writeFiles,
 } from '../../test-utils/index.js';
@@ -103,7 +103,7 @@ describe('connected Firefox workflow integration', () => {
       await bootstrapCommand(projectRoot);
       await buildCommand(projectRoot, {});
 
-      const fireforgeConfig = JSON.parse(await readText(projectRoot, 'fireforge.json')) as {
+      const fireforgeConfig = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
         build?: { jobs?: number };
       };
       const expectedBuildArgs = fireforgeConfig.build?.jobs
@@ -111,7 +111,7 @@ describe('connected Firefox workflow integration', () => {
         : ['build'];
 
       const buildInfo = JSON.parse(
-        await readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.buildInfo)
+        await readProjectText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.buildInfo)
       ) as {
         args: string[];
         mozconfigExists: boolean;
@@ -123,7 +123,9 @@ describe('connected Firefox workflow integration', () => {
       expect(buildInfo.brandingConfigured).toBe(true);
       expect(buildInfo.vendorLinePatched).toBe(true);
 
-      const machLog = (await readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.machLog))
+      const machLog = (
+        await readProjectText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.machLog)
+      )
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line) as { args: string[] });
@@ -132,7 +134,7 @@ describe('connected Firefox workflow integration', () => {
         expectedBuildArgs,
       ]);
 
-      const buildDirtyStatus = await git(join(projectRoot, 'engine'), ['status', '--short']);
+      const buildDirtyStatus = await runGit(join(projectRoot, 'engine'), ['status', '--short']);
       expect(buildDirtyStatus).toContain(' M browser/moz.configure');
       expect(buildDirtyStatus).toContain('?? browser/branding/mybrowser/');
 
@@ -152,11 +154,11 @@ describe('connected Firefox workflow integration', () => {
 
       const patchFilename = manifest?.patches[0]?.filename;
       expect(patchFilename).toBeDefined();
-      await expect(readText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
+      await expect(readProjectText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
         '+export const browserTitle = "patched";'
       );
 
-      await git(join(projectRoot, 'engine'), [
+      await runGit(join(projectRoot, 'engine'), [
         'checkout',
         '--',
         SYNTHETIC_FIREFOX_PATHS.browserScript,
@@ -164,10 +166,10 @@ describe('connected Firefox workflow integration', () => {
       await importCommand(projectRoot, {});
 
       await expect(
-        readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
+        readProjectText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
       ).resolves.toBe('export const browserTitle = "patched";\n');
 
-      await git(join(projectRoot, 'engine'), [
+      await runGit(join(projectRoot, 'engine'), [
         'checkout',
         '--',
         SYNTHETIC_FIREFOX_PATHS.browserScript,
@@ -182,14 +184,14 @@ describe('connected Firefox workflow integration', () => {
 
       await discardCommand(projectRoot, SYNTHETIC_FIREFOX_PATHS.browserScript, { yes: true });
 
-      const recoveredStatus = await git(join(projectRoot, 'engine'), ['status', '--short']);
+      const recoveredStatus = await runGit(join(projectRoot, 'engine'), ['status', '--short']);
       expect(recoveredStatus).toContain(' M browser/moz.configure');
       expect(recoveredStatus).toContain('?? browser/branding/mybrowser/');
       expect(recoveredStatus).not.toContain(SYNTHETIC_FIREFOX_PATHS.browserScript);
 
       await importCommand(projectRoot, {});
       await expect(
-        readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
+        readProjectText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
       ).resolves.toBe('export const browserTitle = "patched";\n');
     }
   );
@@ -211,7 +213,7 @@ describe('connected Firefox workflow integration', () => {
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
 
-    await git(join(projectRoot, 'engine'), [
+    await runGit(join(projectRoot, 'engine'), [
       'checkout',
       '--',
       SYNTHETIC_FIREFOX_PATHS.browserScript,
@@ -220,8 +222,8 @@ describe('connected Firefox workflow integration', () => {
       [SYNTHETIC_FIREFOX_PATHS.browserScript]:
         'export const browserTitle = "conflicting-upstream";\n',
     });
-    await git(join(projectRoot, 'engine'), ['add', SYNTHETIC_FIREFOX_PATHS.browserScript]);
-    await git(join(projectRoot, 'engine'), ['commit', '-m', 'conflicting upstream change']);
+    await runGit(join(projectRoot, 'engine'), ['add', SYNTHETIC_FIREFOX_PATHS.browserScript]);
+    await runGit(join(projectRoot, 'engine'), ['commit', '-m', 'conflicting upstream change']);
 
     await expect(importCommand(projectRoot, { force: true })).rejects.toThrow(
       'Failed to apply 1 patch(es)'
@@ -231,7 +233,7 @@ describe('connected Firefox workflow integration', () => {
     expect(failedState.pendingResolution?.patchFilename).toBe(patchFilename);
     expect(failedState.pendingResolution?.originalError).toEqual(expect.any(String));
     await expect(
-      readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
+      readProjectText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
     ).resolves.toBe('export const browserTitle = "conflicting-upstream";\n');
 
     restoreTTY?.();
@@ -245,10 +247,10 @@ describe('connected Firefox workflow integration', () => {
 
     const resolvedState = await loadState(projectRoot);
     expect(resolvedState.pendingResolution).toBeUndefined();
-    await expect(readText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
+    await expect(readProjectText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
       '-export const browserTitle = "conflicting-upstream";'
     );
-    await expect(readText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
+    await expect(readProjectText(projectRoot, `patches/${patchFilename}`)).resolves.toContain(
       '+export const browserTitle = "patched";'
     );
 
@@ -256,7 +258,7 @@ describe('connected Firefox workflow integration', () => {
     await importCommand(projectRoot, { force: true });
 
     await expect(
-      readText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
+      readProjectText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
     ).resolves.toBe('export const browserTitle = "patched";\n');
   });
 
@@ -296,15 +298,15 @@ describe('connected Firefox workflow integration', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('+    let src = "// post-processed".to_string();');
     expect(patchContent).toContain('+    fs::write(out_file, src).expect("write failed");');
 
     // Round-trip: checkout original, re-import, verify
-    await git(engineDir, ['checkout', '--', rustFile]);
+    await runGit(engineDir, ['checkout', '--', rustFile]);
     await importCommand(projectRoot, {});
 
-    const imported = await readText(engineDir, rustFile);
+    const imported = await readProjectText(engineDir, rustFile);
     expect(imported).toContain('let src = "// post-processed".to_string();');
     expect(imported).toContain('fs::write(out_file, src).expect("write failed");');
   });
@@ -353,14 +355,14 @@ describe('connected Firefox workflow integration', () => {
     expect(manifest?.patches[1]?.category).toBe('infra');
 
     // Reset both files and re-import full stack
-    await git(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.browserScript]);
-    await git(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.rustBuildScript]);
+    await runGit(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.browserScript]);
+    await runGit(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.rustBuildScript]);
     await importCommand(projectRoot, {});
 
-    await expect(readText(engineDir, SYNTHETIC_FIREFOX_PATHS.browserScript)).resolves.toBe(
+    await expect(readProjectText(engineDir, SYNTHETIC_FIREFOX_PATHS.browserScript)).resolves.toBe(
       'export const browserTitle = "patched";\n'
     );
-    const rustContent = await readText(engineDir, SYNTHETIC_FIREFOX_PATHS.rustBuildScript);
+    const rustContent = await readProjectText(engineDir, SYNTHETIC_FIREFOX_PATHS.rustBuildScript);
     expect(rustContent).toContain('let src = "// fixed".to_string();');
   });
 
@@ -390,15 +392,15 @@ describe('connected Firefox workflow integration', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('GIT binary patch');
     expect(patchContent).toContain('diff --git');
 
     // Binary patches produce GIT binary patch format without +++ b/ lines.
     // Verify git can apply it directly (bypasses manifest consistency check).
-    await git(engineDir, ['checkout', '--', pngPath]);
+    await runGit(engineDir, ['checkout', '--', pngPath]);
     const patchPath = join(projectRoot, 'patches', patchFilename ?? '');
-    await git(engineDir, ['apply', '--binary', patchPath]);
+    await runGit(engineDir, ['apply', '--binary', patchPath]);
     const roundTripped = await readFile(join(engineDir, pngPath));
     expect(roundTripped.equals(modifiedPng)).toBe(true);
   });
@@ -455,18 +457,18 @@ describe('connected Firefox workflow integration', () => {
     expect(manifest?.patches).toHaveLength(3);
 
     // Reset all and import the full stack
-    await git(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.browserScript]);
-    await git(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.mozbuild]);
-    await git(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.rustBuildScript]);
+    await runGit(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.browserScript]);
+    await runGit(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.mozbuild]);
+    await runGit(engineDir, ['checkout', '--', SYNTHETIC_FIREFOX_PATHS.rustBuildScript]);
     await importCommand(projectRoot, {});
 
     // All three changes should be applied
-    await expect(readText(engineDir, SYNTHETIC_FIREFOX_PATHS.browserScript)).resolves.toBe(
+    await expect(readProjectText(engineDir, SYNTHETIC_FIREFOX_PATHS.browserScript)).resolves.toBe(
       'export const browserTitle = "patched";\n'
     );
-    const mozbuild = await readText(engineDir, SYNTHETIC_FIREFOX_PATHS.mozbuild);
+    const mozbuild = await readProjectText(engineDir, SYNTHETIC_FIREFOX_PATHS.mozbuild);
     expect(mozbuild).toContain('DIRS += ["mybrowser"]');
-    const rust = await readText(engineDir, SYNTHETIC_FIREFOX_PATHS.rustBuildScript);
+    const rust = await readProjectText(engineDir, SYNTHETIC_FIREFOX_PATHS.rustBuildScript);
     expect(rust).toContain('let src = "// patched".to_string();');
   });
 

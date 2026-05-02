@@ -23,8 +23,8 @@ import { getFurnacePaths, loadFurnaceConfig, writeFurnaceConfig } from '../core/
 import type { FurnaceConfig, OverrideComponentConfig } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson } from '../utils/fs.js';
-import type { CheckResult, DoctorCheckDefinition } from './doctor.js';
-import { failure, ok, warning } from './doctor.js';
+import type { CheckResult, DoctorCheckDefinition } from './doctor-check-core.js';
+import { failure, ok, warning } from './doctor-check-core.js';
 
 interface OrphanOverride {
   name: string;

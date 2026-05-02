@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Integration coverage for `re-export --files`. Uses a real git repo so
+ * Integration coverage for `re-export --files`. Uses a real runGit repo so
  * the diff-generation path runs, and exercises the destructive-safety
  * contract plus the projection-lint fix: the lint pass must now run
  * against the shrunken/expanded state, not the current queue.
@@ -14,9 +14,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InvalidArgumentError } from '../../errors/base.js';
 import {
   createTempProject,
-  git,
   initCommittedRepo,
   removeTempProject,
+  runGit,
   setInteractiveMode,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
@@ -417,7 +417,7 @@ describe('re-export --files integration', () => {
   // Keep git happy across test reordering.
   afterEach(async () => {
     try {
-      await git(engineDir, ['reset', '--hard', 'HEAD']);
+      await runGit(engineDir, ['reset', '--hard', 'HEAD']);
     } catch {
       // Ignore — the temp project may already be gone.
     }

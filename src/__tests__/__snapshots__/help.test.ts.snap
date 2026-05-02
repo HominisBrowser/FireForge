@@ -113,8 +113,9 @@ Options:
   -d, --description <desc>  Component description
   --localized               Include Fluent l10n support
   --no-register             Skip customElements.js registration
-  --with-tests              Scaffold a test harness (defaults to MochiKit; see
-                            --test-style)
+  --with-tests              Scaffold a test harness (defaults to browser-chrome;
+                            use --test-style=mochikit for tabbrowser-less chrome
+                            — may be flaky on macOS)
   --xpcshell                Scaffold an xpcshell test harness (for storage-layer
                             code on forks without tabbrowser); equivalent to
                             --test-style=xpcshell. Note: xpcshell resolves
@@ -122,9 +123,9 @@ Options:
                             use --test-style=browser-chrome for
                             browser-chrome-dependent tests.
   --test-style <style>      Override the harness written by --with-tests:
-                            mochikit (default, runs against non-tabbrowser
-                            chrome), browser-chrome (today's scaffold, needs
-                            tabbrowser), or xpcshell (headless)
+                            browser-chrome (default, needs tabbrowser), mochikit
+                            (toolkit/widgets, non-tabbrowser chrome), or
+                            xpcshell (headless)
   --compose <tags>          Record stock tags composed internally (metadata
                             only, comma-separated)
   --shared-ftl <path>       Participate in an existing feature-scoped .ftl at

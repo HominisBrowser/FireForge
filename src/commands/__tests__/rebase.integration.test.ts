@@ -9,8 +9,8 @@ import { hasActiveRebaseSession, loadRebaseSession } from '../../core/rebase-ses
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
   createTempProject,
-  git,
   removeTempProject,
+  runGit,
   setInteractiveMode,
   writeFiles,
   writeFireForgeConfig,
@@ -40,11 +40,11 @@ vi.mock('../../utils/logger.js', () => ({
 async function initCommittedRepo(repoDir: string, files: Record<string, string>): Promise<void> {
   const { writeFiles: wf } = await import('../../test-utils/index.js');
   await wf(repoDir, files);
-  await git(repoDir, ['init']);
-  await git(repoDir, ['config', 'user.email', 'fireforge@example.test']);
-  await git(repoDir, ['config', 'user.name', 'FireForge Tests']);
-  await git(repoDir, ['add', '-A']);
-  await git(repoDir, ['commit', '-m', 'initial']);
+  await runGit(repoDir, ['init']);
+  await runGit(repoDir, ['config', 'user.email', 'fireforge@example.test']);
+  await runGit(repoDir, ['config', 'user.name', 'FireForge Tests']);
+  await runGit(repoDir, ['add', '-A']);
+  await runGit(repoDir, ['commit', '-m', 'initial']);
 }
 
 describe('rebase integration', () => {
@@ -132,12 +132,12 @@ describe('rebase integration', () => {
 
     // Create a conflicting upstream change: commit a different modification
     // Reset to baseline first, then make a different change
-    await git(engineDir, ['checkout', '--', 'browser/base/content/browser.js']);
+    await runGit(engineDir, ['checkout', '--', 'browser/base/content/browser.js']);
     await writeFiles(engineDir, {
       'browser/base/content/browser.js': 'export const title = "upstream-changed";\n',
     });
-    await git(engineDir, ['add', '-A']);
-    await git(engineDir, ['commit', '-m', 'upstream change']);
+    await runGit(engineDir, ['add', '-A']);
+    await runGit(engineDir, ['commit', '-m', 'upstream change']);
 
     // Upgrade version
     await writeFireForgeConfig(projectRoot, {
@@ -194,12 +194,12 @@ describe('rebase integration', () => {
     });
 
     // Create conflict
-    await git(engineDir, ['checkout', '--', 'browser/base/content/browser.js']);
+    await runGit(engineDir, ['checkout', '--', 'browser/base/content/browser.js']);
     await writeFiles(engineDir, {
       'browser/base/content/browser.js': 'export const title = "upstream-changed";\n',
     });
-    await git(engineDir, ['add', '-A']);
-    await git(engineDir, ['commit', '-m', 'upstream change']);
+    await runGit(engineDir, ['add', '-A']);
+    await runGit(engineDir, ['commit', '-m', 'upstream change']);
 
     await writeFireForgeConfig(projectRoot, {
       firefox: { version: '141.0esr', product: 'firefox-esr' },

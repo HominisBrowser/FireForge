@@ -263,14 +263,14 @@ export type ResolvedTestStyle = 'mochikit' | 'browser-chrome' | 'xpcshell' | 'no
  * Collapses `--with-tests`, `--xpcshell`, and `--test-style` into the single
  * scaffold dispatch used inside the mutation phase.
  *
- * Backwards-compat invariants:
+ * Invariants:
  * - `--xpcshell` alone is equivalent to `--test-style=xpcshell`.
- * - `--with-tests` alone (no `--test-style`) now defaults to `mochikit`
- *   (previously it defaulted to browser-chrome; the dogfooding pass
- *   flagged browser-chrome as unrunnable against non-tabbrowser chrome).
- *   Operators who need the old behavior can pass
- *   `--with-tests --test-style=browser-chrome`.
- * - `--xpcshell --with-tests` is rejected as ambiguous.
+ * - `--with-tests` alone (no `--test-style`) defaults to `browser-chrome`
+ *   (multi-process mochitest; reliable on macOS for interactive chrome).
+ *   Forks whose chrome document has no `tabbrowser` should pass
+ *   `--test-style=mochikit` explicitly.
+ * - When both `--xpcshell` and `--with-tests` are set, `--xpcshell` wins
+ *   (resolved style is `xpcshell` only).
  * @throws InvalidArgumentError when flags conflict.
  */
 export function resolveTestStyle(options: FurnaceCreateOptions): ResolvedTestStyle {
@@ -287,7 +287,7 @@ export function resolveTestStyle(options: FurnaceCreateOptions): ResolvedTestSty
 
   if (explicit) return explicit;
   if (xpcshellFlag) return 'xpcshell';
-  if (withTests) return 'mochikit';
+  if (withTests) return 'browser-chrome';
   return 'none';
 }
 

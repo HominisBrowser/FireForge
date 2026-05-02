@@ -8,7 +8,7 @@ import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflo
 import {
   createTempProject,
   initCommittedRepo,
-  readText,
+  readProjectText,
   removeTempProject,
   setInteractiveMode,
   writeFiles,
@@ -112,7 +112,7 @@ describe('furnace→export workflow integration', () => {
 
     const patchFilename = manifest?.patches[0]?.filename;
     expect(patchFilename).toBeDefined();
-    const patchContent = await readText(projectRoot, `patches/${patchFilename}`);
+    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('new file mode');
     expect(patchContent).toContain('MozMyBrowserPanel');
   });

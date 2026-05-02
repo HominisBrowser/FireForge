@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createTempProject,
-  readText,
+  readProjectText,
   removeTempProject,
   writeFiles,
 } from '../../test-utils/index.js';
@@ -45,7 +45,7 @@ describe('project state persistence', () => {
 
     await expect(loadState(projectRoot)).resolves.toEqual({ baseCommit: 'base-1' });
 
-    await expect(readText(projectRoot, '.fireforge/state.json')).resolves.toBe(
+    await expect(readProjectText(projectRoot, '.fireforge/state.json')).resolves.toBe(
       '{\n  "baseCommit": "base-1"\n}\n'
     );
 

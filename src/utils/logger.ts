@@ -17,7 +17,7 @@ export function setVerbose(enabled: boolean): void {
  * Checks if verbose mode is enabled.
  * @returns True if verbose mode is enabled
  */
-export function isVerbose(): boolean {
+function isVerbose(): boolean {
   return verboseMode;
 }
 
@@ -26,7 +26,7 @@ export function isVerbose(): boolean {
  * @param message - Message to display
  */
 export function verbose(message: string): void {
-  if (verboseMode) {
+  if (isVerbose()) {
     p.log.info(`[debug] ${message}`);
   }
 }

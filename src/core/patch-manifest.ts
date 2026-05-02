@@ -6,7 +6,6 @@
  * is an implementation detail.
  */
 
-export type { PatchManifestConsistencyIssue } from './patch-manifest-consistency.js';
 export {
   rebuildPatchesManifest,
   validatePatchesManifestConsistency,
@@ -14,11 +13,9 @@ export {
 export {
   addPatchToManifest,
   loadPatchesManifest,
-  PatchDeleteRollbackError,
   PATCHES_MANIFEST,
   type PatchRenameEntry,
   removePatchFileAndManifest,
-  removePatchFromManifest,
   renumberPatchesInManifest,
   savePatchesManifest,
 } from './patch-manifest-io.js';

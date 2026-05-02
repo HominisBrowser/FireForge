@@ -11,7 +11,7 @@ import { FurnaceError } from '../errors/furnace.js';
 import type { CustomComponentConfig } from '../types/furnace.js';
 import { isExplicitAbsolutePath } from '../utils/paths.js';
 import { isBoolean, isString } from '../utils/validation.js';
-import { parseStringArray } from './furnace-config.js';
+import { parseStringArray } from './furnace-config-array-utils.js';
 import { validateSharedFtl } from './shared-ftl.js';
 
 /**

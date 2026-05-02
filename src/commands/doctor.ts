@@ -15,138 +15,14 @@ import {
 import { ExitCode } from '../errors/codes.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DoctorCheck, DoctorOptions } from '../types/commands/index.js';
-import type { FireForgeConfig, FireForgeState, ProjectPaths } from '../types/config.js';
-import type { FurnaceConfig } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, success, warn } from '../utils/logger.js';
 import { findExecutable } from '../utils/process.js';
+import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
+import { failure, ok, warning } from './doctor-check-core.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { inspectEngineWorkingTree } from './doctor-working-tree.js';
-
-/**
- * Shared state available to every doctor check during a single run.
- *
- * The context is populated lazily by the doctor runner. Individual checks
- * can record side-observations (e.g. the parsed `fireforge.json`) into the
- * context for later checks to consume without re-parsing.
- *
- * Exported so sibling modules (e.g. `doctor-furnace.ts`) can declare
- * `DoctorCheckDefinition` entries against the same shared context.
- */
-export interface DoctorCheckContext {
-  projectRoot: string;
-  paths: ProjectPaths;
-  state: FireForgeState;
-  options: DoctorOptions;
-  /**
-   * Whether the engine/ directory exists on disk. Populated before checks
-   * run so downstream checks can skip git/mach inspections cheaply.
-   */
-  engineExists: boolean;
-  /**
-   * The loaded project config, set by the "fireforge.json is valid" check
-   * when it succeeds. Undefined before that check runs and whenever loading
-   * failed.
-   */
-  config: FireForgeConfig | undefined;
-  /**
-   * Whether `furnace.json` exists on disk. Populated before checks run so
-   * the furnace group can skipIf cheaply when the subsystem is not in use.
-   * A missing furnace.json is not an error — plenty of projects never touch
-   * the subsystem — so the doctor stays silent rather than failing.
-   */
-  furnaceConfigExists: boolean;
-  /**
-   * The parsed furnace config, set by the "Furnace configuration" check
-   * when it succeeds. Later furnace checks read from this so they do not
-   * re-parse the file; undefined when the config could not be loaded.
-   */
-  furnaceConfig: FurnaceConfig | undefined;
-}
-
-/**
- * Result a check may return. A single object is the common case; an array
- * lets a single check emit multiple related rows (e.g. the engine branch
- * check which may report on branch + detached state together).
- */
-export type CheckResult = DoctorCheck | DoctorCheck[];
-
-/**
- * Declarative definition of a single doctor check.
- *
- * Every check opts into the shared execution/reporting pipeline by
- * implementing only its inspection logic in `run`. Cross-cutting concerns
- * (result aggregation, summary, exit codes) live in the runner instead of
- * being duplicated at each call site.
- *
- * Exported so sibling modules (e.g. `doctor-furnace.ts`) can declare
- * new checks without re-deriving the shape.
- */
-export interface DoctorCheckDefinition {
-  /**
-   * Human-readable name surfaced in the check report (e.g. "Git installed").
-   * Not required to be unique, but tests assert on it.
-   */
-  name: string;
-  /**
-   * When `true`, the check is silently skipped. Used for checks that only
-   * apply when the engine is present, or only when specific state flags
-   * are set. Skipped checks contribute nothing to the final report.
-   */
-  skipIf?: (ctx: DoctorCheckContext) => boolean;
-  /**
-   * Names of checks that must appear earlier in the registry and run before
-   * this check. Enforced at startup via {@link validateCheckDependencies} so
-   * accidental reorders surface immediately instead of producing subtle
-   * context-population bugs at runtime.
-   */
-  dependsOn?: readonly string[];
-  /**
-   * Runs the inspection. Throwing is shorthand for "this check failed with
-   * severity 'error'" — the runner converts the exception message into a
-   * DoctorCheck. Returning a DoctorCheck (or array) lets the check control
-   * severity, warnings, and fix hints directly.
-   */
-  run: (ctx: DoctorCheckContext) => CheckResult | Promise<CheckResult>;
-  /**
-   * Optional recovery hint attached to the auto-generated failure result
-   * when `run` throws. Ignored when `run` returns a DoctorCheck explicitly.
-   */
-  fix?: string;
-}
-
-/**
- * Builds a DoctorCheck object representing a successful "OK" check.
- * Exported for sibling check modules that declare `DoctorCheckDefinition`
- * entries out-of-file (e.g. `doctor-furnace.ts`).
- */
-export function ok(name: string): DoctorCheck {
-  return { name, passed: true, severity: 'ok', message: 'OK' };
-}
-
-/**
- * Builds a DoctorCheck object representing a warning result.
- * Exported for sibling check modules — see {@link ok}.
- */
-export function warning(name: string, message: string, fix?: string): DoctorCheck {
-  return {
-    name,
-    passed: true,
-    severity: 'warning',
-    warning: true,
-    message,
-    ...(fix ? { fix } : {}),
-  };
-}
-
-/**
- * Builds a DoctorCheck object representing a failure result.
- * Exported for sibling check modules — see {@link ok}.
- */
-export function failure(name: string, message: string, fix?: string): DoctorCheck {
-  return { name, passed: false, severity: 'error', message, ...(fix ? { fix } : {}) };
-}
 
 /**
  * Runs a single check definition, converting thrown errors into

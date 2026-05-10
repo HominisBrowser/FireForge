@@ -72,7 +72,8 @@ export async function downloadFirefoxSource(
   destDir: string,
   cacheDir: string,
   onProgress?: ProgressCallback,
-  onPhase?: FirefoxSourcePhaseCallback
+  onPhase?: FirefoxSourcePhaseCallback,
+  expectedSha256?: string
 ): Promise<void> {
   const archive = resolveArchive(version, product);
   const tarballPath = join(cacheDir, archive.filename);
@@ -81,7 +82,7 @@ export async function downloadFirefoxSource(
   await ensureDir(cacheDir);
 
   onPhase?.('download');
-  await ensureCachedArchive(archive, cacheDir, onProgress);
+  await ensureCachedArchive(archive, cacheDir, onProgress, expectedSha256);
 
   // Extract to a unique temporary directory so concurrent downloads for
   // the same destination do not clobber each other.

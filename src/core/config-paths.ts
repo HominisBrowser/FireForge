@@ -53,6 +53,7 @@ export const SUPPORTED_CONFIG_PATHS = [
   'firefox',
   'firefox.version',
   'firefox.product',
+  'firefox.sha256',
   'build',
   'build.jobs',
   'wire',

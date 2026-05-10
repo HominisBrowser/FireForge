@@ -12,6 +12,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { sanitizeName } from '../../core/patch-export.js';
 import { addPatchToManifest } from '../../core/patch-manifest.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
@@ -117,6 +118,13 @@ describe('computePlacementPlan validation', () => {
     const plan = computePlacementPlan([], 'infra', 'bar', 1);
     expect(plan.insertionOrder).toBe(1);
     expect(plan.newFilename).toMatch(/^001-infra-bar\.patch$/);
+  });
+
+  it('uses the shared patch-export slug sanitizer for new placement filenames', () => {
+    const name = 'My@@@Feature###Name';
+    const plan = computePlacementPlan([], 'ui', name, 1);
+
+    expect(plan.newFilename).toBe(`001-ui-${sanitizeName(name)}.patch`);
   });
 });
 

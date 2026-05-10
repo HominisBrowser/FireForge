@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
+  pathExistsStrict: vi.fn(),
   readJson: vi.fn(),
   writeJson: vi.fn(),
 }));
@@ -19,7 +20,7 @@ vi.mock('../state-file.js', () => ({
 
 import { ConfigError, ConfigNotFoundError } from '../../errors/config.js';
 import type { FireForgeConfig, FireForgeState } from '../../types/config.js';
-import { pathExists, readJson, writeJson } from '../../utils/fs.js';
+import { pathExists, pathExistsStrict, readJson, writeJson } from '../../utils/fs.js';
 import { verbose, warn } from '../../utils/logger.js';
 import {
   CONFIG_FILENAME,
@@ -39,6 +40,7 @@ import {
 import { quarantineStateFile, withStateFileLock } from '../state-file.js';
 
 const mockPathExists = vi.mocked(pathExists);
+const mockPathExistsStrict = vi.mocked(pathExistsStrict);
 const mockReadJson = vi.mocked(readJson);
 const mockWriteJson = vi.mocked(writeJson);
 const mockVerbose = vi.mocked(verbose);
@@ -88,10 +90,10 @@ describe('config helpers', () => {
   });
 
   it('checks whether the config file exists', async () => {
-    mockPathExists.mockResolvedValueOnce(true);
+    mockPathExistsStrict.mockResolvedValueOnce(true);
 
     await expect(configExists('/project')).resolves.toBe(true);
-    expect(mockPathExists).toHaveBeenCalledWith('/project/fireforge.json');
+    expect(mockPathExistsStrict).toHaveBeenCalledWith('/project/fireforge.json');
   });
 });
 
@@ -102,6 +104,23 @@ describe('validateConfig', () => {
 
   it('returns a strongly typed config for valid input', () => {
     expect(validateConfig(makeValidConfig())).toEqual(makeValidConfig());
+  });
+
+  it('accepts and normalizes an optional pinned firefox sha256', () => {
+    const digest = 'A'.repeat(64);
+    const base = makeValidConfig();
+
+    expect(
+      validateConfig({ ...base, firefox: { ...base.firefox, sha256: digest } }).firefox.sha256
+    ).toBe(digest.toLowerCase());
+  });
+
+  it('rejects malformed firefox sha256 pins', () => {
+    const base = makeValidConfig();
+
+    expect(() =>
+      validateConfig({ ...base, firefox: { ...base.firefox, sha256: 'not-a-sha' } })
+    ).toThrow('Config field "firefox.sha256" must be a 64-character SHA-256 hex digest');
   });
 
   it('logs unknown root keys and ignores them', () => {
@@ -393,7 +412,7 @@ describe('config persistence', () => {
   });
 
   it('loads and validates the config file', async () => {
-    mockPathExists.mockResolvedValueOnce(true);
+    mockPathExistsStrict.mockResolvedValueOnce(true);
     mockReadJson.mockResolvedValueOnce(makeValidConfig());
 
     await expect(loadConfig('/project')).resolves.toEqual(makeValidConfig());
@@ -401,13 +420,13 @@ describe('config persistence', () => {
   });
 
   it('throws a ConfigNotFoundError when fireforge.json is missing', async () => {
-    mockPathExists.mockResolvedValueOnce(false);
+    mockPathExistsStrict.mockResolvedValueOnce(false);
 
     await expect(loadConfig('/project')).rejects.toBeInstanceOf(ConfigNotFoundError);
   });
 
   it('wraps non-ConfigError exceptions from readJson in a ConfigError', async () => {
-    mockPathExists.mockResolvedValueOnce(true);
+    mockPathExistsStrict.mockResolvedValueOnce(true);
     mockReadJson.mockRejectedValueOnce(new TypeError('Unexpected token'));
 
     const err = await loadConfig('/project').catch((e: unknown) => e);
@@ -416,14 +435,14 @@ describe('config persistence', () => {
   });
 
   it('re-throws ConfigError subclasses without wrapping', async () => {
-    mockPathExists.mockResolvedValueOnce(true);
+    mockPathExistsStrict.mockResolvedValueOnce(true);
     mockReadJson.mockResolvedValueOnce('not-an-object');
 
     await expect(loadConfig('/project')).rejects.toBeInstanceOf(ConfigError);
   });
 
   it('stringifies non-Error throwables in loadConfig catch', async () => {
-    mockPathExists.mockResolvedValueOnce(true);
+    mockPathExistsStrict.mockResolvedValueOnce(true);
     mockReadJson.mockRejectedValueOnce('raw string error');
 
     const err = await loadConfig('/project').catch((e: unknown) => e);

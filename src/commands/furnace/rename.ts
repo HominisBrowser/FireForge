@@ -50,63 +50,16 @@ import {
   writeText,
 } from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
+import {
+  renameComponentFileName,
+  updateConfigForCustomRename,
+  updateConfigForOverrideRename,
+} from './rename-helpers.js';
 import { renameXpcshellTestFiles } from './rename-xpcshell.js';
 
 /** Escapes regex metacharacters so a user-supplied name is literal inside a RegExp. */
 function escapeRegex(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Applies the component rename to a filename. Only replaces the leading
- * component name when it is followed by `.` (extension) or equals the
- * filename exactly; every other filename is returned unchanged so stray
- * assets, editor backups, or files whose name coincidentally contains the
- * old component name in the middle or at the end are not accidentally
- * renamed.
- */
-function renameComponentFileName(fileName: string, oldName: string, newName: string): string {
-  if (fileName === oldName) return newName;
-  if (fileName.startsWith(oldName + '.')) {
-    return newName + fileName.slice(oldName.length);
-  }
-  return fileName;
-}
-
-function updateConfigForCustomRename(
-  config: FurnaceConfig,
-  oldName: string,
-  newName: string
-): void {
-  const oldConfig = config.custom[oldName];
-  if (!oldConfig) return;
-
-  config.custom[newName] = {
-    ...oldConfig,
-    targetPath: oldConfig.targetPath.replace(new RegExp(`(^|/)${oldName}$`), `$1${newName}`),
-  };
-  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- idiomatic key removal from config record
-  delete config.custom[oldName];
-
-  // Update composes references in other components
-  for (const customConfig of Object.values(config.custom)) {
-    if (customConfig.composes) {
-      customConfig.composes = customConfig.composes.map((ref) => (ref === oldName ? newName : ref));
-    }
-  }
-}
-
-function updateConfigForOverrideRename(
-  config: FurnaceConfig,
-  oldName: string,
-  newName: string
-): void {
-  const oldConfig = config.overrides[oldName];
-  if (!oldConfig) return;
-
-  config.overrides[newName] = { ...oldConfig };
-  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- idiomatic key removal from config record
-  delete config.overrides[oldName];
 }
 
 /**
@@ -314,22 +267,59 @@ async function performRenameMutations(args: {
   componentType: string;
   config: FurnaceConfig;
   furnaceConfigPath: string;
+  furnacePaths: ReturnType<typeof getFurnacePaths>;
   engineDir: string;
 }): Promise<void> {
-  const { projectRoot, oldName, newName, oldDir, newDir, isCustom, componentType, config } = args;
+  const { projectRoot, oldName, newName } = args;
   const oldClassName = tagNameToClassName(oldName);
   const newClassName = tagNameToClassName(newName);
-  // Capture the pre-rename deployed target path so we know what to
-  // clean up in the engine tree. `updateConfigForCustomRename` rewrites
-  // `targetPath` in-place once the mutation enters phase 2, so we read
-  // it here while it still points at the old name's deployment.
-  const oldCustomTargetPath = isCustom ? config.custom[oldName]?.targetPath : undefined;
 
   await runFurnaceMutation(projectRoot, 'rename-rollback', async (ctx) => {
     const journal = createRollbackJournal();
     ctx.registerJournal(journal);
 
+    let newDir = args.newDir;
     try {
+      const config = await loadFurnaceConfig(projectRoot);
+      const isCustom = oldName in config.custom;
+      const isOverride = oldName in config.overrides;
+      if (!isCustom && !isOverride) {
+        throw new FurnaceError(
+          `Component "${oldName}" not found in furnace.json. Only custom and override components can be renamed.`,
+          oldName
+        );
+      }
+      if (
+        newName in config.custom ||
+        newName in config.overrides ||
+        config.stock.includes(newName)
+      ) {
+        throw new FurnaceError(
+          `A component named "${newName}" already exists in furnace.json.`,
+          newName
+        );
+      }
+
+      const componentType = isCustom ? 'custom' : 'override';
+      const componentDirLabel = isCustom ? 'custom' : 'overrides';
+      const baseDir = isCustom ? args.furnacePaths.customDir : args.furnacePaths.overridesDir;
+      const oldDir = join(baseDir, oldName);
+      newDir = join(baseDir, newName);
+      const oldCustomTargetPath = isCustom ? config.custom[oldName]?.targetPath : undefined;
+
+      if (!(await pathExists(oldDir))) {
+        throw new FurnaceError(
+          `Component directory not found: components/${componentDirLabel}/${oldName}`,
+          oldName
+        );
+      }
+      if (await pathExists(newDir)) {
+        throw new FurnaceError(
+          `Target directory already exists: components/${componentDirLabel}/${newName}`,
+          newName
+        );
+      }
+
       await snapshotDir(journal, oldDir);
       await snapshotFile(journal, args.furnaceConfigPath);
 
@@ -646,6 +636,7 @@ export async function furnaceRenameCommand(
     componentType,
     config,
     furnaceConfigPath: furnacePaths.furnaceConfig,
+    furnacePaths,
     engineDir: paths.engine,
   });
 

@@ -394,13 +394,19 @@ describe('furnaceCreateCommand --with-tests', () => {
     process.stdin.isTTY = false;
 
     // The compose targets must be known components for validation to pass.
-    vi.mocked(createDefaultFurnaceConfig).mockReturnValueOnce({
-      version: 1,
+    const composeConfig = {
+      version: 1 as const,
       componentPrefix: 'moz-',
       stock: ['moz-button', 'moz-toggle'],
       overrides: {},
       custom: {},
-    });
+    };
+    vi.mocked(createDefaultFurnaceConfig)
+      .mockReturnValueOnce(composeConfig)
+      .mockReturnValueOnce({
+        ...composeConfig,
+        custom: {},
+      });
 
     try {
       await furnaceCreateCommand('/project', 'moz-test-widget', {
@@ -435,6 +441,53 @@ describe('furnaceCreateCommand --with-tests', () => {
     const customEntry = configArg?.custom['moz-test-widget'];
     expect(customEntry).toBeDefined();
     expect(customEntry?.composes).toBeUndefined();
+  });
+
+  it('re-reads furnace.json inside the lock to preserve concurrent custom entries', async () => {
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig
+      .mockResolvedValueOnce({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+      })
+      .mockResolvedValueOnce({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-card': {
+            description: 'Sibling writer',
+            targetPath: 'toolkit/content/widgets/moz-card',
+            register: true,
+            localized: false,
+          },
+        },
+      });
+
+    try {
+      await furnaceCreateCommand('/project', 'moz-test-widget', {
+        description: 'A test widget',
+      });
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+
+    const writtenConfig = mockWriteFurnaceConfig.mock.calls.at(-1)?.[1];
+    expect(writtenConfig?.custom['moz-test-widget']).toMatchObject({
+      description: 'A test widget',
+      targetPath: 'toolkit/content/widgets/moz-test-widget',
+    });
+    expect(writtenConfig?.custom['moz-card']).toMatchObject({
+      description: 'Sibling writer',
+      targetPath: 'toolkit/content/widgets/moz-card',
+    });
   });
 });
 

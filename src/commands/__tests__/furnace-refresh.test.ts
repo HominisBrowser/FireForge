@@ -362,4 +362,54 @@ describe('furnace refresh', () => {
       'Override directory not found'
     );
   });
+
+  it('refreshes later overrides in --all mode, then throws a hard-failure summary', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {
+        'moz-button': {
+          type: 'full',
+          description: 'Button override',
+          basePath: 'toolkit/content/widgets/moz-button',
+          baseVersion: '145.0',
+        },
+        'moz-card': {
+          type: 'full',
+          description: 'Card override',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(refreshOverrideFile)
+      .mockRejectedValueOnce(new Error('merge helper exploded'))
+      .mockResolvedValue({ fileName: 'moz-card.mjs', status: 'merged' });
+
+    await expect(furnaceRefreshCommand('/project', undefined, { all: true })).rejects.toThrow(
+      /Failed to refresh 1 override\(s\): moz-button: merge helper exploded/
+    );
+
+    expect(refreshOverrideFile).toHaveBeenCalledWith(
+      '/project/engine',
+      expect.stringContaining('/components/overrides/moz-button/'),
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+      false,
+      undefined
+    );
+    expect(refreshOverrideFile).toHaveBeenCalledWith(
+      '/project/engine',
+      expect.stringContaining('/components/overrides/moz-card/'),
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+      false,
+      undefined
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-button: merge helper exploded'));
+  });
 });

@@ -508,7 +508,10 @@ export async function findExecutable(name: string): Promise<string | undefined> 
     const result = await exec(command, [name]);
     if (result.exitCode === 0 && result.stdout.trim()) {
       // Return the first line (first match)
-      return result.stdout.trim().split('\n')[0];
+      return result.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => line.length > 0);
     }
     return undefined;
   } catch (error: unknown) {

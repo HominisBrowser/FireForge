@@ -20,6 +20,15 @@ vi.mock('../../utils/fs.js', () => ({
   writeJson: vi.fn().mockResolvedValue(undefined),
 }));
 
+const mockWithFileLock = vi.hoisted(() =>
+  vi.fn((_lockPath: string, operation: () => Promise<unknown>) => operation())
+);
+
+vi.mock('../file-lock.js', () => ({
+  createSiblingLockPath: (filePath: string, suffix = '.fireforge.lock') => `${filePath}${suffix}`,
+  withFileLock: mockWithFileLock,
+}));
+
 const mockCreateWriteStream = vi.hoisted(() => vi.fn());
 const mockCreateReadStream = vi.hoisted(() => vi.fn());
 
@@ -50,6 +59,7 @@ const mockFetch = vi.fn<(url: string | URL | Request, init?: RequestInit) => Pro
 
 beforeEach(() => {
   mockFetch.mockReset();
+  mockWithFileLock.mockClear();
   mockCreateWriteStream.mockReset();
   mockCreateReadStream.mockReset();
   mockRename.mockReset().mockResolvedValue(undefined);
@@ -347,6 +357,118 @@ describe('checksum-based cache validation', () => {
     expect(fsMod.removeFile).toHaveBeenCalled();
     expect(mockFetch).toHaveBeenCalled();
   });
+
+  it('serializes cache validation and download behind a per-archive lock', async () => {
+    const fsMod = await import('../../utils/fs.js');
+    vi.mocked(fsMod.pathExists).mockResolvedValue(false);
+
+    const body = new ReadableStream({
+      start(controller): void {
+        controller.enqueue(new TextEncoder().encode('fresh'));
+        controller.close();
+      },
+    });
+    mockFetch.mockResolvedValueOnce(
+      new Response(body, { status: 200, headers: { 'content-length': '5' } })
+    );
+    mockCreateWriteStream.mockReturnValue(makeMockWriteStream());
+    mockCreateReadStream.mockReturnValue(Readable.from([Buffer.from('fresh')]));
+    mockReaddir.mockResolvedValue([{ name: 'firefox-140.9.0', isDirectory: () => true }]);
+
+    await downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache');
+
+    expect(mockWithFileLock).toHaveBeenCalledWith(
+      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.fireforge-cache.lock',
+      expect.any(Function)
+    );
+  });
+
+  it('accepts a freshly downloaded archive whose pinned sha256 matches', async () => {
+    const fsMod = await import('../../utils/fs.js');
+    vi.mocked(fsMod.pathExists).mockResolvedValue(false);
+
+    const body = new ReadableStream({
+      start(controller): void {
+        controller.enqueue(new TextEncoder().encode('fresh'));
+        controller.close();
+      },
+    });
+    mockFetch.mockResolvedValueOnce(
+      new Response(body, { status: 200, headers: { 'content-length': '5' } })
+    );
+    mockCreateWriteStream.mockReturnValue(makeMockWriteStream());
+    mockCreateReadStream.mockReturnValue(Readable.from([Buffer.from('fresh')]));
+    mockReaddir.mockResolvedValue([{ name: 'firefox-140.9.0', isDirectory: () => true }]);
+
+    await expect(
+      downloadFirefoxSource(
+        '140.9.0',
+        'firefox',
+        '/tmp/dest',
+        '/tmp/cache',
+        undefined,
+        undefined,
+        'd098ab5e44b9aabb755f76d806598f43573c662b35e4a2eab1e312ec9ad195e2'
+      )
+    ).resolves.toBeUndefined();
+  });
+
+  it('removes this invocation tarball when a pinned sha256 mismatches', async () => {
+    const fsMod = await import('../../utils/fs.js');
+    vi.mocked(fsMod.pathExists).mockResolvedValue(false);
+
+    const body = new ReadableStream({
+      start(controller): void {
+        controller.enqueue(new TextEncoder().encode('fresh'));
+        controller.close();
+      },
+    });
+    mockFetch.mockResolvedValueOnce(
+      new Response(body, { status: 200, headers: { 'content-length': '5' } })
+    );
+    mockCreateWriteStream.mockReturnValue(makeMockWriteStream());
+    mockCreateReadStream.mockReturnValue(Readable.from([Buffer.from('fresh')]));
+
+    await expect(
+      downloadFirefoxSource(
+        '140.9.0',
+        'firefox',
+        '/tmp/dest',
+        '/tmp/cache',
+        undefined,
+        undefined,
+        '0'.repeat(64)
+      )
+    ).rejects.toThrow(/SHA-256 mismatch/);
+
+    expect(fsMod.removeFile).toHaveBeenCalledWith(
+      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz'
+    );
+    expect(fsMod.removeFile).toHaveBeenCalledWith(
+      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json'
+    );
+  });
+
+  it('does not delete a peer cache entry when a download fails before promotion', async () => {
+    const fsMod = await import('../../utils/fs.js');
+    vi.mocked(fsMod.removeFile).mockClear();
+    vi.mocked(fsMod.pathExists).mockResolvedValue(false);
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    await expect(
+      downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache')
+    ).rejects.toThrow(/No response body received/);
+
+    expect(fsMod.removeFile).not.toHaveBeenCalledWith(
+      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz'
+    );
+    expect(fsMod.removeFile).not.toHaveBeenCalledWith(
+      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json'
+    );
+    expect(vi.mocked(fsMod.removeFile).mock.calls[0]?.[0]).toMatch(
+      /^\/tmp\/cache\/firefox-firefox-140\.9\.0\.source\.tar\.xz\.part-/
+    );
+  });
 });
 
 describe('download extraction behavior', () => {
@@ -495,6 +617,39 @@ describe('download stall detection', () => {
     await expect(
       downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache')
     ).resolves.toBeUndefined();
+  });
+
+  it('clears the stall timer when the pipeline errors before flush', async () => {
+    vi.useFakeTimers();
+    try {
+      const body = new ReadableStream({
+        start(controller): void {
+          controller.enqueue(new TextEncoder().encode('partial'));
+          controller.close();
+        },
+      });
+      mockFetch.mockResolvedValueOnce(
+        new Response(body, { status: 200, headers: { 'content-length': '7' } })
+      );
+
+      const failingWriter = new Writable({
+        write(_chunk, _encoding, callback): void {
+          callback(new Error('disk full'));
+        },
+      });
+      mockCreateWriteStream.mockReturnValue(failingWriter);
+
+      const fsMod = await import('../../utils/fs.js');
+      vi.mocked(fsMod.pathExists).mockResolvedValue(false);
+
+      await expect(
+        downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache')
+      ).rejects.toThrow('disk full');
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

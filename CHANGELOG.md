@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.20.0
+
+### Features
+
+- **Pinned Firefox archive verification.** `FirefoxConfig` now accepts optional `firefox.sha256`, and `fireforge config firefox.sha256 <digest>` is a supported config path. The digest must be a 64-character SHA-256 hex string; FireForge verifies both cached and freshly downloaded source archives against it before extraction, so reproducible workflows can fail fast on a mismatched upstream archive instead of discovering the problem after engine mutation has begun.
+- **`fireforge patch compact`.** Patch queues with ordinal gaps after deletes, splits, or manual repair can now be compacted back to contiguous numbering under the existing patch manifest lock. The command supports dry-run previews, confirmation/`--yes`, lock-time recomputation, history entries, and the same two-phase rename/rollback safety as other patch renumbering paths.
+- **Furnace xpcshell scaffolding and rename helpers.** Furnace test scaffolding now covers xpcshell packaging probes for storage/module-loading code paths, and rename logic is split into focused helpers for component filenames and config rewrites so custom and override renames share the same behaviour.
+
+### Hardening
+
+- **`fireforge download` is locked end-to-end.** The command now takes a project-level `.fireforge/` sidecar lock around the full engine mutation sequence: engine existence checks, forced removal, source download/extraction, git init or resume, patch cleanup, and state updates. Parallel invocations queue with explicit timeout/stale-lock messaging instead of racing over `engine/`.
+- **Firefox archive cache mutation is locked per archive.** Cache validation, invalidation, download promotion, and metadata writes now run under a per-archive cache lock. A failed downloader removes only its own unique `.part-*` file unless it already promoted the tarball, so a failing peer can no longer delete another process's valid final cache entry.
+- **Download stream timers clean up on all terminal paths.** The stall detector now clears its timer from `destroy(error, callback)` as well as normal `flush`, avoiding late timer errors and unnecessary event-loop retention after pipeline failures.
+- **Relative import linting is AST-backed.** `fireforge lint` now uses Acorn/ESTree traversal to detect relative ES imports, side-effect imports, dynamic `import()`, relative re-exports, and `ChromeUtils` / `Cu.import` calls, with a narrow stripped-text fallback only when parsing fails. This closes the false negatives left by the old regex pass while keeping malformed-file diagnostics useful.
+- **Cross-platform process and lock probes are stricter.** `findExecutable` now parses Windows `where` output with CRLF-safe per-line trimming and returns the first non-empty candidate. File-lock stale recovery treats only `ESRCH` from `process.kill(pid, 0)` as dead; `EPERM` and unknown errors are treated as live/unknown so FireForge does not reclaim a lock owned by another live process.
+- **Filesystem writes get low-risk durability checks.** `writeFileAtomic` preserves the existing mode-preservation behaviour and now best-effort fsyncs the parent directory after rename where the platform supports directory handles. `pathExistsStrict` is available for user-facing probes that should surface `EACCES` / `EPERM` instead of collapsing them into "missing".
+- **Furnace mutations use fresh locked state.** `furnace create`, `furnace remove`, and `furnace rename` re-read `furnace.json` inside the mutation lock before validation and writeback, preserving sibling entries created by concurrent commands instead of writing back stale outer snapshots. `furnace remove` also shares cleanup state for custom browser-chrome, xpcshell, and MochiKit scaffolds.
+- **Furnace refresh distinguishes conflicts from fatal merge failures.** `git merge-file` result handling now treats normal conflict exits separately from fatal/error output or high exit codes. `furnace refresh --all` continues through later overrides after a per-component failure, reports the failed count, and exits non-zero with the failed override names once the rest of the selection has been attempted.
+- **Shared naming and coverage drift guards.** Export placement now reuses `sanitizeName` from patch export instead of maintaining a duplicate slug helper, and the dedicated coverage-threshold script now enrols newly critical modules including Furnace refresh, patch compact, and Furnace xpcshell rename handling.
+
+### Documentation
+
+- **README — download locks and pinned archive checksums.** The quick-start and configuration sections now describe the project download lock, per-archive cache lock, and `firefox.sha256` workflow.
+- **README — concurrent Furnace mutations.** The Furnace section now documents locked fresh-state writeback for create/remove/rename and the `refresh --all` failure summary behaviour.
+
 ## 0.19.0
 
 ### Features

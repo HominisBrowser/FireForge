@@ -9,9 +9,11 @@ import { rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
+import { DownloadError } from '../errors/download.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, removeFile, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { createSiblingLockPath, withFileLock } from './file-lock.js';
 import type { ArchiveMetadata, ResolvedArchive } from './firefox-archive.js';
 import { validateArchiveMetadata } from './firefox-archive.js';
 import type { ProgressCallback } from './firefox-download.js';
@@ -37,14 +39,29 @@ export async function sha256File(filePath: string): Promise<string> {
 export async function ensureCachedArchive(
   archive: ResolvedArchive,
   cacheDir: string,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  expectedSha256?: string
 ): Promise<void> {
-  if (await validateCachedArchive(archive, cacheDir)) {
-    return;
-  }
+  const lockPath = createSiblingLockPath(join(cacheDir, archive.filename), '.fireforge-cache.lock');
+  await withFileLock(lockPath, async () => {
+    if (await validateCachedArchive(archive, cacheDir, expectedSha256)) {
+      return;
+    }
 
-  await invalidateArchiveCache(archive, cacheDir);
-  await downloadToCache(archive, cacheDir, onProgress);
+    if (await cacheEntryExists(archive, cacheDir)) {
+      await invalidateArchiveCache(archive, cacheDir);
+    } else {
+      await removeArchivePartFiles(archive, cacheDir);
+    }
+    await downloadToCache(archive, cacheDir, onProgress, expectedSha256);
+  });
+}
+
+async function cacheEntryExists(archive: ResolvedArchive, cacheDir: string): Promise<boolean> {
+  return (
+    (await pathExists(join(cacheDir, archive.filename))) ||
+    (await pathExists(join(cacheDir, archive.metadataFilename)))
+  );
 }
 
 /**
@@ -53,7 +70,11 @@ export async function ensureCachedArchive(
  * @param cacheDir - Cache directory
  * @returns True if the cache entry is valid
  */
-async function validateCachedArchive(archive: ResolvedArchive, cacheDir: string): Promise<boolean> {
+async function validateCachedArchive(
+  archive: ResolvedArchive,
+  cacheDir: string,
+  expectedSha256?: string
+): Promise<boolean> {
   const tarballPath = join(cacheDir, archive.filename);
   const metadataPath = join(cacheDir, archive.metadataFilename);
 
@@ -79,9 +100,12 @@ async function validateCachedArchive(archive: ResolvedArchive, cacheDir: string)
       }
     }
 
-    if (metadata.sha256) {
+    if (expectedSha256 || metadata.sha256) {
       const actualHash = await sha256File(tarballPath);
-      if (actualHash !== metadata.sha256) {
+      if (expectedSha256 && actualHash !== expectedSha256) {
+        return false;
+      }
+      if (metadata.sha256 && actualHash !== metadata.sha256) {
         return false;
       }
     }
@@ -104,18 +128,27 @@ async function validateCachedArchive(archive: ResolvedArchive, cacheDir: string)
 async function downloadToCache(
   archive: ResolvedArchive,
   cacheDir: string,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  expectedSha256?: string
 ): Promise<void> {
   const tarballPath = join(cacheDir, archive.filename);
   // Use a unique .part path so concurrent downloads for the same archive
   // do not clobber each other's partial files.
   const partPath = `${tarballPath}.part-${randomUUID()}`;
   const metadataPath = join(cacheDir, archive.metadataFilename);
+  let promotedTarball = false;
 
   try {
     const contentLength = await downloadFile(archive.url, partPath, onProgress);
     await rename(partPath, tarballPath);
+    promotedTarball = true;
     const sha256 = await sha256File(tarballPath);
+    if (expectedSha256 && sha256 !== expectedSha256) {
+      throw new DownloadError(
+        `Downloaded archive SHA-256 mismatch: expected ${expectedSha256}, got ${sha256}`,
+        archive.url
+      );
+    }
     await writeJson(metadataPath, {
       requestedVersion: archive.requestedVersion,
       product: archive.product,
@@ -127,8 +160,10 @@ async function downloadToCache(
     } satisfies ArchiveMetadata);
   } catch (error: unknown) {
     await removeFile(partPath);
-    await removeFile(tarballPath);
-    await removeFile(metadataPath);
+    if (promotedTarball) {
+      await removeFile(tarballPath);
+      await removeFile(metadataPath);
+    }
     throw error;
   }
 }
@@ -145,8 +180,13 @@ export async function invalidateArchiveCache(
   const tarballPath = join(cacheDir, archive.filename);
   const metadataPath = join(cacheDir, archive.metadataFilename);
 
-  // Clean up any partial download files (may have unique suffixes from
-  // concurrent download attempts).
+  await removeArchivePartFiles(archive, cacheDir);
+
+  await removeFile(tarballPath);
+  await removeFile(metadataPath);
+}
+
+async function removeArchivePartFiles(archive: ResolvedArchive, cacheDir: string): Promise<void> {
   const partPrefix = `${archive.filename}.part`;
   try {
     const { readdir } = await import('node:fs/promises');
@@ -156,10 +196,8 @@ export async function invalidateArchiveCache(
         .filter((name) => name.startsWith(partPrefix))
         .map((name) => removeFile(join(cacheDir, name)))
     );
-  } catch {
+  } catch (error: unknown) {
+    void error;
     // Cache dir may not exist yet — that's fine.
   }
-
-  await removeFile(tarballPath);
-  await removeFile(metadataPath);
 }

@@ -3,7 +3,14 @@ import { EventEmitter } from 'node:events';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { exec, execInherit, execInheritCapture, execSmokeRun, execStream } from '../process.js';
+import {
+  exec,
+  execInherit,
+  execInheritCapture,
+  execSmokeRun,
+  execStream,
+  findExecutable,
+} from '../process.js';
 
 class MockStream extends EventEmitter {}
 
@@ -308,5 +315,22 @@ describe('execSmokeRun', () => {
 
     const result = await promise;
     expect(result.timedOut).toBe(false);
+  });
+});
+
+describe('findExecutable', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the first non-empty CRLF-delimited path without a trailing carriage return', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = findExecutable('tool');
+    child.stdout.emit('data', Buffer.from('\r\n/usr/local/bin/tool\r\n/usr/bin/tool\r\n'));
+    child.emit('close', 0);
+
+    await expect(promise).resolves.toBe('/usr/local/bin/tool');
   });
 });

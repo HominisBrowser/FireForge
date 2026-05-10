@@ -14,7 +14,7 @@ import { basename } from 'node:path';
 import { ConfigError, ConfigNotFoundError } from '../errors/config.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import * as fsUtils from '../utils/fs.js';
 import { getProjectPaths } from './config-paths.js';
 import { validateConfig } from './config-validate.js';
 import { createSiblingLockPath, withFileLock } from './file-lock.js';
@@ -35,6 +35,13 @@ export { validateConfig } from './config-validate.js';
 
 // ---- config I/O (stays here because it bridges paths + validation) ----
 
+async function configPathExists(path: string): Promise<boolean> {
+  const fs = fsUtils as typeof fsUtils & {
+    pathExistsStrict?: typeof fsUtils.pathExists;
+  };
+  return (fs.pathExistsStrict ?? fsUtils.pathExists)(path);
+}
+
 /**
  * Checks if a fireforge.json exists in the given directory.
  * @param root - Root directory to check
@@ -42,7 +49,7 @@ export { validateConfig } from './config-validate.js';
  */
 export async function configExists(root: string): Promise<boolean> {
   const paths = getProjectPaths(root);
-  return pathExists(paths.config);
+  return configPathExists(paths.config);
 }
 
 /**
@@ -54,12 +61,12 @@ export async function configExists(root: string): Promise<boolean> {
 export async function loadConfig(root: string): Promise<FireForgeConfig> {
   const paths = getProjectPaths(root);
 
-  if (!(await pathExists(paths.config))) {
+  if (!(await configPathExists(paths.config))) {
     throw new ConfigNotFoundError(paths.config);
   }
 
   try {
-    const data = await readJson<unknown>(paths.config);
+    const data = await fsUtils.readJson<unknown>(paths.config);
     return validateConfig(data);
   } catch (error: unknown) {
     if (error instanceof ConfigError) {
@@ -89,12 +96,12 @@ export async function loadConfig(root: string): Promise<FireForgeConfig> {
 export async function loadRawConfigDocument(root: string): Promise<Record<string, unknown>> {
   const paths = getProjectPaths(root);
 
-  if (!(await pathExists(paths.config))) {
+  if (!(await configPathExists(paths.config))) {
     throw new ConfigNotFoundError(paths.config);
   }
 
   try {
-    const data = await readJson<unknown>(paths.config);
+    const data = await fsUtils.readJson<unknown>(paths.config);
     if (data === null || typeof data !== 'object' || Array.isArray(data)) {
       throw new ConfigError(`Invalid fireforge.json at ${paths.config}: expected an object`);
     }
@@ -135,7 +142,7 @@ export async function writeConfigDocument(
   config: FireForgeConfig | Record<string, unknown>
 ): Promise<void> {
   const paths = getProjectPaths(root);
-  await writeJson(paths.config, config);
+  await fsUtils.writeJson(paths.config, config);
 }
 
 /**

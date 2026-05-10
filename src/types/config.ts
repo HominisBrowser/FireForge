@@ -12,6 +12,8 @@ export interface FirefoxConfig {
   version: string;
   /** Firefox product type */
   product: FirefoxProduct;
+  /** Optional pinned SHA-256 for the resolved source archive */
+  sha256?: string;
 }
 
 /**

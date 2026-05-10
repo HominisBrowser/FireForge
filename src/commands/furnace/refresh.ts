@@ -308,6 +308,7 @@ export async function furnaceRefreshCommand(
   let totalUnchanged = 0;
   let totalSkipped = 0;
   const conflictComponents: string[] = [];
+  const failedOverrides: { name: string; message: string }[] = [];
 
   // Snapshot furnace.json before the batch loop so an unexpected failure
   // (process crash, unhandled error) can be recovered from. Per-component
@@ -337,7 +338,9 @@ export async function furnaceRefreshCommand(
           } else if (r.status === 'unchanged') totalUnchanged++;
         }
       } catch (error: unknown) {
-        warn(`${overrideName}: ${toError(error).message}`);
+        const message = toError(error).message;
+        warn(`${overrideName}: ${message}`);
+        failedOverrides.push({ name: overrideName, message });
       }
     }
   } catch (error: unknown) {
@@ -351,7 +354,8 @@ export async function furnaceRefreshCommand(
 
   const summary =
     `${overrideNames.length} override(s) processed, ${totalSkipped} already up-to-date\n` +
-    `${totalMerged} file(s) merged, ${totalUnchanged} unchanged, ${totalConflicts} conflict(s)`;
+    `${totalMerged} file(s) merged, ${totalUnchanged} unchanged, ${totalConflicts} conflict(s), ` +
+    `${failedOverrides.length} failed`;
 
   if (conflictComponents.length > 0) {
     warn(
@@ -361,5 +365,13 @@ export async function furnaceRefreshCommand(
   }
 
   note(summary, dryRun ? 'Dry Run Summary' : 'Refresh Summary');
+  if (failedOverrides.length > 0) {
+    outro(dryRun ? 'Dry run completed with failures' : 'Refresh completed with failures');
+    throw new FurnaceError(
+      `Failed to refresh ${failedOverrides.length} override(s): ` +
+        failedOverrides.map((failure) => `${failure.name}: ${failure.message}`).join('; ')
+    );
+  }
+
   outro(dryRun ? 'Dry run complete' : 'Refresh complete');
 }

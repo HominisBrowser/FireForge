@@ -87,6 +87,8 @@ npx fireforge rebase
 
 `fireforge download` indexes the extracted Firefox source into a fresh git repository — a one-time 1–3 minute pass on a cold SSD, longer on slow or loaded disks. The monolithic `git add -A` is capped at 10 minutes by default and falls back to a per-directory chunked pass (30 minutes per chunk) when the cap hits. If indexing still times out, the command now raises `GitIndexingTimeoutError` with recovery guidance: extend the cap via `FIREFORGE_GIT_ADD_TIMEOUT_MS` (monolithic) and/or `FIREFORGE_GIT_ADD_CHUNK_TIMEOUT_MS` (chunked) in milliseconds, e.g. `FIREFORGE_GIT_ADD_TIMEOUT_MS=1800000 fireforge download --force` for a 30-minute monolithic budget, then re-run `fireforge download --force` — the resume path picks up from the partial git state so the repeat is not wasted work.
 
+`fireforge download` is serialised by a project lock under `.fireforge/`, covering the engine-exists check, forced replacement, extraction, git initialisation/resume, patch cleanup and state update. Archive cache entries are also guarded by per-archive locks, so parallel downloads queue instead of racing over the same `engine/` directory or deleting each other's cache results. For reproducible workflows, set `firefox.sha256` to the expected 64-character archive SHA-256; FireForge verifies both cached and freshly downloaded archives before extraction and refuses a mismatch before touching the engine.
+
 `fireforge rebase --dry-run` refuses when the engine has no baseline commit yet (e.g. the aftermath of an aborted `download --force`), so dry-run and real-run preconditions stay in sync.
 
 ## Patch Workflow
@@ -435,6 +437,8 @@ Three styles are available via `--test-style`:
 
 `furnace create --dry-run` previews the planned file set, test scaffold, and `furnace.json` mutation without writing anything. Every validation the real command runs (tag-name shape, name conflicts, engine pre-existence of the component, `--compose` target existence + cycle detection) fires BEFORE the plan is emitted, so a failed preview matches a failed real run.
 
+`furnace create`, `furnace remove`, and `furnace rename` re-read `furnace.json` inside the mutation lock before writing, so concurrent component edits preserve sibling entries instead of writing back a stale outer snapshot. `furnace refresh --all` continues past per-component refresh failures, reports the failed count, and exits non-zero with the failed override names after finishing the rest of the selection.
+
 ## Additional Commands
 
 The commands below cover project configuration, patch queue management, build packaging and development utilities. Run `fireforge <command> --help` for full option details.
@@ -448,6 +452,9 @@ fireforge config firefox.version
 # Set a config value
 fireforge config firefox.version 145.0.0esr
 
+# Pin the resolved Firefox source archive checksum
+fireforge config firefox.sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
 # Set a value at a non-standard path (requires --force)
 fireforge config customKey "value" --force
 ```
@@ -455,6 +462,8 @@ fireforge config customKey "value" --force
 Writes are serialised behind a sidecar lock — two concurrent `fireforge config` invocations against the same `fireforge.json` (for example, parallel automation steps) queue instead of racing the read-modify-write. The lock is released automatically on process exit; stale locks from a crashed earlier command are reclaimed on the next invocation via the PID-alive probe.
 
 Re-setting a key to its current value is a no-op: `fireforge.json` is not rewritten, key ordering is preserved, and the success log surfaces `<key> = <value> (unchanged)` instead of a fresh `Set …` line. This means automation that idempotently runs `fireforge config <key> <value>` no longer produces spurious diffs in `fireforge.json`.
+
+`firefox.sha256` is optional. When set, it must be a 64-character hex SHA-256 for the Firefox source archive resolved from `firefox.product` + `firefox.version`; cached archives and fresh downloads are verified against it before extraction. Omit it to keep the default cache-integrity-only behaviour.
 
 ### Patch queue management
 

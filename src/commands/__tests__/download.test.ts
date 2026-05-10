@@ -16,6 +16,10 @@ vi.mock('../../core/firefox.js', () => ({
   formatBytes: vi.fn((value: number) => `${value} B`),
 }));
 
+vi.mock('../../core/file-lock.js', () => ({
+  withFileLock: vi.fn((_lockPath: string, operation: () => Promise<unknown>) => operation()),
+}));
+
 vi.mock('../../core/furnace-config.js', () => ({
   getFurnacePaths: vi.fn((root: string) => ({
     furnaceConfig: `${root}/furnace.json`,
@@ -40,6 +44,7 @@ vi.mock('../../core/git.js', async (importOriginal) => {
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn((path: string) => Promise.resolve(path === '/project/engine')),
+  pathExistsStrict: vi.fn((path: string) => Promise.resolve(path === '/project/engine')),
   removeDir: vi.fn().mockResolvedValue(undefined),
   ensureDir: vi.fn().mockResolvedValue(undefined),
   checkDiskSpace: vi.fn().mockResolvedValue(undefined),
@@ -60,11 +65,12 @@ vi.mock('../../utils/logger.js', () => ({
 }));
 
 import { getProjectPaths } from '../../core/config.js';
+import { withFileLock } from '../../core/file-lock.js';
 import { downloadFirefoxSource } from '../../core/firefox.js';
 import { updateFurnaceState } from '../../core/furnace-config.js';
 import { getHead, initRepository, resumeRepository } from '../../core/git.js';
 import { EngineExistsError } from '../../errors/download.js';
-import { pathExists, removeDir } from '../../utils/fs.js';
+import { pathExists, pathExistsStrict, removeDir } from '../../utils/fs.js';
 import type { SpinnerHandle } from '../../utils/logger.js';
 import { info, spinner, step, warn } from '../../utils/logger.js';
 import { downloadCommand } from '../download.js';
@@ -92,7 +98,11 @@ describe('downloadCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
+    vi.mocked(withFileLock).mockImplementation((_lockPath, operation) => operation());
     vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === '/project/engine')
+    );
+    vi.mocked(pathExistsStrict).mockImplementation((path: string) =>
       Promise.resolve(path === '/project/engine')
     );
   });
@@ -185,14 +195,18 @@ describe('downloadCommand', () => {
   it('throws EngineExistsError when a valid engine checkout already exists without force', async () => {
     await expect(downloadCommand('/project', {})).rejects.toBeInstanceOf(EngineExistsError);
 
+    expect(withFileLock).toHaveBeenCalledWith(
+      '/project/.fireforge/download.fireforge.lock',
+      expect.any(Function)
+    );
     expect(removeDir).not.toHaveBeenCalled();
     expect(initRepository).not.toHaveBeenCalled();
   });
 
   it('clears furnace state when --force removes an existing engine', async () => {
     // Engine exists AND furnace-state.json exists → force branch should clear it.
+    vi.mocked(pathExistsStrict).mockResolvedValue(true);
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
       if (path === '/project/.fireforge/furnace-state.json') return Promise.resolve(true);
       return Promise.resolve(false);
     });
@@ -213,8 +227,8 @@ describe('downloadCommand', () => {
   });
 
   it('preserves pendingRepair when --force clears stale furnace apply state', async () => {
+    vi.mocked(pathExistsStrict).mockResolvedValue(true);
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
       if (path === '/project/.fireforge/furnace-state.json') return Promise.resolve(true);
       return Promise.resolve(false);
     });
@@ -249,9 +263,8 @@ describe('downloadCommand', () => {
   });
 
   it('does not try to clear furnace state when it does not exist', async () => {
-    vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === '/project/engine')
-    );
+    vi.mocked(pathExistsStrict).mockResolvedValue(true);
+    vi.mocked(pathExists).mockResolvedValue(false);
     vi.mocked(initRepository).mockResolvedValue(undefined);
     vi.mocked(getHead).mockResolvedValue('base-commit');
 
@@ -265,6 +278,7 @@ describe('downloadCommand', () => {
     const downloadSpinner = createSpinnerMock();
     const gitSpinner = createSpinnerMock();
     vi.mocked(spinner).mockReturnValueOnce(downloadSpinner).mockReturnValueOnce(gitSpinner);
+    vi.mocked(pathExistsStrict).mockResolvedValue(false);
     vi.mocked(pathExists).mockResolvedValue(false);
     vi.mocked(downloadFirefoxSource).mockImplementation(
       (_version, _product, _engineDir, _cacheDir, onProgress) => {
@@ -302,6 +316,7 @@ describe('downloadCommand', () => {
     const downloadSpinner = createSpinnerMock();
     const gitSpinner = createSpinnerMock();
     vi.mocked(spinner).mockReturnValueOnce(downloadSpinner).mockReturnValueOnce(gitSpinner);
+    vi.mocked(pathExistsStrict).mockResolvedValue(false);
     vi.mocked(pathExists).mockResolvedValue(false);
     vi.mocked(initRepository).mockResolvedValue(undefined);
     vi.mocked(getHead).mockResolvedValue('base-commit');
@@ -328,6 +343,7 @@ describe('downloadCommand', () => {
       .mockReturnValueOnce(restoreSpinner);
     // patches dir absent → getPatchTouchedFiles returns an empty set →
     // cleanPatchTouchedFiles reports hadQueue: false.
+    vi.mocked(pathExistsStrict).mockResolvedValue(false);
     vi.mocked(pathExists).mockResolvedValue(false);
     vi.mocked(initRepository).mockResolvedValue(undefined);
     vi.mocked(getHead).mockResolvedValue('base-commit');
@@ -338,5 +354,36 @@ describe('downloadCommand', () => {
       'No patches in queue — nothing to restore'
     );
     expect(restoreSpinner.stopMock).not.toHaveBeenCalledWith('Patch-touched files restored');
+  });
+
+  it('passes a pinned firefox.sha256 through to the archive downloader', async () => {
+    const configMod = await import('../../core/config.js');
+    vi.mocked(configMod.loadConfig).mockResolvedValueOnce({
+      firefox: {
+        version: '140.9.0esr',
+        product: 'firefox-esr',
+        sha256: 'a'.repeat(64),
+      },
+      name: 'Fire',
+      vendor: 'Forge',
+      appId: 'org.example.fireforge',
+      binaryName: 'fireforge',
+    });
+    vi.mocked(pathExistsStrict).mockResolvedValue(false);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', {});
+
+    expect(downloadFirefoxSource).toHaveBeenCalledWith(
+      '140.9.0esr',
+      'firefox-esr',
+      '/project/engine',
+      '/project/.fireforge/cache',
+      expect.any(Function),
+      expect.any(Function),
+      'a'.repeat(64)
+    );
   });
 });

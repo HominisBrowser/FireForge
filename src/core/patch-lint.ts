@@ -19,6 +19,7 @@ import { invokePatchLintCheckJs } from './patch-lint-checkjs.js';
 import { lintChromeScriptJsDocForFile } from './patch-lint-chrome-jsdoc.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
 import { AGGREGATE_PATCH_FILE } from './patch-lint-diff-tag.js';
+import { hasRelativeImport } from './patch-lint-imports.js';
 import { validateExportJsDoc } from './patch-lint-jsdoc.js';
 import { resolvePatchOwnedChromeScripts, resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
 
@@ -471,11 +472,8 @@ export async function lintPatchedJs(
 
     // 1. Relative import check
     const strippedContent = stripJsComments(content);
-    const relativeImportPattern =
-      /(?:ChromeUtils\.import(?:ESModule)?|Cu\.import)\s*\(\s*["'](?:\.\.?\/)/gm;
-    const esRelativePattern = /\bimport\s+.*?\s+from\s+["'](?:\.\.?\/)/gm;
 
-    if (relativeImportPattern.test(strippedContent) || esRelativePattern.test(strippedContent)) {
+    if (hasRelativeImport(content)) {
       issues.push({
         file,
         check: 'relative-import',

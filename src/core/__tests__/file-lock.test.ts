@@ -218,4 +218,33 @@ describe('file-lock', () => {
       })
     ).rejects.toThrow('lock still held');
   });
+
+  it('treats EPERM from PID liveness checks as alive or unknown', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    const tempDir = await makeTempDir('fireforge-eperm-pid-lock-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+    await writeFile(join(lockPath, 'pid'), '12345', 'utf-8');
+    const staleTime = new Date(Date.now() - 10 * 60 * 1000);
+    await utimes(lockPath, staleTime, staleTime);
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    });
+
+    try {
+      await expect(
+        withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+          timeoutMs: 25,
+          pollMs: 5,
+          staleMs: 1000,
+          onTimeoutMessage: 'lock still held',
+        })
+      ).rejects.toThrow('lock still held');
+    } finally {
+      killSpy.mockRestore();
+    }
+
+    expect(await exists(lockPath)).toBe(true);
+  });
 });

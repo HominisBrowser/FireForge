@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { parsePorcelainStatus } from '../git-status.js';
 import { extractOrder, isNewFileInPatch, withPatchDirectoryLock } from '../patch-apply.js';
-import { getNextPatchNumber, parseFilename } from '../patch-export.js';
+import { getNextPatchNumber, parseFilename, sanitizeName } from '../patch-export.js';
 
 // ---------------------------------------------------------------------------
 // parsePorcelainStatus — edge cases
@@ -162,44 +162,30 @@ describe('getNextPatchNumber — coverage gaps', () => {
 // sanitizeName — edge cases
 // ---------------------------------------------------------------------------
 
-// Access the private function via dynamic import
-// sanitizeName is not exported, so we test it indirectly through getNextPatchFilename
-// or by importing the module and testing the pattern directly.
-// Since sanitizeName is not exported, we test the pattern it implements.
-
 describe('sanitizeName pattern — coverage gaps', () => {
-  // Re-implement the same logic for testing
-  function sanitize(name: string): string {
-    return name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 50);
-  }
-
   it('returns empty string for dash-only input', () => {
-    expect(sanitize('---')).toBe('');
+    expect(sanitizeName('---')).toBe('');
   });
 
   it('truncates to 50 characters', () => {
     const long = 'a'.repeat(100);
-    expect(sanitize(long)).toHaveLength(50);
+    expect(sanitizeName(long)).toHaveLength(50);
   });
 
   it('collapses special characters into single dashes', () => {
-    expect(sanitize('my@@@file###name')).toBe('my-file-name');
+    expect(sanitizeName('my@@@file###name')).toBe('my-file-name');
   });
 
   it('handles Unicode and emoji', () => {
-    expect(sanitize('🔥test🚀')).toBe('test');
+    expect(sanitizeName('🔥test🚀')).toBe('test');
   });
 
   it('lowercases everything', () => {
-    expect(sanitize('MyTestFile')).toBe('mytestfile');
+    expect(sanitizeName('MyTestFile')).toBe('mytestfile');
   });
 
   it('strips leading and trailing dashes', () => {
-    expect(sanitize('--my-file--')).toBe('my-file');
+    expect(sanitizeName('--my-file--')).toBe('my-file');
   });
 });
 

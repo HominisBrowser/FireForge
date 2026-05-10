@@ -66,6 +66,19 @@ describe('configCommand', () => {
     expect(config.firefox?.version).toBe('140.9.0esr');
   });
 
+  it('sets firefox.sha256 without force', async () => {
+    const digest = 'b'.repeat(64);
+
+    await configCommand(projectRoot, 'firefox.sha256', digest);
+    await configCommand(projectRoot, 'firefox.sha256');
+
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
+      firefox?: { sha256?: string };
+    };
+    expect(config.firefox?.sha256).toBe(digest);
+    expect(info).toHaveBeenCalledWith(`firefox.sha256 = ${digest}`);
+  });
+
   it('warns when JSON parsing would coerce the stored value to a non-string type', async () => {
     await configCommand(projectRoot, 'build.jobs', '16');
 

@@ -149,14 +149,48 @@ import { isGitRepository } from '../../core/git.js';
 import { fileExistsInHead, restoreTrackedPath } from '../../core/git-file-ops.js';
 import { deregisterTestManifest } from '../../core/manifest-register.js';
 import { FurnaceError } from '../../errors/furnace.js';
-import type { FurnaceState } from '../../types/furnace.js';
+import type { FurnaceConfig, FurnaceState } from '../../types/furnace.js';
 import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { cancel as logCancel, info, isCancel, warn } from '../../utils/logger.js';
 import { furnaceRemoveCommand } from '../furnace/remove.js';
 
+function defaultRemoveConfig(): FurnaceConfig {
+  return {
+    version: 1 as const,
+    componentPrefix: 'moz-',
+    stock: [],
+    overrides: {},
+    custom: {
+      'moz-audit-widget': {
+        description: 'Audit widget',
+        targetPath: 'toolkit/content/widgets/moz-audit-widget',
+        register: true,
+        localized: false,
+      },
+    },
+  };
+}
+
 describe('furnaceRemoveCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(loadFurnaceConfig).mockResolvedValue(defaultRemoveConfig());
+    vi.mocked(loadFurnaceState).mockResolvedValue({});
+    vi.mocked(updateFurnaceState).mockResolvedValue(undefined);
+    vi.mocked(isGitRepository).mockResolvedValue(true);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(readdir).mockResolvedValue([]);
+    vi.mocked(readText).mockResolvedValue('');
+    vi.mocked(removeDir).mockResolvedValue(undefined);
+    vi.mocked(removeFile).mockResolvedValue(undefined);
+    vi.mocked(writeText).mockResolvedValue(undefined);
+    vi.mocked(fileExistsInHead).mockResolvedValue(true);
+    vi.mocked(restoreTrackedPath).mockResolvedValue(undefined);
+    vi.mocked(deregisterTestManifest).mockResolvedValue(false);
+    vi.mocked(removeCustomFtlJarMnEntry).mockResolvedValue(undefined);
+    vi.mocked(removeCustomElementRegistration).mockResolvedValue(undefined);
+    vi.mocked(removeJarMnEntries).mockResolvedValue(undefined);
+    vi.mocked(restoreRollbackJournalOrThrow).mockResolvedValue(undefined);
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
     Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
   });
@@ -208,7 +242,7 @@ describe('furnaceRemoveCommand', () => {
   });
 
   it('removes a stock component from furnace.json', async () => {
-    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: ['moz-button', 'moz-card'],
@@ -226,8 +260,55 @@ describe('furnaceRemoveCommand', () => {
     );
   });
 
+  it('re-reads furnace.json inside the lock to preserve concurrent custom entries', async () => {
+    vi.mocked(loadFurnaceConfig)
+      .mockResolvedValueOnce({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-audit-widget': {
+            description: 'Audit widget',
+            targetPath: 'toolkit/content/widgets/moz-audit-widget',
+            register: true,
+            localized: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-audit-widget': {
+            description: 'Audit widget',
+            targetPath: 'toolkit/content/widgets/moz-audit-widget',
+            register: true,
+            localized: false,
+          },
+          'moz-card': {
+            description: 'Sibling writer',
+            targetPath: 'toolkit/content/widgets/moz-card',
+            register: true,
+            localized: false,
+          },
+        },
+      });
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    const writtenConfig = vi.mocked(writeFurnaceConfig).mock.calls.at(-1)?.[1];
+    expect(writtenConfig?.custom['moz-audit-widget']).toBeUndefined();
+    expect(writtenConfig?.custom['moz-card']).toMatchObject({
+      description: 'Sibling writer',
+      targetPath: 'toolkit/content/widgets/moz-card',
+    });
+  });
+
   it('restores overridden engine files and deletes the override workspace', async () => {
-    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
@@ -273,7 +354,7 @@ describe('furnaceRemoveCommand', () => {
     // orphaned engine copy. furnace remove must consult the state file
     // to find and restore that copy, even though the workspace no
     // longer has the file.
-    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
@@ -319,7 +400,7 @@ describe('furnaceRemoveCommand', () => {
   });
 
   it('deletes override-introduced files that do not exist in HEAD', async () => {
-    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
@@ -356,7 +437,7 @@ describe('furnaceRemoveCommand', () => {
   });
 
   it('fails clearly when the engine is not a git repository', async () => {
-    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
@@ -410,7 +491,7 @@ describe('furnaceRemoveCommand', () => {
     // update left furnace-state.json disagreeing with furnace.json. Now
     // the state file is snapshotted into the journal BEFORE the update,
     // and a failure triggers the full rollback.
-    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
@@ -445,7 +526,7 @@ describe('furnaceRemoveCommand', () => {
   });
 
   it('clears stale appliedChecksums and engineChecksums for the removed override', async () => {
-    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
@@ -555,7 +636,7 @@ describe('furnaceRemoveCommand', () => {
   });
 
   it('removes the deployed .ftl for localized custom components', async () => {
-    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],
@@ -592,7 +673,7 @@ describe('furnaceRemoveCommand', () => {
     // the existing removeCustomFtlJarMnEntry helper through the remove
     // pipeline so the locale registration and the file delete travel
     // together inside the rollback journal.
-    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
       stock: [],

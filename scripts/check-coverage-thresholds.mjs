@@ -78,6 +78,13 @@ const MODULE_THRESHOLDS = {
   // every rebranded fork's xpcshell suite. Real-fs unit tests cover both
   // happy path and the four "skip" outcomes.
   'src/core/xpcshell-appdir.ts': { lines: 90, branches: 85, functions: 100 },
+  // Override refresh merge semantics — fatal `git merge-file` exits must
+  // never be surfaced as ordinary conflict counts.
+  'src/core/furnace-refresh.ts': { lines: 95, branches: 85, functions: 100 },
+  // Patch queue renumbering — destructive manifest/filesystem mutation.
+  'src/commands/patch/compact.ts': { lines: 88, branches: 75, functions: 85 },
+  // xpcshell scaffold rename — filesystem rewrite helper for component rename.
+  'src/commands/furnace/rename-xpcshell.ts': { lines: 100, branches: 80, functions: 100 },
 };
 
 function loadCoverageSummary() {

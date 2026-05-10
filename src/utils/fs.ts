@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   access,
+  chmod,
   copyFile as fsCopyFile,
   mkdir,
   open,
@@ -9,6 +10,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   statfs,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -32,6 +34,26 @@ export async function pathExists(path: string): Promise<boolean> {
   } catch (error: unknown) {
     void error;
     return false;
+  }
+}
+
+/**
+ * Checks if a path exists while surfacing permission errors.
+ * @param path - Path to check
+ */
+export async function pathExistsStrict(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error: unknown) {
+    const code =
+      error instanceof Error && 'code' in error && typeof error.code === 'string'
+        ? error.code
+        : undefined;
+    if (code === 'ENOENT') {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -165,6 +187,19 @@ export async function writeTextIfChanged(path: string, content: string): Promise
 export async function writeFileAtomic(path: string, content: string | Buffer): Promise<void> {
   await ensureParentDir(path);
 
+  let existingMode: number | undefined;
+  try {
+    existingMode = (await stat(path)).mode;
+  } catch (error: unknown) {
+    const code =
+      error instanceof Error && 'code' in error && typeof error.code === 'string'
+        ? error.code
+        : undefined;
+    if (code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
   const tempPath = createAtomicTempPath(path);
   const handle = await open(tempPath, 'w');
 
@@ -180,10 +215,30 @@ export async function writeFileAtomic(path: string, content: string | Buffer): P
   await handle.close();
 
   try {
+    if (existingMode !== undefined) {
+      await chmod(tempPath, existingMode);
+    }
     await rename(tempPath, path);
+    await syncParentDir(path);
   } catch (error: unknown) {
     await rm(tempPath, { force: true });
     throw error;
+  }
+}
+
+async function syncParentDir(path: string): Promise<void> {
+  let directoryHandle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    directoryHandle = await open(dirname(path), 'r');
+    await directoryHandle.sync();
+  } catch (error: unknown) {
+    void error;
+  } finally {
+    try {
+      await directoryHandle?.close();
+    } catch (error: unknown) {
+      void error;
+    }
   }
 }
 

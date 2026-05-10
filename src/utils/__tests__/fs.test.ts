@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { mkdtemp, readFile, rm as fsRm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm as fsRm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,7 +15,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { rm } from 'node:fs/promises';
 
-import { removeDir, writeFileAtomic, writeTextIfChanged } from '../fs.js';
+import { pathExistsStrict, removeDir, writeFileAtomic, writeTextIfChanged } from '../fs.js';
 
 describe('removeDir', () => {
   beforeEach(() => {
@@ -35,6 +35,30 @@ describe('removeDir', () => {
     vi.mocked(rm).mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'EACCES' }));
 
     await expect(removeDir('/tmp/project')).rejects.toThrow('denied');
+  });
+});
+
+describe('pathExistsStrict', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    tempDir = await mkdtemp(join(tmpdir(), 'fireforge-fs-test-'));
+  });
+
+  afterEach(async () => {
+    await fsRm(tempDir, { recursive: true, force: true });
+  });
+
+  it('returns false only for a missing path', async () => {
+    await expect(pathExistsStrict(join(tempDir, 'missing.txt'))).resolves.toBe(false);
+  });
+
+  it('returns true for an existing path', async () => {
+    const filePath = join(tempDir, 'target.txt');
+    await writeFileAtomic(filePath, 'hello');
+
+    await expect(pathExistsStrict(filePath)).resolves.toBe(true);
   });
 });
 
@@ -72,6 +96,17 @@ describe('writeFileAtomic concurrency', () => {
 
     const content = await readFile(filePath, 'utf-8');
     expect(content).toBe('hello world');
+  });
+
+  it('preserves an existing file mode when replacing content', async () => {
+    const filePath = join(tempDir, 'executable-target.sh');
+    await writeFileAtomic(filePath, '#!/bin/sh\necho old\n');
+    await chmod(filePath, 0o755);
+
+    await writeFileAtomic(filePath, '#!/bin/sh\necho new\n');
+
+    await expect(readFile(filePath, 'utf-8')).resolves.toBe('#!/bin/sh\necho new\n');
+    expect((await stat(filePath)).mode & 0o777).toBe(0o755);
   });
 });
 

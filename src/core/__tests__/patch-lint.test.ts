@@ -550,6 +550,60 @@ describe('lintPatchedJs', () => {
     expect(issues.find((i) => i.check === 'relative-import')?.severity).toBe('error');
   });
 
+  it('detects side-effect relative imports', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('import "./side-effect.js";\n');
+
+    const issues = await lintPatchedJs('/engine', ['module.mjs'], new Set<string>(), mockConfig);
+
+    expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
+  });
+
+  it('detects dynamic relative imports', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('async function load() {\n  return import("../lazy.js");\n}\n');
+
+    const issues = await lintPatchedJs('/engine', ['module.mjs'], new Set<string>(), mockConfig);
+
+    expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
+  });
+
+  it('detects relative re-exports', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('export { foo } from "./foo.js";\n');
+
+    const issues = await lintPatchedJs('/engine', ['module.mjs'], new Set<string>(), mockConfig);
+
+    expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
+  });
+
+  it('detects multiline relative imports', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('import {\n  foo,\n  bar,\n} from "./multi.js";\n');
+
+    const issues = await lintPatchedJs('/engine', ['module.mjs'], new Set<string>(), mockConfig);
+
+    expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
+  });
+
+  it('does not flag relative import text inside comments', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('// import "./commented.js";\nconst ok = true;\n');
+
+    const issues = await lintPatchedJs('/engine', ['module.js'], new Set<string>(), mockConfig);
+
+    expect(issues.some((i) => i.check === 'relative-import')).toBe(false);
+  });
+
+  it('falls back to stripped-text relative import detection when parsing fails', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('return import("./legacy-script.js");\n');
+
+    const issues = await lintPatchedJs('/engine', ['legacy.js'], new Set<string>(), mockConfig);
+
+    expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
+  });
+
   it('detects ChromeUtils.import with relative path', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('ChromeUtils.import("../Foo.sys.mjs");\n');

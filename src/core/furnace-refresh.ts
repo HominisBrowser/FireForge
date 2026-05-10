@@ -25,6 +25,23 @@ export interface RefreshFileResult {
   conflictMarkers?: number;
 }
 
+function isFatalMergeStderr(stderr: string): boolean {
+  return /(?:^|\n)\s*(?:fatal|error):/i.test(stderr);
+}
+
+function classifyMergeFileResult(result: { exitCode: number; stderr: string }): number {
+  if (result.exitCode === 0 && !isFatalMergeStderr(result.stderr)) {
+    return 0;
+  }
+
+  if (result.exitCode >= 1 && result.exitCode <= 127 && !isFatalMergeStderr(result.stderr)) {
+    return result.exitCode;
+  }
+
+  const detail = result.stderr.trim() || `exit code ${result.exitCode}`;
+  throw new FurnaceError(`git merge-file failed: ${detail}`);
+}
+
 /**
  * Performs a three-way merge on a single file.
  *
@@ -57,7 +74,8 @@ async function threeWayMergeFile(
     await writeText(tempTheirs, theirs);
 
     // git merge-file writes the result to the first file (ours) in-place.
-    // Exit code 0 = clean merge, >0 = number of conflicts, <0 = error.
+    // Exit code 0 = clean merge, 1..127 = conflict count, shell-exposed
+    // fatal errors typically arrive as >=128 (for example, 255).
     const mergeArgs = [
       'merge-file',
       ...(strategy ? [`--${strategy}`] : []),
@@ -72,13 +90,8 @@ async function threeWayMergeFile(
       tempTheirs,
     ];
     const result = await exec('git', mergeArgs);
-
+    const conflicts = classifyMergeFileResult(result);
     const merged = await readText(tempOurs);
-    const conflicts = result.exitCode > 0 ? result.exitCode : 0;
-
-    if (result.exitCode < 0) {
-      throw new FurnaceError(`git merge-file failed: ${result.stderr}`);
-    }
 
     return { merged, conflicts };
   } finally {

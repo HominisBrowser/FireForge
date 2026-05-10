@@ -351,6 +351,31 @@ describe('furnaceRenameCommand custom component rename', () => {
     expect(configArg?.custom['moz-nav']?.targetPath).toBe('toolkit/content/widgets/moz-nav');
   });
 
+  it('re-reads furnace.json inside the lock to preserve concurrent custom entries', async () => {
+    mockLoadFurnaceConfig.mockResolvedValueOnce(defaultCustomConfig()).mockResolvedValueOnce({
+      ...defaultCustomConfig(),
+      custom: {
+        ...defaultCustomConfig().custom,
+        'moz-chip': {
+          description: 'Sibling writer',
+          targetPath: 'toolkit/content/widgets/moz-chip',
+          register: true,
+          localized: false,
+        },
+      },
+    });
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    const configArg = mockWriteFurnaceConfig.mock.calls[0]?.[1];
+    expect(configArg?.custom['moz-nav']).toBeDefined();
+    expect(configArg?.custom['moz-sidebar']).toBeUndefined();
+    expect(configArg?.custom['moz-chip']).toMatchObject({
+      description: 'Sibling writer',
+      targetPath: 'toolkit/content/widgets/moz-chip',
+    });
+  });
+
   it('replaces tag name and class name in source files using word boundaries', async () => {
     await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
 

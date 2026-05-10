@@ -6,7 +6,6 @@ import { text } from '@clack/prompts';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import {
   createDefaultFurnaceConfig,
-  detectComposesCycles,
   furnaceConfigExists,
   getFurnacePaths,
   loadFurnaceConfig,
@@ -46,6 +45,7 @@ import { resolveCreateFeatures } from './create-features.js';
 import { scaffoldMochikitTestFiles } from './create-mochikit.js';
 import { assertCustomEntryPersisted } from './create-readback.js';
 import { generateCssContent, generateFtlContent, generateMjsContent } from './create-templates.js';
+import { validateCreateAgainstConfig } from './create-validation.js';
 import { scaffoldXpcshellTestFiles } from './create-xpcshell.js';
 
 async function loadAuthoringFurnaceConfig(projectRoot: string): Promise<FurnaceConfig> {
@@ -64,19 +64,6 @@ function validateTagName(name: string): string | undefined {
   if (!name.trim()) return 'Name is required';
   if (!name.includes('-')) return 'Custom element names must contain a hyphen (e.g., "my-widget")';
   if (!CUSTOM_ELEMENT_TAG_PATTERN.test(name)) return `Name ${CUSTOM_ELEMENT_TAG_RULES}`;
-  return undefined;
-}
-
-/**
- * Checks if a component name conflicts with existing entries in furnace.json.
- */
-function checkNameConflict(config: FurnaceConfig, name: string): string | undefined {
-  if (name in config.custom) {
-    return `A custom component named "${name}" already exists in furnace.json`;
-  }
-  if (name in config.overrides) {
-    return `An override component named "${name}" already exists in furnace.json`;
-  }
   return undefined;
 }
 
@@ -308,12 +295,11 @@ async function performCreateMutations(args: {
   sharedFtl: string | undefined;
   componentDir: string;
   furnacePaths: { furnaceConfig: string };
-  config: FurnaceConfig;
+  allowPrefixMismatch: boolean | undefined;
   forgeConfig: { binaryName: string };
   paths: { engine: string };
   license: ProjectLicense;
   testStyle: ResolvedTestStyle;
-  ftlChromeSubPath: string | undefined;
   operationContext?: FurnaceOperationContext;
 }): Promise<{ files: string[]; testFiles: string[] }> {
   // Invariant: the journal MUST be registered with the operation context
@@ -329,6 +315,20 @@ async function performCreateMutations(args: {
   let files: string[];
 
   try {
+    const freshConfig = await loadAuthoringFurnaceConfig(args.projectRoot);
+    validateCreateAgainstConfig(
+      freshConfig,
+      args.componentName,
+      args.allowPrefixMismatch,
+      args.composes
+    );
+    if (await pathExists(args.componentDir)) {
+      throw new FurnaceError(
+        `Directory already exists: components/custom/${args.componentName}`,
+        args.componentName
+      );
+    }
+
     // Record the componentDir creation entry immediately after registration
     // so signal-driven rollback can clean it up even if writeComponentFiles
     // is interrupted mid-ensureDir.
@@ -340,7 +340,7 @@ async function performCreateMutations(args: {
       args.description,
       args.localized,
       args.license,
-      args.ftlChromeSubPath,
+      resolveFtlChromeSubPath(freshConfig.ftlBasePath),
       args.sharedFtl,
       journal
     );
@@ -357,10 +357,10 @@ async function performCreateMutations(args: {
     if (args.sharedFtl) {
       customEntry.sharedFtl = args.sharedFtl;
     }
-    args.config.custom[args.componentName] = customEntry;
+    freshConfig.custom[args.componentName] = customEntry;
 
     await snapshotFile(journal, args.furnacePaths.furnaceConfig);
-    await writeFurnaceConfig(args.projectRoot, args.config);
+    await writeFurnaceConfig(args.projectRoot, freshConfig);
     await assertCustomEntryPersisted(args.projectRoot, args.componentName);
 
     if (args.testStyle === 'browser-chrome') {
@@ -433,49 +433,6 @@ async function resolveDescription(
 }
 
 /**
- * Validates the `--compose` targets against registered components and runs
- * cycle detection if the new component is introduced into the graph. Throws
- * on any failure; returns when the graph is clean.
- */
-function validateComposesTargets(
-  config: FurnaceConfig,
-  componentName: string,
-  composes: string[] | undefined
-): void {
-  if (!composes || composes.length === 0) return;
-
-  const known = new Set([
-    ...config.stock,
-    ...Object.keys(config.overrides),
-    ...Object.keys(config.custom),
-  ]);
-  for (const tag of composes) {
-    if (tag === componentName) {
-      throw new FurnaceError(`Component "${componentName}" cannot compose itself.`);
-    }
-    if (!known.has(tag)) {
-      throw new FurnaceError(
-        `Cannot compose unknown component "${tag}". ` +
-          'The referenced component must be registered as stock, override, or custom.'
-      );
-    }
-  }
-
-  // Check for cycles that would be introduced by adding this component.
-  const tempCustom: FurnaceConfig['custom'] = {
-    ...config.custom,
-    [componentName]: {
-      description: '',
-      targetPath: `toolkit/content/widgets/${componentName}`,
-      register: true,
-      localized: false,
-      composes,
-    },
-  };
-  detectComposesCycles(tempCustom);
-}
-
-/**
  * Runs the furnace create command to scaffold a new custom component.
  * @param projectRoot - Root directory of the project
  * @param name - Optional component tag name (prompted if not provided)
@@ -536,11 +493,8 @@ export async function furnaceCreateCommand(
   // furnace.json behind.
   const config = await loadAuthoringFurnaceConfig(projectRoot);
 
-  // Check for conflicts
-  const conflict = checkNameConflict(config, componentName);
-  if (conflict) {
-    throw new FurnaceError(conflict, componentName);
-  }
+  const composes = options.compose;
+  validateCreateAgainstConfig(config, componentName, options.allowPrefixMismatch, composes);
 
   // Check if it already exists in the engine source tree
   if (await pathExists(paths.engine)) {
@@ -550,34 +504,6 @@ export async function furnaceCreateCommand(
         componentName
       );
     }
-  }
-
-  // Refuse if name doesn't match componentPrefix, unless
-  // --allow-prefix-mismatch was explicitly passed.
-  //
-  // Pre-0.16.0 this was a bare `warn()` and the create flow continued,
-  // which produced a class of validation runs where the command reported
-  // success, scaffolded files under components/custom/<name>/, and
-  // registered tests in browser/base/moz.build, but the component
-  // wasn't a good citizen of the fork's convention — subsequent
-  // follow-up commands (list, status, rename) behaved inconsistently.
-  // Refusing up-front leaves the workspace untouched on a bad name and
-  // forces an intentional `--allow-prefix-mismatch` for the rare case
-  // where the mismatch is deliberate.
-  if (
-    config.componentPrefix &&
-    !componentName.startsWith(config.componentPrefix) &&
-    !options.allowPrefixMismatch
-  ) {
-    throw new InvalidArgumentError(
-      `Name "${componentName}" does not start with the configured prefix "${config.componentPrefix}". ` +
-        'Use a prefixed name (e.g. "' +
-        config.componentPrefix +
-        componentName +
-        '"), update `componentPrefix` in furnace.json, ' +
-        'or pass --allow-prefix-mismatch to create the component anyway.',
-      'name'
-    );
   }
 
   // --- Resolve description ---
@@ -613,11 +539,6 @@ export async function furnaceCreateCommand(
       componentName
     );
   }
-
-  // --- Validate --compose targets BEFORE any writes so a failed validation
-  // does not strand component files behind.
-  const composes = options.compose;
-  validateComposesTargets(config, componentName, composes);
 
   // --- Normalize and validate --shared-ftl ahead of any writes. Shares the
   // structural rules with furnace-config.ts so the command and the on-disk
@@ -662,11 +583,6 @@ export async function furnaceCreateCommand(
   // state via the shared rollback journal. The mutation runs under the
   // furnace-wide lock and is registered with the global SIGINT/SIGTERM
   // rollback pathway.
-  // Derive the FTL chrome sub-path from the configured ftlBasePath so the
-  // generated `.mjs` calls `insertFTLIfNeeded` at a URI that actually matches
-  // the locale jar.mn entry `furnace apply` will write.
-  const ftlChromeSubPath = resolveFtlChromeSubPath(config.ftlBasePath);
-
   const { files, testFiles } = await runFurnaceMutation(projectRoot, 'create-rollback', (ctx) =>
     performCreateMutations({
       projectRoot,
@@ -679,12 +595,11 @@ export async function furnaceCreateCommand(
       sharedFtl,
       componentDir,
       furnacePaths,
-      config,
+      allowPrefixMismatch: options.allowPrefixMismatch,
       forgeConfig,
       paths,
       license,
       testStyle,
-      ftlChromeSubPath,
       operationContext: ctx,
     })
   );

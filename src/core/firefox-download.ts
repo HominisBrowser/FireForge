@@ -94,10 +94,16 @@ export async function fetchWithRetry(url: string): Promise<Response> {
  */
 function createStallDetector(url: string, timeoutMs = DOWNLOAD_STALL_TIMEOUT_MS): Transform {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const clearTimer = (): void => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
 
   const detector = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
-      if (timer !== undefined) clearTimeout(timer);
+      clearTimer();
       timer = setTimeout(() => {
         detector.destroy(
           new DownloadError(
@@ -109,8 +115,12 @@ function createStallDetector(url: string, timeoutMs = DOWNLOAD_STALL_TIMEOUT_MS)
       callback(null, chunk);
     },
     flush(callback) {
-      if (timer !== undefined) clearTimeout(timer);
+      clearTimer();
       callback();
+    },
+    destroy(error, callback) {
+      clearTimer();
+      callback(error);
     },
   });
 

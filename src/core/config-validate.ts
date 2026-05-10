@@ -107,6 +107,13 @@ export function validateConfig(data: unknown): FireForgeConfig {
     throw new ConfigError(compatError);
   }
 
+  const firefoxSha256 = optionalConfigString(firefoxRec, 'sha256', 'firefox.sha256');
+  if (firefoxSha256 !== undefined && !/^[a-f0-9]{64}$/i.test(firefoxSha256)) {
+    throw new ConfigError(
+      'Config field "firefox.sha256" must be a 64-character SHA-256 hex digest'
+    );
+  }
+
   // Optional configs
   const config: FireForgeConfig = {
     name,
@@ -116,6 +123,7 @@ export function validateConfig(data: unknown): FireForgeConfig {
     firefox: {
       version: firefoxVersion,
       product: firefoxProduct as FireForgeConfig['firefox']['product'],
+      ...(firefoxSha256 !== undefined ? { sha256: firefoxSha256.toLowerCase() } : {}),
     },
   };
 

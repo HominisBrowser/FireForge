@@ -11,7 +11,11 @@
 import { join } from 'node:path';
 
 import { type ConflictReport } from '../core/destructive.js';
-import { findAllPatchesForFilesWithDetails, planExport } from '../core/patch-export.js';
+import {
+  findAllPatchesForFilesWithDetails,
+  planExport,
+  sanitizeName,
+} from '../core/patch-export.js';
 import {
   buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
@@ -34,18 +38,6 @@ import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
 
-/**
- * Sanitizes a patch name for use in a filename. Mirrors the private helper
- * in patch-export.ts.
- */
-function sanitizeExportName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 50);
-}
-
 function buildFilenameForPlacement(
   category: PatchCategory,
   name: string,
@@ -53,7 +45,7 @@ function buildFilenameForPlacement(
   width: number
 ): string {
   const padded = String(order).padStart(Math.max(3, width), '0');
-  return `${padded}-${category}-${sanitizeExportName(name)}.patch`;
+  return `${padded}-${category}-${sanitizeName(name)}.patch`;
 }
 
 /**

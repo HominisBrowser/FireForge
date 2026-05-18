@@ -14,6 +14,10 @@ vi.mock('../furnace/chrome-doc.js', () => ({
   furnaceChromeDocCreateCommand: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../furnace/chrome-doc-remove.js', () => ({
+  furnaceChromeDocRemoveCommand: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../furnace/deploy.js', () => ({
   furnaceDeployCommand: vi.fn(() => Promise.resolve()),
 }));
@@ -69,6 +73,7 @@ vi.mock('../furnace/validate.js', () => ({
 
 import { furnaceApplyCommand } from '../furnace/apply.js';
 import { furnaceChromeDocCreateCommand } from '../furnace/chrome-doc.js';
+import { furnaceChromeDocRemoveCommand } from '../furnace/chrome-doc-remove.js';
 import { furnaceCreateCommand } from '../furnace/create.js';
 import { furnaceDeployCommand } from '../furnace/deploy.js';
 import { furnaceDiffCommand } from '../furnace/diff.js';
@@ -244,6 +249,25 @@ describe('registerFurnace', () => {
       'overlay',
       expect.objectContaining({ titlebar: false })
     );
+  });
+
+  it('passes --dry-run to the chrome-doc scaffolder', async () => {
+    await runFurnaceCommand('chrome-doc', 'create', 'mybrowser', '--dry-run');
+
+    expect(furnaceChromeDocCreateCommand).toHaveBeenCalledWith(
+      '/project',
+      'mybrowser',
+      expect.objectContaining({ dryRun: true })
+    );
+  });
+
+  it('routes "furnace chrome-doc remove" to the chrome-doc remover', async () => {
+    await runFurnaceCommand('chrome-doc', 'remove', 'mybrowser', '--yes', '--dry-run');
+
+    expect(furnaceChromeDocRemoveCommand).toHaveBeenCalledWith('/project', 'mybrowser', {
+      yes: true,
+      dryRun: true,
+    });
   });
 
   it('routes override with typed options', async () => {

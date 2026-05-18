@@ -5,13 +5,7 @@
 
 import type { PatchCategory, PatchesManifest, PatchMetadata } from '../types/commands/index.js';
 import { parseObject } from '../utils/parse.js';
-import {
-  isArray,
-  isObject,
-  isValidFirefoxVersion,
-  isValidPatchCategory,
-  PATCH_CATEGORIES,
-} from '../utils/validation.js';
+import { isArray, isObject, isValidFirefoxVersion, PATCH_CATEGORIES } from '../utils/validation.js';
 
 /**
  * Validates a single patch metadata entry from raw data.
@@ -28,10 +22,10 @@ export function validatePatchMetadata(data: unknown, index: number): PatchMetada
   const createdAt = rec.string('createdAt');
   const sourceEsrVersion = rec.string('sourceEsrVersion');
   const order = rec.nonNegativeInteger('order');
-  const category = rec.stringEnum(
+  const category = rec.validatedString(
     'category',
-    (v): v is PatchCategory => isValidPatchCategory(v),
-    `one of: ${PATCH_CATEGORIES.join(', ')}`
+    (value) => /^[a-z][a-z0-9-]*$/.test(value),
+    'a lowercase category identifier (letters, numbers, hyphens)'
   );
 
   if (!isValidFirefoxVersion(sourceEsrVersion)) {
@@ -109,8 +103,8 @@ export function inferPatchMetadataFromFilename(filename: string): {
 } {
   const categorizedMatch = /^(\d+)-([a-z]+)-(.+)\.patch$/.exec(filename);
   if (categorizedMatch?.[2] && categorizedMatch[3]) {
-    const category = categorizedMatch[2] as PatchCategory;
-    if (PATCH_CATEGORIES.includes(category)) {
+    const category = categorizedMatch[2];
+    if ((PATCH_CATEGORIES as readonly string[]).includes(category)) {
       return { category, name: categorizedMatch[3] };
     }
   }

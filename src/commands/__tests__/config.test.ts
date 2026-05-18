@@ -79,6 +79,12 @@ describe('configCommand', () => {
     expect(info).toHaveBeenCalledWith(`firefox.sha256 = ${digest}`);
   });
 
+  it('prints not set for absent supported optional keys', async () => {
+    await configCommand(projectRoot, 'firefox.sha256');
+
+    expect(info).toHaveBeenCalledWith('firefox.sha256 = (not set)');
+  });
+
   it('warns when JSON parsing would coerce the stored value to a non-string type', async () => {
     await configCommand(projectRoot, 'build.jobs', '16');
 

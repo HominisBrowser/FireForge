@@ -257,6 +257,56 @@ describe('furnaceDeployCommand', () => {
     expect(applyCustomComponent).toHaveBeenCalled();
   });
 
+  it('validates dry-run custom deploys against the projected jar.mn registration', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-sidebar': {
+          description: 'Custom sidebar',
+          targetPath: 'browser/components/sidebar',
+          register: true,
+          localized: false,
+        },
+      },
+    });
+    vi.mocked(applyCustomComponent).mockResolvedValue({
+      affectedPaths: [],
+      stepErrors: [],
+      actions: [
+        {
+          component: 'moz-sidebar',
+          action: 'register-jar',
+          description: 'Add moz-sidebar.mjs, moz-sidebar.css to jar.mn',
+        },
+      ],
+    });
+    vi.mocked(validateComponent).mockResolvedValue([
+      {
+        component: 'moz-sidebar',
+        severity: 'error',
+        check: 'missing-jar-mn-mjs',
+        message: 'moz-sidebar.mjs is not registered in jar.mn.',
+      },
+      {
+        component: 'moz-sidebar',
+        severity: 'warning',
+        check: 'missing-jar-mn-css',
+        message: 'moz-sidebar.css is not registered in jar.mn.',
+      },
+    ]);
+
+    await expect(
+      furnaceDeployCommand('/project', 'moz-sidebar', { dryRun: true })
+    ).resolves.toBeUndefined();
+
+    expect(success).toHaveBeenCalledWith('moz-sidebar — all checks passed');
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('missing-jar-mn'));
+    expect(updateFurnaceState).not.toHaveBeenCalled();
+  });
+
   it('rolls back and skips validation when a single-component deploy has step errors', async () => {
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,

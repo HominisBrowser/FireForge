@@ -101,6 +101,7 @@ vi.mock('../../core/furnace-operation.js', () => ({
 
 vi.mock('../../core/furnace-scanner.js', () => ({
   isComponentInEngine: vi.fn(() => false),
+  scanWidgetsDirectory: vi.fn(() => Promise.resolve([])),
 }));
 
 vi.mock('../../core/manifest-register.js', () => ({
@@ -127,7 +128,7 @@ import {
   loadFurnaceConfig,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { isComponentInEngine } from '../../core/furnace-scanner.js';
+import { isComponentInEngine, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
 import { registerTestManifest } from '../../core/manifest-register.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { success, warn } from '../../utils/logger.js';
@@ -141,6 +142,7 @@ const mockWriteFurnaceConfig = vi.mocked(writeFurnaceConfig);
 const mockFurnaceConfigExists = vi.mocked(furnaceConfigExists);
 const mockLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
 const mockIsComponentInEngine = vi.mocked(isComponentInEngine);
+const mockScanWidgetsDirectory = vi.mocked(scanWidgetsDirectory);
 const mockSuccess = vi.mocked(success);
 const mockWarn = vi.mocked(warn);
 
@@ -167,6 +169,7 @@ beforeEach(() => {
     return Promise.resolve();
   });
   mockReadText.mockResolvedValue('');
+  mockScanWidgetsDirectory.mockResolvedValue([]);
   // Simulate: engine exists, component dir doesn't exist yet
   mockPathExists.mockImplementation((path: string) => {
     if (path === '/project/engine') return Promise.resolve(true);
@@ -227,6 +230,9 @@ describe('furnaceCreateCommand --with-tests', () => {
     const testContent = testCall?.[1] ?? '';
     expect(testContent).toContain('test_test_widget_defined');
     expect(testContent).toContain('waitForElement("moz-test-widget")');
+
+    const headCall = mockWriteText.mock.calls.find((c) => c[0].includes('head.js'));
+    expect(headCall?.[1] ?? '').toContain('document.createElement(tag);');
 
     // Check that moz.build registration was called with binaryName
     expect(mockRegisterTestManifest).toHaveBeenCalledWith('/project/engine', 'testbrowser');
@@ -423,6 +429,66 @@ describe('furnaceCreateCommand --with-tests', () => {
     const customEntry = configArg?.custom['moz-test-widget'];
     expect(customEntry).toBeDefined();
     expect(customEntry?.composes).toEqual(['moz-button', 'moz-toggle']);
+  });
+
+  it('auto-registers discovered engine widgets as stock for --compose targets', async () => {
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+
+    mockScanWidgetsDirectory.mockResolvedValue([
+      {
+        tagName: 'moz-button',
+        sourcePath: 'toolkit/content/widgets/moz-button',
+        hasCSS: true,
+        hasFTL: false,
+        isRegistered: true,
+      },
+    ]);
+
+    try {
+      await furnaceCreateCommand('/project', 'moz-test-widget', {
+        description: 'Composing widget',
+        compose: ['moz-button'],
+      });
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+
+    const configArg = mockWriteFurnaceConfig.mock.calls[0]?.[1];
+    expect(configArg?.stock).toContain('moz-button');
+    expect(configArg?.custom['moz-test-widget']?.composes).toEqual(['moz-button']);
+  });
+
+  it('reports auto-registered stock additions in dry-run without writing furnace.json', async () => {
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+    const { note } = await import('../../utils/logger.js');
+
+    mockScanWidgetsDirectory.mockResolvedValue([
+      {
+        tagName: 'moz-button',
+        sourcePath: 'toolkit/content/widgets/moz-button',
+        hasCSS: true,
+        hasFTL: false,
+        isRegistered: true,
+      },
+    ]);
+
+    try {
+      await furnaceCreateCommand('/project', 'moz-test-widget', {
+        description: 'Composing widget',
+        compose: ['moz-button'],
+        dryRun: true,
+      });
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+
+    expect(mockWriteFurnaceConfig).not.toHaveBeenCalled();
+    expect(vi.mocked(note)).toHaveBeenCalledWith(
+      expect.stringContaining('Would add discovered stock to furnace.json:\n  moz-button'),
+      'moz-test-widget'
+    );
   });
 
   it('does not include composes field when --compose is not provided', async () => {
@@ -772,16 +838,18 @@ describe('furnaceCreateCommand validation', () => {
 
     // The generated .mjs must use the MozLitElement-compatible l10n pattern:
     // a module-level `window.MozXULElement?.insertFTLIfNeeded(...)` call and
-    // `connectRoot(this.shadowRoot)` in connectedCallback. The old (broken)
+    // null-guarded `connectRoot(shadowRoot)` in connectedCallback. The old (broken)
     // template called `this.insertFTLIfNeeded(...)` on MozLitElement, which
     // threw TypeError at every connect.
     const mjsCall = mockWriteText.mock.calls.find((c) => c[0].endsWith('.mjs'));
     expect(mjsCall).toBeDefined();
     const mjsContent = mjsCall?.[1] ?? '';
     expect(mjsContent).toContain('window.MozXULElement?.insertFTLIfNeeded(');
-    expect(mjsContent).toContain('this.ownerDocument.l10n?.connectRoot(this.shadowRoot)');
-    expect(mjsContent).toContain('this.ownerDocument.l10n?.disconnectRoot(this.shadowRoot)');
+    expect(mjsContent).toContain('this.ownerDocument.l10n?.connectRoot(shadowRoot)');
+    expect(mjsContent).toContain('this.ownerDocument.l10n?.disconnectRoot(shadowRoot)');
     expect(mjsContent).not.toContain('this.insertFTLIfNeeded(');
+    expect(mjsContent).toContain('/** @type {Record<string, unknown>} */');
+    expect(mjsContent).toContain('/** @type {CustomElementConstructor} */');
   });
 
   it('warns but continues when test manifest registration fails', async () => {

@@ -16,6 +16,7 @@ import { isObject, isString } from '../utils/validation.js';
 import { FIREFORGE_DIR } from './config.js';
 import { parseStringArray } from './furnace-config-array-utils.js';
 import { parseCustomConfig } from './furnace-config-custom.js';
+import { orderFurnaceConfigForWrite } from './furnace-config-order.js';
 import { validateRuntimeVariables, validateTokenHostDocuments } from './furnace-config-tokens.js';
 import { resolveFtlDir } from './furnace-constants.js';
 import { detectComposesCycles, validateComposesReferences } from './furnace-graph-utils.js';
@@ -266,6 +267,9 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
   if (migrated['tokenAllowlist'] !== undefined) {
     config.tokenAllowlist = parseStringArray(migrated['tokenAllowlist'], 'tokenAllowlist');
   }
+  if (migrated['platformPrefixes'] !== undefined) {
+    config.platformPrefixes = parseStringArray(migrated['platformPrefixes'], 'platformPrefixes');
+  }
   if (migrated['runtimeVariables'] !== undefined) {
     config.runtimeVariables = parseStringArray(migrated['runtimeVariables'], 'runtimeVariables');
   }
@@ -328,6 +332,7 @@ const PENDING_REPAIR_OPERATIONS: readonly FurnacePendingRepairOperation[] = [
   'deploy-rollback',
   'remove-rollback',
   'create-rollback',
+  'chrome-doc-rollback',
   'override-rollback',
   'scan-rollback',
   'rename-rollback',
@@ -528,7 +533,16 @@ export async function loadFurnaceConfig(root: string): Promise<FurnaceConfig> {
  */
 export async function writeFurnaceConfig(root: string, config: FurnaceConfig): Promise<void> {
   const paths = getFurnacePaths(root);
-  await writeJson(paths.furnaceConfig, config);
+  let existing: Record<string, unknown> | undefined;
+  if (await pathExists(paths.furnaceConfig)) {
+    try {
+      const raw = await readJson<unknown>(paths.furnaceConfig);
+      if (isObject(raw)) existing = raw;
+    } catch {
+      existing = undefined;
+    }
+  }
+  await writeJson(paths.furnaceConfig, orderFurnaceConfigForWrite(existing, config));
 }
 
 /**

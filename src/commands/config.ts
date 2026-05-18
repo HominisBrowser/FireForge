@@ -127,6 +127,11 @@ export async function configCommand(
     const currentValue = getNestedValue(rawConfig, key);
 
     if (currentValue === undefined) {
+      if ((SUPPORTED_CONFIG_PATHS as readonly string[]).includes(key)) {
+        info(`${key} = ${formatValue(currentValue)}`);
+        outro('');
+        return;
+      }
       throw new InvalidArgumentError(`Unknown config key: ${key}`);
     } else {
       info(`${key} = ${formatValue(currentValue)}`);

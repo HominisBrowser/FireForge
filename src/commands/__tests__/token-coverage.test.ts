@@ -38,6 +38,7 @@ vi.mock('../../core/token-manager.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
+  readText: vi.fn(),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -54,7 +55,7 @@ import { getStatusWithCodes, isGitRepository } from '../../core/git.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../../core/git-status.js';
 import { measureTokenCoverage } from '../../core/token-coverage.js';
 import { getTokensCssPath } from '../../core/token-manager.js';
-import { pathExists } from '../../utils/fs.js';
+import { pathExists, readText } from '../../utils/fs.js';
 import { info, intro, outro, success, warn } from '../../utils/logger.js';
 import { tokenCoverageCommand } from '../token-coverage.js';
 
@@ -95,6 +96,7 @@ const mockedLoadConfig = vi.mocked(loadConfig);
 const mockedMeasureTokenCoverage = vi.mocked(measureTokenCoverage);
 const mockedGetTokensCssPath = vi.mocked(getTokensCssPath);
 const mockedPathExists = vi.mocked(pathExists);
+const mockedReadText = vi.mocked(readText);
 const mockedFurnaceConfigExists = vi.mocked(furnaceConfigExists);
 const mockedLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
 
@@ -114,6 +116,7 @@ describe('tokenCoverageCommand', () => {
       componentsDir: '/project/components',
     });
     mockedPathExists.mockResolvedValue(true);
+    mockedReadText.mockResolvedValue(':root {}\n');
     mockedIsGitRepository.mockResolvedValue(true);
     mockedLoadConfig.mockResolvedValue({ binaryName: 'mybrowser' } as Awaited<
       ReturnType<typeof loadConfig>
@@ -183,7 +186,6 @@ describe('tokenCoverageCommand', () => {
   it('returns early when there are no modified CSS files to measure', async () => {
     mockedGetWorkingTreeStatus.mockResolvedValue([
       statusEntry(' M', 'browser/components/app/app.js'),
-      statusEntry(' M', 'browser/themes/shared/mybrowser-tokens.css'),
     ]);
 
     await tokenCoverageCommand('/project');
@@ -191,6 +193,34 @@ describe('tokenCoverageCommand', () => {
     expect(info).toHaveBeenCalledWith('No modified CSS files');
     expect(outro).toHaveBeenCalledWith('Nothing to measure');
     expect(mockedMeasureTokenCoverage).not.toHaveBeenCalled();
+  });
+
+  it('validates modified Furnace token CSS without counting raw token values as usage coverage', async () => {
+    mockedGetWorkingTreeStatus.mockResolvedValue([
+      statusEntry(' M', 'browser/themes/shared/mybrowser-tokens.css'),
+    ]);
+    mockedFurnaceConfigExists.mockResolvedValue(true);
+    mockedLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      tokenPrefix: '--mybrowser-',
+      stock: [],
+      overrides: {},
+      custom: {},
+    });
+    mockedReadText.mockResolvedValue(`
+:root {
+  --mybrowser-accent: #ff00aa;
+}
+`);
+
+    await tokenCoverageCommand('/project');
+
+    expect(mockedMeasureTokenCoverage).not.toHaveBeenCalled();
+    expect(success).toHaveBeenCalledWith(
+      'browser/themes/shared/mybrowser-tokens.css  token source valid (1 token declaration)'
+    );
+    expect(outro).toHaveBeenCalledWith('1 token source file validated');
   });
 
   it('reports per-file stats and warns when coverage is incomplete', async () => {
@@ -228,8 +258,10 @@ describe('tokenCoverageCommand', () => {
     expect(warn).toHaveBeenCalledWith(
       'Token coverage: 50% (2 tokens / 4 total) — 1 raw colors, 1 unknown vars'
     );
+    expect(success).toHaveBeenCalledWith(
+      'browser/themes/shared/mybrowser-tokens.css  token source valid (0 token declarations)'
+    );
     expect(outro).toHaveBeenCalledWith('1 CSS file scanned');
-    expect(success).not.toHaveBeenCalled();
   });
 
   it('augments scan with Furnace custom-component CSS files that exist on disk', async () => {

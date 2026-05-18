@@ -340,7 +340,7 @@ export async function downloadCommand(
     // still fire as usual; this is an additional up-front signal, not a
     // replacement.
     info(
-      'Indexing downloaded source into git (one-time; typically 1–3 minutes on a ~600 MB Firefox tree)...'
+      'Indexing downloaded source into git (one-time; typically 3–5 minutes on a ~600 MB Firefox tree)...'
     );
 
     // Initialize git repository

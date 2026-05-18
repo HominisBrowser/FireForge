@@ -559,6 +559,67 @@ describe('lintCommand — branch coverage', () => {
       );
     });
 
+    it('fails per-patch lint when warnings exceed --max-warnings', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'warning',
+          check: 'large-patch-files',
+          file: '(patch)',
+          message: 'Patch affects 8 files',
+        },
+      ]);
+
+      await expect(lintCommand('/project', [], { perPatch: true, maxWarnings: 0 })).rejects.toThrow(
+        /exceeding --max-warnings 0/
+      );
+
+      expect(vi.mocked(outro)).toHaveBeenCalledWith('Lint failed');
+    });
+
+    it('passes per-patch lint when warnings are within --max-warnings', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'warning',
+          check: 'large-patch-files',
+          file: '(patch)',
+          message: 'Patch affects 8 files',
+        },
+      ]);
+
+      await expect(
+        lintCommand('/project', [], { perPatch: true, maxWarnings: 1 })
+      ).resolves.toBeUndefined();
+
+      expect(vi.mocked(outro)).toHaveBeenCalledWith('Lint passed with warnings');
+    });
+
+    it('keeps per-patch warnings advisory by default', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'warning',
+          check: 'large-patch-files',
+          file: '(patch)',
+          message: 'Patch affects 8 files',
+        },
+      ]);
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(vi.mocked(outro)).toHaveBeenCalledWith('Lint passed with warnings');
+    });
+
     it('still runs cross-patch rules once over the whole queue context', async () => {
       const a = makePatch('001-ui-a.patch', ['a.ts']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a]));

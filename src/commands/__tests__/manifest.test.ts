@@ -46,6 +46,7 @@ const COMMANDS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HELPER_FILES: ReadonlySet<string> = new Set([
   'manifest.ts',
   'export-flow.ts',
+  'export-placement-policy.ts',
   'export-shared.ts',
   'setup-support.ts',
   'token-coverage.ts',

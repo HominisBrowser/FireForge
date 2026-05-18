@@ -36,7 +36,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 - **Python 3** (required by Firefox's `mach` build system).
 - **Git**
 - Platform build tools: Xcode on macOS, `build-essential` on Linux, Visual Studio Build Tools on Windows.
-- **Watchman** (optional, only required by `fireforge watch`). Install via `brew install watchman` (macOS), `dnf install watchman` (Fedora), or follow the upstream [Meta docs](https://facebook.github.io/watchman/). `fireforge doctor` surfaces a warning row when it is not on `PATH` so the dependency is visible during the usual onboarding sweep rather than at the watch-mode failure site. `fireforge watch` resolves watchman's absolute path via `which` / `where` and prepends its directory to the subprocess `PATH` it hands mach, so a homebrew-installed watchman at `/opt/homebrew/bin/watchman` (absent from the Node subprocess's default `PATH` on macOS) is still visible to `mach watch` without the operator having to re-export `PATH` manually.
+- **Watchman** (optional, only required by `fireforge watch`). Install via `brew install watchman` (macOS), `dnf install watchman` (Fedora), or follow the upstream [Meta docs](https://facebook.github.io/watchman/). `fireforge doctor` surfaces a warning row when it is not on `PATH`; build, run, package, and test workflows still work without Watchman. `fireforge watch` resolves watchman's absolute path via `which` / `where` and prepends its directory to the subprocess `PATH` it hands mach, so a homebrew-installed watchman at `/opt/homebrew/bin/watchman` (absent from the Node subprocess's default `PATH` on macOS) is still visible to `mach watch` without the operator having to re-export `PATH` manually. If `watchman` is installed but `fireforge watch` still refuses, make sure the same shell or automation environment that launches FireForge has Watchman on `PATH`. If `mach watch` reports `Operation not permitted` / `EPERM` on macOS, FireForge points at the usual privacy fix: grant Full Disk Access or Files and Folders access to the terminal/Codex app and watchman, then restart watchman with `watchman shutdown-server`.
 
 ### Setup
 
@@ -53,6 +53,8 @@ npx fireforge build               # build the browser
 npx fireforge run                 # launch it
 ```
 
+If your shell does not provide `npm` / `npx`, run the installed binary directly instead: `fireforge setup`, `fireforge download`, and so on when `fireforge` is on `PATH`, or `./node_modules/.bin/fireforge setup` from a project-local install.
+
 Your project now has `fireforge.json`, an `engine/` directory with Firefox source and a `patches/` directory with an empty `patches.json` manifest ready for your first customisation.
 
 #### Known upstream build issues
@@ -68,21 +70,23 @@ Your project now has `fireforge.json`, an `engine/` directory with Firefox sourc
 
 ```bash
 npx fireforge export browser/base/content/browser.js --name "custom-toolbar" --category ui
+# Direct binary equivalent:
+fireforge export browser/base/content/browser.js --name "custom-toolbar" --category ui
 ```
 
 3. Your patch is now in `patches/`.
 4. Reset and import to verify everything applies cleanly:
 
 ```bash
-npx fireforge reset --yes
-npx fireforge import              # --dry-run to preview without applying
+npx fireforge reset --yes         # or: fireforge reset --yes
+npx fireforge import              # or: fireforge import --dry-run
 ```
 
 5. When Mozilla releases a new version, update fireforge.json, re-download and rebase:
 
 ```bash
-npx fireforge download --force
-npx fireforge rebase
+npx fireforge download --force    # or: fireforge download --force
+npx fireforge rebase              # or: fireforge rebase
 ```
 
 `fireforge download` indexes the extracted Firefox source into a fresh git repository — a one-time 1–3 minute pass on a cold SSD, longer on slow or loaded disks. The monolithic `git add -A` is capped at 10 minutes by default and falls back to a per-directory chunked pass (30 minutes per chunk) when the cap hits. If indexing still times out, the command now raises `GitIndexingTimeoutError` with recovery guidance: extend the cap via `FIREFORGE_GIT_ADD_TIMEOUT_MS` (monolithic) and/or `FIREFORGE_GIT_ADD_CHUNK_TIMEOUT_MS` (chunked) in milliseconds, e.g. `FIREFORGE_GIT_ADD_TIMEOUT_MS=1800000 fireforge download --force` for a 30-minute monolithic budget, then re-run `fireforge download --force` — the resume path picks up from the partial git state so the repeat is not wasted work.
@@ -106,6 +110,52 @@ patches/
 **Categories:** `branding` | `ui` | `privacy` | `security` | `infra`
 
 The category system is intentionally broad. The numeric ordering provides sequencing.
+
+Projects that need stricter queue semantics can add an optional `patchPolicy` block to
+`fireforge.json`. When present, FireForge checks the policy before mutating the patch queue and
+reports the same policy findings from `fireforge verify` and `fireforge lint --per-patch`.
+
+```json
+{
+  "patchPolicy": {
+    "filenamePattern": "^(?<order>\\d{3})-(?<category>branding|infra|ui)-(?<slug>[a-z0-9-]+)\\.patch$",
+    "requireDescription": true,
+    "allowGaps": true,
+    "mutationMode": "error",
+    "ranges": [
+      { "from": 1, "to": 99, "category": "branding" },
+      { "from": 100, "to": 199, "category": "infra" },
+      { "from": 200, "to": 299, "category": "ui" }
+    ],
+    "reservedRanges": [
+      {
+        "from": 900,
+        "to": 999,
+        "allowed": [
+          {
+            "filename": "900-infra-bootstrap-workaround.patch",
+            "files": ["tools/profiler/rust-api/build.rs"],
+            "adr": "docs/architecture/adr/0001-bootstrap-workaround.md"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Policy ranges are category-owned: a `ui` patch in the example must use `200-299`, while
+`900-999` is reserved for exact allowlisted exceptions. Reserved exceptions must include either
+`adr` or `documentation`; when `files` is present, the patch may not touch paths outside that
+allowlist. `filenamePattern` must expose named captures `order`, `category`, and `slug`.
+`mutationMode` controls mutating commands: `"error"` refuses, `"warn"` prints warnings and
+continues, and `"force"` refuses unless the command supports and receives `--force-unsafe`.
+When a policy-owned queue has sparse category ranges before reserved exceptions, use
+`fireforge export <paths> --order 241 --category ui --name new-ui-feature` to create the exact
+unused order without renumbering later patches. Positional insertion with `--before` / `--after`
+still renumbers following patches, and policy enforcement refuses the operation if that would move a
+reserved exact exception such as `900-infra-bootstrap-workaround.patch`.
+Without `patchPolicy`, existing repositories keep the broad category and numeric ordering behavior.
 
 ### Importing patches
 
@@ -150,8 +200,10 @@ fireforge export browser/base/content/browser.js --dry-run
 # Same preview surface for the aggregate path
 fireforge export-all --name "all-changes" --category ui --dry-run
 
-# Insert a new patch at a specific position
-fireforge export browser/base/content/browser.js --order 3 --name "inserted" --category ui
+# Create a sparse patch at an exact unused order without renumbering later patches
+fireforge export browser/base/content/browser.js --order 241 --name "new-ui-feature" --category ui
+
+# Insert a new patch at a positional anchor, renumbering later patches
 fireforge export browser/base/content/browser.js --before 005-ui-sidebar.patch --name "prelim"
 
 # Restrict a re-export to a specific file subset
@@ -232,7 +284,7 @@ If the manifest drifts after an interrupted export or manual edits, `fireforge i
 
 `fireforge lint` runs automatically during export, export-all and re-export. Use `--skip-lint` to downgrade errors to warnings. Errors block the export; warnings are printed but do not block.
 
-By default, a standalone `fireforge lint` (no arguments) lints the **aggregate** `git diff HEAD` — i.e. every applied patch summed — with tool-managed branding paths (`browser/branding/<binaryName>/`) excluded. A fresh-setup workspace carries a large generated branding diff that operators did not author directly, and letting it through tripped the patch-size and license-header rules on content that matches the `branding` bucket in `fireforge status`. When the exclusion fires the command prints a one-line note naming the excluded count so the filter is visible. On a repo where `fireforge import` or `fireforge rebase` has just applied the full queue, the patch-size rules (`large-patch-lines`, `large-patch-files`) fire against the sum, which reads as "my queue is broken" when it is really an artefact of aggregation. Use `fireforge lint --per-patch` to rescope the diff to each patch's own `filesAffected`, honouring the patch's own `lintIgnore`. Cross-patch rules (`duplicate-new-file-creation`, `forward-import`) still run once over the whole queue either way. Pass explicit file paths to narrow the scope further — explicit-path mode does lint branding files (the operator's explicit request wins over the branding exclusion); the three modes (aggregate, file-scoped, per-patch) are mutually exclusive.
+By default, a standalone `fireforge lint` (no arguments) lints the **aggregate** `git diff HEAD` — i.e. every applied patch summed — with tool-managed branding paths (`browser/branding/<binaryName>/`) excluded. A fresh-setup workspace carries a large generated branding diff that operators did not author directly, and letting it through tripped the patch-size and license-header rules on content that matches the `branding` bucket in `fireforge status`. When the exclusion fires the command prints a one-line note naming the excluded count so the filter is visible. On a repo where `fireforge import` or `fireforge rebase` has just applied the full queue, the patch-size rules (`large-patch-lines`, `large-patch-files`) fire against the sum, which reads as "my queue is broken" when it is really an artefact of aggregation. Use `fireforge lint --per-patch` to rescope the diff to each patch's own `filesAffected`, honouring the patch's own `lintIgnore`. Cross-patch rules (`duplicate-new-file-creation`, `forward-import`) still run once over the whole queue either way. Pass explicit file paths to narrow the scope further — explicit-path mode does lint branding files (the operator's explicit request wins over the branding exclusion); the three modes (aggregate, file-scoped, per-patch) are mutually exclusive. Warnings stay advisory by default; release gates that require a warning-clean queue should use `fireforge lint --per-patch --max-warnings 0`.
 
 | Check                                | Scope                                                                                                   | Severity                 |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------- | ------------------------ |
@@ -290,8 +342,10 @@ When a patch queue drifts, e.g. due to overlapping new-file creations, forward i
 fireforge verify                    # fsck: manifest + cross-patch lint
 fireforge lint                      # includes the same cross-patch rules
 fireforge status --ownership        # flat path → owning patch table
-fireforge status --json             # machine-readable classified output
+fireforge status --json             # machine-readable classified object
 ```
+
+`status --json` emits a versioned object: `{ "schemaVersion": 1, "summary": { "total": <n>, "byClassification": { ... } }, "files": [...] }`. Error paths also emit a JSON object with `schemaVersion`, `code`, and `error` before exiting non-zero, so scripts can parse both clean and failing runs.
 
 Then fix with the appropriate primitive:
 
@@ -321,6 +375,16 @@ fireforge register engine/browser/modules/mybrowser/MyStore.sys.mjs
 
 # Both support --dry-run to preview changes
 ```
+
+For the first module in a new `browser/modules/<binaryName>/` namespace, create `engine/browser/modules/<binaryName>/moz.build` before running `fireforge register`. The minimal manifest is:
+
+```python
+# SPDX-License-Identifier: MPL-2.0
+
+EXTRA_JS_MODULES += []
+```
+
+Also make sure `browser/modules/moz.build` references the namespace directory with `DIRS += ["<binaryName>"]`; `register` adds the module entry inside the namespace manifest, not the parent `DIRS` entry.
 
 <details>
 <summary>Wire options</summary>
@@ -369,6 +433,8 @@ fireforge furnace status                           # workspace vs engine drift
 fireforge furnace diff moz-button                  # unified diff against baseline
 ```
 
+`furnace scan` is read-only in non-interactive shells and reports which discovered widgets are already tracked. In interactive shells it can add selected discoveries to `furnace.json#stock`. `furnace create --compose <tag>` also consults the scan inventory: if `<tag>` is a discovered engine widget that is not yet in `stock`, create auto-adds it to `stock` in the same `furnace.json` write as the new custom component. Unknown compose targets still fail.
+
 `furnace deploy` validates components before applying. As always, errors block, warnings are advisory. `fireforge build` and `fireforge test --build` run apply automatically — when apply wrote files during a build, the build prints a `Furnace: source → engine sync wrote N component(s) …` banner naming every component that was synced, so it is obvious whether engine/ was freshly updated. Use `fireforge doctor --repair-furnace` if the engine gets out of sync.
 
 ### Scaffolding top-level chrome documents
@@ -379,6 +445,9 @@ Custom elements live under `toolkit/content/widgets`, but a fork's top-level chr
 fireforge furnace chrome-doc create mybrowser              # full chrome (titlebar + windowtype)
 fireforge furnace chrome-doc create overlay --no-titlebar  # frameless overlay
 fireforge furnace chrome-doc create mybrowser --with-tests # + xpcshell packaging-verification test
+fireforge furnace chrome-doc create mybrowser --dry-run    # preview without writing
+fireforge furnace chrome-doc remove mybrowser --dry-run    # preview cleanup
+fireforge furnace chrome-doc remove mybrowser --yes        # remove files + registrations
 ```
 
 The command writes:
@@ -390,7 +459,7 @@ The command writes:
 - Appends the corresponding `jar.mn` / `jar.inc.mn` entries. The locales/jar.mn append is suppressed when the fork's existing `engine/browser/locales/jar.mn` already carries a `[localization] (%browser/**/*.ftl)` (or `(%browser/*.ftl)`) wildcard that would already pick up the scaffolded FTL — on those forks a per-file `locale/<name>.ftl` entry would be dead weight at best and an outright build break when the fork has dropped the `% locale browser …` registration the per-file entry depends on. Forks still on the legacy registration get the per-file entry as before.
 - When `--with-tests` is set, also scaffolds an xpcshell test + `xpcshell.toml` under `engine/browser/base/content/test/<binary>-xpcshell/<name>/` that probes the packaged app directory (`Services.dirsvc.get("XCurProcD")/chrome/browser/...`) directly rather than going through `chrome://` URI resolution — see "Platform module compatibility" and the xpcshell chrome-URI note further down for why direct filesystem probing is the reliable way to verify chrome-doc packaging. Registration in `XPCSHELL_TESTS_MANIFESTS` is left to the operator because the owning moz.build depends on the fork layout.
 
-Writes are transactional: a SIGINT mid-scaffold rolls back every touched file. Requires an existing engine — run `fireforge download` first.
+Writes are transactional: a SIGINT mid-scaffold rolls back every touched file. `--dry-run` validates the same paths and registrations without acquiring the mutation lock or writing. `furnace chrome-doc remove <name>` removes the scaffolded source files, jar registrations, and optional xpcshell packaging-test directory; use its `--dry-run` first when cleaning an experimental document. Requires an existing engine — run `fireforge download` first.
 
 #### Platform module compatibility
 
@@ -438,6 +507,8 @@ Three styles are available via `--test-style`:
 `furnace create --dry-run` previews the planned file set, test scaffold, and `furnace.json` mutation without writing anything. Every validation the real command runs (tag-name shape, name conflicts, engine pre-existence of the component, `--compose` target existence + cycle detection) fires BEFORE the plan is emitted, so a failed preview matches a failed real run.
 
 `furnace create`, `furnace remove`, and `furnace rename` re-read `furnace.json` inside the mutation lock before writing, so concurrent component edits preserve sibling entries instead of writing back a stale outer snapshot. `furnace refresh --all` continues past per-component refresh failures, reports the failed count, and exits non-zero with the failed override names after finishing the rest of the selection.
+
+`furnace preview` starts Firefox's upstream Storybook workspace. On the first run, `mach storybook` may install roughly a thousand npm packages under `engine/browser/components/storybook/` and may print npm audit counts from Storybook's transitive dependencies. FireForge frames that output as upstream Storybook dependency state; it does not mean FireForge's own package dependencies were installed into the project.
 
 ## Additional Commands
 
@@ -512,7 +583,7 @@ fireforge token add --category 'Colors — General' --mode static -- --my-color 
 fireforge token add --category 'Colors — General' --mode static my-color   '#fff'   # bare-name form
 ```
 
-Tokens live in the Furnace-managed tokens CSS file (`engine/browser/themes/shared/<binaryName>-tokens.css`), scaffolded by `fireforge furnace init` alongside `furnace.json`. The scaffold seeds a default set of categories (`Colors — General`, `Colors — Canvas`, `Colors — Experiment`, `Spacing`); add a category by hand as a `/* = My Category = */` comment inside the `:root { … }` block if you need another. `fireforge furnace init` does three more things in the same step so the file is owned end-to-end by tooling: it registers the tokens CSS path in `patchLint.rawColorAllowlist` (so raw color literals inside it are not flagged by `fireforge lint`); it adds the matching `skin/classic/browser/<binaryName>-tokens.css (../shared/<binaryName>-tokens.css)` entry to `browser/themes/shared/jar.inc.mn` (so `fireforge status` does not flag the file as unmanaged or unregistered); and it derives `tokenPrefix: --<binaryName>-` from `fireforge.json`'s `binaryName` so `fireforge token coverage` has a prefix to key off on the very first run. Projects that prefer a different prefix can override it in `furnace.json` after init.
+Tokens live in the Furnace-managed tokens CSS file (`engine/browser/themes/shared/<binaryName>-tokens.css`), scaffolded by `fireforge furnace init` alongside `furnace.json`. The scaffold seeds a default set of categories (`Colors — General`, `Colors — Canvas`, `Colors — Experiment`, `Spacing`); add a category by hand as a `/* = My Category = */` comment inside the `:root { … }` block if you need another. `fireforge furnace init` does three more things in the same step so the file is owned end-to-end by tooling: it registers the tokens CSS path in `patchLint.rawColorAllowlist` (so raw color literals inside it are not flagged by `fireforge lint`); it adds the matching `skin/classic/browser/<binaryName>-tokens.css (../shared/<binaryName>-tokens.css)` entry to `browser/themes/shared/jar.inc.mn` (so `fireforge status` does not flag the file as unmanaged or unregistered); and it derives `tokenPrefix: --<binaryName>-` from `fireforge.json`'s `binaryName` so `fireforge token coverage` has a prefix to key off on the very first run. Projects that prefer a different prefix can override it in `furnace.json` after init. When only the tokens CSS file is dirty or untracked, `fireforge token coverage` validates it as a token source file and does not count its expected literal token values as raw-color coverage failures.
 
 ### Diff-scoped lint (`lint --since`)
 
@@ -539,6 +610,8 @@ Aggregate patch-size findings (`large-patch-files`, `large-patch-lines`) describ
 ### Post-build audit and auto-configure
 
 `fireforge build` is a transactional step: after a successful mach build it audits the dist bundle against engine-relative paths touched since the last successful build, and warns per file that is packageable-by-convention (`.js`/`.mjs`/`.css`/`.ftl`/`.xhtml`/`app/profile/…`) but has no matching artifact or whose dist mtime is older than the source. Ends every build with a `Packaged: N updated, M stale, K missing, S skipped` summary. The audit is warn-only — it never fails a build that mach reported green.
+
+`fireforge build --ui` is intentionally a fast rebuild path, not a bootstrap path. It now refuses before invoking `mach build faster` unless the current objdir has a completed launchable bundle; fresh imports and partial builds should run a full `fireforge build` first.
 
 The audit applies seven routing rules to suppress false positives that previously trained operators to ignore its warnings:
 
@@ -614,7 +687,7 @@ fireforge test --doctor
 fireforge test --doctor browser/base/content/test/foo/browser_bar.js
 ```
 
-Spawns the built browser headless, waits for a marionette handshake on `127.0.0.1:2828`, and reports PASS/FAIL with the tail of the browser's stderr on FAIL. Distinguishes "marionette wedged" (socket silent) from "mach test discovery failed" — both otherwise surface as a silent 360-second hang followed by `Passed: 0, Failed: 0`. Useful as a prefix on routine `fireforge test` invocations when marionette has been flaky.
+Spawns the built browser headless, waits for a marionette handshake on `127.0.0.1:2828`, and reports PASS/FAIL with the tail of the browser's stderr on FAIL. The success output also names the objdir, binary, app path, port, and elapsed probe time so CI logs show exactly what was probed. Distinguishes "marionette wedged" (socket silent) from "mach test discovery failed" — both otherwise surface as a silent 360-second hang followed by `Passed: 0, Failed: 0`. Useful as a prefix on routine `fireforge test` invocations when marionette has been flaky.
 
 The probe is a cascade of six layered checks — engine-present → mach-available → python-available → profile-creatable → browser-spawns → marionette-handshake. Each failure is tagged `[layer N/6: <name>]` so the first broken layer is surfaced immediately instead of the whole cascade blocking on the final socket poll. When the browser binary crashes at startup (missing dylib, wrong CPU arch, corrupt profile) the cascade fails at layer 5 within the settle window, not after the full socket timeout.
 

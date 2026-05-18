@@ -8,8 +8,14 @@ import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/g
 import { measureTokenCoverage } from '../core/token-coverage.js';
 import { getTokensCssPath } from '../core/token-manager.js';
 import { GeneralError } from '../errors/base.js';
-import { pathExists } from '../utils/fs.js';
+import { pathExists, readText } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
+
+interface TokenSourceValidation {
+  file: string;
+  tokenDeclarations: number;
+  unknownDeclarations: string[];
+}
 
 /**
  * Measures design token coverage across modified CSS files.
@@ -40,6 +46,9 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
   // and the file-extension filter could not see the .css inside.
   const rawStatus = await getWorkingTreeStatus(paths.engine);
   const expandedStatus = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
+  const statusTokenCssFiles = expandedStatus
+    .filter((f) => f.file === tokensCssPath)
+    .map((f) => f.file);
   const statusCssFiles = expandedStatus
     .filter((f) => f.file.endsWith('.css') && f.file !== tokensCssPath)
     .map((f) => f.file);
@@ -59,10 +68,36 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
   // De-dupe so a file that is both a custom deploy target AND modified is
   // scanned exactly once.
   const cssFiles = [...new Set([...statusCssFiles, ...furnaceCssFiles])];
+  const tokenSourceFiles = [...new Set(statusTokenCssFiles)];
 
-  if (cssFiles.length === 0) {
+  if (cssFiles.length === 0 && tokenSourceFiles.length === 0) {
     info('No modified CSS files');
     outro('Nothing to measure');
+    return;
+  }
+
+  const tokenPrefix = await resolveTokenPrefix(projectRoot, config.binaryName);
+  const tokenSourceResults = await validateTokenSourceFiles(
+    paths.engine,
+    tokenSourceFiles,
+    tokenPrefix
+  );
+
+  for (const result of tokenSourceResults) {
+    const detail = `${result.tokenDeclarations} token declaration${result.tokenDeclarations === 1 ? '' : 's'}`;
+    if (result.unknownDeclarations.length === 0) {
+      success(`${result.file}  token source valid (${detail})`);
+    } else {
+      warn(
+        `${result.file}  token source has ${result.unknownDeclarations.length} declaration${result.unknownDeclarations.length === 1 ? '' : 's'} outside prefix ${tokenPrefix}: ${result.unknownDeclarations.join(', ')}`
+      );
+    }
+  }
+
+  if (cssFiles.length === 0) {
+    outro(
+      `${tokenSourceResults.length} token source file${tokenSourceResults.length === 1 ? '' : 's'} validated`
+    );
     return;
   }
 
@@ -94,6 +129,52 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
   }
 
   outro(`${report.filesScanned} CSS file${report.filesScanned === 1 ? '' : 's'} scanned`);
+}
+
+async function resolveTokenPrefix(projectRoot: string, binaryName: string): Promise<string> {
+  try {
+    const furnaceConfig = await loadFurnaceConfig(projectRoot);
+    if (furnaceConfig.tokenPrefix) {
+      return furnaceConfig.tokenPrefix;
+    }
+  } catch {
+    // Fall through to the convention used by furnace init. A broken
+    // furnace.json is already surfaced by collectFurnaceCustomCssFiles.
+  }
+  return `--${binaryName}-`;
+}
+
+async function validateTokenSourceFiles(
+  engineDir: string,
+  tokenSourceFiles: string[],
+  tokenPrefix: string
+): Promise<TokenSourceValidation[]> {
+  const results: TokenSourceValidation[] = [];
+  for (const file of tokenSourceFiles) {
+    const filePath = join(engineDir, file);
+    if (!(await pathExists(filePath))) continue;
+
+    const css = (await readText(filePath)).replace(/\/\*[\s\S]*?\*\//g, '');
+    const declarations = new Set<string>();
+    const declarationPattern = /(^|[;{\s])(--[\w-]+)\s*:/g;
+    let match: RegExpExecArray | null;
+    while ((match = declarationPattern.exec(css)) !== null) {
+      const declaration = match[2];
+      if (declaration) declarations.add(declaration);
+    }
+
+    const tokenDeclarations = [...declarations].filter((name) => name.startsWith(tokenPrefix));
+    const unknownDeclarations = [...declarations]
+      .filter((name) => !name.startsWith(tokenPrefix))
+      .sort();
+
+    results.push({
+      file,
+      tokenDeclarations: tokenDeclarations.length,
+      unknownDeclarations,
+    });
+  }
+  return results;
 }
 
 /**

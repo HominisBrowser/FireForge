@@ -50,12 +50,18 @@ window.MozXULElement?.insertFTLIfNeeded("${ftlPath}");
     ? `
   connectedCallback() {
     super.connectedCallback();
-    this.ownerDocument.l10n?.connectRoot(this.shadowRoot);
+    const { shadowRoot } = this;
+    if (shadowRoot) {
+      this.ownerDocument.l10n?.connectRoot(shadowRoot);
+    }
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    this.ownerDocument.l10n?.disconnectRoot(this.shadowRoot);
+    const { shadowRoot } = this;
+    if (shadowRoot) {
+      this.ownerDocument.l10n?.disconnectRoot(shadowRoot);
+    }
   }
 `
     : '';
@@ -71,6 +77,7 @@ ${ftlModulePreamble}
  * @tagname ${name}
  */
 class ${className} extends MozLitElement {
+  /** @type {Record<string, unknown>} */
   static properties = {};
 
   constructor() {
@@ -84,7 +91,7 @@ ${lifecycleHooks}
     \`;
   }
 }
-customElements.define("${name}", ${className});
+customElements.define("${name}", /** @type {CustomElementConstructor} */ (${className}));
 `;
 }
 

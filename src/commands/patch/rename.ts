@@ -22,7 +22,7 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../../core/config.js';
+import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { appendHistory, confirmDestructive } from '../../core/destructive.js';
 import { sanitizeName } from '../../core/patch-export.js';
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
@@ -32,9 +32,11 @@ import {
   resolvePatchIdentifier,
   savePatchesManifest,
 } from '../../core/patch-manifest.js';
+import { buildProjectedManifest, enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchRenameOptions } from '../../types/commands/index.js';
+import type { FireForgeConfig } from '../../types/config.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
@@ -72,6 +74,10 @@ interface CommitRenameInput {
   descriptionChanging: boolean;
   /** Mirrors `--yes`; recorded in the history entry for audit consistency. */
   yes?: boolean;
+  /** Mirrors `--force-unsafe`; used for force-mode patchPolicy bypass. */
+  forceUnsafe?: boolean;
+  /** Project config used when opt-in patchPolicy is present. */
+  config: FireForgeConfig;
 }
 
 /**
@@ -113,6 +119,8 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
       );
     }
 
+    let oldPath: string | undefined;
+    let newPath: string | undefined;
     if (filenameChanging) {
       const collisionInLock = fresh.patches.find(
         (p) => p.filename === newFilename && p.filename !== target.filename
@@ -124,8 +132,8 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
         );
       }
 
-      const oldPath = join(patchesDir, target.filename);
-      const newPath = join(patchesDir, newFilename);
+      oldPath = join(patchesDir, target.filename);
+      newPath = join(patchesDir, newFilename);
 
       if (await pathExists(newPath)) {
         throw new InvalidArgumentError(
@@ -133,7 +141,6 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
           'patch rename'
         );
       }
-      await fsRename(oldPath, newPath);
 
       fresh.patches[idx] = {
         ...before,
@@ -141,7 +148,23 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
         name: newName,
         ...(descriptionChanging ? { description: newDescription ?? '' } : {}),
       };
+    } else {
+      fresh.patches[idx] = {
+        ...before,
+        ...(nameChanging ? { name: newName } : {}),
+        ...(descriptionChanging ? { description: newDescription ?? '' } : {}),
+      };
+    }
 
+    enforcePatchPolicy({
+      config: input.config,
+      manifest: buildProjectedManifest(fresh, fresh.patches),
+      command: 'patch rename',
+      forceUnsafe: input.forceUnsafe === true,
+    });
+
+    if (filenameChanging && oldPath !== undefined && newPath !== undefined) {
+      await fsRename(oldPath, newPath);
       try {
         await savePatchesManifest(patchesDir, fresh);
       } catch (saveError: unknown) {
@@ -155,11 +178,6 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
         throw saveError;
       }
     } else {
-      fresh.patches[idx] = {
-        ...before,
-        ...(nameChanging ? { name: newName } : {}),
-        ...(descriptionChanging ? { description: newDescription ?? '' } : {}),
-      };
       await savePatchesManifest(patchesDir, fresh);
     }
 
@@ -174,6 +192,7 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
           ...(descriptionChanging ? { oldDescription: target.description, newDescription } : {}),
         },
         ...(input.yes === true ? { yes: true } : {}),
+        ...(input.forceUnsafe === true ? { unsafeOverride: true } : {}),
         result: 'ok',
       });
     } catch (historyError: unknown) {
@@ -208,6 +227,7 @@ export async function patchRenameCommand(
   }
 
   const paths = getProjectPaths(projectRoot);
+  const config = await loadConfig(projectRoot);
   if (!(await pathExists(paths.patches))) {
     throw new GeneralError('Patches directory not found.');
   }
@@ -282,6 +302,25 @@ export async function patchRenameCommand(
     );
   }
 
+  enforcePatchPolicy({
+    config,
+    manifest: buildProjectedManifest(
+      manifest,
+      manifest.patches.map((entry) =>
+        entry.filename === target.filename
+          ? {
+              ...entry,
+              filename: newFilename,
+              name: nameChanging ? (options.to ?? entry.name) : entry.name,
+              ...(descriptionChanging ? { description: options.description ?? '' } : {}),
+            }
+          : entry
+      )
+    ),
+    command: 'patch rename',
+    forceUnsafe: options.forceUnsafe === true,
+  });
+
   const decision = await confirmDestructive({
     operation: 'patch-rename',
     title: `Rename ${target.filename}`,
@@ -310,6 +349,8 @@ export async function patchRenameCommand(
     nameChanging,
     descriptionChanging,
     ...(options.yes === true ? { yes: true } : {}),
+    ...(options.forceUnsafe === true ? { forceUnsafe: true } : {}),
+    config,
   });
 
   if (filenameChanging) {
@@ -337,11 +378,18 @@ export function registerPatchRename(parent: Command, context: CommandContext): v
     .option('--description <text>', 'Replacement description (omit to leave description unchanged)')
     .option('--dry-run', 'Show what would change without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
+    .option('--force-unsafe', 'Bypass force-mode patchPolicy refusals')
     .action(
       withErrorHandling(
         async (
           name: string,
-          options: { to?: string; description?: string; dryRun?: boolean; yes?: boolean }
+          options: {
+            to?: string;
+            description?: string;
+            dryRun?: boolean;
+            yes?: boolean;
+            forceUnsafe?: boolean;
+          }
         ) => {
           await patchRenameCommand(getProjectRoot(), name, pickDefined(options));
         }

@@ -290,7 +290,7 @@ async function renderJsonStatus(
     binaryName,
     furnacePrefixes
   );
-  const output = classified.map((f) => {
+  const outputFiles = classified.map((f) => {
     const entry: {
       file: string;
       status: string;
@@ -310,6 +310,24 @@ async function renderJsonStatus(
     }
     return entry;
   });
+  const byClassification: Record<FileClassification, number> = {
+    unmanaged: 0,
+    'patch-backed': 0,
+    branding: 0,
+    furnace: 0,
+    conflict: 0,
+  };
+  for (const file of outputFiles) {
+    byClassification[file.classification]++;
+  }
+  const output = {
+    schemaVersion: 1,
+    summary: {
+      total: outputFiles.length,
+      byClassification,
+    },
+    files: outputFiles,
+  };
   process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 }
 
@@ -345,7 +363,8 @@ async function assertEngineHasBaselineCommit(
       // withErrorHandling, leaving JSON consumers with non-JSON output on
       // exactly the failure mode they care about catching.
       process.stdout.write(
-        JSON.stringify({ error: guidance, code: 'engine-baseline-missing' }) + '\n'
+        JSON.stringify({ schemaVersion: 1, error: guidance, code: 'engine-baseline-missing' }) +
+          '\n'
       );
     }
     throw new GeneralError(guidance);
@@ -397,7 +416,7 @@ export async function statusCommand(
   // `withErrorHandling` does not log: bin/fireforge.ts catches it,
   // exits with the carried code, and stdout stays a single JSON line.
   const emitJsonError = (code: string, message: string): never => {
-    process.stdout.write(JSON.stringify({ error: message, code }) + '\n');
+    process.stdout.write(JSON.stringify({ schemaVersion: 1, error: message, code }) + '\n');
     throw new CommandError(ExitCode.GENERAL_ERROR);
   };
 

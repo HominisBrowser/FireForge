@@ -283,6 +283,8 @@ async function findOrphanXpcshellScaffolds(
   const issues: ValidationIssue[] = [];
   for (const entry of entries) {
     if (known.has(entry)) continue;
+    const chromeDocPackagingTest = join(parentAbs, entry, `test_${entry}_packaging.js`);
+    if (await pathExists(chromeDocPackagingTest)) continue;
     issues.push({
       component: entry,
       severity: 'error',

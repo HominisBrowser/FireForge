@@ -21,6 +21,7 @@ import {
   validateFirefoxProductVersionCompatibility,
 } from '../utils/validation.js';
 import { SUPPORTED_CONFIG_ROOT_KEYS } from './config-paths.js';
+import { parsePatchPolicyBlock } from './config-validate-patch-policy.js';
 
 /**
  * Validates a raw config object and returns a typed FireForgeConfig.
@@ -177,6 +178,12 @@ export function validateConfig(data: unknown): FireForgeConfig {
   const patchLintRec = optionalConfigObject(rec, 'patchLint');
   if (patchLintRec) {
     config.patchLint = parsePatchLintBlock(patchLintRec);
+  }
+
+  // PatchPolicy
+  const patchPolicyRec = optionalConfigObject(rec, 'patchPolicy');
+  if (patchPolicyRec) {
+    config.patchPolicy = parsePatchPolicyBlock(patchPolicyRec);
   }
 
   // Typecheck (top-level, distinct from patchLint — see TypecheckConfig docs).

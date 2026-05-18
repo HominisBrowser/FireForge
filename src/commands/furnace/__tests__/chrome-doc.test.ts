@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as config from '../../../core/config.js';
 import { ensureDir, writeText } from '../../../utils/fs.js';
 import { furnaceChromeDocCreateCommand } from '../chrome-doc.js';
+import { furnaceChromeDocRemoveCommand } from '../chrome-doc-remove.js';
 import {
   generateChromeDocCss,
   generateChromeDocFtl,
@@ -260,6 +261,31 @@ describe('furnaceChromeDocCreateCommand', () => {
     expect(localeJarMn).toContain('locale/browser/mybrowser.ftl');
   });
 
+  it('previews the chrome-doc scaffold without writing files', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    await ensureDir(join(engineDir, 'browser/base/content'));
+    await ensureDir(join(engineDir, 'browser/themes/shared'));
+    await ensureDir(join(engineDir, 'browser/locales/en-US/browser'));
+    await writeText(join(engineDir, 'browser/base/jar.mn'), '# header\n');
+    await writeText(join(engineDir, 'browser/themes/shared/jar.inc.mn'), '# header\n');
+    await writeText(join(engineDir, 'browser/locales/jar.mn'), '# header\n');
+
+    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser', {
+      withTests: true,
+      dryRun: true,
+    });
+
+    const { pathExists } = await import('../../../utils/fs.js');
+    expect(await pathExists(join(engineDir, 'browser/base/content/mybrowser.xhtml'))).toBe(false);
+    expect(await pathExists(join(engineDir, 'browser/base/content/mybrowser.js'))).toBe(false);
+    expect(
+      await pathExists(join(engineDir, 'browser/base/content/test/mybrowser-xpcshell/mybrowser'))
+    ).toBe(false);
+
+    const jarMn = await readFile(join(engineDir, 'browser/base/jar.mn'), 'utf8');
+    expect(jarMn).toBe('# header\n');
+  });
+
   it('rejects an empty name', async () => {
     await ensureDir(join(projectRoot, 'engine'));
     await expect(furnaceChromeDocCreateCommand(projectRoot, '   ')).rejects.toThrow(
@@ -347,6 +373,59 @@ describe('furnaceChromeDocCreateCommand', () => {
     // the browser subdir — otherwise the probe walks the wrong tree.
     expect(manifestContent).toContain('firefox-appdir = "browser"');
     expect(manifestContent).toContain('["test_mybrowser_packaging.js"]');
+  });
+
+  it('removes scaffolded chrome-doc files, tests, and jar entries', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    await ensureDir(join(engineDir, 'browser/base/content'));
+    await ensureDir(join(engineDir, 'browser/themes/shared'));
+    await ensureDir(join(engineDir, 'browser/locales/en-US/browser'));
+    await writeText(join(engineDir, 'browser/base/jar.mn'), '# header\n');
+    await writeText(join(engineDir, 'browser/themes/shared/jar.inc.mn'), '# header\n');
+    await writeText(join(engineDir, 'browser/locales/jar.mn'), '# header\n');
+
+    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser', { withTests: true });
+    await furnaceChromeDocRemoveCommand(projectRoot, 'mybrowser', { yes: true });
+
+    const { pathExists } = await import('../../../utils/fs.js');
+    expect(await pathExists(join(engineDir, 'browser/base/content/mybrowser.xhtml'))).toBe(false);
+    expect(await pathExists(join(engineDir, 'browser/base/content/mybrowser.js'))).toBe(false);
+    expect(await pathExists(join(engineDir, 'browser/themes/shared/mybrowser-chrome.css'))).toBe(
+      false
+    );
+    expect(await pathExists(join(engineDir, 'browser/locales/en-US/browser/mybrowser.ftl'))).toBe(
+      false
+    );
+    expect(
+      await pathExists(join(engineDir, 'browser/base/content/test/mybrowser-xpcshell/mybrowser'))
+    ).toBe(false);
+
+    expect(await readFile(join(engineDir, 'browser/base/jar.mn'), 'utf8')).not.toContain(
+      'mybrowser'
+    );
+    expect(
+      await readFile(join(engineDir, 'browser/themes/shared/jar.inc.mn'), 'utf8')
+    ).not.toContain('mybrowser');
+    expect(await readFile(join(engineDir, 'browser/locales/jar.mn'), 'utf8')).not.toContain(
+      'mybrowser'
+    );
+  });
+
+  it('previews chrome-doc removal without writing files', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    await ensureDir(join(engineDir, 'browser/base/content'));
+    await ensureDir(join(engineDir, 'browser/themes/shared'));
+    await ensureDir(join(engineDir, 'browser/locales/en-US/browser'));
+    await writeText(join(engineDir, 'browser/base/jar.mn'), '# header\n');
+    await writeText(join(engineDir, 'browser/themes/shared/jar.inc.mn'), '# header\n');
+    await writeText(join(engineDir, 'browser/locales/jar.mn'), '# header\n');
+
+    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser');
+    await furnaceChromeDocRemoveCommand(projectRoot, 'mybrowser', { dryRun: true });
+
+    const { pathExists } = await import('../../../utils/fs.js');
+    expect(await pathExists(join(engineDir, 'browser/base/content/mybrowser.xhtml'))).toBe(true);
+    expect(await readFile(join(engineDir, 'browser/base/jar.mn'), 'utf8')).toContain('mybrowser');
   });
 
   it('omits test scaffolding by default so no test files land without --with-tests', async () => {

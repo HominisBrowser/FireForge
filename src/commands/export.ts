@@ -17,15 +17,21 @@ import {
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { commitExportedPatch, findAllPatchesForFiles } from '../core/patch-export.js';
+import { loadPatchesManifest } from '../core/patch-manifest.js';
+import {
+  applyRenameMapToManifest,
+  buildProjectedManifest,
+  enforcePatchPolicy,
+} from '../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
-import type { ExportOptions, PatchCategory, PatchMetadata } from '../types/commands/index.js';
+import type { ExportOptions, PatchMetadata } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
-import { parsePositiveIntegerFlag, PATCH_CATEGORIES } from '../utils/validation.js';
+import { parsePositiveIntegerFlag } from '../utils/validation.js';
 import {
   commitPlacementExport,
   type PlacementPlan,
@@ -34,6 +40,7 @@ import {
   renderDryRunPreview,
   resolvePlacementPlan,
 } from './export-flow.js';
+import { assertPlacementPreservesReservedRanges } from './export-placement-policy.js';
 import {
   autoFixLicenseHeaders,
   confirmSupersedePatches,
@@ -229,7 +236,7 @@ export async function exportCommand(
     diff = await generatePatchDiff(paths.engine, allFiles);
   }
 
-  const metadata = await promptExportPatchMetadata(options, isInteractive, 'export');
+  const metadata = await promptExportPatchMetadata(options, isInteractive, 'export', config);
   if (!metadata) return;
   const { patchName, selectedCategory, description } = metadata;
 
@@ -276,7 +283,42 @@ export async function exportCommand(
         patchName
       );
 
+      const currentManifest = await loadPatchesManifest(paths.patches);
+      if (currentManifest !== null) {
+        assertPlacementPreservesReservedRanges(
+          placementPlan,
+          currentManifest.patches,
+          config,
+          selectedCategory
+        );
+      }
       const conflicts = await projectPlacementForLint(paths.patches, placementPlan, diff);
+      const renamed =
+        currentManifest !== null
+          ? applyRenameMapToManifest(currentManifest, placementPlan.renameMap)
+          : buildProjectedManifest(null, []);
+      enforcePatchPolicy({
+        config,
+        manifest: buildProjectedManifest(renamed, [
+          ...renamed.patches,
+          {
+            filename: placementPlan.newFilename,
+            order: placementPlan.insertionOrder,
+            category: selectedCategory,
+            name: patchName,
+            description,
+            createdAt: new Date().toISOString(),
+            sourceEsrVersion: config.firefox.version,
+            filesAffected,
+            ...(options.tier !== undefined ? { tier: options.tier } : {}),
+            ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
+              ? { lintIgnore: options.lintIgnore }
+              : {}),
+          },
+        ]),
+        command: 'export',
+        forceUnsafe: options.forceUnsafe === true,
+      });
       const summary = placementSummary(placementPlan);
       const renameCount = placementPlan.renameMap.size;
 
@@ -324,10 +366,13 @@ export async function exportCommand(
         filesAffected,
         sourceEsrVersion: config.firefox.version,
         explicitSupersede: options.supersede === true,
+        allowOverlap: options.allowOverlap === true,
         ...(options.tier !== undefined ? { tier: options.tier } : {}),
         ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
           ? { lintIgnore: options.lintIgnore }
           : {}),
+        config,
+        forceUnsafe: options.forceUnsafe === true,
       });
       outro('Dry run complete — no changes made');
       return;
@@ -361,6 +406,8 @@ export async function exportCommand(
         metadata: placementMetadata,
         expectedPlan: placementPlan,
         unsafeOverride: options.forceUnsafe === true,
+        config,
+        forceUnsafe: options.forceUnsafe === true,
         // History append runs inside the same lock as the mutation so
         // concurrent placement exports cannot interleave their records
         // and a crash between mutation and record cannot orphan the
@@ -434,6 +481,9 @@ export async function exportCommand(
       ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
         ? { lintIgnore: options.lintIgnore }
         : {}),
+      config,
+      policyCommand: 'export',
+      forceUnsafe: options.forceUnsafe === true,
     });
 
     for (const oldPatch of superseded) {
@@ -462,9 +512,7 @@ export function registerExport(
     .command('export <paths...>')
     .description('Export new changes as a patch (use re-export to update existing patches)')
     .option('-n, --name <name>', 'Name for the patch')
-    .addOption(
-      new Option('-c, --category <category>', 'Patch category').choices([...PATCH_CATEGORIES])
-    )
+    .option('-c, --category <category>', 'Patch category')
     .option('-d, --description <desc>', 'Description of the patch')
     .option('--supersede', 'Allow superseding multiple existing patches')
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
@@ -472,7 +520,7 @@ export function registerExport(
     .addOption(
       new Option(
         '--order <N>',
-        'Place the new patch at this ordinal, shifting subsequent patches up'
+        'Place the new patch at this exact unused order without renumbering existing patches'
       ).argParser((v) => parsePositiveIntegerFlag('--order', v))
     )
     .option('--before <anchor>', 'Place the new patch immediately before <anchor>')
@@ -521,7 +569,7 @@ export function registerExport(
           const { category, tier, lintIgnore, ...rest } = options;
           await exportCommand(getProjectRoot(), paths, {
             ...pickDefined(rest),
-            ...(category !== undefined ? { category: category as PatchCategory } : {}),
+            ...(category !== undefined ? { category } : {}),
             ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
             ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
           });

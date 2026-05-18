@@ -5,6 +5,7 @@ import type { CommandContext } from '../../types/cli.js';
 import { pickDefined } from '../../utils/options.js';
 import { furnaceApplyCommand } from './apply.js';
 import { furnaceChromeDocCreateCommand } from './chrome-doc.js';
+import { furnaceChromeDocRemoveCommand } from './chrome-doc-remove.js';
 import { furnaceCreateCommand } from './create.js';
 import { furnaceDeployCommand } from './deploy.js';
 import { furnaceDiffCommand } from './diff.js';
@@ -161,6 +162,12 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
       )
     );
 
+  registerChromeDocCommands(furnace, context);
+}
+
+function registerChromeDocCommands(furnace: Command, context: CommandContext): void {
+  const { getProjectRoot, withErrorHandling } = context;
+
   const chromeDoc = furnace
     .command('chrome-doc')
     .description('Scaffold top-level chrome documents (xhtml + js + css + ftl + jar.mn)');
@@ -173,12 +180,27 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
       '--with-tests',
       'Scaffold an xpcshell packaging-verification test that probes XCurProcD/chrome/browser/... directly (bypasses the xpcshell chrome:// URI limitation).'
     )
+    .option('--dry-run', 'Show the chrome-doc scaffold plan without writing')
     .action(
       withErrorHandling(
-        async (name: string, options: { titlebar?: boolean; withTests?: boolean }) => {
+        async (
+          name: string,
+          options: { titlebar?: boolean; withTests?: boolean; dryRun?: boolean }
+        ) => {
           await furnaceChromeDocCreateCommand(getProjectRoot(), name, pickDefined(options));
         }
       )
+    );
+
+  chromeDoc
+    .command('remove <name>')
+    .description('Remove a scaffolded top-level chrome document')
+    .option('-y, --yes', 'Skip confirmation')
+    .option('--dry-run', 'Show the chrome-doc removal plan without writing')
+    .action(
+      withErrorHandling(async (name: string, options: { yes?: boolean; dryRun?: boolean }) => {
+        await furnaceChromeDocRemoveCommand(getProjectRoot(), name, pickDefined(options));
+      })
     );
 }
 

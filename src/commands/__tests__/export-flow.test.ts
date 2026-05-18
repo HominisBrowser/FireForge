@@ -17,12 +17,18 @@ import { addPatchToManifest } from '../../core/patch-manifest.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
+import type { FireForgeConfig } from '../../types/config.js';
 import { ensureDir, writeText } from '../../utils/fs.js';
+import { info, warn } from '../../utils/logger.js';
 import {
   commitPlacementExport,
+  computeExactPlacementPlan,
   computePlacementPlan,
   projectPlacementForLint,
+  renderDryRunPreview,
+  resolvePlacementPlan,
 } from '../export-flow.js';
+import { assertPlacementPreservesReservedRanges } from '../export-placement-policy.js';
 
 // Mock ../../utils/fs.js and ../../core/patch-manifest.js so the rollback
 // tests below can override specific functions (writeText,
@@ -47,6 +53,11 @@ vi.mock('../../core/patch-manifest.js', async () => {
   };
 });
 
+vi.mock('../../utils/logger.js', () => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+}));
+
 function makeMetadata(filename: string, order: number, filesAffected: string[]): PatchMetadata {
   return {
     filename,
@@ -57,6 +68,50 @@ function makeMetadata(filename: string, order: number, filesAffected: string[]):
     createdAt: '2025-01-01T00:00:00.000Z',
     sourceEsrVersion: '140.9.0esr',
     filesAffected,
+  };
+}
+
+function makePolicyMetadata(
+  filename: string,
+  order: number,
+  category: string,
+  filesAffected: string[]
+): PatchMetadata {
+  return {
+    ...makeMetadata(filename, order, filesAffected),
+    category,
+    name: filename.replace(/^\d+-[a-z0-9-]+-/, '').replace(/\.patch$/, ''),
+    description: `${category} patch ${String(order)}`,
+  };
+}
+
+function sparsePolicyConfig(): FireForgeConfig {
+  return {
+    name: 'MyBrowser',
+    vendor: 'Acme',
+    appId: 'org.acme.browser',
+    binaryName: 'mybrowser',
+    firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+    patchPolicy: {
+      requireDescription: true,
+      ranges: [
+        { from: 200, to: 299, category: 'ui' },
+        { from: 100, to: 199, category: 'infra' },
+      ],
+      reservedRanges: [
+        {
+          from: 900,
+          to: 999,
+          allowed: [
+            {
+              filename: '900-infra-bindgen-basic-string-workaround.patch',
+              files: ['tools/profiler/rust-api/build.rs'],
+              documentation: 'docs/patches/bindgen-basic-string-workaround.md',
+            },
+          ],
+        },
+      ],
+    },
   };
 }
 
@@ -125,6 +180,164 @@ describe('computePlacementPlan validation', () => {
     const plan = computePlacementPlan([], 'ui', name, 1);
 
     expect(plan.newFilename).toBe(`001-ui-${sanitizeName(name)}.patch`);
+  });
+});
+
+describe('sparse export placement with patchPolicy reserved ranges', () => {
+  let projectRoot: string;
+  let patchesDir: string;
+
+  const ui200 = makePolicyMetadata('200-ui-shell.patch', 200, 'ui', [
+    'browser/base/content/browser.js',
+  ]);
+  const ui240 = makePolicyMetadata('240-ui-something.patch', 240, 'ui', [
+    'browser/base/content/something.js',
+  ]);
+  const reserved900 = makePolicyMetadata(
+    '900-infra-bindgen-basic-string-workaround.patch',
+    900,
+    'infra',
+    ['tools/profiler/rust-api/build.rs']
+  );
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-sparse-placement-');
+    patchesDir = join(projectRoot, 'patches');
+  });
+
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  async function seedSparseQueue(includeReserved = true): Promise<PatchMetadata[]> {
+    const patches = includeReserved ? [ui200, ui240, reserved900] : [ui200, ui240];
+    await seed(
+      patchesDir,
+      patches.map((metadata) => ({
+        metadata,
+        body: createDiff(metadata.filesAffected[0] ?? 'missing.js', 'export const value = 1;'),
+      }))
+    );
+    return patches;
+  }
+
+  async function readManifestPatches(): Promise<PatchMetadata[]> {
+    const raw = await readFile(join(patchesDir, 'patches.json'), 'utf-8');
+    return (JSON.parse(raw) as PatchesManifest).patches;
+  }
+
+  it('creates an exact sparse --order patch without renumbering a later reserved patch', async () => {
+    await seedSparseQueue();
+    const plan = await resolvePlacementPlan(patchesDir, { order: 241 }, 'ui', 'new-feature');
+
+    expect(plan.newFilename).toBe('241-ui-new-feature.patch');
+    expect(plan.renameMap.size).toBe(0);
+
+    await expect(
+      commitPlacementExport({
+        patchesDir,
+        options: { order: 241 },
+        category: 'ui',
+        name: 'new-feature',
+        diff: createDiff('browser/base/content/new-feature.js', 'export const feature = 1;'),
+        metadata: {
+          ...makePolicyMetadata('241-ui-new-feature.patch', 241, 'ui', [
+            'browser/base/content/new-feature.js',
+          ]),
+          name: 'new-feature',
+          sourceEsrVersion: '140.9.0esr',
+        },
+        expectedPlan: plan,
+        config: sparsePolicyConfig(),
+      })
+    ).resolves.toMatchObject({
+      insertionOrder: 241,
+      newFilename: '241-ui-new-feature.patch',
+    });
+
+    const entries = (await readdir(patchesDir)).filter((entry) => entry.endsWith('.patch')).sort();
+    expect(entries).toEqual([
+      '200-ui-shell.patch',
+      '240-ui-something.patch',
+      '241-ui-new-feature.patch',
+      '900-infra-bindgen-basic-string-workaround.patch',
+    ]);
+    expect((await readManifestPatches()).map((patch) => patch.filename)).toEqual(entries);
+  });
+
+  it('refuses positional insertion that would renumber a reserved exact exception', async () => {
+    const patches = await seedSparseQueue();
+    const plan = await resolvePlacementPlan(
+      patchesDir,
+      { after: '240-ui-something.patch' },
+      'ui',
+      'new-feature'
+    );
+
+    expect(plan.renameMap.get('900-infra-bindgen-basic-string-workaround.patch')).toEqual({
+      newFilename: '901-infra-bindgen-basic-string-workaround.patch',
+      newOrder: 901,
+    });
+    expect(() => {
+      assertPlacementPreservesReservedRanges(plan, patches, sparsePolicyConfig(), 'ui');
+    }).toThrow(/Use --order 241/);
+    expect(() => {
+      assertPlacementPreservesReservedRanges(plan, patches, sparsePolicyConfig(), 'ui');
+    }).toThrow(/900-infra-bindgen-basic-string-workaround\.patch/);
+  });
+
+  it('rejects exact --order when the requested order is occupied', async () => {
+    await seedSparseQueue();
+
+    await expect(
+      resolvePlacementPlan(patchesDir, { order: 240 }, 'ui', 'new-feature')
+    ).rejects.toThrow(/already occupied by 240-ui-something\.patch/);
+  });
+
+  it('lets policy reject exact --order outside the selected category range', async () => {
+    await seedSparseQueue();
+    const plan = computeExactPlacementPlan([ui200, ui240, reserved900], 'ui', 'wrong-range', 199);
+
+    await expect(
+      commitPlacementExport({
+        patchesDir,
+        options: { order: 199 },
+        category: 'ui',
+        name: 'wrong-range',
+        diff: createDiff('browser/base/content/wrong-range.js', 'export const wrong = 1;'),
+        metadata: {
+          ...makePolicyMetadata('199-ui-wrong-range.patch', 199, 'ui', [
+            'browser/base/content/wrong-range.js',
+          ]),
+          name: 'wrong-range',
+        },
+        expectedPlan: plan,
+        config: sparsePolicyConfig(),
+      })
+    ).rejects.toThrow(/ui patches must use 200-299/);
+  });
+
+  it('lets policy reject exact --order inside a reserved range', async () => {
+    await seedSparseQueue(false);
+    const plan = computeExactPlacementPlan([ui200, ui240], 'ui', 'reserved-slot', 900);
+
+    await expect(
+      commitPlacementExport({
+        patchesDir,
+        options: { order: 900 },
+        category: 'ui',
+        name: 'reserved-slot',
+        diff: createDiff('browser/base/content/reserved-slot.js', 'export const reserved = 1;'),
+        metadata: {
+          ...makePolicyMetadata('900-ui-reserved-slot.patch', 900, 'ui', [
+            'browser/base/content/reserved-slot.js',
+          ]),
+          name: 'reserved-slot',
+        },
+        expectedPlan: plan,
+        config: sparsePolicyConfig(),
+      })
+    ).rejects.toThrow(/reserved range 900-999/);
   });
 });
 
@@ -221,7 +434,7 @@ describe('projectPlacementForLint', () => {
     await expect(
       commitPlacementExport({
         patchesDir,
-        options: { order: 1 },
+        options: { before: '001-infra-a.patch' },
         category: 'infra',
         name: 'new',
         diff: createDiff('foo/New.sys.mjs', 'export const NewValue = 1;'),
@@ -231,6 +444,129 @@ describe('projectPlacementForLint', () => {
     ).rejects.toBeInstanceOf(InvalidArgumentError);
 
     expect(await readdir(patchesDir)).not.toContain('001-infra-new.patch');
+  });
+
+  it('rejects export placement into a reserved policy range', async () => {
+    await seed(patchesDir, [
+      {
+        metadata: makeMetadata('900-infra-bootstrap.patch', 900, ['tools/build.rs']),
+        body: createDiff('tools/build.rs', 'export const bootstrap = 1;'),
+      },
+    ]);
+    const config: FireForgeConfig = {
+      name: 'MyBrowser',
+      vendor: 'Acme',
+      appId: 'org.acme.browser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      patchPolicy: {
+        ranges: [{ from: 200, to: 299, category: 'ui' }],
+        reservedRanges: [{ from: 900, to: 999, allowed: [] }],
+      },
+    };
+    const expectedPlan = computePlacementPlan(
+      [makeMetadata('900-infra-bootstrap.patch', 900, ['tools/build.rs'])],
+      'ui',
+      'late-product',
+      900
+    );
+
+    await expect(
+      commitPlacementExport({
+        patchesDir,
+        options: { before: '900-infra-bootstrap.patch' },
+        category: 'ui',
+        name: 'late-product',
+        diff: createDiff('browser/base/content/product.js', 'export const product = 1;'),
+        metadata: makeMetadata('900-ui-late-product.patch', 900, [
+          'browser/base/content/product.js',
+        ]),
+        expectedPlan,
+        config,
+      })
+    ).rejects.toThrow(/reserved range 900-999/);
+  });
+});
+
+describe('renderDryRunPreview ownership overlap', () => {
+  let projectRoot: string;
+  let patchesDir: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    projectRoot = await createTempProject('ff-export-dry-run-overlap-');
+    patchesDir = join(projectRoot, 'patches');
+  });
+
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it('fails dry-run after surfacing partial ownership overlap', async () => {
+    await seed(patchesDir, [
+      {
+        metadata: {
+          ...makeMetadata('001-ui-owned.patch', 1, [
+            'browser/base/content/mybrowser.xhtml',
+            'browser/base/content/mybrowser.js',
+          ]),
+          category: 'ui',
+        },
+        body: createDiff('browser/base/content/mybrowser.xhtml', '<window />'),
+      },
+    ]);
+
+    await expect(
+      renderDryRunPreview({
+        patchesDir,
+        category: 'ui',
+        name: 'audit-export-probe',
+        description: '',
+        filesAffected: ['browser/base/content/mybrowser.xhtml'],
+        sourceEsrVersion: '140.9.0esr',
+        explicitSupersede: false,
+        allowOverlap: false,
+      })
+    ).rejects.toThrow(/cross-patch ownership overlap/i);
+
+    expect(info).toHaveBeenCalledWith('\n[dry-run] No patches would be superseded.');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'browser/base/content/mybrowser.xhtml already claimed by: 001-ui-owned.patch'
+      )
+    );
+  });
+
+  it('prints acknowledged overlap when --allow-overlap is set', async () => {
+    await seed(patchesDir, [
+      {
+        metadata: {
+          ...makeMetadata('001-ui-owned.patch', 1, [
+            'browser/base/content/mybrowser.xhtml',
+            'browser/base/content/mybrowser.js',
+          ]),
+          category: 'ui',
+        },
+        body: createDiff('browser/base/content/mybrowser.xhtml', '<window />'),
+      },
+    ]);
+
+    await expect(
+      renderDryRunPreview({
+        patchesDir,
+        category: 'ui',
+        name: 'audit-export-probe',
+        description: '',
+        filesAffected: ['browser/base/content/mybrowser.xhtml'],
+        sourceEsrVersion: '140.9.0esr',
+        explicitSupersede: false,
+        allowOverlap: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Would create cross-patch ownership overlap')
+    );
   });
 });
 
@@ -298,7 +634,7 @@ describe('commitPlacementExport rollback', () => {
     await expect(
       commitPlacementExport({
         patchesDir,
-        options: { order: 1 },
+        options: { before: '001-infra-a.patch' },
         category: 'infra',
         name: 'new',
         diff: createDiff('foo/New.sys.mjs', 'export const NewValue = 1;'),
@@ -351,7 +687,7 @@ describe('commitPlacementExport rollback', () => {
     await expect(
       commitPlacementExport({
         patchesDir,
-        options: { order: 1 },
+        options: { before: '001-infra-a.patch' },
         category: 'infra',
         name: 'new',
         diff: createDiff('foo/New.sys.mjs', 'export const NewValue = 1;'),
@@ -396,7 +732,7 @@ describe('commitPlacementExport rollback', () => {
     await expect(
       commitPlacementExport({
         patchesDir,
-        options: { order: 1 },
+        options: { before: '001-infra-a.patch' },
         category: 'infra',
         name: 'new',
         diff: createDiff('foo/New.sys.mjs', 'export const NewValue = 1;'),

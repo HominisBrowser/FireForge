@@ -626,7 +626,7 @@ describe('Firefox workflow fixtures', () => {
     expect(store).toContain('return true;');
   });
 
-  it('export --dry-run --order <N> prints the placement summary for single-rename runs', async () => {
+  it('export --dry-run --before <anchor> prints the placement summary for single-rename runs', async () => {
     // Regression: the placement dry-run preview used to fire only when
     // renameCount > 1, silently exiting with "Dry run complete" otherwise.
     // A single-renumber dry-run now routes through confirmDestructive and
@@ -645,9 +645,9 @@ describe('Firefox workflow fixtures', () => {
       description: '',
     });
 
-    // Second export: a modification of b.js that we will try to place at
-    // order 1 in dry-run mode. This forces a single rename of the existing
-    // first patch, which is the previously-silent case.
+    // Second export: a modification of b.js that we will try to place before
+    // the existing first patch in dry-run mode. This forces a single rename,
+    // which is the previously-silent case.
     await writeFiles(engineDir, { 'browser/b.js': 'const b = 2;\n' });
 
     const logger = await import('../../utils/logger.js');
@@ -659,7 +659,7 @@ describe('Firefox workflow fixtures', () => {
       category: 'infra',
       description: '',
       dryRun: true,
-      order: 1,
+      before: '001-infra-first.patch',
       yes: true,
     });
 

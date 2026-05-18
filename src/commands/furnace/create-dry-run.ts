@@ -15,6 +15,7 @@ export interface DryRunPlanInput {
   localized: boolean;
   register: boolean;
   composes: string[] | undefined;
+  stockAdditions?: string[];
   /**
    * Feature-scoped Fluent bundle the component participates in (the same
    * value that will be written to `furnace.json`'s `sharedFtl`). When set,
@@ -120,6 +121,7 @@ export function formatDryRunPlan(args: DryRunPlanInput): string {
     localized,
     register,
     composes,
+    stockAdditions,
     sharedFtl,
     testStyle,
     description,
@@ -144,6 +146,12 @@ export function formatDryRunPlan(args: DryRunPlanInput): string {
   plan += `\n  localized: ${localized}`;
   if (composes && composes.length > 0) {
     plan += `\n  composes: ${composes.join(', ')}`;
+  }
+  if (stockAdditions && stockAdditions.length > 0) {
+    plan += `\n\nWould add discovered stock to furnace.json:`;
+    for (const name of stockAdditions) {
+      plan += `\n  ${name}`;
+    }
   }
   if (sharedFtl) {
     plan += `\n  sharedFtl: ${sharedFtl}`;

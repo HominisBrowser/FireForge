@@ -80,15 +80,27 @@ function buildWatchmanConfigureTimeMessage(): string {
  * @param watchmanPath - Optional absolute path to the resolved watchman binary; surfaced in the guidance so the operator can see whether FireForge actually found one.
  * @returns User-facing failure guidance
  */
-function buildUnsupportedWatchMessage(exitCode: number, watchmanPath: string | undefined): string {
+function hasWatchPermissionFailure(output: string): boolean {
+  return /Operation not permitted|EPERM|EACCES/i.test(output);
+}
+
+function buildUnsupportedWatchMessage(
+  exitCode: number,
+  watchmanPath: string | undefined,
+  output = ''
+): string {
   const watchmanLine = watchmanPath
     ? `  - FireForge resolved watchman at ${watchmanPath} and prepended its directory to the mach subprocess PATH. If mach still did not see it, ensure that path is stable between runs.\n`
+    : '';
+  const permissionLine = hasWatchPermissionFailure(output)
+    ? '  - macOS may be blocking watchman or Terminal/Codex from reading the engine directory. Grant Full Disk Access or Files and Folders access to your terminal app and watchman, then restart watchman with "watchman shutdown-server".\n'
     : '';
   return (
     `Watch failed with exit code ${exitCode}. Check the output above for details.\n\n` +
     'Common causes:\n' +
     '  - watchman is not installed or not in PATH right now\n' +
     '  - watchman was installed only after the current obj-* directory was configured; delete obj-* and rebuild\n' +
+    permissionLine +
     '  - mach watch is unsupported in the current objdir or build environment\n' +
     watchmanLine +
     '\n' +
@@ -243,7 +255,10 @@ export async function watchCommand(projectRoot: string): Promise<void> {
     }
 
     // 130 is SIGINT (Ctrl+C), which is expected
-    throw new BuildError(buildUnsupportedWatchMessage(result.exitCode, watchmanPath), 'mach watch');
+    throw new BuildError(
+      buildUnsupportedWatchMessage(result.exitCode, watchmanPath, combinedOutput),
+      'mach watch'
+    );
   }
 
   outro('Watch mode stopped');

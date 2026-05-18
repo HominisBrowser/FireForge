@@ -281,15 +281,18 @@ describe('exportAllCommand', () => {
       description: 'test',
     });
 
-    expect(commitExportedPatch).toHaveBeenCalledWith({
-      patchesDir: '/fake/patches',
-      category: 'ui',
-      name: 'all-changes',
-      description: 'test',
-      diff: 'diff --git a/a.js b/a.js\n+content a\n\ndiff --git a/c.js b/c.js\n+content c\n',
-      filesAffected: ['a.js', 'c.js'],
-      sourceEsrVersion: '140.9.0esr',
-    });
+    expect(commitExportedPatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patchesDir: '/fake/patches',
+        category: 'ui',
+        name: 'all-changes',
+        description: 'test',
+        diff: 'diff --git a/a.js b/a.js\n+content a\n\ndiff --git a/c.js b/c.js\n+content c\n',
+        filesAffected: ['a.js', 'c.js'],
+        sourceEsrVersion: '140.9.0esr',
+        policyCommand: 'export-all',
+      })
+    );
   });
 
   it('surfaces commit failures from the patch helper', async () => {
@@ -577,7 +580,7 @@ describe('exportAllCommand', () => {
     await expect(
       exportAllCommand('/fake/root', {
         name: 'bye-module',
-        category: 'infra' as never,
+        category: 'infra',
         description: 'second creator',
       })
     ).rejects.toThrow(/refuses to capture new-file creations/i);
@@ -603,7 +606,7 @@ describe('exportAllCommand', () => {
 
     await exportAllCommand('/fake/root', {
       name: 'fresh-module',
-      category: 'infra' as never,
+      category: 'infra',
       description: 'clean new creator',
     });
 

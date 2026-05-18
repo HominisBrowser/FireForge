@@ -117,6 +117,20 @@ describe('validateAllComponents — orphan xpcshell scaffolds', () => {
     expect(issues.some((issue) => issue.check === 'orphan-xpcshell-scaffold')).toBe(false);
   });
 
+  it('does not flag chrome-doc packaging tests as component xpcshell orphans', async () => {
+    const scaffoldDir = join(
+      root,
+      'engine/browser/base/content/test/freshforge-xpcshell/mybrowser'
+    );
+    await ensureDir(scaffoldDir);
+    await writeFile(join(scaffoldDir, 'xpcshell.toml'), '[DEFAULT]\n');
+    await writeFile(join(scaffoldDir, 'test_mybrowser_packaging.js'), '// chrome-doc probe\n');
+
+    const results = await validateAllComponents(root);
+    const issues = results.get('mybrowser') ?? [];
+    expect(issues.some((issue) => issue.check === 'orphan-xpcshell-scaffold')).toBe(false);
+  });
+
   it('stays silent on a project that never used xpcshell scaffolding', async () => {
     // No `.<binary>-xpcshell` directory at all — the check should return
     // cleanly without walking anywhere else.

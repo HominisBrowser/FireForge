@@ -379,6 +379,71 @@ describe('furnace-config helpers', () => {
     expect(writeJson).toHaveBeenNthCalledWith(2, '/project/.fireforge/furnace-state.json', state);
   });
 
+  it('preserves existing furnace.json ordering while appending new component entries', async () => {
+    vi.mocked(pathExists).mockResolvedValueOnce(true);
+    vi.mocked(readJson).mockResolvedValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      custom: {
+        'moz-existing': {
+          targetPath: 'toolkit/content/widgets/moz-existing',
+          description: 'Existing',
+          localized: false,
+          register: true,
+        },
+      },
+      stock: ['moz-button'],
+      overrides: {},
+      tokenPrefix: '--browser-',
+    });
+
+    await writeFurnaceConfig('/project', {
+      version: 1,
+      componentPrefix: 'moz-',
+      tokenPrefix: '--browser-',
+      stock: ['moz-button'],
+      overrides: {},
+      custom: {
+        'moz-existing': {
+          description: 'Existing',
+          targetPath: 'toolkit/content/widgets/moz-existing',
+          register: true,
+          localized: false,
+        },
+        'moz-new': {
+          description: 'New',
+          targetPath: 'toolkit/content/widgets/moz-new',
+          register: true,
+          localized: false,
+        },
+      },
+    });
+
+    const written = vi.mocked(writeJson).mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(Object.keys(written)).toEqual([
+      'version',
+      'componentPrefix',
+      'custom',
+      'stock',
+      'overrides',
+      'tokenPrefix',
+    ]);
+    expect(Object.keys(written['custom'] as Record<string, unknown>)).toEqual([
+      'moz-existing',
+      'moz-new',
+    ]);
+    const existingComponent = (written['custom'] as Record<string, Record<string, unknown>>)[
+      'moz-existing'
+    ];
+    expect(existingComponent).toBeDefined();
+    expect(Object.keys(existingComponent ?? {})).toEqual([
+      'targetPath',
+      'description',
+      'localized',
+      'register',
+    ]);
+  });
+
   it('supports transactional furnace state updaters for nested checksum maps', async () => {
     vi.mocked(pathExists).mockResolvedValueOnce(true);
     vi.mocked(readJson).mockResolvedValueOnce({

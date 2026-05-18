@@ -76,7 +76,7 @@ export interface ExportOptions {
    * be superseded and which files caused the coverage.
    */
   dryRun?: boolean;
-  /** Place the new patch at a specific ordinal, shifting subsequent patches. */
+  /** Place the new patch at this exact unused order without renumbering existing patches. */
   order?: number;
   /** Place the new patch immediately before the named patch. */
   before?: string;
@@ -559,6 +559,8 @@ export interface PatchRenameOptions {
   dryRun?: boolean;
   /** Skip the confirmation prompt (required for non-TTY). */
   yes?: boolean;
+  /** Bypass force-mode patchPolicy refusals. */
+  forceUnsafe?: boolean;
 }
 
 /**

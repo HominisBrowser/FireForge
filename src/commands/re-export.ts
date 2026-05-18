@@ -15,6 +15,7 @@ import {
   resolvePatchIdentifier,
   stampPatchVersions,
 } from '../core/patch-manifest.js';
+import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
@@ -285,6 +286,27 @@ async function reExportSinglePatch(
   const effectiveLintIgnore = mergedIgnoreSet.size > 0 ? [...mergedIgnoreSet] : undefined;
   const ignoreChecks = effectiveLintIgnore ? new Set<string>(effectiveLintIgnore) : undefined;
   const effectiveTier = options.tier ?? patch.tier;
+  const updates: Partial<PatchMetadata> = {
+    filesAffected: currentFilesAffected,
+  };
+  if (options.tier !== undefined) {
+    updates.tier = options.tier;
+  }
+  if (effectiveLintIgnore !== undefined && flagIgnoreSet.size > 0) {
+    updates.lintIgnore = effectiveLintIgnore;
+  }
+
+  enforcePatchPolicy({
+    config,
+    manifest: buildProjectedManifest(
+      manifest,
+      manifest.patches.map((entry) =>
+        entry.filename === patch.filename ? { ...entry, ...updates } : entry
+      )
+    ),
+    command: 're-export',
+    forceUnsafe: options.forceUnsafe === true,
+  });
 
   await runPatchLint(
     paths.engine,
@@ -312,16 +334,11 @@ async function reExportSinglePatch(
     // sequence allows a concurrent `resolve` / `rebase --continue` / `patch
     // compact` / `patch reorder` to rewrite the manifest between the two
     // writes and leave patch body and `filesAffected` disagreeing.
-    const updates: Partial<PatchMetadata> = {
-      filesAffected: currentFilesAffected,
-    };
-    if (options.tier !== undefined) {
-      updates.tier = options.tier;
-    }
-    if (effectiveLintIgnore !== undefined && flagIgnoreSet.size > 0) {
-      updates.lintIgnore = effectiveLintIgnore;
-    }
-    await updatePatchAndMetadata(paths.patches, patch.filename, diffContent, updates);
+    await updatePatchAndMetadata(paths.patches, patch.filename, diffContent, updates, undefined, {
+      config,
+      command: 're-export',
+      forceUnsafe: options.forceUnsafe === true,
+    });
 
     // Keep the in-memory manifest in sync so subsequent iterations (notably
     // `--all --scan`, where `getClaimedFiles` reads from this manifest) see

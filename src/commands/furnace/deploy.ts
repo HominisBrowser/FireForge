@@ -557,7 +557,8 @@ export async function furnaceDeployCommand(
     furnacePaths,
     failedComponents,
     isDryRun,
-    projectRoot
+    projectRoot,
+    result.actions
   );
   if (validation.done) return;
   const { totalErrors, totalWarnings, componentCount, skippedValidationCount } = validation;

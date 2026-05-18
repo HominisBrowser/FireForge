@@ -18,12 +18,14 @@ function checkNameConflict(config: FurnaceConfig, name: string): string | undefi
 function validateComposesTargets(
   config: FurnaceConfig,
   componentName: string,
-  composes: string[] | undefined
+  composes: string[] | undefined,
+  stockAdditions: string[] = []
 ): void {
   if (!composes || composes.length === 0) return;
 
   const known = new Set([
     ...config.stock,
+    ...stockAdditions,
     ...Object.keys(config.overrides),
     ...Object.keys(config.custom),
   ]);
@@ -58,7 +60,8 @@ export function validateCreateAgainstConfig(
   config: FurnaceConfig,
   componentName: string,
   allowPrefixMismatch: FurnaceCreateOptions['allowPrefixMismatch'],
-  composes: string[] | undefined
+  composes: string[] | undefined,
+  stockAdditions: string[] = []
 ): void {
   const conflict = checkNameConflict(config, componentName);
   if (conflict) {
@@ -78,5 +81,5 @@ export function validateCreateAgainstConfig(
     );
   }
 
-  validateComposesTargets(config, componentName, composes);
+  validateComposesTargets(config, componentName, composes, stockAdditions);
 }

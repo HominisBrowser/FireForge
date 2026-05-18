@@ -31,12 +31,20 @@ import {
   resolvePatchIdentifier,
   savePatchesManifest,
 } from '../core/patch-manifest.js';
+import {
+  applyRenameMapToManifest,
+  buildProjectedManifest,
+  enforcePatchPolicy,
+} from '../core/patch-policy.js';
 import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
-import { InvalidArgumentError } from '../errors/base.js';
+import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { ExportOptions, PatchCategory, PatchMetadata } from '../types/commands/index.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
+import { assertPlacementPreservesReservedRanges } from './export-placement-policy.js';
+import { findPartialOwnershipOverlap } from './export-shared.js';
 
 function buildFilenameForPlacement(
   category: PatchCategory,
@@ -56,6 +64,13 @@ export interface PlacementPlan {
   insertionOrder: number;
   newFilename: string;
   renameMap: Map<string, PatchRenameEntry>;
+}
+
+function prefixWidthForPatches(manifestPatches: PatchMetadata[], requestedOrder: number): number {
+  return manifestPatches.reduce((width, patch) => {
+    const match = /^(\d+)-/.exec(patch.filename);
+    return Math.max(width, match?.[1]?.length ?? 3, String(requestedOrder).length);
+  }, 3);
 }
 
 function getSortedRenameEntries(
@@ -109,13 +124,7 @@ export function computePlacementPlan(
   }
   const sorted = [...manifestPatches].sort((a, b) => a.order - b.order);
   const renameMap = new Map<string, PatchRenameEntry>();
-
-  // Decide the canonical prefix width by inspecting the widest existing
-  // filename (falling back to 3). Keeps zero-padding consistent post-shift.
-  const prefixWidth = sorted.reduce((w, p) => {
-    const match = /^(\d+)-/.exec(p.filename);
-    return match ? Math.max(w, match[1]?.length ?? 3) : w;
-  }, 3);
+  const prefixWidth = prefixWidthForPatches(sorted, requestedOrder);
 
   // Every existing patch at requestedOrder or later shifts up by one.
   for (const patch of sorted) {
@@ -142,6 +151,46 @@ export function computePlacementPlan(
 }
 
 /**
+ * Computes an exact sparse placement plan for `--order <N>`. Unlike
+ * positional insertion, this never renumbers existing patches: the order
+ * must be unused, and policy validation decides whether the requested
+ * category/order is allowed.
+ */
+export function computeExactPlacementPlan(
+  manifestPatches: PatchMetadata[],
+  newPatchCategory: PatchCategory,
+  newPatchName: string,
+  requestedOrder: number
+): PlacementPlan {
+  if (!Number.isInteger(requestedOrder) || requestedOrder <= 0) {
+    throw new InvalidArgumentError(
+      `--order must be a positive integer, got ${String(requestedOrder)}.`,
+      '--order'
+    );
+  }
+
+  const occupied = manifestPatches.find((patch) => patch.order === requestedOrder);
+  if (occupied) {
+    throw new InvalidArgumentError(
+      `--order ${String(requestedOrder)} is already occupied by ${occupied.filename}. ` +
+        'Choose an unused order or use --before/--after for positional insertion.',
+      '--order'
+    );
+  }
+
+  return {
+    insertionOrder: requestedOrder,
+    newFilename: buildFilenameForPlacement(
+      newPatchCategory,
+      newPatchName,
+      requestedOrder,
+      prefixWidthForPatches(manifestPatches, requestedOrder)
+    ),
+    renameMap: new Map(),
+  };
+}
+
+/**
  * Resolves a placement plan from CLI flags against the current manifest.
  */
 export async function resolvePlacementPlan(
@@ -164,7 +213,7 @@ export async function resolvePlacementPlan(
         '--order'
       );
     }
-    targetOrder = options.order;
+    return computeExactPlacementPlan(existingPatches, category, name, options.order);
   } else if (options.before !== undefined) {
     const anchor = resolvePatchIdentifier(options.before, existingPatches);
     if (!anchor) {
@@ -279,6 +328,10 @@ export interface CommitPlacementExportInput {
   metadata: PatchMetadata;
   expectedPlan: PlacementPlan;
   unsafeOverride?: boolean;
+  /** Project config, used only when opt-in patchPolicy is present. */
+  config?: FireForgeConfig;
+  /** Whether --force-unsafe was supplied by the mutating command. */
+  forceUnsafe?: boolean;
   /**
    * Optional post-commit hook that runs inside the patch directory lock,
    * after the mutation has succeeded but before the lock is released.
@@ -325,13 +378,41 @@ export async function commitPlacementExport(
       );
     }
 
+    const originalManifest = await loadPatchesManifest(input.patchesDir);
+    if (originalManifest !== null) {
+      assertPlacementPreservesReservedRanges(
+        currentPlan,
+        originalManifest.patches,
+        input.config,
+        input.category
+      );
+    }
+    if (input.config !== undefined) {
+      const renamed =
+        originalManifest !== null
+          ? applyRenameMapToManifest(originalManifest, currentPlan.renameMap)
+          : buildProjectedManifest(null, []);
+      enforcePatchPolicy({
+        config: input.config,
+        manifest: buildProjectedManifest(renamed, [
+          ...renamed.patches,
+          {
+            ...input.metadata,
+            filename: currentPlan.newFilename,
+            order: currentPlan.insertionOrder,
+          },
+        ]),
+        command: 'export',
+        forceUnsafe: input.forceUnsafe === true,
+      });
+    }
+
     // Snapshot pre-mutation state so we can best-effort restore the queue
     // if any of the three steps below fail mid-flight. Mirrors the
     // rollback shape in commitExportedPatch (src/core/patch-export.ts), but
     // inlined because the two rollbacks operate on different state shapes
     // (rename map vs. supersede set) and sharing a helper would be forced.
     const patchPath = join(input.patchesDir, currentPlan.newFilename);
-    const originalManifest = await loadPatchesManifest(input.patchesDir);
     const originalNewPatchContent = (await pathExists(patchPath))
       ? await readText(patchPath)
       : null;
@@ -428,10 +509,15 @@ export interface DryRunPreviewInput {
   filesAffected: string[];
   sourceEsrVersion: string;
   explicitSupersede: boolean;
+  allowOverlap: boolean;
   /** Optional `PatchMetadata.tier` opt-in carried from the CLI. */
   tier?: 'branding';
   /** Optional `PatchMetadata.lintIgnore` carried from the CLI. */
   lintIgnore?: string[];
+  /** Project config, used only when opt-in patchPolicy is present. */
+  config?: FireForgeConfig;
+  /** Whether --force-unsafe was supplied by the mutating command. */
+  forceUnsafe?: boolean;
 }
 
 /**
@@ -444,6 +530,12 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     input.patchesDir,
     input.filesAffected
   );
+  const supersedingFilenames = new Set(supersedeDetails.map((detail) => detail.patch.filename));
+  const manifest = await loadPatchesManifest(input.patchesDir);
+  const overlap =
+    manifest !== null
+      ? findPartialOwnershipOverlap(manifest, input.filesAffected, supersedingFilenames)
+      : new Map<string, string[]>();
   const plan = await planExport({
     patchesDir: input.patchesDir,
     category: input.category,
@@ -453,7 +545,17 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     sourceEsrVersion: input.sourceEsrVersion,
     ...(input.tier !== undefined ? { tier: input.tier } : {}),
     ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
+    ...(input.config !== undefined ? { config: input.config } : {}),
   });
+
+  if (input.config !== undefined) {
+    enforcePatchPolicy({
+      config: input.config,
+      manifest: plan.manifestAfter,
+      command: 'export',
+      forceUnsafe: input.forceUnsafe === true,
+    });
+  }
 
   info(`\n[dry-run] Would write: patches/${plan.patchFilename}`);
   info(`  category: ${plan.metadata.category}`);
@@ -481,5 +583,25 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     }
   } else {
     info('\n[dry-run] No patches would be superseded.');
+  }
+
+  if (overlap.size > 0) {
+    const entries = [...overlap.entries()].sort(([a], [b]) => a.localeCompare(b));
+    warn(
+      `\n[dry-run] Would create cross-patch ownership overlap on ${String(entries.length)} file${entries.length === 1 ? '' : 's'}:`
+    );
+    for (const [file, owners] of entries) {
+      warn(`  - ${file} already claimed by: ${owners.join(', ')}`);
+    }
+    warn(
+      'The real export would leave the queue verify-failing. Repartition ownership with `fireforge re-export --files <paths> <existing-patch>` before exporting, or pass --allow-overlap to acknowledge the conflict.'
+    );
+    if (!input.allowOverlap) {
+      throw new GeneralError(
+        'Dry-run detected cross-patch ownership overlap. Pass --allow-overlap to preview the acknowledged conflict, or repartition ownership via `fireforge re-export --files`.'
+      );
+    }
+  } else {
+    info('[dry-run] No cross-patch ownership overlap detected.');
   }
 }

@@ -19,9 +19,10 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../core/config.js';
+import { getProjectPaths, loadConfig } from '../core/config.js';
 import { buildPatchQueueContext, lintPatchQueue } from '../core/patch-lint.js';
 import { loadPatchesManifest, validatePatchesManifestConsistency } from '../core/patch-manifest.js';
+import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { collectPatchRegistrationReferences } from '../core/patch-registration-refs.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -136,6 +137,7 @@ export async function verifyCommand(projectRoot: string): Promise<void> {
   intro('FireForge Verify');
 
   const paths = getProjectPaths(projectRoot);
+  const config = await loadConfig(projectRoot);
   if (!(await pathExists(paths.patches))) {
     info('No patches directory. Nothing to verify.');
     outro('Verify clean');
@@ -160,6 +162,17 @@ export async function verifyCommand(projectRoot: string): Promise<void> {
   // same path in filesAffected. Not caught by per-patch consistency.
   const manifest = await loadPatchesManifest(paths.patches);
   if (manifest) {
+    const policyIssues = evaluatePatchPolicy(config, manifest);
+    if (policyIssues.length > 0) {
+      warn(`Patch policy issues (${policyIssues.length}):`);
+      for (const issue of policyIssues) {
+        const label = issue.severity === 'error' ? 'ERROR' : 'WARN';
+        warn(`  ${label} [${issue.code}] ${issue.filename}: ${issue.message}`);
+        if (issue.severity === 'error') errorCount += 1;
+        else warningCount += 1;
+      }
+    }
+
     const crossClaims = detectCrossPatchFileClaims(manifest.patches);
     if (crossClaims.length > 0) {
       warn(`Cross-patch filesAffected conflicts (${crossClaims.length}):`);

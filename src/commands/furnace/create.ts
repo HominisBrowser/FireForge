@@ -28,7 +28,7 @@ import {
   type RollbackJournal,
   snapshotFile,
 } from '../../core/furnace-rollback.js';
-import { isComponentInEngine } from '../../core/furnace-scanner.js';
+import { isComponentInEngine, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
 import { DEFAULT_LICENSE, getLicenseHeader } from '../../core/license-headers.js';
 import { registerTestManifest } from '../../core/manifest-register.js';
 import { validateSharedFtl } from '../../core/shared-ftl.js';
@@ -54,6 +54,36 @@ async function loadAuthoringFurnaceConfig(projectRoot: string): Promise<FurnaceC
   }
 
   return createDefaultFurnaceConfig();
+}
+
+function knownComponentSet(config: FurnaceConfig): Set<string> {
+  return new Set([
+    ...config.stock,
+    ...Object.keys(config.overrides),
+    ...Object.keys(config.custom),
+  ]);
+}
+
+async function resolveComposeStockAdditions(args: {
+  engineDir: string;
+  config: FurnaceConfig;
+  componentName: string;
+  composes: string[] | undefined;
+}): Promise<string[]> {
+  const { engineDir, config, componentName, composes } = args;
+  if (!composes || composes.length === 0) return [];
+
+  const known = knownComponentSet(config);
+  const unresolved = composes.filter((tag) => tag !== componentName && !known.has(tag));
+  if (unresolved.length === 0 || !(await pathExists(engineDir))) return [];
+
+  const scanPaths = config.scanPaths && config.scanPaths.length > 0 ? config.scanPaths : undefined;
+  const discovered = await scanWidgetsDirectory(engineDir, undefined, scanPaths);
+  const discoveredTags = new Set(discovered.map((component) => component.tagName));
+
+  return unresolved.filter(
+    (tag, index) => discoveredTags.has(tag) && unresolved.indexOf(tag) === index
+  );
 }
 
 /**
@@ -141,6 +171,7 @@ support-files = ["head.js"]
  * @returns {Promise<CustomElementConstructor>}
  */
 async function waitForElement(tag) {
+  document.createElement(tag);
   return customElements.whenDefined(tag);
 }
 `;
@@ -316,11 +347,18 @@ async function performCreateMutations(args: {
 
   try {
     const freshConfig = await loadAuthoringFurnaceConfig(args.projectRoot);
+    const freshStockAdditions = await resolveComposeStockAdditions({
+      engineDir: args.paths.engine,
+      config: freshConfig,
+      componentName: args.componentName,
+      composes: args.composes,
+    });
     validateCreateAgainstConfig(
       freshConfig,
       args.componentName,
       args.allowPrefixMismatch,
-      args.composes
+      args.composes,
+      freshStockAdditions
     );
     if (await pathExists(args.componentDir)) {
       throw new FurnaceError(
@@ -356,6 +394,11 @@ async function performCreateMutations(args: {
     }
     if (args.sharedFtl) {
       customEntry.sharedFtl = args.sharedFtl;
+    }
+    for (const name of freshStockAdditions) {
+      if (!freshConfig.stock.includes(name)) {
+        freshConfig.stock.push(name);
+      }
     }
     freshConfig.custom[args.componentName] = customEntry;
 
@@ -494,7 +537,19 @@ export async function furnaceCreateCommand(
   const config = await loadAuthoringFurnaceConfig(projectRoot);
 
   const composes = options.compose;
-  validateCreateAgainstConfig(config, componentName, options.allowPrefixMismatch, composes);
+  const stockAdditions = await resolveComposeStockAdditions({
+    engineDir: paths.engine,
+    config,
+    componentName,
+    composes,
+  });
+  validateCreateAgainstConfig(
+    config,
+    componentName,
+    options.allowPrefixMismatch,
+    composes,
+    stockAdditions
+  );
 
   // Check if it already exists in the engine source tree
   if (await pathExists(paths.engine)) {
@@ -566,6 +621,7 @@ export async function furnaceCreateCommand(
       localized,
       register,
       composes,
+      stockAdditions,
       // Spread rather than assign so the key is absent when sharedFtl is
       // undefined — the DryRunPlanInput type uses strict-optional shape.
       ...(sharedFtl !== undefined ? { sharedFtl } : {}),

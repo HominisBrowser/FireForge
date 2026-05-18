@@ -25,6 +25,7 @@ import {
 } from '../core/patch-lint.js';
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
+import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
@@ -77,6 +78,12 @@ export interface LintCommandOptions {
    * scope contracts are different.
    */
   perPatch?: boolean;
+  /**
+   * Maximum warning count tolerated before lint exits non-zero. Mirrors
+   * ESLint's `--max-warnings` shape for release gates that want advisory
+   * findings to become blocking without changing default CLI behavior.
+   */
+  maxWarnings?: number;
 }
 
 /**
@@ -319,6 +326,13 @@ export async function lintCommand(
     );
   }
 
+  if (
+    options.maxWarnings !== undefined &&
+    (!Number.isInteger(options.maxWarnings) || options.maxWarnings < 0)
+  ) {
+    throw new GeneralError('--max-warnings must be a non-negative integer.');
+  }
+
   // `--per-patch` rescopes the diff from "aggregate engine state" to "each
   // patch's own filesAffected". Mixing in explicit file paths would produce
   // an ambiguous set — is the file list an additional filter, or does it
@@ -343,7 +357,7 @@ export async function lintCommand(
   }
 
   if (options.perPatch) {
-    await lintPerPatch(projectRoot, paths);
+    await lintPerPatch(projectRoot, paths, options);
     return;
   }
 
@@ -498,6 +512,13 @@ export async function lintCommand(
     );
   }
 
+  if (options.maxWarnings !== undefined && warnings.length > options.maxWarnings) {
+    outro('Lint failed');
+    throw new GeneralError(
+      `Patch lint found ${warnings.length} warning(s), exceeding --max-warnings ${options.maxWarnings}.`
+    );
+  }
+
   // Notices are advisory and don't count as warnings — emitting "passed
   // with warnings" when only notices fired contradicts the preceding
   // `0 warning(s)` summary line and reads as a regression. Distinguish
@@ -530,7 +551,8 @@ export async function lintCommand(
  */
 async function lintPerPatch(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>
+  paths: ReturnType<typeof getProjectPaths>,
+  options: LintCommandOptions = {}
 ): Promise<void> {
   const manifest = await loadPatchesManifest(paths.patches);
   if (!manifest || manifest.patches.length === 0) {
@@ -543,6 +565,14 @@ async function lintPerPatch(
   const ctx = await buildPatchQueueContext(paths.patches);
 
   const issues: PatchLintIssue[] = [];
+  for (const issue of evaluatePatchPolicy(config, manifest)) {
+    issues.push({
+      file: issue.filename,
+      check: `patch-policy/${issue.code}`,
+      message: issue.message,
+      severity: issue.severity,
+    });
+  }
   let linted = 0;
   let skipped = 0;
   for (const patch of manifest.patches) {
@@ -631,6 +661,13 @@ async function lintPerPatch(
     );
   }
 
+  if (options.maxWarnings !== undefined && warnings.length > options.maxWarnings) {
+    outro('Lint failed');
+    throw new GeneralError(
+      `Patch lint found ${warnings.length} warning(s) across ${linted} patch(es), exceeding --max-warnings ${options.maxWarnings}.`
+    );
+  }
+
   if (warnings.length > 0) {
     outro('Lint passed with warnings');
   } else if (notices.length > 0) {
@@ -664,11 +701,20 @@ export function registerLint(
       '--per-patch',
       "Lint each patch in the queue as its own isolated diff. Rescopes patch-size rules so they fire against individual patches rather than the aggregate. Honours each patch's `lintIgnore` entries."
     )
+    .option(
+      '--max-warnings <n>',
+      'Fail when lint reports more than <n> warning(s); use 0 for warning-clean release gates.'
+    )
     .action(
       withErrorHandling(
         async (
           paths: string[],
-          options: { since?: string; onlyIntroduced?: boolean; perPatch?: boolean }
+          options: {
+            since?: string;
+            onlyIntroduced?: boolean;
+            perPatch?: boolean;
+            maxWarnings?: string;
+          }
         ) => {
           const lintOptions: LintCommandOptions = {};
           if (options.since !== undefined) {
@@ -679,6 +725,13 @@ export function registerLint(
           }
           if (options.perPatch !== undefined) {
             lintOptions.perPatch = options.perPatch;
+          }
+          if (options.maxWarnings !== undefined) {
+            const maxWarnings = Number(options.maxWarnings);
+            if (!Number.isInteger(maxWarnings) || maxWarnings < 0) {
+              throw new GeneralError('--max-warnings must be a non-negative integer.');
+            }
+            lintOptions.maxWarnings = maxWarnings;
           }
           await lintCommand(getProjectRoot(), paths, lintOptions);
         }

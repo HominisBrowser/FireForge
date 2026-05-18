@@ -559,6 +559,8 @@ export interface PatchRenameOptions {
   dryRun?: boolean;
   /** Skip the confirmation prompt (required for non-TTY). */
   yes?: boolean;
+  /** Bypass force-mode patchPolicy refusals. */
+  forceUnsafe?: boolean;
 }
 
 /**

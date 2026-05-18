@@ -115,6 +115,70 @@ describe('validateConfig', () => {
     ).toBe(digest.toLowerCase());
   });
 
+  it('accepts a valid patchPolicy block', () => {
+    const config = validateConfig({
+      ...makeValidConfig(),
+      patchPolicy: {
+        filenamePattern:
+          '^(?<order>\\d{3})-(?<category>branding|infra|ui)-(?<slug>[a-z0-9-]+)\\.patch$',
+        requireDescription: true,
+        allowGaps: false,
+        mutationMode: 'force',
+        ranges: [
+          { from: 1, to: 99, category: 'branding' },
+          { from: 100, to: 199, category: 'infra' },
+          { from: 200, to: 299, category: 'ui' },
+        ],
+        reservedRanges: [
+          {
+            from: 900,
+            to: 999,
+            allowed: [
+              {
+                filename: '900-infra-bootstrap-workaround.patch',
+                files: ['tools/build.rs'],
+                adr: 'docs/architecture/adr/0001-bootstrap-workaround.md',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(config.patchPolicy?.mutationMode).toBe('force');
+    expect(config.patchPolicy?.ranges.map((range) => range.category)).toEqual([
+      'branding',
+      'infra',
+      'ui',
+    ]);
+  });
+
+  it('rejects malformed patchPolicy filename regexes', () => {
+    expect(() =>
+      validateConfig({
+        ...makeValidConfig(),
+        patchPolicy: {
+          filenamePattern: '(?<order>',
+          ranges: [{ from: 1, to: 99, category: 'infra' }],
+        },
+      })
+    ).toThrow('patchPolicy.filenamePattern');
+  });
+
+  it('rejects overlapping patchPolicy ranges', () => {
+    expect(() =>
+      validateConfig({
+        ...makeValidConfig(),
+        patchPolicy: {
+          ranges: [
+            { from: 1, to: 50, category: 'infra' },
+            { from: 50, to: 99, category: 'ui' },
+          ],
+        },
+      })
+    ).toThrow('overlapping ranges');
+  });
+
   it('rejects malformed firefox sha256 pins', () => {
     const base = makeValidConfig();
 

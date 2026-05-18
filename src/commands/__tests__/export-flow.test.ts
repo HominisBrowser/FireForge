@@ -17,6 +17,7 @@ import { addPatchToManifest } from '../../core/patch-manifest.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
+import type { FireForgeConfig } from '../../types/config.js';
 import { ensureDir, writeText } from '../../utils/fs.js';
 import { info, warn } from '../../utils/logger.js';
 import {
@@ -239,6 +240,47 @@ describe('projectPlacementForLint', () => {
 
     expect(await readdir(patchesDir)).not.toContain('001-infra-new.patch');
   });
+
+  it('rejects export placement into a reserved policy range', async () => {
+    await seed(patchesDir, [
+      {
+        metadata: makeMetadata('900-infra-bootstrap.patch', 900, ['tools/build.rs']),
+        body: createDiff('tools/build.rs', 'export const bootstrap = 1;'),
+      },
+    ]);
+    const config: FireForgeConfig = {
+      name: 'MyBrowser',
+      vendor: 'Acme',
+      appId: 'org.acme.browser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      patchPolicy: {
+        ranges: [{ from: 200, to: 299, category: 'ui' }],
+        reservedRanges: [{ from: 900, to: 999, allowed: [] }],
+      },
+    };
+    const expectedPlan = computePlacementPlan(
+      [makeMetadata('900-infra-bootstrap.patch', 900, ['tools/build.rs'])],
+      'ui',
+      'late-product',
+      900
+    );
+
+    await expect(
+      commitPlacementExport({
+        patchesDir,
+        options: { order: 900 },
+        category: 'ui',
+        name: 'late-product',
+        diff: createDiff('browser/base/content/product.js', 'export const product = 1;'),
+        metadata: makeMetadata('900-ui-late-product.patch', 900, [
+          'browser/base/content/product.js',
+        ]),
+        expectedPlan,
+        config,
+      })
+    ).rejects.toThrow(/reserved range 900-999/);
+  });
 });
 
 describe('renderDryRunPreview ownership overlap', () => {
@@ -260,12 +302,12 @@ describe('renderDryRunPreview ownership overlap', () => {
       {
         metadata: {
           ...makeMetadata('001-ui-owned.patch', 1, [
-            'browser/base/content/hominis.xhtml',
-            'browser/base/content/hominis.js',
+            'browser/base/content/mybrowser.xhtml',
+            'browser/base/content/mybrowser.js',
           ]),
           category: 'ui',
         },
-        body: createDiff('browser/base/content/hominis.xhtml', '<window />'),
+        body: createDiff('browser/base/content/mybrowser.xhtml', '<window />'),
       },
     ]);
 
@@ -275,7 +317,7 @@ describe('renderDryRunPreview ownership overlap', () => {
         category: 'ui',
         name: 'audit-export-probe',
         description: '',
-        filesAffected: ['browser/base/content/hominis.xhtml'],
+        filesAffected: ['browser/base/content/mybrowser.xhtml'],
         sourceEsrVersion: '140.9.0esr',
         explicitSupersede: false,
         allowOverlap: false,
@@ -285,7 +327,7 @@ describe('renderDryRunPreview ownership overlap', () => {
     expect(info).toHaveBeenCalledWith('\n[dry-run] No patches would be superseded.');
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(
-        'browser/base/content/hominis.xhtml already claimed by: 001-ui-owned.patch'
+        'browser/base/content/mybrowser.xhtml already claimed by: 001-ui-owned.patch'
       )
     );
   });
@@ -295,12 +337,12 @@ describe('renderDryRunPreview ownership overlap', () => {
       {
         metadata: {
           ...makeMetadata('001-ui-owned.patch', 1, [
-            'browser/base/content/hominis.xhtml',
-            'browser/base/content/hominis.js',
+            'browser/base/content/mybrowser.xhtml',
+            'browser/base/content/mybrowser.js',
           ]),
           category: 'ui',
         },
-        body: createDiff('browser/base/content/hominis.xhtml', '<window />'),
+        body: createDiff('browser/base/content/mybrowser.xhtml', '<window />'),
       },
     ]);
 
@@ -310,7 +352,7 @@ describe('renderDryRunPreview ownership overlap', () => {
         category: 'ui',
         name: 'audit-export-probe',
         description: '',
-        filesAffected: ['browser/base/content/hominis.xhtml'],
+        filesAffected: ['browser/base/content/mybrowser.xhtml'],
         sourceEsrVersion: '140.9.0esr',
         explicitSupersede: false,
         allowOverlap: true,

@@ -39,6 +39,7 @@ export const SUPPORTED_CONFIG_ROOT_KEYS = [
   'license',
   'wire',
   'patchLint',
+  'patchPolicy',
   'typecheck',
   'markerComment',
 ] as const;
@@ -67,6 +68,7 @@ export const SUPPORTED_CONFIG_PATHS = [
   'patchLint.jsdocClassMethods',
   'patchLint.testAssertionFloor',
   'patchLint.chromeScriptJsDoc',
+  'patchPolicy',
   'typecheck',
   'typecheck.projects',
   'typecheck.extraShim',

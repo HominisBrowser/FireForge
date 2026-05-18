@@ -6,6 +6,7 @@
 
 - **Chrome-doc previews and cleanup.** `furnace chrome-doc create` now supports `--dry-run`, validating the same target files and jar registrations without writing. New `furnace chrome-doc remove <name>` removes scaffolded chrome-doc files, jar entries, and optional xpcshell packaging-test directories, with `--dry-run` and `--yes` support.
 - **Versioned `status --json` schema.** The JSON output is now an object with `schemaVersion`, `summary`, and `files` instead of a bare array. Error paths also emit versioned JSON objects with `code` and `error`.
+- **Configurable patch queue policy.** Projects can now opt into `fireforge.json#patchPolicy` to define category-owned numeric ranges, reserved exception ranges, filename capture patterns, description requirements, gap policy, and mutation enforcement mode. FireForge enforces the policy during export/re-export/reorder/rename projections and reports the same findings from `verify` and `lint --per-patch`.
 
 ### Hardening
 

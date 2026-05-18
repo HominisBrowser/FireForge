@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
+import type { FireForgeConfig } from '../../types/config.js';
 import { ensureDir } from '../../utils/fs.js';
 import { commitExportedPatch, planExport } from '../patch-export.js';
 import { loadPatchesManifest, savePatchesManifest } from '../patch-manifest-io.js';
@@ -63,6 +64,37 @@ describe('planExport agrees with commitExportedPatch', () => {
   beforeEach(async () => {
     projectRoot = await createTempProject('ff-plan-commit-');
     patchesDir = join(projectRoot, 'patches');
+  });
+
+  it('allocates default export filenames inside the configured patchPolicy category range', async () => {
+    await seed(patchesDir, [
+      { filename: '200-ui-alpha.patch', order: 200, body: 'alpha', filesAffected: ['a.js'] },
+    ]);
+    const config: FireForgeConfig = {
+      name: 'MyBrowser',
+      vendor: 'Acme',
+      appId: 'org.acme.browser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      patchPolicy: {
+        ranges: [
+          { from: 100, to: 199, category: 'infra' },
+          { from: 200, to: 299, category: 'ui' },
+        ],
+      },
+    };
+
+    const plan = await planExport({
+      patchesDir,
+      category: 'ui',
+      name: 'beta',
+      description: 'new patch',
+      filesAffected: ['b.js'],
+      sourceEsrVersion: '140.9.0esr',
+      config,
+    });
+
+    expect(plan.patchFilename).toBe('201-ui-beta.patch');
   });
 
   afterEach(async () => {

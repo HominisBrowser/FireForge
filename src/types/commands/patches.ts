@@ -6,7 +6,7 @@
 /**
  * Patch categories for organizational classification.
  */
-export type PatchCategory = 'branding' | 'ui' | 'privacy' | 'security' | 'infra';
+export type PatchCategory = string;
 
 /**
  * Information about a patch file.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { Command, Option } from 'commander';
+import { Command } from 'commander';
 
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
@@ -21,11 +21,10 @@ import {
 import { collectPatchRegistrationReferences } from '../core/patch-registration-refs.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
-import type { ExportOptions, PatchCategory } from '../types/commands/index.js';
+import type { ExportOptions } from '../types/commands/index.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
-import { PATCH_CATEGORIES } from '../utils/validation.js';
 import { renderDryRunPreview } from './export-flow.js';
 import {
   autoFixLicenseHeaders,
@@ -318,7 +317,7 @@ export async function exportAllCommand(
     diff = await getAllDiff(paths.engine);
   }
 
-  const metadata = await promptExportPatchMetadata(options, isInteractive, 'export-all');
+  const metadata = await promptExportPatchMetadata(options, isInteractive, 'export-all', config);
   if (!metadata) return;
   const { patchName, selectedCategory, description } = metadata;
 
@@ -355,6 +354,8 @@ export async function exportAllCommand(
         sourceEsrVersion: config.firefox.version,
         explicitSupersede: options.supersede === true,
         allowOverlap: options.allowOverlap === true,
+        config,
+        forceUnsafe: options.forceUnsafe === true,
       });
       outro('Dry run complete — no changes made');
       return;
@@ -395,6 +396,9 @@ export async function exportAllCommand(
       diff,
       filesAffected,
       sourceEsrVersion: config.firefox.version,
+      config,
+      policyCommand: 'export-all',
+      forceUnsafe: options.forceUnsafe === true,
     });
 
     for (const oldPatch of superseded) {
@@ -424,9 +428,7 @@ export function registerExportAll(
     .command('export-all')
     .description('Export all changes as a patch')
     .option('--name <name>', 'Name for the patch')
-    .addOption(
-      new Option('-c, --category <category>', 'Patch category').choices([...PATCH_CATEGORIES])
-    )
+    .option('-c, --category <category>', 'Patch category')
     .option('-d, --description <desc>', 'Description of the patch')
     .option('--supersede', 'Allow superseding multiple existing patches')
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
@@ -442,6 +444,7 @@ export function registerExportAll(
       '--dry-run',
       'Print the export-all plan (filename, metadata, files affected, supersede preview) without writing anything to patches/. Lint still runs so the operator sees the same lint output a real run would produce.'
     )
+    .option('--force-unsafe', 'Bypass force-mode patchPolicy refusals')
     .action(
       withErrorHandling(
         async (options: {
@@ -453,11 +456,12 @@ export function registerExportAll(
           excludeFurnace?: boolean;
           allowOverlap?: boolean;
           dryRun?: boolean;
+          forceUnsafe?: boolean;
         }) => {
           const { category, ...rest } = options;
           await exportAllCommand(getProjectRoot(), {
             ...pickDefined(rest),
-            ...(category !== undefined ? { category: category as PatchCategory } : {}),
+            ...(category !== undefined ? { category } : {}),
           });
         }
       )

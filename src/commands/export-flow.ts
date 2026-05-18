@@ -31,9 +31,15 @@ import {
   resolvePatchIdentifier,
   savePatchesManifest,
 } from '../core/patch-manifest.js';
+import {
+  applyRenameMapToManifest,
+  buildProjectedManifest,
+  enforcePatchPolicy,
+} from '../core/patch-policy.js';
 import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { ExportOptions, PatchCategory, PatchMetadata } from '../types/commands/index.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
@@ -280,6 +286,10 @@ export interface CommitPlacementExportInput {
   metadata: PatchMetadata;
   expectedPlan: PlacementPlan;
   unsafeOverride?: boolean;
+  /** Project config, used only when opt-in patchPolicy is present. */
+  config?: FireForgeConfig;
+  /** Whether --force-unsafe was supplied by the mutating command. */
+  forceUnsafe?: boolean;
   /**
    * Optional post-commit hook that runs inside the patch directory lock,
    * after the mutation has succeeded but before the lock is released.
@@ -326,13 +336,33 @@ export async function commitPlacementExport(
       );
     }
 
+    const originalManifest = await loadPatchesManifest(input.patchesDir);
+    if (input.config !== undefined) {
+      const renamed =
+        originalManifest !== null
+          ? applyRenameMapToManifest(originalManifest, currentPlan.renameMap)
+          : buildProjectedManifest(null, []);
+      enforcePatchPolicy({
+        config: input.config,
+        manifest: buildProjectedManifest(renamed, [
+          ...renamed.patches,
+          {
+            ...input.metadata,
+            filename: currentPlan.newFilename,
+            order: currentPlan.insertionOrder,
+          },
+        ]),
+        command: 'export',
+        forceUnsafe: input.forceUnsafe === true,
+      });
+    }
+
     // Snapshot pre-mutation state so we can best-effort restore the queue
     // if any of the three steps below fail mid-flight. Mirrors the
     // rollback shape in commitExportedPatch (src/core/patch-export.ts), but
     // inlined because the two rollbacks operate on different state shapes
     // (rename map vs. supersede set) and sharing a helper would be forced.
     const patchPath = join(input.patchesDir, currentPlan.newFilename);
-    const originalManifest = await loadPatchesManifest(input.patchesDir);
     const originalNewPatchContent = (await pathExists(patchPath))
       ? await readText(patchPath)
       : null;
@@ -434,6 +464,10 @@ export interface DryRunPreviewInput {
   tier?: 'branding';
   /** Optional `PatchMetadata.lintIgnore` carried from the CLI. */
   lintIgnore?: string[];
+  /** Project config, used only when opt-in patchPolicy is present. */
+  config?: FireForgeConfig;
+  /** Whether --force-unsafe was supplied by the mutating command. */
+  forceUnsafe?: boolean;
 }
 
 /**
@@ -461,7 +495,17 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     sourceEsrVersion: input.sourceEsrVersion,
     ...(input.tier !== undefined ? { tier: input.tier } : {}),
     ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
+    ...(input.config !== undefined ? { config: input.config } : {}),
   });
+
+  if (input.config !== undefined) {
+    enforcePatchPolicy({
+      config: input.config,
+      manifest: plan.manifestAfter,
+      command: 'export',
+      forceUnsafe: input.forceUnsafe === true,
+    });
+  }
 
   info(`\n[dry-run] Would write: patches/${plan.patchFilename}`);
   info(`  category: ${plan.metadata.category}`);

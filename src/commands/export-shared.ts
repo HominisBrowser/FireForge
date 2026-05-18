@@ -12,6 +12,7 @@ import {
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
+import { getPatchPolicyCategories, isCategoryAllowedByConfig } from '../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { PatchesManifest } from '../types/commands/index.js';
 import type { ExportOptions, PatchCategory } from '../types/commands/index.js';
@@ -19,7 +20,7 @@ import type { FireForgeConfig } from '../types/config.js';
 import { pathExists, readText } from '../utils/fs.js';
 import type { SpinnerHandle } from '../utils/logger.js';
 import { cancel, info, isCancel, warn } from '../utils/logger.js';
-import { isValidPatchCategory, PATCH_CATEGORIES, validatePatchName } from '../utils/validation.js';
+import { PATCH_CATEGORIES, validatePatchName } from '../utils/validation.js';
 
 /**
  * Runs the full patch lint pipeline and reports results.
@@ -130,8 +131,11 @@ export async function runPatchLint(
 export async function promptExportPatchMetadata(
   options: ExportOptions,
   isInteractive: boolean,
-  commandName: 'export' | 'export-all'
+  commandName: 'export' | 'export-all',
+  config?: FireForgeConfig
 ): Promise<{ patchName: string; selectedCategory: PatchCategory; description: string } | null> {
+  const categories =
+    config !== undefined ? getPatchPolicyCategories(config) : [...PATCH_CATEGORIES];
   let patchName = options.name;
 
   if (patchName) {
@@ -144,7 +148,7 @@ export async function promptExportPatchMetadata(
   if (!patchName && !isInteractive) {
     throw new InvalidArgumentError(
       'The --name flag is required in non-interactive mode',
-      `Use: fireforge ${commandName} ${commandName === 'export' ? '<paths...> ' : ''}--name "my-patch-name" --category ui`
+      `Use: fireforge ${commandName} ${commandName === 'export' ? '<paths...> ' : ''}--name "my-patch-name" --category ${categories[0] ?? 'ui'}`
     );
   }
 
@@ -165,27 +169,25 @@ export async function promptExportPatchMetadata(
 
   let category = options.category;
   if (category) {
-    if (!isValidPatchCategory(category)) {
+    const isAllowed =
+      config !== undefined
+        ? isCategoryAllowedByConfig(config, category)
+        : (PATCH_CATEGORIES as readonly string[]).includes(category);
+    if (!isAllowed) {
       throw new InvalidArgumentError(
-        `Invalid category. Must be one of: ${PATCH_CATEGORIES.join(', ')}`,
+        `Invalid category. Must be one of: ${categories.join(', ')}`,
         '--category'
       );
     }
   } else if (!isInteractive) {
     throw new InvalidArgumentError(
       'The --category flag is required in non-interactive mode',
-      `Use: fireforge ${commandName} ${commandName === 'export' ? '<paths...> ' : ''}--name "name" --category <${PATCH_CATEGORIES.join('|')}>`
+      `Use: fireforge ${commandName} ${commandName === 'export' ? '<paths...> ' : ''}--name "name" --category <${categories.join('|')}>`
     );
   } else {
     const categoryResult = await select({
       message: 'Select a category for this patch:',
-      options: [
-        { value: 'branding', label: 'branding - Logo, icons, names, about pages' },
-        { value: 'ui', label: 'ui - User interface changes' },
-        { value: 'privacy', label: 'privacy - Telemetry, tracking, data collection' },
-        { value: 'security', label: 'security - Security hardening, policies' },
-        { value: 'infra', label: 'infra - Build system, tooling, CI, configuration' },
-      ],
+      options: categories.map((value) => ({ value, label: value })),
     });
 
     if (isCancel(categoryResult)) {

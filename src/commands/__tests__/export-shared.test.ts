@@ -166,7 +166,7 @@ describe('promptExportPatchMetadata', () => {
 
   it('throws on invalid category from CLI', async () => {
     await expect(
-      promptExportPatchMetadata({ name: 'my-patch', category: 'invalid' as 'ui' }, false, 'export')
+      promptExportPatchMetadata({ name: 'my-patch', category: 'invalid' }, false, 'export')
     ).rejects.toThrow(InvalidArgumentError);
   });
 

@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`CLI help output > documents kebab-case setup flags and choice-limited categories 1`] = `
+exports[`CLI help output > documents kebab-case setup flags and configurable categories 1`] = `
 "Usage: fireforge [options] [command]
 
 A build tool for customizing Firefox

@@ -18,12 +18,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GeneralError } from '../../errors/base.js';
 import {
   createTempProject,
+  initCommittedRepo,
   removeTempProject,
   setInteractiveMode,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { ensureDir } from '../../utils/fs.js';
+import { lintCommand } from '../lint.js';
 import { verifyCommand } from '../verify.js';
 
 async function seedManifestAndPatches(
@@ -156,6 +158,47 @@ describe('verify command', () => {
     await writeFile(join(patchesDir, 'patches.json'), JSON.stringify(manifest));
 
     await expect(verifyCommand(projectRoot)).rejects.toBeInstanceOf(GeneralError);
+  });
+
+  it('fails on a structurally valid queue that violates patchPolicy', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        ranges: [{ from: 200, to: 299, category: 'ui' }],
+        reservedRanges: [{ from: 900, to: 999, allowed: [] }],
+      },
+    });
+    const diff = createDiff('foo/Late.sys.mjs', 'export const Late = 1;');
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: makeMetadata('900-ui-late-product.patch', 900, ['foo/Late.sys.mjs']),
+        body: diff,
+      },
+    ]);
+
+    await expect(verifyCommand(projectRoot)).rejects.toBeInstanceOf(GeneralError);
+  });
+
+  it('reports patchPolicy violations in lint --per-patch', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        ranges: [{ from: 200, to: 299, category: 'ui' }],
+        reservedRanges: [{ from: 900, to: 999, allowed: [] }],
+      },
+    });
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      'foo/Late.sys.mjs': 'export const Late = 1;\n',
+    });
+    const diff = createDiff('foo/Late.sys.mjs', 'export const Late = 1;');
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: makeMetadata('900-ui-late-product.patch', 900, ['foo/Late.sys.mjs']),
+        body: diff,
+      },
+    ]);
+
+    await expect(lintCommand(projectRoot, [], { perPatch: true })).rejects.toBeInstanceOf(
+      GeneralError
+    );
   });
 
   // 2026-04-24 eval Finding 1: `export-all --exclude-furnace` landed a

@@ -107,6 +107,47 @@ patches/
 
 The category system is intentionally broad. The numeric ordering provides sequencing.
 
+Projects that need stricter queue semantics can add an optional `patchPolicy` block to
+`fireforge.json`. When present, FireForge checks the policy before mutating the patch queue and
+reports the same policy findings from `fireforge verify` and `fireforge lint --per-patch`.
+
+```json
+{
+  "patchPolicy": {
+    "filenamePattern": "^(?<order>\\d{3})-(?<category>branding|infra|ui)-(?<slug>[a-z0-9-]+)\\.patch$",
+    "requireDescription": true,
+    "allowGaps": true,
+    "mutationMode": "error",
+    "ranges": [
+      { "from": 1, "to": 99, "category": "branding" },
+      { "from": 100, "to": 199, "category": "infra" },
+      { "from": 200, "to": 299, "category": "ui" }
+    ],
+    "reservedRanges": [
+      {
+        "from": 900,
+        "to": 999,
+        "allowed": [
+          {
+            "filename": "900-infra-bootstrap-workaround.patch",
+            "files": ["tools/profiler/rust-api/build.rs"],
+            "adr": "docs/architecture/adr/0001-bootstrap-workaround.md"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Policy ranges are category-owned: a `ui` patch in the example must use `200-299`, while
+`900-999` is reserved for exact allowlisted exceptions. Reserved exceptions must include either
+`adr` or `documentation`; when `files` is present, the patch may not touch paths outside that
+allowlist. `filenamePattern` must expose named captures `order`, `category`, and `slug`.
+`mutationMode` controls mutating commands: `"error"` refuses, `"warn"` prints warnings and
+continues, and `"force"` refuses unless the command supports and receives `--force-unsafe`.
+Without `patchPolicy`, existing repositories keep the broad category and numeric ordering behavior.
+
 ### Importing patches
 
 ```bash

@@ -117,6 +117,43 @@ describe('patch rename', () => {
     expect(manifest.patches[0]?.description).toBe('new description');
   });
 
+  it('rejects empty descriptions when patchPolicy requires descriptions', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        requireDescription: true,
+        ranges: [{ from: 1, to: 99, category: 'ui' }],
+      },
+    });
+    await seed(patchesDir, [makeMetadata('044-ui-foo.patch', 44, ['a.js'], { category: 'ui' })]);
+
+    await expect(
+      patchRenameCommand(projectRoot, '044-ui-foo.patch', { to: 'bar', yes: true })
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+
+    expect(await fileExists(join(patchesDir, '044-ui-foo.patch'))).toBe(true);
+    expect(await fileExists(join(patchesDir, '044-ui-bar.patch'))).toBe(false);
+  });
+
+  it('accepts a supplied non-empty description when policy requires one', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        requireDescription: true,
+        ranges: [{ from: 1, to: 99, category: 'ui' }],
+      },
+    });
+    await seed(patchesDir, [makeMetadata('044-ui-foo.patch', 44, ['a.js'], { category: 'ui' })]);
+
+    await patchRenameCommand(projectRoot, '044-ui-foo.patch', {
+      to: 'bar',
+      description: 'documented rename',
+      yes: true,
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.filename).toBe('044-ui-bar.patch');
+    expect(manifest.patches[0]?.description).toBe('documented rename');
+  });
+
   it('leaves description unchanged when --description is omitted', async () => {
     await seed(patchesDir, [
       makeMetadata('0044-ui-foo.patch', 44, ['a.js'], { description: 'keep me' }),

@@ -11,7 +11,7 @@
 
 import { Command, Option } from 'commander';
 
-import { getProjectPaths } from '../../core/config.js';
+import { getProjectPaths, loadConfig } from '../../core/config.js';
 import {
   appendHistory,
   confirmDestructive,
@@ -32,6 +32,7 @@ import {
   renumberPatchesInManifest,
   resolvePatchIdentifier,
 } from '../../core/patch-manifest.js';
+import { applyRenameMapToManifest, enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchReorderOptions } from '../../types/commands/index.js';
@@ -247,6 +248,7 @@ async function commitReorderPlan(
   renameMap: Map<string, PatchRenameEntry>,
   anchorFilename: string | undefined,
   options: PatchReorderOptions,
+  config: Awaited<ReturnType<typeof loadConfig>>,
   buildHistoryEntry: (finalRenameMap: Map<string, PatchRenameEntry>) => HistoryEntry
 ): Promise<void> {
   await withPatchDirectoryLock(patchesDir, async () => {
@@ -293,6 +295,13 @@ async function commitReorderPlan(
         'Patch queue changed while waiting for confirmation. Re-run reorder to recompute the rename plan.'
       );
     }
+
+    enforcePatchPolicy({
+      config,
+      manifest: applyRenameMapToManifest(currentManifest, currentRenameMap),
+      command: 'patch reorder',
+      forceUnsafe: options.forceUnsafe === true,
+    });
 
     const currentProjected = projectReorder(
       await buildPatchQueueContext(patchesDir),
@@ -362,6 +371,7 @@ export async function patchReorderCommand(
   }
 
   const paths = getProjectPaths(projectRoot);
+  const config = await loadConfig(projectRoot);
   if (!(await pathExists(paths.patches))) {
     throw new GeneralError('Patches directory not found.');
   }
@@ -398,6 +408,12 @@ export async function patchReorderCommand(
   const projected = projectReorder(baseCtx, renameMap);
   const projectedIssues = lintPatchQueue(projected);
   const errorIssues = projectedIssues.filter((i) => i.severity === 'error');
+  enforcePatchPolicy({
+    config,
+    manifest: applyRenameMapToManifest(manifest, renameMap),
+    command: 'patch reorder',
+    forceUnsafe: options.forceUnsafe === true,
+  });
 
   const conflicts: ConflictReport | null =
     errorIssues.length > 0
@@ -470,6 +486,7 @@ export async function patchReorderCommand(
     renameMap,
     anchorFilename,
     options,
+    config,
     buildHistoryEntry
   );
 

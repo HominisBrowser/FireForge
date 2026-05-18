@@ -14,6 +14,8 @@ import {
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../core/patch-lint.js';
+import { loadPatchesManifest } from '../core/patch-manifest.js';
+import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
 import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { PatchMetadata, ReExportOptions } from '../types/commands/index.js';
@@ -230,6 +232,26 @@ export async function reExportFilesInPlace(
   );
 
   const conflicts = await runProjectedCrossPatchLint(paths.patches, target.filename, projectedDiff);
+  const filesUpdates = buildFilesModeMetadataUpdates(
+    actualProjectedFiles,
+    options,
+    effectiveLintIgnore,
+    flagIgnoreSet
+  );
+  const manifest = await loadPatchesManifest(paths.patches);
+  if (manifest) {
+    enforcePatchPolicy({
+      config,
+      manifest: buildProjectedManifest(
+        manifest,
+        manifest.patches.map((entry) =>
+          entry.filename === target.filename ? { ...entry, ...filesUpdates } : entry
+        )
+      ),
+      command: 're-export --files',
+      forceUnsafe: options.forceUnsafe === true,
+    });
+  }
 
   // Shrinks are destructive (previously-owned files become unmanaged).
   // Additive-only changes still deserve a prompt because --files asserts
@@ -276,12 +298,6 @@ export async function reExportFilesInPlace(
   // directory lock as the mutation (via the onCommitted hook) so two
   // concurrent re-exports cannot interleave records and a crash between
   // mutation and append cannot orphan the audit trail.
-  const filesUpdates = buildFilesModeMetadataUpdates(
-    actualProjectedFiles,
-    options,
-    effectiveLintIgnore,
-    flagIgnoreSet
-  );
   await updatePatchAndMetadata(
     paths.patches,
     target.filename,
@@ -300,6 +316,11 @@ export async function reExportFilesInPlace(
         ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
         result: 'ok',
       });
+    },
+    {
+      config,
+      command: 're-export --files',
+      forceUnsafe: options.forceUnsafe === true,
     }
   );
 

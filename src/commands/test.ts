@@ -277,12 +277,14 @@ export async function testCommand(
   // here so `test --doctor` against an incomplete build surfaces the
   // missing-bundle path instead of a cryptic `Browser process exited
   // during spawn (exit code 1, signal none). stderr tail: (empty)`.
+  let launchablePath: string | undefined;
   if (buildCheck.objDir) {
     const bundleCheck = await hasRunnableBundle(
       paths.engine,
       projectConfig.binaryName,
       buildCheck.objDir
     );
+    launchablePath = bundleCheck.expectedPath;
     if (!bundleCheck.runnable) {
       const expectedSuffix = bundleCheck.expectedPath
         ? ` (expected at engine/${bundleCheck.expectedPath})`
@@ -373,6 +375,9 @@ export async function testCommand(
     // (`info`/`warn`) is retained so TTY users keep the visual framing.
     const directLine = formatMarionettePreflightLine(preflight);
     process.stdout.write(`${directLine}\n`);
+    process.stdout.write(
+      `Marionette preflight environment: objdir=${buildCheck.objDir ?? '(none)'}; binary=${projectConfig.binaryName}; app=${launchablePath ? `engine/${launchablePath}` : '(unknown)'}; port=${effectivePort ?? 2828}; elapsed=${preflight.durationMs}ms\n`
+    );
     reportMarionettePreflight(preflight);
     if (testPaths.length === 0) {
       if (!preflight.ok) {

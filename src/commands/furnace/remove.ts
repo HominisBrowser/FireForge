@@ -648,6 +648,9 @@ export async function furnaceRemoveCommand(
         freshConfig.overrides = Object.fromEntries(
           Object.entries(freshConfig.overrides).filter(([key]) => key !== name)
         );
+        if (!freshConfig.stock.includes(name)) {
+          freshConfig.stock.push(name);
+        }
       } else {
         freshConfig.custom = Object.fromEntries(
           Object.entries(freshConfig.custom).filter(([key]) => key !== name)

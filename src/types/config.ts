@@ -29,6 +29,60 @@ export interface BuildConfig {
   jobs?: number;
 }
 
+/** Enforcement mode for patch policy violations during mutating commands. */
+export type PatchPolicyMutationMode = 'error' | 'warn' | 'force';
+
+/** A category-owned numeric range in the patch queue. */
+export interface PatchPolicyRange {
+  /** Inclusive lower bound. */
+  from: number;
+  /** Inclusive upper bound. */
+  to: number;
+  /** Category that owns this range. */
+  category: string;
+}
+
+/** A single allowlisted reserved-range patch exception. */
+export interface PatchPolicyReservedAllowedPatch {
+  /** Exact patch filename allowed in the reserved range. */
+  filename: string;
+  /** Optional exact filesAffected allowlist for this reserved patch. */
+  files?: string[];
+  /** Project-relative ADR path documenting the exception. */
+  adr?: string;
+  /** Project-relative documentation path documenting the exception. */
+  documentation?: string;
+}
+
+/** Reserved numeric range for exceptional patches. */
+export interface PatchPolicyReservedRange {
+  /** Inclusive lower bound. */
+  from: number;
+  /** Inclusive upper bound. */
+  to: number;
+  /** Exact patch exceptions allowed in this reserved range. */
+  allowed: PatchPolicyReservedAllowedPatch[];
+}
+
+/**
+ * Optional project-specific patch queue policy. When absent, FireForge keeps
+ * its historical broad category + numeric ordering behaviour.
+ */
+export interface PatchPolicyConfig {
+  /** Regex with named captures: order, category, slug. */
+  filenamePattern?: string;
+  /** Require non-empty patch descriptions. Default false. */
+  requireDescription?: boolean;
+  /** Allow numeric gaps within configured category ranges. Default true. */
+  allowGaps?: boolean;
+  /** How mutating commands handle policy violations. Default "error". */
+  mutationMode?: PatchPolicyMutationMode;
+  /** Category-owned numeric ranges. */
+  ranges: PatchPolicyRange[];
+  /** Reserved exception ranges. */
+  reservedRanges?: PatchPolicyReservedRange[];
+}
+
 /**
  * Main fireforge.json configuration schema.
  */
@@ -51,6 +105,8 @@ export interface FireForgeConfig {
   wire?: WireConfig;
   /** Patch lint configuration */
   patchLint?: PatchLintConfig;
+  /** Optional project-specific patch queue policy. */
+  patchPolicy?: PatchPolicyConfig;
   /** Typecheck command configuration (CI-grade, whole-project) */
   typecheck?: TypecheckConfig;
   /**

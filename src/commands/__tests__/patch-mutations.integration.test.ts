@@ -417,6 +417,106 @@ describe('patch reorder', () => {
     }
   });
 
+  it('rejects reordering a non-allowlisted patch into a reserved policy range', async () => {
+    restoreTTY = setInteractiveMode(false);
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        ranges: [
+          { from: 100, to: 199, category: 'infra' },
+          { from: 200, to: 299, category: 'ui' },
+        ],
+        reservedRanges: [
+          {
+            from: 900,
+            to: 999,
+            allowed: [
+              {
+                filename: '901-infra-bootstrap-peer.patch',
+                adr: 'docs/architecture/adr/0001-bootstrap-peer.md',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await seed(patchesDir, [
+      {
+        metadata: {
+          ...makeMetadata('900-infra-bootstrap-peer.patch', 900, ['tools/build.rs']),
+          description: 'bootstrap peer',
+        },
+        body: createDiff('tools/build.rs', 'export const bootstrap = 1;'),
+      },
+      {
+        metadata: {
+          ...makeMetadata('950-ui-late-product.patch', 950, ['browser/base/content/product.js']),
+          category: 'ui',
+          description: 'late product',
+        },
+        body: createDiff('browser/base/content/product.js', 'export const product = 1;'),
+      },
+    ]);
+
+    await expect(
+      patchReorderCommand(projectRoot, '950-ui-late-product.patch', { to: 900, yes: true })
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+  });
+
+  it('allows an allowlisted bootstrap exception to reorder into a reserved policy range', async () => {
+    restoreTTY = setInteractiveMode(false);
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        ranges: [
+          { from: 100, to: 199, category: 'infra' },
+          { from: 200, to: 299, category: 'ui' },
+        ],
+        reservedRanges: [
+          {
+            from: 900,
+            to: 999,
+            allowed: [
+              {
+                filename: '900-infra-bootstrap-workaround.patch',
+                adr: 'docs/architecture/adr/0001-bootstrap-workaround.md',
+              },
+              {
+                filename: '901-infra-bootstrap-peer.patch',
+                adr: 'docs/architecture/adr/0002-bootstrap-peer.md',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await seed(patchesDir, [
+      {
+        metadata: {
+          ...makeMetadata('900-infra-bootstrap-peer.patch', 900, ['tools/peer.rs']),
+          description: 'bootstrap peer',
+        },
+        body: createDiff('tools/peer.rs', 'export const peer = 1;'),
+      },
+      {
+        metadata: {
+          ...makeMetadata('950-infra-bootstrap-workaround.patch', 950, ['tools/build.rs']),
+          description: 'bootstrap workaround',
+        },
+        body: createDiff('tools/build.rs', 'export const bootstrap = 1;'),
+      },
+    ]);
+
+    await patchReorderCommand(projectRoot, '950-infra-bootstrap-workaround.patch', {
+      to: 900,
+      yes: true,
+    });
+
+    const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
+    expect(entries).toEqual([
+      '900-infra-bootstrap-workaround.patch',
+      '901-infra-bootstrap-peer.patch',
+    ]);
+  });
+
   it('--dry-run does not mutate anything', async () => {
     restoreTTY = setInteractiveMode(false);
     await seed(patchesDir, [

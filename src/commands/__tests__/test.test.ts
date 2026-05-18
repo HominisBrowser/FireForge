@@ -321,6 +321,11 @@ describe('testCommand', () => {
       detail: 'handshake',
     });
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: false,
+    });
 
     try {
       await expect(testCommand('/project', [], { doctor: true })).resolves.toBeUndefined();
@@ -344,8 +349,20 @@ describe('testCommand', () => {
       expect(rawWrites.some((chunk) => /Marionette preflight: PASS \(200ms\)/.test(chunk))).toBe(
         true
       );
+      expect(
+        rawWrites.some((chunk) =>
+          /Marionette preflight environment: objdir=obj-debug; binary=mybrowser; app=engine\/obj-debug\/dist\/bin\/firefox; port=2828; elapsed=200ms/.test(
+            chunk
+          )
+        )
+      ).toBe(true);
     } finally {
       writeSpy.mockRestore();
+      if (ttyDescriptor) {
+        Object.defineProperty(process.stdout, 'isTTY', ttyDescriptor);
+      } else {
+        Reflect.deleteProperty(process.stdout, 'isTTY');
+      }
     }
   });
 

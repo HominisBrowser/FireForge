@@ -13,6 +13,7 @@ vi.mock('../../core/mach.js', () => ({
   build: vi.fn(),
   buildUI: vi.fn(),
   hasBuildArtifacts: vi.fn(),
+  hasRunnableBundle: vi.fn(),
   buildArtifactMismatchMessage: vi.fn(),
   attemptMozinfoRewrite: vi.fn(),
   runMach: vi.fn(),
@@ -70,6 +71,7 @@ import {
   buildArtifactMismatchMessage,
   buildUI,
   hasBuildArtifacts,
+  hasRunnableBundle,
   runMach,
 } from '../../core/mach.js';
 import { pathExists } from '../../utils/fs.js';
@@ -98,6 +100,10 @@ describe('buildCommand', () => {
     } as never);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
+    vi.mocked(hasRunnableBundle).mockResolvedValue({
+      runnable: true,
+      expectedPath: 'obj-debug/dist/bin/mybrowser',
+    });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
     vi.mocked(prepareBuildEnvironment).mockResolvedValue({
       furnaceApplied: 0,
@@ -208,6 +214,21 @@ describe('buildCommand', () => {
     expect(verbose).toHaveBeenCalledWith('Building with brand: beta');
     expect(info).toHaveBeenCalledWith('Brand: beta');
     expect(outro).toHaveBeenCalledWith(expect.stringContaining('Build completed in'));
+  });
+
+  it('refuses UI-only builds when the launchable bundle is missing', async () => {
+    vi.mocked(hasRunnableBundle).mockResolvedValue({
+      runnable: false,
+      expectedPath: 'obj-debug/dist/bin/mybrowser',
+    });
+
+    await expect(buildCommand('/project', { ui: true })).rejects.toThrow(
+      /UI-only builds require a completed full build first/
+    );
+
+    expect(prepareBuildEnvironment).not.toHaveBeenCalled();
+    expect(buildUI).not.toHaveBeenCalled();
+    expect(build).not.toHaveBeenCalled();
   });
 
   it('uses build.jobs from config when the CLI does not override it', async () => {
@@ -381,6 +402,10 @@ describe('registerBuild', () => {
     } as never);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
+    vi.mocked(hasRunnableBundle).mockResolvedValue({
+      runnable: true,
+      expectedPath: 'obj-debug/dist/bin/mybrowser',
+    });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
     vi.mocked(prepareBuildEnvironment).mockResolvedValue({
       furnaceApplied: 0,

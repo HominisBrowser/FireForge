@@ -13,6 +13,7 @@ import {
   buildArtifactMismatchMessage,
   buildUI,
   hasBuildArtifacts,
+  hasRunnableBundle,
   runMach,
   withBuildLock,
 } from '../core/mach.js';
@@ -143,6 +144,28 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
       await rewriteAndReconfigure(paths.engine, buildCheck.objDir, mismatchMessage);
     } else {
       throw new GeneralError(mismatchMessage);
+    }
+  }
+  if (options.ui) {
+    if (!buildCheck.exists || !buildCheck.objDir) {
+      const detail = buildCheck.objDir
+        ? `Build artifacts incomplete in ${buildCheck.objDir}/`
+        : 'No completed obj-* build artifacts found.';
+      throw new GeneralError(
+        `UI-only builds require a completed full build first. ${detail}\n\n` +
+          'Run "fireforge build" and let it finish, then retry "fireforge build --ui".'
+      );
+    }
+    const bundleCheck = await hasRunnableBundle(paths.engine, config.binaryName, buildCheck.objDir);
+    if (!bundleCheck.runnable) {
+      const expectedSuffix = bundleCheck.expectedPath
+        ? ` Expected launchable binary at engine/${bundleCheck.expectedPath}.`
+        : '';
+      throw new GeneralError(
+        `UI-only builds require a completed full build first.${expectedSuffix}\n\n` +
+          'Freshly imported or partially built trees cannot use `mach build faster` yet. ' +
+          'Run "fireforge build" and let it finish, then retry "fireforge build --ui".'
+      );
     }
   }
 

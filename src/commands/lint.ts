@@ -25,6 +25,7 @@ import {
 } from '../core/patch-lint.js';
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
+import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
@@ -543,6 +544,14 @@ async function lintPerPatch(
   const ctx = await buildPatchQueueContext(paths.patches);
 
   const issues: PatchLintIssue[] = [];
+  for (const issue of evaluatePatchPolicy(config, manifest)) {
+    issues.push({
+      file: issue.filename,
+      check: `patch-policy/${issue.code}`,
+      message: issue.message,
+      severity: issue.severity,
+    });
+  }
   let linted = 0;
   let skipped = 0;
   for (const patch of manifest.patches) {

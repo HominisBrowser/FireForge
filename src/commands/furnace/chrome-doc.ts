@@ -69,6 +69,8 @@ export interface FurnaceChromeDocCreateOptions {
    * because the owning moz.build depends on the fork's layout.
    */
   withTests?: boolean;
+  /** Print the scaffold plan without writing files. */
+  dryRun?: boolean;
 }
 
 /** Chrome-doc name shape: lowercase ASCII, optional hyphens, no leading digit. */
@@ -82,7 +84,7 @@ const CHROME_DOC_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
  * @param name Chrome-doc name (file basename without extension).
  * @throws InvalidArgumentError when the name is unusable.
  */
-function validateChromeDocName(name: string): void {
+export function validateChromeDocName(name: string): void {
   if (!name.trim()) {
     throw new InvalidArgumentError('Chrome-doc name is required', 'name');
   }
@@ -92,6 +94,141 @@ function validateChromeDocName(name: string): void {
       'name'
     );
   }
+}
+
+export interface ChromeDocPlan {
+  files: string[];
+  dirs: string[];
+  jarEntries: Array<{ file: string; entry: string; present: boolean }>;
+  localeWildcardCapturesFtl: boolean;
+  testDir?: string;
+  testFiles: string[];
+}
+
+/** Builds the shared create/remove plan for a top-level chrome document. */
+export async function buildChromeDocPlan(args: {
+  engineDir: string;
+  name: string;
+  withTests: boolean;
+  binaryName: string;
+  validateCreateConflicts?: boolean;
+  includeLocaleEntryWhenWildcard?: boolean;
+}): Promise<ChromeDocPlan> {
+  const contentDir = join(args.engineDir, 'browser/base/content');
+  const sharedThemeDir = join(args.engineDir, 'browser/themes/shared');
+  const localeDir = join(args.engineDir, 'browser/locales/en-US/browser');
+  const dirs = [contentDir, sharedThemeDir, localeDir];
+
+  const xhtmlPath = join(contentDir, `${args.name}.xhtml`);
+  if (args.validateCreateConflicts && (await pathExists(xhtmlPath))) {
+    throw new FurnaceError(
+      `${args.name}.xhtml already exists at ${xhtmlPath}. Remove it or choose a different name.`
+    );
+  }
+
+  const jarMnPath = join(args.engineDir, 'browser/base/jar.mn');
+  const jarIncMnPath = join(args.engineDir, 'browser/themes/shared/jar.inc.mn');
+  const localeJarMnPath = join(args.engineDir, 'browser/locales/jar.mn');
+  for (const requiredJarPath of [jarMnPath, jarIncMnPath, localeJarMnPath]) {
+    if (!(await pathExists(requiredJarPath))) {
+      throw new FurnaceError(
+        `Required jar file ${requiredJarPath} does not exist; cannot register chrome-doc entry. Check that the fork's engine layout matches the expected browser/ and locales/ tree.`
+      );
+    }
+  }
+
+  const [jarMn, jarIncMn, localeJarMn] = await Promise.all([
+    readText(jarMnPath),
+    readText(jarIncMnPath),
+    readText(localeJarMnPath),
+  ]);
+  const localeWildcardCapturesFtl = localesFtlWildcardCapturesScaffoldedName(localeJarMn);
+
+  const jarEntries: ChromeDocPlan['jarEntries'] = [];
+  for (const entry of jarMnEntriesForChromeDoc(args.name)) {
+    jarEntries.push({
+      file: 'browser/base/jar.mn',
+      entry,
+      present: jarMn.includes(entry),
+    });
+  }
+  const cssEntry = jarIncMnEntryForChromeDoc(args.name);
+  jarEntries.push({
+    file: 'browser/themes/shared/jar.inc.mn',
+    entry: cssEntry,
+    present: jarIncMn.includes(cssEntry),
+  });
+  if (!localeWildcardCapturesFtl || args.includeLocaleEntryWhenWildcard) {
+    const ftlEntry = localeJarMnEntryForChromeDoc(args.name);
+    jarEntries.push({
+      file: 'browser/locales/jar.mn',
+      entry: ftlEntry,
+      present: localeJarMn.includes(ftlEntry),
+    });
+  }
+
+  const files = [
+    `browser/base/content/${args.name}.xhtml`,
+    `browser/base/content/${args.name}.js`,
+    `browser/themes/shared/${args.name}-chrome.css`,
+    `browser/locales/en-US/browser/${args.name}.ftl`,
+  ];
+  const testFiles: string[] = [];
+  let testDir: string | undefined;
+  if (args.withTests) {
+    const testParentDir = `${args.binaryName}-xpcshell`;
+    testDir = `browser/base/content/test/${testParentDir}/${args.name}`;
+    testFiles.push(
+      `${testDir}/${chromeDocPackagingTestFileName(args.name)}`,
+      `${testDir}/xpcshell.toml`
+    );
+  }
+
+  return {
+    files,
+    dirs,
+    jarEntries,
+    localeWildcardCapturesFtl,
+    ...(testDir ? { testDir } : {}),
+    testFiles,
+  };
+}
+
+function renderChromeDocCreateDryRun(name: string, plan: ChromeDocPlan): string {
+  const dirLines = plan.dirs.map((dir) => `  ${dir}`);
+  const jarLines = plan.jarEntries.map(
+    ({ file, entry, present }) =>
+      `  engine/${file}: ${present ? 'already present' : 'would add'} ${entry.trim()}`
+  );
+  const localeLine = plan.localeWildcardCapturesFtl
+    ? [
+        '',
+        'Locale jar.mn already has a [localization] wildcard that captures the FTL;',
+        'no per-file locale entry would be added.',
+      ]
+    : [];
+  const testLines =
+    plan.testFiles.length > 0
+      ? [
+          '',
+          'Would create xpcshell packaging test files:',
+          ...plan.testFiles.map((f) => `  engine/${f}`),
+        ]
+      : [];
+  return [
+    `[dry-run] Chrome document "${name}" scaffold plan`,
+    '',
+    'Directories checked/created as needed:',
+    ...dirLines,
+    '',
+    'Would create source files:',
+    ...plan.files.map((f) => `  engine/${f}`),
+    ...testLines,
+    '',
+    'Jar registrations:',
+    ...jarLines,
+    ...localeLine,
+  ].join('\n');
 }
 
 /**
@@ -292,6 +429,19 @@ export async function furnaceChromeDocCreateCommand(
 
   const withTitlebar = options.titlebar ?? true;
   const withTests = options.withTests ?? false;
+  const plan = await buildChromeDocPlan({
+    engineDir,
+    name,
+    withTests,
+    binaryName: forgeConfig.binaryName,
+    validateCreateConflicts: true,
+  });
+
+  if (options.dryRun) {
+    note(renderChromeDocCreateDryRun(name, plan), name);
+    outro('Dry run complete');
+    return;
+  }
 
   const written = await runFurnaceMutation(projectRoot, 'chrome-doc-rollback', (ctx) =>
     performChromeDocMutations({

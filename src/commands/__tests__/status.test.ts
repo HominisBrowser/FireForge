@@ -954,7 +954,7 @@ describe('statusCommand', () => {
   });
 
   describe('clean-tree output shape (Finding #3)', () => {
-    it('emits [] via stdout when --json is set and the tree is clean', async () => {
+    it('emits the documented JSON object via stdout when --json is set and the tree is clean', async () => {
       // Regression guard for the clean-tree `--json` branch. Pre-0.16.0
       // the empty-files early-return ran before the `--json` check and
       // printed "No modified files" / "Working tree clean" human text,
@@ -977,7 +977,14 @@ describe('statusCommand', () => {
       }
 
       const combined = writes.join('');
-      expect(combined.trim()).toBe('[]');
+      const payload = JSON.parse(combined) as {
+        schemaVersion: number;
+        summary: { total: number };
+        files: unknown[];
+      };
+      expect(payload.schemaVersion).toBe(1);
+      expect(payload.summary.total).toBe(0);
+      expect(payload.files).toEqual([]);
       // Human banner must NOT fire in json mode on a clean tree.
       expect(infoMessages()).not.toContain('No modified files');
     });
@@ -1058,15 +1065,22 @@ describe('statusCommand', () => {
         stdoutSpy.mockRestore();
       }
 
-      const payload = JSON.parse(writes.join('')) as Array<{
-        file: string;
-        classification: string;
-        claimedBy?: string[];
-      }>;
-      expect(payload).toHaveLength(1);
-      expect(payload[0]?.file).toBe('browser/base/jar.mn');
-      expect(payload[0]?.classification).toBe('conflict');
-      expect(payload[0]?.claimedBy).toEqual([
+      const payload = JSON.parse(writes.join('')) as {
+        schemaVersion: number;
+        summary: { total: number; byClassification: Record<string, number> };
+        files: Array<{
+          file: string;
+          classification: string;
+          claimedBy?: string[];
+        }>;
+      };
+      expect(payload.schemaVersion).toBe(1);
+      expect(payload.summary.total).toBe(1);
+      expect(payload.summary.byClassification['conflict']).toBe(1);
+      expect(payload.files).toHaveLength(1);
+      expect(payload.files[0]?.file).toBe('browser/base/jar.mn');
+      expect(payload.files[0]?.classification).toBe('conflict');
+      expect(payload.files[0]?.claimedBy).toEqual([
         '002-ui-workbench-chrome-doc.patch',
         '003-ui-browser-wire-eval-hook.patch',
       ]);
@@ -1112,14 +1126,21 @@ describe('statusCommand', () => {
         stdoutSpy.mockRestore();
       }
 
-      const payload = JSON.parse(writes.join('')) as Array<{
-        file: string;
-        classification: string;
-        claimedBy?: string[];
-      }>;
-      expect(payload).toHaveLength(1);
-      expect(payload[0]?.classification).toBe('patch-backed');
-      expect(payload[0]).not.toHaveProperty('claimedBy');
+      const payload = JSON.parse(writes.join('')) as {
+        schemaVersion: number;
+        summary: { total: number; byClassification: Record<string, number> };
+        files: Array<{
+          file: string;
+          classification: string;
+          claimedBy?: string[];
+        }>;
+      };
+      expect(payload.schemaVersion).toBe(1);
+      expect(payload.summary.total).toBe(1);
+      expect(payload.summary.byClassification['patch-backed']).toBe(1);
+      expect(payload.files).toHaveLength(1);
+      expect(payload.files[0]?.classification).toBe('patch-backed');
+      expect(payload.files[0]).not.toHaveProperty('claimedBy');
     });
   });
 
@@ -1166,7 +1187,12 @@ describe('statusCommand', () => {
       const lines = combined.trim().split('\n');
       expect(lines).toHaveLength(1);
       const firstLine = lines[0] ?? '';
-      const parsed = JSON.parse(firstLine) as { error: string; code: string };
+      const parsed = JSON.parse(firstLine) as {
+        schemaVersion: number;
+        error: string;
+        code: string;
+      };
+      expect(parsed.schemaVersion).toBe(1);
       expect(parsed.code).toBe('engine-missing');
       expect(parsed.error).toMatch(/Firefox source not found/);
       // Human banner must not appear on stdout.

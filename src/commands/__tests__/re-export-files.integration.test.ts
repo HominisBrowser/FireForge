@@ -414,6 +414,50 @@ describe('re-export --files integration', () => {
     ).rejects.toThrow();
   });
 
+  it('rejects reserved exceptions when projected files exceed the policy allowlist', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        ranges: [{ from: 100, to: 199, category: 'infra' }],
+        reservedRanges: [
+          {
+            from: 900,
+            to: 999,
+            allowed: [
+              {
+                filename: '900-infra-bootstrap-workaround.patch',
+                files: ['browser/base/content/browser.js'],
+                adr: 'docs/architecture/adr/0001-bootstrap-workaround.md',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await seedManifest(patchesDir, [
+      {
+        metadata: {
+          ...makeMetadata('900-infra-bootstrap-workaround.patch', 900, [
+            'browser/base/content/browser.js',
+          ]),
+          description: 'bootstrap workaround',
+        },
+        body: '',
+      },
+    ]);
+    await writeFile(join(engineDir, 'browser/base/content/browser.js'), 'modified;\n');
+    await writeFile(
+      join(engineDir, 'browser/base/content/browser.css'),
+      '.root { color: blue; }\n'
+    );
+
+    await expect(
+      reExportCommand(projectRoot, ['900-infra-bootstrap-workaround.patch'], {
+        files: ['browser/base/content/browser.js', 'browser/base/content/browser.css'],
+        yes: true,
+      })
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+  });
+
   // Keep git happy across test reordering.
   afterEach(async () => {
     try {

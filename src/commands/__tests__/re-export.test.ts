@@ -226,7 +226,9 @@ describe('reExportCommand - --scan flag', () => {
           'browser/modules/foo/a.js',
           'browser/modules/foo/b.js',
         ]) as string[],
-      })
+      }),
+      undefined,
+      expect.objectContaining({ command: 're-export' })
     );
   });
 
@@ -577,7 +579,9 @@ describe('reExportCommand - --scan flag', () => {
       '/fake/patches',
       '002-ui-second.patch',
       expect.any(String),
-      expect.any(Object)
+      expect.any(Object),
+      undefined,
+      expect.objectContaining({ command: 're-export' })
     );
     expect(success).toHaveBeenCalledWith('Re-exported 1 of 2 patch(es)');
   });

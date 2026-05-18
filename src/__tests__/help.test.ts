@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createProgram } from '../cli.js';
 
 describe('CLI help output', () => {
-  it('documents kebab-case setup flags and choice-limited categories', () => {
+  it('documents kebab-case setup flags and configurable categories', () => {
     const program = createProgram();
     const rootHelp = program.helpInformation();
     const setupHelp = program.commands
@@ -22,7 +22,7 @@ describe('CLI help output', () => {
     expect(setupHelp).toContain('"firefox-esr"');
     expect(setupHelp).toContain('"firefox-beta"');
     expect(exportHelp).toContain('--category <category>');
-    expect(exportHelp).toContain('"infra"');
+    expect(exportHelp).not.toContain('(choices: "branding", "ui", "privacy", "security", "infra")');
   });
 
   it('exposes stable help text for every furnace subcommand', () => {

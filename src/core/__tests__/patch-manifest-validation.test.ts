@@ -84,7 +84,7 @@ describe('validatePatchesManifest', () => {
           },
         ],
       })
-    ).toThrow('patches[0].category must be one of: branding, ui, privacy, security, infra');
+    ).toThrow('patches[0].category must be a lowercase category identifier');
 
     expect(() =>
       validatePatchesManifest({

@@ -79,7 +79,28 @@ describe('generateMjsContent', () => {
       'toolkit/global',
       'browser/mybrowser-dock.ftl'
     );
-    expect(mjs).toContain('l10n?.connectRoot(this.shadowRoot)');
-    expect(mjs).toContain('l10n?.disconnectRoot(this.shadowRoot)');
+    expect(mjs).toContain(
+      'if (shadowRoot) {\n      this.ownerDocument.l10n?.connectRoot(shadowRoot);'
+    );
+    expect(mjs).toContain(
+      'if (shadowRoot) {\n      this.ownerDocument.l10n?.disconnectRoot(shadowRoot);'
+    );
+  });
+
+  it('emits strict-checkJs-friendly class metadata and custom element registration', () => {
+    const mjs = generateMjsContent(
+      'my-widget',
+      'MyWidget',
+      'A widget',
+      false,
+      LICENSE,
+      undefined,
+      undefined
+    );
+
+    expect(mjs).toContain('/** @type {Record<string, unknown>} */\n  static properties = {};');
+    expect(mjs).toContain(
+      'customElements.define("my-widget", /** @type {CustomElementConstructor} */ (MyWidget));'
+    );
   });
 });

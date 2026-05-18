@@ -36,7 +36,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 - **Python 3** (required by Firefox's `mach` build system).
 - **Git**
 - Platform build tools: Xcode on macOS, `build-essential` on Linux, Visual Studio Build Tools on Windows.
-- **Watchman** (optional, only required by `fireforge watch`). Install via `brew install watchman` (macOS), `dnf install watchman` (Fedora), or follow the upstream [Meta docs](https://facebook.github.io/watchman/). `fireforge doctor` surfaces a warning row when it is not on `PATH` so the dependency is visible during the usual onboarding sweep rather than at the watch-mode failure site. `fireforge watch` resolves watchman's absolute path via `which` / `where` and prepends its directory to the subprocess `PATH` it hands mach, so a homebrew-installed watchman at `/opt/homebrew/bin/watchman` (absent from the Node subprocess's default `PATH` on macOS) is still visible to `mach watch` without the operator having to re-export `PATH` manually.
+- **Watchman** (optional, only required by `fireforge watch`). Install via `brew install watchman` (macOS), `dnf install watchman` (Fedora), or follow the upstream [Meta docs](https://facebook.github.io/watchman/). `fireforge doctor` surfaces a warning row when it is not on `PATH` so the dependency is visible during the usual onboarding sweep rather than at the watch-mode failure site. `fireforge watch` resolves watchman's absolute path via `which` / `where` and prepends its directory to the subprocess `PATH` it hands mach, so a homebrew-installed watchman at `/opt/homebrew/bin/watchman` (absent from the Node subprocess's default `PATH` on macOS) is still visible to `mach watch` without the operator having to re-export `PATH` manually. If `mach watch` reports `Operation not permitted` / `EPERM` on macOS, FireForge points at the usual privacy fix: grant Full Disk Access or Files and Folders access to the terminal/Codex app and watchman, then restart watchman with `watchman shutdown-server`.
 
 ### Setup
 
@@ -290,8 +290,10 @@ When a patch queue drifts, e.g. due to overlapping new-file creations, forward i
 fireforge verify                    # fsck: manifest + cross-patch lint
 fireforge lint                      # includes the same cross-patch rules
 fireforge status --ownership        # flat path → owning patch table
-fireforge status --json             # machine-readable classified output
+fireforge status --json             # machine-readable classified object
 ```
+
+`status --json` emits a versioned object: `{ "schemaVersion": 1, "summary": { "total": <n>, "byClassification": { ... } }, "files": [...] }`. Error paths also emit a JSON object with `schemaVersion`, `code`, and `error` before exiting non-zero, so scripts can parse both clean and failing runs.
 
 Then fix with the appropriate primitive:
 
@@ -379,6 +381,9 @@ Custom elements live under `toolkit/content/widgets`, but a fork's top-level chr
 fireforge furnace chrome-doc create mybrowser              # full chrome (titlebar + windowtype)
 fireforge furnace chrome-doc create overlay --no-titlebar  # frameless overlay
 fireforge furnace chrome-doc create mybrowser --with-tests # + xpcshell packaging-verification test
+fireforge furnace chrome-doc create mybrowser --dry-run    # preview without writing
+fireforge furnace chrome-doc remove mybrowser --dry-run    # preview cleanup
+fireforge furnace chrome-doc remove mybrowser --yes        # remove files + registrations
 ```
 
 The command writes:
@@ -390,7 +395,7 @@ The command writes:
 - Appends the corresponding `jar.mn` / `jar.inc.mn` entries. The locales/jar.mn append is suppressed when the fork's existing `engine/browser/locales/jar.mn` already carries a `[localization] (%browser/**/*.ftl)` (or `(%browser/*.ftl)`) wildcard that would already pick up the scaffolded FTL — on those forks a per-file `locale/<name>.ftl` entry would be dead weight at best and an outright build break when the fork has dropped the `% locale browser …` registration the per-file entry depends on. Forks still on the legacy registration get the per-file entry as before.
 - When `--with-tests` is set, also scaffolds an xpcshell test + `xpcshell.toml` under `engine/browser/base/content/test/<binary>-xpcshell/<name>/` that probes the packaged app directory (`Services.dirsvc.get("XCurProcD")/chrome/browser/...`) directly rather than going through `chrome://` URI resolution — see "Platform module compatibility" and the xpcshell chrome-URI note further down for why direct filesystem probing is the reliable way to verify chrome-doc packaging. Registration in `XPCSHELL_TESTS_MANIFESTS` is left to the operator because the owning moz.build depends on the fork layout.
 
-Writes are transactional: a SIGINT mid-scaffold rolls back every touched file. Requires an existing engine — run `fireforge download` first.
+Writes are transactional: a SIGINT mid-scaffold rolls back every touched file. `--dry-run` validates the same paths and registrations without acquiring the mutation lock or writing. `furnace chrome-doc remove <name>` removes the scaffolded source files, jar registrations, and optional xpcshell packaging-test directory; use its `--dry-run` first when cleaning an experimental document. Requires an existing engine — run `fireforge download` first.
 
 #### Platform module compatibility
 
@@ -438,6 +443,8 @@ Three styles are available via `--test-style`:
 `furnace create --dry-run` previews the planned file set, test scaffold, and `furnace.json` mutation without writing anything. Every validation the real command runs (tag-name shape, name conflicts, engine pre-existence of the component, `--compose` target existence + cycle detection) fires BEFORE the plan is emitted, so a failed preview matches a failed real run.
 
 `furnace create`, `furnace remove`, and `furnace rename` re-read `furnace.json` inside the mutation lock before writing, so concurrent component edits preserve sibling entries instead of writing back a stale outer snapshot. `furnace refresh --all` continues past per-component refresh failures, reports the failed count, and exits non-zero with the failed override names after finishing the rest of the selection.
+
+`furnace preview` starts Firefox's upstream Storybook workspace. On the first run, `mach storybook` may install roughly a thousand npm packages under `engine/browser/components/storybook/` and may print npm audit counts from Storybook's transitive dependencies. FireForge frames that output as upstream Storybook dependency state; it does not mean FireForge's own package dependencies were installed into the project.
 
 ## Additional Commands
 
@@ -540,6 +547,8 @@ Aggregate patch-size findings (`large-patch-files`, `large-patch-lines`) describ
 
 `fireforge build` is a transactional step: after a successful mach build it audits the dist bundle against engine-relative paths touched since the last successful build, and warns per file that is packageable-by-convention (`.js`/`.mjs`/`.css`/`.ftl`/`.xhtml`/`app/profile/…`) but has no matching artifact or whose dist mtime is older than the source. Ends every build with a `Packaged: N updated, M stale, K missing, S skipped` summary. The audit is warn-only — it never fails a build that mach reported green.
 
+`fireforge build --ui` is intentionally a fast rebuild path, not a bootstrap path. It now refuses before invoking `mach build faster` unless the current objdir has a completed launchable bundle; fresh imports and partial builds should run a full `fireforge build` first.
+
 The audit applies seven routing rules to suppress false positives that previously trained operators to ignore its warnings:
 
 - **jar.mn registrations are authoritative.** When the source under audit is claimed by a `(source)` reference in an ancestor `jar.mn`, the audit walks the registration to compute the expected target path (e.g. `content/browser/mybrowser.js`) and probes the dist tree for a candidate whose absolute path ends with that suffix. Picking the correct artifact from a same-basename collision no longer depends on path-similarity scoring. If the registration target is missing from dist, the warning names the `jar.mn` entry so "registration is intact, packaging dropped the file" is distinguishable from "source is unregistered". This is the fix for the class of false positive where `engine/browser/base/content/<name>.js` (registered in `browser/base/jar.mn`) collided with an unrelated `browser/defaults/preferences/<name>.js` added by a separate patch; the heuristic could not distinguish them, so the audit falsely reported the correctly-packaged chrome resource as missing.
@@ -614,7 +623,7 @@ fireforge test --doctor
 fireforge test --doctor browser/base/content/test/foo/browser_bar.js
 ```
 
-Spawns the built browser headless, waits for a marionette handshake on `127.0.0.1:2828`, and reports PASS/FAIL with the tail of the browser's stderr on FAIL. Distinguishes "marionette wedged" (socket silent) from "mach test discovery failed" — both otherwise surface as a silent 360-second hang followed by `Passed: 0, Failed: 0`. Useful as a prefix on routine `fireforge test` invocations when marionette has been flaky.
+Spawns the built browser headless, waits for a marionette handshake on `127.0.0.1:2828`, and reports PASS/FAIL with the tail of the browser's stderr on FAIL. The success output also names the objdir, binary, app path, port, and elapsed probe time so CI logs show exactly what was probed. Distinguishes "marionette wedged" (socket silent) from "mach test discovery failed" — both otherwise surface as a silent 360-second hang followed by `Passed: 0, Failed: 0`. Useful as a prefix on routine `fireforge test` invocations when marionette has been flaky.
 
 The probe is a cascade of six layered checks — engine-present → mach-available → python-available → profile-creatable → browser-spawns → marionette-handshake. Each failure is tagged `[layer N/6: <name>]` so the first broken layer is surfaced immediately instead of the whole cascade blocking on the final socket poll. When the browser binary crashes at startup (missing dylib, wrong CPU arch, corrupt profile) the cascade fails at layer 5 within the settle window, not after the full socket timeout.
 

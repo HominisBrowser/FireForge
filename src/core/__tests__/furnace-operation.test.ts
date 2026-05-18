@@ -16,7 +16,7 @@
  * any-typed at the boundary; the test casts the captured updater fn back to
  * a known shape locally.
  */
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -37,6 +37,7 @@ import { writeFile } from 'node:fs/promises';
 import { loadFurnaceState, updateFurnaceState } from '../furnace-config.js';
 import {
   __resetFurnaceOperationStateForTests,
+  forceReleaseFurnaceLocksForActiveOperations,
   getFurnaceLockPath,
   recordFurnaceRollbackFailure,
   rollbackActiveOperationsForSignal,
@@ -54,6 +55,15 @@ async function makeTempProject(prefix: string): Promise<string> {
   cleanupPaths.push(dir);
   await mkdir(join(dir, '.fireforge'), { recursive: true });
   return dir;
+}
+
+async function pathExistsOnDisk(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 beforeEach(() => {
@@ -301,6 +311,42 @@ describe('rollbackActiveOperationsForSignal', () => {
       operation: 'preview-teardown',
       reason: expect.stringContaining('cleanup errors: storybook cleanup failed'),
     });
+
+    releaseBody!();
+    await runPromise;
+  });
+
+  it('force-releases the furnace lock after signal rollback while preview is still unwinding', async () => {
+    const root = await makeTempProject('fireforge-furnace-op-signal-lock-');
+    const sentinel = join(root, 'engine-file.txt');
+    await writeFile(sentinel, 'pristine');
+
+    let releaseBody: (() => void) | undefined;
+    const bodyHeld = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    let signalBodyReady: (() => void) | undefined;
+    const bodyReady = new Promise<void>((resolve) => {
+      signalBodyReady = resolve;
+    });
+
+    const runPromise = runFurnaceMutation(root, 'preview-teardown', async (ctx) => {
+      const journal = createRollbackJournal();
+      ctx.registerJournal(journal);
+      await snapshotFile(journal, sentinel);
+      await writeFile(sentinel, 'corrupted');
+      signalBodyReady!();
+      await bodyHeld;
+      return 'done';
+    });
+
+    await bodyReady;
+    expect(await pathExistsOnDisk(getFurnaceLockPath(root))).toBe(true);
+
+    await rollbackActiveOperationsForSignal('SIGINT');
+    await forceReleaseFurnaceLocksForActiveOperations();
+
+    expect(await pathExistsOnDisk(getFurnaceLockPath(root))).toBe(false);
 
     releaseBody!();
     await runPromise;

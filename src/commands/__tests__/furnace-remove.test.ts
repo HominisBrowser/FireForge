@@ -343,8 +343,50 @@ describe('furnaceRemoveCommand', () => {
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Deployed files may remain'));
     expect(writeFurnaceConfig).toHaveBeenCalledWith(
       '/project',
-      expect.objectContaining({ overrides: {} })
+      expect.objectContaining({ overrides: {}, stock: ['moz-card'] })
     );
+  });
+
+  it('demotes removed overrides back to stock while preserving optional config fields', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      tokenPrefix: '--mybrowser-',
+      tokenAllowlist: ['--allowed'],
+      platformPrefixes: ['--moz-', '--in-content-'],
+      runtimeVariables: ['--runtime-x'],
+      tokenHostDocuments: ['browser/base/content/mybrowser.xhtml'],
+      ftlBasePath: 'browser/locales/en-US/browser',
+      scanPaths: ['browser/components'],
+      stock: ['moz-card'],
+      overrides: {
+        'moz-button': {
+          type: 'css-only' as const,
+          description: 'Override button',
+          basePath: 'toolkit/content/widgets/moz-button',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {},
+    });
+    vi.mocked(pathExists).mockImplementation((target: string) =>
+      Promise.resolve(target === '/project/components/overrides/moz-button')
+    );
+
+    await furnaceRemoveCommand('/project', 'moz-button', { yes: true });
+
+    const writtenConfig = vi.mocked(writeFurnaceConfig).mock.calls.at(-1)?.[1];
+    expect(writtenConfig).toMatchObject({
+      tokenPrefix: '--mybrowser-',
+      tokenAllowlist: ['--allowed'],
+      platformPrefixes: ['--moz-', '--in-content-'],
+      runtimeVariables: ['--runtime-x'],
+      tokenHostDocuments: ['browser/base/content/mybrowser.xhtml'],
+      ftlBasePath: 'browser/locales/en-US/browser',
+      scanPaths: ['browser/components'],
+      stock: ['moz-card', 'moz-button'],
+      overrides: {},
+    });
   });
 
   it('restores orphaned engine files recorded only in state, not the workspace', async () => {

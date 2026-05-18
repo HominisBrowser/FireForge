@@ -266,6 +266,9 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
   if (migrated['tokenAllowlist'] !== undefined) {
     config.tokenAllowlist = parseStringArray(migrated['tokenAllowlist'], 'tokenAllowlist');
   }
+  if (migrated['platformPrefixes'] !== undefined) {
+    config.platformPrefixes = parseStringArray(migrated['platformPrefixes'], 'platformPrefixes');
+  }
   if (migrated['runtimeVariables'] !== undefined) {
     config.runtimeVariables = parseStringArray(migrated['runtimeVariables'], 'runtimeVariables');
   }
@@ -328,6 +331,7 @@ const PENDING_REPAIR_OPERATIONS: readonly FurnacePendingRepairOperation[] = [
   'deploy-rollback',
   'remove-rollback',
   'create-rollback',
+  'chrome-doc-rollback',
   'override-rollback',
   'scan-rollback',
   'rename-rollback',

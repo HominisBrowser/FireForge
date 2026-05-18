@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.21.0
+
+### Features
+
+- **Chrome-doc previews and cleanup.** `furnace chrome-doc create` now supports `--dry-run`, validating the same target files and jar registrations without writing. New `furnace chrome-doc remove <name>` removes scaffolded chrome-doc files, jar entries, and optional xpcshell packaging-test directories, with `--dry-run` and `--yes` support.
+- **Versioned `status --json` schema.** The JSON output is now an object with `schemaVersion`, `summary`, and `files` instead of a bare array. Error paths also emit versioned JSON objects with `code` and `error`.
+
+### Hardening
+
+- **Override removal demotes back to stock.** Removing a Furnace override restores engine files, deletes the override workspace, clears override checksums, and re-adds the component to `stock` tracking instead of dropping it from `furnace.json`. Optional Furnace config fields, including `platformPrefixes`, are preserved across the write.
+- **Rename updates browser-chrome test bodies.** `furnace rename` now rewrites generated browser-chrome mochitest contents as well as filenames and `browser.toml`, preventing stale `waitForElement("<old>")` references after a component rename.
+- **UI build preflight is stricter.** `fireforge build --ui` now refuses before `mach build faster` when the current objdir lacks a completed launchable bundle, guiding fresh imports and partial builds through a full `fireforge build` first.
+- **Interrupt and diagnostics polish.** Signal-driven Furnace preview teardown has regression coverage for stale lock cleanup, `chrome-doc-rollback` markers round-trip through Furnace state validation, watch-mode permission failures name the macOS privacy remediation, and `test --doctor` prints the probed objdir, binary/app path, port, and elapsed time.
+
+### Documentation
+
+- **README — Storybook first-run and audit posture.** The Furnace preview docs now call out the upstream Storybook npm install and audit output as Firefox Storybook workspace dependency state, not FireForge package dependency state.
+- **README — chrome-doc lifecycle and JSON schema.** The Furnace and status sections document chrome-doc dry-runs/removal, UI-build preconditions, watch privacy guidance, and the new versioned `status --json` object.
+
 ## 0.20.0
 
 ### Features

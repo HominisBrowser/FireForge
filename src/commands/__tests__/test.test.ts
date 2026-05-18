@@ -344,6 +344,13 @@ describe('testCommand', () => {
       expect(rawWrites.some((chunk) => /Marionette preflight: PASS \(200ms\)/.test(chunk))).toBe(
         true
       );
+      expect(
+        rawWrites.some((chunk) =>
+          /Marionette preflight environment: objdir=obj-debug; binary=mybrowser; app=engine\/obj-debug\/dist\/bin\/firefox; port=2828; elapsed=200ms/.test(
+            chunk
+          )
+        )
+      ).toBe(true);
     } finally {
       writeSpy.mockRestore();
     }

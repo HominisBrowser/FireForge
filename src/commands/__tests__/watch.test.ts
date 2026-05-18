@@ -128,6 +128,16 @@ describe('watchCommand', () => {
     );
   });
 
+  it('adds macOS privacy guidance when mach watch reports a permission failure', async () => {
+    vi.mocked(watchWithOutput).mockResolvedValue({
+      stdout: '',
+      stderr: 'watchman: Operation not permitted while watching /project/engine',
+      exitCode: 1,
+    });
+
+    await expect(watchCommand('/project')).rejects.toThrow(/Full Disk Access/i);
+  });
+
   it('treats Ctrl+C exits as a normal stop condition', async () => {
     await expect(watchCommand('/project')).resolves.toBeUndefined();
 

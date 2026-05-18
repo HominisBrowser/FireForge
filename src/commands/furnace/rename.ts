@@ -50,6 +50,7 @@ import {
   writeText,
 } from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
+import { updateBrowserChromeTestContent } from './rename-browser-test.js';
 import {
   renameComponentFileName,
   updateConfigForCustomRename,
@@ -108,7 +109,10 @@ async function renameTestFiles(
     try {
       await snapshotFile(journal, oldTestPath);
       const content = await readText(oldTestPath);
-      await writeText(newTestPath, content);
+      await writeText(
+        newTestPath,
+        updateBrowserChromeTestContent(content, oldName, newName, binaryName)
+      );
       await removeFile(oldTestPath);
       info(`Renamed test file: ${oldTestFileName} → ${newTestFileName}`);
     } catch (error: unknown) {

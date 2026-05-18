@@ -28,6 +28,11 @@ vi.mock('../../core/config.js', () => ({
     src: '/project/src',
     componentsDir: '/project/components',
   })),
+  loadConfig: vi.fn(() =>
+    Promise.resolve({
+      binaryName: 'mybrowser',
+    })
+  ),
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
@@ -56,6 +61,9 @@ vi.mock('../../core/furnace-constants.js', () => ({
   resolveFtlDir: vi.fn(() => 'toolkit/locales/en-US/toolkit/global'),
   resolveFtlChromeSubPath: vi.fn(() => 'toolkit/global'),
   resolveFtlLocaleJarMnPath: vi.fn(() => 'toolkit/locales/jar.mn'),
+  xpcshellTestParentDir: vi.fn(
+    (binaryName: string) => `browser/base/content/test/${binaryName}-xpcshell`
+  ),
 }));
 
 vi.mock('../../core/furnace-operation.js', () => ({
@@ -914,5 +922,60 @@ describe('furnaceRenameCommand engine-tree cleanup (Finding #9)', () => {
     });
 
     await expect(furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav')).resolves.not.toThrow();
+  });
+
+  it('renames browser-chrome test files and updates stale tag references in the body', async () => {
+    const testDir = '/project/engine/browser/base/content/test/mybrowser';
+    const oldTestPath = `${testDir}/browser_mybrowser_sidebar.js`;
+    const newTestPath = `${testDir}/browser_mybrowser_nav.js`;
+    const tomlPath = `${testDir}/browser.toml`;
+
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
+      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path === testDir || path === oldTestPath || path === tomlPath)
+        return Promise.resolve(true);
+      if (path.includes('customElements.js')) return Promise.resolve(true);
+      if (path.includes('jar.mn')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    mockReadText.mockImplementation((path: string) => {
+      if (path === oldTestPath) {
+        return Promise.resolve(`"use strict";
+
+add_task(async function test_sidebar_defined() {
+  const ctor = await waitForElement("moz-sidebar");
+  Assert.ok(ctor, "moz-sidebar custom element should be defined");
+});
+`);
+      }
+      if (path === tomlPath) {
+        return Promise.resolve('["browser_mybrowser_sidebar.js"]\n');
+      }
+      if (path.includes('moz-sidebar.mjs')) {
+        return Promise.resolve('customElements.define("moz-sidebar", MozSidebar);\n');
+      }
+      if (path.includes('moz-sidebar.css')) {
+        return Promise.resolve('moz-sidebar { color: red; }\n');
+      }
+      return Promise.resolve('');
+    });
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    const testWrite = mockWriteText.mock.calls.find(([path]) => path === newTestPath);
+    expect(testWrite).toBeDefined();
+    const testContent = testWrite?.[1] ?? '';
+    expect(testContent).toContain('waitForElement("moz-nav")');
+    expect(testContent).toContain('moz-nav custom element should be defined');
+    expect(testContent).toContain('test_nav_defined');
+    expect(testContent).not.toContain('moz-sidebar');
+    expect(testContent).not.toContain('test_sidebar_defined');
+
+    const tomlWrite = mockWriteText.mock.calls.find(([path]) => path === tomlPath);
+    expect(tomlWrite?.[1]).toContain('["browser_mybrowser_nav.js"]');
+    expect(tomlWrite?.[1]).not.toContain('browser_mybrowser_sidebar.js');
+    expect(mockRemoveFile).toHaveBeenCalledWith(oldTestPath);
   });
 });

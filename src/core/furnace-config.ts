@@ -16,6 +16,7 @@ import { isObject, isString } from '../utils/validation.js';
 import { FIREFORGE_DIR } from './config.js';
 import { parseStringArray } from './furnace-config-array-utils.js';
 import { parseCustomConfig } from './furnace-config-custom.js';
+import { orderFurnaceConfigForWrite } from './furnace-config-order.js';
 import { validateRuntimeVariables, validateTokenHostDocuments } from './furnace-config-tokens.js';
 import { resolveFtlDir } from './furnace-constants.js';
 import { detectComposesCycles, validateComposesReferences } from './furnace-graph-utils.js';
@@ -532,7 +533,16 @@ export async function loadFurnaceConfig(root: string): Promise<FurnaceConfig> {
  */
 export async function writeFurnaceConfig(root: string, config: FurnaceConfig): Promise<void> {
   const paths = getFurnacePaths(root);
-  await writeJson(paths.furnaceConfig, config);
+  let existing: Record<string, unknown> | undefined;
+  if (await pathExists(paths.furnaceConfig)) {
+    try {
+      const raw = await readJson<unknown>(paths.furnaceConfig);
+      if (isObject(raw)) existing = raw;
+    } catch {
+      existing = undefined;
+    }
+  }
+  await writeJson(paths.furnaceConfig, orderFurnaceConfigForWrite(existing, config));
 }
 
 /**

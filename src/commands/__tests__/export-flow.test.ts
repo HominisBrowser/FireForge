@@ -18,10 +18,12 @@ import { InvalidArgumentError } from '../../errors/base.js';
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { ensureDir, writeText } from '../../utils/fs.js';
+import { info, warn } from '../../utils/logger.js';
 import {
   commitPlacementExport,
   computePlacementPlan,
   projectPlacementForLint,
+  renderDryRunPreview,
 } from '../export-flow.js';
 
 // Mock ../../utils/fs.js and ../../core/patch-manifest.js so the rollback
@@ -46,6 +48,11 @@ vi.mock('../../core/patch-manifest.js', async () => {
     addPatchToManifest: vi.fn(actual.addPatchToManifest),
   };
 });
+
+vi.mock('../../utils/logger.js', () => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+}));
 
 function makeMetadata(filename: string, order: number, filesAffected: string[]): PatchMetadata {
   return {
@@ -231,6 +238,88 @@ describe('projectPlacementForLint', () => {
     ).rejects.toBeInstanceOf(InvalidArgumentError);
 
     expect(await readdir(patchesDir)).not.toContain('001-infra-new.patch');
+  });
+});
+
+describe('renderDryRunPreview ownership overlap', () => {
+  let projectRoot: string;
+  let patchesDir: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    projectRoot = await createTempProject('ff-export-dry-run-overlap-');
+    patchesDir = join(projectRoot, 'patches');
+  });
+
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it('fails dry-run after surfacing partial ownership overlap', async () => {
+    await seed(patchesDir, [
+      {
+        metadata: {
+          ...makeMetadata('001-ui-owned.patch', 1, [
+            'browser/base/content/hominis.xhtml',
+            'browser/base/content/hominis.js',
+          ]),
+          category: 'ui',
+        },
+        body: createDiff('browser/base/content/hominis.xhtml', '<window />'),
+      },
+    ]);
+
+    await expect(
+      renderDryRunPreview({
+        patchesDir,
+        category: 'ui',
+        name: 'audit-export-probe',
+        description: '',
+        filesAffected: ['browser/base/content/hominis.xhtml'],
+        sourceEsrVersion: '140.9.0esr',
+        explicitSupersede: false,
+        allowOverlap: false,
+      })
+    ).rejects.toThrow(/cross-patch ownership overlap/i);
+
+    expect(info).toHaveBeenCalledWith('\n[dry-run] No patches would be superseded.');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'browser/base/content/hominis.xhtml already claimed by: 001-ui-owned.patch'
+      )
+    );
+  });
+
+  it('prints acknowledged overlap when --allow-overlap is set', async () => {
+    await seed(patchesDir, [
+      {
+        metadata: {
+          ...makeMetadata('001-ui-owned.patch', 1, [
+            'browser/base/content/hominis.xhtml',
+            'browser/base/content/hominis.js',
+          ]),
+          category: 'ui',
+        },
+        body: createDiff('browser/base/content/hominis.xhtml', '<window />'),
+      },
+    ]);
+
+    await expect(
+      renderDryRunPreview({
+        patchesDir,
+        category: 'ui',
+        name: 'audit-export-probe',
+        description: '',
+        filesAffected: ['browser/base/content/hominis.xhtml'],
+        sourceEsrVersion: '140.9.0esr',
+        explicitSupersede: false,
+        allowOverlap: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Would create cross-patch ownership overlap')
+    );
   });
 });
 

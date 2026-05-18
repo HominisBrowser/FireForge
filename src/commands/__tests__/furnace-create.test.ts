@@ -228,6 +228,9 @@ describe('furnaceCreateCommand --with-tests', () => {
     expect(testContent).toContain('test_test_widget_defined');
     expect(testContent).toContain('waitForElement("moz-test-widget")');
 
+    const headCall = mockWriteText.mock.calls.find((c) => c[0].includes('head.js'));
+    expect(headCall?.[1] ?? '').toContain('document.createElement(tag);');
+
     // Check that moz.build registration was called with binaryName
     expect(mockRegisterTestManifest).toHaveBeenCalledWith('/project/engine', 'testbrowser');
   });
@@ -772,16 +775,18 @@ describe('furnaceCreateCommand validation', () => {
 
     // The generated .mjs must use the MozLitElement-compatible l10n pattern:
     // a module-level `window.MozXULElement?.insertFTLIfNeeded(...)` call and
-    // `connectRoot(this.shadowRoot)` in connectedCallback. The old (broken)
+    // null-guarded `connectRoot(shadowRoot)` in connectedCallback. The old (broken)
     // template called `this.insertFTLIfNeeded(...)` on MozLitElement, which
     // threw TypeError at every connect.
     const mjsCall = mockWriteText.mock.calls.find((c) => c[0].endsWith('.mjs'));
     expect(mjsCall).toBeDefined();
     const mjsContent = mjsCall?.[1] ?? '';
     expect(mjsContent).toContain('window.MozXULElement?.insertFTLIfNeeded(');
-    expect(mjsContent).toContain('this.ownerDocument.l10n?.connectRoot(this.shadowRoot)');
-    expect(mjsContent).toContain('this.ownerDocument.l10n?.disconnectRoot(this.shadowRoot)');
+    expect(mjsContent).toContain('this.ownerDocument.l10n?.connectRoot(shadowRoot)');
+    expect(mjsContent).toContain('this.ownerDocument.l10n?.disconnectRoot(shadowRoot)');
     expect(mjsContent).not.toContain('this.insertFTLIfNeeded(');
+    expect(mjsContent).toContain('/** @type {Record<string, unknown>} */');
+    expect(mjsContent).toContain('/** @type {CustomElementConstructor} */');
   });
 
   it('warns but continues when test manifest registration fails', async () => {

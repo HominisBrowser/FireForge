@@ -354,6 +354,7 @@ export async function exportAllCommand(
         filesAffected,
         sourceEsrVersion: config.firefox.version,
         explicitSupersede: options.supersede === true,
+        allowOverlap: options.allowOverlap === true,
       });
       outro('Dry run complete — no changes made');
       return;

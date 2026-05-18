@@ -324,6 +324,7 @@ export async function exportCommand(
         filesAffected,
         sourceEsrVersion: config.firefox.version,
         explicitSupersede: options.supersede === true,
+        allowOverlap: options.allowOverlap === true,
         ...(options.tier !== undefined ? { tier: options.tier } : {}),
         ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
           ? { lintIgnore: options.lintIgnore }

@@ -9,6 +9,7 @@
 
 ### Hardening
 
+- **Eval 0.21.0 release-gate fixes.** `export --dry-run` now performs the same supersede and cross-patch ownership checks as real export before calling a plan safe; `furnace deploy --dry-run` validates successful custom-component plans against projected jar.mn registrations; generated Furnace components and browser-chrome test scaffolds are strict-checkJs and lazy-custom-element ready; chrome-doc packaging xpcshell tests no longer trip component-orphan validation; supported optional config keys such as `firefox.sha256` print `(not set)` when absent; and Furnace manifest writes preserve existing top-level/component ordering while appending new entries predictably.
 - **Override removal demotes back to stock.** Removing a Furnace override restores engine files, deletes the override workspace, clears override checksums, and re-adds the component to `stock` tracking instead of dropping it from `furnace.json`. Optional Furnace config fields, including `platformPrefixes`, are preserved across the write.
 - **Rename updates browser-chrome test bodies.** `furnace rename` now rewrites generated browser-chrome mochitest contents as well as filenames and `browser.toml`, preventing stale `waitForElement("<old>")` references after a component rename.
 - **UI build preflight is stricter.** `fireforge build --ui` now refuses before `mach build faster` when the current objdir lacks a completed launchable bundle, guiding fresh imports and partial builds through a full `fireforge build` first.

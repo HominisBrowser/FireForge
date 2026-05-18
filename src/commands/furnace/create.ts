@@ -141,6 +141,7 @@ support-files = ["head.js"]
  * @returns {Promise<CustomElementConstructor>}
  */
 async function waitForElement(tag) {
+  document.createElement(tag);
   return customElements.whenDefined(tag);
 }
 `;

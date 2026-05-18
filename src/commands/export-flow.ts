@@ -32,11 +32,12 @@ import {
   savePatchesManifest,
 } from '../core/patch-manifest.js';
 import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
-import { InvalidArgumentError } from '../errors/base.js';
+import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { ExportOptions, PatchCategory, PatchMetadata } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
+import { findPartialOwnershipOverlap } from './export-shared.js';
 
 function buildFilenameForPlacement(
   category: PatchCategory,
@@ -428,6 +429,7 @@ export interface DryRunPreviewInput {
   filesAffected: string[];
   sourceEsrVersion: string;
   explicitSupersede: boolean;
+  allowOverlap: boolean;
   /** Optional `PatchMetadata.tier` opt-in carried from the CLI. */
   tier?: 'branding';
   /** Optional `PatchMetadata.lintIgnore` carried from the CLI. */
@@ -444,6 +446,12 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     input.patchesDir,
     input.filesAffected
   );
+  const supersedingFilenames = new Set(supersedeDetails.map((detail) => detail.patch.filename));
+  const manifest = await loadPatchesManifest(input.patchesDir);
+  const overlap =
+    manifest !== null
+      ? findPartialOwnershipOverlap(manifest, input.filesAffected, supersedingFilenames)
+      : new Map<string, string[]>();
   const plan = await planExport({
     patchesDir: input.patchesDir,
     category: input.category,
@@ -481,5 +489,25 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     }
   } else {
     info('\n[dry-run] No patches would be superseded.');
+  }
+
+  if (overlap.size > 0) {
+    const entries = [...overlap.entries()].sort(([a], [b]) => a.localeCompare(b));
+    warn(
+      `\n[dry-run] Would create cross-patch ownership overlap on ${String(entries.length)} file${entries.length === 1 ? '' : 's'}:`
+    );
+    for (const [file, owners] of entries) {
+      warn(`  - ${file} already claimed by: ${owners.join(', ')}`);
+    }
+    warn(
+      'The real export would leave the queue verify-failing. Repartition ownership with `fireforge re-export --files <paths> <existing-patch>` before exporting, or pass --allow-overlap to acknowledge the conflict.'
+    );
+    if (!input.allowOverlap) {
+      throw new GeneralError(
+        'Dry-run detected cross-patch ownership overlap. Pass --allow-overlap to preview the acknowledged conflict, or repartition ownership via `fireforge re-export --files`.'
+      );
+    }
+  } else {
+    info('[dry-run] No cross-patch ownership overlap detected.');
   }
 }

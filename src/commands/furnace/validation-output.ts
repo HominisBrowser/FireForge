@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { getFurnacePaths } from '../../core/furnace-config.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import { FurnaceError } from '../../errors/furnace.js';
-import type { FurnaceConfig, ValidationIssue } from '../../types/furnace.js';
+import type { DryRunAction, FurnaceConfig, ValidationIssue } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, type SpinnerHandle, success, warn } from '../../utils/logger.js';
 
@@ -28,6 +28,27 @@ export function displayValidationIssues(issues: ValidationIssue[]): [number, num
   }
 
   return [errors, warnings];
+}
+
+function filterProjectedDryRunIssues(
+  issues: ValidationIssue[],
+  actions: DryRunAction[] | undefined
+): ValidationIssue[] {
+  if (!actions || actions.length === 0) return issues;
+
+  const plannedJarRegistrations = new Set(
+    actions.filter((action) => action.action === 'register-jar').map((action) => action.component)
+  );
+
+  return issues.filter((issue) => {
+    if (
+      plannedJarRegistrations.has(issue.component) &&
+      (issue.check === 'missing-jar-mn-mjs' || issue.check === 'missing-jar-mn-css')
+    ) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function resolveNamedValidationTarget(
@@ -84,7 +105,8 @@ export async function runDeployValidation(
   furnacePaths: ReturnType<typeof getFurnacePaths>,
   failedComponents: Set<string>,
   isDryRun: boolean,
-  projectRoot: string
+  projectRoot: string,
+  dryRunActions?: DryRunAction[]
 ): Promise<ValidationResult> {
   let totalErrors = 0;
   let totalWarnings = 0;
@@ -109,13 +131,14 @@ export async function runDeployValidation(
       throw new FurnaceError(`Component directory not found for "${name}".`, name);
     }
 
-    const issues = await validateComponent(
+    const rawIssues = await validateComponent(
       target.componentDir,
       name,
       target.type,
       config,
       projectRoot
     );
+    const issues = isDryRun ? filterProjectedDryRunIssues(rawIssues, dryRunActions) : rawIssues;
     componentCount = 1;
 
     validateSpinner.stop('Validation complete');
@@ -139,10 +162,13 @@ export async function runDeployValidation(
       }
 
       componentCount++;
-      if (issues.length === 0) {
+      const projectedIssues = isDryRun
+        ? filterProjectedDryRunIssues(issues, dryRunActions)
+        : issues;
+      if (projectedIssues.length === 0) {
         success(`${componentName} — all checks passed`);
       } else {
-        const [errors, warnings] = displayValidationIssues(issues);
+        const [errors, warnings] = displayValidationIssues(projectedIssues);
         totalErrors += errors;
         totalWarnings += warnings;
       }

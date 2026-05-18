@@ -321,6 +321,11 @@ describe('testCommand', () => {
       detail: 'handshake',
     });
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: false,
+    });
 
     try {
       await expect(testCommand('/project', [], { doctor: true })).resolves.toBeUndefined();
@@ -353,6 +358,11 @@ describe('testCommand', () => {
       ).toBe(true);
     } finally {
       writeSpy.mockRestore();
+      if (ttyDescriptor) {
+        Object.defineProperty(process.stdout, 'isTTY', ttyDescriptor);
+      } else {
+        Reflect.deleteProperty(process.stdout, 'isTTY');
+      }
     }
   });
 

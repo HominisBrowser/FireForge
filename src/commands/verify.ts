@@ -42,6 +42,20 @@ interface DanglingRegistrationIssue {
   source: string;
 }
 
+interface VerifyIssueGroup {
+  title: string;
+  issues: string[];
+  errorCount: number;
+  warningCount: number;
+}
+
+export interface PatchQueueHealth {
+  hasPatchesDirectory: boolean;
+  groups: VerifyIssueGroup[];
+  errorCount: number;
+  warningCount: number;
+}
+
 /**
  * Walks each patch body in the manifest, extracts the set of
  * component-shaped registration references it adds (widget paths
@@ -128,6 +142,119 @@ function detectCrossPatchFileClaims(
 }
 
 /**
+ * Collects the same queue-health findings reported by `fireforge verify`
+ * without printing. Used by doctor recovery paths that need a read-only
+ * "is this queue healthy?" decision before clearing stale state.
+ */
+export async function collectPatchQueueHealth(projectRoot: string): Promise<PatchQueueHealth> {
+  const paths = getProjectPaths(projectRoot);
+  const config = await loadConfig(projectRoot);
+  if (!(await pathExists(paths.patches))) {
+    return {
+      hasPatchesDirectory: false,
+      groups: [],
+      errorCount: 0,
+      warningCount: 0,
+    };
+  }
+
+  const groups: VerifyIssueGroup[] = [];
+  let errorCount = 0;
+  let warningCount = 0;
+
+  const consistencyIssues = await validatePatchesManifestConsistency(paths.patches);
+  if (consistencyIssues.length > 0) {
+    const issues = consistencyIssues.map((issue) => `[${issue.code}] ${issue.message}`);
+    groups.push({
+      title: `Manifest consistency issues (${consistencyIssues.length})`,
+      issues,
+      errorCount: consistencyIssues.length,
+      warningCount: 0,
+    });
+    errorCount += consistencyIssues.length;
+  }
+
+  const manifest = await loadPatchesManifest(paths.patches);
+  if (manifest) {
+    const policyIssues = evaluatePatchPolicy(config, manifest);
+    if (policyIssues.length > 0) {
+      const policyErrors = policyIssues.filter((issue) => issue.severity === 'error').length;
+      const policyWarnings = policyIssues.length - policyErrors;
+      groups.push({
+        title: `Patch policy issues (${policyIssues.length})`,
+        issues: policyIssues.map((issue) => {
+          const label = issue.severity === 'error' ? 'ERROR' : 'WARN';
+          return `${label} [${issue.code}] ${issue.filename}: ${issue.message}`;
+        }),
+        errorCount: policyErrors,
+        warningCount: policyWarnings,
+      });
+      errorCount += policyErrors;
+      warningCount += policyWarnings;
+    }
+
+    const crossClaims = detectCrossPatchFileClaims(manifest.patches);
+    if (crossClaims.length > 0) {
+      groups.push({
+        title: `Cross-patch filesAffected conflicts (${crossClaims.length})`,
+        issues: crossClaims.map(
+          (claim) => `${claim.path}  claimed by: ${claim.filenames.join(', ')}`
+        ),
+        errorCount: crossClaims.length,
+        warningCount: 0,
+      });
+      errorCount += crossClaims.length;
+    }
+  }
+
+  const ctx = await buildPatchQueueContext(paths.patches);
+  const lintIssues = lintPatchQueue(ctx);
+  if (lintIssues.length > 0) {
+    const lintErrors = lintIssues.filter((issue) => issue.severity === 'error').length;
+    const lintWarnings = lintIssues.filter((issue) => issue.severity === 'warning').length;
+    groups.push({
+      title: `Cross-patch lint issues (${lintIssues.length})`,
+      issues: lintIssues.map((issue) => {
+        const label =
+          issue.severity === 'error' ? 'ERROR' : issue.severity === 'warning' ? 'WARN' : 'NOTICE';
+        return `${label} [${issue.check}] ${issue.file}: ${issue.message}`;
+      }),
+      errorCount: lintErrors,
+      warningCount: lintWarnings,
+    });
+    errorCount += lintErrors;
+    warningCount += lintWarnings;
+  }
+
+  if (manifest) {
+    const registrationIssues = await detectDanglingRegistrations(
+      paths.patches,
+      paths.engine,
+      manifest.patches
+    );
+    if (registrationIssues.length > 0) {
+      groups.push({
+        title: `Dangling registration references (${registrationIssues.length})`,
+        issues: registrationIssues.map(
+          (issue) =>
+            `${issue.patchFilename}: registers ${issue.targetPath} via ${issue.source}, but no patch body or engine file supplies it`
+        ),
+        errorCount: registrationIssues.length,
+        warningCount: 0,
+      });
+      errorCount += registrationIssues.length;
+    }
+  }
+
+  return {
+    hasPatchesDirectory: true,
+    groups,
+    errorCount,
+    warningCount,
+  };
+}
+
+/**
  * Runs the `verify` command: manifest consistency + cross-patch lint.
  * Read-only; exits non-zero on any error-severity finding.
  *
@@ -136,105 +263,31 @@ function detectCrossPatchFileClaims(
 export async function verifyCommand(projectRoot: string): Promise<void> {
   intro('FireForge Verify');
 
-  const paths = getProjectPaths(projectRoot);
-  const config = await loadConfig(projectRoot);
-  if (!(await pathExists(paths.patches))) {
+  const health = await collectPatchQueueHealth(projectRoot);
+  if (!health.hasPatchesDirectory) {
     info('No patches directory. Nothing to verify.');
     outro('Verify clean');
     return;
   }
 
-  let errorCount = 0;
-  let warningCount = 0;
-
-  // 1. Manifest consistency: orphan patch files, missing entries,
-  // files-affected mismatch, duplicate entries, unparseable manifest.
-  const consistencyIssues = await validatePatchesManifestConsistency(paths.patches);
-  if (consistencyIssues.length > 0) {
-    warn(`Manifest consistency issues (${consistencyIssues.length}):`);
-    for (const issue of consistencyIssues) {
-      warn(`  [${issue.code}] ${issue.message}`);
-      errorCount += 1;
+  for (const group of health.groups) {
+    warn(`${group.title}:`);
+    for (const issue of group.issues) {
+      warn(`  ${issue}`);
     }
   }
 
-  // 2. Cross-patch file claims: two or more manifest entries listing the
-  // same path in filesAffected. Not caught by per-patch consistency.
-  const manifest = await loadPatchesManifest(paths.patches);
-  if (manifest) {
-    const policyIssues = evaluatePatchPolicy(config, manifest);
-    if (policyIssues.length > 0) {
-      warn(`Patch policy issues (${policyIssues.length}):`);
-      for (const issue of policyIssues) {
-        const label = issue.severity === 'error' ? 'ERROR' : 'WARN';
-        warn(`  ${label} [${issue.code}] ${issue.filename}: ${issue.message}`);
-        if (issue.severity === 'error') errorCount += 1;
-        else warningCount += 1;
-      }
-    }
-
-    const crossClaims = detectCrossPatchFileClaims(manifest.patches);
-    if (crossClaims.length > 0) {
-      warn(`Cross-patch filesAffected conflicts (${crossClaims.length}):`);
-      for (const claim of crossClaims) {
-        warn(`  ${claim.path}  claimed by: ${claim.filenames.join(', ')}`);
-        errorCount += 1;
-      }
-    }
-  }
-
-  // 3. Cross-patch lint: duplicate /dev/null creation + forward imports.
-  const ctx = await buildPatchQueueContext(paths.patches);
-  const lintIssues = lintPatchQueue(ctx);
-  if (lintIssues.length > 0) {
-    warn(`Cross-patch lint issues (${lintIssues.length}):`);
-    for (const issue of lintIssues) {
-      const label =
-        issue.severity === 'error' ? 'ERROR' : issue.severity === 'warning' ? 'WARN' : 'NOTICE';
-      warn(`  ${label} [${issue.check}] ${issue.file}: ${issue.message}`);
-      if (issue.severity === 'error') errorCount += 1;
-      else if (issue.severity === 'warning') warningCount += 1;
-    }
-  }
-
-  // 4. Registration-consequence consistency: walk each patch body and
-  // confirm that every widget / locale registration it adds has a
-  // corresponding file body covered by the patch queue OR present in
-  // the engine working tree. 2026-04-24 eval Finding 1: a patch
-  // produced by `export-all --exclude-furnace` referenced
-  // `toolkit/content/widgets/moz-qa-panel/*.mjs` via jar.mn /
-  // customElements.js edits, but the source files themselves were
-  // excluded from the patch. `verify` used to report "clean"; it now
-  // flags each dangling reference as a `dangling-registration` error
-  // naming the specific patch and target path.
-  if (manifest) {
-    const registrationIssues = await detectDanglingRegistrations(
-      paths.patches,
-      paths.engine,
-      manifest.patches
-    );
-    if (registrationIssues.length > 0) {
-      warn(`Dangling registration references (${registrationIssues.length}):`);
-      for (const issue of registrationIssues) {
-        warn(
-          `  ${issue.patchFilename}: registers ${issue.targetPath} via ${issue.source}, but no patch body or engine file supplies it`
-        );
-        errorCount += 1;
-      }
-    }
-  }
-
-  if (errorCount === 0 && warningCount === 0) {
+  if (health.errorCount === 0 && health.warningCount === 0) {
     success('Patch queue is consistent.');
     outro('Verify clean');
     return;
   }
 
-  info(`\nVerify: ${errorCount} error(s), ${warningCount} warning(s)`);
-  if (errorCount > 0) {
+  info(`\nVerify: ${health.errorCount} error(s), ${health.warningCount} warning(s)`);
+  if (health.errorCount > 0) {
     outro('Verify failed');
     throw new GeneralError(
-      `fireforge verify found ${errorCount} error(s). Fix these before running export/import/rebase.`
+      `fireforge verify found ${health.errorCount} error(s). Fix these before running export/import/rebase.`
     );
   }
   outro('Verify passed with warnings');

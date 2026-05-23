@@ -13,6 +13,15 @@ vi.mock('../../core/config.js', () => ({
     src: '/project/src',
     componentsDir: '/project/components',
   })),
+  loadConfig: vi.fn(() =>
+    Promise.resolve({
+      name: 'Test',
+      vendor: 'Test',
+      appId: 'test',
+      binaryName: 'test',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+    })
+  ),
 }));
 
 vi.mock('../../core/destructive.js', () => ({
@@ -40,13 +49,24 @@ vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
+import { loadConfig } from '../../core/config.js';
 import { appendHistory, confirmDestructive } from '../../core/destructive.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import { loadPatchesManifest, renumberPatchesInManifest } from '../../core/patch-manifest.js';
+import { InvalidArgumentError } from '../../errors/base.js';
 import type { PatchesManifest } from '../../types/commands/index.js';
+import type { FireForgeConfig } from '../../types/config.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, warn } from '../../utils/logger.js';
 import { patchCompactCommand } from '../patch/compact.js';
+
+const baseConfig: FireForgeConfig = {
+  name: 'Test',
+  vendor: 'Test',
+  appId: 'test',
+  binaryName: 'test',
+  firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+};
 
 function manifest(orders: number[]): PatchesManifest {
   return {
@@ -65,12 +85,78 @@ function manifest(orders: number[]): PatchesManifest {
   };
 }
 
+function policyManifest(): PatchesManifest {
+  return {
+    version: 1,
+    patches: [
+      {
+        filename: '001-branding-logo.patch',
+        name: 'logo',
+        description: 'Branding logo',
+        category: 'branding',
+        order: 1,
+        filesAffected: ['browser/branding/test/logo.svg'],
+        sourceEsrVersion: '140.0',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        filename: '200-ui-shell.patch',
+        name: 'shell',
+        description: 'Shell UI',
+        category: 'ui',
+        order: 200,
+        filesAffected: ['browser/base/content/shell.js'],
+        sourceEsrVersion: '140.0',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        filename: '900-infra-bootstrap-workaround.patch',
+        name: 'bootstrap-workaround',
+        description: 'Bootstrap workaround',
+        category: 'infra',
+        order: 900,
+        filesAffected: ['tools/profiler/rust-api/build.rs'],
+        sourceEsrVersion: '140.0',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  };
+}
+
+function policyConfig(mutationMode?: 'error' | 'warn' | 'force'): FireForgeConfig {
+  return {
+    ...baseConfig,
+    patchPolicy: {
+      ...(mutationMode ? { mutationMode } : {}),
+      ranges: [
+        { from: 1, to: 99, category: 'branding' },
+        { from: 100, to: 199, category: 'infra' },
+        { from: 200, to: 299, category: 'ui' },
+      ],
+      reservedRanges: [
+        {
+          from: 900,
+          to: 999,
+          allowed: [
+            {
+              filename: '900-infra-bootstrap-workaround.patch',
+              files: ['tools/profiler/rust-api/build.rs'],
+              adr: 'docs/architecture/adr/0001-bootstrap-workaround.md',
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 describe('patchCompactCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(confirmDestructive).mockResolvedValue('proceed');
     vi.mocked(loadPatchesManifest).mockResolvedValue(manifest([1, 3, 7]));
+    vi.mocked(loadConfig).mockResolvedValue(baseConfig);
   });
 
   it('prints a no-op result when the patch queue is already compact', async () => {
@@ -147,6 +233,47 @@ describe('patchCompactCommand', () => {
     expect(renumberPatchesInManifest).toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('History log append failed after patch compact committed')
+    );
+  });
+
+  it('refuses a global compact plan that violates patchPolicy ranges', async () => {
+    vi.mocked(loadConfig).mockResolvedValue(policyConfig());
+    vi.mocked(loadPatchesManifest).mockResolvedValue(policyManifest());
+
+    await expect(patchCompactCommand('/project', { yes: true })).rejects.toBeInstanceOf(
+      InvalidArgumentError
+    );
+
+    expect(confirmDestructive).not.toHaveBeenCalled();
+    expect(withPatchDirectoryLock).not.toHaveBeenCalled();
+    expect(renumberPatchesInManifest).not.toHaveBeenCalled();
+  });
+
+  it('still refuses policy violations with --force-unsafe when mutationMode is error', async () => {
+    vi.mocked(loadConfig).mockResolvedValue(policyConfig('error'));
+    vi.mocked(loadPatchesManifest).mockResolvedValue(policyManifest());
+
+    await expect(
+      patchCompactCommand('/project', { yes: true, forceUnsafe: true })
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+
+    expect(renumberPatchesInManifest).not.toHaveBeenCalled();
+  });
+
+  it('allows --force-unsafe to bypass compact policy violations in force mode', async () => {
+    vi.mocked(loadConfig).mockResolvedValue(policyConfig('force'));
+    vi.mocked(loadPatchesManifest).mockResolvedValue(policyManifest());
+
+    await patchCompactCommand('/project', { yes: true, forceUnsafe: true });
+
+    expect(renumberPatchesInManifest).toHaveBeenCalled();
+    expect(appendHistory).toHaveBeenCalledWith(
+      '/project/patches',
+      expect.objectContaining({
+        operation: 'patch-compact',
+        result: 'ok',
+        unsafeOverride: true,
+      })
     );
   });
 });

@@ -583,6 +583,8 @@ export interface PatchCompactOptions {
   yes?: boolean;
   /** Print what would happen without writing anything. */
   dryRun?: boolean;
+  /** Bypass force-mode patchPolicy refusals. */
+  forceUnsafe?: boolean;
 }
 
 /**
@@ -618,6 +620,12 @@ export interface TokenAddOptions {
  */
 export interface DoctorOptions {
   repairPatchesManifest?: boolean;
+  /**
+   * Clear a stale `pendingResolution` marker, but only after the same
+   * read-only queue health checks used by `fireforge verify` report no
+   * error-severity findings.
+   */
+  clearResolution?: boolean;
   /**
    * Opt-in repair path for furnace-specific checks. When true, doctor will:
    * - clear stale `.fireforge/furnace-state.json` entries whose component is

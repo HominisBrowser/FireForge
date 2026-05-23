@@ -16,7 +16,8 @@
  * per-file LOC budget.
  */
 
-import { readdir } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { getFurnacePaths, loadFurnaceConfig, writeFurnaceConfig } from '../core/furnace-config.js';
@@ -154,6 +155,42 @@ async function repairOrphanOverrides(
   return { restored, unrecoverable };
 }
 
+async function repairCustomOrphans(
+  projectRoot: string,
+  customNames: string[]
+): Promise<{ deleted: string[]; retained: string[]; errors: string[] }> {
+  const deleted: string[] = [];
+  const retained: string[] = [];
+  const errors: string[] = [];
+  if (customNames.length === 0) return { deleted, retained, errors };
+
+  const furnacePaths = getFurnacePaths(projectRoot);
+  for (const name of customNames) {
+    const dir = join(furnacePaths.customDir, name);
+    let entries: Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (err: unknown) {
+      errors.push(`${name}: ${toError(err).message}`);
+      continue;
+    }
+
+    if (entries.length > 0) {
+      retained.push(name);
+      continue;
+    }
+
+    try {
+      await rm(dir);
+      deleted.push(name);
+    } catch (err: unknown) {
+      errors.push(`${name}: ${toError(err).message}`);
+    }
+  }
+
+  return { deleted, retained, errors };
+}
+
 export const furnaceManifestSyncCheck: DoctorCheckDefinition = {
   name: 'Furnace manifest sync',
   dependsOn: ['Furnace configuration'],
@@ -187,6 +224,7 @@ export const furnaceManifestSyncCheck: DoctorCheckDefinition = {
       );
     }
 
+    const customRepair = await repairCustomOrphans(ctx.projectRoot, orphans.customNames);
     const { restored, unrecoverable } = repairResult;
     const restoreDetail =
       restored.length > 0
@@ -197,12 +235,20 @@ export const furnaceManifestSyncCheck: DoctorCheckDefinition = {
         ? ` Could not recover ${unrecoverable.length} override${unrecoverable.length === 1 ? '' : 's'} without a valid override.json (${unrecoverable.join(', ')}) — delete components/overrides/<name> or re-run "fireforge furnace override" to restore the entry.`
         : '';
     const customDetail =
-      customCount > 0
-        ? ` ${customCount} custom ${customCount === 1 ? 'directory requires' : 'directories require'} manual action: re-run "fireforge furnace create" or delete components/custom/<name>/ to reconcile.`
+      customRepair.deleted.length > 0
+        ? ` Deleted ${customRepair.deleted.length} empty custom orphan ${customRepair.deleted.length === 1 ? 'directory' : 'directories'} (${customRepair.deleted.join(', ')}).`
+        : '';
+    const retainedCustomDetail =
+      customRepair.retained.length > 0
+        ? ` ${customRepair.retained.length} non-empty custom orphan ${customRepair.retained.length === 1 ? 'directory requires' : 'directories require'} manual action (${customRepair.retained.join(', ')}): re-run "fireforge furnace create" or delete components/custom/<name>/ to reconcile.`
+        : '';
+    const customErrorDetail =
+      customRepair.errors.length > 0
+        ? ` Could not inspect or delete ${customRepair.errors.length} custom orphan ${customRepair.errors.length === 1 ? 'directory' : 'directories'} (${customRepair.errors.join('; ')}).`
         : '';
     return warning(
       'Furnace manifest sync',
-      `${restoreDetail}${unrecoverableDetail}${customDetail}`.trim() ||
+      `${restoreDetail}${unrecoverableDetail}${customDetail}${retainedCustomDetail}${customErrorDetail}`.trim() ||
         'Nothing to repair (orphans surfaced but all were already recoverable).'
     );
   },

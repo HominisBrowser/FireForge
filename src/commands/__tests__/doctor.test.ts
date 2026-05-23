@@ -15,6 +15,7 @@ vi.mock('../../core/config.js', () => ({
     })
   ),
   loadState: vi.fn(() => Promise.resolve({})),
+  updateState: vi.fn(() => Promise.resolve()),
   getProjectPaths: vi.fn(() => ({
     root: '/project',
     engine: '/project/engine',
@@ -185,9 +186,20 @@ vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
-import { readdir } from 'node:fs/promises';
+vi.mock('../verify.js', () => ({
+  collectPatchQueueHealth: vi.fn(() =>
+    Promise.resolve({
+      hasPatchesDirectory: true,
+      groups: [],
+      errorCount: 0,
+      warningCount: 0,
+    })
+  ),
+}));
 
-import { configExists, loadConfig, loadState } from '../../core/config.js';
+import { readdir, rm } from 'node:fs/promises';
+
+import { configExists, loadConfig, loadState, updateState } from '../../core/config.js';
 import { applyAllComponents } from '../../core/furnace-apply.js';
 import { hasCustomEngineDrift, hasOverrideEngineDrift } from '../../core/furnace-apply-helpers.js';
 import {
@@ -218,6 +230,7 @@ import {
   validateCheckDependencies,
 } from '../doctor.js';
 import type { DoctorCheckDefinition } from '../doctor-check-core.js';
+import { collectPatchQueueHealth } from '../verify.js';
 
 function createProgram(): Command {
   const program = new Command();
@@ -253,6 +266,8 @@ describe('doctorCommand', () => {
       recoveredFilenames: [],
     });
     vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([]);
+    vi.mocked(rm).mockResolvedValue(undefined);
     // Reset furnace mocks to their "project does not use furnace" defaults.
     // `clearAllMocks` clears call history but preserves implementations, so
     // a `.mockResolvedValue(true)` set in a nested describe would persist
@@ -273,6 +288,13 @@ describe('doctorCommand', () => {
       applied: [],
       skipped: [],
       errors: [],
+    });
+    vi.mocked(updateState).mockResolvedValue(undefined);
+    vi.mocked(collectPatchQueueHealth).mockResolvedValue({
+      hasPatchesDirectory: true,
+      groups: [],
+      errorCount: 0,
+      warningCount: 0,
     });
   });
 
@@ -544,6 +566,66 @@ describe('doctorCommand', () => {
         .mocked(error)
         .mock.calls.some(([message]) =>
           message.includes('You are currently resolving a conflict for patch 007-ui.patch.')
+        )
+    ).toBe(true);
+    expect(result.exitCode).toBe(1);
+  });
+
+  it('clears pending resolution when the queue health check is clean', async () => {
+    vi.mocked(loadState).mockResolvedValue({
+      pendingResolution: {
+        patchFilename: '007-ui.patch',
+        originalError: 'patch failed',
+      },
+      baseCommit: 'base-commit',
+    });
+
+    const result = await doctorCommand('/project', { clearResolution: true });
+
+    expect(collectPatchQueueHealth).toHaveBeenCalledWith('/project');
+    expect(updateState).toHaveBeenCalledWith('/project', expect.any(Function));
+    const updater = vi.mocked(updateState).mock.calls.at(-1)?.[1] as (
+      current: Record<string, unknown>
+    ) => Record<string, unknown>;
+    expect(
+      updater({
+        pendingResolution: { patchFilename: 'x', originalError: 'y' },
+        baseCommit: 'base-commit',
+      })
+    ).toEqual({ baseCommit: 'base-commit' });
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('does nothing for --clear-resolution when no pending resolution exists', async () => {
+    const result = await doctorCommand('/project', { clearResolution: true });
+
+    expect(collectPatchQueueHealth).not.toHaveBeenCalled();
+    expect(updateState).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('refuses to clear pending resolution when queue health has errors', async () => {
+    vi.mocked(loadState).mockResolvedValue({
+      pendingResolution: {
+        patchFilename: '007-ui.patch',
+        originalError: 'patch failed',
+      },
+    });
+    vi.mocked(collectPatchQueueHealth).mockResolvedValue({
+      hasPatchesDirectory: true,
+      groups: [],
+      errorCount: 2,
+      warningCount: 0,
+    });
+
+    const result = await doctorCommand('/project', { clearResolution: true });
+
+    expect(updateState).not.toHaveBeenCalled();
+    expect(
+      vi
+        .mocked(error)
+        .mock.calls.some(([message]) =>
+          message.includes('Refusing to clear pending resolution for 007-ui.patch')
         )
     ).toBe(true);
     expect(result.exitCode).toBe(1);
@@ -1287,6 +1369,157 @@ describe('doctorCommand', () => {
         | undefined;
       expect(written?.overrides?.['moz-button']?.type).toBe('css-only');
       expect(written?.overrides?.['moz-button']?.description).toBe('Recovered');
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('deletes empty custom orphan directories during furnace repair', async () => {
+      vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+      });
+      vi.mocked(readdir).mockImplementation(((
+        path: string
+      ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
+        if (typeof path === 'string' && path.endsWith('components/custom')) {
+          return Promise.resolve([
+            {
+              name: 'moz-empty',
+              isDirectory: () => true,
+              isFile: () => false,
+            },
+          ]);
+        }
+        if (typeof path === 'string' && path.endsWith('components/custom/moz-empty')) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      }) as unknown as typeof readdir);
+
+      const result = await doctorCommand('/project', { repairFurnace: true });
+
+      expect(rm).toHaveBeenCalledWith('/project/components/custom/moz-empty');
+      expect(
+        vi
+          .mocked(warn)
+          .mock.calls.some(([message]) =>
+            message.includes('Deleted 1 empty custom orphan directory (moz-empty)')
+          )
+      ).toBe(true);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('keeps non-empty custom orphan directories for manual follow-up', async () => {
+      vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+      });
+      vi.mocked(readdir).mockImplementation(((
+        path: string
+      ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
+        if (typeof path === 'string' && path.endsWith('components/custom')) {
+          return Promise.resolve([
+            {
+              name: 'moz-lived-in',
+              isDirectory: () => true,
+              isFile: () => false,
+            },
+          ]);
+        }
+        if (typeof path === 'string' && path.endsWith('components/custom/moz-lived-in')) {
+          return Promise.resolve([
+            {
+              name: 'moz-lived-in.mjs',
+              isDirectory: () => false,
+              isFile: () => true,
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      }) as unknown as typeof readdir);
+
+      const result = await doctorCommand('/project', { repairFurnace: true });
+
+      expect(rm).not.toHaveBeenCalledWith('/project/components/custom/moz-lived-in');
+      expect(
+        vi
+          .mocked(warn)
+          .mock.calls.some(
+            ([message]) =>
+              message.includes('non-empty custom orphan directory requires manual action') &&
+              message.includes('moz-lived-in')
+          )
+      ).toBe(true);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('reports mixed override recovery and custom orphan cleanup together', async () => {
+      vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+      });
+      vi.mocked(readdir).mockImplementation(((
+        path: string
+      ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
+        if (typeof path === 'string' && path.endsWith('overrides')) {
+          return Promise.resolve([
+            {
+              name: 'moz-button',
+              isDirectory: () => true,
+              isFile: () => false,
+            },
+          ]);
+        }
+        if (typeof path === 'string' && path.endsWith('components/custom')) {
+          return Promise.resolve([
+            {
+              name: 'moz-empty',
+              isDirectory: () => true,
+              isFile: () => false,
+            },
+          ]);
+        }
+        if (typeof path === 'string' && path.endsWith('components/custom/moz-empty')) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      }) as unknown as typeof readdir);
+      vi.mocked(readJson).mockImplementation((path: string): Promise<unknown> => {
+        if (typeof path === 'string' && path.endsWith('moz-button/override.json')) {
+          return Promise.resolve({
+            type: 'css-only',
+            description: 'Recovered',
+            basePath: 'toolkit/content/widgets/moz-button',
+            baseVersion: '145.0',
+          });
+        }
+        return Promise.reject(new Error('not found'));
+      });
+
+      const result = await doctorCommand('/project', { repairFurnace: true });
+
+      expect(writeFurnaceConfig).toHaveBeenCalled();
+      expect(rm).toHaveBeenCalledWith('/project/components/custom/moz-empty');
+      expect(
+        vi
+          .mocked(warn)
+          .mock.calls.some(
+            ([message]) =>
+              message.includes('Re-registered 1 override') &&
+              message.includes('Deleted 1 empty custom orphan directory')
+          )
+      ).toBe(true);
       expect(result.exitCode).toBe(0);
     });
 

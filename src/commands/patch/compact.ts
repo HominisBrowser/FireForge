@@ -9,7 +9,7 @@
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../../core/config.js';
+import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { appendHistory, confirmDestructive, type HistoryEntry } from '../../core/destructive.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
@@ -17,6 +17,7 @@ import {
   type PatchRenameEntry,
   renumberPatchesInManifest,
 } from '../../core/patch-manifest.js';
+import { applyRenameMapToManifest, enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchCompactOptions, PatchMetadata } from '../../types/commands/index.js';
@@ -61,6 +62,7 @@ export async function patchCompactCommand(
   intro(options.dryRun ? 'FireForge patch compact (dry run)' : 'FireForge patch compact');
 
   const paths = getProjectPaths(projectRoot);
+  const config = await loadConfig(projectRoot);
   if (!(await pathExists(paths.patches))) {
     throw new GeneralError('Patches directory not found.');
   }
@@ -84,12 +86,20 @@ export async function patchCompactCommand(
     summary.push(`  ${oldFilename}  →  ${entry.newFilename}  (order ${entry.newOrder})`);
   }
 
+  enforcePatchPolicy({
+    config,
+    manifest: applyRenameMapToManifest(manifest, renameMap),
+    command: 'patch compact',
+    forceUnsafe: options.forceUnsafe === true,
+  });
+
   const decision = await confirmDestructive({
     operation: 'patch-compact',
     title: `Compact ${manifest.patches.length} patches (${renameMap.size} rename(s))`,
     summary,
     yes: options.yes === true,
     dryRun: options.dryRun === true,
+    unsafeOverride: options.forceUnsafe === true,
   });
 
   if (decision === 'dry-run') {
@@ -113,6 +123,13 @@ export async function patchCompactCommand(
       return;
     }
 
+    enforcePatchPolicy({
+      config,
+      manifest: applyRenameMapToManifest(currentManifest, currentRenameMap),
+      command: 'patch compact',
+      forceUnsafe: options.forceUnsafe === true,
+    });
+
     await renumberPatchesInManifest(paths.patches, currentRenameMap);
 
     const historyEntry: HistoryEntry = {
@@ -127,6 +144,7 @@ export async function patchCompactCommand(
           })),
       },
       ...(options.yes === true ? { yes: true } : {}),
+      ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
       result: 'ok',
     };
 
@@ -156,9 +174,12 @@ export function registerPatchCompact(parent: Command, context: CommandContext): 
     .description('Close ordinal gaps in the patch queue (renumber sequentially)')
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
+    .option('--force-unsafe', 'Bypass force-mode patchPolicy refusals')
     .action(
-      withErrorHandling(async (options: { dryRun?: boolean; yes?: boolean }) => {
-        await patchCompactCommand(getProjectRoot(), pickDefined(options));
-      })
+      withErrorHandling(
+        async (options: { dryRun?: boolean; yes?: boolean; forceUnsafe?: boolean }) => {
+          await patchCompactCommand(getProjectRoot(), pickDefined(options));
+        }
+      )
     );
 }

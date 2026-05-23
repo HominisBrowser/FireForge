@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { Command } from 'commander';
 
-import { configExists, getProjectPaths, loadConfig, loadState } from '../core/config.js';
+import {
+  configExists,
+  getProjectPaths,
+  loadConfig,
+  loadState,
+  updateState,
+} from '../core/config.js';
 import { furnaceConfigExists as checkFurnaceConfigExists } from '../core/furnace-config.js';
 import { getCurrentBranch, getHead, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { ensureGit } from '../core/git-base.js';
@@ -23,6 +29,7 @@ import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-c
 import { failure, ok, warning } from './doctor-check-core.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { inspectEngineWorkingTree } from './doctor-working-tree.js';
+import { collectPatchQueueHealth } from './verify.js';
 
 /**
  * Runs a single check definition, converting thrown errors into
@@ -237,12 +244,30 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
   {
     name: 'Pending Resolution',
     skipIf: (ctx) => !ctx.state.pendingResolution,
-    run: (ctx) => {
+    run: async (ctx) => {
       const patchFilename = ctx.state.pendingResolution?.patchFilename ?? 'unknown';
+      if (ctx.options.clearResolution) {
+        const health = await collectPatchQueueHealth(ctx.projectRoot);
+        if (health.errorCount > 0) {
+          return failure(
+            'Pending Resolution',
+            `Refusing to clear pending resolution for ${patchFilename}: patch queue health check found ${health.errorCount} error(s).`,
+            'Run "fireforge verify" for details, fix the queue, then retry "fireforge doctor --clear-resolution".'
+          );
+        }
+
+        await updateState(ctx.projectRoot, (current) => {
+          const next = { ...current };
+          delete next.pendingResolution;
+          return next;
+        });
+        return ok('Pending Resolution');
+      }
+
       return failure(
         'Pending Resolution',
         `You are currently resolving a conflict for patch ${patchFilename}.`,
-        'Build and Export commands may behave unexpectedly until "fireforge resolve" is completed.'
+        'Build and Export commands may behave unexpectedly until "fireforge resolve" is completed. If the queue now verifies cleanly, run "fireforge doctor --clear-resolution" to discard the stale marker.'
       );
     },
   },
@@ -577,6 +602,10 @@ export function registerDoctor(
     .option(
       '--repair-furnace',
       'Reconcile furnace state: clear stale furnace-state.json entries, re-run furnace apply to fix engine drift, and clear the pending-repair marker set by a failed preview teardown'
+    )
+    .option(
+      '--clear-resolution',
+      'Clear stale pendingResolution state after the patch queue health check reports no errors'
     )
     .action(
       withErrorHandling(async (options: DoctorOptions) => {

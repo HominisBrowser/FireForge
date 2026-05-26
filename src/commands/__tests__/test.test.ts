@@ -35,6 +35,7 @@ vi.mock('../../core/mach.js', () => ({
   buildArtifactMismatchMessage: vi.fn(() => undefined),
   buildUI: vi.fn(),
   testWithOutput: vi.fn(),
+  withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
 }));
 
 vi.mock('../../core/build-prepare.js', () => ({
@@ -94,6 +95,7 @@ vi.mock('../../core/test-stale-check.js', () => ({
 }));
 
 vi.mock('../../core/xpcshell-appdir.js', () => ({
+  findNearestXpcshellManifest: vi.fn(() => Promise.resolve(null)),
   resolveXpcshellAppdirArg: vi.fn(() => Promise.resolve({ kind: 'none' })),
   operatorAlreadySetAppPath: vi.fn(() => false),
 }));
@@ -104,6 +106,7 @@ import {
   buildUI,
   hasBuildArtifacts,
   testWithOutput,
+  withBuildLock,
 } from '../../core/mach.js';
 import { assertMarionettePortAvailable } from '../../core/marionette-port.js';
 import {
@@ -111,7 +114,11 @@ import {
   runMarionettePreflight,
 } from '../../core/marionette-preflight.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../../core/test-stale-check.js';
-import { operatorAlreadySetAppPath, resolveXpcshellAppdirArg } from '../../core/xpcshell-appdir.js';
+import {
+  findNearestXpcshellManifest,
+  operatorAlreadySetAppPath,
+  resolveXpcshellAppdirArg,
+} from '../../core/xpcshell-appdir.js';
 import { GeneralError } from '../../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { pathExists } from '../../utils/fs.js';
@@ -125,6 +132,7 @@ describe('testCommand', () => {
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
     vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(null);
   });
 
   it('fails before invoking mach when a requested test path does not exist', async () => {
@@ -211,6 +219,7 @@ describe('testCommand', () => {
       expect.objectContaining({ engine: '/project/engine' }),
       expect.objectContaining({ binaryName: 'mybrowser' })
     );
+    expect(withBuildLock).toHaveBeenCalledWith('/project', expect.any(Function));
     expect(buildUI).toHaveBeenCalledWith('/project/engine');
   });
 
@@ -544,6 +553,18 @@ describe('testCommand', () => {
     ).rejects.toBeInstanceOf(GeneralError);
   });
 
+  it('rewrites stale mochitest symlink setup failures into a harness-state hint', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: 'FileExistsError: [Errno 17] File exists: mochitest',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/foo/test_x.js'])
+    ).rejects.toThrow(/stale harness setup/i);
+  });
+
   it('forwards --mach-arg values verbatim to testWithOutput after --headless', async () => {
     vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
 
@@ -560,6 +581,40 @@ describe('testCommand', () => {
       ['browser/components/tests/unit/test_distribution.js'],
       ['--headless', '--verbose', '--keep-going']
     );
+  });
+
+  it('filters redundant --flavor=xpcshell when xpcshell is inferred from the manifest', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
+      '/project/engine/browser/base/content/test/foo/xpcshell.toml'
+    );
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/foo/test_x.js'], {
+        machArg: ['--flavor=xpcshell', '--verbose'],
+      })
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/foo/test_x.js'],
+      ['--verbose']
+    );
+  });
+
+  it('fails before mach when xpcshell and browser paths are mixed', async () => {
+    vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
+      Promise.resolve(path.includes('/xpcshell/') ? '/project/engine/foo/xpcshell.toml' : null)
+    );
+
+    await expect(
+      testCommand('/project', [
+        'browser/base/content/test/xpcshell/test_tile.js',
+        'browser/base/content/test/browser/browser_tile.js',
+      ])
+    ).rejects.toThrow(/cannot run xpcshell and browser\/mochitest paths/i);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
   });
 
   it('ignores an empty --mach-arg array without appending anything', async () => {

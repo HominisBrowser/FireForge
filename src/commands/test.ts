@@ -11,6 +11,7 @@ import {
   hasBuildArtifacts,
   hasRunnableBundle,
   testWithOutput,
+  withBuildLock,
 } from '../core/mach.js';
 import {
   assertMarionettePortAvailable,
@@ -25,6 +26,7 @@ import {
 } from '../core/marionette-preflight.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import {
+  findNearestXpcshellManifest,
   operatorAlreadySetAppPath,
   resolveXpcshellAppdirArg,
   type XpcshellAppdirOutcome,
@@ -71,6 +73,59 @@ function buildStaleBuildMessage(): string {
     'The failing output referenced missing branding or distribution resources, which usually means the current obj-* build does not match recent engine or branding changes.\n\n' +
     'Re-run "fireforge build --ui" or "fireforge test --build" and then retry.'
   );
+}
+
+interface HarnessClassification {
+  xpcshell: string[];
+  nonXpcshell: string[];
+}
+
+async function classifyTestHarnesses(
+  engineDir: string,
+  normalizedPaths: readonly string[]
+): Promise<HarnessClassification> {
+  const result: HarnessClassification = { xpcshell: [], nonXpcshell: [] };
+  for (const testPath of normalizedPaths) {
+    const manifest = await findNearestXpcshellManifest(engineDir, testPath);
+    if (manifest) {
+      result.xpcshell.push(testPath);
+    } else {
+      result.nonXpcshell.push(testPath);
+    }
+  }
+  return result;
+}
+
+function buildMixedHarnessMessage(classification: HarnessClassification): string {
+  return (
+    'FireForge cannot run xpcshell and browser/mochitest paths in the same mach invocation.\n\n' +
+    'Split this into separate `fireforge test` commands so each manifest selects its own harness:\n' +
+    `  - xpcshell: ${classification.xpcshell.join(', ')}\n` +
+    `  - browser/mochitest: ${classification.nonXpcshell.join(', ')}`
+  );
+}
+
+function filterRedundantXpcshellFlavorArgs(
+  machArgs: readonly string[],
+  classification: HarnessClassification
+): string[] {
+  if (classification.xpcshell.length === 0 || classification.nonXpcshell.length > 0) {
+    return [...machArgs];
+  }
+
+  const filtered: string[] = [];
+  for (let i = 0; i < machArgs.length; i += 1) {
+    const arg = machArgs[i] ?? '';
+    if (/^--flavor=xpcshell(?:-tests)?$/.test(arg)) {
+      continue;
+    }
+    if (arg === '--flavor' && /^xpcshell(?:-tests)?$/.test(machArgs[i + 1] ?? '')) {
+      i += 1;
+      continue;
+    }
+    filtered.push(arg);
+  }
+  return filtered;
 }
 
 function hasStaleBuildArtifactsSignal(output: string): boolean {
@@ -152,6 +207,50 @@ function buildXpcshellAppdirMessage(injectionAttempted: boolean): string {
   );
 }
 
+function buildMochitestSymlinkMessage(): string {
+  return (
+    'mach failed while preparing mochitest harness symlinks before the requested tests ran.\n\n' +
+    'This usually means the objdir contains stale harness setup from an earlier run. Re-run with `fireforge test --build` to refresh the harness state, or remove the stale mochitest symlink in the active obj-* directory before retrying.'
+  );
+}
+
+async function resolveLaunchablePathForTests(
+  engineDir: string,
+  binaryName: string,
+  objDir: string | undefined
+): Promise<string | undefined> {
+  if (!objDir) return undefined;
+  const bundleCheck = await hasRunnableBundle(engineDir, binaryName, objDir);
+  if (!bundleCheck.runnable) {
+    const expectedSuffix = bundleCheck.expectedPath
+      ? ` (expected at engine/${bundleCheck.expectedPath})`
+      : '';
+    throw new GeneralError(
+      `Tests require a complete launchable build${expectedSuffix}. ` +
+        'The obj-*/dist/ tree exists but the launchable binary is missing — typically the result of an interrupted or partially failed `fireforge build`.\n\n' +
+        'Run "fireforge build" again and let it finish before retrying "fireforge test".'
+    );
+  }
+  return bundleCheck.expectedPath;
+}
+
+async function runPreTestBuild(
+  projectRoot: string,
+  paths: ReturnType<typeof getProjectPaths>,
+  projectConfig: Awaited<ReturnType<typeof loadConfig>>
+): Promise<void> {
+  await withBuildLock(projectRoot, async () => {
+    await prepareBuildEnvironment(projectRoot, paths, projectConfig);
+    const s = spinner('Running incremental build...');
+    const buildResult = await buildUI(paths.engine);
+    if (buildResult.exitCode !== 0) {
+      s.error('Pre-test build failed');
+      throw new BuildError('Pre-test build failed', 'mach build faster');
+    }
+    s.stop('Build complete');
+  });
+}
+
 // Detects the `AttributeError: 'MochitestDesktop' object has no attribute
 // 'http3Server'` teardown crash. The attribute is lazy-initialized inside
 // harness code paths that presume chrome://branding resolves correctly; a
@@ -211,6 +310,9 @@ function handleNonZeroTestExit(
   }
   if (hasMochitestHttp3ServerSignal(combinedOutput)) {
     throw new GeneralError(buildMochitestHttp3ServerMessage());
+  }
+  if (/FileExistsError/i.test(combinedOutput) && /mochitest/i.test(combinedOutput)) {
+    throw new GeneralError(buildMochitestSymlinkMessage());
   }
   if (
     /invalid filename/i.test(combinedOutput) ||
@@ -277,36 +379,15 @@ export async function testCommand(
   // here so `test --doctor` against an incomplete build surfaces the
   // missing-bundle path instead of a cryptic `Browser process exited
   // during spawn (exit code 1, signal none). stderr tail: (empty)`.
-  let launchablePath: string | undefined;
-  if (buildCheck.objDir) {
-    const bundleCheck = await hasRunnableBundle(
-      paths.engine,
-      projectConfig.binaryName,
-      buildCheck.objDir
-    );
-    launchablePath = bundleCheck.expectedPath;
-    if (!bundleCheck.runnable) {
-      const expectedSuffix = bundleCheck.expectedPath
-        ? ` (expected at engine/${bundleCheck.expectedPath})`
-        : '';
-      throw new GeneralError(
-        `Tests require a complete launchable build${expectedSuffix}. ` +
-          'The obj-*/dist/ tree exists but the launchable binary is missing — typically the result of an interrupted or partially failed `fireforge build`.\n\n' +
-          'Run "fireforge build" again and let it finish before retrying "fireforge test".'
-      );
-    }
-  }
+  const launchablePath = await resolveLaunchablePathForTests(
+    paths.engine,
+    projectConfig.binaryName,
+    buildCheck.objDir
+  );
 
   // Run incremental build if requested
   if (options.build) {
-    await prepareBuildEnvironment(projectRoot, paths, projectConfig);
-    const s = spinner('Running incremental build...');
-    const buildResult = await buildUI(paths.engine);
-    if (buildResult.exitCode !== 0) {
-      s.error('Pre-test build failed');
-      throw new BuildError('Pre-test build failed', 'mach build faster');
-    }
-    s.stop('Build complete');
+    await runPreTestBuild(projectRoot, paths, projectConfig);
     info('');
   } else {
     // Stale-build preflight — when --build was NOT requested, detect
@@ -400,6 +481,14 @@ export async function testCommand(
   // previous case-insensitive + leading-whitespace-tolerant contract.
   const normalizedPaths = testPaths.map((p) => stripEnginePrefix(p).trim());
   await assertTestPathsExist(paths.engine, normalizedPaths);
+  const classification = await classifyTestHarnesses(paths.engine, normalizedPaths);
+  if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {
+    throw new GeneralError(buildMixedHarnessMessage(classification));
+  }
+  const forwardedMachArgs =
+    options.machArg && options.machArg.length > 0
+      ? filterRedundantXpcshellFlavorArgs(options.machArg, classification)
+      : [];
 
   // Build extra args
   const extraArgs: string[] = [];
@@ -413,8 +502,8 @@ export async function testCommand(
   // above for the motivating case). Appended AFTER --headless so mach sees
   // the FireForge-managed flags first and the escape-valve ones last, which
   // keeps the override precedence predictable.
-  if (options.machArg && options.machArg.length > 0) {
-    extraArgs.push(...options.machArg);
+  if (forwardedMachArgs.length > 0) {
+    extraArgs.push(...forwardedMachArgs);
   }
 
   // Auto-forward the Marionette port to mach when `--marionette-port` is

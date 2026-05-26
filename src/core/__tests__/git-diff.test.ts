@@ -24,6 +24,7 @@ vi.mock('../git-base.js', () => ({
 
 vi.mock('../git-file-ops.js', () => ({
   fileExistsInHead: vi.fn(),
+  isBinaryFile: vi.fn(),
 }));
 
 vi.mock('../git-status.js', () => ({
@@ -47,6 +48,7 @@ import {
   getStagedDiffForFiles,
 } from '../git-diff.js';
 import { fileExistsInHead } from '../git-file-ops.js';
+import { isBinaryFile } from '../git-file-ops.js';
 import { getUntrackedFiles, getUntrackedFilesInDir } from '../git-status.js';
 
 const mockExec = vi.mocked(exec);
@@ -54,6 +56,7 @@ const mockGit = vi.mocked(git);
 const mockPathExists = vi.mocked(pathExists);
 const mockReadText = vi.mocked(readText);
 const mockFileExistsInHead = vi.mocked(fileExistsInHead);
+const mockIsBinaryFile = vi.mocked(isBinaryFile);
 const mockGetUntrackedFiles = vi.mocked(getUntrackedFiles);
 const mockGetUntrackedFilesInDir = vi.mocked(getUntrackedFilesInDir);
 const mockMkdtemp = vi.mocked(mkdtemp);
@@ -68,6 +71,7 @@ beforeEach(() => {
   // Default: every `stat` lookup reports a regular file. The two tests
   // that exercise the directory-detection paths override this.
   mockStat.mockResolvedValue(makeStat(false));
+  mockIsBinaryFile.mockResolvedValue(false);
 });
 
 describe('getFileDiff', () => {
@@ -273,6 +277,31 @@ describe('getDiffForFilesAgainstHead', () => {
 
     const result = await getDiffForFilesAgainstHead('/repo', ['new.txt']);
     expect(result).toContain('new file mode 100644');
+  });
+
+  it('uses binary patches for untracked binary files', async () => {
+    mockFileExistsInHead.mockResolvedValue(false);
+    mockPathExists.mockResolvedValue(true);
+    mockIsBinaryFile.mockResolvedValue(true);
+    mockExec
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({
+        stdout: 'GIT binary patch\nliteral 1\nA\n',
+        stderr: '',
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+
+    const result = await getDiffForFilesAgainstHead('/repo', ['brand/icon.png']);
+
+    expect(result).toContain('GIT binary patch');
+    expect(mockReadText).not.toHaveBeenCalled();
+    expect(mockExec).toHaveBeenCalledWith(
+      'git',
+      ['add', '--intent-to-add', '--', 'brand/icon.png'],
+      { cwd: '/repo' }
+    );
   });
 
   it('skips files that do not exist on disk', async () => {

@@ -253,6 +253,15 @@ export interface AggregateLintIgnoreResult {
   dropped: number;
 }
 
+function buildMaxWarningsMessage(count: number, maxWarnings: number, scope?: string): string {
+  const scoped = scope ? ` ${scope}` : '';
+  const base = `Patch lint found ${count} warning(s)${scoped}, exceeding --max-warnings ${maxWarnings}.`;
+  return (
+    base +
+    ' If this is a release gate and the warnings are historical patch-size advisories, run with --per-patch to identify the owning patch and split/re-export that patch, or add a scoped lintIgnore entry only after review.'
+  );
+}
+
 /**
  * Filters aggregate-mode lint issues against per-patch `lintIgnore`
  * lists drawn from the manifest. An issue is dropped when at least one
@@ -514,9 +523,7 @@ export async function lintCommand(
 
   if (options.maxWarnings !== undefined && warnings.length > options.maxWarnings) {
     outro('Lint failed');
-    throw new GeneralError(
-      `Patch lint found ${warnings.length} warning(s), exceeding --max-warnings ${options.maxWarnings}.`
-    );
+    throw new GeneralError(buildMaxWarningsMessage(warnings.length, options.maxWarnings));
   }
 
   // Notices are advisory and don't count as warnings — emitting "passed
@@ -664,7 +671,7 @@ async function lintPerPatch(
   if (options.maxWarnings !== undefined && warnings.length > options.maxWarnings) {
     outro('Lint failed');
     throw new GeneralError(
-      `Patch lint found ${warnings.length} warning(s) across ${linted} patch(es), exceeding --max-warnings ${options.maxWarnings}.`
+      buildMaxWarningsMessage(warnings.length, options.maxWarnings, `across ${linted} patch(es)`)
     );
   }
 

@@ -329,8 +329,10 @@ export function forwardedMachArgsIncludeMarionetteClient(machArgs: string[]): bo
  * for runs where the pref is ignored anyway.
  */
 export function hasExplicitXpcshellFlavor(machArgs: string[]): boolean {
-  for (const arg of machArgs) {
+  for (let i = 0; i < machArgs.length; i += 1) {
+    const arg = machArgs[i] ?? '';
     if (/^--flavor=xpcshell\b/.test(arg) || arg === '--flavor=xpcshell-tests') return true;
+    if (arg === '--flavor' && /^xpcshell(?:-tests)?$/.test(machArgs[i + 1] ?? '')) return true;
   }
   return false;
 }

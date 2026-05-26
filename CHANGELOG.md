@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.23.0
+
+- Improved xpcshell test argument filtering and mixed-harness diagnostics.
+- Locked pre-test build phases and improved stale harness diagnostics.
+- Fixed binary-safe re-export for new untracked files.
+- Improved additive `re-export --files` and lint warning guidance.
+
 ## 0.22.0
 
 - Added `doctor --clear-resolution` with verify-backed safety checks.

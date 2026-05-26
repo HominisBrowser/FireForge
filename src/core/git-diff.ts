@@ -9,7 +9,7 @@ import { pathExists, readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
 import { ensureGit, git } from './git-base.js';
-import { fileExistsInHead } from './git-file-ops.js';
+import { fileExistsInHead, isBinaryFile } from './git-file-ops.js';
 import { getUntrackedFiles, getUntrackedFilesInDir } from './git-status.js';
 
 async function execGitWithAllowedExitCodes(
@@ -219,7 +219,9 @@ export async function getAllDiff(repoDir: string): Promise<string> {
   // Generate diffs for untracked files
   const untrackedDiffs: string[] = [];
   for (const file of untrackedFiles) {
-    const diff = await generateNewFileDiff(repoDir, file);
+    const diff = (await isBinaryFile(repoDir, file))
+      ? await generateBinaryFilePatch(repoDir, file)
+      : await generateNewFileDiff(repoDir, file);
     untrackedDiffs.push(diff);
   }
 
@@ -305,7 +307,9 @@ export async function getDiffForFilesAgainstHead(
       continue;
     }
 
-    const diff = await generateNewFileDiff(repoDir, file);
+    const diff = (await isBinaryFile(repoDir, file))
+      ? await generateBinaryFilePatch(repoDir, file)
+      : await generateNewFileDiff(repoDir, file);
     if (diff.trim()) {
       diffs.push(diff);
     }

@@ -118,7 +118,7 @@ describe('re-export --files integration', () => {
     ).rejects.toBeInstanceOf(InvalidArgumentError);
   });
 
-  it('--files non-TTY without --force rejects', async () => {
+  it('--files additive/same-scope non-TTY proceeds without --yes', async () => {
     await seedManifest(patchesDir, [
       {
         metadata: makeMetadata('001-infra-a.patch', 1, ['browser/base/content/browser.js']),
@@ -127,6 +127,25 @@ describe('re-export --files integration', () => {
     ]);
     // Make an actual modification so the diff is non-empty.
     await writeFile(join(engineDir, 'browser/base/content/browser.js'), 'modified;\n');
+    await expect(
+      reExportCommand(projectRoot, ['001-infra-a.patch'], {
+        files: ['browser/base/content/browser.js'],
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it('--files shrink non-TTY without --yes rejects', async () => {
+    await seedManifest(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-a.patch', 1, [
+          'browser/base/content/browser.js',
+          'browser/base/content/browser.css',
+        ]),
+        body: '',
+      },
+    ]);
+    await writeFile(join(engineDir, 'browser/base/content/browser.js'), 'modified;\n');
+
     await expect(
       reExportCommand(projectRoot, ['001-infra-a.patch'], {
         files: ['browser/base/content/browser.js'],

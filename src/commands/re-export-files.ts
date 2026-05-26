@@ -253,9 +253,10 @@ export async function reExportFilesInPlace(
     });
   }
 
-  // Shrinks are destructive (previously-owned files become unmanaged).
-  // Additive-only changes still deserve a prompt because --files asserts
-  // an authoritative file set.
+  // Shrinks are destructive (previously-owned files become unmanaged), so
+  // they keep the explicit confirmation gate. Additive-only scopes are safe
+  // to run non-interactively after lint/policy projection because no existing
+  // patch ownership is being dropped.
   const summary: string[] = [
     `re-export ${target.filename} with --files scope`,
     `current files (${target.filesAffected.length}): ${target.filesAffected.join(', ') || '(none)'}`,
@@ -275,7 +276,7 @@ export async function reExportFilesInPlace(
     operation: 're-export-files',
     title: `Re-export ${target.filename} with --files`,
     summary,
-    yes: options.yes === true,
+    yes: removed.length === 0 && missingFiles.length === 0 ? true : options.yes === true,
     dryRun: isDryRun,
     unsafeOverride: options.forceUnsafe === true,
     conflicts,

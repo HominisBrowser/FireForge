@@ -42,8 +42,8 @@ Workflow:
                                     sourceEsrVersion by default — use --stamp or
                                     run rebase for version stamping.
   patch                             Manage individual patches in the queue
-                                    (compact, delete, lint-ignore, rename,
-                                    reorder, tier)
+                                    (compact, delete, lint-ignore, move-files,
+                                    rename, reorder, staged-dependency, tier)
   rebase [options]                  Semi-automated ESR version upgrade — apply
                                     patches with fuzz and re-export
   package [options]                 Create distribution package
@@ -300,5 +300,39 @@ Options:
   --fix       Auto-fix registration issues (missing jar.mn entries,
               customElements.js)
   -h, --help  display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for patch staged-dependency > patch move-files --help 1`] = `
+"Usage: fireforge patch move-files [options] <from> <to>
+
+Preview the re-export commands needed to move file ownership between patches.
+
+Options:
+  --file <path>  File path relative to engine/ to move (repeatable) (default:
+                 [])
+  -h, --help     display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for patch staged-dependency > patch staged-dependency --help 1`] = `
+"Usage: fireforge patch staged-dependency [options] <name>
+
+Edit PatchMetadata.stagedDependencies on a single patch (no .patch body
+rewrite).
+
+Options:
+  --add                    Add a staged forward-import declaration
+  --remove                 Remove matching staged forward-import declaration(s)
+  --clear                  Drop the stagedDependencies field entirely
+  --file <path>            Importing file path relative to engine/
+  --specifier <specifier>  Exact import specifier as it appears in source
+  --creates <path>         Later-created file path relative to engine/
+  --owner <patch>          Exact later patch filename expected to create
+                           --creates
+  --reason <text>          Human-readable rationale stored with the declaration
+  --dry-run                Show what would change without writing
+  -y, --yes                Skip confirmation prompt (required for non-TTY)
+  -h, --help               display help for command
 "
 `;

@@ -287,7 +287,7 @@ export async function verifyCommand(projectRoot: string): Promise<void> {
   if (health.errorCount > 0) {
     outro('Verify failed');
     throw new GeneralError(
-      `fireforge verify found ${health.errorCount} error(s). Fix these before running export/import/rebase.`
+      `fireforge verify found ${health.errorCount} error(s). Fix these before running export/import/rebase. Use "patch staged-dependency" for intentional staged imports, or preview "patch move-files" / "patch reorder --dry-run" / "re-export --files --dry-run" for ownership repairs.`
     );
   }
   outro('Verify passed with warnings');

@@ -13,7 +13,11 @@
 
 import { basename } from 'node:path';
 
-import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
+import type {
+  PatchLintIssue,
+  PatchMetadata,
+  PatchStagedForwardImport,
+} from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
@@ -410,6 +414,41 @@ export function findForwardImportIgnoreLines(source: string): Set<number> {
   return ignored;
 }
 
+function stagedDependencyKey(entry: PatchQueueEntry, dependency: PatchStagedForwardImport): string {
+  return [
+    entry.filename,
+    dependency.file,
+    dependency.specifier,
+    dependency.creates,
+    dependency.owner ?? '',
+  ].join('\0');
+}
+
+function findMatchingStagedDependency(
+  entry: PatchQueueEntry,
+  sitePath: string,
+  specifier: string,
+  laterOwners: readonly NewFileOwner[]
+): PatchStagedForwardImport | undefined {
+  const declarations = entry.metadata?.stagedDependencies?.forwardImports ?? [];
+  return declarations.find(
+    (dependency) =>
+      dependency.file === sitePath &&
+      dependency.specifier === specifier &&
+      laterOwners.some(
+        (owner) =>
+          owner.fullPath === dependency.creates &&
+          (dependency.owner === undefined || dependency.owner === owner.filename)
+      )
+  );
+}
+
+interface NewFileOwner {
+  filename: string;
+  order: number;
+  fullPath: string;
+}
+
 /**
  * Cross-patch lint rule: a patch imports a module that a later patch is
  * responsible for creating.
@@ -431,12 +470,6 @@ export function findForwardImportIgnoreLines(source: string): Set<number> {
  * - Imports on a line suppressed by the ignore marker.
  */
 export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintIssue[] {
-  interface NewFileOwner {
-    filename: string;
-    order: number;
-    fullPath: string;
-  }
-
   const newFileIndex = new Map<string, NewFileOwner[]>();
   for (const entry of ctx.entries) {
     for (const fullPath of entry.newFiles.keys()) {
@@ -451,6 +484,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
   }
 
   const issues: PatchLintIssue[] = [];
+  const usedStagedDeclarations = new Set<string>();
 
   // Runs the forward-import check against one source site — either a file
   // the patch creates (`content` = full file) or a file the patch modifies
@@ -482,6 +516,17 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
       );
       if (laterOwners.length === 0) continue;
 
+      const stagedDependency = findMatchingStagedDependency(
+        entry,
+        sitePath,
+        specifier,
+        laterOwners
+      );
+      if (stagedDependency) {
+        usedStagedDeclarations.add(stagedDependencyKey(entry, stagedDependency));
+        continue;
+      }
+
       const ownersSummary = laterOwners
         .map((o) => `${o.filename} (creates ${o.fullPath})`)
         .join(', ');
@@ -502,7 +547,8 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
           `${sitePath} in ${entry.filename} imports "${specifier}", ` +
           `but the matching new file is created by a later patch: ${ownersSummary}. ` +
           'Reorder the patches so the dependency is created first, move the import ' +
-          'into the later patch, or mark the import with ' +
+          'into the later patch, declare the intentional staged dependency with ' +
+          '"fireforge patch staged-dependency --add", or mark the import with ' +
           `"// ${FORWARD_IMPORT_IGNORE_MARKER}" if the basename collision is a false positive. ` +
           `Closest legal ordinal that satisfies this dependency: ${suggestedOrder}.`,
         severity: 'error',
@@ -513,6 +559,22 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
   for (const entry of ctx.entries) {
     for (const [path, content] of entry.newFiles) checkSite(entry, path, content);
     for (const [path, added] of entry.modifiedFileAdditions) checkSite(entry, path, added);
+  }
+
+  for (const entry of ctx.entries) {
+    for (const dependency of entry.metadata?.stagedDependencies?.forwardImports ?? []) {
+      if (usedStagedDeclarations.has(stagedDependencyKey(entry, dependency))) continue;
+      issues.push({
+        file: dependency.file,
+        check: 'staged-dependency-unused',
+        fingerprint: `staged-dependency-unused|${entry.filename}|${dependency.file}|${dependency.specifier}|${dependency.creates}|${dependency.owner ?? ''}`,
+        message:
+          `${entry.filename} declares a staged forward import from ${dependency.file} ` +
+          `to "${dependency.specifier}" / ${dependency.creates}, but that exact forward dependency was not found. ` +
+          'Remove the stale declaration with "fireforge patch staged-dependency --remove" or update it to match the current queue.',
+        severity: 'warning',
+      });
+    }
   }
 
   return issues;

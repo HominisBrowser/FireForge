@@ -138,6 +138,7 @@ function buildConfigureScriptContent(config: BrandingConfig): string {
   return `${header}
 
 MOZ_APP_DISPLAYNAME="${escapeShellValue(config.name)}"
+MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"
 MOZ_MACBUNDLE_ID="${escapeShellValue(config.appId)}"
 `;
 }
@@ -199,16 +200,19 @@ trademarkInfo = { " " }
 }
 
 /**
- * Patches browser/moz.configure to set custom vendor.
+ * Patches browser/moz.configure to set custom vendor when the upstream
+ * configure surface still owns an existing MOZ_APP_VENDOR imply_option.
  *
- * Mozilla's build system requires MOZ_APP_VENDOR to be set via imply_option
- * in moz.configure, not through mozconfig.
+ * Newer FireForge branding writes MOZ_APP_VENDOR from the branding-owned
+ * configure.sh instead, so an absent browser/moz.configure line is valid.
+ * Keeping this best-effort replacement preserves compatibility for queues
+ * that still carry the older process-wide registration line.
  */
 async function patchMozConfigure(engineDir: string, config: BrandingConfig): Promise<void> {
   const mozConfigurePath = join(engineDir, 'browser', 'moz.configure');
 
   if (!(await pathExists(mozConfigurePath))) {
-    throw new BrandingError(`browser/moz.configure not found at ${mozConfigurePath}`);
+    return;
   }
 
   let content = await readText(mozConfigurePath);
@@ -216,7 +220,7 @@ async function patchMozConfigure(engineDir: string, config: BrandingConfig): Pro
   // Replace MOZ_APP_VENDOR imply_option
   const vendorRegex = /imply_option\("MOZ_APP_VENDOR",\s*"[^"]*"\)/;
   if (!vendorRegex.test(content)) {
-    throw new BrandingError('Could not find MOZ_APP_VENDOR imply_option in browser/moz.configure');
+    return;
   }
   content = content.replace(vendorRegex, buildMozConfigureVendorLine(config));
 
@@ -284,7 +288,6 @@ export async function isBrandingSetup(engineDir: string, config: BrandingConfig)
   const configureShPath = join(brandingDir, 'configure.sh');
   const propsPath = join(brandingDir, 'locales', 'en-US', 'brand.properties');
   const ftlPath = join(brandingDir, 'locales', 'en-US', 'brand.ftl');
-  const mozConfigurePath = join(engineDir, 'browser', 'moz.configure');
 
   if (!(await pathExists(configureShPath))) {
     return false;
@@ -309,12 +312,7 @@ export async function isBrandingSetup(engineDir: string, config: BrandingConfig)
     }
   }
 
-  if (!(await pathExists(mozConfigurePath))) {
-    return false;
-  }
-
-  const mozConfigureContent = await readText(mozConfigurePath);
-  return mozConfigureContent.includes(buildMozConfigureVendorLine(config));
+  return configureContent.includes(`MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"`);
 }
 
 /**

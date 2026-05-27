@@ -10,7 +10,7 @@ import { loadPatchesManifest, savePatchesManifest } from './patch-manifest.js';
 /**
  * Optional `PatchMetadata` keys safe to clear via the helpers below.
  */
-export type ClearablePatchMetadataField = 'tier' | 'lintIgnore';
+export type ClearablePatchMetadataField = 'tier' | 'lintIgnore' | 'stagedDependencies';
 
 /**
  * Merges `updates` onto `existing` and removes the listed optional fields.
@@ -28,6 +28,9 @@ function applyMetadataUpdate(
         break;
       case 'lintIgnore':
         delete next.lintIgnore;
+        break;
+      case 'stagedDependencies':
+        delete next.stagedDependencies;
         break;
     }
   }

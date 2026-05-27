@@ -102,6 +102,35 @@ export interface PatchMetadata {
    * rejected by the manifest validator, not silently stripped.
    */
   tier?: 'branding';
+  /**
+   * Optional declarations for intentional staged dependencies between
+   * patches. These are metadata-only escape hatches for cases where an
+   * early patch must import or register a helper created later in the
+   * queue during a staged migration. They keep tooling-specific markers
+   * out of Firefox source while remaining exact enough that unrelated
+   * forward imports still fail.
+   */
+  stagedDependencies?: PatchStagedDependencies;
+}
+
+/** Staged dependency metadata owned by a patch. */
+export interface PatchStagedDependencies {
+  /** Exact forward-import declarations allowed for this patch. */
+  forwardImports?: PatchStagedForwardImport[];
+}
+
+/** A single intentional forward import to a later-created file. */
+export interface PatchStagedForwardImport {
+  /** Importing file path relative to engine/. */
+  file: string;
+  /** Exact import specifier as it appears in source. */
+  specifier: string;
+  /** Later-created file path relative to engine/. */
+  creates: string;
+  /** Optional exact patch filename expected to create `creates`. */
+  owner?: string;
+  /** Optional human-readable rationale for the staged dependency. */
+  reason?: string;
 }
 
 /**

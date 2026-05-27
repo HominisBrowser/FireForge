@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.24.0
+
+- Moved branding vendor identity into generated branding configure scripts and made `browser/moz.configure` vendor patching optional.
+- Added metadata-backed staged forward-import declarations plus `patch staged-dependency` editing.
+- Added stale xpcshell `_tests` symlink repair with a single safe retry.
+- Added `patch move-files` for previewable ownership-transfer repair plans.
+- Improved queue self-containment guidance for staged dependencies and patch repairs.
+
 ## 0.23.0
 
 - Improved xpcshell test argument filtering and mixed-harness diagnostics.

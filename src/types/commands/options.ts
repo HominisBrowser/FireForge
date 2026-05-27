@@ -255,6 +255,44 @@ export interface PatchLintIgnoreOptions {
 }
 
 /**
+ * Options for the `fireforge patch staged-dependency` subcommand. Modes are
+ * mutually exclusive: add a declaration, remove one or more matching
+ * declarations, or clear all staged dependencies from the patch.
+ */
+export interface PatchStagedDependencyOptions {
+  /** Add a forward-import staged dependency. */
+  add?: boolean;
+  /** Remove matching forward-import staged dependency declarations. */
+  remove?: boolean;
+  /** Drop the stagedDependencies field entirely. */
+  clear?: boolean;
+  /** Importing file path relative to engine/. */
+  file?: string;
+  /** Exact import specifier as it appears in source. */
+  specifier?: string;
+  /** Later-created file path relative to engine/. */
+  creates?: string;
+  /** Optional exact patch filename expected to create `creates`. */
+  owner?: string;
+  /** Optional human-readable rationale stored with the declaration. */
+  reason?: string;
+  /** Print the planned change without writing. */
+  dryRun?: boolean;
+  /** Skip the confirmation prompt (required for non-TTY). */
+  yes?: boolean;
+}
+
+/**
+ * Options for the preview-only `fireforge patch move-files` subcommand.
+ * It validates an ownership transfer and prints the explicit
+ * `re-export --files` commands needed to perform it.
+ */
+export interface PatchMoveFilesOptions {
+  /** File paths relative to engine/ to move from the source patch to the target patch. */
+  file?: string[];
+}
+
+/**
  * Options for the rebase command.
  */
 export interface RebaseOptions {

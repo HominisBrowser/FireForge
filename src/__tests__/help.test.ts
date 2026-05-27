@@ -70,4 +70,17 @@ describe('CLI help output', () => {
       expect(help).toMatchSnapshot(`furnace ${subcommand.name()} --help`);
     }
   });
+
+  it('exposes stable help text for patch staged-dependency', () => {
+    const program = createProgram();
+    const patch = program.commands.find((command) => command.name() === 'patch');
+    const moveFiles = patch?.commands.find((command) => command.name() === 'move-files');
+    const stagedDependency = patch?.commands.find(
+      (command) => command.name() === 'staged-dependency'
+    );
+    expect(moveFiles).toBeDefined();
+    expect(stagedDependency).toBeDefined();
+    expect(moveFiles?.helpInformation()).toMatchSnapshot('patch move-files --help');
+    expect(stagedDependency?.helpInformation()).toMatchSnapshot('patch staged-dependency --help');
+  });
 });

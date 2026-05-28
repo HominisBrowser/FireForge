@@ -79,7 +79,7 @@
     "vitest": "^4.0.18"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.22.1"
   },
   "packageManager": "npm@11.12.1",
   "license": "EUPL-1.2",

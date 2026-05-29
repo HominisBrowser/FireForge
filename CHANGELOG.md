@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.25.0
+
+- Kept `MOZ_APP_VENDOR` in `browser/moz.configure` for Firefox ESR 140 project-flag trees instead of generated branding `configure.sh`.
+- Added a regression for stale xpcshell install symlink repair under shared `_tests/testing/mochitest/` harness paths.
+
 ## 0.24.0
 
 - Moved branding vendor identity into generated branding configure scripts and made `browser/moz.configure` vendor patching optional.

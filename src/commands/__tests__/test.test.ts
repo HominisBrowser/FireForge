@@ -594,6 +594,29 @@ describe('testCommand', () => {
     expect(testWithOutput).toHaveBeenCalledTimes(2);
   });
 
+  it('removes stale xpcshell install symlinks under the shared mochitest harness tree', async () => {
+    const staleLink =
+      '/project/engine/obj-debug/_tests/testing/mochitest/browser/browser/extensions/formautofill/test/fixtures/autocomplete_address_basic.html';
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
+      '/project/engine/browser/extensions/formautofill/test/unit/xpcshell.toml'
+    );
+    vi.mocked(isSymlink).mockResolvedValue(true);
+    vi.mocked(testWithOutput)
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        stdout: `FileExistsError: [Errno 17] File exists: '/src/autocomplete_address_basic.html' -> '${staleLink}'`,
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/extensions/formautofill/test/unit/test_sync.js'])
+    ).resolves.toBeUndefined();
+
+    expect(removeFile).toHaveBeenCalledWith(staleLink);
+    expect(testWithOutput).toHaveBeenCalledTimes(2);
+  });
+
   it('does not remove FileExistsError destinations outside the active _tests tree', async () => {
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/toolkit/mozapps/extensions/test/xpcshell/xpcshell.toml'

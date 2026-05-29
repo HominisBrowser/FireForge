@@ -88,6 +88,10 @@ export interface BrandingConfig {
   license?: ProjectLicense;
 }
 
+type VendorPlacement = 'branding-configure' | 'moz-configure';
+
+const MOZ_APP_VENDOR_IMPLY_REGEX = /imply_option\("MOZ_APP_VENDOR",\s*"[^"]*"\)/;
+
 /**
  * Sets up the custom branding directory for the browser.
  *
@@ -114,33 +118,42 @@ export async function setupBranding(engineDir: string, config: BrandingConfig): 
     await copyDir(unofficialDir, brandingDir);
   }
 
+  const vendorPlacement = await resolveVendorPlacement(engineDir);
+
   // Create/update configure.sh with custom values
-  await createConfigureScript(brandingDir, config);
+  await createConfigureScript(brandingDir, config, vendorPlacement);
 
   // Update localization files
   await updateBrandProperties(brandingDir, config);
   await updateBrandFtl(brandingDir, config);
 
   // Patch moz.configure for MOZ_APP_VENDOR
-  await patchMozConfigure(engineDir, config);
+  await patchMozConfigure(engineDir, config, vendorPlacement);
 }
 
 /**
  * Creates the branding configure.sh script.
  */
-async function createConfigureScript(brandingDir: string, config: BrandingConfig): Promise<void> {
+async function createConfigureScript(
+  brandingDir: string,
+  config: BrandingConfig,
+  vendorPlacement: VendorPlacement
+): Promise<void> {
   const configureShPath = join(brandingDir, 'configure.sh');
-  await writeTextIfChanged(configureShPath, buildConfigureScriptContent(config));
+  await writeTextIfChanged(configureShPath, buildConfigureScriptContent(config, vendorPlacement));
 }
 
-function buildConfigureScriptContent(config: BrandingConfig): string {
+function buildConfigureScriptContent(
+  config: BrandingConfig,
+  vendorPlacement: VendorPlacement
+): string {
   const header = getLicenseHeader(config.license ?? DEFAULT_LICENSE, 'hash');
-  return `${header}
-
-MOZ_APP_DISPLAYNAME="${escapeShellValue(config.name)}"
-MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"
-MOZ_MACBUNDLE_ID="${escapeShellValue(config.appId)}"
-`;
+  const lines = [`MOZ_APP_DISPLAYNAME="${escapeShellValue(config.name)}"`];
+  if (vendorPlacement === 'branding-configure') {
+    lines.push(`MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"`);
+  }
+  lines.push(`MOZ_MACBUNDLE_ID="${escapeShellValue(config.appId)}"`);
+  return `${header}\n\n${lines.join('\n')}\n`;
 }
 
 /**
@@ -201,14 +214,18 @@ trademarkInfo = { " " }
 
 /**
  * Patches browser/moz.configure to set custom vendor when the upstream
- * configure surface still owns an existing MOZ_APP_VENDOR imply_option.
- *
- * Newer FireForge branding writes MOZ_APP_VENDOR from the branding-owned
- * configure.sh instead, so an absent browser/moz.configure line is valid.
- * Keeping this best-effort replacement preserves compatibility for queues
- * that still carry the older process-wide registration line.
+ * configure surface owns MOZ_APP_VENDOR as a project flag. ESR 140 rejects
+ * branding configure.sh / confvars origins for that flag, so the value must
+ * come from imply_option.
  */
-async function patchMozConfigure(engineDir: string, config: BrandingConfig): Promise<void> {
+async function patchMozConfigure(
+  engineDir: string,
+  config: BrandingConfig,
+  vendorPlacement: VendorPlacement
+): Promise<void> {
+  if (vendorPlacement !== 'moz-configure') {
+    return;
+  }
   const mozConfigurePath = join(engineDir, 'browser', 'moz.configure');
 
   if (!(await pathExists(mozConfigurePath))) {
@@ -217,18 +234,65 @@ async function patchMozConfigure(engineDir: string, config: BrandingConfig): Pro
 
   let content = await readText(mozConfigurePath);
 
-  // Replace MOZ_APP_VENDOR imply_option
-  const vendorRegex = /imply_option\("MOZ_APP_VENDOR",\s*"[^"]*"\)/;
-  if (!vendorRegex.test(content)) {
-    return;
+  if (MOZ_APP_VENDOR_IMPLY_REGEX.test(content)) {
+    content = content.replace(MOZ_APP_VENDOR_IMPLY_REGEX, buildMozConfigureVendorLine(config));
+  } else {
+    content = insertMozConfigureVendorLine(content, buildMozConfigureVendorLine(config));
   }
-  content = content.replace(vendorRegex, buildMozConfigureVendorLine(config));
 
   await writeTextIfChanged(mozConfigurePath, content);
 }
 
 function buildMozConfigureVendorLine(config: BrandingConfig): string {
   return `imply_option("MOZ_APP_VENDOR", "${escapeString(config.vendor)}")`;
+}
+
+async function resolveVendorPlacement(engineDir: string): Promise<VendorPlacement> {
+  const mozConfigurePath = join(engineDir, 'browser', 'moz.configure');
+  const toolkitMozConfigurePath = join(engineDir, 'toolkit', 'moz.configure');
+
+  const browserMozConfigureExists = await pathExists(mozConfigurePath);
+  const browserMozConfigureContent = browserMozConfigureExists
+    ? await readText(mozConfigurePath)
+    : undefined;
+
+  if (
+    browserMozConfigureContent !== undefined &&
+    MOZ_APP_VENDOR_IMPLY_REGEX.test(browserMozConfigureContent)
+  ) {
+    return 'moz-configure';
+  }
+
+  if (await toolkitMozConfigureUsesVendorProjectFlag(toolkitMozConfigurePath)) {
+    if (!browserMozConfigureExists) {
+      throw new BrandingError(
+        'Firefox toolkit configure declares MOZ_APP_VENDOR as a project_flag, but browser/moz.configure is missing, so FireForge cannot safely set the vendor identity.'
+      );
+    }
+    return 'moz-configure';
+  }
+
+  return 'branding-configure';
+}
+
+async function toolkitMozConfigureUsesVendorProjectFlag(filePath: string): Promise<boolean> {
+  if (!(await pathExists(filePath))) {
+    return false;
+  }
+  const content = await readText(filePath);
+  return /project_flag\(\s*(?:(?!\)\s*\n)[\s\S])*env\s*=\s*"MOZ_APP_VENDOR"/m.test(content);
+}
+
+function insertMozConfigureVendorLine(content: string, line: string): string {
+  const includeRegex = /^include\((["'])\.\.\/toolkit\/moz\.configure\1\)\s*$/m;
+  const match = includeRegex.exec(content);
+  if (!match) {
+    return `${content.replace(/\s*$/, '')}\n\n${line}\n`;
+  }
+
+  const prefix = content.slice(0, match.index).replace(/\s*$/, '');
+  const suffix = content.slice(match.index);
+  return `${prefix}\n\n${line}\n${suffix}`;
 }
 
 /**
@@ -293,8 +357,9 @@ export async function isBrandingSetup(engineDir: string, config: BrandingConfig)
     return false;
   }
 
+  const vendorPlacement = await resolveVendorPlacement(engineDir);
   const configureContent = await readText(configureShPath);
-  if (configureContent !== buildConfigureScriptContent(config)) {
+  if (configureContent !== buildConfigureScriptContent(config, vendorPlacement)) {
     return false;
   }
 
@@ -312,7 +377,16 @@ export async function isBrandingSetup(engineDir: string, config: BrandingConfig)
     }
   }
 
-  return configureContent.includes(`MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"`);
+  if (vendorPlacement === 'branding-configure') {
+    return configureContent.includes(`MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"`);
+  }
+
+  const mozConfigurePath = join(engineDir, 'browser', 'moz.configure');
+  if (!(await pathExists(mozConfigurePath))) {
+    return false;
+  }
+  const mozConfigureContent = await readText(mozConfigurePath);
+  return mozConfigureContent.includes(buildMozConfigureVendorLine(config));
 }
 
 /**

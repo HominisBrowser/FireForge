@@ -1,6 +1,6 @@
 {
   "name": "@hominis/fireforge",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "FireForge — a build tool for customizing Firefox",
   "type": "module",
   "main": "./dist/src/index.js",
@@ -29,13 +29,14 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage && node ./scripts/check-coverage-thresholds.mjs",
     "test:firefox-full": "node ./scripts/run-full-firefox-integration.mjs",
+    "whitespace:check": "node ./scripts/check-worktree-whitespace.mjs",
     "pack:verify": "vitest run src/__tests__/wrapper-smoke.test.ts",
     "pack:dry-run": "npm pack --dry-run --json --silent",
     "format": "prettier --write --ignore-unknown \"src/**/*.ts\" \"bin/**/*.ts\" \"scripts/**/*.mjs\" \"package.json\" \"eslint.config.js\" \"vitest.config.ts\" \"tsconfig.json\" \"tsconfig.build.json\" \".lintstagedrc.json\" \".prettierignore\" \".prettierrc\" \".gitignore\" \"README.md\" \"CHANGELOG.md\"",
     "format:check": "prettier --check --ignore-unknown \"src/**/*.ts\" \"bin/**/*.ts\" \"scripts/**/*.mjs\" \"package.json\" \"eslint.config.js\" \"vitest.config.ts\" \"tsconfig.json\" \"tsconfig.build.json\" \".lintstagedrc.json\" \".prettierignore\" \".prettierrc\" \".gitignore\" \"README.md\" \"CHANGELOG.md\"",
     "prepare": "node -e \"import('./scripts/prepare.mjs').catch((error) => { if (error && typeof error === 'object' && 'code' in error && error.code === 'ERR_MODULE_NOT_FOUND') process.exit(0); throw error; })\"",
     "prepack": "npm run build",
-    "release:check": "npm run format:check && npm run lint:ci && npm run typecheck && npm run test:coverage && npm run pack:verify && npm run pack:dry-run",
+    "release:check": "npm run format:check && npm run whitespace:check && npm run lint:ci && npm run typecheck && npm run test:coverage && npm run pack:verify && npm run pack:dry-run",
     "prepublishOnly": "npm run release:check"
   },
   "files": [

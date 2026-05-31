@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
-import { confirm, multiselect } from '@clack/prompts';
+import { multiselect } from '@clack/prompts';
 import { Command, Option } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
-import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
 import {
-  getClaimedFiles,
   loadPatchesManifest,
   resolvePatchIdentifier,
   stampPatchVersions,
@@ -23,143 +21,22 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '../utils/logger.js';
-
-/**
- * Threshold above which `--scan` must be explicitly confirmed. Values were
- * picked so the common "refresh after one-or-two-file tweak" case stays
- * frictionless while catching the eval finding #13 scenario where `--scan`
- * silently pulled in an entire sibling feature (xhtml + tests + theme CSS).
- */
-const SCAN_ADD_COUNT_THRESHOLD = 3;
-const SCAN_DIR_COUNT_THRESHOLD = 2;
 import { pickDefined } from '../utils/options.js';
 import { runPatchLint } from './export-shared.js';
 import { reExportFilesInPlace } from './re-export-files.js';
+import {
+  assertScanFileAdditionsHaveDiffHunks,
+  confirmBroadScanAdditions,
+  normalizeScanFiles,
+  scanPatchFilesForReExport,
+} from './re-export-scan.js';
 
-interface ScanResult {
-  updated: string[];
-  added: string[];
-  removed: string[];
-}
-
-async function scanPatchFiles(
-  currentFilesAffected: string[],
-  engineDir: string,
-  manifest: PatchesManifest,
-  patchFilename: string,
-  isDryRun: boolean
-): Promise<ScanResult> {
-  const parentDirs = [...new Set(currentFilesAffected.map((f) => dirname(f)))];
-  const claimedByOthers = getClaimedFiles(manifest, patchFilename);
-
-  const discoveredFiles = new Set<string>();
-  for (const dir of parentDirs) {
-    const modifiedFiles = await getModifiedFilesInDir(engineDir, dir);
-    const untrackedFiles = await getUntrackedFilesInDir(engineDir, dir);
-    for (const f of [...modifiedFiles, ...untrackedFiles]) {
-      discoveredFiles.add(f);
-    }
+async function findMissingFiles(engineDir: string, files: readonly string[]): Promise<string[]> {
+  const missingFiles: string[] = [];
+  for (const file of files) {
+    if (!(await pathExists(join(engineDir, file)))) missingFiles.push(file);
   }
-
-  const currentSet = new Set(currentFilesAffected);
-  const added: string[] = [];
-  for (const f of discoveredFiles) {
-    if (!currentSet.has(f) && !claimedByOthers.has(f)) {
-      added.push(f);
-    }
-  }
-
-  const removed: string[] = [];
-  for (const f of currentFilesAffected) {
-    const filePath = join(engineDir, f);
-    if (!(await pathExists(filePath))) {
-      removed.push(f);
-    }
-  }
-
-  const sortedAdded = [...added].sort();
-  const sortedRemoved = [...removed].sort();
-
-  for (const f of sortedAdded) {
-    info(`  + ${f}`);
-  }
-  for (const f of sortedRemoved) {
-    info(`  - ${f}`);
-  }
-
-  if (added.length > 0 || removed.length > 0) {
-    const removedSet = new Set(removed);
-    const updated = [...currentFilesAffected.filter((f) => !removedSet.has(f)), ...added].sort();
-
-    info(
-      `  ${isDryRun ? 'Would update' : 'Updated'} ${patchFilename}: +${added.length} / -${removed.length} files`
-    );
-    return { updated, added: sortedAdded, removed: sortedRemoved };
-  }
-
-  return { updated: currentFilesAffected, added: [], removed: [] };
-}
-
-/**
- * Returns true when the caller-confirmed threshold is exceeded for this
- * scan's additions. The heuristic treats "small, same-directory" additions
- * as friction-free (the common refresh case) and flags larger or
- * multi-directory expansions so operators see them before they land.
- *
- * Pre-0.16.0 `--scan` silently broadened patches to include any modified or
- * untracked file that shared a parent directory with the existing
- * filesAffected — in practice, pulling adjacent feature code into a patch
- * that had nothing to do with it. The gate below turns the broadening into
- * an explicit opt-in.
- */
-function scanAdditionsNeedConfirmation(added: readonly string[]): boolean {
-  if (added.length === 0) return false;
-  if (added.length > SCAN_ADD_COUNT_THRESHOLD) return true;
-  const dirs = new Set(added.map((f) => dirname(f)));
-  return dirs.size >= SCAN_DIR_COUNT_THRESHOLD;
-}
-
-/**
- * Gate for broad `--scan` additions. Enforces explicit acknowledgement when
- * the scan would pull in more files than a narrow refresh. Dry-run always
- * proceeds (the preview is the whole point).
- *
- * @returns true if the caller should proceed; false if the user cancelled.
- */
-async function confirmBroadScanAdditions(args: {
-  patchFilename: string;
-  added: readonly string[];
-  isDryRun: boolean;
-  yes: boolean;
-  isInteractive: boolean;
-}): Promise<boolean> {
-  const { patchFilename, added, isDryRun, yes, isInteractive } = args;
-  if (isDryRun) return true;
-  if (!scanAdditionsNeedConfirmation(added)) return true;
-  if (yes) return true;
-
-  warn(
-    `${patchFilename}: --scan would add ${String(added.length)} file(s) that span ${String(new Set(added.map((f) => dirname(f))).size)} director${new Set(added.map((f) => dirname(f))).size === 1 ? 'y' : 'ies'}. ` +
-      'Broad scans can silently pull adjacent features into a patch — review the diff before continuing.'
-  );
-
-  if (!isInteractive) {
-    throw new GeneralError(
-      `Refusing to broaden "${patchFilename}" via --scan in non-interactive mode. ` +
-        'Pass --yes to acknowledge the expansion, or run with --dry-run first to review.'
-    );
-  }
-
-  const confirmed = await confirm({
-    message: `Proceed and broaden ${patchFilename} with ${String(added.length)} newly discovered file(s)?`,
-    initialValue: false,
-  });
-
-  if (isCancel(confirmed) || !confirmed) {
-    cancel(`Skipped ${patchFilename}`);
-    return false;
-  }
-  return true;
+  return missingFiles;
 }
 
 async function reExportSinglePatch(
@@ -174,23 +51,27 @@ async function reExportSinglePatch(
 
   // --- Scan for new/removed files ---
   if (options.scan) {
-    const scanResult = await scanPatchFiles(
+    const scanResult = await scanPatchFilesForReExport({
       currentFilesAffected,
-      paths.engine,
+      engineDir: paths.engine,
       manifest,
-      patch.filename,
-      isDryRun
-    );
-    const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
-    const proceed = await confirmBroadScanAdditions({
       patchFilename: patch.filename,
-      added: scanResult.added,
       isDryRun,
-      yes: options.yes === true,
-      isInteractive,
+      ...(options.scanFiles !== undefined ? { scanFiles: options.scanFiles } : {}),
     });
-    if (!proceed) {
-      return false;
+
+    if (options.scanFiles === undefined) {
+      const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+      const proceed = await confirmBroadScanAdditions({
+        patchFilename: patch.filename,
+        added: scanResult.added,
+        isDryRun,
+        yes: options.yes === true,
+        isInteractive,
+      });
+      if (!proceed) {
+        return false;
+      }
     }
     currentFilesAffected = scanResult.updated;
   } else if (options.files === undefined) {
@@ -203,12 +84,7 @@ async function reExportSinglePatch(
     // warning up-front when we can detect the drift cheaply, so the
     // operator has a chance to re-run with `--scan` or `--files`
     // before the stale filesAffected lands in patches.json.
-    const missingFiles: string[] = [];
-    for (const file of currentFilesAffected) {
-      if (!(await pathExists(join(paths.engine, file)))) {
-        missingFiles.push(file);
-      }
-    }
+    const missingFiles = await findMissingFiles(paths.engine, currentFilesAffected);
     if (missingFiles.length > 0) {
       warn(
         `${patch.filename}: some files in patches.json no longer exist on disk ` +
@@ -236,13 +112,7 @@ async function reExportSinglePatch(
     for (const f of removed) info(`  - ${f}`);
   }
 
-  const missingFiles: string[] = [];
-  for (const file of currentFilesAffected) {
-    const filePath = join(paths.engine, file);
-    if (!(await pathExists(filePath))) {
-      missingFiles.push(file);
-    }
-  }
+  const missingFiles = await findMissingFiles(paths.engine, currentFilesAffected);
 
   if (missingFiles.length === currentFilesAffected.length) {
     warn(`Skipped ${patch.filename}: all affected files missing`);
@@ -258,6 +128,12 @@ async function reExportSinglePatch(
   const existingFiles = currentFilesAffected.filter((f) => !missingSet.has(f));
 
   const diffContent = await getDiffForFilesAgainstHead(paths.engine, existingFiles);
+  assertScanFileAdditionsHaveDiffHunks({
+    diffContent,
+    patchFilename: patch.filename,
+    previousFilesAffected: patch.filesAffected,
+    scanFiles: options.scanFiles,
+  });
 
   if (!diffContent.trim()) {
     warn(`Skipped ${patch.filename}: no changes (files unchanged from HEAD)`);
@@ -424,6 +300,15 @@ export async function reExportCommand(
   patches: string[],
   options: ReExportOptions
 ): Promise<void> {
+  const normalizedScanFiles = normalizeScanFiles(options.scanFiles);
+  if (normalizedScanFiles !== undefined) {
+    options = { ...options, scanFiles: normalizedScanFiles };
+  } else if (options.scanFiles !== undefined) {
+    const cleanedOptions: ReExportOptions = { ...options };
+    delete cleanedOptions.scanFiles;
+    options = cleanedOptions;
+  }
+
   const isDryRun = options.dryRun === true;
   intro(isDryRun ? 'FireForge Re-export (dry run)' : 'FireForge Re-export');
 
@@ -437,6 +322,18 @@ export async function reExportCommand(
       throw new InvalidArgumentError(
         '--files operates on exactly one target patch. Pass a single patch identifier.',
         '--files'
+      );
+    }
+  }
+
+  if (options.scanFiles !== undefined) {
+    if (!options.scan) {
+      throw new InvalidArgumentError('--scan-file requires --scan.', '--scan-file');
+    }
+    if (options.all || patches.length !== 1) {
+      throw new InvalidArgumentError(
+        '--scan-file operates on exactly one target patch. Pass a single patch identifier.',
+        '--scan-file'
       );
     }
   }
@@ -577,6 +474,12 @@ export function registerReExport(
     .option('-a, --all', 'Re-export all patches')
     .option('-s, --scan', 'Scan directories for new/removed files and update filesAffected')
     .option(
+      '--scan-file <path>',
+      'With --scan, add this explicit engine-relative file to one target patch without collecting adjacent files. Repeatable.',
+      (value: string, prev: string[]) => [...prev, value],
+      [] as string[]
+    )
+    .option(
       '--files <paths>',
       'Restrict the re-exported filesAffected to this comma-separated list (single target patch only)',
       (value: string) =>
@@ -612,6 +515,7 @@ export function registerReExport(
           options: {
             all?: boolean;
             scan?: boolean;
+            scanFile?: string[];
             files?: string[];
             dryRun?: boolean;
             skipLint?: boolean;
@@ -622,9 +526,10 @@ export function registerReExport(
             lintIgnore?: string[];
           }
         ) => {
-          const { tier, lintIgnore, ...rest } = options;
+          const { tier, lintIgnore, scanFile, ...rest } = options;
           await reExportCommand(getProjectRoot(), patches, {
             ...pickDefined(rest),
+            ...(scanFile !== undefined && scanFile.length > 0 ? { scanFiles: scanFile } : {}),
             ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
             ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
           });

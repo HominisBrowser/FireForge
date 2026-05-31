@@ -84,6 +84,7 @@ vi.mock('@clack/prompts', () => ({
 
 import { confirm, multiselect } from '@clack/prompts';
 
+import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-status.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { lintExportedPatch } from '../../core/patch-lint.js';
@@ -230,6 +231,182 @@ describe('reExportCommand - --scan flag', () => {
       undefined,
       expect.objectContaining({ command: 're-export' })
     );
+  });
+
+  it('--scan-file adds only explicit files and ignores adjacent scanned siblings', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([
+      'browser/modules/foo/a.js',
+      'browser/modules/foo/sibling.js',
+    ]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue(['browser/modules/foo/unmanaged.js']);
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValueOnce(
+      [
+        'diff --git a/browser/modules/foo/intended.js b/browser/modules/foo/intended.js',
+        '--- /dev/null',
+        '+++ b/browser/modules/foo/intended.js',
+        '@@ -0,0 +1 @@',
+        '+content',
+        '',
+      ].join('\n')
+    );
+
+    await reExportCommand('/fake/root', ['001'], {
+      scan: true,
+      scanFiles: ['engine/browser/modules/foo/intended.js'],
+    });
+
+    expect(getModifiedFilesInDir).not.toHaveBeenCalled();
+    expect(getUntrackedFilesInDir).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith('  + browser/modules/foo/intended.js');
+
+    const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
+    expect(updates?.filesAffected).toEqual([
+      'browser/modules/foo/a.js',
+      'browser/modules/foo/intended.js',
+    ]);
+  });
+
+  it('--scan-file rejects invalid option combinations', async () => {
+    await expect(
+      reExportCommand('/fake/root', ['001'], { scanFiles: ['browser/modules/foo/new.js'] })
+    ).rejects.toThrow('--scan-file requires --scan');
+
+    await expect(
+      reExportCommand('/fake/root', [], {
+        all: true,
+        scan: true,
+        scanFiles: ['browser/modules/foo/new.js'],
+      })
+    ).rejects.toThrow('--scan-file operates on exactly one target patch');
+
+    await expect(
+      reExportCommand('/fake/root', ['001', '002'], {
+        scan: true,
+        scanFiles: ['browser/modules/foo/new.js'],
+      })
+    ).rejects.toThrow('--scan-file operates on exactly one target patch');
+  });
+
+  it('--scan-file rejects paths that are not safe engine-relative paths', async () => {
+    await expect(
+      reExportCommand('/fake/root', ['001'], {
+        scan: true,
+        scanFiles: ['../outside.js'],
+      })
+    ).rejects.toThrow('must stay within engine/');
+  });
+
+  it('--scan-file rejects files claimed by another patch', async () => {
+    restoreTTY = setInteractiveMode(false);
+    const patch1 = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    const patch2 = makePatch('002-ui-other.patch', ['browser/modules/foo/claimed.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+    vi.mocked(getClaimedFiles).mockReturnValue(new Set(['browser/modules/foo/claimed.js']));
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    await expect(
+      reExportCommand('/fake/root', ['001'], {
+        scan: true,
+        scanFiles: ['browser/modules/foo/claimed.js'],
+      })
+    ).rejects.toThrow(/All selected patches failed to re-export/);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('already claimed by another patch'));
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
+  it('--scan-file dry-run previews without writing', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValueOnce(
+      [
+        'diff --git a/browser/modules/foo/intended.js b/browser/modules/foo/intended.js',
+        '--- /dev/null',
+        '+++ b/browser/modules/foo/intended.js',
+        '@@ -0,0 +1 @@',
+        '+content',
+        '',
+      ].join('\n')
+    );
+
+    await reExportCommand('/fake/root', ['001'], {
+      scan: true,
+      scanFiles: ['browser/modules/foo/intended.js'],
+      dryRun: true,
+    });
+
+    expect(info).toHaveBeenCalledWith('  + browser/modules/foo/intended.js');
+    expect(info).toHaveBeenCalledWith('[dry-run] 001-ui-test.patch: 2 file(s)');
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
+  it('--scan-file does not require --yes for broad-looking non-interactive additions', async () => {
+    restoreTTY = setInteractiveMode(false);
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValueOnce(
+      [
+        'diff --git a/browser/modules/foo/b.js b/browser/modules/foo/b.js',
+        '--- /dev/null',
+        '+++ b/browser/modules/foo/b.js',
+        '@@ -0,0 +1 @@',
+        '+b',
+        'diff --git a/browser/modules/foo/c.js b/browser/modules/foo/c.js',
+        '--- /dev/null',
+        '+++ b/browser/modules/foo/c.js',
+        '@@ -0,0 +1 @@',
+        '+c',
+        'diff --git a/browser/modules/foo/d.js b/browser/modules/foo/d.js',
+        '--- /dev/null',
+        '+++ b/browser/modules/foo/d.js',
+        '@@ -0,0 +1 @@',
+        '+d',
+        'diff --git a/browser/modules/foo/e.js b/browser/modules/foo/e.js',
+        '--- /dev/null',
+        '+++ b/browser/modules/foo/e.js',
+        '@@ -0,0 +1 @@',
+        '+e',
+        '',
+      ].join('\n')
+    );
+
+    await reExportCommand('/fake/root', ['001'], {
+      scan: true,
+      scanFiles: [
+        'browser/modules/foo/b.js',
+        'browser/modules/foo/c.js',
+        'browser/modules/foo/d.js',
+        'browser/modules/foo/e.js',
+      ],
+    });
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it('--scan-file rejects explicit added files that produce no diff hunk', async () => {
+    restoreTTY = setInteractiveMode(false);
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValueOnce(
+      'diff --git a/browser/modules/foo/a.js b/browser/modules/foo/a.js\n+content\n'
+    );
+
+    await expect(
+      reExportCommand('/fake/root', ['001'], {
+        scan: true,
+        scanFiles: ['browser/modules/foo/unchanged.js'],
+      })
+    ).rejects.toThrow(/All selected patches failed to re-export/);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('produced no diff hunks'));
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
   });
 
   it('surfaces an atomic write failure during scan without a partial commit', async () => {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.0
+
+- Added targeted `re-export --scan --scan-file <path>` for reviewed single-patch new-file assignment without broad sibling collection.
+- Added a FireForge-owned worktree whitespace gate that excludes generated `patches/*.patch` diff syntax from repository whitespace checks.
+- Kept generated patch context lines unchanged while making release checks use the FireForge whitespace gate.
+
 ## 0.25.0
 
 - Kept `MOZ_APP_VENDOR` in `browser/moz.configure` for Firefox ESR 140 project-flag trees instead of generated branding `configure.sh`.

@@ -176,6 +176,12 @@ export interface ReExportOptions {
   /** Scan directories for new/removed files and update filesAffected */
   scan?: boolean;
   /**
+   * Explicit engine-relative files to add while scanning. Unlike broad
+   * `--scan`, this does not collect adjacent files from the same directory.
+   * Requires `--scan` and exactly one target patch.
+   */
+  scanFiles?: string[];
+  /**
    * Restrict the re-exported patch's filesAffected to this explicit list.
    * Files currently in the patch but not in this list are dropped (shrink);
    * files in this list but not currently in the patch are added. Mutually

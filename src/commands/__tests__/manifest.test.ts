@@ -74,6 +74,9 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // it under the max-lines threshold. Consumed by re-export.ts; no
   // top-level registrar.
   're-export-files.ts',
+  // Scan planning helpers for re-export, including targeted --scan-file.
+  // Consumed by re-export.ts; no top-level registrar.
+  're-export-scan.ts',
 ]);
 
 const ALLOWED_GROUPS = new Set(['project', 'workflow', 'engine', 'diagnostics', 'components']);

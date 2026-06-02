@@ -133,6 +133,36 @@ interface RegistrationTargetInfo {
   insideDCL: boolean;
 }
 
+function collectArrayDeclarations(
+  ast: AcornESTreeNode<estree.Program>
+): Map<string, AcornESTreeNode<estree.ArrayExpression>> {
+  const arrays = new Map<string, AcornESTreeNode<estree.ArrayExpression>>();
+  walkAST(ast, {
+    enter(node) {
+      if (node.type !== 'VariableDeclarator') return;
+      const declarator = node as AcornESTreeNode<estree.VariableDeclarator>;
+      if (declarator.id.type !== 'Identifier' || declarator.init?.type !== 'ArrayExpression') {
+        return;
+      }
+      arrays.set(declarator.id.name, declarator.init as AcornESTreeNode<estree.ArrayExpression>);
+    },
+  });
+  return arrays;
+}
+
+function resolveForOfArray(
+  right: estree.Expression,
+  declaredArrays: Map<string, AcornESTreeNode<estree.ArrayExpression>>
+): AcornESTreeNode<estree.ArrayExpression> | undefined {
+  if (right.type === 'ArrayExpression') {
+    return right as AcornESTreeNode<estree.ArrayExpression>;
+  }
+  if (right.type === 'Identifier') {
+    return declaredArrays.get(right.name);
+  }
+  return undefined;
+}
+
 function selectRegistrationTarget(
   targets: RegistrationTargetInfo[],
   isESModule: boolean,
@@ -195,6 +225,7 @@ function addRegistrationAST(
 ): string {
   validateTagName(tagName);
   const ast = parseScript(content);
+  const declaredArrays = collectArrayDeclarations(ast);
   const ancestors: estree.Node[] = [];
 
   // Collect all ForOfStatement nodes with ArrayExpression rights
@@ -205,8 +236,8 @@ function addRegistrationAST(
       ancestors.push(node);
       if (node.type === 'ForOfStatement') {
         const forOf = node as AcornESTreeNode<estree.ForOfStatement>;
-        if (forOf.right.type === 'ArrayExpression') {
-          const array = forOf.right as AcornESTreeNode<estree.ArrayExpression>;
+        const array = resolveForOfArray(forOf.right, declaredArrays);
+        if (array) {
           forOfs.push({
             array,
             insideDCL: isInsideDOMContentLoaded(ancestors, content),
@@ -371,6 +402,10 @@ function addRegistrationRegexFallback(
   return content.slice(0, insertPos) + newEntry + '\n' + content.slice(insertPos);
 }
 
+function hasRecognizableRegistrationLoop(content: string): boolean {
+  return /for\s*\(\s*(?:let|const|var)\s*\[[^)]*\]\s+of\s+(?:\[|[A-Za-z_$][\w$]*)/.test(content);
+}
+
 /**
  * Adds a custom element registration entry to customElements.js.
  *
@@ -423,7 +458,7 @@ export async function addCustomElementRegistration(
   // assumption is violated the AST path errors with a confusing
   // "Could not find DOMContentLoaded block" message — fail fast here with
   // actionable guidance instead.
-  if (!/for\s*\(\s*(?:let|const|var)\s*\[/.test(content)) {
+  if (!hasRecognizableRegistrationLoop(content)) {
     throw new FurnaceError(
       `${CUSTOM_ELEMENTS_JS} does not contain a recognizable registration loop; refusing to mutate. ` +
         'Run "fireforge reset --force" to restore the engine, or inspect the file manually.',
@@ -524,7 +559,7 @@ export async function validateCustomElementRegistration(
 
   const isESModule = modulePath.endsWith('.mjs');
 
-  if (!/for\s*\(\s*(?:let|const|var)\s*\[/.test(content)) {
+  if (!hasRecognizableRegistrationLoop(content)) {
     throw new FurnaceError(
       `${CUSTOM_ELEMENTS_JS} does not contain a recognizable registration loop; refusing to mutate. ` +
         'Run "fireforge reset --force" to restore the engine, or inspect the file manually.',

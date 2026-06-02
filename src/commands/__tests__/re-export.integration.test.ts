@@ -115,4 +115,26 @@ describe('reExportCommand integration', () => {
       makeManifest()
     );
   });
+
+  it('--scan-file assigns only the intended adjacent new file', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': 'changed\n',
+      'features/intended.txt': 'intended\n',
+      'features/sibling.txt': 'sibling\n',
+    });
+
+    await reExportCommand(projectRoot, ['001'], {
+      scan: true,
+      scanFiles: ['features/intended.txt'],
+    });
+
+    const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: Array<{ filesAffected: string[] }>;
+    };
+    expect(manifest.patches[0]?.filesAffected).toEqual(['features/intended.txt', 'tracked.txt']);
+
+    const patchBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expect(patchBody).toContain('features/intended.txt');
+    expect(patchBody).not.toContain('features/sibling.txt');
+  });
 });

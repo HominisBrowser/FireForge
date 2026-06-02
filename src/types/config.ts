@@ -2,7 +2,7 @@
 /**
  * Firefox product type for downloads.
  */
-export type FirefoxProduct = 'firefox' | 'firefox-esr' | 'firefox-beta';
+export type FirefoxProduct = 'firefox' | 'firefox-esr' | 'firefox-beta' | 'firefox-devedition';
 
 /**
  * Firefox version configuration.

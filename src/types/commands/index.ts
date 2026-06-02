@@ -24,8 +24,10 @@ export type {
   PatchCompactOptions,
   PatchDeleteOptions,
   PatchLintIgnoreOptions,
+  PatchMoveFilesOptions,
   PatchRenameOptions,
   PatchReorderOptions,
+  PatchStagedDependencyOptions,
   PatchTierOptions,
   RebaseOptions,
   ReExportOptions,
@@ -33,6 +35,7 @@ export type {
   ResetOptions,
   RunOptions,
   SetupOptions,
+  SourceSetOptions,
   StatusOptions,
   TestOptions,
   TokenAddOptions,
@@ -46,6 +49,8 @@ export type {
   PatchLintIssue,
   PatchMetadata,
   PatchResult,
+  PatchStagedDependencies,
+  PatchStagedForwardImport,
 } from './patches.js';
 export type {
   DoctorCheck,

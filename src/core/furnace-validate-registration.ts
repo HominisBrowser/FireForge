@@ -17,6 +17,7 @@ import { stripJsComments } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, FTL_DIR, JAR_MN } from './furnace-constants.js';
+import { isTagInCorrectCustomElementsPlacement } from './furnace-registration-validate.js';
 import { getTokensCssPath } from './token-manager.js';
 
 /**
@@ -42,24 +43,13 @@ export async function validateRegistrationPatterns(
 
   const content = await readText(filePath);
 
-  // Find the DOMContentLoaded block boundary (handles multi-line addEventListener)
-  const dclMatch = /document\.addEventListener\(\s*["']DOMContentLoaded["']/.exec(content);
-
-  if (!dclMatch) {
-    return issues;
-  }
-
-  const domContentLoadedIdx = dclMatch.index;
-
   // Get all custom component tag names that use .mjs (all custom components do)
   for (const [name, customConfig] of Object.entries(config.custom)) {
     if (!customConfig.register) continue;
 
-    // Check if this tag is referenced before the DOMContentLoaded block
-    const contentBeforeDCL = stripJsComments(content.slice(0, domContentLoadedIdx));
-    const tagPattern = new RegExp(`"${name}"`);
-
-    if (tagPattern.test(contentBeforeDCL)) {
+    const stripped = stripJsComments(content);
+    const tagPattern = new RegExp(`["']${escapeRegex(name)}["']`);
+    if (tagPattern.test(stripped) && !isTagInCorrectCustomElementsPlacement(content, name, true)) {
       issues.push({
         component: name,
         severity: 'error',
@@ -70,6 +60,10 @@ export async function validateRegistrationPatterns(
   }
 
   return issues;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -183,13 +177,11 @@ export async function checkRegistrationConsistency(
       ceContent.includes(`"${name}"`) || ceContent.includes(`'${name}'`);
 
     if (status.customElementsPresent) {
-      // Check it's in the correct block (after DOMContentLoaded)
-      const dclMatch = /document\.addEventListener\(\s*["']DOMContentLoaded["']/.exec(ceContent);
-      if (dclMatch) {
-        const afterDcl = ceContent.slice(dclMatch.index);
-        status.customElementsCorrectBlock =
-          afterDcl.includes(`"${name}"`) || afterDcl.includes(`'${name}'`);
-      }
+      status.customElementsCorrectBlock = isTagInCorrectCustomElementsPlacement(
+        ceContent,
+        name,
+        true
+      );
     }
   }
 

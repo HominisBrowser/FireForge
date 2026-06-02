@@ -8,6 +8,7 @@ import {
   GitIndexLockError,
   PatchApplyError,
 } from '../errors/git.js';
+import { elapsedSince } from '../utils/elapsed.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
@@ -54,6 +55,11 @@ export async function ensureOriginRemote(dir: string): Promise<void> {
 // ── Large-tree staging helpers ──
 
 const GIT_ADD_ENV = { GIT_INDEX_THREADS: '0' };
+
+interface SourceScanSummary {
+  directories: string[];
+  topLevelFiles: string[];
+}
 
 /**
  * Returns true when the error looks like a process killed by the spawn timeout
@@ -123,13 +129,10 @@ async function isPathIgnored(dir: string, relativePath: string): Promise<boolean
  */
 async function stageAllFilesChunked(
   dir: string,
+  scan: SourceScanSummary,
   options: { onProgress?: (message: string) => void } = {}
 ): Promise<void> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const directories = entries
-    .filter((e) => e.isDirectory() && e.name !== '.git')
-    .map((e) => e.name)
-    .sort();
+  const { directories, topLevelFiles: topLevelCandidates } = scan;
 
   async function runChunk(args: string[], label: string): Promise<void> {
     try {
@@ -151,12 +154,18 @@ async function stageAllFilesChunked(
     }
   }
 
+  let stagedDirectories = 0;
   for (const dirName of directories) {
+    stagedDirectories++;
     if (await isPathIgnored(dir, dirName)) {
-      options.onProgress?.(`Skipping gitignored: ${dirName}/`);
+      options.onProgress?.(
+        `Skipping gitignored directory ${stagedDirectories}/${directories.length}: ${dirName}/`
+      );
       continue;
     }
-    options.onProgress?.(`Staging directory: ${dirName}/...`);
+    options.onProgress?.(
+      `Staging directory ${stagedDirectories}/${directories.length}: ${dirName}/...`
+    );
     await runChunk(['add', '--', dirName], dirName);
   }
 
@@ -164,17 +173,16 @@ async function stageAllFilesChunked(
   // on an explicit ignored path errors out, which would otherwise
   // abort the chunked fallback after the monolithic path has already
   // timed out).
-  const topLevelCandidates = entries.filter((e) => e.isFile()).map((e) => e.name);
   const topLevelFiles: string[] = [];
   for (const name of topLevelCandidates) {
     if (await isPathIgnored(dir, name)) {
-      options.onProgress?.(`Skipping gitignored: ${name}`);
+      options.onProgress?.(`Skipping gitignored top-level file: ${name}`);
       continue;
     }
     topLevelFiles.push(name);
   }
   if (topLevelFiles.length > 0) {
-    options.onProgress?.('Staging top-level files...');
+    options.onProgress?.(`Staging ${topLevelFiles.length} top-level file(s)...`);
     await runChunk(['add', '--', ...topLevelFiles], 'top-level files');
   }
 }
@@ -188,6 +196,21 @@ async function stageAllFilesChunked(
  * SIGINT'd mid-way assuming the process had stalled.
  */
 const GIT_ADD_HEARTBEAT_MS = 15_000;
+const GIT_COMMIT_HEARTBEAT_MS = 15_000;
+
+async function scanTopLevelSource(dir: string): Promise<SourceScanSummary> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  return {
+    directories: entries
+      .filter((entry) => entry.isDirectory() && entry.name !== '.git')
+      .map((entry) => entry.name)
+      .sort(),
+    topLevelFiles: entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort(),
+  };
+}
 
 /**
  * Stages all files in the repository.
@@ -200,6 +223,11 @@ export async function stageAllFiles(
 ): Promise<void> {
   const timeout = options.timeout ?? GIT_ADD_TIMEOUT_MS;
   const reportProgress = options.onProgress;
+  reportProgress?.('Scanning Firefox source tree before indexing...');
+  const scan = await scanTopLevelSource(dir);
+  reportProgress?.(
+    `Source scan complete: ${scan.directories.length} top-level director${scan.directories.length === 1 ? 'y' : 'ies'}, ${scan.topLevelFiles.length} top-level file${scan.topLevelFiles.length === 1 ? '' : 's'}`
+  );
 
   // 2026-04-26 eval Finding 5: the pre-fix heartbeat used a single
   // `heartbeatStartedAt` set at function entry and reported cumulative
@@ -225,7 +253,11 @@ export async function stageAllFiles(
 
   try {
     try {
+      reportProgress?.(
+        `Starting monolithic git add -A for ${scan.directories.length} director${scan.directories.length === 1 ? 'y' : 'ies'} and ${scan.topLevelFiles.length} top-level file${scan.topLevelFiles.length === 1 ? '' : 's'}...`
+      );
       await git(['add', '-A'], dir, { timeout, env: GIT_ADD_ENV });
+      reportProgress?.('Monolithic git add -A completed.');
       return;
     } catch (error: unknown) {
       if (!isTimeoutError(error)) {
@@ -253,7 +285,7 @@ export async function stageAllFiles(
     phaseStartedAt = Date.now();
 
     try {
-      await stageAllFilesChunked(dir, options);
+      await stageAllFilesChunked(dir, scan, options);
     } catch (error: unknown) {
       if (error instanceof GitIndexingTimeoutError) throw error;
       throw error;
@@ -261,6 +293,27 @@ export async function stageAllFiles(
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
   }
+}
+
+async function createInitialSourceCommit(
+  dir: string,
+  reportProgress: (message: string) => void
+): Promise<void> {
+  const startedAt = Date.now();
+  reportProgress(`Creating initial Firefox source commit (${elapsedSince(startedAt)} elapsed)...`);
+  const heartbeat = setInterval(() => {
+    reportProgress(
+      `Creating initial Firefox source commit (${elapsedSince(startedAt)} elapsed)...`
+    );
+  }, GIT_COMMIT_HEARTBEAT_MS);
+  heartbeat.unref();
+
+  try {
+    await git(['commit', '-m', 'Initial Firefox source'], dir);
+  } finally {
+    clearInterval(heartbeat);
+  }
+  reportProgress(`Initial Firefox source commit created (${elapsedSince(startedAt)} elapsed).`);
 }
 
 /**
@@ -311,9 +364,8 @@ export async function initRepository(
   }
 
   // Create initial commit
-  reportProgress('Creating initial Firefox source commit...');
   try {
-    await git(['commit', '-m', 'Initial Firefox source'], dir);
+    await createInitialSourceCommit(dir, reportProgress);
   } catch (error: unknown) {
     throw await maybeWrapIndexLockError(dir, error);
   }
@@ -357,9 +409,8 @@ export async function resumeRepository(
   }
 
   // Create initial commit
-  reportProgress('Creating initial Firefox source commit...');
   try {
-    await git(['commit', '-m', 'Initial Firefox source'], dir);
+    await createInitialSourceCommit(dir, reportProgress);
   } catch (error: unknown) {
     throw await maybeWrapIndexLockError(dir, error);
   }

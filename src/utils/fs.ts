@@ -4,6 +4,7 @@ import {
   access,
   chmod,
   copyFile as fsCopyFile,
+  lstat,
   mkdir,
   open,
   readdir,
@@ -104,6 +105,21 @@ export async function removeDir(path: string): Promise<void> {
  */
 export async function removeFile(path: string): Promise<void> {
   await rm(path, { force: true });
+}
+
+/**
+ * Returns true when a path exists and is a symbolic link.
+ *
+ * Uses lstat rather than stat so a symlink to a missing target is still
+ * classified as a symlink. That matters for cleanup of stale harness links.
+ */
+export async function isSymlink(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isSymbolicLink();
+  } catch (error: unknown) {
+    void error;
+    return false;
+  }
 }
 
 /**

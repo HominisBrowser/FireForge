@@ -19,9 +19,11 @@ import type { RebaseSession } from '../../core/rebase-session.js';
 import { clearRebaseSession, saveRebaseSession } from '../../core/rebase-session.js';
 import { runInSignalCriticalSection } from '../../core/signal-critical.js';
 import { RebaseError } from '../../errors/rebase.js';
+import { elapsedSince } from '../../utils/elapsed.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, spinner, success, warn } from '../../utils/logger.js';
+import { buildRebaseConflictSummary } from './conflict-summary.js';
 import { printSummary } from './summary.js';
 
 /**
@@ -50,7 +52,7 @@ export async function runPatchLoop(
       continue;
     }
 
-    s.message(`Applying ${entry.filename}...`);
+    s.message(`Applying ${i + 1}/${session.patches.length}: ${entry.filename}...`);
 
     // Apply + session persist is wrapped in a signal-deferred critical
     // section so a SIGINT / SIGTERM between the filesystem mutation and
@@ -104,8 +106,23 @@ export async function runPatchLoop(
       }));
 
       s.error(`${entry.filename} failed to apply`);
+      const summary = buildRebaseConflictSummary({
+        patchFilename: entry.filename,
+        ...(result.error !== undefined ? { error: result.error } : {}),
+        ...(result.rejectFiles !== undefined ? { rejectFiles: result.rejectFiles } : {}),
+      });
+      warn(`Conflict summary for ${summary.patchFilename}: ${summary.category}`);
+      if (summary.failedFiles.length > 0) {
+        warn(`  Failed files: ${summary.failedFiles.join(', ')}`);
+      } else {
+        warn('  Failed files: not detected from git output');
+      }
+      info('  Suggested next commands:');
+      for (const command of summary.nextCommands) {
+        info(`    ${command}`);
+      }
       if (result.error) {
-        error(`  Error: ${result.error}`);
+        error(`  Raw apply detail: ${result.error}`);
       }
       if (result.rejectFiles && result.rejectFiles.length > 0) {
         info(`  .rej files created for manual resolution`);
@@ -200,13 +217,14 @@ async function reExportAppliedPatches(
 
   const s = spinner('Re-exporting patches...');
 
-  for (const entry of session.patches) {
-    if (entry.status !== 'applied-clean' && entry.status !== 'applied-fuzz') continue;
+  const reExportable = session.patches.filter(
+    (entry) => entry.status === 'applied-clean' || entry.status === 'applied-fuzz'
+  );
+  const startedAt = Date.now();
 
+  for (const [index, entry] of reExportable.entries()) {
     const meta = manifest.patches.find((p) => p.filename === entry.filename);
     if (!meta) continue;
-
-    s.message(`Re-exporting ${entry.filename}...`);
 
     const existingFiles: string[] = [];
     for (const f of meta.filesAffected) {
@@ -214,6 +232,9 @@ async function reExportAppliedPatches(
         existingFiles.push(f);
       }
     }
+    s.message(
+      `Re-exporting ${index + 1}/${reExportable.length}: ${entry.filename} (${existingFiles.length}/${meta.filesAffected.length} file(s), ${elapsedSince(startedAt)} elapsed)...`
+    );
 
     try {
       const diffContent = await getDiffForFilesAgainstHead(paths.engine, existingFiles);

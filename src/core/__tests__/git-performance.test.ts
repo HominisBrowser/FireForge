@@ -111,6 +111,10 @@ describe('stageAllFiles', () => {
     expect(progress).toHaveBeenCalledWith(
       expect.stringContaining('falling back to chunked staging')
     );
+    expect(progress).toHaveBeenCalledWith(
+      'Source scan complete: 2 top-level directories, 1 top-level file'
+    );
+    expect(progress).toHaveBeenCalledWith('Staging directory 1/2: browser/...');
   });
 
   it('skips gitignored top-level entries during chunked fallback (Finding 4)', async () => {
@@ -159,7 +163,9 @@ describe('stageAllFiles', () => {
       return args[0] === 'add' && args.includes('.vscode');
     });
     expect(addCallsWithVscode).toHaveLength(0);
-    expect(progress).toHaveBeenCalledWith(expect.stringContaining('Skipping gitignored: .vscode/'));
+    expect(progress).toHaveBeenCalledWith(
+      expect.stringContaining('Skipping gitignored directory 1/2: .vscode/')
+    );
   });
 
   it('labels heartbeat ticks with the active phase (Finding 5)', async () => {

@@ -20,6 +20,8 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { isGitRepository } from '../core/git.js';
+import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { buildPatchQueueContext, lintPatchQueue } from '../core/patch-lint.js';
 import { loadPatchesManifest, validatePatchesManifestConsistency } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
@@ -141,6 +143,23 @@ function detectCrossPatchFileClaims(
   return results;
 }
 
+async function detectUnownedWorktreeChanges(
+  engineDir: string,
+  claimedFiles: Set<string>
+): Promise<string[]> {
+  if (!(await pathExists(engineDir)) || !(await isGitRepository(engineDir))) {
+    return [];
+  }
+
+  const entries = await expandUntrackedDirectoryEntries(
+    engineDir,
+    await getWorkingTreeStatus(engineDir)
+  );
+  return [
+    ...new Set(entries.map((entry) => entry.file).filter((file) => !claimedFiles.has(file))),
+  ].sort();
+}
+
 /**
  * Collects the same queue-health findings reported by `fireforge verify`
  * without printing. Used by doctor recovery paths that need a read-only
@@ -227,6 +246,27 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
   }
 
   if (manifest) {
+    const claimedFiles = new Set<string>();
+    for (const patch of manifest.patches) {
+      for (const file of patch.filesAffected) {
+        claimedFiles.add(file);
+      }
+    }
+
+    const unownedWorktreeChanges = await detectUnownedWorktreeChanges(paths.engine, claimedFiles);
+    if (unownedWorktreeChanges.length > 0) {
+      groups.push({
+        title: `Unowned worktree changes (${unownedWorktreeChanges.length})`,
+        issues: unownedWorktreeChanges.map(
+          (file) =>
+            `${file} is changed in engine/ but is not listed in any patch filesAffected entry`
+        ),
+        errorCount: 0,
+        warningCount: unownedWorktreeChanges.length,
+      });
+      warningCount += unownedWorktreeChanges.length;
+    }
+
     const registrationIssues = await detectDanglingRegistrations(
       paths.patches,
       paths.engine,
@@ -287,7 +327,7 @@ export async function verifyCommand(projectRoot: string): Promise<void> {
   if (health.errorCount > 0) {
     outro('Verify failed');
     throw new GeneralError(
-      `fireforge verify found ${health.errorCount} error(s). Fix these before running export/import/rebase.`
+      `fireforge verify found ${health.errorCount} error(s). Fix these before running export/import/rebase. Use "patch staged-dependency" for intentional staged imports, or preview "patch move-files" / "patch reorder --dry-run" / "re-export --files --dry-run" for ownership repairs.`
     );
   }
   outro('Verify passed with warnings');

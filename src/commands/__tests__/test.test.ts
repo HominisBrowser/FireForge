@@ -44,6 +44,8 @@ vi.mock('../../core/build-prepare.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
+  isSymlink: vi.fn(() => Promise.resolve(false)),
+  removeFile: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -121,7 +123,7 @@ import {
 } from '../../core/xpcshell-appdir.js';
 import { GeneralError } from '../../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
-import { pathExists } from '../../utils/fs.js';
+import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { outro, success, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 
@@ -133,6 +135,8 @@ describe('testCommand', () => {
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
     vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(null);
+    vi.mocked(isSymlink).mockResolvedValue(false);
+    vi.mocked(removeFile).mockResolvedValue();
   });
 
   it('fails before invoking mach when a requested test path does not exist', async () => {
@@ -563,6 +567,98 @@ describe('testCommand', () => {
     await expect(
       testCommand('/project', ['browser/base/content/test/foo/test_x.js'])
     ).rejects.toThrow(/stale harness setup/i);
+  });
+
+  it('removes a stale xpcshell _tests symlink and retries mach test once', async () => {
+    const staleLink =
+      '/project/engine/obj-debug/_tests/xpcshell/toolkit/mozapps/extensions/test/xpcshell/data/bug455906_block.xml';
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
+      '/project/engine/toolkit/mozapps/extensions/test/xpcshell/xpcshell.toml'
+    );
+    vi.mocked(isSymlink).mockResolvedValue(true);
+    vi.mocked(testWithOutput)
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        stdout: `FileExistsError: [Errno 17] File exists: '/src/bug455906_block.xml' -> '${staleLink}'`,
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', [
+        'toolkit/mozapps/extensions/test/xpcshell/test_bug455906_blocklist.js',
+      ])
+    ).resolves.toBeUndefined();
+
+    expect(removeFile).toHaveBeenCalledWith(staleLink);
+    expect(testWithOutput).toHaveBeenCalledTimes(2);
+  });
+
+  it('removes stale xpcshell install symlinks under the shared mochitest harness tree', async () => {
+    const staleLink =
+      '/project/engine/obj-debug/_tests/testing/mochitest/browser/browser/extensions/formautofill/test/fixtures/autocomplete_address_basic.html';
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
+      '/project/engine/browser/extensions/formautofill/test/unit/xpcshell.toml'
+    );
+    vi.mocked(isSymlink).mockResolvedValue(true);
+    vi.mocked(testWithOutput)
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        stdout: `FileExistsError: [Errno 17] File exists: '/src/autocomplete_address_basic.html' -> '${staleLink}'`,
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/extensions/formautofill/test/unit/test_sync.js'])
+    ).resolves.toBeUndefined();
+
+    expect(removeFile).toHaveBeenCalledWith(staleLink);
+    expect(testWithOutput).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not remove FileExistsError destinations outside the active _tests tree', async () => {
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
+      '/project/engine/toolkit/mozapps/extensions/test/xpcshell/xpcshell.toml'
+    );
+    vi.mocked(isSymlink).mockResolvedValue(true);
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout:
+        "xpcshell FileExistsError: [Errno 17] File exists: '/src' -> '/tmp/not-fireforge.xml'",
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', [
+        'toolkit/mozapps/extensions/test/xpcshell/test_bug455906_blocklist.js',
+      ])
+    ).rejects.toThrow(/stale harness setup/i);
+
+    expect(removeFile).not.toHaveBeenCalled();
+    expect(testWithOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not remove a stale xpcshell destination unless it is a symlink', async () => {
+    const stalePath = '/project/engine/obj-debug/_tests/xpcshell/data/bug455906_block.xml';
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
+      '/project/engine/toolkit/mozapps/extensions/test/xpcshell/xpcshell.toml'
+    );
+    vi.mocked(isSymlink).mockResolvedValue(false);
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: `FileExistsError: [Errno 17] File exists: '/src' -> '${stalePath}'`,
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', [
+        'toolkit/mozapps/extensions/test/xpcshell/test_bug455906_blocklist.js',
+      ])
+    ).rejects.toThrow(/stale harness setup/i);
+
+    expect(removeFile).not.toHaveBeenCalled();
+    expect(testWithOutput).toHaveBeenCalledTimes(1);
   });
 
   it('forwards --mach-arg values verbatim to testWithOutput after --headless', async () => {

@@ -114,6 +114,7 @@ describe('setup-support', () => {
   it('parses optional CLI product and license values', () => {
     expect(parseFirefoxProductOption(undefined)).toBeUndefined();
     expect(parseFirefoxProductOption('firefox-beta')).toBe('firefox-beta');
+    expect(parseFirefoxProductOption('firefox-devedition')).toBe('firefox-devedition');
     expect(() => parseFirefoxProductOption('waterfox')).toThrow('Invalid product');
 
     expect(parseProjectLicenseOption(undefined)).toBeUndefined();

@@ -54,6 +54,7 @@ export type FirefoxSourcePhase = 'download' | 'extract';
 
 /** Callback fired at phase transitions during {@link downloadFirefoxSource}. */
 export type FirefoxSourcePhaseCallback = (phase: FirefoxSourcePhase) => void;
+export type FirefoxSourceProgressCallback = (message: string) => void;
 
 /**
  * Downloads and extracts Firefox source.
@@ -73,7 +74,8 @@ export async function downloadFirefoxSource(
   cacheDir: string,
   onProgress?: ProgressCallback,
   onPhase?: FirefoxSourcePhaseCallback,
-  expectedSha256?: string
+  expectedSha256?: string,
+  onPhaseProgress?: FirefoxSourceProgressCallback
 ): Promise<void> {
   const archive = resolveArchive(version, product);
   const tarballPath = join(cacheDir, archive.filename);
@@ -89,7 +91,7 @@ export async function downloadFirefoxSource(
   onPhase?.('extract');
   const tempDir = `${destDir}.tmp-${randomUUID()}`;
   try {
-    await extractTarXz(tarballPath, tempDir);
+    await extractTarXz(tarballPath, tempDir, onPhaseProgress);
   } catch (error: unknown) {
     await removeDir(tempDir);
     await invalidateArchiveCache(archive, cacheDir);

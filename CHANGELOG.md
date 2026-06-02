@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.27.0
+
+- Added first-class `firefox-devedition` source support and atomic `fireforge source set`.
+- Improved `download --force` git indexing progress with phase, count, and heartbeat output.
+- Added elapsed progress for extraction, initial source commits, and rebase/re-export patch refreshes.
+- Added `re-export --files --allow-shrink` so patch ownership shrinkage is refused unless explicitly acknowledged, with clearer dry-run previews.
+- Surfaced likely new sibling files during plain re-export and aligned verify/status ownership reporting for unowned worktree changes.
+- Preserved patch-owned branding `configure.sh` settings during build preflight.
+- Added custom element registration support for Furnace validate/apply and Firefox 152-style array-backed ESM registrations.
+- Normalized generated patch artifacts so blank context lines do not trip raw whitespace checks.
+- Improved rebase conflict summaries and added `doctor --post-rebase-audit` for common registration surfaces.
+
+## 0.26.0
+
+- Added targeted `re-export --scan --scan-file <path>` for reviewed single-patch new-file assignment without broad sibling collection.
+- Added a FireForge-owned worktree whitespace gate that excludes generated `patches/*.patch` diff syntax from repository whitespace checks.
+- Kept generated patch context lines unchanged while making release checks use the FireForge whitespace gate.
+
+## 0.25.0
+
+- Kept `MOZ_APP_VENDOR` in `browser/moz.configure` for Firefox ESR 140 project-flag trees instead of generated branding `configure.sh`.
+- Added a regression for stale xpcshell install symlink repair under shared `_tests/testing/mochitest/` harness paths.
+
+## 0.24.0
+
+- Moved branding vendor identity into generated branding configure scripts and made `browser/moz.configure` vendor patching optional.
+- Added metadata-backed staged forward-import declarations plus `patch staged-dependency` editing.
+- Added stale xpcshell `_tests` symlink repair with a single safe retry.
+- Added `patch move-files` for previewable ownership-transfer repair plans.
+- Improved queue self-containment guidance for staged dependencies and patch repairs.
+
 ## 0.23.0
 
 - Improved xpcshell test argument filtering and mixed-harness diagnostics.

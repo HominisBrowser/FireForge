@@ -25,6 +25,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, success, warn } from '../utils/logger.js';
 import { findExecutable } from '../utils/process.js';
+import { POST_REBASE_AUDIT_CHECK } from './doctor/post-rebase-audit.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, warning } from './doctor-check-core.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
@@ -461,6 +462,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
     },
     fix: 'Re-export affected files with "fireforge export <paths...>" to create full-file patches',
   },
+  POST_REBASE_AUDIT_CHECK,
   // Furnace checks live in a sibling module so this file stays under the
   // max-lines threshold. Splicing them in as an array preserves the
   // declarative registry contract — each entry remains a single
@@ -606,6 +608,10 @@ export function registerDoctor(
     .option(
       '--clear-resolution',
       'Clear stale pendingResolution state after the patch queue health check reports no errors'
+    )
+    .option(
+      '--post-rebase-audit',
+      'Check common registration surfaces after a Firefox source rebase'
     )
     .action(
       withErrorHandling(async (options: DoctorOptions) => {

@@ -3,9 +3,44 @@
  * Schema validation for patches.json manifest data.
  */
 
-import type { PatchCategory, PatchesManifest, PatchMetadata } from '../types/commands/index.js';
+import type {
+  PatchCategory,
+  PatchesManifest,
+  PatchMetadata,
+  PatchStagedDependencies,
+  PatchStagedForwardImport,
+} from '../types/commands/index.js';
 import { parseObject } from '../utils/parse.js';
 import { isArray, isObject, isValidFirefoxVersion, PATCH_CATEGORIES } from '../utils/validation.js';
+
+function parseForwardImports(data: unknown, label: string): PatchStagedForwardImport[] {
+  if (!isArray(data)) {
+    throw new Error(`${label} must be an array`);
+  }
+  return data.map((entry, index) => {
+    const rec = parseObject(entry, `${label}[${index}]`);
+    const dependency: PatchStagedForwardImport = {
+      file: rec.string('file'),
+      specifier: rec.string('specifier'),
+      creates: rec.string('creates'),
+    };
+    const owner = rec.optionalString('owner');
+    if (owner !== undefined) dependency.owner = owner;
+    const reason = rec.optionalString('reason');
+    if (reason !== undefined) dependency.reason = reason;
+    return dependency;
+  });
+}
+
+function parseStagedDependencies(data: unknown, label: string): PatchStagedDependencies {
+  const rec = parseObject(data, label);
+  const rawForwardImports = rec.raw('forwardImports');
+  const staged: PatchStagedDependencies = {};
+  if (rawForwardImports !== undefined) {
+    staged.forwardImports = parseForwardImports(rawForwardImports, `${label}.forwardImports`);
+  }
+  return staged;
+}
 
 /**
  * Validates a single patch metadata entry from raw data.
@@ -69,6 +104,13 @@ export function validatePatchMetadata(data: unknown, index: number): PatchMetada
   };
   if (lintIgnore !== undefined) result.lintIgnore = lintIgnore;
   if (tier !== undefined) result.tier = tier;
+  const rawStagedDependencies = rec.raw('stagedDependencies');
+  if (rawStagedDependencies !== undefined) {
+    result.stagedDependencies = parseStagedDependencies(
+      rawStagedDependencies,
+      `patches[${index}].stagedDependencies`
+    );
+  }
   return result;
 }
 

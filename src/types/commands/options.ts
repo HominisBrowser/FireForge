@@ -20,7 +20,7 @@ export interface SetupOptions {
   binaryName?: string;
   /** Firefox version to base on */
   firefoxVersion?: string;
-  /** Firefox product type (firefox, firefox-esr, firefox-beta) */
+  /** Firefox product type (firefox, firefox-esr, firefox-beta, firefox-devedition) */
   product?: FirefoxProduct;
   /** Overwrite existing configuration without prompting */
   force?: boolean;
@@ -34,6 +34,20 @@ export interface SetupOptions {
 export interface DownloadOptions {
   /** Force re-download, deleting existing engine/ */
   force?: boolean;
+}
+
+/**
+ * Options for the source command.
+ */
+export interface SourceSetOptions {
+  /** Firefox version to set */
+  version: string;
+  /** Firefox product type */
+  product: FirefoxProduct;
+  /** Optional pinned SHA-256 for the resolved source archive */
+  sha256?: string;
+  /** Clear any existing pinned SHA-256 */
+  clearSha256?: boolean;
 }
 
 /**
@@ -176,6 +190,12 @@ export interface ReExportOptions {
   /** Scan directories for new/removed files and update filesAffected */
   scan?: boolean;
   /**
+   * Explicit engine-relative files to add while scanning. Unlike broad
+   * `--scan`, this does not collect adjacent files from the same directory.
+   * Requires `--scan` and exactly one target patch.
+   */
+  scanFiles?: string[];
+  /**
    * Restrict the re-exported patch's filesAffected to this explicit list.
    * Files currently in the patch but not in this list are dropped (shrink);
    * files in this list but not currently in the patch are added. Mutually
@@ -189,6 +209,12 @@ export interface ReExportOptions {
   skipLint?: boolean;
   /** Skip confirmation prompt on shrink (required for non-TTY) */
   yes?: boolean;
+  /**
+   * Explicitly allow `--files` to remove paths that are currently owned by
+   * the patch. Without this acknowledgement, non-dry-run shrinks are refused
+   * before the interactive/`--yes` confirmation path.
+   */
+  allowShrink?: boolean;
   /** Bypass cross-patch lint refusal on projected shrink state */
   forceUnsafe?: boolean;
   /**
@@ -252,6 +278,44 @@ export interface PatchLintIgnoreOptions {
   dryRun?: boolean;
   /** Skip the confirmation prompt (required for non-TTY). */
   yes?: boolean;
+}
+
+/**
+ * Options for the `fireforge patch staged-dependency` subcommand. Modes are
+ * mutually exclusive: add a declaration, remove one or more matching
+ * declarations, or clear all staged dependencies from the patch.
+ */
+export interface PatchStagedDependencyOptions {
+  /** Add a forward-import staged dependency. */
+  add?: boolean;
+  /** Remove matching forward-import staged dependency declarations. */
+  remove?: boolean;
+  /** Drop the stagedDependencies field entirely. */
+  clear?: boolean;
+  /** Importing file path relative to engine/. */
+  file?: string;
+  /** Exact import specifier as it appears in source. */
+  specifier?: string;
+  /** Later-created file path relative to engine/. */
+  creates?: string;
+  /** Optional exact patch filename expected to create `creates`. */
+  owner?: string;
+  /** Optional human-readable rationale stored with the declaration. */
+  reason?: string;
+  /** Print the planned change without writing. */
+  dryRun?: boolean;
+  /** Skip the confirmation prompt (required for non-TTY). */
+  yes?: boolean;
+}
+
+/**
+ * Options for the preview-only `fireforge patch move-files` subcommand.
+ * It validates an ownership transfer and prints the explicit
+ * `re-export --files` commands needed to perform it.
+ */
+export interface PatchMoveFilesOptions {
+  /** File paths relative to engine/ to move from the source patch to the target patch. */
+  file?: string[];
 }
 
 /**
@@ -637,6 +701,8 @@ export interface DoctorOptions {
    * and side-effect-free.
    */
   repairFurnace?: boolean;
+  /** Run extra post-rebase checks for common Firefox registration surfaces. */
+  postRebaseAudit?: boolean;
 }
 
 /**

@@ -25,6 +25,7 @@ import {
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
+import { tryRepairStaleXpcshellTestSymlink } from '../core/test-stale-symlink.js';
 import {
   findNearestXpcshellManifest,
   operatorAlreadySetAppPath,
@@ -207,10 +208,10 @@ function buildXpcshellAppdirMessage(injectionAttempted: boolean): string {
   );
 }
 
-function buildMochitestSymlinkMessage(): string {
+function buildHarnessSymlinkMessage(): string {
   return (
-    'mach failed while preparing mochitest harness symlinks before the requested tests ran.\n\n' +
-    'This usually means the objdir contains stale harness setup from an earlier run. Re-run with `fireforge test --build` to refresh the harness state, or remove the stale mochitest symlink in the active obj-* directory before retrying.'
+    'mach failed while preparing test harness symlinks before the requested tests ran.\n\n' +
+    'This usually means the objdir contains stale harness setup from an earlier run. Re-run with `fireforge test --build` to refresh the harness state, or remove the stale harness symlink in the active obj-* directory before retrying.'
   );
 }
 
@@ -311,8 +312,11 @@ function handleNonZeroTestExit(
   if (hasMochitestHttp3ServerSignal(combinedOutput)) {
     throw new GeneralError(buildMochitestHttp3ServerMessage());
   }
-  if (/FileExistsError/i.test(combinedOutput) && /mochitest/i.test(combinedOutput)) {
-    throw new GeneralError(buildMochitestSymlinkMessage());
+  if (
+    /FileExistsError/i.test(combinedOutput) &&
+    /(mochitest|xpcshell|_tests)/i.test(combinedOutput)
+  ) {
+    throw new GeneralError(buildHarnessSymlinkMessage());
   }
   if (
     /invalid filename/i.test(combinedOutput) ||
@@ -578,6 +582,21 @@ export async function testCommand(
       'mach test',
       error instanceof Error ? error : undefined
     );
+  }
+
+  if (
+    result.exitCode !== 0 &&
+    classification.xpcshell.length > 0 &&
+    classification.nonXpcshell.length === 0
+  ) {
+    const repaired = await tryRepairStaleXpcshellTestSymlink(
+      paths.engine,
+      buildCheck.objDir,
+      `${result.stdout}\n${result.stderr}`
+    );
+    if (repaired) {
+      result = await testWithOutput(paths.engine, normalizedPaths, extraArgs);
+    }
   }
 
   handleNonZeroTestExit(result, normalizedPaths, appdirInjection, projectConfig.binaryName);

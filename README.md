@@ -20,7 +20,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 22.22.1+
 - Python 3
 - Git
 - The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows (never tested on Windows tbh)
@@ -68,7 +68,7 @@ Use `fireforge --help` for the full set of commands.
 When Mozilla publishes a new ESR you need to update the configured Firefox version, download the new source code and reapply the patches:
 
 ```bash
-npx fireforge config firefox.version 145.0.0esr
+npx fireforge source set --version 145.0.0esr --product firefox-esr --sha256 <archive-sha256>
 npx fireforge download --force
 npx fireforge rebase
 ```

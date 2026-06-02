@@ -318,7 +318,10 @@ export async function downloadCommand(
             );
           }
         },
-        config.firefox.sha256
+        config.firefox.sha256,
+        (message) => {
+          if (phaseState.value === 'extract') s.message(message);
+        }
       );
 
       if (phaseState.value === 'extract') {

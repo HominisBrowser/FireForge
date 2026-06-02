@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * `fireforge patch <verb>` parent command. Groups single-patch
- * mutations (`compact`, `delete`, `lint-ignore`, `rename`, `reorder`,
- * `tier`) so they do not clutter the top-level command list.
+ * mutations and planners (`compact`, `delete`, `lint-ignore`, `move-files`,
+ * `rename`, `reorder`, `staged-dependency`, `tier`) so they do not clutter the top-level command
+ * list.
  * Queue-level verbs like `lint`, `export`, `verify`, and `status` stay
  * flat.
  */
@@ -13,8 +14,10 @@ import type { CommandContext } from '../../types/cli.js';
 import { registerPatchCompact } from './compact.js';
 import { registerPatchDelete } from './delete.js';
 import { registerPatchLintIgnore } from './lint-ignore.js';
+import { registerPatchMoveFiles } from './move-files.js';
 import { registerPatchRename } from './rename.js';
 import { registerPatchReorder } from './reorder.js';
+import { registerPatchStagedDependency } from './staged-dependency.js';
 import { registerPatchTier } from './tier.js';
 
 /**
@@ -27,7 +30,7 @@ export function registerPatch(program: Command, context: CommandContext): void {
   const patch = program
     .command('patch')
     .description(
-      'Manage individual patches in the queue (compact, delete, lint-ignore, rename, reorder, tier)'
+      'Manage individual patches in the queue (compact, delete, lint-ignore, move-files, rename, reorder, staged-dependency, tier)'
     )
     // Match `fireforge furnace`'s no-args contract: print the group's help and
     // exit 0. Without this default action, commander routes `fireforge patch`
@@ -42,7 +45,9 @@ export function registerPatch(program: Command, context: CommandContext): void {
   registerPatchCompact(patch, context);
   registerPatchDelete(patch, context);
   registerPatchLintIgnore(patch, context);
+  registerPatchMoveFiles(patch, context);
   registerPatchRename(patch, context);
   registerPatchReorder(patch, context);
+  registerPatchStagedDependency(patch, context);
   registerPatchTier(patch, context);
 }

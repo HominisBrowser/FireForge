@@ -127,6 +127,65 @@ function buildFilesModeMetadataUpdates(
   return updates;
 }
 
+async function confirmFilesModeProjection(args: {
+  target: PatchMetadata;
+  retained: string[];
+  removed: string[];
+  added: string[];
+  actualProjectedFiles: string[];
+  missingFiles: string[];
+  options: ReExportOptions;
+  conflicts: ConflictReport | null;
+}): Promise<'proceed' | 'dry-run' | 'cancelled'> {
+  const {
+    target,
+    retained,
+    removed,
+    added,
+    actualProjectedFiles,
+    missingFiles,
+    options,
+    conflicts,
+  } = args;
+  const isDryRun = options.dryRun === true;
+  const summary: string[] = [
+    `re-export ${target.filename} with --files scope`,
+    `current files (${target.filesAffected.length}): ${target.filesAffected.join(', ') || '(none)'}`,
+    `retained files (${retained.length}): ${retained.join(', ') || '(none)'}`,
+    `projected files (${actualProjectedFiles.length}): ${actualProjectedFiles.join(', ') || '(none)'}`,
+  ];
+  if (removed.length > 0) {
+    summary.push(`removed files (${removed.length}; become unmanaged): ${removed.join(', ')}`);
+  }
+  if (added.length > 0) {
+    summary.push(`newly included files (${added.length}): ${added.join(', ')}`);
+  }
+  if (missingFiles.length > 0) {
+    summary.push(`missing on disk (will be dropped): ${missingFiles.join(', ')}`);
+  }
+
+  if (!isDryRun && removed.length > 0 && options.allowShrink !== true) {
+    warn(`Refusing to shrink ${target.filename} without --allow-shrink.`);
+    for (const line of summary) {
+      info(`  ${line}`);
+    }
+    throw new InvalidArgumentError(
+      `Refusing to re-export ${target.filename} with --files because it would remove ${removed.length} existing patch-owned file${removed.length === 1 ? '' : 's'}. Run again with --allow-shrink after reviewing the dry-run output.`,
+      '--allow-shrink'
+    );
+  }
+
+  return confirmDestructive({
+    operation: 're-export-files',
+    title: `Re-export ${target.filename} with --files`,
+    summary,
+    yes: removed.length === 0 && missingFiles.length === 0 ? true : options.yes === true,
+    dryRun: isDryRun,
+    unsafeOverride: options.forceUnsafe === true,
+    conflicts,
+  });
+}
+
 /**
  * Handles `re-export --files` end-to-end: computes the projected diff,
  * runs the per-patch and cross-patch lint against a context in which the
@@ -146,7 +205,6 @@ export async function reExportFilesInPlace(
   options: ReExportOptions,
   config: FireForgeConfig
 ): Promise<void> {
-  const isDryRun = options.dryRun === true;
   const target = selectedPatches[0];
   if (!target) {
     throw new InvalidArgumentError('--files requires a target patch.', '--files');
@@ -159,6 +217,7 @@ export async function reExportFilesInPlace(
   const requested = [...new Set(filesOption)].sort();
   const removed = target.filesAffected.filter((f) => !requested.includes(f));
   const added = requested.filter((f) => !target.filesAffected.includes(f));
+  const retained = target.filesAffected.filter((f) => requested.includes(f));
 
   // Filter out paths that no longer exist on disk; we cannot include
   // them in the new diff because getDiffForFilesAgainstHead would fail.
@@ -253,32 +312,14 @@ export async function reExportFilesInPlace(
     });
   }
 
-  // Shrinks are destructive (previously-owned files become unmanaged), so
-  // they keep the explicit confirmation gate. Additive-only scopes are safe
-  // to run non-interactively after lint/policy projection because no existing
-  // patch ownership is being dropped.
-  const summary: string[] = [
-    `re-export ${target.filename} with --files scope`,
-    `current files (${target.filesAffected.length}): ${target.filesAffected.join(', ') || '(none)'}`,
-    `new files (${actualProjectedFiles.length}): ${actualProjectedFiles.join(', ') || '(none)'}`,
-  ];
-  if (removed.length > 0) {
-    summary.push(`would drop (become unmanaged): ${removed.join(', ')}`);
-  }
-  if (added.length > 0) {
-    summary.push(`would add: ${added.join(', ')}`);
-  }
-  if (missingFiles.length > 0) {
-    summary.push(`missing on disk (will be dropped): ${missingFiles.join(', ')}`);
-  }
-
-  const decision = await confirmDestructive({
-    operation: 're-export-files',
-    title: `Re-export ${target.filename} with --files`,
-    summary,
-    yes: removed.length === 0 && missingFiles.length === 0 ? true : options.yes === true,
-    dryRun: isDryRun,
-    unsafeOverride: options.forceUnsafe === true,
+  const decision = await confirmFilesModeProjection({
+    target,
+    retained,
+    removed,
+    added,
+    actualProjectedFiles,
+    missingFiles,
+    options,
     conflicts,
   });
 

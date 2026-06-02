@@ -545,6 +545,29 @@ describe('furnace registration validation helpers', () => {
         })
       );
     });
+
+    it('accepts Firefox 152 array declared before DOMContentLoaded and consumed inside it', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(
+        [
+          'const gDclCustomElements = [',
+          '  ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],',
+          '];',
+          '',
+          'document.addEventListener("DOMContentLoaded", () => {',
+          '  for (let [tag, script] of gDclCustomElements) {',
+          '    customElements.setElementCreationCallback(tag, () => {',
+          '      ChromeUtils.importESModule(script);',
+          '    });',
+          '  }',
+          '});',
+          '',
+        ].join('\n')
+      );
+
+      const issues = await validateRegistrationPatterns('/project', baseConfig);
+      expect(issues).toEqual([]);
+    });
   });
 
   describe('runPostApplyConsistencyChecks', () => {

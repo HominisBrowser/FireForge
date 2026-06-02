@@ -53,7 +53,7 @@ export function validateRegistrationPlacement(
   const contentBeforeTag = result.slice(0, insertedPos);
   const hasDCLBefore = dclPattern.test(contentBeforeTag);
 
-  if (isESModule && !hasDCLBefore) {
+  if (isESModule && !hasDCLBefore && !isTagInArrayConsumedInsideDOMContentLoaded(result, tagName)) {
     throw new FurnaceError(
       `${tagName} was registered in the loadSubScript block (Pattern A) instead of the DOMContentLoaded/importESModule block (Pattern B). This will cause the component to fail at runtime. The customElements.js file structure may have changed upstream — manual intervention required.`,
       tagName
@@ -65,4 +65,33 @@ export function validateRegistrationPlacement(
       tagName
     );
   }
+}
+
+function isTagInArrayConsumedInsideDOMContentLoaded(content: string, tagName: string): boolean {
+  const dclMatch = /document\.addEventListener\(\s*["']DOMContentLoaded["']/.exec(content);
+  if (!dclMatch) return false;
+
+  const beforeDcl = content.slice(0, dclMatch.index);
+  const afterDcl = content.slice(dclMatch.index);
+  const consumedArrays = new Set<string>();
+  const forOfPattern = /for\s*\(\s*(?:let|const|var)\s*\[[^)]*\]\s+of\s+([A-Za-z_$][\w$]*)\s*\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = forOfPattern.exec(afterDcl)) !== null) {
+    if (match[1]) consumedArrays.add(match[1]);
+  }
+
+  for (const arrayName of consumedArrays) {
+    const declarationPattern = new RegExp(
+      `(?:const|let|var)\\s+${escapeRegex(arrayName)}\\s*=\\s*\\[([\\s\\S]*?)\\];`
+    );
+    const declaration = declarationPattern.exec(beforeDcl);
+    if (declaration?.[1] && new RegExp(`["']${escapeRegex(tagName)}["']`).test(declaration[1])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

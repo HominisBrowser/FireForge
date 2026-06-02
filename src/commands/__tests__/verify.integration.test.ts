@@ -73,6 +73,7 @@ describe('verify command', () => {
   let projectRoot: string;
   let patchesDir: string;
   let restoreTTY: () => void = () => undefined;
+  let stdout: string;
 
   beforeEach(async () => {
     projectRoot = await createTempProject('ff-verify-');
@@ -81,7 +82,11 @@ describe('verify command', () => {
     restoreTTY = setInteractiveMode(false);
     // Silence logger output during tests by stubbing methods on the
     // loaded singleton.
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stdout = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      stdout += chunk.toString();
+      return true;
+    });
   });
 
   afterEach(async () => {
@@ -106,6 +111,31 @@ describe('verify command', () => {
     ]);
 
     await expect(verifyCommand(projectRoot)).resolves.toBeUndefined();
+  });
+
+  it('warns when engine contains unowned changed files', async () => {
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      'browser/branding/hominis/configure.sh': 'MOZ_APP_DISPLAYNAME="Hominis"\n',
+    });
+    await writeFile(join(projectRoot, 'engine/browser/branding/hominis/Assets.car'), 'asset\n');
+    const diff = createDiff(
+      'browser/branding/hominis/configure.sh',
+      'MOZ_APP_DISPLAYNAME="Hominis"'
+    );
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-branding.patch', 1, [
+          'browser/branding/hominis/configure.sh',
+        ]),
+        body: diff,
+      },
+    ]);
+
+    await expect(verifyCommand(projectRoot)).resolves.toBeUndefined();
+
+    expect(stdout).toContain('Unowned worktree changes (1)');
+    expect(stdout).toContain('browser/branding/hominis/Assets.car');
+    expect(stdout).toContain('Verify passed with warnings');
   });
 
   it('fails on duplicate /dev/null creation across two patches', async () => {

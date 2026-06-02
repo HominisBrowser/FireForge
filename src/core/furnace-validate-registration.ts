@@ -59,7 +59,10 @@ export async function validateRegistrationPatterns(
     const contentBeforeDCL = stripJsComments(content.slice(0, domContentLoadedIdx));
     const tagPattern = new RegExp(`"${name}"`);
 
-    if (tagPattern.test(contentBeforeDCL)) {
+    if (
+      tagPattern.test(contentBeforeDCL) &&
+      !isArrayDeclaredBeforeDclAndConsumedInsideDcl(content, domContentLoadedIdx, name)
+    ) {
       issues.push({
         component: name,
         severity: 'error',
@@ -70,6 +73,37 @@ export async function validateRegistrationPatterns(
   }
 
   return issues;
+}
+
+function isArrayDeclaredBeforeDclAndConsumedInsideDcl(
+  content: string,
+  domContentLoadedIdx: number,
+  tagName: string
+): boolean {
+  const contentBeforeDCL = stripJsComments(content.slice(0, domContentLoadedIdx));
+  const contentAfterDCL = stripJsComments(content.slice(domContentLoadedIdx));
+  const consumedArrays = new Set<string>();
+  const forOfPattern = /for\s*\(\s*(?:let|const|var)\s*\[[^)]*\]\s+of\s+([A-Za-z_$][\w$]*)\s*\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = forOfPattern.exec(contentAfterDCL)) !== null) {
+    if (match[1]) consumedArrays.add(match[1]);
+  }
+
+  for (const arrayName of consumedArrays) {
+    const declarationPattern = new RegExp(
+      `(?:const|let|var)\\s+${escapeRegex(arrayName)}\\s*=\\s*\\[([\\s\\S]*?)\\];`
+    );
+    const declaration = declarationPattern.exec(contentBeforeDCL);
+    if (declaration?.[1] && new RegExp(`["']${escapeRegex(tagName)}["']`).test(declaration[1])) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

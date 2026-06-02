@@ -133,11 +133,7 @@ describe('furnace registration AST coverage', () => {
     );
   });
 
-  it('wraps parser failures in a FurnaceError now that the legacy path is removed', async () => {
-    // The H4 pre-flight checks for a destructuring `for (... of [...])` loop
-    // and the DOMContentLoaded marker, so the unparseable fragment must
-    // contain both literals to reach the AST parser. The body inside the loop is intentional
-    // garbage so acorn rejects it at parse time.
+  it('fails fast when no recognizable registration loop is present', async () => {
     vi.mocked(readText).mockResolvedValue(
       `document.addEventListener("DOMContentLoaded", () => {\n  for (let [a] of !@#$) {\n});\n`
     );
@@ -149,9 +145,7 @@ describe('furnace registration AST coverage', () => {
     ).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(FurnaceError);
-    expect((error as FurnaceError).message).toContain(
-      'Failed to update toolkit/content/customElements.js using both AST and regex fallback'
-    );
+    expect((error as FurnaceError).message).toContain('recognizable registration loop');
   });
 
   it('inserts into an empty registration array when no reference entry exists', async () => {

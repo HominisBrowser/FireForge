@@ -195,6 +195,12 @@ export interface ReExportOptions {
   skipLint?: boolean;
   /** Skip confirmation prompt on shrink (required for non-TTY) */
   yes?: boolean;
+  /**
+   * Explicitly allow `--files` to remove paths that are currently owned by
+   * the patch. Without this acknowledgement, non-dry-run shrinks are refused
+   * before the interactive/`--yes` confirmation path.
+   */
+  allowShrink?: boolean;
   /** Bypass cross-patch lint refusal on projected shrink state */
   forceUnsafe?: boolean;
   /**

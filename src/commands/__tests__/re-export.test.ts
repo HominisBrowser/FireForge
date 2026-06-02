@@ -207,6 +207,26 @@ describe('reExportCommand - --scan flag', () => {
     expect(outro).toHaveBeenCalledWith('Re-export complete');
   });
 
+  it('plain re-export suggests --scan-file for unowned changed sibling files', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/branding/hominis/configure.sh']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue(['browser/branding/hominis/Assets.car']);
+
+    await reExportCommand('/fake/root', ['001'], {});
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('found 1 unowned changed sibling file')
+    );
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'browser/branding/hominis/Assets.car — fireforge re-export 001-ui-test.patch --scan --scan-file browser/branding/hominis/Assets.car'
+      )
+    );
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+  });
+
   it('should discover new files in scanned directories', async () => {
     const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
@@ -479,16 +499,24 @@ describe('reExportCommand - --scan flag', () => {
     expect(updatedFiles).not.toContain('browser/modules/foo/claimed.js');
   });
 
-  it('should not scan when --scan is not passed', async () => {
+  it('plain re-export checks siblings for suggestions without changing filesAffected', async () => {
     const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
     vi.mocked(pathExists).mockResolvedValue(true);
 
     await reExportCommand('/fake/root', ['001'], {});
 
-    expect(getModifiedFilesInDir).not.toHaveBeenCalled();
-    expect(getUntrackedFilesInDir).not.toHaveBeenCalled();
-    expect(getClaimedFiles).not.toHaveBeenCalled();
+    expect(getModifiedFilesInDir).toHaveBeenCalledWith('/fake/engine', 'browser/modules/foo');
+    expect(getUntrackedFilesInDir).toHaveBeenCalledWith('/fake/engine', 'browser/modules/foo');
+    expect(getClaimedFiles).toHaveBeenCalled();
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
+      '/fake/patches',
+      '001-ui-test.patch',
+      expect.any(String),
+      expect.objectContaining({ filesAffected: ['browser/modules/foo/a.js'] }),
+      undefined,
+      expect.objectContaining({ command: 're-export' })
+    );
   });
 
   it('warns when filesAffected names a path missing from disk without --scan (Finding #16)', async () => {

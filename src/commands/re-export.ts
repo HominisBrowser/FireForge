@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { multiselect } from '@clack/prompts';
 import { Command, Option } from 'commander';
@@ -7,8 +7,10 @@ import { Command, Option } from 'commander';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
+import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
 import {
+  getClaimedFiles,
   loadPatchesManifest,
   resolvePatchIdentifier,
   stampPatchVersions,
@@ -37,6 +39,67 @@ async function findMissingFiles(engineDir: string, files: readonly string[]): Pr
     if (!(await pathExists(join(engineDir, file)))) missingFiles.push(file);
   }
   return missingFiles;
+}
+
+async function findLikelyNewSiblingFiles(args: {
+  currentFilesAffected: readonly string[];
+  engineDir: string;
+  manifest: PatchesManifest;
+  patchFilename: string;
+}): Promise<string[]> {
+  const { currentFilesAffected, engineDir, manifest, patchFilename } = args;
+  const parentDirs = [...new Set(currentFilesAffected.map((file) => dirname(file)))];
+  const currentSet = new Set(currentFilesAffected);
+  const claimedByOthers = getClaimedFiles(manifest, patchFilename);
+  const candidates = new Set<string>();
+
+  for (const dir of parentDirs) {
+    const [modifiedFiles, untrackedFiles] = await Promise.all([
+      getModifiedFilesInDir(engineDir, dir),
+      getUntrackedFilesInDir(engineDir, dir),
+    ]);
+    for (const file of [...modifiedFiles, ...untrackedFiles]) {
+      if (currentSet.has(file) || claimedByOthers.has(file)) continue;
+      candidates.add(file);
+    }
+  }
+
+  return [...candidates].sort();
+}
+
+async function warnPlainReExportFileDrift(args: {
+  patch: PatchMetadata;
+  paths: ReturnType<typeof getProjectPaths>;
+  manifest: PatchesManifest;
+  currentFilesAffected: readonly string[];
+}): Promise<void> {
+  const { patch, paths, manifest, currentFilesAffected } = args;
+  const missingFiles = await findMissingFiles(paths.engine, currentFilesAffected);
+  if (missingFiles.length > 0) {
+    warn(
+      `${patch.filename}: some files in patches.json no longer exist on disk ` +
+        `(${missingFiles.join(', ')}). Without --scan, re-export keeps the manifest's ` +
+        `filesAffected unchanged and the missing entries will be preserved — ` +
+        `\`fireforge verify\` may flag manifest inconsistency after this run.\n` +
+        `  Re-run with --scan to reconcile filesAffected with the current worktree, ` +
+        `or pass --files <paths> to set the list explicitly.`
+    );
+  }
+
+  const likelyNewFiles = await findLikelyNewSiblingFiles({
+    currentFilesAffected,
+    engineDir: paths.engine,
+    manifest,
+    patchFilename: patch.filename,
+  });
+  if (likelyNewFiles.length === 0) return;
+
+  warn(
+    `${patch.filename}: found ${likelyNewFiles.length} unowned changed sibling file${likelyNewFiles.length === 1 ? '' : 's'} near this patch. Plain re-export keeps filesAffected unchanged; add reviewed files explicitly with --scan-file.`
+  );
+  for (const file of likelyNewFiles) {
+    info(`  ${file} — fireforge re-export ${patch.filename} --scan --scan-file ${file}`);
+  }
 }
 
 async function reExportSinglePatch(
@@ -84,17 +147,7 @@ async function reExportSinglePatch(
     // warning up-front when we can detect the drift cheaply, so the
     // operator has a chance to re-run with `--scan` or `--files`
     // before the stale filesAffected lands in patches.json.
-    const missingFiles = await findMissingFiles(paths.engine, currentFilesAffected);
-    if (missingFiles.length > 0) {
-      warn(
-        `${patch.filename}: some files in patches.json no longer exist on disk ` +
-          `(${missingFiles.join(', ')}). Without --scan, re-export keeps the manifest's ` +
-          `filesAffected unchanged and the missing entries will be preserved — ` +
-          `\`fireforge verify\` may flag manifest inconsistency after this run.\n` +
-          `  Re-run with --scan to reconcile filesAffected with the current worktree, ` +
-          `or pass --files <paths> to set the list explicitly.`
-      );
-    }
+    await warnPlainReExportFileDrift({ patch, paths, manifest, currentFilesAffected });
   }
 
   // --- Explicit file-subset path ---
@@ -490,7 +543,11 @@ export function registerReExport(
     )
     .option('--dry-run', 'Show what would change without writing')
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
-    .option('-y, --yes', 'Skip confirmation when --files shrinks a patch (required for non-TTY)')
+    .option(
+      '--allow-shrink',
+      'Allow --files to remove paths currently owned by the patch. Required before --yes can bypass the shrink confirmation.'
+    )
+    .option('-y, --yes', 'Skip confirmation prompts (required for non-TTY destructive writes)')
     .option('--force-unsafe', 'Bypass cross-patch lint refusal when --files shrinks a patch')
     .option(
       '--stamp',
@@ -520,6 +577,7 @@ export function registerReExport(
             dryRun?: boolean;
             skipLint?: boolean;
             yes?: boolean;
+            allowShrink?: boolean;
             forceUnsafe?: boolean;
             stamp?: boolean;
             tier?: string;

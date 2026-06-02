@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.27.0
+
+- Improved `download --force` git indexing progress with phase, count, and heartbeat output.
+- Added `re-export --files --allow-shrink` so patch ownership shrinkage is refused unless explicitly acknowledged, with clearer dry-run previews.
+- Surfaced likely new sibling files during plain re-export and aligned verify/status ownership reporting for unowned worktree changes.
+- Preserved patch-owned branding `configure.sh` settings during build preflight.
+- Added custom element registration support for Furnace validate/apply.
+
 ## 0.26.0
 
 - Added targeted `re-export --scan --scan-file <path>` for reviewed single-patch new-file assignment without broad sibling collection.

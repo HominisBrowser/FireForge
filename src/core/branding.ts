@@ -91,6 +91,11 @@ export interface BrandingConfig {
 type VendorPlacement = 'branding-configure' | 'moz-configure';
 
 const MOZ_APP_VENDOR_IMPLY_REGEX = /imply_option\("MOZ_APP_VENDOR",\s*"[^"]*"\)/;
+const BRANDING_CONFIGURE_MANAGED_KEYS = new Set([
+  'MOZ_APP_DISPLAYNAME',
+  'MOZ_APP_VENDOR',
+  'MOZ_MACBUNDLE_ID',
+]);
 
 /**
  * Sets up the custom branding directory for the browser.
@@ -140,20 +145,71 @@ async function createConfigureScript(
   vendorPlacement: VendorPlacement
 ): Promise<void> {
   const configureShPath = join(brandingDir, 'configure.sh');
-  await writeTextIfChanged(configureShPath, buildConfigureScriptContent(config, vendorPlacement));
+  const existing = (await pathExists(configureShPath))
+    ? await readText(configureShPath)
+    : undefined;
+  await writeTextIfChanged(
+    configureShPath,
+    buildConfigureScriptContent(config, vendorPlacement, existing)
+  );
 }
 
 function buildConfigureScriptContent(
   config: BrandingConfig,
-  vendorPlacement: VendorPlacement
+  vendorPlacement: VendorPlacement,
+  existingContent?: string
 ): string {
   const header = getLicenseHeader(config.license ?? DEFAULT_LICENSE, 'hash');
-  const lines = [`MOZ_APP_DISPLAYNAME="${escapeShellValue(config.name)}"`];
+  const managedLines = [`MOZ_APP_DISPLAYNAME="${escapeShellValue(config.name)}"`];
   if (vendorPlacement === 'branding-configure') {
-    lines.push(`MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"`);
+    managedLines.push(`MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"`);
   }
-  lines.push(`MOZ_MACBUNDLE_ID="${escapeShellValue(config.appId)}"`);
-  return `${header}\n\n${lines.join('\n')}\n`;
+  managedLines.push(`MOZ_MACBUNDLE_ID="${escapeShellValue(config.appId)}"`);
+
+  const preservedLines = existingContent ? extractPreservedConfigureLines(existingContent) : [];
+  const body = [...managedLines, ...preservedLines].join('\n');
+  return `${header}\n\n${body}\n`;
+}
+
+function extractPreservedConfigureLines(content: string): string[] {
+  return content.split(/\r?\n/).filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) return false;
+    if (/^#\s*SPDX-License-Identifier:/i.test(trimmed)) return false;
+    const keyMatch = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(trimmed);
+    if (keyMatch && BRANDING_CONFIGURE_MANAGED_KEYS.has(keyMatch[1] ?? '')) return false;
+    return true;
+  });
+}
+
+function parseConfigureAssignments(content: string): Map<string, string> {
+  const assignments = new Map<string, string>();
+  for (const line of content.split(/\r?\n/)) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
+    if (match?.[1] && match[2] !== undefined) {
+      assignments.set(match[1], match[2]);
+    }
+  }
+  return assignments;
+}
+
+function isConfigureScriptCurrent(
+  content: string,
+  config: BrandingConfig,
+  vendorPlacement: VendorPlacement
+): boolean {
+  const assignments = parseConfigureAssignments(content);
+  if (assignments.get('MOZ_APP_DISPLAYNAME') !== `"${escapeShellValue(config.name)}"`) {
+    return false;
+  }
+  if (assignments.get('MOZ_MACBUNDLE_ID') !== `"${escapeShellValue(config.appId)}"`) {
+    return false;
+  }
+  const vendorValue = assignments.get('MOZ_APP_VENDOR');
+  if (vendorPlacement === 'branding-configure') {
+    return vendorValue === `"${escapeShellValue(config.vendor)}"`;
+  }
+  return vendorValue === undefined;
 }
 
 /**
@@ -359,7 +415,7 @@ export async function isBrandingSetup(engineDir: string, config: BrandingConfig)
 
   const vendorPlacement = await resolveVendorPlacement(engineDir);
   const configureContent = await readText(configureShPath);
-  if (configureContent !== buildConfigureScriptContent(config, vendorPlacement)) {
+  if (!isConfigureScriptCurrent(configureContent, config, vendorPlacement)) {
     return false;
   }
 

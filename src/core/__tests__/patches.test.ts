@@ -76,6 +76,7 @@ function makePatch(filename: string, filesAffected: string[]): PatchMetadata {
     description: '',
     createdAt: '',
     sourceEsrVersion: '140.9.0esr',
+    sourceVersion: '140.9.0esr',
     filesAffected,
   };
 }

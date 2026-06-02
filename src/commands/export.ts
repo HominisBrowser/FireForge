@@ -23,6 +23,7 @@ import {
   buildProjectedManifest,
   enforcePatchPolicy,
 } from '../core/patch-policy.js';
+import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions, PatchMetadata } from '../types/commands/index.js';
@@ -308,7 +309,7 @@ export async function exportCommand(
             name: patchName,
             description,
             createdAt: new Date().toISOString(),
-            sourceEsrVersion: config.firefox.version,
+            ...buildPatchSourceMetadata(config.firefox),
             filesAffected,
             ...(options.tier !== undefined ? { tier: options.tier } : {}),
             ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
@@ -364,7 +365,7 @@ export async function exportCommand(
         name: patchName,
         description,
         filesAffected,
-        sourceEsrVersion: config.firefox.version,
+        ...buildPatchSourceMetadata(config.firefox),
         explicitSupersede: options.supersede === true,
         allowOverlap: options.allowOverlap === true,
         ...(options.tier !== undefined ? { tier: options.tier } : {}),
@@ -390,7 +391,7 @@ export async function exportCommand(
         name: patchName,
         description,
         createdAt: new Date().toISOString(),
-        sourceEsrVersion: config.firefox.version,
+        ...buildPatchSourceMetadata(config.firefox),
         filesAffected,
         ...(options.tier !== undefined ? { tier: options.tier } : {}),
         ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
@@ -476,7 +477,7 @@ export async function exportCommand(
       description,
       diff,
       filesAffected,
-      sourceEsrVersion: config.firefox.version,
+      ...buildPatchSourceMetadata(config.firefox),
       ...(options.tier !== undefined ? { tier: options.tier } : {}),
       ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
         ? { lintIgnore: options.lintIgnore }

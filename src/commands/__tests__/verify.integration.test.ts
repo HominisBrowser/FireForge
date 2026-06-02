@@ -56,6 +56,18 @@ function createDiff(newFilePath: string, content: string): string {
   ].join('\n');
 }
 
+function createModifyDiff(filePath: string, before: string, after: string): string {
+  return [
+    `diff --git a/${filePath} b/${filePath}`,
+    'index 1111111..2222222 100644',
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    '@@ -1 +1 @@',
+    `-${before}`,
+    `+${after}`,
+  ].join('\n');
+}
+
 function makeMetadata(filename: string, order: number, filesAffected: string[]): PatchMetadata {
   return {
     filename,
@@ -73,6 +85,7 @@ describe('verify command', () => {
   let projectRoot: string;
   let patchesDir: string;
   let restoreTTY: () => void = () => undefined;
+  let stdout: string;
 
   beforeEach(async () => {
     projectRoot = await createTempProject('ff-verify-');
@@ -81,7 +94,11 @@ describe('verify command', () => {
     restoreTTY = setInteractiveMode(false);
     // Silence logger output during tests by stubbing methods on the
     // loaded singleton.
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stdout = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      stdout += chunk.toString();
+      return true;
+    });
   });
 
   afterEach(async () => {
@@ -106,6 +123,58 @@ describe('verify command', () => {
     ]);
 
     await expect(verifyCommand(projectRoot)).resolves.toBeUndefined();
+  });
+
+  it('warns when engine contains unowned changed files', async () => {
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      'browser/branding/hominis/configure.sh': 'MOZ_APP_DISPLAYNAME="Hominis"\n',
+    });
+    await writeFile(join(projectRoot, 'engine/browser/branding/hominis/Assets.car'), 'asset\n');
+    const diff = createDiff(
+      'browser/branding/hominis/configure.sh',
+      'MOZ_APP_DISPLAYNAME="Hominis"'
+    );
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-branding.patch', 1, [
+          'browser/branding/hominis/configure.sh',
+        ]),
+        body: diff,
+      },
+    ]);
+
+    await expect(verifyCommand(projectRoot)).resolves.toBeUndefined();
+
+    expect(stdout).toContain('Unowned worktree changes (1)');
+    expect(stdout).toContain('browser/branding/hominis/Assets.car');
+    expect(stdout).toContain('Verify passed with warnings');
+  });
+
+  it('warns when a claimed worktree file has patch-owned drift', async () => {
+    const file = 'browser/components/sessionstore/SessionStore.sys.mjs';
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      [file]: 'before\n',
+    });
+    await writeFile(join(projectRoot, 'engine', file), 'manual resolution\n');
+    const diff = createModifyDiff(file, 'before', 'expected patch output');
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: {
+          ...makeMetadata('010-ui-sessionstore.patch', 10, [file]),
+          sourceEsrVersion: '152.0b6',
+          sourceProduct: 'firefox-devedition',
+          sourceVersion: '152.0b6',
+        },
+        body: diff,
+      },
+    ]);
+
+    await expect(verifyCommand(projectRoot)).resolves.toBeUndefined();
+
+    expect(stdout).toContain('Patch-owned worktree drift (1)');
+    expect(stdout).toContain(file);
+    expect(stdout).not.toContain('Unowned worktree changes (1)');
+    expect(stdout).toContain('Verify passed with warnings');
   });
 
   it('fails on duplicate /dev/null creation across two patches', async () => {

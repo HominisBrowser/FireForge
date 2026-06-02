@@ -14,6 +14,7 @@ import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { PATCH_CATEGORIES } from '../utils/validation.js';
 import { discoverPatches, withPatchDirectoryLock } from './patch-apply.js';
+import { normalizePatchArtifact } from './patch-artifact-normalize.js';
 import {
   findAllPatchesForFilesWithDetails,
   type SupersedeCoverageDetail,
@@ -106,6 +107,8 @@ export interface CommitExportedPatchInput {
   diff: string;
   filesAffected: string[];
   sourceEsrVersion: string;
+  sourceProduct?: FireForgeConfig['firefox']['product'];
+  sourceVersion?: string;
   /** Optional `PatchMetadata.tier` opt-in (only `"branding"` recognised). */
   tier?: 'branding';
   /** Optional `PatchMetadata.lintIgnore` (empty array treated as absent). */
@@ -143,6 +146,8 @@ export async function commitExportedPatch(
       description: input.description,
       filesAffected: input.filesAffected,
       sourceEsrVersion: input.sourceEsrVersion,
+      ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
+      ...(input.sourceVersion !== undefined ? { sourceVersion: input.sourceVersion } : {}),
       ...(input.tier !== undefined ? { tier: input.tier } : {}),
       ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
       ...(input.config !== undefined ? { config: input.config } : {}),
@@ -168,7 +173,7 @@ export async function commitExportedPatch(
     }
 
     try {
-      await writeText(patchPath, input.diff);
+      await writeText(patchPath, normalizePatchArtifact(input.diff));
 
       await addPatchToManifest(
         input.patchesDir,
@@ -286,7 +291,7 @@ export async function findExistingPatchForFile(
  * @param newContent - New patch content
  */
 export async function updatePatch(patchPath: string, newContent: string): Promise<void> {
-  await writeText(patchPath, newContent);
+  await writeText(patchPath, normalizePatchArtifact(newContent));
 }
 
 /**
@@ -366,6 +371,8 @@ export interface PlanExportInput {
   description: string;
   filesAffected: string[];
   sourceEsrVersion: string;
+  sourceProduct?: FireForgeConfig['firefox']['product'];
+  sourceVersion?: string;
   /**
    * Optional `PatchMetadata.tier` opt-in carried from the CLI flag.
    * Only `"branding"` is currently recognised. When provided the field
@@ -428,6 +435,8 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
     description: input.description,
     createdAt: new Date().toISOString(),
     sourceEsrVersion: input.sourceEsrVersion,
+    ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
+    sourceVersion: input.sourceVersion ?? input.sourceEsrVersion,
     filesAffected: input.filesAffected,
     ...(input.tier !== undefined ? { tier: input.tier } : {}),
     ...(input.lintIgnore !== undefined && input.lintIgnore.length > 0

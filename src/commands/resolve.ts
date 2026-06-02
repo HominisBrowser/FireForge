@@ -11,6 +11,7 @@ import { stageFiles, unstageFiles } from '../core/git-file-ops.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
+import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { GeneralError, ResolutionError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import { toError } from '../utils/errors.js';
@@ -198,7 +199,7 @@ export async function resolveCommand(
     const config = await loadConfig(projectRoot);
     await updatePatchAndMetadata(paths.patches, patchFilename, diffContent, {
       filesAffected: diffFilesAffected,
-      sourceEsrVersion: config.firefox.version,
+      ...buildPatchSourceMetadata(config.firefox),
     });
 
     // Cleanup: Clear pendingResolution from state.json transactionally so

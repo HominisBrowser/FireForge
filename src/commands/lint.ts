@@ -258,7 +258,7 @@ function buildMaxWarningsMessage(count: number, maxWarnings: number, scope?: str
   const base = `Patch lint found ${count} warning(s)${scoped}, exceeding --max-warnings ${maxWarnings}.`;
   return (
     base +
-    ' If this is a release gate and the warnings are historical patch-size advisories, run with --per-patch to identify the owning patch and split/re-export that patch, or add a scoped lintIgnore entry only after review.'
+    ' If this is a release gate, run with --per-patch to identify the owning patch. For intentional staged imports, use patch staged-dependency; for ownership repairs, preview patch move-files, patch reorder --dry-run, or re-export --files --dry-run; add scoped lintIgnore only after review.'
   );
 }
 

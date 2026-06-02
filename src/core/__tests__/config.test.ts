@@ -115,6 +115,26 @@ describe('validateConfig', () => {
     ).toBe(digest.toLowerCase());
   });
 
+  it('accepts Developer Edition beta versions', () => {
+    expect(
+      validateConfig(
+        makeValidConfig({
+          firefox: { version: '152.0b6', product: 'firefox-devedition' },
+        })
+      ).firefox.product
+    ).toBe('firefox-devedition');
+  });
+
+  it('rejects Developer Edition with non-beta versions', () => {
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          firefox: { version: '152.0', product: 'firefox-devedition' },
+        })
+      )
+    ).toThrow('Product "firefox-devedition" requires a beta version');
+  });
+
   it('accepts a valid patchPolicy block', () => {
     const config = validateConfig({
       ...makeValidConfig(),
@@ -256,7 +276,9 @@ describe('validateConfig', () => {
         ...makeValidConfig(),
         firefox: { version: '140.9.0esr', product: 'fennec' as never },
       })
-    ).toThrow('Config field "firefox.product" must be one of: firefox, firefox-esr, firefox-beta');
+    ).toThrow(
+      'Config field "firefox.product" must be one of: firefox, firefox-esr, firefox-beta, firefox-devedition'
+    );
   });
 
   it('rejects invalid optional build, wire, and license fields', () => {

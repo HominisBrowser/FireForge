@@ -406,8 +406,10 @@ describe('prepareBuildEnvironment auto-configure', () => {
     expect(result.reconfigured).toBe(true);
     expect(runMach).toHaveBeenCalledWith(['configure'], '/project/engine');
     expect(mockInfo).toHaveBeenCalledWith(
-      expect.stringContaining('Backend config changed; running mach configure first')
+      expect.stringContaining('Backend config changed; running backend regeneration first')
     );
+    expect(mockInfo).toHaveBeenCalledWith('Backend command: mach configure');
+    expect(mockInfo).toHaveBeenCalledWith('Backend regeneration succeeded; continuing with build.');
   });
 
   it('skips mach configure when no backend-invalidating files changed', async () => {
@@ -430,7 +432,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     expect(runMach).not.toHaveBeenCalled();
   });
 
-  it('continues the build when mach configure exits non-zero', async () => {
+  it('stops the build when mach configure exits non-zero', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');
     const { runMach } = await import('../mach.js');
@@ -439,19 +441,20 @@ describe('prepareBuildEnvironment auto-configure', () => {
     vi.mocked(hasChanges).mockResolvedValue(false);
     vi.mocked(runMach).mockResolvedValue(1);
 
-    const result = await prepareBuildEnvironment('/project', paths, config, {
-      previousBaseline: {
-        engineHeadSha: 'abc',
-        builtAt: new Date().toISOString(),
-        binaryName: 'testbrowser',
-      },
-    });
+    await expect(
+      prepareBuildEnvironment('/project', paths, config, {
+        previousBaseline: {
+          engineHeadSha: 'abc',
+          builtAt: new Date().toISOString(),
+          binaryName: 'testbrowser',
+        },
+      })
+    ).rejects.toThrow(/Backend regeneration failed: mach configure exited with code 1/);
 
-    // configure failed, but prepare itself did not — reconfigured stays false.
-    expect(result.reconfigured).toBe(false);
+    expect(runMach).toHaveBeenCalledWith(['configure'], '/project/engine');
   });
 
-  it('swallows mach configure exceptions and keeps building', async () => {
+  it('surfaces mach configure exceptions and stops building', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');
     const { runMach } = await import('../mach.js');
@@ -460,15 +463,15 @@ describe('prepareBuildEnvironment auto-configure', () => {
     vi.mocked(hasChanges).mockResolvedValue(false);
     vi.mocked(runMach).mockRejectedValue(new Error('python missing'));
 
-    const result = await prepareBuildEnvironment('/project', paths, config, {
-      previousBaseline: {
-        engineHeadSha: 'abc',
-        builtAt: new Date().toISOString(),
-        binaryName: 'testbrowser',
-      },
-    });
-
-    expect(result.reconfigured).toBe(false);
+    await expect(
+      prepareBuildEnvironment('/project', paths, config, {
+        previousBaseline: {
+          engineHeadSha: 'abc',
+          builtAt: new Date().toISOString(),
+          binaryName: 'testbrowser',
+        },
+      })
+    ).rejects.toThrow(/Backend regeneration failed while running mach configure: python missing/);
   });
 
   it('picks up workdir-modified moz.build when the baseline diff is empty', async () => {

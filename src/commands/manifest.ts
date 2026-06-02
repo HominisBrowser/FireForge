@@ -33,6 +33,7 @@ import { registerReset } from './reset.js';
 import { registerResolve } from './resolve.js';
 import { registerRun } from './run.js';
 import { registerSetup } from './setup.js';
+import { registerSource } from './source.js';
 import { registerStatus } from './status.js';
 import { registerTest } from './test.js';
 import { registerToken } from './token.js';
@@ -68,6 +69,7 @@ export interface CommandManifestEntry {
  */
 export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = [
   { name: 'setup', group: 'project', register: registerSetup },
+  { name: 'source', group: 'project', register: registerSource },
   { name: 'download', group: 'engine', register: registerDownload },
   { name: 'bootstrap', group: 'engine', register: registerBootstrap },
   { name: 'import', group: 'workflow', register: registerImport },

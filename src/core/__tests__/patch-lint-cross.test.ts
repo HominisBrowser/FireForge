@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import type { PatchMetadata } from '../../types/commands/index.js';
 import {
   collectNewFileCreatorsByPath,
   extractImportSpecifiers,
@@ -24,12 +25,23 @@ function makeEntry(
   order: number,
   diff: string,
   newFiles: Record<string, string> = {},
-  modifiedFileAdditions: Record<string, string> = {}
+  modifiedFileAdditions: Record<string, string> = {},
+  metadataExtras: Partial<PatchMetadata> = {}
 ): PatchQueueEntry {
   return {
     filename,
     order,
-    metadata: null,
+    metadata: {
+      filename,
+      order,
+      category: 'ui',
+      name: filename.replace(/\.patch$/, ''),
+      description: '',
+      createdAt: '2026-05-27T00:00:00.000Z',
+      sourceEsrVersion: '140.9.0esr',
+      filesAffected: [...Object.keys(newFiles), ...Object.keys(modifiedFileAdditions)],
+      ...metadataExtras,
+    },
     diff,
     newFiles: new Map(Object.entries(newFiles)),
     modifiedFileAdditions: new Map(Object.entries(modifiedFileAdditions)),
@@ -131,6 +143,100 @@ describe('lintPatchQueueForwardImports', () => {
     expect(issue?.file).toBe('foo/A.sys.mjs');
     expect(issue?.message).toContain('002-infra-b.patch');
     expect(issue?.severity).toBe('error');
+  });
+
+  it('suppresses an exact declared staged forward import', () => {
+    const importerContent = `import { B } from "resource:///modules/B.sys.mjs";\nexport const A = B;\n`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-a.patch',
+          1,
+          CREATE_A_DIFF,
+          { 'foo/A.sys.mjs': importerContent },
+          {},
+          {
+            stagedDependencies: {
+              forwardImports: [
+                {
+                  file: 'foo/A.sys.mjs',
+                  specifier: 'resource:///modules/B.sys.mjs',
+                  creates: 'foo/B.sys.mjs',
+                  owner: '002-infra-b.patch',
+                },
+              ],
+            },
+          }
+        ),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;\n',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('does not suppress unrelated forward imports when staged metadata is present', () => {
+    const importerContent = `import { C } from "resource:///modules/C.sys.mjs";\n`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-a.patch',
+          1,
+          CREATE_A_DIFF,
+          { 'foo/A.sys.mjs': importerContent },
+          {},
+          {
+            stagedDependencies: {
+              forwardImports: [
+                {
+                  file: 'foo/A.sys.mjs',
+                  specifier: 'resource:///modules/B.sys.mjs',
+                  creates: 'foo/B.sys.mjs',
+                },
+              ],
+            },
+          }
+        ),
+        makeEntry('002-infra-c.patch', 2, CREATE_A_DIFF, {
+          'foo/C.sys.mjs': 'export const C = 1;\n',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues.map((issue) => issue.check)).toEqual([
+      'forward-import',
+      'staged-dependency-unused',
+    ]);
+  });
+
+  it('warns when a staged forward-import declaration is stale', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-a.patch',
+          1,
+          CREATE_A_DIFF,
+          { 'foo/A.sys.mjs': 'export const A = 1;\n' },
+          {},
+          {
+            stagedDependencies: {
+              forwardImports: [
+                {
+                  file: 'foo/A.sys.mjs',
+                  specifier: 'resource:///modules/B.sys.mjs',
+                  creates: 'foo/B.sys.mjs',
+                },
+              ],
+            },
+          }
+        ),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.check).toBe('staged-dependency-unused');
+    expect(issues[0]?.severity).toBe('warning');
   });
 
   it('appends the closest legal ordinal to the refusal message', () => {

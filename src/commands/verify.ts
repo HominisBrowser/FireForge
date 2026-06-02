@@ -20,10 +20,14 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
+import { isGitRepository } from '../core/git.js';
+import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { buildPatchQueueContext, lintPatchQueue } from '../core/patch-lint.js';
 import { loadPatchesManifest, validatePatchesManifestConsistency } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { collectPatchRegistrationReferences } from '../core/patch-registration-refs.js';
+import { classifyFiles } from '../core/status-classify.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import { pathExists, readText } from '../utils/fs.js';
@@ -141,6 +145,46 @@ function detectCrossPatchFileClaims(
   return results;
 }
 
+async function detectWorktreeOwnershipDrift(
+  projectRoot: string,
+  engineDir: string,
+  patchesDir: string,
+  binaryName: string
+): Promise<{ unowned: string[]; patchOwnedDrift: string[] }> {
+  if (!(await pathExists(engineDir)) || !(await isGitRepository(engineDir))) {
+    return { unowned: [], patchOwnedDrift: [] };
+  }
+
+  const entries = await expandUntrackedDirectoryEntries(
+    engineDir,
+    await getWorkingTreeStatus(engineDir)
+  );
+  const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
+  const classified = await classifyFiles(
+    entries,
+    engineDir,
+    patchesDir,
+    binaryName,
+    furnacePrefixes
+  );
+  return {
+    unowned: [
+      ...new Set(
+        classified
+          .filter((entry) => entry.classification === 'unmanaged')
+          .map((entry) => entry.file)
+      ),
+    ].sort(),
+    patchOwnedDrift: [
+      ...new Set(
+        classified
+          .filter((entry) => entry.classification === 'patch-owned-drift')
+          .map((entry) => entry.file)
+      ),
+    ].sort(),
+  };
+}
+
 /**
  * Collects the same queue-health findings reported by `fireforge verify`
  * without printing. Used by doctor recovery paths that need a read-only
@@ -227,6 +271,38 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
   }
 
   if (manifest) {
+    const worktreeDrift = await detectWorktreeOwnershipDrift(
+      projectRoot,
+      paths.engine,
+      paths.patches,
+      config.binaryName
+    );
+    if (worktreeDrift.unowned.length > 0) {
+      groups.push({
+        title: `Unowned worktree changes (${worktreeDrift.unowned.length})`,
+        issues: worktreeDrift.unowned.map(
+          (file) =>
+            `${file} is changed in engine/ but is not listed in any patch filesAffected entry`
+        ),
+        errorCount: 0,
+        warningCount: worktreeDrift.unowned.length,
+      });
+      warningCount += worktreeDrift.unowned.length;
+    }
+
+    if (worktreeDrift.patchOwnedDrift.length > 0) {
+      groups.push({
+        title: `Patch-owned worktree drift (${worktreeDrift.patchOwnedDrift.length})`,
+        issues: worktreeDrift.patchOwnedDrift.map(
+          (file) =>
+            `${file} is claimed by exactly one patch, but engine/ no longer matches that patch output`
+        ),
+        errorCount: 0,
+        warningCount: worktreeDrift.patchOwnedDrift.length,
+      });
+      warningCount += worktreeDrift.patchOwnedDrift.length;
+    }
+
     const registrationIssues = await detectDanglingRegistrations(
       paths.patches,
       paths.engine,
@@ -287,7 +363,7 @@ export async function verifyCommand(projectRoot: string): Promise<void> {
   if (health.errorCount > 0) {
     outro('Verify failed');
     throw new GeneralError(
-      `fireforge verify found ${health.errorCount} error(s). Fix these before running export/import/rebase.`
+      `fireforge verify found ${health.errorCount} error(s). Fix these before running export/import/rebase. Use "patch staged-dependency" for intentional staged imports, or preview "patch move-files" / "patch reorder --dry-run" / "re-export --files --dry-run" for ownership repairs.`
     );
   }
   outro('Verify passed with warnings');

@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Integration tests for `fireforge patch tier` and
- * `fireforge patch lint-ignore`. These subcommands edit
- * `PatchMetadata.tier` / `PatchMetadata.lintIgnore` on a single patch
- * without rewriting the `.patch` body — pinning that contract end to
- * end (real fs + manifest reload) is the only way to confirm the
- * exactOptionalPropertyTypes-aware "drop the field" path actually
- * removes the key from disk.
+ * Integration tests for metadata-only `fireforge patch` subcommands.
+ * These edit PatchMetadata optional fields without rewriting the `.patch`
+ * body — pinning that contract end to end (real fs + manifest reload) is the
+ * only way to confirm the exactOptionalPropertyTypes-aware "drop the field"
+ * path actually removes the key from disk.
  */
 
 import { readFile, stat, writeFile } from 'node:fs/promises';
@@ -24,6 +22,7 @@ import {
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { ensureDir } from '../../utils/fs.js';
 import { describeChange, patchLintIgnoreCommand } from '../patch/lint-ignore.js';
+import { patchStagedDependencyCommand } from '../patch/staged-dependency.js';
 import { patchTierCommand } from '../patch/tier.js';
 
 function makeMetadata(
@@ -411,6 +410,135 @@ describe('patch lint-ignore', () => {
     expect(entry.args.filename).toBe('001-branding-a.patch');
     expect(entry.args.mode).toBe('add');
     expect(entry.args.after).toEqual(['large-patch-files']);
+  });
+});
+
+describe('patch staged-dependency', () => {
+  let projectRoot: string;
+  let patchesDir: string;
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-psd-');
+    await writeFireForgeConfig(projectRoot);
+    patchesDir = join(projectRoot, 'patches');
+  });
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it('--add writes a staged forward-import declaration', async () => {
+    await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
+
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      add: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/B.sys.mjs',
+      creates: 'foo/B.sys.mjs',
+      owner: '002-ui-helper.patch',
+      reason: 'shared helper staged later',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toEqual([
+      {
+        file: 'foo/A.sys.mjs',
+        specifier: 'resource:///modules/B.sys.mjs',
+        creates: 'foo/B.sys.mjs',
+        owner: '002-ui-helper.patch',
+        reason: 'shared helper staged later',
+      },
+    ]);
+  });
+
+  it('--remove deletes matching declarations and clears the field when empty', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
+        stagedDependencies: {
+          forwardImports: [
+            {
+              file: 'foo/A.sys.mjs',
+              specifier: 'resource:///modules/B.sys.mjs',
+              creates: 'foo/B.sys.mjs',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      remove: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/B.sys.mjs',
+      creates: 'foo/B.sys.mjs',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
+  });
+
+  it('--clear removes all staged dependency metadata', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
+        stagedDependencies: {
+          forwardImports: [
+            {
+              file: 'foo/A.sys.mjs',
+              specifier: 'resource:///modules/B.sys.mjs',
+              creates: 'foo/B.sys.mjs',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', { clear: true });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
+  });
+
+  it('--dry-run leaves the manifest unchanged', async () => {
+    await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
+    const manifestPath = join(patchesDir, 'patches.json');
+    const beforeMtime = (await stat(manifestPath)).mtimeMs;
+
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      add: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/B.sys.mjs',
+      creates: 'foo/B.sys.mjs',
+      dryRun: true,
+    });
+
+    const afterMtime = (await stat(manifestPath)).mtimeMs;
+    expect(afterMtime).toBe(beforeMtime);
+  });
+
+  it('does not modify the .patch file body', async () => {
+    await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])], {
+      '001-ui-shim.patch': '# original body marker\n',
+    });
+    const patchPath = join(patchesDir, '001-ui-shim.patch');
+    const beforeMtime = (await stat(patchPath)).mtimeMs;
+
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      add: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/B.sys.mjs',
+      creates: 'foo/B.sys.mjs',
+    });
+
+    const afterMtime = (await stat(patchPath)).mtimeMs;
+    expect(afterMtime).toBe(beforeMtime);
+    await expect(readFile(patchPath, 'utf-8')).resolves.toBe('# original body marker\n');
+  });
+
+  it('rejects add without exact dependency fields', async () => {
+    await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', { add: true })
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
   });
 });
 

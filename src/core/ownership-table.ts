@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import type { PatchMetadata } from '../types/commands/index.js';
 import { info } from '../utils/logger.js';
+import type { FileClassification } from './status-classify.js';
 
 /**
  * A row in the flat path → owning-patch ownership table.
@@ -11,6 +12,7 @@ export interface OwnershipRow {
   conflict: boolean;
   conflictReason: 'files-affected' | 'duplicate-create' | null;
   unmanaged: boolean;
+  state: 'owned' | 'patch-backed' | 'patch-owned-drift' | 'unmanaged' | 'conflict';
 }
 
 interface StatusFile {
@@ -50,7 +52,8 @@ interface StatusFile {
 export function buildOwnershipTable(
   manifestPatches: PatchMetadata[],
   worktreeFiles: StatusFile[],
-  newFileCreatorsByPath: Map<string, string[]>
+  newFileCreatorsByPath: Map<string, string[]>,
+  classifications: Map<string, FileClassification> = new Map()
 ): OwnershipRow[] {
   const ownersByPath = new Map<string, string[]>();
   for (const patch of manifestPatches) {
@@ -111,6 +114,14 @@ export function buildOwnershipTable(
       conflict: isFilesAffectedConflict || isDuplicateCreateConflict,
       conflictReason,
       unmanaged: false,
+      state:
+        isFilesAffectedConflict || isDuplicateCreateConflict
+          ? 'conflict'
+          : classifications.get(path) === 'patch-backed'
+            ? 'patch-backed'
+            : classifications.get(path) === 'patch-owned-drift'
+              ? 'patch-owned-drift'
+              : 'owned',
     });
   }
   for (const path of unmanagedOnly) {
@@ -120,6 +131,7 @@ export function buildOwnershipTable(
       conflict: false,
       conflictReason: null,
       unmanaged: true,
+      state: 'unmanaged',
     });
   }
 
@@ -141,6 +153,22 @@ function renderConflictCell(row: OwnershipRow): string {
   return 'CONFLICT';
 }
 
+function renderStateCell(row: OwnershipRow): string {
+  if (row.conflict) return renderConflictCell(row);
+  switch (row.state) {
+    case 'owned':
+      return 'owned';
+    case 'patch-backed':
+      return 'patch-backed';
+    case 'patch-owned-drift':
+      return 'patch-owned drift';
+    case 'unmanaged':
+      return 'unmanaged';
+    case 'conflict':
+      return renderConflictCell(row);
+  }
+}
+
 /**
  * Renders the ownership table as a GitHub-flavored Markdown pipe table.
  * Using markdown-table's own serializer would require a seed document to
@@ -155,31 +183,27 @@ export function renderOwnershipTable(rows: OwnershipRow[]): void {
 
   const pathHeader = 'path';
   const ownerHeader = 'owning patch';
-  const conflictHeader = 'conflict';
+  const stateHeader = 'state';
 
   const pathWidth = Math.max(pathHeader.length, ...rows.map((r) => r.path.length));
   const ownerWidth = Math.max(
     ownerHeader.length,
     ...rows.map((r) => (r.unmanaged ? 1 : r.owners.join(', ').length))
   );
-  const conflictWidth = Math.max(
-    conflictHeader.length,
-    ...rows.map((r) => renderConflictCell(r).length),
-    8
-  );
+  const stateWidth = Math.max(stateHeader.length, ...rows.map((r) => renderStateCell(r).length), 8);
 
   const pad = (text: string, width: number): string => text + ' '.repeat(width - text.length);
 
   info(
-    `| ${pad(pathHeader, pathWidth)} | ${pad(ownerHeader, ownerWidth)} | ${pad(conflictHeader, conflictWidth)} |`
+    `| ${pad(pathHeader, pathWidth)} | ${pad(ownerHeader, ownerWidth)} | ${pad(stateHeader, stateWidth)} |`
   );
-  info(`| ${'-'.repeat(pathWidth)} | ${'-'.repeat(ownerWidth)} | ${'-'.repeat(conflictWidth)} |`);
+  info(`| ${'-'.repeat(pathWidth)} | ${'-'.repeat(ownerWidth)} | ${'-'.repeat(stateWidth)} |`);
 
   for (const row of rows) {
     const ownerCell = row.unmanaged ? '-' : row.owners.join(', ');
-    const conflictCell = renderConflictCell(row);
+    const stateCell = renderStateCell(row);
     info(
-      `| ${pad(row.path, pathWidth)} | ${pad(ownerCell, ownerWidth)} | ${pad(conflictCell, conflictWidth)} |`
+      `| ${pad(row.path, pathWidth)} | ${pad(ownerCell, ownerWidth)} | ${pad(stateCell, stateWidth)} |`
     );
   }
 }

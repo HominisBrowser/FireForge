@@ -192,6 +192,9 @@ function buildGroupedHelpFormatter(
       const desc = helper.optionDescription(opt);
       return formatHelpLine(term, desc, termWidth, helpWidth);
     });
+    optionLines.unshift(
+      formatHelpLine('-V, --version', 'output the version number', termWidth, helpWidth)
+    );
     if (optionLines.length > 0) {
       output.push('Options:');
       output.push(...optionLines);
@@ -291,7 +294,6 @@ export function createProgram(): Command {
   program
     .name('fireforge')
     .description('A build tool for customizing Firefox')
-    .version(getPackageVersion())
     .option('-v, --verbose', 'Enable debug output')
     .hook('preAction', (thisCommand) => {
       const opts = thisCommand.opts();
@@ -318,6 +320,11 @@ export function createProgram(): Command {
  * Main CLI entry point.
  */
 export async function main(): Promise<void> {
+  if (process.argv.length === 3 && (process.argv[2] === '--version' || process.argv[2] === '-V')) {
+    process.stdout.write(`${getPackageVersion()}\n`);
+    return;
+  }
+
   const program = createProgram();
   await program.parseAsync(process.argv);
 }

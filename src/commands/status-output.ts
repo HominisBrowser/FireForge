@@ -1,0 +1,228 @@
+// SPDX-License-Identifier: EUPL-1.2
+import { isFileRegistered, matchesRegistrablePattern } from '../core/manifest-rules.js';
+import type { ClassifiedFile, StatusFile } from '../core/status-classify.js';
+import { GeneralError } from '../errors/base.js';
+import { info, outro, warn } from '../utils/logger.js';
+
+const STATUS_DESCRIPTIONS: Record<string, string> = {
+  M: 'modified',
+  A: 'added',
+  D: 'deleted',
+  R: 'renamed',
+  C: 'copied',
+  U: 'unmerged',
+  '?': 'untracked',
+  '!': 'ignored',
+};
+
+export interface ClassifiedBuckets {
+  conflict: ClassifiedFile[];
+  unmanaged: ClassifiedFile[];
+  patchBacked: ClassifiedFile[];
+  patchOwnedDrift: ClassifiedFile[];
+  branding: ClassifiedFile[];
+  furnace: ClassifiedFile[];
+}
+
+function getStatusDescription(code: string): string {
+  return STATUS_DESCRIPTIONS[code] ?? 'changed';
+}
+
+function getPrimaryStatusCode(status: string): string {
+  if (status.includes('?')) return '?';
+  if (status.includes('!')) return '!';
+  for (const code of status) {
+    if (code !== ' ') return code;
+  }
+  return status;
+}
+
+function isNewFileStatus(status: string): boolean {
+  const code = getPrimaryStatusCode(status);
+  return code === '?' || code === 'A';
+}
+
+function groupFilesByStatus(files: StatusFile[]): Map<string, string[]> {
+  const grouped = new Map<string, string[]>();
+  for (const { status, file } of files) {
+    const code = getPrimaryStatusCode(status);
+    const existing = grouped.get(code) ?? [];
+    existing.push(file);
+    grouped.set(code, existing);
+  }
+  return grouped;
+}
+
+function printStatusGroups(files: StatusFile[]): void {
+  const grouped = groupFilesByStatus(files);
+  for (const [status, fileList] of grouped) {
+    warn(`${getStatusDescription(status)}:`);
+    for (const file of fileList) info(`  ${file}`);
+  }
+}
+
+async function printUnregisteredWarnings(
+  files: StatusFile[],
+  projectRoot: string,
+  binaryName: string
+): Promise<void> {
+  const newFiles = files.filter((f) => isNewFileStatus(f.status));
+  if (newFiles.length === 0) return;
+
+  const registrableFiles = newFiles.filter((f) => matchesRegistrablePattern(f.file, binaryName));
+  const registrationChecks = await Promise.all(
+    registrableFiles.map(async (f) => {
+      try {
+        return {
+          file: f.file,
+          registered: await isFileRegistered(projectRoot, f.file),
+          manifestMissing: false as const,
+          manifestMissingMessage: undefined as string | undefined,
+        };
+      } catch (err: unknown) {
+        if (err instanceof GeneralError && /^Manifest not found:/i.test(err.message)) {
+          return {
+            file: f.file,
+            registered: false,
+            manifestMissing: true as const,
+            manifestMissingMessage: err.message,
+          };
+        }
+        throw err;
+      }
+    })
+  );
+  const unregistered = registrationChecks.filter((f) => !f.registered && !f.manifestMissing);
+  const manifestMissing = registrationChecks.filter((f) => f.manifestMissing);
+
+  if (unregistered.length > 0) {
+    info('');
+    warn('Potentially unregistered files:');
+    for (const f of unregistered) info(`  ${f.file} — run 'fireforge register ${f.file}'`);
+  }
+
+  if (manifestMissing.length > 0) {
+    info('');
+    warn('Files whose registration manifest does not exist yet:');
+    for (const f of manifestMissing) {
+      info(`  ${f.file} — ${f.manifestMissingMessage}`);
+      info(`    Create the parent manifest, then run 'fireforge register ${f.file}'.`);
+    }
+  }
+}
+
+/** Renders the unmanaged-only status view and registration hints. */
+export async function renderUnmanagedOnly(
+  unmanagedFiles: ClassifiedFile[],
+  totalModified: number,
+  projectRoot: string,
+  binaryName: string
+): Promise<void> {
+  info(
+    `${unmanagedFiles.length} unmanaged file${unmanagedFiles.length === 1 ? '' : 's'} (${totalModified} total modified):\n`
+  );
+  if (unmanagedFiles.length > 0) {
+    printStatusGroups(unmanagedFiles);
+    await printUnregisteredWarnings(unmanagedFiles, projectRoot, binaryName);
+  } else {
+    info('No unmanaged changes');
+  }
+  outro(
+    unmanagedFiles.length === 0
+      ? 'No unmanaged changes'
+      : `${unmanagedFiles.length} unmanaged change${unmanagedFiles.length === 1 ? '' : 's'}`
+  );
+}
+
+/** Renders the default classified status buckets. */
+export async function renderDefaultStatus(
+  totalModified: number,
+  buckets: ClassifiedBuckets,
+  projectRoot: string,
+  binaryName: string
+): Promise<void> {
+  const { conflict, unmanaged, patchBacked, patchOwnedDrift, branding, furnace } = buckets;
+  info(`${totalModified} modified file${totalModified === 1 ? '' : 's'}:\n`);
+
+  if (conflict.length > 0) {
+    warn('Cross-patch ownership conflicts (same file claimed by multiple patches):');
+    printStatusGroups(conflict);
+    for (const entry of conflict) {
+      if (entry.claimedBy && entry.claimedBy.length > 0) {
+        info(`  ${entry.file} — claimed by ${entry.claimedBy.join(', ')}`);
+      }
+    }
+    info(
+      'Run "fireforge status --ownership" for the full conflict table, then repartition with "fireforge re-export --files <paths> <patch>".'
+    );
+  }
+
+  if (unmanaged.length > 0) {
+    if (conflict.length > 0) info('');
+    warn('Unmanaged changes:');
+    printStatusGroups(unmanaged);
+    await printUnregisteredWarnings(unmanaged, projectRoot, binaryName);
+  }
+
+  if (patchBacked.length > 0) {
+    if (conflict.length > 0 || unmanaged.length > 0) info('');
+    warn('Patch-backed materialized changes:');
+    printStatusGroups(patchBacked);
+  }
+
+  if (patchOwnedDrift.length > 0) {
+    if (conflict.length > 0 || unmanaged.length > 0 || patchBacked.length > 0) info('');
+    warn('Patch-owned drift:');
+    printStatusGroups(patchOwnedDrift);
+    info(
+      'These files are claimed by exactly one patch, but engine/ no longer matches that patch output. Re-export the owning patch after reviewing the manual resolution.'
+    );
+  }
+
+  if (branding.length > 0) {
+    if (
+      conflict.length > 0 ||
+      unmanaged.length > 0 ||
+      patchBacked.length > 0 ||
+      patchOwnedDrift.length > 0
+    ) {
+      info('');
+    }
+    warn('Tool-managed branding changes:');
+    printStatusGroups(branding);
+  }
+
+  if (furnace.length > 0) {
+    if (
+      conflict.length > 0 ||
+      unmanaged.length > 0 ||
+      patchBacked.length > 0 ||
+      patchOwnedDrift.length > 0 ||
+      branding.length > 0
+    ) {
+      info('');
+    }
+    warn('Furnace-managed component changes:');
+    printStatusGroups(furnace);
+  }
+
+  if (
+    conflict.length === 0 &&
+    unmanaged.length === 0 &&
+    patchBacked.length === 0 &&
+    patchOwnedDrift.length === 0 &&
+    branding.length === 0 &&
+    furnace.length === 0
+  ) {
+    info('No changes');
+  }
+
+  const parts: string[] = [];
+  if (conflict.length > 0) parts.push(`${conflict.length} conflict`);
+  if (unmanaged.length > 0) parts.push(`${unmanaged.length} unmanaged`);
+  if (patchBacked.length > 0) parts.push(`${patchBacked.length} patch-backed`);
+  if (patchOwnedDrift.length > 0) parts.push(`${patchOwnedDrift.length} patch-owned drift`);
+  if (branding.length > 0) parts.push(`${branding.length} branding`);
+  if (furnace.length > 0) parts.push(`${furnace.length} furnace`);
+  outro(parts.join(', '));
+}

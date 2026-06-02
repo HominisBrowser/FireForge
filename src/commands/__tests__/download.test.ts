@@ -281,7 +281,18 @@ describe('downloadCommand', () => {
     vi.mocked(pathExistsStrict).mockResolvedValue(false);
     vi.mocked(pathExists).mockResolvedValue(false);
     vi.mocked(downloadFirefoxSource).mockImplementation(
-      (_version, _product, _engineDir, _cacheDir, onProgress) => {
+      (
+        _version,
+        _product,
+        _engineDir,
+        _cacheDir,
+        onProgress,
+        _onPhase,
+        _sha256,
+        onPhaseProgress
+      ) => {
+        onPhaseProgress?.('Validating source archive cache metadata for firefox.tar.xz...');
+        onPhaseProgress?.('Writing source archive cache metadata for firefox.tar.xz.json...');
         onProgress?.(1, 0);
         onProgress?.(1, 100);
         onProgress?.(4, 100);
@@ -296,13 +307,19 @@ describe('downloadCommand', () => {
 
     await downloadCommand('/project', {});
 
-    expect(downloadSpinner.messageMock).toHaveBeenCalledTimes(2);
+    expect(downloadSpinner.messageMock).toHaveBeenCalledTimes(4);
+    expect(downloadSpinner.messageMock).toHaveBeenCalledWith(
+      'Validating source archive cache metadata for firefox.tar.xz...'
+    );
+    expect(downloadSpinner.messageMock).toHaveBeenCalledWith(
+      'Writing source archive cache metadata for firefox.tar.xz.json...'
+    );
     expect(downloadSpinner.messageMock).toHaveBeenNthCalledWith(
-      1,
+      3,
       'Downloading Firefox 140.9.0esr... 5% (5 B / 100 B)'
     );
     expect(downloadSpinner.messageMock).toHaveBeenNthCalledWith(
-      2,
+      4,
       'Downloading Firefox 140.9.0esr... 10% (10 B / 100 B)'
     );
   });
@@ -325,6 +342,50 @@ describe('downloadCommand', () => {
 
     expect(info).toHaveBeenCalledWith(
       expect.stringContaining('Indexing downloaded source into git')
+    );
+  });
+
+  it('forwards indexing phase progress from git initialization', async () => {
+    const downloadSpinner = createSpinnerMock();
+    const gitSpinner = createSpinnerMock();
+    vi.mocked(spinner).mockReturnValueOnce(downloadSpinner).mockReturnValueOnce(gitSpinner);
+    vi.mocked(pathExistsStrict).mockResolvedValue(false);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(initRepository).mockImplementation((_engineDir, _branch, options) => {
+      options?.onProgress?.('Git phase: initializing source git repository.');
+      options?.onProgress?.('Scanning Firefox source tree before indexing...');
+      options?.onProgress?.('Git phase: starting git add -A source indexing.');
+      options?.onProgress?.('Source scan complete: 24 top-level directories, 12 top-level files');
+      options?.onProgress?.(
+        'Starting monolithic git add -A for 24 directories and 12 top-level files...'
+      );
+      options?.onProgress?.('Indexing Firefox source (monolithic, 15s elapsed)');
+      options?.onProgress?.('Git phase complete: git add -A source indexing finished.');
+      options?.onProgress?.('Git phase: creating initial source commit.');
+      options?.onProgress?.('Creating initial Firefox source commit...');
+      return Promise.resolve();
+    });
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', {});
+
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Scanning Firefox source tree before indexing...'
+    );
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Git phase: starting git add -A source indexing.'
+    );
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Source scan complete: 24 top-level directories, 12 top-level files'
+    );
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Indexing Firefox source (monolithic, 15s elapsed)'
+    );
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Creating initial Firefox source commit...'
+    );
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Git phase: creating initial source commit.'
     );
   });
 
@@ -383,7 +444,8 @@ describe('downloadCommand', () => {
       '/project/.fireforge/cache',
       expect.any(Function),
       expect.any(Function),
-      'a'.repeat(64)
+      'a'.repeat(64),
+      expect.any(Function)
     );
   });
 });

@@ -6,6 +6,7 @@
 import { join } from 'node:path';
 
 import { ExtractionError } from '../errors/download.js';
+import { elapsedSince } from '../utils/elapsed.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { exec, executableExists } from '../utils/process.js';
 
@@ -14,7 +15,11 @@ import { exec, executableExists } from '../utils/process.js';
  * @param archivePath - Path to the archive
  * @param destDir - Destination directory
  */
-export async function extractTarXz(archivePath: string, destDir: string): Promise<void> {
+export async function extractTarXz(
+  archivePath: string,
+  destDir: string,
+  onProgress?: (message: string) => void
+): Promise<void> {
   if (!(await executableExists('tar'))) {
     throw new ExtractionError(
       archivePath,
@@ -26,7 +31,17 @@ export async function extractTarXz(archivePath: string, destDir: string): Promis
 
   await ensureDir(destDir);
 
+  const startedAt = Date.now();
+  onProgress?.(`Extracting source archive (${elapsedSince(startedAt)} elapsed)...`);
+  const heartbeat = onProgress
+    ? setInterval(() => {
+        onProgress(`Extracting source archive (${elapsedSince(startedAt)} elapsed)...`);
+      }, 15_000)
+    : null;
+  heartbeat?.unref();
+
   const result = await exec('tar', ['-xf', archivePath, '-C', destDir]);
+  if (heartbeat) clearInterval(heartbeat);
 
   if (result.exitCode !== 0) {
     throw new ExtractionError(
@@ -34,6 +49,7 @@ export async function extractTarXz(archivePath: string, destDir: string): Promis
       new Error(`tar exited with code ${result.exitCode}:\n${result.stderr}`)
     );
   }
+  onProgress?.(`Source archive extracted (${elapsedSince(startedAt)} elapsed)`);
 }
 
 /**

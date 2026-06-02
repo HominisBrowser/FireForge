@@ -19,6 +19,7 @@ import {
   detectNewFilesInDiff,
 } from '../core/patch-lint.js';
 import { collectPatchRegistrationReferences } from '../core/patch-registration-refs.js';
+import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions } from '../types/commands/index.js';
@@ -351,7 +352,7 @@ export async function exportAllCommand(
         name: patchName,
         description,
         filesAffected,
-        sourceEsrVersion: config.firefox.version,
+        ...buildPatchSourceMetadata(config.firefox),
         explicitSupersede: options.supersede === true,
         allowOverlap: options.allowOverlap === true,
         config,
@@ -395,7 +396,7 @@ export async function exportAllCommand(
       description,
       diff,
       filesAffected,
-      sourceEsrVersion: config.firefox.version,
+      ...buildPatchSourceMetadata(config.firefox),
       config,
       policyCommand: 'export-all',
       forceUnsafe: options.forceUnsafe === true,

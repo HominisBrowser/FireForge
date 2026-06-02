@@ -23,6 +23,7 @@ import {
   resetBrokenPipeHandlerForTests,
 } from '../cli.js';
 import * as logger from '../utils/logger.js';
+import { getPackageVersion } from '../utils/package-root.js';
 
 function getInstalledStdoutErrorHandler(
   stdoutListenersBefore: number
@@ -141,6 +142,22 @@ describe('createProgram', () => {
 describe('main', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('handles root --version before Commander parses subcommands', async () => {
+    const previousArgv = process.argv;
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const parseAsyncSpy = vi.spyOn(Command.prototype, 'parseAsync');
+    process.argv = ['node', 'fireforge', '--version'];
+
+    try {
+      await main();
+    } finally {
+      process.argv = previousArgv;
+    }
+
+    expect(writeSpy).toHaveBeenCalledWith(`${getPackageVersion()}\n`);
+    expect(parseAsyncSpy).not.toHaveBeenCalled();
   });
 
   it('parses the current process arguments through the Commander program', async () => {

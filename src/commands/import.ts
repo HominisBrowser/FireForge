@@ -21,6 +21,7 @@ import {
   validatePatchesManifestConsistency,
   validatePatchIntegrity,
 } from '../core/patch-manifest.js';
+import { getPatchSourceVersion } from '../core/patch-source-metadata.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ImportOptions } from '../types/commands/index.js';
@@ -372,7 +373,7 @@ export async function importCommand(
       // Scope the advisory warnings too: an operator running with --until
       // doesn't need to see version warnings for patches outside the range.
       if (options.until !== undefined && !untilFilenameSet.has(patch.filename)) continue;
-      const warning = checkVersionCompatibility(patch.sourceEsrVersion, currentVersion);
+      const warning = checkVersionCompatibility(getPatchSourceVersion(patch), currentVersion);
       if (warning) {
         warn(`${patch.filename}: ${warning}`);
       }

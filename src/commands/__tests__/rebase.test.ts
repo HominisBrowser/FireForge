@@ -297,7 +297,8 @@ describe('fireforge rebase', () => {
     expect(stampPatchVersionsMock).toHaveBeenCalledWith(
       '/project/patches',
       ['001-branding.patch'],
-      '140.9.0esr'
+      '140.9.0esr',
+      'firefox-esr'
     );
   });
 
@@ -819,7 +820,7 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
       '/project/patches',
       '001-branding.patch',
       'diff --git a/browser/file.txt b/browser/file.txt\n',
-      { sourceEsrVersion: '140.9.0esr' }
+      { sourceEsrVersion: '140.9.0esr', sourceVersion: '140.9.0esr' }
     );
     expect(applyPatchWithFuzzMock).toHaveBeenCalledWith(
       '/project/patches/002-ui.patch',
@@ -831,7 +832,8 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
     expect(stampPatchVersionsMock).toHaveBeenCalledWith(
       '/project/patches',
       ['001-branding.patch', '002-ui.patch'],
-      '140.9.0esr'
+      '140.9.0esr',
+      undefined
     );
     expect(clearRebaseSessionMock).toHaveBeenCalled();
   });
@@ -907,7 +909,8 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
     expect(stampPatchVersionsMock).toHaveBeenCalledWith(
       '/project/patches',
       ['001-branding.patch'],
-      '140.9.0esr'
+      '140.9.0esr',
+      undefined
     );
     expect(clearRebaseSessionMock).toHaveBeenCalled();
   });

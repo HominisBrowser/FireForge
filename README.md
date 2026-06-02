@@ -11,16 +11,16 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 ## What It Does
 
 - **Patch based** Edit Firefox inside the `engine/` directory, then export changes into `.patch` files with manifest metadata.
-- **ESR rebasing** Reapply your patches onto a newer Firefox source tree, resolve rejects and re-export the queue against the new baseline, hopefully...
+- **Source rebasing** Reapply your patches onto newer Firefox source trees, including ESR, Beta, and Developer Edition archives, resolve rejects and re-export the queue against the new baseline, hopefully...
 - **Firefox source and build helpers** Download, bootstrap, build, run, test, package, smoke-check, etc.
 - **Wiring and registration** Add chrome scripts, DOM fragments, modules, styles, tests and manifest entries through commands built by learning from existing Firefox conventions.
 - **Furnace components** Create or override `MozLitElement` widgets easily to add new or adapt existing UI components to your needs.
 - **Quality** `lint`, `typecheck`, `verify` and `doctor` catch common issues early.
-- **Tests** Fireforge was build by taking apart and applying patches of all sorts to original Firefox ESR source code across different versions, learning what works vs doesn't and creating some quite extensive tests based on that covering all manner of scenarios. Yes, we mock quite a bit, but when building a tool that modifies a separate code base, I think it's a solid compromise for the time being. Full end-to-end runs are currently run locally on my MacBook, as they require about 30 GB of disk and significant compute for multiple full builds. Full end-to-end via Actions will be added soonishlyTM but might need a different runner...
+- **Tests** Fireforge was build by taking apart and applying patches of all sorts to original Firefox source code across different versions and products, learning what works vs doesn't and creating some quite extensive tests based on that covering all manner of scenarios. Yes, we mock quite a bit, but when building a tool that modifies a separate code base, I think it's a solid compromise for the time being. Full end-to-end runs are currently run locally on my MacBook, as they require about 30 GB of disk and significant compute for multiple full builds. Full end-to-end via Actions will be added soonishlyTM but might need a different runner...
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 22.22.1+
 - Python 3
 - Git
 - The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows (never tested on Windows tbh)
@@ -63,12 +63,12 @@ npx fireforge test browser/base/content/test/browser/
 
 Use `fireforge --help` for the full set of commands.
 
-## Rebasing Firefox
+## Rebasing Firefox Source
 
-When Mozilla publishes a new ESR you need to update the configured Firefox version, download the new source code and reapply the patches:
+When Mozilla publishes a new Firefox source release you need to update the configured version/product, download the new source code and reapply the patches:
 
 ```bash
-npx fireforge config firefox.version 145.0.0esr
+npx fireforge source set --version 145.0.0esr --product firefox-esr --sha256 <archive-sha256>
 npx fireforge download --force
 npx fireforge rebase
 ```
@@ -95,7 +95,7 @@ Use `fireforge furnace --help` for the full set of component commands.
 - **Docker builds** Reproducible builds using Docker containers.
 - **CI mode** Automated setup for continuous integration pipelines.
 - **Update manifests** Generate update server manifests for auto-updates.
-- **Nightly support** Requires implementing `hg clone` support via mozilla-central. Currently fireforge only downloads from the archive.
+- **Nightly source support** Requires implementing `hg clone` support via mozilla-central. ESR, Beta, and Developer Edition source archives are supported through `fireforge source set`.
 - **E2E Github Actions** Requires either a higher tier of Githubs offering, an external VPS or another provider entirely. In any case, full end-to-end testing is currently run solely locally.
 
 ## Licence

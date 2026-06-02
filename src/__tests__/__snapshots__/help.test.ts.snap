@@ -12,6 +12,7 @@ Options:
 
 Project:
   setup [options]                   Initialize a new FireForge project
+  source                            Manage Firefox source configuration
   config [options] <key> [value]    Get or set configuration values
 
 Engine:
@@ -39,13 +40,15 @@ Workflow:
   re-export [options] [patches...]  Refresh existing patch bodies (and
                                     filesAffected with --scan) from the current
                                     engine state. Does NOT change
-                                    sourceEsrVersion by default — use --stamp or
-                                    run rebase for version stamping.
+                                    sourceVersion/sourceProduct by default — use
+                                    --stamp or run rebase for source metadata
+                                    stamping.
   patch                             Manage individual patches in the queue
-                                    (compact, delete, lint-ignore, rename,
-                                    reorder, tier)
-  rebase [options]                  Semi-automated ESR version upgrade — apply
-                                    patches with fuzz and re-export
+                                    (compact, delete, lint-ignore, move-files,
+                                    rename, reorder, staged-dependency, tier)
+  rebase [options]                  Semi-automated Firefox source version
+                                    upgrade — apply patches with fuzz and
+                                    re-export
   package [options]                 Create distribution package
   watch                             Watch for changes and auto-rebuild
   test [options] [paths...]         Run tests via mach test
@@ -300,5 +303,39 @@ Options:
   --fix       Auto-fix registration issues (missing jar.mn entries,
               customElements.js)
   -h, --help  display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for patch staged-dependency > patch move-files --help 1`] = `
+"Usage: fireforge patch move-files [options] <from> <to>
+
+Preview the re-export commands needed to move file ownership between patches.
+
+Options:
+  --file <path>  File path relative to engine/ to move (repeatable) (default:
+                 [])
+  -h, --help     display help for command
+"
+`;
+
+exports[`CLI help output > exposes stable help text for patch staged-dependency > patch staged-dependency --help 1`] = `
+"Usage: fireforge patch staged-dependency [options] <name>
+
+Edit PatchMetadata.stagedDependencies on a single patch (no .patch body
+rewrite).
+
+Options:
+  --add                    Add a staged forward-import declaration
+  --remove                 Remove matching staged forward-import declaration(s)
+  --clear                  Drop the stagedDependencies field entirely
+  --file <path>            Importing file path relative to engine/
+  --specifier <specifier>  Exact import specifier as it appears in source
+  --creates <path>         Later-created file path relative to engine/
+  --owner <patch>          Exact later patch filename expected to create
+                           --creates
+  --reason <text>          Human-readable rationale stored with the declaration
+  --dry-run                Show what would change without writing
+  -y, --yes                Skip confirmation prompt (required for non-TTY)
+  -h, --help               display help for command
 "
 `;

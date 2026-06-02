@@ -88,6 +88,8 @@ export async function handleContinue(projectRoot: string, maxFuzz: number): Prom
     // v0.14.0 resolve.ts fix.
     await updatePatchAndMetadata(paths.patches, currentPatch.filename, diffContent, {
       sourceEsrVersion: session.toVersion,
+      sourceVersion: session.toVersion,
+      ...(session.toProduct !== undefined ? { sourceProduct: session.toProduct } : {}),
     });
   } finally {
     if (staged) {

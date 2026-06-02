@@ -266,10 +266,23 @@ describe('buildCommand', () => {
   });
 
   it('wraps non-zero mach exits as build failures', async () => {
-    vi.mocked(build).mockResolvedValue({ exitCode: 2, stdout: '', stderr: '' });
+    vi.mocked(build).mockResolvedValue({
+      exitCode: 2,
+      stdout: 'make[4]: *** [tools] Error 1\nmake: *** [build] Error 2\n',
+      stderr:
+        'cp: /project/engine/browser/branding/hominis/Assets.car: No such file or directory\n',
+    });
 
-    await expect(buildCommand('/project', { jobs: 8 })).rejects.toThrow(
-      'Build failed with exit code 2'
+    const failure = await buildCommand('/project', { jobs: 8 }).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('Build failed with exit code 2');
+    expect((failure as Error).message).toContain('Mach phase: mach build');
+    expect((failure as Error).message).toContain('Last make error: make: *** [build] Error 2');
+    expect((failure as Error).message).toContain('Captured stderr tail:');
+    expect((failure as Error).message).toContain('Assets.car: No such file or directory');
+    expect((failure as Error).message).toContain(
+      'Verbose rerun: cd /project/engine && ./mach build -v'
     );
 
     expect(build).toHaveBeenCalledWith('/project/engine', 8);

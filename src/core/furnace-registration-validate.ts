@@ -5,6 +5,7 @@
  */
 
 import { FurnaceError } from '../errors/furnace.js';
+import { stripJsComments } from '../utils/regex.js';
 
 /**
  * Regex for valid custom element tag names. A valid name is lowercase, starts
@@ -46,23 +47,80 @@ export function validateRegistrationPlacement(
   tagName: string,
   isESModule: boolean
 ): void {
-  const dclPattern = /document\.addEventListener\(\s*["']DOMContentLoaded["']/;
   const insertedPos = result.lastIndexOf(`"${tagName}"`);
   if (insertedPos === -1) return;
 
-  const contentBeforeTag = result.slice(0, insertedPos);
-  const hasDCLBefore = dclPattern.test(contentBeforeTag);
-
-  if (isESModule && !hasDCLBefore) {
+  if (!isTagInCorrectCustomElementsPlacement(result, tagName, isESModule)) {
+    if (!isESModule) {
+      throw new FurnaceError(
+        `${tagName} was registered in the DOMContentLoaded/importESModule block (Pattern B) instead of the loadSubScript block (Pattern A). This will cause the component to fail at runtime. The customElements.js file structure may have changed upstream — manual intervention required.`,
+        tagName
+      );
+    }
     throw new FurnaceError(
       `${tagName} was registered in the loadSubScript block (Pattern A) instead of the DOMContentLoaded/importESModule block (Pattern B). This will cause the component to fail at runtime. The customElements.js file structure may have changed upstream — manual intervention required.`,
       tagName
     );
   }
-  if (!isESModule && hasDCLBefore) {
-    throw new FurnaceError(
-      `${tagName} was registered in the DOMContentLoaded/importESModule block (Pattern B) instead of the loadSubScript block (Pattern A). This will cause the component to fail at runtime. The customElements.js file structure may have changed upstream — manual intervention required.`,
-      tagName
-    );
+}
+
+/**
+ * Returns whether a tag appears in the correct customElements.js placement.
+ * ESM entries may either appear textually inside/after DOMContentLoaded or
+ * inside an array declared before DOMContentLoaded and consumed by a for-of
+ * loop inside the listener, as Firefox 152 Beta does for acornElements.
+ */
+export function isTagInCorrectCustomElementsPlacement(
+  content: string,
+  tagName: string,
+  isESModule: boolean
+): boolean {
+  const stripped = stripJsComments(content);
+  const tagPattern = new RegExp(`["']${escapeRegex(tagName)}["']`);
+  const dclMatch = /document\.addEventListener\(\s*["']DOMContentLoaded["']/.exec(stripped);
+  if (!dclMatch) {
+    return !isESModule && tagPattern.test(stripped);
   }
+
+  const beforeDcl = stripped.slice(0, dclMatch.index);
+  const afterDcl = stripped.slice(dclMatch.index);
+  const tagBeforeDcl = tagPattern.test(beforeDcl);
+  const tagAfterDcl = tagPattern.test(afterDcl);
+
+  if (!isESModule) {
+    return tagBeforeDcl && !tagAfterDcl;
+  }
+  return (
+    tagAfterDcl || isTagInArrayConsumedInsideDOMContentLoaded(stripped, dclMatch.index, tagName)
+  );
+}
+
+function isTagInArrayConsumedInsideDOMContentLoaded(
+  content: string,
+  domContentLoadedIdx: number,
+  tagName: string
+): boolean {
+  const beforeDcl = content.slice(0, domContentLoadedIdx);
+  const afterDcl = content.slice(domContentLoadedIdx);
+  const consumedArrays = new Set<string>();
+  const forOfPattern = /for\s*\(\s*(?:let|const|var)\s*\[[^)]*\]\s+of\s+([A-Za-z_$][\w$]*)\s*\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = forOfPattern.exec(afterDcl)) !== null) {
+    if (match[1]) consumedArrays.add(match[1]);
+  }
+
+  for (const arrayName of consumedArrays) {
+    const declarationPattern = new RegExp(
+      `(?:const|let|var)\\s+${escapeRegex(arrayName)}\\s*=\\s*\\[([\\s\\S]*?)\\];`
+    );
+    const declaration = declarationPattern.exec(beforeDcl);
+    if (declaration?.[1] && new RegExp(`["']${escapeRegex(tagName)}["']`).test(declaration[1])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

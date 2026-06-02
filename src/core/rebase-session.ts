@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Rebase session persistence for multi-patch ESR version upgrades.
+ * Rebase session persistence for multi-patch Firefox source upgrades.
  * Session state is stored at `.fireforge/rebase-session.json` and
  * survives across CLI invocations so the user can fix conflicts and
  * resume with `fireforge rebase --continue`.
@@ -8,6 +8,7 @@
 
 import { join } from 'node:path';
 
+import type { FirefoxProduct } from '../types/config.js';
 import { pathExists, readJson, removeFile, writeJson } from '../utils/fs.js';
 import { isArray, isObject, isString } from '../utils/validation.js';
 import { getProjectPaths } from './config-paths.js';
@@ -37,9 +38,13 @@ export interface RebasePatchEntry {
 export interface RebaseSession {
   /** ISO timestamp when the rebase started. */
   startedAt: string;
-  /** ESR version being rebased FROM. */
+  /** Source product being rebased FROM. */
+  fromProduct?: FirefoxProduct;
+  /** Source product being rebased TO. */
+  toProduct?: FirefoxProduct;
+  /** Source version being rebased FROM. */
   fromVersion: string;
-  /** ESR version being rebased TO. */
+  /** Source version being rebased TO. */
   toVersion: string;
   /** Commit hash recorded before the rebase started (for --abort). */
   preRebaseCommit: string;

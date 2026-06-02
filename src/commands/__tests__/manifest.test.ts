@@ -49,6 +49,7 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   'export-placement-policy.ts',
   'export-shared.ts',
   'setup-support.ts',
+  'status-output.ts',
   'token-coverage.ts',
   // Post-bootstrap validation checks consumed by bootstrap.ts. Exports
   // check helpers, not a top-level registrar.
@@ -74,6 +75,9 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // it under the max-lines threshold. Consumed by re-export.ts; no
   // top-level registrar.
   're-export-files.ts',
+  // Scan planning helpers for re-export, including targeted --scan-file.
+  // Consumed by re-export.ts; no top-level registrar.
+  're-export-scan.ts',
 ]);
 
 const ALLOWED_GROUPS = new Set(['project', 'workflow', 'engine', 'diagnostics', 'components']);

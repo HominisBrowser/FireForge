@@ -136,6 +136,14 @@ describe('resolveArchive', () => {
     expect(beta.archiveVersion).toBe('147.0b1');
   });
 
+  it('resolves Developer Edition to the beta source archive with product-specific cache metadata', () => {
+    const result = resolveArchive('152.0b6', 'firefox-devedition');
+    expect(result.archiveVersion).toBe('152.0b6');
+    expect(result.url).toContain('/152.0b6/source/firefox-152.0b6.source.tar.xz');
+    expect(result.filename).toBe('firefox-firefox-devedition-152.0b6.source.tar.xz');
+    expect(result.metadataFilename).toBe('firefox-firefox-devedition-152.0b6.source.tar.xz.json');
+  });
+
   it('strips trailing esr from version when product is ESR and re-adds it consistently', () => {
     const result = resolveArchive('128.0.1esr', 'firefox-esr');
     expect(result.archiveVersion).toBe('128.0.1esr');

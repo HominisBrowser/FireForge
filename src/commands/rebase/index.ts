@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge rebase` — semi-automated ESR version upgrade.
+ * `fireforge rebase` — semi-automated Firefox source version upgrade.
  *
  * Orchestrates the full patch-rebase workflow:
  *   1. Reset engine to baseline
@@ -18,6 +18,7 @@ import { getFurnacePaths, updateFurnaceState } from '../../core/furnace-config.j
 import { getHead, isGitRepository, isMissingHeadError, resetChanges } from '../../core/git.js';
 import { discoverPatches } from '../../core/patch-files.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
+import { getPatchSourceProduct, getPatchSourceVersion } from '../../core/patch-source-metadata.js';
 import type { RebaseSession } from '../../core/rebase-session.js';
 import { hasActiveRebaseSession, saveRebaseSession } from '../../core/rebase-session.js';
 import { GeneralError } from '../../errors/base.js';
@@ -85,9 +86,13 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
   }
 
   // Determine the "from" version from the patches
-  const patchVersions = new Set(manifest.patches.map((p) => p.sourceEsrVersion));
+  const patchVersions = new Set(manifest.patches.map((p) => getPatchSourceVersion(p)));
+  const patchProducts = new Set(
+    manifest.patches.map((p) => getPatchSourceProduct(p)).filter(Boolean)
+  );
   const sortedVersions = [...patchVersions].sort();
   const fromVersion = sortedVersions[0] ?? currentVersion;
+  const fromProduct = [...patchProducts].sort()[0] ?? config.firefox.product;
 
   if (patchVersions.size === 1 && fromVersion === currentVersion) {
     info('All patches already match the current Firefox version. Nothing to rebase.');
@@ -141,6 +146,8 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
   const allPatches = await discoverPatches(paths.patches);
   const session: RebaseSession = {
     startedAt: new Date().toISOString(),
+    fromProduct,
+    toProduct: config.firefox.product,
     fromVersion,
     toVersion: currentVersion,
     preRebaseCommit,
@@ -159,7 +166,7 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
 // ── Public API ──
 
 /**
- * Runs the rebase command to orchestrate an ESR version upgrade.
+ * Runs the rebase command to orchestrate a Firefox source version upgrade.
  * @param projectRoot - Root directory of the project
  * @param options - Rebase options
  */
@@ -185,7 +192,9 @@ export function registerRebase(
 ): void {
   program
     .command('rebase')
-    .description('Semi-automated ESR version upgrade — apply patches with fuzz and re-export')
+    .description(
+      'Semi-automated Firefox source version upgrade — apply patches with fuzz and re-export'
+    )
     .option('--continue', 'Resume after manually resolving a failed patch')
     .option('--abort', 'Cancel the rebase and restore engine to pre-rebase state')
     .option('--dry-run', 'Show what would happen without modifying anything')

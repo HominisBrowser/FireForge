@@ -65,6 +65,7 @@ describe('re-export --files integration', () => {
   let engineDir: string;
   let patchesDir: string;
   let restoreTTY: () => void = () => undefined;
+  let stdout: string;
 
   beforeEach(async () => {
     projectRoot = await createTempProject('ff-re-export-files-');
@@ -80,7 +81,11 @@ describe('re-export --files integration', () => {
     });
 
     restoreTTY = setInteractiveMode(false);
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stdout = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      stdout += chunk.toString();
+      return true;
+    });
   });
 
   afterEach(async () => {
@@ -134,7 +139,7 @@ describe('re-export --files integration', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('--files shrink non-TTY without --yes rejects', async () => {
+  it('--files shrink refuses without --allow-shrink even when --yes is provided', async () => {
     await seedManifest(patchesDir, [
       {
         metadata: makeMetadata('001-infra-a.patch', 1, [
@@ -149,11 +154,15 @@ describe('re-export --files integration', () => {
     await expect(
       reExportCommand(projectRoot, ['001-infra-a.patch'], {
         files: ['browser/base/content/browser.js'],
+        yes: true,
       })
     ).rejects.toBeInstanceOf(InvalidArgumentError);
+
+    expect(stdout).toContain('Refusing to shrink 001-infra-a.patch without --allow-shrink');
+    expect(stdout).toContain('removed files (1; become unmanaged)');
   });
 
-  it('--files --force writes the shrunken patch and history entry', async () => {
+  it('--files --allow-shrink --yes writes the shrunken patch and history entry', async () => {
     await seedManifest(patchesDir, [
       {
         metadata: makeMetadata('001-infra-a.patch', 1, [
@@ -169,6 +178,7 @@ describe('re-export --files integration', () => {
 
     await reExportCommand(projectRoot, ['001-infra-a.patch'], {
       files: ['browser/base/content/browser.js'],
+      allowShrink: true,
       yes: true,
     });
 
@@ -187,6 +197,38 @@ describe('re-export --files integration', () => {
     const newBody = await readFile(join(patchesDir, '001-infra-a.patch'), 'utf-8');
     expect(newBody).toContain('browser/base/content/browser.js');
     expect(newBody).not.toContain('browser/base/content/browser.css');
+  });
+
+  it('--files --dry-run previews retained removed new and missing files without --allow-shrink', async () => {
+    await seedManifest(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-a.patch', 1, [
+          'browser/base/content/browser.js',
+          'browser/base/content/browser.css',
+        ]),
+        body: 'unchanged',
+      },
+    ]);
+    await writeFile(join(engineDir, 'browser/base/content/browser.js'), 'modified;\n');
+    await writeFile(join(engineDir, 'browser/base/content/new.js'), 'new;\n');
+    const { rm } = await import('node:fs/promises');
+    await rm(join(engineDir, 'browser/base/content/browser.css'));
+
+    await reExportCommand(projectRoot, ['001-infra-a.patch'], {
+      files: [
+        'browser/base/content/browser.js',
+        'browser/base/content/browser.css',
+        'browser/base/content/new.js',
+      ],
+      dryRun: true,
+      skipLint: true,
+    });
+
+    expect(stdout).toContain('retained files (2)');
+    expect(stdout).toContain('projected files (2)');
+    expect(stdout).toContain('newly included files (1): browser/base/content/new.js');
+    expect(stdout).toContain('missing on disk (will be dropped): browser/base/content/browser.css');
+    expect(await pathExists(join(patchesDir, '.fireforge-history.jsonl'))).toBe(false);
   });
 
   it('--files --dry-run does not write and does not append history', async () => {

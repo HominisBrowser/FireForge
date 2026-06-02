@@ -139,7 +139,7 @@ export interface RebuildPatchesManifestResult {
  * Existing metadata is preserved when possible; missing entries are recovered
  * from filename structure, patch contents, and file mtimes.
  * @param patchesDir - Path to the patches directory
- * @param fallbackSourceEsrVersion - ESR version to use for recovered entries
+ * @param fallbackSourceEsrVersion - source version to use for recovered legacy entries
  * @returns {@link RebuildPatchesManifestResult} — the persisted manifest
  *   plus the filenames that were reconstructed from generic defaults.
  */
@@ -199,9 +199,12 @@ export async function rebuildPatchesManifest(
       name: existing?.name ?? inferred.name,
       description:
         existing?.description ??
-        `Recovered manifest entry for ${patch.filename}. Review description and ESR version.`,
+        `Recovered manifest entry for ${patch.filename}. Review description and source version.`,
       createdAt: existing?.createdAt ?? new Date(patchStats.mtimeMs).toISOString(),
       sourceEsrVersion: existing?.sourceEsrVersion ?? fallbackSourceEsrVersion,
+      sourceVersion:
+        existing?.sourceVersion ?? existing?.sourceEsrVersion ?? fallbackSourceEsrVersion,
+      ...(existing?.sourceProduct !== undefined ? { sourceProduct: existing.sourceProduct } : {}),
       filesAffected,
     };
     if (existing?.lintIgnore !== undefined) rebuilt.lintIgnore = [...existing.lintIgnore];

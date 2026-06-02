@@ -20,6 +20,7 @@ import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { EngineExistsError, PartialEngineExistsError } from '../errors/download.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DownloadOptions } from '../types/commands/index.js';
+import type { FirefoxProduct } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { checkDiskSpace, ensureDir, pathExists, pathExistsStrict, removeDir } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
@@ -152,6 +153,60 @@ function closeRestoreSpinner(
   restoreSpinner.stop('Patch-touched files restored');
 }
 
+async function downloadAndExtractFirefox(args: {
+  version: string;
+  product: FirefoxProduct;
+  engineDir: string;
+  cacheDir: string;
+  sha256?: string;
+}): Promise<void> {
+  const { version, product, engineDir, cacheDir, sha256 } = args;
+  let s = spinner(`Downloading Firefox ${version}...`);
+  let lastPercent = 0;
+  const phaseState: { value: 'download' | 'extract' } = { value: 'download' };
+
+  try {
+    await downloadFirefoxSource(
+      version,
+      product,
+      engineDir,
+      cacheDir,
+      (downloaded, total) => {
+        if (total <= 0) return;
+        const percent = Math.floor((downloaded / total) * 100);
+        if (percent !== lastPercent && percent % 5 === 0) {
+          s.message(
+            `Downloading Firefox ${version}... ${percent}% (${formatBytes(downloaded)} / ${formatBytes(total)})`
+          );
+          lastPercent = percent;
+        }
+      },
+      (phase) => {
+        if (phase === 'extract' && phaseState.value === 'download') {
+          s.stop(`Firefox ${version} downloaded`);
+          phaseState.value = 'extract';
+          s = spinner(
+            `Extracting Firefox ${version}... (decompressing ~600 MB of source; typically 30–90s)`
+          );
+        }
+      },
+      sha256,
+      (message) => {
+        s.message(message);
+      }
+    );
+
+    s.stop(
+      phaseState.value === 'extract'
+        ? `Firefox ${version} extracted`
+        : `Firefox ${version} downloaded`
+    );
+  } catch (error: unknown) {
+    s.error(phaseState.value === 'extract' ? 'Extraction failed' : 'Download failed');
+    throw error;
+  }
+}
+
 /**
  * Runs the download command.
  * @param projectRoot - Root directory of the project
@@ -163,14 +218,12 @@ export async function downloadCommand(
 ): Promise<void> {
   intro('FireForge Download');
 
-  // Load configuration
-  const config = await loadConfig(projectRoot);
+  const config = await loadConfig(projectRoot),
+    version = config.firefox.version;
   const paths = getProjectPaths(projectRoot);
-  const version = config.firefox.version;
 
   info(`Firefox version: ${version}`);
 
-  // Disk space pre-flight: Firefox source is ~5 GB
   await checkDiskSpace(projectRoot, 5 * 1024 * 1024 * 1024, warn);
 
   await withFileLock(join(paths.fireforgeDir, 'download.fireforge.lock'), async () => {
@@ -282,54 +335,13 @@ export async function downloadCommand(
     const cacheDir = join(paths.fireforgeDir, 'cache');
     await ensureDir(cacheDir);
 
-    // Phase-switched spinners: the download phase runs with the byte-count
-    // progress callbacks below; the extract phase is blocking tar-xz and
-    // has no incremental progress, but it can take 30–90s on a ~600 MB
-    // Firefox tree, so it gets its own spinner message. Before the phase
-    // split, a single "Downloading Firefox … 100%" spinner covered both
-    // — the first-run setup looked hung precisely when the archive had
-    // already reached disk and `tar` was the long pole.
-    let s = spinner(`Downloading Firefox ${version}...`);
-    let lastPercent = 0;
-    const phaseState: { value: 'download' | 'extract' } = { value: 'download' };
-
-    try {
-      await downloadFirefoxSource(
-        version,
-        config.firefox.product,
-        paths.engine,
-        cacheDir,
-        (downloaded, total) => {
-          if (total <= 0) return;
-          const percent = Math.floor((downloaded / total) * 100);
-          if (percent !== lastPercent && percent % 5 === 0) {
-            s.message(
-              `Downloading Firefox ${version}... ${percent}% (${formatBytes(downloaded)} / ${formatBytes(total)})`
-            );
-            lastPercent = percent;
-          }
-        },
-        (phase) => {
-          if (phase === 'extract' && phaseState.value === 'download') {
-            s.stop(`Firefox ${version} downloaded`);
-            phaseState.value = 'extract';
-            s = spinner(
-              `Extracting Firefox ${version}... (decompressing ~600 MB of source; typically 30–90s)`
-            );
-          }
-        },
-        config.firefox.sha256
-      );
-
-      if (phaseState.value === 'extract') {
-        s.stop(`Firefox ${version} extracted`);
-      } else {
-        s.stop(`Firefox ${version} downloaded`);
-      }
-    } catch (error: unknown) {
-      s.error(phaseState.value === 'extract' ? 'Extraction failed' : 'Download failed');
-      throw error;
-    }
+    await downloadAndExtractFirefox({
+      version,
+      product: config.firefox.product,
+      engineDir: paths.engine,
+      cacheDir,
+      ...(config.firefox.sha256 !== undefined ? { sha256: config.firefox.sha256 } : {}),
+    });
 
     // Finding #17: the git indexing phase of `download` can block for
     // minutes on a ~600 MB Firefox tree — the spinner updates less often
@@ -343,7 +355,7 @@ export async function downloadCommand(
       'Indexing downloaded source into git (one-time; typically 3–5 minutes on a ~600 MB Firefox tree)...'
     );
 
-    // Initialize git repository
+    info('Git phase: initializing/resetting source repository metadata.');
     const gitSpinner = spinner('Initializing git repository (this may take a few minutes)...');
     let baseCommit: string | undefined;
 

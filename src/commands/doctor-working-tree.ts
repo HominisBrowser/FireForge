@@ -26,9 +26,11 @@ function formatManagedDetail(counts: {
   branding: number;
   furnace: number;
   patchBacked: number;
+  patchOwnedDrift: number;
 }): string {
   return [
     counts.patchBacked > 0 ? `${counts.patchBacked} patch-backed` : null,
+    counts.patchOwnedDrift > 0 ? `${counts.patchOwnedDrift} patch-owned drift` : null,
     counts.branding > 0 ? `${counts.branding} branding` : null,
     counts.furnace > 0 ? `${counts.furnace} furnace` : null,
   ]
@@ -82,6 +84,7 @@ export async function inspectEngineWorkingTree(
     branding: 0,
     furnace: 0,
     patchBacked: 0,
+    patchOwnedDrift: 0,
     conflict: 0,
     unmanaged: 0,
   };
@@ -89,6 +92,7 @@ export async function inspectEngineWorkingTree(
     if (entry.classification === 'branding') counts.branding++;
     else if (entry.classification === 'furnace') counts.furnace++;
     else if (entry.classification === 'patch-backed') counts.patchBacked++;
+    else if (entry.classification === 'patch-owned-drift') counts.patchOwnedDrift++;
     else if (entry.classification === 'conflict') counts.conflict++;
     else counts.unmanaged++;
   }
@@ -101,7 +105,8 @@ export async function inspectEngineWorkingTree(
     );
   }
 
-  const managedTotal = counts.branding + counts.furnace + counts.patchBacked;
+  const managedTotal =
+    counts.branding + counts.furnace + counts.patchBacked + counts.patchOwnedDrift;
 
   if (counts.unmanaged === 0) {
     const managedDetail = formatManagedDetail(counts);

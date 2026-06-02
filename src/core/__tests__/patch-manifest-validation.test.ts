@@ -32,10 +32,61 @@ describe('validatePatchesManifest', () => {
           description: 'UI patch',
           createdAt: '2026-04-07T00:00:00.000Z',
           sourceEsrVersion: '140.9.0esr',
+          sourceVersion: '140.9.0esr',
           filesAffected: ['browser/base/content/browser.js'],
         },
       ],
     });
+  });
+
+  it('accepts legacy sourceEsrVersion-only metadata and exposes sourceVersion fallback', () => {
+    const manifest = validatePatchesManifest({
+      version: 1,
+      patches: [
+        {
+          filename: '001-ui.patch',
+          order: 1,
+          category: 'ui',
+          name: 'ui',
+          description: 'UI patch',
+          createdAt: '2026-04-07T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['browser/base/content/browser.js'],
+        },
+      ],
+    });
+
+    expect(manifest.patches[0]?.sourceEsrVersion).toBe('140.9.0esr');
+    expect(manifest.patches[0]?.sourceVersion).toBe('140.9.0esr');
+    expect(manifest.patches[0]?.sourceProduct).toBeUndefined();
+  });
+
+  it('accepts sourceProduct and sourceVersion for non-ESR products', () => {
+    const manifest = validatePatchesManifest({
+      version: 1,
+      patches: [
+        {
+          filename: '001-ui.patch',
+          order: 1,
+          category: 'ui',
+          name: 'ui',
+          description: 'UI patch',
+          createdAt: '2026-04-07T00:00:00.000Z',
+          sourceEsrVersion: '152.0b6',
+          sourceProduct: 'firefox-devedition',
+          sourceVersion: '152.0b6',
+          filesAffected: ['browser/base/content/browser.js'],
+        },
+      ],
+    });
+
+    expect(manifest.patches[0]).toEqual(
+      expect.objectContaining({
+        sourceEsrVersion: '152.0b6',
+        sourceProduct: 'firefox-devedition',
+        sourceVersion: '152.0b6',
+      })
+    );
   });
 
   it('rejects malformed patch metadata with actionable messages', () => {
@@ -245,5 +296,73 @@ describe('validatePatchesManifest', () => {
       ],
     });
     expect('tier' in (result.patches[0] ?? {})).toBe(false);
+  });
+
+  it('preserves staged forward-import dependencies when present', () => {
+    const result = validatePatchesManifest({
+      version: 1,
+      patches: [
+        {
+          filename: '001-ui-shim.patch',
+          order: 1,
+          category: 'ui',
+          name: 'shim',
+          description: 'Early shim importing staged helper',
+          createdAt: '2026-05-27T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['browser/base/content/HominisShim.sys.mjs'],
+          stagedDependencies: {
+            forwardImports: [
+              {
+                file: 'browser/base/content/HominisShim.sys.mjs',
+                specifier: 'resource:///modules/HominisSurfaceBrowserOps.sys.mjs',
+                creates: 'browser/modules/HominisSurfaceBrowserOps.sys.mjs',
+                owner: '208-ui-tile-surface-core.patch',
+                reason: 'shared fixup reuse during staged queue split',
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(result.patches[0]?.stagedDependencies?.forwardImports).toEqual([
+      {
+        file: 'browser/base/content/HominisShim.sys.mjs',
+        specifier: 'resource:///modules/HominisSurfaceBrowserOps.sys.mjs',
+        creates: 'browser/modules/HominisSurfaceBrowserOps.sys.mjs',
+        owner: '208-ui-tile-surface-core.patch',
+        reason: 'shared fixup reuse during staged queue split',
+      },
+    ]);
+  });
+
+  it('rejects malformed staged forward-import dependencies', () => {
+    expect(() =>
+      validatePatchesManifest({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-shim.patch',
+            order: 1,
+            category: 'ui',
+            name: 'shim',
+            description: 'Early shim importing staged helper',
+            createdAt: '2026-05-27T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/content/HominisShim.sys.mjs'],
+            stagedDependencies: {
+              forwardImports: [
+                {
+                  file: 'browser/base/content/HominisShim.sys.mjs',
+                  specifier: 42,
+                  creates: 'browser/modules/HominisSurfaceBrowserOps.sys.mjs',
+                },
+              ],
+            },
+          },
+        ],
+      })
+    ).toThrow('patches[0].stagedDependencies.forwardImports[0].specifier must be a string');
   });
 });

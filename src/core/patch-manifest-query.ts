@@ -4,6 +4,7 @@
  */
 
 import type { PatchesManifest, PatchInfo, PatchMetadata } from '../types/commands/index.js';
+import type { FirefoxProduct } from '../types/config.js';
 import { readText } from '../utils/fs.js';
 import { fileExistsInHead } from './git-file-ops.js';
 import { discoverPatches, getAllTargetFilesFromPatch } from './patch-files.js';
@@ -28,7 +29,7 @@ export function getClaimedFiles(manifest: PatchesManifest, excludeFilename: stri
 }
 
 /**
- * Checks ESR version compatibility.
+ * Checks Firefox source version compatibility.
  * @param patchVersion - Version the patch was created for
  * @param currentVersion - Current project version
  * @returns Warning message if versions differ, null if compatible
@@ -138,7 +139,7 @@ export async function validatePatchIntegrity(
 }
 
 /**
- * Stamps multiple patches with a new `sourceEsrVersion` in a single
+ * Stamps multiple patches with a new source version in a single
  * manifest read-modify-write cycle.
  * @param patchesDir - Path to the patches directory
  * @param filenames - Patch filenames to update
@@ -147,7 +148,8 @@ export async function validatePatchIntegrity(
 export async function stampPatchVersions(
   patchesDir: string,
   filenames: string[],
-  newVersion: string
+  newVersion: string,
+  newProduct?: FirefoxProduct
 ): Promise<void> {
   const manifest = await loadPatchesManifest(patchesDir);
   if (!manifest) return;
@@ -156,8 +158,17 @@ export async function stampPatchVersions(
   let modified = false;
 
   for (const patch of manifest.patches) {
-    if (filenameSet.has(patch.filename) && patch.sourceEsrVersion !== newVersion) {
+    if (!filenameSet.has(patch.filename)) continue;
+    if (
+      patch.sourceEsrVersion !== newVersion ||
+      patch.sourceVersion !== newVersion ||
+      (newProduct !== undefined && patch.sourceProduct !== newProduct)
+    ) {
       patch.sourceEsrVersion = newVersion;
+      patch.sourceVersion = newVersion;
+      if (newProduct !== undefined) {
+        patch.sourceProduct = newProduct;
+      }
       modified = true;
     }
   }

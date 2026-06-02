@@ -508,6 +508,8 @@ export interface DryRunPreviewInput {
   description: string;
   filesAffected: string[];
   sourceEsrVersion: string;
+  sourceProduct?: FireForgeConfig['firefox']['product'];
+  sourceVersion?: string;
   explicitSupersede: boolean;
   allowOverlap: boolean;
   /** Optional `PatchMetadata.tier` opt-in carried from the CLI. */
@@ -543,6 +545,8 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     description: input.description,
     filesAffected: input.filesAffected,
     sourceEsrVersion: input.sourceEsrVersion,
+    ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
+    ...(input.sourceVersion !== undefined ? { sourceVersion: input.sourceVersion } : {}),
     ...(input.tier !== undefined ? { tier: input.tier } : {}),
     ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
     ...(input.config !== undefined ? { config: input.config } : {}),

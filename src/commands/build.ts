@@ -106,6 +106,70 @@ function resolveJobCount(
   return jobs;
 }
 
+function tailLines(text: string, maxLines: number): string {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+  return lines.slice(-maxLines).join('\n');
+}
+
+function extractLastMakeError(captured: string): string | undefined {
+  const lines = captured.split(/\r?\n/).filter((line) => /\bmake(?:\[\d+\])?: \*\*\*/.test(line));
+  return lines.at(-1)?.trim();
+}
+
+function extractLikelyFailingCommand(captured: string): string | undefined {
+  const lines = captured
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index];
+    if (!line) continue;
+    if (/^make(?:\[\d+\])?:/.test(line)) continue;
+    if (/^g?make(?:\[\d+\])?:/.test(line)) continue;
+    if (/^Error running mach:/.test(line)) continue;
+    if (/^\d+:\d+\.\d+\s+/.test(line)) continue;
+    if (/\b(?:cp|clang|clang\+\+|rustc|python|node|make|install_name_tool)\b/.test(line)) {
+      return line;
+    }
+  }
+  return undefined;
+}
+
+function buildFailureDiagnostics(
+  result: MachCommandResult,
+  engineDir: string,
+  objDir: string | undefined,
+  machCommand: string
+): string {
+  const captured = `${result.stderr}\n${result.stdout}`;
+  const stderrTail = tailLines(result.stderr, 20);
+  const combinedTail = tailLines(captured, 30);
+  const makeError = extractLastMakeError(captured);
+  const failingCommand = extractLikelyFailingCommand(captured);
+  const logHint = objDir
+    ? `engine/${objDir}/ (inspect build logs, warnings, and generated make targets under this objdir)`
+    : 'engine/obj-* (inspect the active objdir for build logs, warnings, and generated make targets)';
+  const verboseRerun = objDir
+    ? `cd ${engineDir} && ./mach build -v; if a make target is named above, retry it with: make -C ${objDir} <target> V=1`
+    : `cd ${engineDir} && ./mach build -v`;
+
+  return [
+    `Build failed with exit code ${result.exitCode}.`,
+    `Mach phase: ${machCommand}`,
+    makeError ? `Last make error: ${makeError}` : undefined,
+    failingCommand ? `Final failing command/error line: ${failingCommand}` : undefined,
+    stderrTail ? `Captured stderr tail:\n${stderrTail}` : undefined,
+    `Captured output tail:\n${combinedTail}`,
+    `Logs/profile/warnings: ${logHint}`,
+    `Verbose rerun: ${verboseRerun}`,
+  ]
+    .filter((part): part is string => part !== undefined && part.length > 0)
+    .join('\n\n');
+}
+
 /**
  * Runs the build command.
  * @param projectRoot - Root directory of the project
@@ -228,9 +292,10 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
 
   if (result.exitCode !== 0) {
     error(`Build failed after ${timeStr}`);
+    const machCommand = options.ui ? 'mach build faster' : 'mach build';
     throw new BuildError(
-      `Build failed with exit code ${result.exitCode}`,
-      options.ui ? 'mach build faster' : 'mach build'
+      buildFailureDiagnostics(result, paths.engine, buildCheck.objDir, machCommand),
+      machCommand
     );
   }
 

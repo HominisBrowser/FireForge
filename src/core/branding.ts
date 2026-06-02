@@ -88,6 +88,15 @@ export interface BrandingConfig {
   license?: ProjectLicense;
 }
 
+type VendorPlacement = 'branding-configure' | 'moz-configure';
+
+const MOZ_APP_VENDOR_IMPLY_REGEX = /imply_option\("MOZ_APP_VENDOR",\s*"[^"]*"\)/;
+const BRANDING_CONFIGURE_MANAGED_KEYS = new Set([
+  'MOZ_APP_DISPLAYNAME',
+  'MOZ_APP_VENDOR',
+  'MOZ_MACBUNDLE_ID',
+]);
+
 /**
  * Sets up the custom branding directory for the browser.
  *
@@ -114,32 +123,93 @@ export async function setupBranding(engineDir: string, config: BrandingConfig): 
     await copyDir(unofficialDir, brandingDir);
   }
 
+  const vendorPlacement = await resolveVendorPlacement(engineDir);
+
   // Create/update configure.sh with custom values
-  await createConfigureScript(brandingDir, config);
+  await createConfigureScript(brandingDir, config, vendorPlacement);
 
   // Update localization files
   await updateBrandProperties(brandingDir, config);
   await updateBrandFtl(brandingDir, config);
 
   // Patch moz.configure for MOZ_APP_VENDOR
-  await patchMozConfigure(engineDir, config);
+  await patchMozConfigure(engineDir, config, vendorPlacement);
 }
 
 /**
  * Creates the branding configure.sh script.
  */
-async function createConfigureScript(brandingDir: string, config: BrandingConfig): Promise<void> {
+async function createConfigureScript(
+  brandingDir: string,
+  config: BrandingConfig,
+  vendorPlacement: VendorPlacement
+): Promise<void> {
   const configureShPath = join(brandingDir, 'configure.sh');
-  await writeTextIfChanged(configureShPath, buildConfigureScriptContent(config));
+  const existing = (await pathExists(configureShPath))
+    ? await readText(configureShPath)
+    : undefined;
+  await writeTextIfChanged(
+    configureShPath,
+    buildConfigureScriptContent(config, vendorPlacement, existing)
+  );
 }
 
-function buildConfigureScriptContent(config: BrandingConfig): string {
+function buildConfigureScriptContent(
+  config: BrandingConfig,
+  vendorPlacement: VendorPlacement,
+  existingContent?: string
+): string {
   const header = getLicenseHeader(config.license ?? DEFAULT_LICENSE, 'hash');
-  return `${header}
+  const managedLines = [`MOZ_APP_DISPLAYNAME="${escapeShellValue(config.name)}"`];
+  if (vendorPlacement === 'branding-configure') {
+    managedLines.push(`MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"`);
+  }
+  managedLines.push(`MOZ_MACBUNDLE_ID="${escapeShellValue(config.appId)}"`);
 
-MOZ_APP_DISPLAYNAME="${escapeShellValue(config.name)}"
-MOZ_MACBUNDLE_ID="${escapeShellValue(config.appId)}"
-`;
+  const preservedLines = existingContent ? extractPreservedConfigureLines(existingContent) : [];
+  const body = [...managedLines, ...preservedLines].join('\n');
+  return `${header}\n\n${body}\n`;
+}
+
+function extractPreservedConfigureLines(content: string): string[] {
+  return content.split(/\r?\n/).filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) return false;
+    if (/^#\s*SPDX-License-Identifier:/i.test(trimmed)) return false;
+    const keyMatch = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(trimmed);
+    if (keyMatch && BRANDING_CONFIGURE_MANAGED_KEYS.has(keyMatch[1] ?? '')) return false;
+    return true;
+  });
+}
+
+function parseConfigureAssignments(content: string): Map<string, string> {
+  const assignments = new Map<string, string>();
+  for (const line of content.split(/\r?\n/)) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
+    if (match?.[1] && match[2] !== undefined) {
+      assignments.set(match[1], match[2]);
+    }
+  }
+  return assignments;
+}
+
+function isConfigureScriptCurrent(
+  content: string,
+  config: BrandingConfig,
+  vendorPlacement: VendorPlacement
+): boolean {
+  const assignments = parseConfigureAssignments(content);
+  if (assignments.get('MOZ_APP_DISPLAYNAME') !== `"${escapeShellValue(config.name)}"`) {
+    return false;
+  }
+  if (assignments.get('MOZ_MACBUNDLE_ID') !== `"${escapeShellValue(config.appId)}"`) {
+    return false;
+  }
+  const vendorValue = assignments.get('MOZ_APP_VENDOR');
+  if (vendorPlacement === 'branding-configure') {
+    return vendorValue === `"${escapeShellValue(config.vendor)}"`;
+  }
+  return vendorValue === undefined;
 }
 
 /**
@@ -199,32 +269,86 @@ trademarkInfo = { " " }
 }
 
 /**
- * Patches browser/moz.configure to set custom vendor.
- *
- * Mozilla's build system requires MOZ_APP_VENDOR to be set via imply_option
- * in moz.configure, not through mozconfig.
+ * Patches browser/moz.configure to set custom vendor when the upstream
+ * configure surface owns MOZ_APP_VENDOR as a project flag. ESR 140 rejects
+ * branding configure.sh / confvars origins for that flag, so the value must
+ * come from imply_option.
  */
-async function patchMozConfigure(engineDir: string, config: BrandingConfig): Promise<void> {
+async function patchMozConfigure(
+  engineDir: string,
+  config: BrandingConfig,
+  vendorPlacement: VendorPlacement
+): Promise<void> {
+  if (vendorPlacement !== 'moz-configure') {
+    return;
+  }
   const mozConfigurePath = join(engineDir, 'browser', 'moz.configure');
 
   if (!(await pathExists(mozConfigurePath))) {
-    throw new BrandingError(`browser/moz.configure not found at ${mozConfigurePath}`);
+    return;
   }
 
   let content = await readText(mozConfigurePath);
 
-  // Replace MOZ_APP_VENDOR imply_option
-  const vendorRegex = /imply_option\("MOZ_APP_VENDOR",\s*"[^"]*"\)/;
-  if (!vendorRegex.test(content)) {
-    throw new BrandingError('Could not find MOZ_APP_VENDOR imply_option in browser/moz.configure');
+  if (MOZ_APP_VENDOR_IMPLY_REGEX.test(content)) {
+    content = content.replace(MOZ_APP_VENDOR_IMPLY_REGEX, buildMozConfigureVendorLine(config));
+  } else {
+    content = insertMozConfigureVendorLine(content, buildMozConfigureVendorLine(config));
   }
-  content = content.replace(vendorRegex, buildMozConfigureVendorLine(config));
 
   await writeTextIfChanged(mozConfigurePath, content);
 }
 
 function buildMozConfigureVendorLine(config: BrandingConfig): string {
   return `imply_option("MOZ_APP_VENDOR", "${escapeString(config.vendor)}")`;
+}
+
+async function resolveVendorPlacement(engineDir: string): Promise<VendorPlacement> {
+  const mozConfigurePath = join(engineDir, 'browser', 'moz.configure');
+  const toolkitMozConfigurePath = join(engineDir, 'toolkit', 'moz.configure');
+
+  const browserMozConfigureExists = await pathExists(mozConfigurePath);
+  const browserMozConfigureContent = browserMozConfigureExists
+    ? await readText(mozConfigurePath)
+    : undefined;
+
+  if (
+    browserMozConfigureContent !== undefined &&
+    MOZ_APP_VENDOR_IMPLY_REGEX.test(browserMozConfigureContent)
+  ) {
+    return 'moz-configure';
+  }
+
+  if (await toolkitMozConfigureUsesVendorProjectFlag(toolkitMozConfigurePath)) {
+    if (!browserMozConfigureExists) {
+      throw new BrandingError(
+        'Firefox toolkit configure declares MOZ_APP_VENDOR as a project_flag, but browser/moz.configure is missing, so FireForge cannot safely set the vendor identity.'
+      );
+    }
+    return 'moz-configure';
+  }
+
+  return 'branding-configure';
+}
+
+async function toolkitMozConfigureUsesVendorProjectFlag(filePath: string): Promise<boolean> {
+  if (!(await pathExists(filePath))) {
+    return false;
+  }
+  const content = await readText(filePath);
+  return /project_flag\(\s*(?:(?!\)\s*\n)[\s\S])*env\s*=\s*"MOZ_APP_VENDOR"/m.test(content);
+}
+
+function insertMozConfigureVendorLine(content: string, line: string): string {
+  const includeRegex = /^include\((["'])\.\.\/toolkit\/moz\.configure\1\)\s*$/m;
+  const match = includeRegex.exec(content);
+  if (!match) {
+    return `${content.replace(/\s*$/, '')}\n\n${line}\n`;
+  }
+
+  const prefix = content.slice(0, match.index).replace(/\s*$/, '');
+  const suffix = content.slice(match.index);
+  return `${prefix}\n\n${line}\n${suffix}`;
 }
 
 /**
@@ -284,14 +408,14 @@ export async function isBrandingSetup(engineDir: string, config: BrandingConfig)
   const configureShPath = join(brandingDir, 'configure.sh');
   const propsPath = join(brandingDir, 'locales', 'en-US', 'brand.properties');
   const ftlPath = join(brandingDir, 'locales', 'en-US', 'brand.ftl');
-  const mozConfigurePath = join(engineDir, 'browser', 'moz.configure');
 
   if (!(await pathExists(configureShPath))) {
     return false;
   }
 
+  const vendorPlacement = await resolveVendorPlacement(engineDir);
   const configureContent = await readText(configureShPath);
-  if (configureContent !== buildConfigureScriptContent(config)) {
+  if (!isConfigureScriptCurrent(configureContent, config, vendorPlacement)) {
     return false;
   }
 
@@ -309,10 +433,14 @@ export async function isBrandingSetup(engineDir: string, config: BrandingConfig)
     }
   }
 
+  if (vendorPlacement === 'branding-configure') {
+    return configureContent.includes(`MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"`);
+  }
+
+  const mozConfigurePath = join(engineDir, 'browser', 'moz.configure');
   if (!(await pathExists(mozConfigurePath))) {
     return false;
   }
-
   const mozConfigureContent = await readText(mozConfigurePath);
   return mozConfigureContent.includes(buildMozConfigureVendorLine(config));
 }

@@ -20,6 +20,9 @@ import { loadPatchesManifest } from './patch-manifest.js';
  * Classification buckets for engine file changes:
  * - `patch-backed`: content matches the expected post-patch state —
  *   normal after `fireforge import`.
+ * - `patch-owned-drift`: the file is claimed by exactly one patch, but
+ *   the live engine content no longer matches that patch's expected
+ *   post-apply content.
  * - `unmanaged`: edits not explained by any patch or tool — local
  *   drift to export or discard.
  * - `branding`: files under tool-managed branding paths, written by
@@ -34,7 +37,13 @@ import { loadPatchesManifest } from './patch-manifest.js';
  *   in `--json`, which misled scripts built on top of the JSON view
  *   into treating the file as routine local drift.
  */
-export type FileClassification = 'patch-backed' | 'unmanaged' | 'branding' | 'furnace' | 'conflict';
+export type FileClassification =
+  | 'patch-backed'
+  | 'patch-owned-drift'
+  | 'unmanaged'
+  | 'branding'
+  | 'furnace'
+  | 'conflict';
 
 export interface StatusFile {
   status: string;
@@ -63,6 +72,17 @@ function getPrimaryStatusCode(status: string): string {
   }
 
   return status;
+}
+
+function isGeneratedBrandingPath(file: string, binaryName: string): boolean {
+  const normalized = file.replace(/\\/g, '/');
+  const brandingRoot = `browser/branding/${binaryName}`;
+  return (
+    normalized === 'browser/moz.configure' ||
+    normalized === `${brandingRoot}/configure.sh` ||
+    normalized === `${brandingRoot}/locales/en-US/brand.properties` ||
+    normalized === `${brandingRoot}/locales/en-US/brand.ftl`
+  );
 }
 
 /**
@@ -111,8 +131,20 @@ export async function classifyFiles(
   const results: ClassifiedFile[] = [];
 
   for (const entry of files) {
-    // Branding check first
-    if (isBrandingManagedPath(entry.file, binaryName)) {
+    const owners = patchClaims.get(entry.file);
+    const primaryCode = getPrimaryStatusCode(entry.status);
+
+    // Branding paths are tool-managed for generated edits, but a brand-new
+    // unowned branding asset must not disappear from `status --unmanaged`.
+    // The Hominis Firefox 152 side-grade added Assets.car under the active
+    // branding tree; classifying every branding path before checking
+    // ownership hid that new patch candidate as "branding" even though no
+    // patch claimed it yet.
+    const isUnownedNewFile = owners === undefined && (primaryCode === '?' || primaryCode === 'A');
+    if (
+      isBrandingManagedPath(entry.file, binaryName) &&
+      (!isUnownedNewFile || isGeneratedBrandingPath(entry.file, binaryName))
+    ) {
       results.push({ ...entry, classification: 'branding' });
       continue;
     }
@@ -131,8 +163,6 @@ export async function classifyFiles(
         continue;
       }
     }
-
-    const owners = patchClaims.get(entry.file);
 
     // Multiple patches claim this file — surface the cross-patch
     // ownership conflict regardless of whether the current content
@@ -155,14 +185,12 @@ export async function classifyFiles(
     }
 
     // File is claimed by exactly one patch — compare content.
-    const primaryCode = getPrimaryStatusCode(entry.status);
-
     if (primaryCode === 'D') {
       // Deleted file: patch-backed only if patch expects deletion
       const expected = await computePatchedContent(patchesDir, engineDir, entry.file);
       results.push({
         ...entry,
-        classification: expected === null ? 'patch-backed' : 'unmanaged',
+        classification: expected === null ? 'patch-backed' : 'patch-owned-drift',
       });
       continue;
     }
@@ -176,14 +204,13 @@ export async function classifyFiles(
 
       results.push({
         ...entry,
-        classification: actual === expected ? 'patch-backed' : 'unmanaged',
+        classification: actual === expected ? 'patch-backed' : 'patch-owned-drift',
       });
     } catch (error: unknown) {
       verbose(
-        `Treating ${entry.file} as unmanaged because patch-backed classification failed: ${toError(error).message}`
+        `Treating ${entry.file} as patch-owned drift because patch-backed classification failed: ${toError(error).message}`
       );
-      // If we can't read the file, treat as unmanaged
-      results.push({ ...entry, classification: 'unmanaged' });
+      results.push({ ...entry, classification: 'patch-owned-drift' });
     }
   }
 

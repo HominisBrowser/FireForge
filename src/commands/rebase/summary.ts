@@ -31,7 +31,11 @@ export function statusLabel(status: RebasePatchEntry['status'], fuzzFactor?: num
  */
 export function printSummary(session: RebaseSession): void {
   info('');
-  info(`ESR Rebase Summary: ${session.fromVersion} → ${session.toVersion}`);
+  const from = session.fromProduct
+    ? `${session.fromProduct} ${session.fromVersion}`
+    : session.fromVersion;
+  const to = session.toProduct ? `${session.toProduct} ${session.toVersion}` : session.toVersion;
+  info(`Source Rebase Summary: ${from} → ${to}`);
   info('='.repeat(55));
 
   for (const patch of session.patches) {
@@ -45,9 +49,10 @@ export function printSummary(session: RebaseSession): void {
   const fuzz = session.patches.filter((p) => p.status === 'applied-fuzz').length;
   const resolved = session.patches.filter((p) => p.status === 'resolved').length;
   const failed = session.patches.filter((p) => p.status === 'failed').length;
+  const total = session.patches.length;
 
   info('');
   info(
-    `Results: ${clean} clean, ${fuzz} fuzz-applied, ${resolved} manually resolved, ${failed} failed`
+    `Results: ${total} total: ${clean} clean, ${fuzz} fuzz-applied, ${resolved} manually resolved, ${failed} failed`
   );
 }

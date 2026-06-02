@@ -40,20 +40,24 @@ export async function ensureCachedArchive(
   archive: ResolvedArchive,
   cacheDir: string,
   onProgress?: ProgressCallback,
-  expectedSha256?: string
+  expectedSha256?: string,
+  onCacheProgress?: (message: string) => void
 ): Promise<void> {
   const lockPath = createSiblingLockPath(join(cacheDir, archive.filename), '.fireforge-cache.lock');
   await withFileLock(lockPath, async () => {
+    onCacheProgress?.(`Validating source archive cache metadata for ${archive.filename}...`);
     if (await validateCachedArchive(archive, cacheDir, expectedSha256)) {
+      onCacheProgress?.(`Using validated cached source archive ${archive.filename}`);
       return;
     }
 
     if (await cacheEntryExists(archive, cacheDir)) {
+      onCacheProgress?.(`Invalid cached source archive metadata; refreshing ${archive.filename}`);
       await invalidateArchiveCache(archive, cacheDir);
     } else {
       await removeArchivePartFiles(archive, cacheDir);
     }
-    await downloadToCache(archive, cacheDir, onProgress, expectedSha256);
+    await downloadToCache(archive, cacheDir, onProgress, expectedSha256, onCacheProgress);
   });
 }
 
@@ -129,7 +133,8 @@ async function downloadToCache(
   archive: ResolvedArchive,
   cacheDir: string,
   onProgress?: ProgressCallback,
-  expectedSha256?: string
+  expectedSha256?: string,
+  onCacheProgress?: (message: string) => void
 ): Promise<void> {
   const tarballPath = join(cacheDir, archive.filename);
   // Use a unique .part path so concurrent downloads for the same archive
@@ -139,9 +144,11 @@ async function downloadToCache(
   let promotedTarball = false;
 
   try {
+    onCacheProgress?.(`Downloading source archive to cache: ${archive.filename}`);
     const contentLength = await downloadFile(archive.url, partPath, onProgress);
     await rename(partPath, tarballPath);
     promotedTarball = true;
+    onCacheProgress?.(`Calculating source archive SHA-256 for ${archive.filename}...`);
     const sha256 = await sha256File(tarballPath);
     if (expectedSha256 && sha256 !== expectedSha256) {
       throw new DownloadError(
@@ -149,6 +156,7 @@ async function downloadToCache(
         archive.url
       );
     }
+    onCacheProgress?.(`Writing source archive cache metadata for ${archive.metadataFilename}...`);
     await writeJson(metadataPath, {
       requestedVersion: archive.requestedVersion,
       product: archive.product,
@@ -158,6 +166,7 @@ async function downloadToCache(
       sha256,
       downloadedAt: new Date().toISOString(),
     } satisfies ArchiveMetadata);
+    onCacheProgress?.(`Source archive cache metadata written: ${archive.metadataFilename}`);
   } catch (error: unknown) {
     await removeFile(partPath);
     if (promotedTarball) {

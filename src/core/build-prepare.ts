@@ -4,6 +4,7 @@
  * story cleanup, branding setup, Furnace component application, and mozconfig generation.
  */
 
+import { BuildError } from '../errors/build.js';
 import { FurnaceError } from '../errors/furnace.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
@@ -149,20 +150,34 @@ export async function prepareBuildEnvironment(
     const invalidating = changed.filter(isBackendInvalidatingFile);
     if (invalidating.length > 0) {
       info(
-        `Backend config changed; running mach configure first... (${invalidating.length} file${invalidating.length === 1 ? '' : 's'} touched)`
+        `Backend config changed; running backend regeneration first (${invalidating.length} file${invalidating.length === 1 ? '' : 's'} touched).`
       );
+      info(`Backend command: mach configure`);
       const configureSpinner = spinner('Running mach configure...');
       try {
         const exitCode = await runMach(['configure'], paths.engine);
         if (exitCode !== 0) {
-          configureSpinner.error('mach configure exited non-zero; continuing with build anyway');
+          configureSpinner.error(`mach configure failed with exit code ${exitCode}`);
+          throw new BuildError(
+            `Backend regeneration failed: mach configure exited with code ${exitCode}. Build stopped because continuing would hide the real configure failure.`,
+            'mach configure'
+          );
         } else {
-          configureSpinner.stop('Backend regenerated');
+          configureSpinner.stop('Backend regenerated successfully (mach configure exit code 0)');
+          info('Backend regeneration succeeded; continuing with build.');
           reconfigured = true;
         }
       } catch (error: unknown) {
-        configureSpinner.error('mach configure failed; continuing with build anyway');
+        if (error instanceof BuildError) {
+          throw error;
+        }
+        configureSpinner.error('mach configure failed');
         verbose(`Auto-configure error: ${toError(error).message}`);
+        throw new BuildError(
+          `Backend regeneration failed while running mach configure: ${toError(error).message}. Build stopped because continuing would hide the real configure failure.`,
+          'mach configure',
+          error instanceof Error ? error : undefined
+        );
       }
     }
   }

@@ -229,6 +229,18 @@ describe('statusCommand', () => {
       expect(outro).toHaveBeenCalledWith('2 branding');
     });
 
+    it('classifies unowned new branding assets as unmanaged patch candidates', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: 'browser/branding/mybrowser/Assets.car' },
+      ]);
+
+      await statusCommand(projectRoot, { unmanaged: true });
+
+      expect(infoMessages()).toContain('1 unmanaged file (1 total modified):\n');
+      expect(infoMessages()).toContain('  browser/branding/mybrowser/Assets.car');
+      expect(outro).toHaveBeenCalledWith('1 unmanaged change');
+    });
+
     it('caps a pathologically large untracked directory and warns the user', async () => {
       vi.mocked(getStatusWithCodes).mockResolvedValue([{ status: '??', file: 'build-output/' }]);
       const HUGE = 6000;
@@ -326,7 +338,7 @@ describe('statusCommand', () => {
       expect(outro).toHaveBeenCalledWith('2 patch-backed');
     });
 
-    it('classifies patch-touched file as unmanaged when content diverges', async () => {
+    it('classifies patch-touched file as patch-owned drift when content diverges', async () => {
       vi.mocked(loadPatchesManifest).mockResolvedValue({
         version: 1,
         patches: [
@@ -349,10 +361,50 @@ describe('statusCommand', () => {
 
       await statusCommand(projectRoot);
 
-      expect(warnMessages()).toContain('Unmanaged changes:');
+      expect(warnMessages()).toContain('Patch-owned drift:');
+      expect(warnMessages()).not.toContain('Unmanaged changes:');
       expect(warnMessages()).not.toContain('Patch-backed materialized changes:');
       expect(infoMessages()).toContain('  toolkit/foo.cpp');
-      expect(outro).toHaveBeenCalledWith('1 unmanaged');
+      expect(outro).toHaveBeenCalledWith('1 patch-owned drift');
+    });
+
+    it('keeps manually resolved rebase files owned rather than unmanaged', async () => {
+      const files = [
+        'browser/base/content/test/startup/browser.toml',
+        'browser/components/extensions/parent/ext-browser.js',
+        'browser/components/sessionstore/SessionStore.sys.mjs',
+        'browser/modules/moz.build',
+        'tools/profiler/rust-api/build.rs',
+      ];
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '010-ui-rebase-refresh.patch',
+            order: 10,
+            category: 'ui',
+            name: 'rebase-refresh',
+            description: 'Manual rebase refresh',
+            createdAt: '2026-06-03T00:00:00Z',
+            sourceEsrVersion: '152.0b6',
+            sourceProduct: 'firefox-devedition',
+            sourceVersion: '152.0b6',
+            filesAffected: files,
+          },
+        ],
+      });
+      vi.mocked(computePatchedContent).mockResolvedValue('expected content');
+      vi.mocked(readText).mockResolvedValue('manual resolution content');
+      vi.mocked(getStatusWithCodes).mockResolvedValue(files.map((file) => ({ status: 'M', file })));
+
+      await statusCommand(projectRoot);
+
+      expect(warnMessages()).toContain('Patch-owned drift:');
+      expect(warnMessages()).not.toContain('Unmanaged changes:');
+      for (const file of files) {
+        expect(infoMessages()).toContain(`  ${file}`);
+      }
+      expect(outro).toHaveBeenCalledWith('5 patch-owned drift');
     });
 
     it('shows all three buckets when files span categories', async () => {
@@ -415,7 +467,7 @@ describe('statusCommand', () => {
       expect(warnMessages()).not.toContain('Unmanaged changes:');
     });
 
-    it('classifies deleted file as unmanaged when patch expects modification', async () => {
+    it('classifies deleted file as patch-owned drift when patch expects modification', async () => {
       vi.mocked(loadPatchesManifest).mockResolvedValue({
         version: 1,
         patches: [
@@ -440,7 +492,8 @@ describe('statusCommand', () => {
 
       await statusCommand(projectRoot);
 
-      expect(warnMessages()).toContain('Unmanaged changes:');
+      expect(warnMessages()).toContain('Patch-owned drift:');
+      expect(warnMessages()).not.toContain('Unmanaged changes:');
       expect(warnMessages()).not.toContain('Patch-backed materialized changes:');
     });
 
@@ -796,6 +849,46 @@ describe('statusCommand', () => {
       await statusCommand(projectRoot, { ownership: true });
 
       expect(outro).toHaveBeenCalledWith('1 managed');
+    });
+
+    it('shows patch-owned drift in the ownership table for claimed modified files', async () => {
+      const files = [
+        'browser/base/content/test/startup/browser.toml',
+        'browser/components/extensions/parent/ext-browser.js',
+        'browser/components/sessionstore/SessionStore.sys.mjs',
+        'browser/modules/moz.build',
+        'tools/profiler/rust-api/build.rs',
+      ];
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '010-ui-rebase-refresh.patch',
+            order: 10,
+            category: 'ui',
+            name: 'rebase-refresh',
+            description: '',
+            createdAt: '2026-06-03T00:00:00Z',
+            sourceEsrVersion: '152.0b6',
+            sourceProduct: 'firefox-devedition',
+            sourceVersion: '152.0b6',
+            filesAffected: files,
+          },
+        ],
+      });
+      vi.mocked(computePatchedContent).mockResolvedValue('expected content');
+      vi.mocked(readText).mockResolvedValue('manual resolution content');
+      vi.mocked(getStatusWithCodes).mockResolvedValue(files.map((file) => ({ status: 'M', file })));
+
+      await statusCommand(projectRoot, { ownership: true });
+
+      const rendered = infoMessages().join('\n');
+      expect(rendered).toContain('patch-owned drift');
+      expect(rendered).not.toContain('| - ');
+      for (const file of files) {
+        expect(rendered).toContain(file);
+      }
+      expect(outro).toHaveBeenCalledWith('5 managed');
     });
   });
 

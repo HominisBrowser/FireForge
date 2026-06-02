@@ -95,6 +95,24 @@ project_flag(
     await expect(isBrandingSetup('/engine', config)).resolves.toBe(false);
   });
 
+  it('returns true when configure.sh has extra patch-owned branding settings', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(filePath.endsWith('configure.sh'))
+    );
+    vi.mocked(readText).mockResolvedValue(
+      [
+        'MOZ_APP_DISPLAYNAME="MyBrowser"',
+        'MOZ_APP_VENDOR="My Company"',
+        'MOZ_MACBUNDLE_ID="org.example.mybrowser"',
+        'MOZ_APP_REMOTINGNAME=hominis-dev',
+        'MOZ_DEV_EDITION=1',
+        '',
+      ].join('\n')
+    );
+
+    await expect(isBrandingSetup('/engine', config)).resolves.toBe(true);
+  });
+
   it('returns true when legacy moz.configure vendor is absent but generated branding has vendor', async () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
@@ -356,5 +374,56 @@ project_flag(
     // moz.configure patching (call 3) never rewrites the license — it's
     // upstream-owned.
     expect(calls[3]?.[1]).not.toContain('SPDX-License-Identifier: 0BSD');
+  });
+
+  it('preserves patch-owned configure.sh settings while refreshing managed branding keys', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('unofficial')) return Promise.resolve(true);
+      if (filePath.endsWith('mybrowser')) return Promise.resolve(true);
+      if (filePath.endsWith('configure.sh')) return Promise.resolve(true);
+      if (filePath.endsWith('brand.properties')) return Promise.resolve(false);
+      if (filePath.endsWith('brand.ftl')) return Promise.resolve(false);
+      if (filePath.endsWith('/browser/moz.configure')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('configure.sh')) {
+        return Promise.resolve(
+          [
+            'MOZ_APP_DISPLAYNAME="OldBrowser"',
+            'MOZ_MACBUNDLE_ID="old.bundle"',
+            'MOZ_APP_REMOTINGNAME=hominis-dev',
+            'MOZ_DEV_EDITION=1',
+            '',
+          ].join('\n')
+        );
+      }
+      if (filePath.includes('/toolkit/moz.configure')) {
+        return Promise.resolve(`
+project_flag(
+    env="MOZ_APP_VENDOR",
+    nargs=1,
+    help="Application vendor",
+)
+`);
+      }
+      if (filePath.endsWith('/browser/moz.configure')) {
+        return Promise.resolve('imply_option("MOZ_APP_VENDOR", "My Company")\n');
+      }
+      return Promise.resolve('');
+    });
+    vi.mocked(writeTextIfChanged).mockResolvedValue(true);
+
+    await setupBranding('/engine', config);
+
+    const configureCall = vi
+      .mocked(writeTextIfChanged)
+      .mock.calls.find((call) => call[0].endsWith('configure.sh'));
+    expect(configureCall?.[1]).toContain('MOZ_APP_DISPLAYNAME="MyBrowser"');
+    expect(configureCall?.[1]).toContain('MOZ_MACBUNDLE_ID="org.example.mybrowser"');
+    expect(configureCall?.[1]).toContain('MOZ_APP_REMOTINGNAME=hominis-dev');
+    expect(configureCall?.[1]).toContain('MOZ_DEV_EDITION=1');
+    expect(configureCall?.[1]).not.toContain('OldBrowser');
+    expect(configureCall?.[1]).not.toContain('old.bundle');
   });
 });

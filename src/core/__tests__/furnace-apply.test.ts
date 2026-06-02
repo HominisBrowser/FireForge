@@ -145,6 +145,34 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 `.trimStart();
 
+const MOCK_FIREFOX_152_ARRAY_BEFORE_DCL = `
+// ... preamble ...
+
+const gNonDclCustomElements = [
+    ["findbar", "chrome://global/content/elements/findbar.js"],
+    ["wizard", "chrome://global/content/elements/wizard.js"],
+];
+
+for (let [tag, script] of gNonDclCustomElements) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+const gDclCustomElements = [
+    ["moz-button", "chrome://global/content/elements/moz-button.mjs"],
+    ["moz-toggle", "chrome://global/content/elements/moz-toggle.mjs"],
+];
+
+document.addEventListener("DOMContentLoaded", () => {
+  for (let [tag, script] of gDclCustomElements) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`.trimStart();
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockPathExists.mockResolvedValue(true);
@@ -367,6 +395,42 @@ describe('addCustomElementRegistration', () => {
     );
 
     // writeText should NOT be called since the tag already exists
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('inserts .mjs entry into Firefox 152 pre-declared DOMContentLoaded array', async () => {
+    mockReadText.mockResolvedValue(MOCK_FIREFOX_152_ARRAY_BEFORE_DCL);
+
+    await addCustomElementRegistration(
+      '/engine',
+      'moz-hominis-panel',
+      'chrome://global/content/elements/moz-hominis-panel.mjs'
+    );
+
+    const call = mockWriteText.mock.calls[0];
+    if (!call) throw new Error('expected writeText to be called');
+    const written = call[1];
+    const lines = written.split('\n');
+    const panelLine = lines.findIndex((line: string) => line.includes('["moz-hominis-panel"'));
+    const buttonLine = lines.findIndex((line: string) => line.includes('["moz-button"'));
+    const toggleLine = lines.findIndex((line: string) => line.includes('["moz-toggle"'));
+    const dclLine = lines.findIndex((line: string) => line.includes('DOMContentLoaded'));
+
+    expect(panelLine).toBeGreaterThan(buttonLine);
+    expect(panelLine).toBeLessThan(toggleLine);
+    expect(panelLine).toBeLessThan(dclLine);
+    expect(written.match(/moz-hominis-panel/g)).toHaveLength(2);
+  });
+
+  it('does not duplicate existing Firefox 152 pre-declared array registrations', async () => {
+    mockReadText.mockResolvedValue(MOCK_FIREFOX_152_ARRAY_BEFORE_DCL);
+
+    await addCustomElementRegistration(
+      '/engine',
+      'moz-button',
+      'chrome://global/content/elements/moz-button.mjs'
+    );
+
     expect(mockWriteText).not.toHaveBeenCalled();
   });
 

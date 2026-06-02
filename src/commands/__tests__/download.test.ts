@@ -328,6 +328,40 @@ describe('downloadCommand', () => {
     );
   });
 
+  it('forwards indexing phase progress from git initialization', async () => {
+    const downloadSpinner = createSpinnerMock();
+    const gitSpinner = createSpinnerMock();
+    vi.mocked(spinner).mockReturnValueOnce(downloadSpinner).mockReturnValueOnce(gitSpinner);
+    vi.mocked(pathExistsStrict).mockResolvedValue(false);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(initRepository).mockImplementation((_engineDir, _branch, options) => {
+      options?.onProgress?.('Scanning Firefox source tree before indexing...');
+      options?.onProgress?.('Source scan complete: 24 top-level directories, 12 top-level files');
+      options?.onProgress?.(
+        'Starting monolithic git add -A for 24 directories and 12 top-level files...'
+      );
+      options?.onProgress?.('Indexing Firefox source (monolithic, 15s elapsed)');
+      options?.onProgress?.('Creating initial Firefox source commit...');
+      return Promise.resolve();
+    });
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', {});
+
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Scanning Firefox source tree before indexing...'
+    );
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Source scan complete: 24 top-level directories, 12 top-level files'
+    );
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Indexing Firefox source (monolithic, 15s elapsed)'
+    );
+    expect(gitSpinner.messageMock).toHaveBeenCalledWith(
+      'Creating initial Firefox source commit...'
+    );
+  });
+
   it('stops the restore spinner with a no-op message when the patch queue is empty', async () => {
     // Finding #4: pre-0.16.0 `download` always closed the restore
     // spinner with "Patch-touched files restored" even when the project
@@ -383,7 +417,8 @@ describe('downloadCommand', () => {
       '/project/.fireforge/cache',
       expect.any(Function),
       expect.any(Function),
-      'a'.repeat(64)
+      'a'.repeat(64),
+      expect.any(Function)
     );
   });
 });

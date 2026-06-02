@@ -7,6 +7,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { withPatchDirectoryLock } from './patch-apply.js';
+import { normalizePatchArtifact } from './patch-artifact-normalize.js';
 import { loadPatchesManifest, savePatchesManifest } from './patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from './patch-policy.js';
 
@@ -68,7 +69,7 @@ export async function updatePatchAndMetadata(
 
     let patchWritten = false;
     try {
-      await writeText(patchPath, newContent);
+      await writeText(patchPath, normalizePatchArtifact(newContent));
       patchWritten = true;
       await savePatchesManifest(patchesDir, manifest);
     } catch (error: unknown) {

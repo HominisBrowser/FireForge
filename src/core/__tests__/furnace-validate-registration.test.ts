@@ -179,6 +179,55 @@ describe('furnace registration validation helpers', () => {
     );
   });
 
+  it('accepts Firefox 152 array-based custom element entries in consistency checks', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(
+        [
+          '/project/components/custom/moz-dock',
+          '/engine/toolkit/content',
+          '/engine/toolkit/content/moz-dock.mjs',
+          '/engine/toolkit/content/jar.mn',
+          '/engine/toolkit/content/customElements.js',
+        ].includes(filePath)
+      )
+    );
+    vi.mocked(readdir).mockResolvedValue([{ isFile: () => true, name: 'moz-dock.mjs' }] as never);
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('moz-dock.mjs')) return Promise.resolve('same');
+      if (filePath.endsWith('jar.mn')) {
+        return Promise.resolve('content/global/elements/moz-dock.mjs');
+      }
+      if (filePath.endsWith('customElements.js')) {
+        return Promise.resolve(
+          [
+            'const acornElements = [',
+            '  ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],',
+            '];',
+            '',
+            'document.addEventListener("DOMContentLoaded", () => {',
+            '  for (const [tag, script] of acornElements) {',
+            '    customElements.setElementCreationCallback(tag, () => {',
+            '      ChromeUtils.importESModule(script);',
+            '    });',
+            '  }',
+            '});',
+            '',
+          ].join('\n')
+        );
+      }
+      return Promise.resolve('');
+    });
+
+    await expect(
+      checkRegistrationConsistency('/project', 'moz-dock', COMPONENT_CONFIG)
+    ).resolves.toEqual(
+      expect.objectContaining({
+        customElementsPresent: true,
+        customElementsCorrectBlock: true,
+      })
+    );
+  });
+
   it('flags localized components whose .ftl is missing from the Fluent tree', async () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
@@ -544,6 +593,29 @@ describe('furnace registration validation helpers', () => {
           severity: 'error',
         })
       );
+    });
+
+    it('accepts Firefox 152 array declared before DOMContentLoaded and consumed inside it', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(
+        [
+          'const acornElements = [',
+          '  ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],',
+          '];',
+          '',
+          'document.addEventListener("DOMContentLoaded", () => {',
+          '  for (let [tag, script] of acornElements) {',
+          '    customElements.setElementCreationCallback(tag, () => {',
+          '      ChromeUtils.importESModule(script);',
+          '    });',
+          '  }',
+          '});',
+          '',
+        ].join('\n')
+      );
+
+      const issues = await validateRegistrationPatterns('/project', baseConfig);
+      expect(issues).toEqual([]);
     });
   });
 

@@ -1,6 +1,6 @@
 {
   "name": "@hominis/fireforge",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "description": "FireForge — a build tool for customizing Firefox",
   "type": "module",
   "main": "./dist/src/index.js",
@@ -53,7 +53,7 @@
   "dependencies": {
     "@clack/prompts": "^1.2.0",
     "acorn": "^8.14.0",
-    "commander": "^14.0.0",
+    "commander": "^15.0.0",
     "estree-walker": "^3.0.3",
     "magic-string": "^0.30.17",
     "picocolors": "^1.1.0"

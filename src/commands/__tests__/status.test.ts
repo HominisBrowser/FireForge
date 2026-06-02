@@ -229,6 +229,18 @@ describe('statusCommand', () => {
       expect(outro).toHaveBeenCalledWith('2 branding');
     });
 
+    it('classifies unowned new branding assets as unmanaged patch candidates', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: 'browser/branding/mybrowser/Assets.car' },
+      ]);
+
+      await statusCommand(projectRoot, { unmanaged: true });
+
+      expect(infoMessages()).toContain('1 unmanaged file (1 total modified):\n');
+      expect(infoMessages()).toContain('  browser/branding/mybrowser/Assets.car');
+      expect(outro).toHaveBeenCalledWith('1 unmanaged change');
+    });
+
     it('caps a pathologically large untracked directory and warns the user', async () => {
       vi.mocked(getStatusWithCodes).mockResolvedValue([{ status: '??', file: 'build-output/' }]);
       const HUGE = 6000;

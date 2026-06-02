@@ -65,6 +65,17 @@ function getPrimaryStatusCode(status: string): string {
   return status;
 }
 
+function isGeneratedBrandingPath(file: string, binaryName: string): boolean {
+  const normalized = file.replace(/\\/g, '/');
+  const brandingRoot = `browser/branding/${binaryName}`;
+  return (
+    normalized === 'browser/moz.configure' ||
+    normalized === `${brandingRoot}/configure.sh` ||
+    normalized === `${brandingRoot}/locales/en-US/brand.properties` ||
+    normalized === `${brandingRoot}/locales/en-US/brand.ftl`
+  );
+}
+
 /**
  * Classifies files into patch-backed, unmanaged, branding, furnace, or
  * conflict buckets.
@@ -111,8 +122,20 @@ export async function classifyFiles(
   const results: ClassifiedFile[] = [];
 
   for (const entry of files) {
-    // Branding check first
-    if (isBrandingManagedPath(entry.file, binaryName)) {
+    const owners = patchClaims.get(entry.file);
+    const primaryCode = getPrimaryStatusCode(entry.status);
+
+    // Branding paths are tool-managed for generated edits, but a brand-new
+    // unowned branding asset must not disappear from `status --unmanaged`.
+    // The Hominis Firefox 152 side-grade added Assets.car under the active
+    // branding tree; classifying every branding path before checking
+    // ownership hid that new patch candidate as "branding" even though no
+    // patch claimed it yet.
+    const isUnownedNewFile = owners === undefined && (primaryCode === '?' || primaryCode === 'A');
+    if (
+      isBrandingManagedPath(entry.file, binaryName) &&
+      (!isUnownedNewFile || isGeneratedBrandingPath(entry.file, binaryName))
+    ) {
       results.push({ ...entry, classification: 'branding' });
       continue;
     }
@@ -131,8 +154,6 @@ export async function classifyFiles(
         continue;
       }
     }
-
-    const owners = patchClaims.get(entry.file);
 
     // Multiple patches claim this file — surface the cross-patch
     // ownership conflict regardless of whether the current content
@@ -155,8 +176,6 @@ export async function classifyFiles(
     }
 
     // File is claimed by exactly one patch — compare content.
-    const primaryCode = getPrimaryStatusCode(entry.status);
-
     if (primaryCode === 'D') {
       // Deleted file: patch-backed only if patch expects deletion
       const expected = await computePatchedContent(patchesDir, engineDir, entry.file);

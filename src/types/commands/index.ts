@@ -35,6 +35,7 @@ export type {
   ResetOptions,
   RunOptions,
   SetupOptions,
+  SourceSetOptions,
   StatusOptions,
   TestOptions,
   TokenAddOptions,

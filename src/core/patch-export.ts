@@ -14,6 +14,7 @@ import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { PATCH_CATEGORIES } from '../utils/validation.js';
 import { discoverPatches, withPatchDirectoryLock } from './patch-apply.js';
+import { normalizePatchArtifact } from './patch-artifact-normalize.js';
 import {
   findAllPatchesForFilesWithDetails,
   type SupersedeCoverageDetail,
@@ -168,7 +169,7 @@ export async function commitExportedPatch(
     }
 
     try {
-      await writeText(patchPath, input.diff);
+      await writeText(patchPath, normalizePatchArtifact(input.diff));
 
       await addPatchToManifest(
         input.patchesDir,
@@ -286,7 +287,7 @@ export async function findExistingPatchForFile(
  * @param newContent - New patch content
  */
 export async function updatePatch(patchPath: string, newContent: string): Promise<void> {
-  await writeText(patchPath, newContent);
+  await writeText(patchPath, normalizePatchArtifact(newContent));
 }
 
 /**

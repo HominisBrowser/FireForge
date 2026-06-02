@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.27.0
+
+- Added first-class `firefox-devedition` source support and atomic `fireforge source set`.
+- Improved `download --force` git indexing progress with phase, count, and heartbeat output.
+- Added elapsed progress for extraction, initial source commits, and rebase/re-export patch refreshes.
+- Added `re-export --files --allow-shrink` so patch ownership shrinkage is refused unless explicitly acknowledged, with clearer dry-run previews.
+- Surfaced likely new sibling files during plain re-export and aligned verify/status ownership reporting for unowned worktree changes.
+- Preserved patch-owned branding `configure.sh` settings during build preflight.
+- Added custom element registration support for Furnace validate/apply and Firefox 152-style array-backed ESM registrations.
+- Normalized generated patch artifacts so blank context lines do not trip raw whitespace checks.
+- Improved rebase conflict summaries and added `doctor --post-rebase-audit` for common registration surfaces.
+
 ## 0.26.0
 
 - Added targeted `re-export --scan --scan-file <path>` for reviewed single-patch new-file assignment without broad sibling collection.

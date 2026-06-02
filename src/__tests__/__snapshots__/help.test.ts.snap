@@ -12,6 +12,7 @@ Options:
 
 Project:
   setup [options]                   Initialize a new FireForge project
+  source                            Manage Firefox source configuration
   config [options] <key> [value]    Get or set configuration values
 
 Engine:

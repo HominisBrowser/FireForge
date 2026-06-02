@@ -47,12 +47,17 @@ function renderLicenseTemplate(
 }
 
 function resolveFirefoxProduct(value: unknown, field: string): FirefoxProduct {
-  if (value === 'firefox' || value === 'firefox-esr' || value === 'firefox-beta') {
+  if (
+    value === 'firefox' ||
+    value === 'firefox-esr' ||
+    value === 'firefox-beta' ||
+    value === 'firefox-devedition'
+  ) {
     return value;
   }
 
   throw new InvalidArgumentError(
-    'Invalid product (use: firefox, firefox-esr, firefox-beta)',
+    'Invalid product (use: firefox, firefox-esr, firefox-beta, firefox-devedition)',
     field
   );
 }
@@ -216,6 +221,7 @@ async function promptSetupInputs(options: SetupOptions): Promise<ResolvedSetupIn
             { value: 'firefox', label: 'Firefox (stable releases)' },
             { value: 'firefox-esr', label: 'Firefox ESR (extended support)' },
             { value: 'firefox-beta', label: 'Firefox Beta (pre-release)' },
+            { value: 'firefox-devedition', label: 'Firefox Developer Edition' },
           ],
         });
       },

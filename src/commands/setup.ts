@@ -95,6 +95,7 @@ export function registerSetup(program: Command, { withErrorHandling }: CommandCo
         'firefox',
         'firefox-esr',
         'firefox-beta',
+        'firefox-devedition',
       ])
     )
     .addOption(new Option('--license <license>', 'Project license').choices([...PROJECT_LICENSES]))

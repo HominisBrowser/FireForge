@@ -95,7 +95,7 @@ export function validateConfig(data: unknown): FireForgeConfig {
   }
 
   const firefoxProduct = requireConfigString(firefoxRec, 'product', 'firefox.product');
-  const validProducts = ['firefox', 'firefox-esr', 'firefox-beta'];
+  const validProducts = ['firefox', 'firefox-esr', 'firefox-beta', 'firefox-devedition'];
   if (!validProducts.includes(firefoxProduct)) {
     throw new ConfigError(
       `Config field "firefox.product" must be one of: ${validProducts.join(', ')}`

@@ -68,7 +68,7 @@ Use `fireforge --help` for the full set of commands.
 When Mozilla publishes a new ESR you need to update the configured Firefox version, download the new source code and reapply the patches:
 
 ```bash
-npx fireforge config firefox.version 145.0.0esr
+npx fireforge source set --version 145.0.0esr --product firefox-esr --sha256 <archive-sha256>
 npx fireforge download --force
 npx fireforge rebase
 ```

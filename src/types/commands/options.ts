@@ -20,7 +20,7 @@ export interface SetupOptions {
   binaryName?: string;
   /** Firefox version to base on */
   firefoxVersion?: string;
-  /** Firefox product type (firefox, firefox-esr, firefox-beta) */
+  /** Firefox product type (firefox, firefox-esr, firefox-beta, firefox-devedition) */
   product?: FirefoxProduct;
   /** Overwrite existing configuration without prompting */
   force?: boolean;
@@ -34,6 +34,20 @@ export interface SetupOptions {
 export interface DownloadOptions {
   /** Force re-download, deleting existing engine/ */
   force?: boolean;
+}
+
+/**
+ * Options for the source command.
+ */
+export interface SourceSetOptions {
+  /** Firefox version to set */
+  version: string;
+  /** Firefox product type */
+  product: FirefoxProduct;
+  /** Optional pinned SHA-256 for the resolved source archive */
+  sha256?: string;
+  /** Clear any existing pinned SHA-256 */
+  clearSha256?: boolean;
 }
 
 /**
@@ -195,6 +209,12 @@ export interface ReExportOptions {
   skipLint?: boolean;
   /** Skip confirmation prompt on shrink (required for non-TTY) */
   yes?: boolean;
+  /**
+   * Explicitly allow `--files` to remove paths that are currently owned by
+   * the patch. Without this acknowledgement, non-dry-run shrinks are refused
+   * before the interactive/`--yes` confirmation path.
+   */
+  allowShrink?: boolean;
   /** Bypass cross-patch lint refusal on projected shrink state */
   forceUnsafe?: boolean;
   /**
@@ -681,6 +701,8 @@ export interface DoctorOptions {
    * and side-effect-free.
    */
   repairFurnace?: boolean;
+  /** Run extra post-rebase checks for common Firefox registration surfaces. */
+  postRebaseAudit?: boolean;
 }
 
 /**

@@ -123,10 +123,10 @@ export function isValidFirefoxVersion(version: string): boolean {
 
 /**
  * Validates a Firefox product string.
- * Accepts: firefox, firefox-esr, firefox-beta
+ * Accepts: firefox, firefox-esr, firefox-beta, firefox-devedition
  */
 export function isValidFirefoxProduct(product: string): boolean {
-  return ['firefox', 'firefox-esr', 'firefox-beta'].includes(product);
+  return ['firefox', 'firefox-esr', 'firefox-beta', 'firefox-devedition'].includes(product);
 }
 
 /**
@@ -192,7 +192,7 @@ export function inferProductFromVersion(
  *
  * Rules:
  * - `firefox-esr` requires an ESR version (e.g. "140.9.0esr", "128.0.1esr").
- * - `firefox-beta` requires a beta version (e.g. "147.0b1").
+ * - `firefox-beta` and `firefox-devedition` require a beta version (e.g. "147.0b1").
  * - `firefox` (stable) rejects both ESR and beta version strings.
  *
  * @returns An error message if incompatible, or undefined if valid.
@@ -214,10 +214,10 @@ export function validateFirefoxProductVersionCompatibility(
       }
       break;
     case 'firefox-beta':
+    case 'firefox-devedition':
       if (!versionIsBeta) {
         return (
-          `Product "firefox-beta" requires a beta version (e.g. "147.0b1"), ` +
-          `but got "${version}"`
+          `Product "${product}" requires a beta version (e.g. "147.0b1"), ` + `but got "${version}"`
         );
       }
       break;

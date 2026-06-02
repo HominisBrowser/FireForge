@@ -162,6 +162,7 @@ vi.mock('../../core/patch-manifest.js', () => ({
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
   readJson: vi.fn(() => Promise.reject(new Error('not found'))),
+  readText: vi.fn(() => Promise.resolve('')),
 }));
 
 vi.mock('../../utils/process.js', () => ({
@@ -221,7 +222,7 @@ import {
   validatePatchIntegrity,
 } from '../../core/patch-manifest.js';
 import { classifyFiles } from '../../core/status-classify.js';
-import { pathExists, readJson } from '../../utils/fs.js';
+import { pathExists, readJson, readText } from '../../utils/fs.js';
 import { error, outro, success, warn } from '../../utils/logger.js';
 import {
   DOCTOR_CHECK_ORDER,
@@ -256,6 +257,8 @@ describe('doctorCommand', () => {
       firefox: { version: '140.9.0esr', product: 'firefox-esr' },
     });
     vi.mocked(loadState).mockResolvedValue({});
+    vi.mocked(readText).mockResolvedValue('');
+    vi.mocked(readdir).mockResolvedValue([] as never);
     vi.mocked(getHead).mockResolvedValue('base-commit');
     vi.mocked(getCurrentBranch).mockResolvedValue('firefox');
     vi.mocked(getWorkingTreeStatus).mockResolvedValue([]);
@@ -296,6 +299,48 @@ describe('doctorCommand', () => {
       errorCount: 0,
       warningCount: 0,
     });
+  });
+
+  it('runs post-rebase registration audit when requested', async () => {
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('browser/moz.configure')) {
+        return Promise.resolve('option("--with-browser-chrome-url", help=BROWSER_CHROME_URL)');
+      }
+      if (filePath.endsWith('browser/base/jar.mn')) {
+        return Promise.resolve('content/browser/browser.xhtml');
+      }
+      if (filePath.endsWith('toolkit/content/customElements.js')) {
+        return Promise.resolve('customElements.setElementCreationCallback("moz-dock", () => {})');
+      }
+      if (filePath.endsWith('toolkit/content/jar.mn')) {
+        return Promise.resolve('content/global/elements/moz-dock.mjs');
+      }
+      return Promise.resolve('');
+    });
+    vi.mocked(readdir).mockResolvedValue([
+      { isDirectory: () => false, isFile: () => true, name: 'browser.toml' },
+    ] as never);
+
+    const result = await doctorCommand('/project', { postRebaseAudit: true });
+
+    expect(result.exitCode).toBe(0);
+    const successMessages = vi.mocked(success).mock.calls.map(([message]) => message);
+    expect(
+      successMessages.some((message) => message.includes('Post-rebase registration audit'))
+    ).toBe(true);
+  });
+
+  it('warns when post-rebase registration audit finds suspicious surfaces', async () => {
+    vi.mocked(readText).mockResolvedValue('');
+
+    const result = await doctorCommand('/project', { postRebaseAudit: true });
+
+    expect(result.exitCode).toBe(0);
+    const warnMessages = vi.mocked(warn).mock.calls.map(([message]) => message);
+    expect(warnMessages.some((message) => message.includes('Post-rebase registration audit'))).toBe(
+      true
+    );
+    expect(warnMessages.some((message) => message.includes('BROWSER_CHROME_URL'))).toBe(true);
   });
 
   it('reports a clean workspace as fully passing', async () => {
@@ -1685,6 +1730,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
       'Patches found',
       'Patch manifest consistency',
       'Patch integrity',
+      'Post-rebase registration audit',
       'Furnace configuration',
       'Furnace state consistency',
       'Furnace engine paths',

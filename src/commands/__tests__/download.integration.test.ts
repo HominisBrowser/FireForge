@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -114,6 +115,90 @@ describe('downloadCommand integration', () => {
       getDownloadUrl('140.9.0esr', 'firefox-esr'),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matcher
       expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
+  it('downloads Developer Edition source from the devedition archive with a pinned checksum', async () => {
+    const archivePath = await makeTarXzArchive(
+      projectRoot,
+      'devedition.tar.xz',
+      'firefox-152.0b6',
+      {
+        'browser/config/version.txt': '152.0b6\n',
+      }
+    );
+    const archiveBody = await readFile(archivePath);
+    const sha256 = createHash('sha256').update(archiveBody).digest('hex');
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(archiveBody, {
+        status: 200,
+        headers: { 'content-length': String(archiveBody.length) },
+      })
+    );
+
+    await writeFireForgeConfig(projectRoot, {
+      firefox: { version: '152.0b6', product: 'firefox-devedition', sha256 },
+    });
+    await downloadCommand(projectRoot, {});
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz',
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matcher
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    await expect(readProjectText(projectRoot, 'engine/browser/config/version.txt')).resolves.toBe(
+      '152.0b6\n'
+    );
+    await expect(
+      readFile(
+        join(projectRoot, '.fireforge/cache', 'firefox-firefox-devedition-152.0b6.source.tar.xz')
+      )
+    ).resolves.toBeTruthy();
+  });
+
+  it('keeps the previous engine when forced replacement fails checksum validation', async () => {
+    const oldArchivePath = await makeTarXzArchive(projectRoot, 'old.tar.xz', 'firefox-140.9.0esr', {
+      'browser/config/version.txt': '140.9.0esr\n',
+    });
+    const oldBody = await readFile(oldArchivePath);
+    fetchMock.mockResolvedValueOnce(
+      new Response(oldBody, {
+        status: 200,
+        headers: { 'content-length': String(oldBody.length) },
+      })
+    );
+
+    await writeFireForgeConfig(projectRoot);
+    await downloadCommand(projectRoot, {});
+
+    const newArchivePath = await makeTarXzArchive(
+      projectRoot,
+      'bad-devedition.tar.xz',
+      'firefox-152.0b6',
+      {
+        'browser/config/version.txt': '152.0b6\n',
+      }
+    );
+    const newBody = await readFile(newArchivePath);
+    fetchMock.mockResolvedValueOnce(
+      new Response(newBody, {
+        status: 200,
+        headers: { 'content-length': String(newBody.length) },
+      })
+    );
+
+    await writeFireForgeConfig(projectRoot, {
+      firefox: {
+        version: '152.0b6',
+        product: 'firefox-devedition',
+        sha256: '0'.repeat(64),
+      },
+    });
+    await expect(downloadCommand(projectRoot, { force: true })).rejects.toThrow(/SHA-256 mismatch/);
+
+    await expect(readProjectText(projectRoot, 'engine/browser/config/version.txt')).resolves.toBe(
+      '140.9.0esr\n'
     );
   });
 

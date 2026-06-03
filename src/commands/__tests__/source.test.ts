@@ -8,6 +8,7 @@ import {
   removeTempProject,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
+import { success } from '../../utils/logger.js';
 import { sourceSetCommand } from '../source.js';
 
 vi.mock('../../utils/logger.js', () => ({
@@ -45,6 +46,9 @@ describe('sourceSetCommand', () => {
       product: 'firefox-devedition',
       sha256: 'a'.repeat(64),
     });
+    expect(success).toHaveBeenCalledWith(
+      'Resolved source URL: https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
+    );
   });
 
   it('clears sha256 when requested', async () => {

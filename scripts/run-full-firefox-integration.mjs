@@ -595,7 +595,12 @@ async function main() {
   await copyPatchToArtifacts(createdPatch.filename);
 
   runCapture('git', ['-C', engineDir, 'checkout', '--', targetFile]);
-  await runFireforge('import-roundtrip', ['import']);
+  // The full-tree project may already materialize patch-touched binary
+  // branding assets. Those cannot be compared through the text projection
+  // that `import` uses to prove an existing dirty file is patch-backed, so
+  // force only this idempotent round-trip import. The explicit dirty-guard
+  // check below still runs without --force.
+  await runFireforge('import-roundtrip', ['import', '--force']);
 
   const importedContent = await readFile(targetAbsolutePath, 'utf8');
   if (!importedContent.includes(patchMarker)) {
@@ -611,7 +616,7 @@ async function main() {
   report.observations.dirtyGuardPreview = dirtyImport.preview;
 
   await runFireforge('discard-target', ['discard', targetFile, '--yes']);
-  await runFireforge('import-after-discard', ['import']);
+  await runFireforge('import-after-discard', ['import', '--force']);
 
   const recoveredContent = await readFile(targetAbsolutePath, 'utf8');
   if (!recoveredContent.includes(patchMarker)) {

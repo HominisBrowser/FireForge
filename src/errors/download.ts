@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import type { FirefoxProduct } from '../types/config.js';
 import { FireForgeError } from './base.js';
 import { ExitCode } from './codes.js';
 
@@ -27,6 +28,45 @@ export class DownloadError extends FireForgeError {
     msg += '  1. Check your internet connection\n';
     msg += '  2. Verify the Firefox version in fireforge.json is valid\n';
     msg += '  3. Try again with "fireforge download --force"';
+
+    return msg;
+  }
+}
+
+/**
+ * Error thrown when a pinned Firefox source archive checksum does not match.
+ */
+export class ChecksumMismatchError extends DownloadError {
+  constructor(
+    public readonly product: FirefoxProduct,
+    public readonly expectedSha256: string,
+    public readonly actualSha256: string,
+    url: string
+  ) {
+    super(
+      `Downloaded archive SHA-256 mismatch: expected ${expectedSha256}, got ${actualSha256}`,
+      url
+    );
+  }
+
+  override get userMessage(): string {
+    let msg =
+      `Download Error: Firefox source archive checksum mismatch.\n\n` +
+      `Product: ${this.product}\n` +
+      `URL: ${this.url}\n` +
+      `Expected SHA-256: ${this.expectedSha256}\n` +
+      `Actual SHA-256: ${this.actualSha256}`;
+
+    msg += '\n\nTo fix this:\n';
+    msg += '  1. Verify firefox.product, firefox.version, and firefox.sha256 in fireforge.json\n';
+    msg += '  2. Compare the pinned hash with Mozilla SHA256SUMMARY for the resolved archive\n';
+    if (this.product === 'firefox-devedition') {
+      msg +=
+        '  3. Developer Edition archives should resolve under https://archive.mozilla.org/pub/devedition/releases/\n';
+      msg += '  4. Re-run "fireforge download --force" after correcting the source settings';
+    } else {
+      msg += '  3. Re-run "fireforge download --force" after correcting the source settings';
+    }
 
     return msg;
   }

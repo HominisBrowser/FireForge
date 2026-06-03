@@ -48,6 +48,28 @@ async function seed(patchesDir: string): Promise<void> {
   await savePatchesManifest(patchesDir, manifest);
 }
 
+async function seedLegacyManifest(patchesDir: string): Promise<void> {
+  await ensureDir(patchesDir);
+  await writeFile(join(patchesDir, '001-infra-a.patch'), 'a body');
+  await writeFile(join(patchesDir, '002-infra-b.patch'), 'b body');
+  await writeFile(join(patchesDir, '003-infra-c.patch'), 'c body');
+  await writeFile(
+    join(patchesDir, 'patches.json'),
+    `${JSON.stringify(
+      {
+        version: 1,
+        patches: [
+          makeMetadata({ filename: '001-infra-a.patch', order: 1, filesAffected: ['fake/a.txt'] }),
+          makeMetadata({ filename: '002-infra-b.patch', order: 2, filesAffected: ['fake/b.txt'] }),
+          makeMetadata({ filename: '003-infra-c.patch', order: 3, filesAffected: ['fake/c.txt'] }),
+        ],
+      },
+      null,
+      2
+    )}\n`
+  );
+}
+
 describe('updatePatchAndMetadata onCommitted hook', () => {
   let projectRoot: string;
   let patchesDir: string;
@@ -112,5 +134,31 @@ describe('updatePatchAndMetadata onCommitted hook', () => {
 
     expect(hookInvocations).toBe(1);
     expect(await readText(join(patchesDir, '001-infra-a.patch'))).toBe('new body');
+  });
+
+  it('does not serialize fallback sourceVersion onto unrelated legacy rows', async () => {
+    await seedLegacyManifest(patchesDir);
+
+    await updatePatchAndMetadata(
+      patchesDir,
+      '002-infra-b.patch',
+      'new b body',
+      { filesAffected: ['fake/b.txt', 'fake/b2.txt'] },
+      undefined
+    );
+
+    const raw = JSON.parse(await readText(join(patchesDir, 'patches.json'))) as {
+      patches: Array<{
+        filename: string;
+        filesAffected: string[];
+        sourceVersion?: string;
+      }>;
+    };
+    const rows = new Map(raw.patches.map((patch) => [patch.filename, patch]));
+
+    expect(rows.get('001-infra-a.patch')?.sourceVersion).toBeUndefined();
+    expect(rows.get('002-infra-b.patch')?.sourceVersion).toBeUndefined();
+    expect(rows.get('003-infra-c.patch')?.sourceVersion).toBeUndefined();
+    expect(rows.get('002-infra-b.patch')?.filesAffected).toEqual(['fake/b.txt', 'fake/b2.txt']);
   });
 });

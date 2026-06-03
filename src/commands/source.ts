@@ -8,6 +8,7 @@ import {
   withConfigFileLock,
   writeConfigDocument,
 } from '../core/config.js';
+import { resolveArchive } from '../core/firefox-archive.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { SourceSetOptions } from '../types/commands/index.js';
@@ -83,8 +84,11 @@ export async function sourceSetCommand(
     return validated.firefox;
   });
 
+  const archive = resolveArchive(written.version, written.product);
+
   success(`Set firefox.version = ${written.version}`);
   success(`Set firefox.product = ${written.product}`);
+  success(`Resolved source URL: ${archive.url}`);
   if (written.sha256 !== undefined) {
     success(`Set firefox.sha256 = ${written.sha256}`);
   } else if (options.clearSha256 === true) {

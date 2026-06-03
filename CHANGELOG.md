@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.27.3
+
+- Fixed `firefox-devedition` source downloads so archive resolution uses `/pub/devedition/releases`.
+- Kept existing `engine/` trees intact during `download --force` until the replacement archive downloads, validates, and extracts successfully.
+- Improved checksum mismatch diagnostics with resolved URL and product context.
+
 ## 0.27.0
 
 - Added first-class `firefox-devedition` source support and atomic `fireforge source set`.

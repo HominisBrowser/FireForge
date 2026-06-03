@@ -9,7 +9,7 @@ import { rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
-import { DownloadError } from '../errors/download.js';
+import { ChecksumMismatchError } from '../errors/download.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, removeFile, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
@@ -151,10 +151,7 @@ async function downloadToCache(
     onCacheProgress?.(`Calculating source archive SHA-256 for ${archive.filename}...`);
     const sha256 = await sha256File(tarballPath);
     if (expectedSha256 && sha256 !== expectedSha256) {
-      throw new DownloadError(
-        `Downloaded archive SHA-256 mismatch: expected ${expectedSha256}, got ${sha256}`,
-        archive.url
-      );
+      throw new ChecksumMismatchError(archive.product, expectedSha256, sha256, archive.url);
     }
     onCacheProgress?.(`Writing source archive cache metadata for ${archive.metadataFilename}...`);
     await writeJson(metadataPath, {

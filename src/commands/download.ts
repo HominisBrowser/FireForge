@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { randomUUID } from 'node:crypto';
+import { rename } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Command } from 'commander';
@@ -153,6 +155,69 @@ function closeRestoreSpinner(
   restoreSpinner.stop('Patch-touched files restored');
 }
 
+async function clearStaleFurnaceApplyState(projectRoot: string): Promise<void> {
+  // --force installs a new baseCommit, which invalidates every applied
+  // checksum in furnace-state.json. Preserve pendingRepair: authoring-side
+  // rollback markers describe unresolved component workspace state and
+  // should survive an engine refresh.
+  const furnacePaths = getFurnacePaths(projectRoot);
+  if (await pathExists(furnacePaths.furnaceState)) {
+    await updateFurnaceState(projectRoot, (current) => ({
+      ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
+    }));
+  }
+}
+
+async function activateReplacementEngine(args: {
+  engineDir: string;
+  replacementDir: string;
+  backupDir: string;
+}): Promise<void> {
+  const { engineDir, replacementDir, backupDir } = args;
+  await rename(engineDir, backupDir);
+  try {
+    await rename(replacementDir, engineDir);
+  } catch (error: unknown) {
+    try {
+      await rename(backupDir, engineDir);
+    } catch (restoreError: unknown) {
+      const cause = toError(restoreError);
+      warn(
+        `Could not restore previous engine after replacement activation failed. Previous engine backup remains at ${backupDir}. Remove ${engineDir} if it exists, then move the backup back to engine/.`
+      );
+      verbose(`Engine restore failure detail: ${cause.message}`);
+      if (cause.stack) {
+        verbose(cause.stack);
+      }
+    }
+    throw error;
+  }
+}
+
+async function restorePreviousEngine(args: {
+  engineDir: string;
+  backupDir: string;
+  reason: unknown;
+}): Promise<void> {
+  const { engineDir, backupDir, reason } = args;
+  const cause = toError(reason);
+  verbose(`Restoring previous engine after failed forced download: ${cause.message}`);
+  try {
+    await removeDir(engineDir);
+    await rename(backupDir, engineDir);
+    warn('Restored the previous engine/ after the forced replacement failed.');
+  } catch (restoreError: unknown) {
+    const restoreCause = toError(restoreError);
+    warn(
+      `Could not restore the previous engine automatically. Previous engine backup remains at ${backupDir}. Remove the failed engine/ and move that backup back to engine/ before retrying.`
+    );
+    verbose(`Engine restore failure detail: ${restoreCause.message}`);
+    if (restoreCause.stack) {
+      verbose(restoreCause.stack);
+    }
+  }
+}
+
 async function downloadAndExtractFirefox(args: {
   version: string;
   product: FirefoxProduct;
@@ -207,6 +272,84 @@ async function downloadAndExtractFirefox(args: {
   }
 }
 
+async function initializeDownloadedEngine(args: {
+  projectRoot: string;
+  patchesDir: string;
+  version: string;
+  engineDir: string;
+  replacementActivated: boolean;
+  backupEngineDir?: string;
+}): Promise<void> {
+  const { projectRoot, patchesDir, version, engineDir, replacementActivated, backupEngineDir } =
+    args;
+
+  // Finding #17: the git indexing phase of `download` can block for
+  // minutes on a ~600 MB Firefox tree. Emit a one-line heads-up banner
+  // before the spinner starts so CI logs show the expected duration.
+  try {
+    info(
+      'Indexing downloaded source into git (one-time; typically 3–5 minutes on a ~600 MB Firefox tree)...'
+    );
+
+    info('Git phase: initializing/resetting source repository metadata.');
+    const gitSpinner = spinner('Initializing git repository (this may take a few minutes)...');
+    let baseCommit: string | undefined;
+
+    try {
+      await initRepository(engineDir, 'firefox', {
+        onProgress: (message) => {
+          gitSpinner.message(message);
+        },
+      });
+      baseCommit = await getHead(engineDir);
+      gitSpinner.stop('Git repository initialized');
+    } catch (error: unknown) {
+      gitSpinner.error('Failed to initialize git repository');
+      warn(
+        replacementActivated
+          ? 'Replacement engine/ failed during baseline git initialization. FireForge will try to restore the previous engine.'
+          : 'engine/ may now contain a partially initialized git repository. Re-run "fireforge download --force" to recreate the baseline cleanly.'
+      );
+      throw error;
+    }
+
+    const restoreSpinner = spinner('Restoring patch-touched files to baseline...');
+    try {
+      const restoreResult = await cleanPatchTouchedFiles(engineDir, patchesDir);
+      closeRestoreSpinner(restoreSpinner, restoreResult);
+    } catch (error: unknown) {
+      restoreSpinner.error('Failed to restore patch-touched files');
+      throw error;
+    }
+
+    if (replacementActivated) {
+      await clearStaleFurnaceApplyState(projectRoot);
+    }
+
+    await updateState(projectRoot, {
+      downloadedVersion: version,
+      baseCommit,
+    });
+
+    await noteUnappliedPatches(patchesDir);
+
+    if (backupEngineDir) {
+      await removeDir(backupEngineDir);
+    }
+
+    outro(`Firefox ${version} is ready!`);
+  } catch (error: unknown) {
+    if (replacementActivated && backupEngineDir) {
+      await restorePreviousEngine({
+        engineDir,
+        backupDir: backupEngineDir,
+        reason: error,
+      });
+    }
+    throw error;
+  }
+}
+
 /**
  * Runs the download command.
  * @param projectRoot - Root directory of the project
@@ -227,6 +370,11 @@ export async function downloadCommand(
   await checkDiskSpace(projectRoot, 5 * 1024 * 1024 * 1024, warn);
 
   await withFileLock(join(paths.fireforgeDir, 'download.fireforge.lock'), async () => {
+    let installEngineDir = paths.engine;
+    let replacementEngineDir: string | undefined;
+    let backupEngineDir: string | undefined;
+    let replacementActivated = false;
+
     // Check if engine already exists
     if (await pathExistsStrict(paths.engine)) {
       if (!options.force) {
@@ -314,105 +462,52 @@ export async function downloadCommand(
         throw new EngineExistsError(paths.engine);
       }
 
-      warn('Removing existing engine directory...');
-      await removeDir(paths.engine);
-
-      // --force installs a new baseCommit, which invalidates every applied
-      // checksum in furnace-state.json. Clearing the state now prevents a
-      // subsequent `furnace apply` from reporting "up to date" against an
-      // engine that no longer contains any of the deployed files. Preserve
-      // pendingRepair: authoring-side rollback markers describe unresolved
-      // component workspace state and should survive an engine refresh.
-      const furnacePaths = getFurnacePaths(projectRoot);
-      if (await pathExists(furnacePaths.furnaceState)) {
-        await updateFurnaceState(projectRoot, (current) => ({
-          ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
-        }));
-      }
+      replacementEngineDir = `${paths.engine}.replacement-${randomUUID()}`;
+      backupEngineDir = `${paths.engine}.backup-${randomUUID()}`;
+      installEngineDir = replacementEngineDir;
+      warn(
+        'Preparing replacement engine directory; existing engine/ will remain in place until the new archive downloads, validates, and extracts.'
+      );
     }
 
     // Ensure cache directory exists
     const cacheDir = join(paths.fireforgeDir, 'cache');
     await ensureDir(cacheDir);
 
-    await downloadAndExtractFirefox({
-      version,
-      product: config.firefox.product,
-      engineDir: paths.engine,
-      cacheDir,
-      ...(config.firefox.sha256 !== undefined ? { sha256: config.firefox.sha256 } : {}),
-    });
-
-    // Finding #17: the git indexing phase of `download` can block for
-    // minutes on a ~600 MB Firefox tree — the spinner updates less often
-    // than operators expect during the monolithic `git add -A` pass, and
-    // non-TTY shells see long stretches of silence. Emit a one-line
-    // heads-up banner BEFORE the spinner starts so even a log-scraping
-    // CI job notes the expected duration. The progress callbacks below
-    // still fire as usual; this is an additional up-front signal, not a
-    // replacement.
-    info(
-      'Indexing downloaded source into git (one-time; typically 3–5 minutes on a ~600 MB Firefox tree)...'
-    );
-
-    info('Git phase: initializing/resetting source repository metadata.');
-    const gitSpinner = spinner('Initializing git repository (this may take a few minutes)...');
-    let baseCommit: string | undefined;
-
     try {
-      await initRepository(paths.engine, 'firefox', {
-        // Same one-authority rule as the resume path above: the non-TTY
-        // spinner fallback already emits `step(msg)` internally, so
-        // calling `step()` in addition to `.message()` duplicated every
-        // git-init progress line in CI logs.
-        onProgress: (message) => {
-          gitSpinner.message(message);
-        },
+      await downloadAndExtractFirefox({
+        version,
+        product: config.firefox.product,
+        engineDir: installEngineDir,
+        cacheDir,
+        ...(config.firefox.sha256 !== undefined ? { sha256: config.firefox.sha256 } : {}),
       });
-      baseCommit = await getHead(paths.engine);
-      gitSpinner.stop('Git repository initialized');
+
+      if (replacementEngineDir && backupEngineDir) {
+        warn('Activating replacement engine directory...');
+        await activateReplacementEngine({
+          engineDir: paths.engine,
+          replacementDir: replacementEngineDir,
+          backupDir: backupEngineDir,
+        });
+        replacementActivated = true;
+        installEngineDir = paths.engine;
+      }
     } catch (error: unknown) {
-      gitSpinner.error('Failed to initialize git repository');
-      warn(
-        'engine/ may now contain a partially initialized git repository. Re-run "fireforge download --force" to recreate the baseline cleanly.'
-      );
+      if (replacementEngineDir) {
+        await removeDir(replacementEngineDir);
+      }
       throw error;
     }
 
-    // Restore any patch-touched files that ended up dirty after the initial
-    // commit (e.g. line-ending normalisation or extraction artefacts) so that
-    // a subsequent `fireforge import` works without --force.
-    //
-    // Wrapped in a dedicated spinner because the restore can itself take
-    // tens of seconds on a ~600 MB Firefox tree: it walks every file in the
-    // patch manifest, calls `git status` / `git checkout` for each, and the
-    // eval's "download looks hung" report landed at least partly on this
-    // post-commit window. An operator watching the CLI needs to see that
-    // this phase is distinct from the preceding git-add work.
-    //
-    // This runs BEFORE updateState so a restore failure keeps the previous
-    // downloadedVersion in state.json. The invariant we preserve is
-    // "state.downloadedVersion matches a clean engine": stamping the new
-    // version only after the restore succeeds means a failed clean-up will
-    // re-enter the resume path on the next `fireforge download` rather than
-    // reporting success against a dirty engine.
-    const restoreSpinner = spinner('Restoring patch-touched files to baseline...');
-    try {
-      const restoreResult = await cleanPatchTouchedFiles(paths.engine, paths.patches);
-      closeRestoreSpinner(restoreSpinner, restoreResult);
-    } catch (error: unknown) {
-      restoreSpinner.error('Failed to restore patch-touched files');
-      throw error;
-    }
-
-    await updateState(projectRoot, {
-      downloadedVersion: version,
-      baseCommit,
+    await initializeDownloadedEngine({
+      projectRoot,
+      patchesDir: paths.patches,
+      version,
+      engineDir: installEngineDir,
+      replacementActivated,
+      ...(backupEngineDir !== undefined ? { backupEngineDir } : {}),
     });
-
-    await noteUnappliedPatches(paths.patches);
-
-    outro(`Firefox ${version} is ready!`);
   });
 }
 

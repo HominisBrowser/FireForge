@@ -75,7 +75,12 @@ afterEach(() => {
 
 import { Readable, Writable } from 'node:stream';
 
-import { DownloadError, ExtractionError, VersionNotFoundError } from '../../errors/download.js';
+import {
+  ChecksumMismatchError,
+  DownloadError,
+  ExtractionError,
+  VersionNotFoundError,
+} from '../../errors/download.js';
 import {
   downloadFirefoxSource,
   formatBytes,
@@ -108,14 +113,19 @@ function stubDownloadFs(): void {
 describe('resolveArchive', () => {
   it('resolves a standard firefox version', () => {
     const result = resolveArchive('140.9.0', 'firefox');
-    expect(result.url).toContain('/140.9.0/source/firefox-140.9.0.source.tar.xz');
+    expect(result.url).toBe(
+      'https://archive.mozilla.org/pub/firefox/releases/140.9.0/source/firefox-140.9.0.source.tar.xz'
+    );
     expect(result.filename).toBe('firefox-firefox-140.9.0.source.tar.xz');
   });
 
   it('resolves an ESR version', () => {
     const result = resolveArchive('140.9.0esr', 'firefox-esr');
     expect(result.archiveVersion).toBe('140.9.0esr');
-    expect(result.url).toContain('/140.9.0esr/source/');
+    expect(result.url).toBe(
+      'https://archive.mozilla.org/pub/firefox/releases/140.9.0esr/source/firefox-140.9.0esr.source.tar.xz'
+    );
+    expect(result.filename).toBe('firefox-firefox-esr-140.9.0esr.source.tar.xz');
   });
 
   it('rejects path traversal in version', () => {
@@ -134,12 +144,18 @@ describe('resolveArchive', () => {
     // Beta product with beta version
     const beta = resolveArchive('147.0b1', 'firefox-beta');
     expect(beta.archiveVersion).toBe('147.0b1');
+    expect(beta.url).toBe(
+      'https://archive.mozilla.org/pub/firefox/releases/147.0b1/source/firefox-147.0b1.source.tar.xz'
+    );
+    expect(beta.filename).toBe('firefox-firefox-beta-147.0b1.source.tar.xz');
   });
 
   it('resolves Developer Edition to the beta source archive with product-specific cache metadata', () => {
     const result = resolveArchive('152.0b6', 'firefox-devedition');
     expect(result.archiveVersion).toBe('152.0b6');
-    expect(result.url).toContain('/152.0b6/source/firefox-152.0b6.source.tar.xz');
+    expect(result.url).toBe(
+      'https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
+    );
     expect(result.filename).toBe('firefox-firefox-devedition-152.0b6.source.tar.xz');
     expect(result.metadataFilename).toBe('firefox-firefox-devedition-152.0b6.source.tar.xz.json');
   });
@@ -455,6 +471,46 @@ describe('checksum-based cache validation', () => {
     expect(fsMod.removeFile).toHaveBeenCalledWith(
       '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json'
     );
+  });
+
+  it('reports product and resolved URL when a Developer Edition pinned sha256 mismatches', async () => {
+    const fsMod = await import('../../utils/fs.js');
+    vi.mocked(fsMod.pathExists).mockResolvedValue(false);
+
+    const body = new ReadableStream({
+      start(controller): void {
+        controller.enqueue(new TextEncoder().encode('fresh'));
+        controller.close();
+      },
+    });
+    mockFetch.mockResolvedValueOnce(
+      new Response(body, { status: 200, headers: { 'content-length': '5' } })
+    );
+    mockCreateWriteStream.mockReturnValue(makeMockWriteStream());
+    mockCreateReadStream.mockReturnValue(Readable.from([Buffer.from('fresh')]));
+
+    let captured: unknown;
+    try {
+      await downloadFirefoxSource(
+        '152.0b6',
+        'firefox-devedition',
+        '/tmp/dest',
+        '/tmp/cache',
+        undefined,
+        undefined,
+        '0'.repeat(64)
+      );
+    } catch (error: unknown) {
+      captured = error;
+    }
+
+    expect(captured).toBeInstanceOf(ChecksumMismatchError);
+    const message = (captured as ChecksumMismatchError).userMessage;
+    expect(message).toContain('Product: firefox-devedition');
+    expect(message).toContain(
+      'URL: https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
+    );
+    expect(message).toContain('Developer Edition archives should resolve under');
   });
 
   it('does not delete a peer cache entry when a download fails before promotion', async () => {

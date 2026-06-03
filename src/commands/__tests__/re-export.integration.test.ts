@@ -13,7 +13,9 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
+import { warn } from '../../utils/logger.js';
 import { reExportCommand } from '../re-export.js';
+import { verifyCommand } from '../verify.js';
 
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
@@ -52,6 +54,15 @@ function makeManifest(): string {
   )}\n`;
 }
 
+const blankContextBase = 'context\n\nmore context\n';
+const blankContextModified = 'context\n\nmore context\nnew line\n';
+
+function expectValidBlankContextHunk(patchBody: string): void {
+  expect(patchBody).toContain('@@ -1,3 +1,4 @@');
+  expect(patchBody).toContain('\n \n more context\n+new line');
+  expect(patchBody).not.toContain('\n\n more context\n+new line');
+}
+
 describe('reExportCommand integration', () => {
   let projectRoot: string;
   let restoreTTY: (() => void) | undefined;
@@ -62,7 +73,7 @@ describe('reExportCommand integration', () => {
     projectRoot = await createTempProject();
     await writeFireForgeConfig(projectRoot);
     await initCommittedRepo(join(projectRoot, 'engine'), {
-      'tracked.txt': 'original\n',
+      'tracked.txt': blankContextBase,
     });
     await writeFiles(projectRoot, {
       'patches/patches.json': makeManifest(),
@@ -136,5 +147,46 @@ describe('reExportCommand integration', () => {
     const patchBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
     expect(patchBody).toContain('features/intended.txt');
     expect(patchBody).not.toContain('features/sibling.txt');
+  });
+
+  it('preserves blank context markers and verifies cleanly after targeted re-export', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': blankContextModified,
+    });
+
+    await reExportCommand(projectRoot, ['001'], { yes: true });
+
+    const patchBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expectValidBlankContextHunk(patchBody);
+
+    vi.mocked(warn).mockClear();
+    await verifyCommand(projectRoot);
+
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Patch-owned worktree drift'));
+  });
+
+  it('preserves blank context markers and verifies cleanly after full stamped re-export', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      firefox: { version: '152.0b6', product: 'firefox-devedition' },
+    });
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': blankContextModified,
+    });
+
+    await reExportCommand(projectRoot, [], { all: true, stamp: true, yes: true });
+
+    const patchBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expectValidBlankContextHunk(patchBody);
+
+    const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: Array<{ sourceProduct?: string; sourceVersion?: string }>;
+    };
+    expect(manifest.patches[0]?.sourceVersion).toBe('152.0b6');
+    expect(manifest.patches[0]?.sourceProduct).toBe('firefox-devedition');
+
+    vi.mocked(warn).mockClear();
+    await verifyCommand(projectRoot);
+
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Patch-owned worktree drift'));
   });
 });

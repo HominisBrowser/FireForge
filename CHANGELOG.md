@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.28.0
+
+- Added the product-resolved Firefox source archive URL to `source set` output so pinned checksums can be verified against the exact archive target before download.
+- Fixed re-export serialization so blank context lines keep their unified-diff context marker, preventing FireForge-generated patches from producing false patch-owned drift warnings during `verify`.
+- Added regression coverage for targeted and full stamped re-export round-trips with blank context lines.
+
 ## 0.27.3
 
 - Fixed `firefox-devedition` source downloads so archive resolution uses `/pub/devedition/releases`.

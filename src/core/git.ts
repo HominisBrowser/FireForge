@@ -13,6 +13,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
+import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
 import {
   configureGitPerformance,
   ensureGit,
@@ -359,6 +360,9 @@ export async function initRepository(
   await git(['remote', 'add', 'origin', 'https://github.com/mozilla-firefox/firefox'], dir);
   reportProgress('Git phase complete: source git repository metadata initialized.');
 
+  reportProgress('Normalizing Firefox ignore files for Git-backed mach lint compatibility...');
+  await ensureFirefoxIgnorefileCompatibility(dir);
+
   // Add all files
   reportProgress(
     'Indexing Firefox source with git add -A (this can take several minutes on large trees)...'
@@ -405,6 +409,9 @@ export async function resumeRepository(
 
   // Ensure origin remote exists (may have been added before the interrupt)
   await ensureOriginRemote(dir);
+
+  reportProgress('Normalizing Firefox ignore files for Git-backed mach lint compatibility...');
+  await ensureFirefoxIgnorefileCompatibility(dir);
 
   // Stage all files
   reportProgress('Indexing Firefox source (resuming)...');

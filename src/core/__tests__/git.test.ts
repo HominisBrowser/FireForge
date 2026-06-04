@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -178,6 +178,26 @@ describe('initRepository', () => {
       await rm(repoDir, { recursive: true, force: true });
     }
   });
+
+  it('materializes Firefox .hgignore before the initial baseline commit', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-ignorefile-'));
+
+    try {
+      await writeFile(join(repoDir, '.gitignore'), 'obj-*/\n*.pyc\n', 'utf8');
+      await mkdir(join(repoDir, 'tools', 'lint'), { recursive: true });
+      await writeFile(
+        join(repoDir, 'tools', 'lint', 'ignorefile.yml'),
+        'include:\n  - .hgignore\n'
+      );
+
+      await initRepository(repoDir, 'firefox');
+
+      await expect(runGit(repoDir, ['show', 'HEAD:.hgignore'])).resolves.toBe('obj-*/\n*.pyc\n');
+      await expect(runGit(repoDir, ['status', '--short'])).resolves.toBe('');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resumeRepository', () => {
@@ -199,6 +219,30 @@ describe('resumeRepository', () => {
       const log = await runGit(repoDir, ['log', '--oneline']);
       expect(log).toContain('Initial Firefox source');
       expect(progress.length).toBeGreaterThan(0);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes Firefox .hgignore before committing a resumed baseline', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-resume-ignorefile-'));
+
+    try {
+      await runGit(repoDir, ['init']);
+      await runGit(repoDir, ['checkout', '--orphan', 'main']);
+      await runGit(repoDir, ['config', 'user.email', 'test@example.test']);
+      await runGit(repoDir, ['config', 'user.name', 'Test']);
+      await writeFile(join(repoDir, '.gitignore'), 'obj-*/\n*.pyc\n', 'utf8');
+      await mkdir(join(repoDir, 'tools', 'lint'), { recursive: true });
+      await writeFile(
+        join(repoDir, 'tools', 'lint', 'ignorefile.yml'),
+        'include:\n  - .hgignore\n'
+      );
+
+      await resumeRepository(repoDir);
+
+      await expect(runGit(repoDir, ['show', 'HEAD:.hgignore'])).resolves.toBe('obj-*/\n*.pyc\n');
+      await expect(runGit(repoDir, ['status', '--short'])).resolves.toBe('');
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }

@@ -2,6 +2,7 @@
 
 ## 0.28.0
 
+- Restored mach lint compatibility for FireForge-managed Git-backed Firefox checkouts by materializing a `.hgignore` copy of `.gitignore` when Firefox's ignorefile linter config is present.
 - Added the product-resolved Firefox source archive URL to `source set` output so pinned checksums can be verified against the exact archive target before download.
 - Added dry-run locking for `re-export` so parallel previews serialize engine git inspection instead of racing on `.git/index.lock`.
 - Added `re-export --scan --scan-files <manifest>` for dry-runnable bulk generated-file assignment across owner patches, with ambiguity and ownership refusals.

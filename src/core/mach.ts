@@ -14,6 +14,7 @@ import {
   type SmokeRunResult,
 } from '../utils/process.js';
 import { createSiblingLockPath, withFileLock } from './file-lock.js';
+import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
 import { explainMachError } from './mach-error-hints.js';
 import { getPython } from './mach-python.js';
 
@@ -73,6 +74,7 @@ export async function runMach(
 ): Promise<number> {
   const python = await getPython(engineDir);
   await ensureMach(engineDir);
+  await ensureFirefoxIgnorefileCompatibility(engineDir);
 
   const machPath = join(engineDir, 'mach');
 
@@ -111,6 +113,7 @@ export async function runMachCapture(
 ): Promise<MachCommandResult> {
   const python = await getPython(engineDir);
   await ensureMach(engineDir);
+  await ensureFirefoxIgnorefileCompatibility(engineDir);
 
   const machPath = join(engineDir, 'mach');
   let stdout = '';
@@ -149,6 +152,7 @@ export async function runMachInheritCapture(
 ): Promise<MachCommandResult> {
   const python = await getPython(engineDir);
   await ensureMach(engineDir);
+  await ensureFirefoxIgnorefileCompatibility(engineDir);
 
   const machPath = join(engineDir, 'mach');
 
@@ -329,6 +333,7 @@ export async function runMachSmoke(
 ): Promise<SmokeRunResult> {
   const python = await getPython(engineDir);
   await ensureMach(engineDir);
+  await ensureFirefoxIgnorefileCompatibility(engineDir);
   const machPath = join(engineDir, 'mach');
   return execSmokeRun(python, [machPath, ...args], {
     cwd: engineDir,

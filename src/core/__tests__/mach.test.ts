@@ -3,7 +3,7 @@ import { readdir } from 'node:fs/promises';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { pathExists, readJson, readText } from '../../utils/fs.js';
+import { pathExists, readJson, readText, writeText } from '../../utils/fs.js';
 import {
   bootstrap,
   bootstrapWithOutput,
@@ -546,6 +546,31 @@ describe('mach command execution', () => {
       'python3.12',
       ['/engine/mach', 'build'],
       expect.objectContaining({ cwd: '/engine', env: { MOZCONFIG: 'debug' } })
+    );
+  });
+
+  it('normalizes Firefox ignore files before spawning mach', async () => {
+    const { exec } = await import('../../utils/process.js');
+    await primePythonResolution();
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/engine/mach' ||
+          path === '/engine/tools/lint/ignorefile.yml' ||
+          path === '/engine/.gitignore'
+      )
+    );
+    vi.mocked(readText).mockResolvedValue('obj-*/\n*.pyc\n');
+    vi.mocked(exec).mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+
+    await expect(
+      runMach(['lint', '--fix', 'browser/base/content/foo.js'], '/engine')
+    ).resolves.toBe(0);
+
+    expect(writeText).toHaveBeenCalledWith('/engine/.hgignore', 'obj-*/\n*.pyc\n');
+    expect(exec).toHaveBeenCalledWith(
+      'python3.12',
+      ['/engine/mach', 'lint', '--fix', 'browser/base/content/foo.js'],
+      expect.objectContaining({ cwd: '/engine' })
     );
   });
 

@@ -204,6 +204,34 @@ describe('testCommand', () => {
     ).rejects.toBeInstanceOf(BuildError);
   });
 
+  it('summarizes the first focused test failure after a successful --build rebuild', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout:
+        'INFO Running browser-chrome tests\n' +
+        'TEST-UNEXPECTED-FAIL | browser_dummy.js | expected true got false',
+      stderr: '',
+    });
+
+    let error: unknown;
+    try {
+      await testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'], {
+        build: true,
+      });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(BuildError);
+    const message = error instanceof Error ? error.message : '';
+    expect(message).toContain('Post-rebuild test failure:');
+    expect(message).toContain('Rebuild command: fireforge test --build');
+    expect(message).toContain('Requested paths: browser/base/content/test/dummy/browser_dummy.js');
+    expect(message).toContain(
+      'First post-rebuild failure: TEST-UNEXPECTED-FAIL | browser_dummy.js | expected true got false'
+    );
+  });
+
   it('rewrites stale-branding failures into an actionable rebuild hint', async () => {
     vi.mocked(testWithOutput).mockResolvedValue({
       exitCode: 1,
@@ -215,6 +243,30 @@ describe('testCommand', () => {
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'])
     ).rejects.toThrow(/stale build artifacts/i);
+  });
+
+  it('separates stale-shaped failures after --build from stale deployed artifacts', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: 'No chrome package registered for chrome://branding/locale/brand.properties',
+      stderr:
+        'ERROR Unexpected exception Error: Failed to load resource:///modules/distribution.sys.mjs',
+    });
+
+    let error: unknown;
+    try {
+      await testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        build: true,
+      });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(GeneralError);
+    const message = error instanceof Error ? error.message : '';
+    expect(message).toContain('Post-rebuild test failure:');
+    expect(message).toContain('already ran the requested rebuild');
+    expect(message).toContain('runtime, registration, routing, or test-contract regression');
   });
 
   it('routes fork-module load failures to the module-registration hint (Eval 1 Finding #14)', async () => {
@@ -299,11 +351,18 @@ describe('testCommand', () => {
   it('throws a BuildError when the incremental pre-test build fails', async () => {
     vi.mocked(buildUI).mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
 
-    await expect(
-      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+    let error: unknown;
+    try {
+      await testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
         build: true,
-      })
-    ).rejects.toBeInstanceOf(BuildError);
+      });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(BuildError);
+    const message = error instanceof Error ? error.message : '';
+    expect(message).not.toContain('Post-rebuild test failure:');
 
     expect(testWithOutput).not.toHaveBeenCalled();
   });

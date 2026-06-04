@@ -7,6 +7,12 @@ export interface HarnessEarlyExit {
   line: string;
 }
 
+export interface PostRebuildFailureContext {
+  rebuildCommand: string;
+  requestedPaths: readonly string[];
+  firstFailureLine?: string;
+}
+
 function getNonEmptyOutputLines(output: string): string[] {
   return output
     .split(/\r?\n/)
@@ -19,6 +25,60 @@ function findFirstMatchingLine(
   patterns: readonly RegExp[]
 ): string | undefined {
   return lines.find((line) => patterns.some((pattern) => pattern.test(line)));
+}
+
+/** Finds the first high-signal failure line from captured mach test output. */
+export function findFirstUsefulFailureLine(output: string): string | undefined {
+  const lines = getNonEmptyOutputLines(output);
+  const matched = findFirstMatchingLine(lines, [
+    /\bTEST-UNEXPECTED-[A-Z-]+\b/,
+    /\bPROCESS-CRASH\b/i,
+    /\bTIMEOUT\b/i,
+    /timed out/i,
+    /HominisBrowserUnavailableError/i,
+    /Marionette.*(?:session|startup|start).*fail/i,
+    /(?:failed|unable) to (?:start|create|open).*Marionette/i,
+    /SessionNotCreatedException/i,
+    /Browser process exited during spawn/i,
+    /Failed to load (?:resource|chrome):\/\//i,
+    /\b(?:Error|Exception|TypeError|ReferenceError|SyntaxError):\s+/,
+    /AttributeError:\s+/,
+  ]);
+  return matched ?? lines[0];
+}
+
+/** Starts a post-rebuild context block for a focused test failure. */
+export function createPostRebuildFailureContext(
+  rebuildCommand: string,
+  requestedPaths: readonly string[]
+): PostRebuildFailureContext {
+  return { rebuildCommand, requestedPaths };
+}
+
+/** Adds the first useful failure line from captured output to an existing context block. */
+export function completePostRebuildFailureContext(
+  context: PostRebuildFailureContext,
+  output: string
+): PostRebuildFailureContext {
+  const firstFailureLine = findFirstUsefulFailureLine(output);
+  return firstFailureLine ? { ...context, firstFailureLine } : context;
+}
+
+/** Prepends post-rebuild context when the test failure happened after a successful rebuild. */
+export function prependPostRebuildFailureContext(
+  message: string,
+  context: PostRebuildFailureContext | undefined
+): string {
+  if (!context) return message;
+  const requestedPaths =
+    context.requestedPaths.length > 0 ? context.requestedPaths.join(', ') : '(all tests)';
+  return (
+    'Post-rebuild test failure:\n\n' +
+    `Rebuild command: ${context.rebuildCommand}\n` +
+    `Requested paths: ${requestedPaths}\n` +
+    `First post-rebuild failure: ${context.firstFailureLine ?? '(no captured output)'}\n\n` +
+    message
+  );
 }
 
 /** Classifies mach output where no requested test actually began running. */

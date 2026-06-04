@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.29.0
+
+- Improved `fireforge test --build` failure reporting so post-rebuild focused test failures name the rebuild command, requested paths, and first failure line separately from stale-artifact rebuild advice.
+
 ## 0.28.0
 
 - Restored mach lint compatibility for FireForge-managed Git-backed Firefox checkouts by materializing a `.hgignore` copy of `.gitignore` when Firefox's ignorefile linter config is present.

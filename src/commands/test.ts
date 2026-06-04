@@ -27,9 +27,13 @@ import {
 import {
   buildHarnessEarlyExitMessage,
   classifyHarnessEarlyExit,
+  completePostRebuildFailureContext,
+  createPostRebuildFailureContext,
+  type PostRebuildFailureContext,
+  prependPostRebuildFailureContext,
 } from '../core/test-harness-output.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
-import { tryRepairStaleXpcshellTestSymlink } from '../core/test-stale-symlink.js';
+import { retryAfterXpcshellSymlinkRepair } from '../core/test-xpcshell-retry.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
@@ -68,7 +72,15 @@ function buildUnknownTestMessage(testPaths: string[]): string {
   );
 }
 
-function buildStaleBuildMessage(): string {
+function buildStaleBuildMessage(postRebuild: boolean): string {
+  if (postRebuild) {
+    return (
+      'Firefox test runtime still reported stale-artifact-shaped resource failures after the rebuild completed.\n\n' +
+      'FireForge already ran the requested rebuild before this focused test, so treat the remaining failure as a real runtime, registration, routing, or test-contract regression rather than another stale deployed-artifact-only blocker.\n\n' +
+      'Check the first post-rebuild failure above and the raw mach output for the concrete path or module that still fails.'
+    );
+  }
+
   return (
     'Firefox test runtime appears to be using stale build artifacts.\n\n' +
     'The failing output referenced missing branding or distribution resources, which usually means the current obj-* build does not match recent engine or branding changes.\n\n' +
@@ -252,6 +264,15 @@ async function runPreTestBuild(
   });
 }
 
+function logTestSelection(normalizedPaths: readonly string[]): void {
+  if (normalizedPaths.length > 0) {
+    info(`Running tests: ${normalizedPaths.join(', ')}`);
+  } else {
+    info('Running all tests...');
+  }
+  info('');
+}
+
 // Detects the `AttributeError: 'MochitestDesktop' object has no attribute
 // 'http3Server'` teardown crash. The attribute is lazy-initialized inside
 // harness code paths that presume chrome://branding resolves correctly; a
@@ -277,16 +298,25 @@ function handleNonZeroTestExit(
   result: { stdout: string; stderr: string; exitCode: number },
   normalizedPaths: string[],
   appdirInjectionAttempted: boolean,
-  binaryName: string
+  binaryName: string,
+  postRebuildContext: PostRebuildFailureContext | undefined
 ): void {
   if (result.exitCode === 0 || result.exitCode === 130) return;
   const combinedOutput = `${result.stdout}\n${result.stderr}`;
+  const failureContext = postRebuildContext
+    ? completePostRebuildFailureContext(postRebuildContext, combinedOutput)
+    : undefined;
+  const withContext = (message: string): string =>
+    prependPostRebuildFailureContext(message, failureContext);
+  const throwGeneral = (message: string): never => {
+    throw new GeneralError(withContext(message));
+  };
   if (/UNKNOWN TEST\b/i.test(combinedOutput)) {
-    throw new GeneralError(buildUnknownTestMessage(normalizedPaths));
+    throwGeneral(buildUnknownTestMessage(normalizedPaths));
   }
   const earlyExit = classifyHarnessEarlyExit(combinedOutput, normalizedPaths);
   if (earlyExit) {
-    throw new GeneralError(buildHarnessEarlyExitMessage(earlyExit, normalizedPaths));
+    throwGeneral(buildHarnessEarlyExitMessage(earlyExit, normalizedPaths));
   }
   // Fork-owned module load failures must beat the branding stale-build
   // branch: 2026-04-21 eval (Finding #14) saw a fork's test fail with
@@ -295,7 +325,7 @@ function handleNonZeroTestExit(
   // stale-build pattern matched, so the operator was told to rebuild
   // when the real fix is to register the missing module.
   if (hasForkModuleSignal(combinedOutput, binaryName)) {
-    throw new GeneralError(buildForkModuleMessage(binaryName));
+    throwGeneral(buildForkModuleMessage(binaryName));
   }
   // Branding-specific stale-build signals keep priority over the broader
   // xpcshell-appdir hint: when `chrome://branding/locale/brand.properties`
@@ -308,19 +338,19 @@ function handleNonZeroTestExit(
   // which is the more useful diagnosis in practice for `Failed to load
   // resource:///modules/…`.
   if (hasStaleBuildArtifactsSignal(combinedOutput)) {
-    throw new GeneralError(buildStaleBuildMessage());
+    throwGeneral(buildStaleBuildMessage(Boolean(failureContext)));
   }
   if (hasXpcshellAppdirSignal(combinedOutput)) {
-    throw new GeneralError(buildXpcshellAppdirMessage(appdirInjectionAttempted));
+    throwGeneral(buildXpcshellAppdirMessage(appdirInjectionAttempted));
   }
   if (hasMochitestHttp3ServerSignal(combinedOutput)) {
-    throw new GeneralError(buildMochitestHttp3ServerMessage());
+    throwGeneral(buildMochitestHttp3ServerMessage());
   }
   if (
     /FileExistsError/i.test(combinedOutput) &&
     /(mochitest|xpcshell|_tests)/i.test(combinedOutput)
   ) {
-    throw new GeneralError(buildHarnessSymlinkMessage());
+    throwGeneral(buildHarnessSymlinkMessage());
   }
   if (
     /invalid filename/i.test(combinedOutput) ||
@@ -330,7 +360,9 @@ function handleNonZeroTestExit(
     info('Run "fireforge register <test-path>" to register it.');
   }
   throw new BuildError(
-    `Tests failed with exit code ${result.exitCode}. Check the output above for details.`,
+    withContext(
+      `Tests failed with exit code ${result.exitCode}. Check the output above for details.`
+    ),
     'mach test'
   );
 }
@@ -483,10 +515,6 @@ export async function testCommand(
     }
   }
 
-  // Normalize test paths (strip engine/ prefix if present). Uses the
-  // shared `stripEnginePrefix` helper so `test`, `register`, `lint`, and
-  // `export` all accept the same prefix forms. Also trim to match the
-  // previous case-insensitive + leading-whitespace-tolerant contract.
   const normalizedPaths = testPaths.map((p) => stripEnginePrefix(p).trim());
   await assertTestPathsExist(paths.engine, normalizedPaths);
   const classification = await classifyTestHarnesses(paths.engine, normalizedPaths);
@@ -498,7 +526,6 @@ export async function testCommand(
       ? filterRedundantXpcshellFlavorArgs(options.machArg, classification)
       : [];
 
-  // Build extra args
   const extraArgs: string[] = [];
 
   if (options.headless) {
@@ -568,13 +595,7 @@ export async function testCommand(
     extraArgs
   );
 
-  // Log what we're doing
-  if (normalizedPaths.length > 0) {
-    info(`Running tests: ${normalizedPaths.join(', ')}`);
-  } else {
-    info('Running all tests...');
-  }
-  info('');
+  logTestSelection(normalizedPaths);
 
   let result: Awaited<ReturnType<typeof testWithOutput>>;
 
@@ -588,22 +609,24 @@ export async function testCommand(
     );
   }
 
-  if (
-    result.exitCode !== 0 &&
-    classification.xpcshell.length > 0 &&
-    classification.nonXpcshell.length === 0
-  ) {
-    const repaired = await tryRepairStaleXpcshellTestSymlink(
-      paths.engine,
-      buildCheck.objDir,
-      `${result.stdout}\n${result.stderr}`
-    );
-    if (repaired) {
-      result = await testWithOutput(paths.engine, normalizedPaths, extraArgs);
-    }
-  }
+  result = await retryAfterXpcshellSymlinkRepair(
+    paths.engine,
+    buildCheck.objDir,
+    result,
+    classification,
+    normalizedPaths,
+    extraArgs
+  );
 
-  handleNonZeroTestExit(result, normalizedPaths, appdirInjection, projectConfig.binaryName);
+  handleNonZeroTestExit(
+    result,
+    normalizedPaths,
+    appdirInjection,
+    projectConfig.binaryName,
+    options.build
+      ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)
+      : undefined
+  );
 }
 
 /** Registers the test command on the CLI program. */

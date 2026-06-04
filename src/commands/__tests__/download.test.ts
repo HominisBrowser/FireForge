@@ -50,6 +50,16 @@ vi.mock('../../utils/fs.js', () => ({
   checkDiskSpace: vi.fn().mockResolvedValue(undefined),
 }));
 
+const mockRename = vi.hoisted(() => vi.fn<() => Promise<void>>().mockResolvedValue(undefined));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    rename: mockRename,
+  };
+});
+
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
@@ -69,7 +79,7 @@ import { withFileLock } from '../../core/file-lock.js';
 import { downloadFirefoxSource } from '../../core/firefox.js';
 import { updateFurnaceState } from '../../core/furnace-config.js';
 import { getHead, initRepository, resumeRepository } from '../../core/git.js';
-import { EngineExistsError } from '../../errors/download.js';
+import { ChecksumMismatchError, EngineExistsError } from '../../errors/download.js';
 import { pathExists, pathExistsStrict, removeDir } from '../../utils/fs.js';
 import type { SpinnerHandle } from '../../utils/logger.js';
 import { info, spinner, step, warn } from '../../utils/logger.js';
@@ -97,6 +107,12 @@ function createSpinnerMock(): SpinnerHandle & {
 describe('downloadCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRename.mockReset().mockResolvedValue(undefined);
+    vi.mocked(downloadFirefoxSource).mockResolvedValue(undefined);
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+    vi.mocked(resumeRepository).mockResolvedValue(undefined);
+    vi.mocked(updateFurnaceState).mockResolvedValue(undefined);
     vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
     vi.mocked(withFileLock).mockImplementation((_lockPath, operation) => operation());
     vi.mocked(pathExists).mockImplementation((path: string) =>
@@ -107,13 +123,31 @@ describe('downloadCommand', () => {
     );
   });
 
-  it('warns that force is required after partial git initialization failure', async () => {
+  it('restores the previous engine when forced git initialization fails after replacement', async () => {
     vi.mocked(initRepository).mockRejectedValue(new Error('git add failed'));
 
     await expect(downloadCommand('/project', { force: true })).rejects.toThrow('git add failed');
 
     expect(warn).toHaveBeenCalledWith(
-      'engine/ may now contain a partially initialized git repository. Re-run "fireforge download --force" to recreate the baseline cleanly.'
+      'Replacement engine/ failed during baseline git initialization. FireForge will try to restore the previous engine.'
+    );
+    expect(warn).toHaveBeenCalledWith(
+      'Restored the previous engine/ after the forced replacement failed.'
+    );
+    expect(mockRename).toHaveBeenNthCalledWith(
+      1,
+      '/project/engine',
+      expect.stringMatching(/^\/project\/engine\.backup-/)
+    );
+    expect(mockRename).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(/^\/project\/engine\.replacement-/),
+      '/project/engine'
+    );
+    expect(mockRename).toHaveBeenNthCalledWith(
+      3,
+      expect.stringMatching(/^\/project\/engine\.backup-/),
+      '/project/engine'
     );
   });
 
@@ -203,8 +237,8 @@ describe('downloadCommand', () => {
     expect(initRepository).not.toHaveBeenCalled();
   });
 
-  it('clears furnace state when --force removes an existing engine', async () => {
-    // Engine exists AND furnace-state.json exists → force branch should clear it.
+  it('clears furnace state after --force activates a replacement engine', async () => {
+    // Engine exists AND furnace-state.json exists → force branch should clear it after activation.
     vi.mocked(pathExistsStrict).mockResolvedValue(true);
     vi.mocked(pathExists).mockImplementation((path: string) => {
       if (path === '/project/.fireforge/furnace-state.json') return Promise.resolve(true);
@@ -215,7 +249,17 @@ describe('downloadCommand', () => {
 
     await downloadCommand('/project', { force: true });
 
-    expect(removeDir).toHaveBeenCalledWith('/project/engine');
+    expect(downloadFirefoxSource).toHaveBeenCalledWith(
+      '140.9.0esr',
+      'firefox-esr',
+      expect.stringMatching(/^\/project\/engine\.replacement-/),
+      '/project/.fireforge/cache',
+      expect.any(Function),
+      expect.any(Function),
+      undefined,
+      expect.any(Function)
+    );
+    expect(removeDir).not.toHaveBeenCalledWith('/project/engine');
     expect(updateFurnaceState).toHaveBeenCalledTimes(1);
     const call = vi.mocked(updateFurnaceState).mock.calls[0];
     expect(call).toBeDefined();
@@ -270,7 +314,26 @@ describe('downloadCommand', () => {
 
     await downloadCommand('/project', { force: true });
 
-    expect(removeDir).toHaveBeenCalled();
+    expect(removeDir).not.toHaveBeenCalledWith('/project/engine');
+    expect(updateFurnaceState).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing engine when forced download fails checksum validation before extraction', async () => {
+    const mismatch = new ChecksumMismatchError(
+      'firefox-devedition',
+      '0'.repeat(64),
+      '1'.repeat(64),
+      'https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
+    );
+    vi.mocked(pathExistsStrict).mockResolvedValue(true);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(downloadFirefoxSource).mockRejectedValueOnce(mismatch);
+
+    await expect(downloadCommand('/project', { force: true })).rejects.toBe(mismatch);
+
+    expect(removeDir).not.toHaveBeenCalledWith('/project/engine');
+    expect(mockRename).not.toHaveBeenCalled();
+    expect(initRepository).not.toHaveBeenCalled();
     expect(updateFurnaceState).not.toHaveBeenCalled();
   });
 

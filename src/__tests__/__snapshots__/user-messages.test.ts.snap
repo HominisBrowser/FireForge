@@ -53,6 +53,21 @@ To fix this:
 
 exports[`userMessage snapshots > CancellationError 1`] = `"cancelled"`;
 
+exports[`userMessage snapshots > ChecksumMismatchError for Developer Edition 1`] = `
+"Download Error: Firefox source archive checksum mismatch.
+
+Product: firefox-devedition
+URL: https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz
+Expected SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
+Actual SHA-256: 1111111111111111111111111111111111111111111111111111111111111111
+
+To fix this:
+  1. Verify firefox.product, firefox.version, and firefox.sha256 in fireforge.json
+  2. Compare the pinned hash with Mozilla SHA256SUMMARY for the resolved archive
+  3. Developer Edition archives should resolve under https://archive.mozilla.org/pub/devedition/releases/
+  4. Re-run "fireforge download --force" after correcting the source settings"
+`;
+
 exports[`userMessage snapshots > ConfigError with field 1`] = `
 "Configuration Error: invalid value
 

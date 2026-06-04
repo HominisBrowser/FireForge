@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ExitCode } from '../codes.js';
 import {
+  ChecksumMismatchError,
   DownloadError,
   EngineExistsError,
   ExtractionError,
@@ -24,6 +25,23 @@ describe('download errors', () => {
     const error = new DownloadError('network error');
 
     expect(error.userMessage).not.toContain('URL:');
+  });
+
+  it('formats ChecksumMismatchError with product and resolved archive URL', () => {
+    const error = new ChecksumMismatchError(
+      'firefox-devedition',
+      '0'.repeat(64),
+      '1'.repeat(64),
+      'https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
+    );
+
+    expect(error.code).toBe(ExitCode.DOWNLOAD_ERROR);
+    expect(error.product).toBe('firefox-devedition');
+    expect(error.userMessage).toContain('Product: firefox-devedition');
+    expect(error.userMessage).toContain(
+      'URL: https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
+    );
+    expect(error.userMessage).toContain('Developer Edition archives should resolve under');
   });
 
   it('formats ExtractionError with archive path', () => {

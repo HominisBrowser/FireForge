@@ -26,7 +26,9 @@ import { pathExists } from '../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { runPatchLint } from './export-shared.js';
+import { loadScanFilesAssignments, withDryRunReExportLock } from './re-export-bulk-scan.js';
 import { reExportFilesInPlace } from './re-export-files.js';
+import { validateReExportOptionCombinations } from './re-export-options.js';
 import {
   assertScanFileAdditionsHaveDiffHunks,
   confirmBroadScanAdditions,
@@ -366,44 +368,7 @@ export async function reExportCommand(
   const isDryRun = options.dryRun === true;
   intro(isDryRun ? 'FireForge Re-export (dry run)' : 'FireForge Re-export');
 
-  // --files is mutually exclusive with --scan and --all: they select
-  // different scope contracts.
-  if (options.files !== undefined) {
-    if (options.all || options.scan) {
-      throw new InvalidArgumentError('--files cannot be combined with --scan or --all.', '--files');
-    }
-    if (patches.length !== 1) {
-      throw new InvalidArgumentError(
-        '--files operates on exactly one target patch. Pass a single patch identifier.',
-        '--files'
-      );
-    }
-  }
-
-  if (options.scanFiles !== undefined) {
-    if (!options.scan) {
-      throw new InvalidArgumentError('--scan-file requires --scan.', '--scan-file');
-    }
-    if (options.all || patches.length !== 1) {
-      throw new InvalidArgumentError(
-        '--scan-file operates on exactly one target patch. Pass a single patch identifier.',
-        '--scan-file'
-      );
-    }
-  }
-
-  // --tier and --lint-ignore are per-patch metadata edits; combining them
-  // with --all silently rewrites every patch's tier/ignore list, which is
-  // virtually always wrong (different patches have different shapes).
-  // Refuse the combination so the operator must enumerate the targets.
-  const usingTierFlag = options.tier !== undefined;
-  const usingLintIgnoreFlag = options.lintIgnore !== undefined && options.lintIgnore.length > 0;
-  if (options.all && (usingTierFlag || usingLintIgnoreFlag)) {
-    throw new InvalidArgumentError(
-      '--tier and --lint-ignore require explicit patch identifiers and cannot be combined with --all (different patches typically need different metadata).',
-      '--all'
-    );
-  }
+  validateReExportOptionCombinations(patches, options);
 
   const paths = getProjectPaths(projectRoot);
 
@@ -427,14 +392,31 @@ export async function reExportCommand(
     );
   }
 
+  const scanFilesByPatch =
+    options.scanFilesManifest !== undefined
+      ? await loadScanFilesAssignments(options.scanFilesManifest, manifest)
+      : undefined;
+
   // Resolve which patches to re-export
-  const selectedPatches = await resolveSelectedPatches(patches, options, manifest);
+  const selectedPatches =
+    scanFilesByPatch !== undefined
+      ? manifest.patches.filter((patch) => scanFilesByPatch.has(patch.filename))
+      : await resolveSelectedPatches(patches, options, manifest);
   if (!selectedPatches) return;
 
   if (selectedPatches.length === 0) {
     warn('No patches selected');
     outro('Nothing to re-export');
     return;
+  }
+
+  if (scanFilesByPatch !== undefined) {
+    info(`Bulk scan assignments from ${options.scanFilesManifest}`);
+    for (const patch of selectedPatches) {
+      const files = scanFilesByPatch.get(patch.filename) ?? [];
+      info(`  ${patch.filename} <= ${files.length} file(s)`);
+      for (const file of files) info(`    + ${file}`);
+    }
   }
 
   // --files path: handled end-to-end here so we can lint the *projected*
@@ -445,7 +427,9 @@ export async function reExportCommand(
   // we write anything.
   if (options.files !== undefined) {
     const filesConfig = await loadConfig(projectRoot);
-    await reExportFilesInPlace(paths, selectedPatches, options, filesConfig);
+    await withDryRunReExportLock(paths.fireforgeDir, isDryRun, () =>
+      reExportFilesInPlace(paths, selectedPatches, options, filesConfig)
+    );
     return;
   }
 
@@ -456,21 +440,33 @@ export async function reExportCommand(
   const progress = spinner('Preparing re-export...');
   const startedAt = Date.now();
 
-  for (const [index, patch] of selectedPatches.entries()) {
-    progress.message(
-      `Re-exporting ${index + 1}/${selectedPatches.length}: ${patch.filename} (${patch.filesAffected.length} file(s), ${elapsedSince(startedAt)} elapsed)...`
-    );
-    try {
-      const exported = await reExportSinglePatch(patch, paths, manifest, options, isDryRun, config);
-      if (exported) {
-        reExported++;
-        reExportedFilenames.push(patch.filename);
+  await withDryRunReExportLock(paths.fireforgeDir, isDryRun, async () => {
+    for (const [index, patch] of selectedPatches.entries()) {
+      const assignedScanFiles = scanFilesByPatch?.get(patch.filename);
+      const patchOptions =
+        assignedScanFiles !== undefined ? { ...options, scanFiles: assignedScanFiles } : options;
+      progress.message(
+        `Re-exporting ${index + 1}/${selectedPatches.length}: ${patch.filename} (${patch.filesAffected.length} file(s), ${elapsedSince(startedAt)} elapsed)...`
+      );
+      try {
+        const exported = await reExportSinglePatch(
+          patch,
+          paths,
+          manifest,
+          patchOptions,
+          isDryRun,
+          config
+        );
+        if (exported) {
+          reExported++;
+          reExportedFilenames.push(patch.filename);
+        }
+      } catch (error: unknown) {
+        warn(`Failed to re-export ${patch.filename}`);
+        warn(toError(error).message);
       }
-    } catch (error: unknown) {
-      warn(`Failed to re-export ${patch.filename}`);
-      warn(toError(error).message);
     }
-  }
+  });
 
   if (reExported === 0 && selectedPatches.length > 0) {
     progress.error('Re-export failed');
@@ -542,6 +538,10 @@ export function registerReExport(
       [] as string[]
     )
     .option(
+      '--scan-files <manifest>',
+      'With --scan, bulk-assign generated files from a JSON manifest: {"assignments":[{"patch":"002-name.patch","files":["path"]}]}. Selects patches from the manifest.'
+    )
+    .option(
       '--files <paths>',
       'Restrict the re-exported filesAffected to this comma-separated list (single target patch only)',
       (value: string) =>
@@ -582,6 +582,7 @@ export function registerReExport(
             all?: boolean;
             scan?: boolean;
             scanFile?: string[];
+            scanFiles?: string;
             files?: string[];
             dryRun?: boolean;
             skipLint?: boolean;
@@ -593,10 +594,11 @@ export function registerReExport(
             lintIgnore?: string[];
           }
         ) => {
-          const { tier, lintIgnore, scanFile, ...rest } = options;
+          const { tier, lintIgnore, scanFile, scanFiles, ...rest } = options;
           await reExportCommand(getProjectRoot(), patches, {
             ...pickDefined(rest),
             ...(scanFile !== undefined && scanFile.length > 0 ? { scanFiles: scanFile } : {}),
+            ...(scanFiles !== undefined ? { scanFilesManifest: scanFiles } : {}),
             ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
             ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
           });

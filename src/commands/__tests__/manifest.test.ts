@@ -75,9 +75,16 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // it under the max-lines threshold. Consumed by re-export.ts; no
   // top-level registrar.
   're-export-files.ts',
+  // Bulk scan manifest and option helpers for re-export, extracted from
+  // re-export.ts to keep that command under max-lines.
+  're-export-bulk-scan.ts',
+  're-export-options.ts',
   // Scan planning helpers for re-export, including targeted --scan-file.
   // Consumed by re-export.ts; no top-level registrar.
   're-export-scan.ts',
+  // Xpcshell appdir auto-injection helper consumed by test.ts; no
+  // top-level registrar.
+  'test-appdir.ts',
 ]);
 
 const ALLOWED_GROUPS = new Set(['project', 'workflow', 'engine', 'diagnostics', 'components']);

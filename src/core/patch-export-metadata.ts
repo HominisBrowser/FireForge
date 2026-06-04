@@ -5,37 +5,12 @@
 
 import type { PatchMetadata } from '../types/commands/index.js';
 import { withPatchDirectoryLock } from './patch-apply.js';
-import { loadPatchesManifest, savePatchesManifest } from './patch-manifest.js';
+import { mutatePatchRowsInManifest } from './patch-manifest.js';
 
 /**
  * Optional `PatchMetadata` keys safe to clear via the helpers below.
  */
 export type ClearablePatchMetadataField = 'tier' | 'lintIgnore' | 'stagedDependencies';
-
-/**
- * Merges `updates` onto `existing` and removes the listed optional fields.
- */
-function applyMetadataUpdate(
-  existing: PatchMetadata,
-  updates: Partial<PatchMetadata>,
-  unset: ReadonlyArray<ClearablePatchMetadataField>
-): PatchMetadata {
-  const next: PatchMetadata = { ...existing, ...updates };
-  for (const field of unset) {
-    switch (field) {
-      case 'tier':
-        delete next.tier;
-        break;
-      case 'lintIgnore':
-        delete next.lintIgnore;
-        break;
-      case 'stagedDependencies':
-        delete next.stagedDependencies;
-        break;
-    }
-  }
-  return next;
-}
 
 /**
  * Updates metadata for a patch in the manifest.
@@ -52,17 +27,10 @@ export async function updatePatchMetadata(
   unsetFields: ReadonlyArray<ClearablePatchMetadataField> = []
 ): Promise<void> {
   await withPatchDirectoryLock(patchesDir, async () => {
-    const manifest = await loadPatchesManifest(patchesDir);
-    if (!manifest) return;
-
-    const patchIndex = manifest.patches.findIndex((p) => p.filename === filename);
-    if (patchIndex === -1) return;
-
-    const existingPatch = manifest.patches[patchIndex];
-    if (existingPatch) {
-      manifest.patches[patchIndex] = applyMetadataUpdate(existingPatch, updates, unsetFields);
-      await savePatchesManifest(patchesDir, manifest);
-    }
+    await mutatePatchRowsInManifest(patchesDir, [filename], () => ({
+      set: updates,
+      unset: unsetFields,
+    }));
   });
 }
 
@@ -92,19 +60,12 @@ export async function mutatePatchMetadata(
   mutator: (existing: PatchMetadata) => PatchMetadataMutation
 ): Promise<PatchMetadataMutationResult | null> {
   return await withPatchDirectoryLock(patchesDir, async () => {
-    const manifest = await loadPatchesManifest(patchesDir);
-    if (!manifest) return null;
-
-    const patchIndex = manifest.patches.findIndex((p) => p.filename === filename);
-    if (patchIndex === -1) return null;
-
-    const existingPatch = manifest.patches[patchIndex];
-    if (!existingPatch) return null;
-
-    const { set = {}, unset = [] } = mutator(existingPatch);
-    const updatedPatch = applyMetadataUpdate(existingPatch, set, unset);
-    manifest.patches[patchIndex] = updatedPatch;
-    await savePatchesManifest(patchesDir, manifest);
-    return { before: existingPatch, after: updatedPatch };
+    const result = await mutatePatchRowsInManifest(patchesDir, [filename], (existing) => {
+      const { set = {}, unset = [] } = mutator(existing);
+      return { set, unset };
+    });
+    const changed = result?.[0];
+    if (!changed) return null;
+    return { before: changed.before, after: changed.after };
   });
 }

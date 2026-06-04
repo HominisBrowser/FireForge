@@ -33,7 +33,8 @@ export function normalizeScanFiles(scanFiles: readonly string[] | undefined): st
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function normalizeEngineRelativeInput(rawPath: string, flagName: string): string {
+/** Normalizes one CLI-provided path into a safe engine-relative path. */
+export function normalizeEngineRelativeInput(rawPath: string, flagName: string): string {
   const normalized = normalizePathSlashes(stripEnginePrefix(rawPath).trim());
   if (normalized.length === 0) {
     throw new InvalidArgumentError(

@@ -27,6 +27,11 @@ vi.mock('../../core/git.js', () => ({
   isGitRepository: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock('../../core/file-lock.js', () => ({
+  createSiblingLockPath: (filePath: string, suffix = '.fireforge.lock') => `${filePath}${suffix}`,
+  withFileLock: vi.fn((_lockPath: string, operation: () => Promise<unknown>) => operation()),
+}));
+
 vi.mock('../../core/git-diff.js', () => ({
   getDiffForFilesAgainstHead: vi.fn().mockResolvedValue('diff --git a/x b/x\n+content\n'),
 }));
@@ -59,6 +64,7 @@ vi.mock('../../core/patch-lint.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn().mockResolvedValue(true),
+  readText: vi.fn(),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -84,6 +90,7 @@ vi.mock('@clack/prompts', () => ({
 
 import { confirm, multiselect } from '@clack/prompts';
 
+import { withFileLock } from '../../core/file-lock.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-status.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
@@ -95,7 +102,7 @@ import {
 } from '../../core/patch-manifest.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
-import { pathExists } from '../../utils/fs.js';
+import { pathExists, readText } from '../../utils/fs.js';
 import { cancel, info, isCancel, outro, spinner, success, warn } from '../../utils/logger.js';
 import { reExportCommand } from '../re-export.js';
 
@@ -127,6 +134,8 @@ describe('reExportCommand - --scan flag', () => {
     vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
     vi.mocked(getClaimedFiles).mockReturnValue(new Set<string>());
     vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readText).mockResolvedValue('{"assignments":[]}');
+    vi.mocked(withFileLock).mockImplementation((_lockPath, operation) => operation());
     vi.mocked(updatePatchAndMetadata).mockResolvedValue(undefined);
     vi.mocked(lintExportedPatch).mockResolvedValue([]);
     vi.mocked(isCancel).mockReturnValue(false);
@@ -364,6 +373,65 @@ describe('reExportCommand - --scan flag', () => {
     expect(updatePatchAndMetadata).not.toHaveBeenCalled();
   });
 
+  it('serializes dry-run re-export inspection under the FireForge dry-run lock', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    await reExportCommand('/fake/root', ['001'], { dryRun: true });
+
+    expect(withFileLock).toHaveBeenCalledWith(
+      '/fake/root/.fireforge/re-export-dry-run.lock',
+      expect.any(Function),
+      expect.any(Object)
+    );
+    const lockOptions = vi.mocked(withFileLock).mock.calls[0]?.[2];
+    expect(lockOptions?.onTimeoutMessage).toEqual(
+      expect.stringContaining('re-export dry-run lock')
+    );
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
+  it('prevents concurrent dry-runs from overlapping simulated engine index access', async () => {
+    const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    let activeGitInspection = 0;
+    vi.mocked(getDiffForFilesAgainstHead).mockImplementation(async () => {
+      activeGitInspection++;
+      try {
+        if (activeGitInspection > 1) {
+          throw new Error("fatal: Unable to create '/fake/engine/.git/index.lock': File exists.");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return 'diff --git a/browser/modules/foo/a.js b/browser/modules/foo/a.js\n+content\n';
+      } finally {
+        activeGitInspection--;
+      }
+    });
+
+    let lockTail = Promise.resolve();
+    vi.mocked(withFileLock).mockImplementation((_lockPath, operation) => {
+      const run = lockTail.then(operation);
+      lockTail = run.then(
+        () => undefined,
+        () => undefined
+      );
+      return run;
+    });
+
+    await expect(
+      Promise.all([
+        reExportCommand('/fake/root', ['001'], { dryRun: true }),
+        reExportCommand('/fake/root', ['001'], { dryRun: true }),
+      ])
+    ).resolves.toEqual([undefined, undefined]);
+
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledTimes(2);
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
   it('--scan-file does not require --yes for broad-looking non-interactive additions', async () => {
     restoreTTY = setInteractiveMode(false);
     const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
@@ -422,6 +490,188 @@ describe('reExportCommand - --scan flag', () => {
       reExportCommand('/fake/root', ['001'], {
         scan: true,
         scanFiles: ['browser/modules/foo/unchanged.js'],
+      })
+    ).rejects.toThrow(/All selected patches failed to re-export/);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('produced no diff hunks'));
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
+  it('--scan-files manifest dry-run assigns generated files to multiple patches', async () => {
+    const patch1 = makePatch('001-branding-browser.patch', ['browser/branding/hominis/base.js']);
+    const patch2 = makePatch('002-branding-runtime.patch', ['browser/branding/hominis/app.ico']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+    vi.mocked(readText).mockResolvedValue(
+      JSON.stringify({
+        assignments: [
+          {
+            patch: '001',
+            files: ['engine/browser/branding/hominis/icon.svg'],
+          },
+          {
+            patch: '002-branding-runtime.patch',
+            files: ['browser/branding/hominis/runtime.ico'],
+          },
+        ],
+      })
+    );
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(getDiffForFilesAgainstHead)
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/branding/hominis/icon.svg b/browser/branding/hominis/icon.svg',
+          '--- /dev/null',
+          '+++ b/browser/branding/hominis/icon.svg',
+          '@@ -0,0 +1 @@',
+          '+icon',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/branding/hominis/runtime.ico b/browser/branding/hominis/runtime.ico',
+          '--- /dev/null',
+          '+++ b/browser/branding/hominis/runtime.ico',
+          '@@ -0,0 +1 @@',
+          '+runtime',
+          '',
+        ].join('\n')
+      );
+
+    await reExportCommand('/fake/root', [], {
+      scan: true,
+      scanFilesManifest: 'assignments.json',
+      dryRun: true,
+    });
+
+    expect(info).toHaveBeenCalledWith('Bulk scan assignments from assignments.json');
+    expect(info).toHaveBeenCalledWith('  001-branding-browser.patch <= 1 file(s)');
+    expect(info).toHaveBeenCalledWith('    + browser/branding/hominis/icon.svg');
+    expect(info).toHaveBeenCalledWith('  002-branding-runtime.patch <= 1 file(s)');
+    expect(info).toHaveBeenCalledWith('    + browser/branding/hominis/runtime.ico');
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
+  it('--scan-files manifest writes each resolved patch assignment', async () => {
+    const patch1 = makePatch('001-branding-browser.patch', ['browser/branding/hominis/base.js']);
+    const patch2 = makePatch('002-branding-runtime.patch', ['browser/branding/hominis/app.ico']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+    vi.mocked(readText).mockResolvedValue(
+      JSON.stringify({
+        assignments: [
+          {
+            patch: '001',
+            files: ['browser/branding/hominis/icon.svg'],
+          },
+          {
+            patch: '002',
+            files: ['browser/branding/hominis/runtime.ico'],
+          },
+        ],
+      })
+    );
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(getDiffForFilesAgainstHead)
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/branding/hominis/icon.svg b/browser/branding/hominis/icon.svg',
+          '--- /dev/null',
+          '+++ b/browser/branding/hominis/icon.svg',
+          '@@ -0,0 +1 @@',
+          '+icon',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/branding/hominis/runtime.ico b/browser/branding/hominis/runtime.ico',
+          '--- /dev/null',
+          '+++ b/browser/branding/hominis/runtime.ico',
+          '@@ -0,0 +1 @@',
+          '+runtime',
+          '',
+        ].join('\n')
+      );
+
+    await reExportCommand('/fake/root', [], {
+      scan: true,
+      scanFilesManifest: 'assignments.json',
+    });
+
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3].filesAffected).toEqual([
+      'browser/branding/hominis/base.js',
+      'browser/branding/hominis/icon.svg',
+    ]);
+    expect(vi.mocked(updatePatchAndMetadata).mock.calls[1]?.[3].filesAffected).toEqual([
+      'browser/branding/hominis/app.ico',
+      'browser/branding/hominis/runtime.ico',
+    ]);
+  });
+
+  it('--scan-files manifest rejects a file assigned to more than one patch', async () => {
+    const patch1 = makePatch('001-branding-browser.patch', ['browser/branding/hominis/base.js']);
+    const patch2 = makePatch('002-branding-runtime.patch', ['browser/branding/hominis/app.ico']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+    vi.mocked(readText).mockResolvedValue(
+      JSON.stringify({
+        assignments: [
+          { patch: '001', files: ['browser/branding/hominis/icon.svg'] },
+          { patch: '002', files: ['browser/branding/hominis/icon.svg'] },
+        ],
+      })
+    );
+
+    await expect(
+      reExportCommand('/fake/root', [], {
+        scan: true,
+        scanFilesManifest: 'assignments.json',
+      })
+    ).rejects.toThrow(/assigned to more than one patch/);
+
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
+  it('--scan-files manifest rejects files claimed by another patch', async () => {
+    const patch1 = makePatch('001-branding-browser.patch', ['browser/branding/hominis/base.js']);
+    const patch2 = makePatch('002-branding-runtime.patch', ['browser/branding/hominis/icon.svg']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+    vi.mocked(readText).mockResolvedValue(
+      JSON.stringify({
+        assignments: [{ patch: '001', files: ['browser/branding/hominis/icon.svg'] }],
+      })
+    );
+    vi.mocked(getClaimedFiles).mockReturnValue(new Set(['browser/branding/hominis/icon.svg']));
+    vi.mocked(pathExists).mockResolvedValue(true);
+
+    await expect(
+      reExportCommand('/fake/root', [], {
+        scan: true,
+        scanFilesManifest: 'assignments.json',
+      })
+    ).rejects.toThrow(/All selected patches failed to re-export/);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('already claimed by another patch'));
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+  });
+
+  it('--scan-files manifest rejects assigned files that produce no diff hunk', async () => {
+    const patch = makePatch('001-branding-browser.patch', ['browser/branding/hominis/base.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(readText).mockResolvedValue(
+      JSON.stringify({
+        assignments: [{ patch: '001', files: ['browser/branding/hominis/unchanged.svg'] }],
+      })
+    );
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValueOnce(
+      'diff --git a/browser/branding/hominis/base.js b/browser/branding/hominis/base.js\n+content\n'
+    );
+
+    await expect(
+      reExportCommand('/fake/root', [], {
+        scan: true,
+        scanFilesManifest: 'assignments.json',
       })
     ).rejects.toThrow(/All selected patches failed to re-export/);
 

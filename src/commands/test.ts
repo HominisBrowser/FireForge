@@ -24,14 +24,13 @@ import {
   reportMarionettePreflight,
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
+import {
+  buildHarnessEarlyExitMessage,
+  classifyHarnessEarlyExit,
+} from '../core/test-harness-output.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import { tryRepairStaleXpcshellTestSymlink } from '../core/test-stale-symlink.js';
-import {
-  findNearestXpcshellManifest,
-  operatorAlreadySetAppPath,
-  resolveXpcshellAppdirArg,
-  type XpcshellAppdirOutcome,
-} from '../core/xpcshell-appdir.js';
+import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
@@ -40,6 +39,7 @@ import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
+import { maybeInjectAppdirArg } from './test-appdir.js';
 
 async function assertTestPathsExist(engineDir: string, testPaths: string[]): Promise<void> {
   const missingPaths: string[] = [];
@@ -283,6 +283,10 @@ function handleNonZeroTestExit(
   const combinedOutput = `${result.stdout}\n${result.stderr}`;
   if (/UNKNOWN TEST\b/i.test(combinedOutput)) {
     throw new GeneralError(buildUnknownTestMessage(normalizedPaths));
+  }
+  const earlyExit = classifyHarnessEarlyExit(combinedOutput, normalizedPaths);
+  if (earlyExit) {
+    throw new GeneralError(buildHarnessEarlyExitMessage(earlyExit, normalizedPaths));
   }
   // Fork-owned module load failures must beat the branding stale-build
   // branch: 2026-04-21 eval (Finding #14) saw a fork's test fail with
@@ -600,47 +604,6 @@ export async function testCommand(
   }
 
   handleNonZeroTestExit(result, normalizedPaths, appdirInjection, projectConfig.binaryName);
-}
-
-/**
- * Resolves and (when applicable) appends an `--app-path=<abs>` arg to
- * `extraArgs`. Returns true iff the arg was injected. The logging branches
- * mirror the {@link XpcshellAppdirOutcome} variants so an operator can tell
- * from the test output whether FireForge tried to help and what it found.
- */
-async function maybeInjectAppdirArg(
-  engineDir: string,
-  normalizedPaths: readonly string[],
-  objDir: string | undefined,
-  extraArgs: string[]
-): Promise<boolean> {
-  if (!objDir) return false;
-  if (operatorAlreadySetAppPath(extraArgs)) return false;
-  const outcome: XpcshellAppdirOutcome = await resolveXpcshellAppdirArg(
-    engineDir,
-    normalizedPaths,
-    objDir
-  );
-  switch (outcome.kind) {
-    case 'none':
-      return false;
-    case 'mismatch':
-      warn(
-        `xpcshell appdir auto-injection skipped — multiple test paths resolved to different app dirs (${outcome.values.join(', ')}). Pass --mach-arg=--app-path=<abs> to disambiguate.`
-      );
-      return false;
-    case 'unresolved':
-      warn(
-        `xpcshell appdir auto-injection skipped — manifest at ${outcome.manifestPath} requests appdir "${outcome.relativeAppdir}" but no matching directory exists under ${objDir}/dist/. Build artifacts may be stale.`
-      );
-      return false;
-    case 'injected':
-      extraArgs.push(`--app-path=${outcome.result.appPath}`);
-      info(
-        `xpcshell appdir auto-injected: --app-path=${outcome.result.appPath} (from ${outcome.result.manifestPath} firefox-appdir=${outcome.result.relativeAppdir}).`
-      );
-      return true;
-  }
 }
 
 /** Registers the test command on the CLI program. */

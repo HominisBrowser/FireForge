@@ -13,6 +13,9 @@ describe('CLI help output', () => {
     const exportHelp = program.commands
       .find((command) => command.name() === 'export')
       ?.helpInformation();
+    const reExportHelp = program.commands
+      .find((command) => command.name() === 're-export')
+      ?.helpInformation();
 
     expect(rootHelp).toMatchSnapshot();
     expect(setupHelp).toContain('--app-id <appId>');
@@ -25,6 +28,8 @@ describe('CLI help output', () => {
     expect(exportHelp).toContain('Place the new patch at this exact unused order');
     expect(exportHelp).toContain('without renumbering existing patches');
     expect(exportHelp).not.toContain('(choices: "branding", "ui", "privacy", "security", "infra")');
+    expect(reExportHelp).toContain('--scan-files <manifest>');
+    expect(reExportHelp).toContain('bulk-assign generated files');
   });
 
   it('exposes stable help text for every furnace subcommand', () => {

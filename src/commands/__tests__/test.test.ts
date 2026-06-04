@@ -163,6 +163,47 @@ describe('testCommand', () => {
     ).rejects.toThrow(/could not discover the requested test path/i);
   });
 
+  it('surfaces harness startup failures before reporting a generic test failure', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout:
+        'INFO Running browser-chrome tests\n' +
+        'HominisBrowserUnavailableError: browser process exited before Marionette session startup',
+      stderr: 'WARNING unrelated teardown noise',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
+    ).rejects.toThrow(/mach test did not run the selected tests/i);
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
+    ).rejects.toThrow(/HominisBrowserUnavailableError/i);
+  });
+
+  it('surfaces zero selected tests run as a harness/discovery failure', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: 'SUITE-START | Running 0 tests\nRan 0 tests and 0 subtests',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
+    ).rejects.toThrow(/zero selected tests ran/i);
+  });
+
+  it('keeps ordinary nonzero mach test failures on the generic BuildError path', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: 'TEST-UNEXPECTED-FAIL | browser_dummy.js | expected true got false',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
+    ).rejects.toBeInstanceOf(BuildError);
+  });
+
   it('rewrites stale-branding failures into an actionable rebuild hint', async () => {
     vi.mocked(testWithOutput).mockResolvedValue({
       exitCode: 1,

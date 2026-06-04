@@ -278,7 +278,11 @@ describe('buildCommand', () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toContain('Build failed with exit code 2');
     expect((failure as Error).message).toContain('Mach phase: mach build');
-    expect((failure as Error).message).toContain('Last make error: make: *** [build] Error 2');
+    expect((failure as Error).message).toContain('Last make error: make[4]: *** [tools] Error 1');
+    expect((failure as Error).message).toContain('Recent make context:');
+    expect((failure as Error).message).toContain(
+      'Final failing command/error line: cp: /project/engine/browser/branding/hominis/Assets.car: No such file or directory'
+    );
     expect((failure as Error).message).toContain('Captured stderr tail:');
     expect((failure as Error).message).toContain('Assets.car: No such file or directory');
     expect((failure as Error).message).toContain(
@@ -287,6 +291,36 @@ describe('buildCommand', () => {
 
     expect(build).toHaveBeenCalledWith('/project/engine', 8);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Build failed after'));
+  });
+
+  it('prioritizes real make failures over trailing Python warning noise', async () => {
+    vi.mocked(build).mockResolvedValue({
+      exitCode: 2,
+      stdout: [
+        '35:12.42 gmake[4]: Entering directory `/project/engine/obj-debug/browser/app/tools`',
+        '35:12.43 /usr/bin/python3 /project/engine/browser/app/tools/repackage.py',
+        '35:12.44 cp: /project/engine/browser/branding/hominis/Assets.car: No such file or directory',
+        '35:12.45 gmake[4]: *** [browser/app/tools/target] Error 1',
+        '35:12.46 gmake[3]: *** [browser/app/tools] Error 2',
+        '35:12.47 gmake[2]: *** [default] Error 2',
+        '/opt/homebrew/lib/python3.11/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+; currently the ssl module is compiled with LibreSSL',
+      ].join('\n'),
+      stderr: '',
+    });
+
+    const failure = await buildCommand('/project', { jobs: 8 }).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain(
+      'Last make error: 35:12.46 gmake[3]: *** [browser/app/tools] Error 2'
+    );
+    expect(message).toContain('Recent make context:');
+    expect(message).toContain('gmake[4]: *** [browser/app/tools/target] Error 1');
+    expect(message).toContain(
+      'Final failing command/error line: 35:12.44 cp: /project/engine/browser/branding/hominis/Assets.car: No such file or directory'
+    );
+    expect(message).not.toContain('Final failing command/error line: /opt/homebrew');
   });
 
   it('annotates a successful build whose captured output warns about a stale config.status', async () => {

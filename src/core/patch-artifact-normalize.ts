@@ -1,13 +1,22 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 /**
- * Normalizes generated patch files for repository whitespace checks.
+ * Normalizes generated patch files before they are written to disk.
  *
- * Unified diffs conventionally encode a blank context line as a physical line
- * containing one space. `git apply` also accepts the same hunk as an empty
- * physical line, while repository-level `git diff --check` flags the
- * single-space artifact as trailing whitespace in `patches/*.patch`.
+ * Kept as a narrow chokepoint for future artifact-level fixes. It must keep
+ * unified-diff hunk markers intact, but marker-only blank payload lines should
+ * not carry extra trailing whitespace (`"+ "` / `"- "` / `"  "`), because raw
+ * repository whitespace checks flag those generated patch artifact lines even
+ * when the engine diff is clean.
  */
 export function normalizePatchArtifact(content: string): string {
-  return content.replace(/^ $/gm, '');
+  return content
+    .split('\n')
+    .map((line) => {
+      if (/^[ +-]\s+$/.test(line)) {
+        return line[0] ?? line;
+      }
+      return line;
+    })
+    .join('\n');
 }

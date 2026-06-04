@@ -8,7 +8,7 @@ import type { FirefoxProduct } from '../types/config.js';
 import { readText } from '../utils/fs.js';
 import { fileExistsInHead } from './git-file-ops.js';
 import { discoverPatches, getAllTargetFilesFromPatch } from './patch-files.js';
-import { loadPatchesManifest, savePatchesManifest } from './patch-manifest-io.js';
+import { loadPatchesManifest, mutatePatchRowsInManifest } from './patch-manifest-io.js';
 import { isNewFileInPatch } from './patch-parse.js';
 
 /**
@@ -151,29 +151,20 @@ export async function stampPatchVersions(
   newVersion: string,
   newProduct?: FirefoxProduct
 ): Promise<void> {
-  const manifest = await loadPatchesManifest(patchesDir);
-  if (!manifest) return;
-
-  const filenameSet = new Set(filenames);
-  let modified = false;
-
-  for (const patch of manifest.patches) {
-    if (!filenameSet.has(patch.filename)) continue;
+  await mutatePatchRowsInManifest(patchesDir, filenames, (patch, rawPatch) => {
     if (
       patch.sourceEsrVersion !== newVersion ||
-      patch.sourceVersion !== newVersion ||
-      (newProduct !== undefined && patch.sourceProduct !== newProduct)
+      rawPatch['sourceVersion'] !== newVersion ||
+      (newProduct !== undefined && rawPatch['sourceProduct'] !== newProduct)
     ) {
-      patch.sourceEsrVersion = newVersion;
-      patch.sourceVersion = newVersion;
-      if (newProduct !== undefined) {
-        patch.sourceProduct = newProduct;
-      }
-      modified = true;
+      return {
+        set: {
+          sourceEsrVersion: newVersion,
+          sourceVersion: newVersion,
+          ...(newProduct !== undefined ? { sourceProduct: newProduct } : {}),
+        },
+      };
     }
-  }
-
-  if (modified) {
-    await savePatchesManifest(patchesDir, manifest);
-  }
+    return null;
+  });
 }

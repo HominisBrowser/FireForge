@@ -34,9 +34,14 @@ export interface ArchiveMetadata {
 }
 
 /**
- * Base URL for Firefox releases on archive.mozilla.org.
+ * Base URLs for Firefox source archives on archive.mozilla.org.
  */
-const ARCHIVE_BASE_URL = 'https://archive.mozilla.org/pub/firefox/releases';
+const FIREFOX_ARCHIVE_BASE_URL = 'https://archive.mozilla.org/pub/firefox/releases';
+const DEVEDITION_ARCHIVE_BASE_URL = 'https://archive.mozilla.org/pub/devedition/releases';
+
+function getArchiveBaseUrl(product: FirefoxProduct): string {
+  return product === 'firefox-devedition' ? DEVEDITION_ARCHIVE_BASE_URL : FIREFOX_ARCHIVE_BASE_URL;
+}
 
 /**
  * Validates raw JSON data as ArchiveMetadata.
@@ -97,7 +102,7 @@ export function resolveArchive(
     requestedVersion: version,
     product,
     archiveVersion,
-    url: `${ARCHIVE_BASE_URL}/${archiveVersion}/source/firefox-${archiveVersion}.source.tar.xz`,
+    url: `${getArchiveBaseUrl(product)}/${archiveVersion}/source/firefox-${archiveVersion}.source.tar.xz`,
     filename: `firefox-${safeProduct}-${archiveVersion}.source.tar.xz`,
     metadataFilename: `firefox-${safeProduct}-${archiveVersion}.source.tar.xz.json`,
   };

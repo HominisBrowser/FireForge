@@ -196,6 +196,13 @@ export interface ReExportOptions {
    */
   scanFiles?: string[];
   /**
+   * Path to a JSON manifest containing bulk scan assignments:
+   * `{ "assignments": [{ "patch": "<patch>", "files": ["path"] }] }`.
+   * Requires `--scan`; mutually exclusive with positional patches, `--all`,
+   * `--scan-file`, and `--files`.
+   */
+  scanFilesManifest?: string;
+  /**
    * Restrict the re-exported patch's filesAffected to this explicit list.
    * Files currently in the patch but not in this list are dropped (shrink);
    * files in this list but not currently in the patch are added. Mutually

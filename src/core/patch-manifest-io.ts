@@ -18,6 +18,7 @@ import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js'
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, removeFile, writeJson } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
+import { isArray, isObject } from '../utils/validation.js';
 import { validatePatchesManifest } from './patch-manifest-validate.js';
 
 /** Filename for the patches manifest */
@@ -28,6 +29,22 @@ export interface LoadedManifestState {
   exists: boolean;
   manifest: PatchesManifest | null;
   parseError: Error | undefined;
+}
+
+/** Field-level mutation returned by a row-scoped manifest mutator. */
+export interface PatchManifestRowMutation {
+  /** Metadata fields to set on the selected manifest row. */
+  set?: Partial<PatchMetadata>;
+  /** Metadata fields to delete from the selected manifest row. */
+  unset?: ReadonlyArray<string>;
+}
+
+/** Result for one manifest row changed by {@link mutatePatchRowsInManifest}. */
+export interface PatchManifestRowMutationResult {
+  /** Validated row before the mutation. */
+  before: PatchMetadata;
+  /** Validated row after the mutation. */
+  after: PatchMetadata;
 }
 
 /**
@@ -77,6 +94,74 @@ export async function savePatchesManifest(
 ): Promise<void> {
   const manifestPath = join(patchesDir, PATCHES_MANIFEST);
   await writeJson(manifestPath, manifest);
+}
+
+/**
+ * Mutates selected manifest rows while preserving the raw JSON shape of every
+ * untouched row. This avoids serializing reader-only fallback fields, such as
+ * `sourceVersion` derived from legacy `sourceEsrVersion`, into unrelated patch
+ * entries during partial metadata updates.
+ */
+export async function mutatePatchRowsInManifest(
+  patchesDir: string,
+  filenames: readonly string[],
+  mutator: (
+    existing: PatchMetadata,
+    rawExisting: Readonly<Record<string, unknown>>
+  ) => PatchManifestRowMutation | null
+): Promise<PatchManifestRowMutationResult[] | null> {
+  const manifestPath = join(patchesDir, PATCHES_MANIFEST);
+  if (!(await pathExists(manifestPath))) return null;
+
+  const rawManifest = await readJson<unknown>(manifestPath);
+  const beforeManifest = validatePatchesManifest(rawManifest);
+  if (!isObject(rawManifest) || !isArray(rawManifest['patches'])) {
+    throw new Error('patches.json must be a JSON object with a patches array');
+  }
+
+  const filenameSet = new Set(filenames);
+  if (filenameSet.size === 0) return [];
+
+  const rawPatches = rawManifest['patches'].map((entry) => {
+    if (!isObject(entry)) {
+      throw new Error('patches.json patches entries must be objects');
+    }
+    return { ...entry };
+  });
+
+  const changedIndexes: number[] = [];
+  for (const [index, rawPatch] of rawPatches.entries()) {
+    const filename = rawPatch['filename'];
+    if (typeof filename !== 'string' || !filenameSet.has(filename)) continue;
+
+    const existing = beforeManifest.patches[index];
+    if (!existing) continue;
+
+    const mutation = mutator(existing, rawPatch);
+    if (!mutation) continue;
+
+    for (const [field, value] of Object.entries(mutation.set ?? {})) {
+      rawPatch[field] = value;
+    }
+    for (const field of mutation.unset ?? []) {
+      rawPatch[field] = undefined;
+    }
+    changedIndexes.push(index);
+  }
+
+  if (changedIndexes.length === 0) return [];
+
+  const nextRawManifest = {
+    ...rawManifest,
+    patches: rawPatches,
+  };
+  const afterManifest = validatePatchesManifest(nextRawManifest);
+  await writeJson(manifestPath, nextRawManifest);
+
+  return changedIndexes.map((index) => ({
+    before: beforeManifest.patches[index] as PatchMetadata,
+    after: afterManifest.patches[index] as PatchMetadata,
+  }));
 }
 
 /**

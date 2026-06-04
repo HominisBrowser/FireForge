@@ -28,6 +28,7 @@ import {
 } from '../errors/config.js';
 // Download errors
 import {
+  ChecksumMismatchError,
   DownloadError,
   EngineExistsError,
   ExtractionError,
@@ -107,6 +108,17 @@ describe('userMessage snapshots', () => {
 
   it('DownloadError without URL', () => {
     expect(new DownloadError('network error').userMessage).toMatchSnapshot();
+  });
+
+  it('ChecksumMismatchError for Developer Edition', () => {
+    expect(
+      new ChecksumMismatchError(
+        'firefox-devedition',
+        '0'.repeat(64),
+        '1'.repeat(64),
+        'https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
+      ).userMessage
+    ).toMatchSnapshot();
   });
 
   it('ExtractionError', () => {

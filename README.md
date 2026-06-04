@@ -55,13 +55,31 @@ After setup you should have a `fireforge.json`, an `engine/` directory containin
 npx fireforge status
 npx fireforge export browser/base/content/browser.js --name custom-toolbar --category ui
 npx fireforge re-export custom-toolbar
+npx fireforge re-export --scan --scan-files generated-assets.json --dry-run
 npx fireforge lint --per-patch
 npx fireforge verify
+npm run whitespace:check
 npx fireforge build
 npx fireforge test browser/base/content/test/browser/
 ```
 
 Use `fireforge --help` for the full set of commands.
+
+For large generated asset batches, `re-export --scan --scan-files <manifest>` assigns files to
+their owner patches without broad directory scanning. The manifest is JSON:
+
+```json
+{
+  "assignments": [
+    { "patch": "002-branding-runtime-icons.patch", "files": ["browser/branding/hominis/icon.svg"] }
+  ]
+}
+```
+
+The command is dry-runnable, refuses ambiguous ownership, and reports each file-to-patch
+assignment before refreshing the patch. For release whitespace checks, use
+`npm run whitespace:check`; it still checks source diffs while excluding generated
+`patches/*.patch` diff syntax.
 
 ## Rebasing Firefox Source
 

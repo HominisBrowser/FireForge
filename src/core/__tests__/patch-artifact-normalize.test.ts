@@ -4,17 +4,18 @@ import { describe, expect, it } from 'vitest';
 import { normalizePatchArtifact } from '../patch-artifact-normalize.js';
 
 describe('normalizePatchArtifact', () => {
-  it('removes single-space blank context lines while preserving real context', () => {
+  it('normalizes whitespace-only hunk body payloads', () => {
     const patch = [
       'diff --git a/foo.js b/foo.js',
       'index 0..1 100644',
       '--- a/foo.js',
       '+++ b/foo.js',
-      '@@ -1,3 +1,3 @@',
+      '@@ -1,4 +1,4 @@',
       ' before',
-      ' ',
+      '  ',
       '-old',
-      '+new',
+      '+ ',
+      '- ',
       ' after',
       '',
     ].join('\n');
@@ -25,14 +26,46 @@ describe('normalizePatchArtifact', () => {
         'index 0..1 100644',
         '--- a/foo.js',
         '+++ b/foo.js',
-        '@@ -1,3 +1,3 @@',
+        '@@ -1,4 +1,4 @@',
         ' before',
-        '',
+        ' ',
         '-old',
-        '+new',
+        '+',
+        '-',
         ' after',
         '',
       ].join('\n')
     );
+  });
+
+  it('leaves ordinary empty lines and trailing newlines unchanged', () => {
+    const patch = [
+      'diff --git a/foo.js b/foo.js',
+      'index 0..1 100644',
+      '',
+      '--- a/foo.js',
+      '+++ b/foo.js',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+
+    expect(normalizePatchArtifact(patch)).toBe(patch);
+  });
+
+  it('preserves nonblank hunk payload whitespace', () => {
+    const patch = [
+      'diff --git a/foo.js b/foo.js',
+      '--- a/foo.js',
+      '+++ b/foo.js',
+      '@@ -1,2 +1,2 @@',
+      ' context with trailing space ',
+      '+added with trailing space ',
+      '-removed with trailing space ',
+      '',
+    ].join('\n');
+
+    expect(normalizePatchArtifact(patch)).toBe(patch);
   });
 });

@@ -12,6 +12,7 @@ vi.mock('../patch-apply.js', () => ({
 vi.mock('../patch-manifest.js', () => ({
   PATCHES_MANIFEST: 'patches.json',
   loadPatchesManifest: vi.fn(),
+  mutatePatchRowsInManifest: vi.fn(),
   savePatchesManifest: vi.fn(),
   addPatchToManifest: vi.fn(),
   findPatchesAffectingFile: vi.fn(),
@@ -59,6 +60,7 @@ import {
   addPatchToManifest,
   findPatchesAffectingFile,
   loadPatchesManifest,
+  mutatePatchRowsInManifest,
   savePatchesManifest,
 } from '../patch-manifest.js';
 
@@ -72,6 +74,7 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(removeFile).mockResolvedValue(undefined);
     vi.mocked(unlink).mockResolvedValue(undefined);
     vi.mocked(loadPatchesManifest).mockResolvedValue(null);
+    vi.mocked(mutatePatchRowsInManifest).mockResolvedValue([]);
     vi.mocked(savePatchesManifest).mockResolvedValue(undefined);
     vi.mocked(addPatchToManifest).mockResolvedValue(undefined);
     vi.mocked(findPatchesAffectingFile).mockResolvedValue([]);
@@ -146,35 +149,14 @@ describe('patch-export threshold coverage', () => {
     await expect(findExistingPatchForFile('/patches', 'missing.js')).resolves.toBeNull();
   });
 
-  it('updates metadata only when the manifest and patch entry exist', async () => {
+  it('delegates metadata edits to the row-scoped manifest mutator', async () => {
     await expect(
       updatePatchMetadata('/patches', '001-ui-old.patch', { description: 'new' })
     ).resolves.toBeUndefined();
-
-    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-old.patch',
-          order: 1,
-          category: 'ui',
-          name: 'old',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['a.js'],
-        },
-      ],
-    } as never);
-
-    await expect(
-      updatePatchMetadata('/patches', '001-ui-old.patch', { description: 'new' })
-    ).resolves.toBeUndefined();
-    expect(savePatchesManifest).toHaveBeenCalledWith(
+    expect(mutatePatchRowsInManifest).toHaveBeenCalledWith(
       '/patches',
-      expect.objectContaining({
-        patches: [expect.objectContaining({ description: 'new' })],
-      })
+      ['001-ui-old.patch'],
+      expect.any(Function)
     );
   });
 
@@ -528,7 +510,11 @@ describe('patch-export threshold coverage', () => {
     ).resolves.toBeUndefined();
 
     expect(writeText).toHaveBeenCalledWith('/patches/001-ui-old.patch', 'new body');
-    expect(savePatchesManifest).toHaveBeenCalled();
+    expect(mutatePatchRowsInManifest).toHaveBeenCalledWith(
+      '/patches',
+      ['001-ui-old.patch'],
+      expect.any(Function)
+    );
   });
 
   it('updatePatchAndMetadata rolls back patch on manifest save failure', async () => {
@@ -550,7 +536,7 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(readText).mockResolvedValue('original body');
     vi.mocked(writeText).mockResolvedValueOnce(undefined); // patch write OK
-    vi.mocked(savePatchesManifest).mockRejectedValueOnce(new Error('manifest save fail'));
+    vi.mocked(mutatePatchRowsInManifest).mockRejectedValueOnce(new Error('manifest save fail'));
 
     await expect(
       updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'new' })
@@ -581,7 +567,7 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(writeText)
       .mockResolvedValueOnce(undefined) // patch write OK
       .mockRejectedValueOnce(new Error('rollback fail')); // rollback write fails
-    vi.mocked(savePatchesManifest).mockRejectedValueOnce(new Error('manifest fail'));
+    vi.mocked(mutatePatchRowsInManifest).mockRejectedValueOnce(new Error('manifest fail'));
 
     await expect(
       updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'new' })
@@ -591,27 +577,15 @@ describe('patch-export threshold coverage', () => {
   });
 
   it('updatePatchMetadata returns early when entry is not found', async () => {
-    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-old.patch',
-          order: 1,
-          category: 'ui',
-          name: 'old',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['a.js'],
-        },
-      ],
-    } as never);
-
     await expect(
       updatePatchMetadata('/patches', '999-ui-missing.patch', { description: 'new' })
     ).resolves.toBeUndefined();
 
-    expect(savePatchesManifest).not.toHaveBeenCalled();
+    expect(mutatePatchRowsInManifest).toHaveBeenCalledWith(
+      '/patches',
+      ['999-ui-missing.patch'],
+      expect.any(Function)
+    );
   });
 
   it('findSupersededPatches returns empty when manifest is null', async () => {

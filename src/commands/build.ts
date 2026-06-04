@@ -115,8 +115,29 @@ function tailLines(text: string, maxLines: number): string {
 }
 
 function extractLastMakeError(captured: string): string | undefined {
-  const lines = captured.split(/\r?\n/).filter((line) => /\bmake(?:\[\d+\])?: \*\*\*/.test(line));
-  return lines.at(-1)?.trim();
+  const lines = captured.split(/\r?\n/).filter((line) => /\bg?make(?:\[\d+\])?: \*\*\*/.test(line));
+  const actionable = lines.filter(
+    (line) => !/\[\s*(?:all|build|default)\s*\]\s+Error\s+\d+/i.test(line)
+  );
+  return (actionable.at(-1) ?? lines.at(-1))?.trim();
+}
+
+function isWarningOnlyLine(line: string): boolean {
+  if (/\b(?:error|failed|fatal)\b/i.test(line)) return false;
+  return (
+    /\bwarning\b/i.test(line) ||
+    /urllib3|LibreSSL|NotOpenSSLWarning|InsecurePlatformWarning/i.test(line)
+  );
+}
+
+function extractRecentMakeContext(captured: string): string | undefined {
+  const lines = captured
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+  const makeLines = lines.filter((line) => /\b(?:g?make)(?:\[\d+\])?:/.test(line));
+  if (makeLines.length === 0) return undefined;
+  return makeLines.slice(-6).join('\n');
 }
 
 function extractLikelyFailingCommand(captured: string): string | undefined {
@@ -124,14 +145,23 @@ function extractLikelyFailingCommand(captured: string): string | undefined {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+  let lastMakeErrorIndex = -1;
   for (let index = lines.length - 1; index >= 0; index--) {
+    if (/\bg?make(?:\[\d+\])?: \*\*\*/.test(lines[index] ?? '')) {
+      lastMakeErrorIndex = index;
+      break;
+    }
+  }
+  const startIndex = lastMakeErrorIndex > 0 ? lastMakeErrorIndex - 1 : lines.length - 1;
+  for (let index = startIndex; index >= 0; index--) {
     const line = lines[index];
     if (!line) continue;
+    if (isWarningOnlyLine(line)) continue;
     if (/^make(?:\[\d+\])?:/.test(line)) continue;
     if (/^g?make(?:\[\d+\])?:/.test(line)) continue;
     if (/^Error running mach:/.test(line)) continue;
-    if (/^\d+:\d+\.\d+\s+/.test(line)) continue;
-    if (/\b(?:cp|clang|clang\+\+|rustc|python|node|make|install_name_tool)\b/.test(line)) {
+    const comparable = line.replace(/^\d+:\d+\.\d+\s+/, '');
+    if (/\b(?:cp|clang|clang\+\+|rustc|python|node|make|install_name_tool)\b/.test(comparable)) {
       return line;
     }
   }
@@ -148,6 +178,7 @@ function buildFailureDiagnostics(
   const stderrTail = tailLines(result.stderr, 20);
   const combinedTail = tailLines(captured, 30);
   const makeError = extractLastMakeError(captured);
+  const makeContext = extractRecentMakeContext(captured);
   const failingCommand = extractLikelyFailingCommand(captured);
   const logHint = objDir
     ? `engine/${objDir}/ (inspect build logs, warnings, and generated make targets under this objdir)`
@@ -160,6 +191,7 @@ function buildFailureDiagnostics(
     `Build failed with exit code ${result.exitCode}.`,
     `Mach phase: ${machCommand}`,
     makeError ? `Last make error: ${makeError}` : undefined,
+    makeContext ? `Recent make context:\n${makeContext}` : undefined,
     failingCommand ? `Final failing command/error line: ${failingCommand}` : undefined,
     stderrTail ? `Captured stderr tail:\n${stderrTail}` : undefined,
     `Captured output tail:\n${combinedTail}`,

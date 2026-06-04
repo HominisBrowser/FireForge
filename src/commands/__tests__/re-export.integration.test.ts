@@ -13,7 +13,9 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
+import { warn } from '../../utils/logger.js';
 import { reExportCommand } from '../re-export.js';
+import { verifyCommand } from '../verify.js';
 
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
@@ -52,6 +54,57 @@ function makeManifest(): string {
   )}\n`;
 }
 
+function makeLegacyThreePatchManifest(): string {
+  return `${JSON.stringify(
+    {
+      version: 1,
+      patches: [
+        {
+          filename: '001-branding-untouched.patch',
+          order: 1,
+          category: 'branding',
+          name: 'untouched',
+          description: '',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['branding/untouched.txt'],
+        },
+        {
+          filename: '002-branding-browser-assets.patch',
+          order: 2,
+          category: 'branding',
+          name: 'browser-assets',
+          description: '',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['branding/browser.txt'],
+        },
+        {
+          filename: '003-branding-platform-assets.patch',
+          order: 3,
+          category: 'branding',
+          name: 'platform-assets',
+          description: '',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['branding/platform.txt'],
+        },
+      ],
+    },
+    null,
+    2
+  )}\n`;
+}
+
+const blankContextBase = 'context\n\nmore context\n';
+const blankContextModified = 'context\n\nmore context\nnew line\n';
+
+function expectValidBlankContextHunk(patchBody: string): void {
+  expect(patchBody).toContain('@@ -1,3 +1,4 @@');
+  expect(patchBody).toContain('\n \n more context\n+new line');
+  expect(patchBody).not.toContain('\n\n more context\n+new line');
+}
+
 describe('reExportCommand integration', () => {
   let projectRoot: string;
   let restoreTTY: (() => void) | undefined;
@@ -62,7 +115,7 @@ describe('reExportCommand integration', () => {
     projectRoot = await createTempProject();
     await writeFireForgeConfig(projectRoot);
     await initCommittedRepo(join(projectRoot, 'engine'), {
-      'tracked.txt': 'original\n',
+      'tracked.txt': blankContextBase,
     });
     await writeFiles(projectRoot, {
       'patches/patches.json': makeManifest(),
@@ -136,5 +189,121 @@ describe('reExportCommand integration', () => {
     const patchBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
     expect(patchBody).toContain('features/intended.txt');
     expect(patchBody).not.toContain('features/sibling.txt');
+  });
+
+  it('preserves blank context markers and verifies cleanly after targeted re-export', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': blankContextModified,
+    });
+
+    await reExportCommand(projectRoot, ['001'], { yes: true });
+
+    const patchBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expectValidBlankContextHunk(patchBody);
+
+    vi.mocked(warn).mockClear();
+    await verifyCommand(projectRoot);
+
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Patch-owned worktree drift'));
+  });
+
+  it('does not normalize sourceVersion on any row during partial non-stamped re-export', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'branding/untouched.txt': 'untouched\n',
+      'branding/browser.txt': 'browser\n',
+      'branding/platform.txt': 'platform\n',
+    });
+    await runGit(join(projectRoot, 'engine'), ['add', '-A']);
+    await runGit(join(projectRoot, 'engine'), ['commit', '-m', 'add branding fixtures']);
+    await writeFiles(projectRoot, {
+      'patches/patches.json': makeLegacyThreePatchManifest(),
+      'patches/001-branding-untouched.patch':
+        'diff --git a/branding/untouched.txt b/branding/untouched.txt\n',
+      'patches/002-branding-browser-assets.patch':
+        'diff --git a/branding/browser.txt b/branding/browser.txt\n',
+      'patches/003-branding-platform-assets.patch':
+        'diff --git a/branding/platform.txt b/branding/platform.txt\n',
+    });
+    await writeFiles(join(projectRoot, 'engine'), {
+      'branding/browser.txt': 'browser\nrefreshed\n',
+      'branding/platform.txt': 'platform\nrefreshed\n',
+    });
+
+    await reExportCommand(projectRoot, ['002', '003'], {});
+
+    const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: Array<{ filename: string; sourceProduct?: string; sourceVersion?: string }>;
+    };
+    for (const patch of manifest.patches) {
+      expect(patch.sourceVersion).toBeUndefined();
+      expect(patch.sourceProduct).toBeUndefined();
+    }
+  });
+
+  it('stamps source metadata only on selected rows during partial stamped re-export', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      firefox: { version: '152.0b6', product: 'firefox-devedition' },
+    });
+    await writeFiles(join(projectRoot, 'engine'), {
+      'branding/untouched.txt': 'untouched\n',
+      'branding/browser.txt': 'browser\n',
+      'branding/platform.txt': 'platform\n',
+    });
+    await runGit(join(projectRoot, 'engine'), ['add', '-A']);
+    await runGit(join(projectRoot, 'engine'), ['commit', '-m', 'add branding fixtures']);
+    await writeFiles(projectRoot, {
+      'patches/patches.json': makeLegacyThreePatchManifest(),
+      'patches/001-branding-untouched.patch':
+        'diff --git a/branding/untouched.txt b/branding/untouched.txt\n',
+      'patches/002-branding-browser-assets.patch':
+        'diff --git a/branding/browser.txt b/branding/browser.txt\n',
+      'patches/003-branding-platform-assets.patch':
+        'diff --git a/branding/platform.txt b/branding/platform.txt\n',
+    });
+    await writeFiles(join(projectRoot, 'engine'), {
+      'branding/browser.txt': 'browser\nrefreshed\n',
+      'branding/platform.txt': 'platform\nrefreshed\n',
+    });
+
+    await reExportCommand(projectRoot, ['002', '003'], { stamp: true });
+
+    const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: Array<{ filename: string; sourceProduct?: string; sourceVersion?: string }>;
+    };
+    const rows = new Map(manifest.patches.map((patch) => [patch.filename, patch]));
+
+    expect(rows.get('001-branding-untouched.patch')?.sourceVersion).toBeUndefined();
+    expect(rows.get('001-branding-untouched.patch')?.sourceProduct).toBeUndefined();
+    expect(rows.get('002-branding-browser-assets.patch')?.sourceVersion).toBe('152.0b6');
+    expect(rows.get('002-branding-browser-assets.patch')?.sourceProduct).toBe('firefox-devedition');
+    expect(rows.get('003-branding-platform-assets.patch')?.sourceVersion).toBe('152.0b6');
+    expect(rows.get('003-branding-platform-assets.patch')?.sourceProduct).toBe(
+      'firefox-devedition'
+    );
+  });
+
+  it('preserves blank context markers and verifies cleanly after full stamped re-export', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      firefox: { version: '152.0b6', product: 'firefox-devedition' },
+    });
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': blankContextModified,
+    });
+
+    await reExportCommand(projectRoot, [], { all: true, stamp: true, yes: true });
+
+    const patchBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expectValidBlankContextHunk(patchBody);
+
+    const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: Array<{ sourceProduct?: string; sourceVersion?: string }>;
+    };
+    expect(manifest.patches[0]?.sourceVersion).toBe('152.0b6');
+    expect(manifest.patches[0]?.sourceProduct).toBe('firefox-devedition');
+
+    vi.mocked(warn).mockClear();
+    await verifyCommand(projectRoot);
+
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Patch-owned worktree drift'));
   });
 });

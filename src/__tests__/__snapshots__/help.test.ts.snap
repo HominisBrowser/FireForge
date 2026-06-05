@@ -1,5 +1,43 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`CLI help output > documents kebab-case setup flags and configurable categories > lint --help 1`] = `
+"Usage: fireforge lint [options] [command] [paths...]
+
+Lint engine changes against patch quality rules. Default: aggregate diff against
+HEAD (every applied patch summed). Use --per-patch for per-patch scope, or pass
+explicit file paths to narrow to those.
+
+Options:
+  --since <git-rev>   Tag issues as [introduced] or [cumulative] based on
+                      whether the file changed since <git-rev> (e.g. HEAD, a
+                      branch, a SHA)
+  --only-introduced   Fail only on issues tagged [introduced] (requires
+                      --since). Cumulative errors still print but do not set a
+                      non-zero exit.
+  --per-patch         Lint each patch in the queue as its own isolated diff.
+                      Rescopes patch-size rules so they fire against individual
+                      patches rather than the aggregate. Honours each patch's
+                      \`lintIgnore\` entries.
+  --max-warnings <n>  Fail when lint reports more than <n> warning(s); use 0 for
+                      warning-clean release gates.
+  --no-cache          Bypass per-patch lint result cache reads and writes.
+  -h, --help          display help for command
+
+Commands:
+  cache               Manage the per-patch lint result cache
+"
+`;
+
+exports[`CLI help output > documents kebab-case setup flags and configurable categories > lint cache clear --help 1`] = `
+"Usage: fireforge lint cache clear [options]
+
+Clear cached per-patch lint results
+
+Options:
+  -h, --help  display help for command
+"
+`;
+
 exports[`CLI help output > documents kebab-case setup flags and configurable categories 1`] = `
 "Usage: fireforge [options] [command]
 

@@ -16,8 +16,16 @@ describe('CLI help output', () => {
     const reExportHelp = program.commands
       .find((command) => command.name() === 're-export')
       ?.helpInformation();
+    const lint = program.commands.find((command) => command.name() === 'lint');
+    const lintHelp = lint?.helpInformation();
+    const lintCacheClearHelp = lint?.commands
+      .find((command) => command.name() === 'cache')
+      ?.commands.find((command) => command.name() === 'clear')
+      ?.helpInformation();
 
     expect(rootHelp).toMatchSnapshot();
+    expect(lintHelp).toMatchSnapshot('lint --help');
+    expect(lintCacheClearHelp).toMatchSnapshot('lint cache clear --help');
     expect(setupHelp).toContain('--app-id <appId>');
     expect(setupHelp).toContain('--binary-name <binaryName>');
     expect(setupHelp).toContain('--firefox-version <version>');
@@ -30,6 +38,7 @@ describe('CLI help output', () => {
     expect(exportHelp).not.toContain('(choices: "branding", "ui", "privacy", "security", "infra")');
     expect(reExportHelp).toContain('--scan-files <manifest>');
     expect(reExportHelp).toContain('bulk-assign generated files');
+    expect(lintHelp).toContain('--no-cache');
   });
 
   it('exposes stable help text for every furnace subcommand', () => {

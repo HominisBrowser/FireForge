@@ -16,22 +16,17 @@ import {
   getUntrackedFilesInDir,
   getWorkingTreeStatus,
 } from '../core/git-status.js';
+import { clearPerPatchLintCache } from '../core/lint-cache.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
-import {
-  buildPatchQueueContext,
-  lintExportedPatch,
-  lintPatchQueue,
-  resolvePatchSizeTier,
-} from '../core/patch-lint.js';
+import { buildPatchQueueContext, lintExportedPatch, lintPatchQueue } from '../core/patch-lint.js';
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
-import { loadPatchesManifest } from '../core/patch-manifest.js';
-import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
+import { lintPerPatch } from './lint-per-patch.js';
 
 /** Options controlling how the lint command filters and tags its output. */
 export interface LintCommandOptions {
@@ -84,6 +79,11 @@ export interface LintCommandOptions {
    * findings to become blocking without changing default CLI behavior.
    */
   maxWarnings?: number;
+  /**
+   * Bypass per-patch lint cache reads and writes. Accepted in aggregate mode
+   * for CLI consistency, but only `--per-patch` currently uses the cache.
+   */
+  noCache?: boolean;
 }
 
 /**
@@ -543,153 +543,12 @@ export async function lintCommand(
   }
 }
 
-/**
- * Lints each patch in the queue as its own isolated diff, honouring
- * per-patch `lintIgnore` entries. Cross-patch rules still run once over
- * the whole queue so queue-level findings (duplicate creations, forward
- * imports) are not lost by the rescoping.
- *
- * Kept separate from {@link lintCommand}'s aggregate path because the
- * two scopes have genuinely different contracts — the aggregate path
- * reports what `git diff HEAD` looks like right now, the per-patch
- * path reports what each patch's own slice of that diff looks like.
- * Sharing a loop would hide the distinction and force the caller to
- * decide semantics mid-function.
- */
-async function lintPerPatch(
-  projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  options: LintCommandOptions = {}
-): Promise<void> {
-  const manifest = await loadPatchesManifest(paths.patches);
-  if (!manifest || manifest.patches.length === 0) {
-    info('No patches in manifest — nothing to lint per-patch.');
-    outro('Nothing to lint');
-    return;
-  }
-
-  const config = await loadConfig(projectRoot);
-  const ctx = await buildPatchQueueContext(paths.patches);
-
-  const issues: PatchLintIssue[] = [];
-  for (const issue of evaluatePatchPolicy(config, manifest)) {
-    issues.push({
-      file: issue.filename,
-      check: `patch-policy/${issue.code}`,
-      message: issue.message,
-      severity: issue.severity,
-    });
-  }
-  let linted = 0;
-  let skipped = 0;
-  for (const patch of manifest.patches) {
-    const existing: string[] = [];
-    for (const f of patch.filesAffected) {
-      if (await pathExists(join(paths.engine, f))) existing.push(f);
-    }
-    if (existing.length === 0) {
-      skipped++;
-      continue;
-    }
-
-    const diff = await getDiffForFilesAgainstHead(paths.engine, existing);
-    if (!diff.trim()) {
-      skipped++;
-      continue;
-    }
-
-    const ignore = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
-    const decision = resolvePatchSizeTier(existing, patch.tier);
-    if (decision.tier === 'branding') {
-      info(
-        decision.source === 'explicit'
-          ? `${patch.filename}: branding threshold tier applied via patches.json \`tier: "branding"\` opt-in.`
-          : `${patch.filename}: branding threshold tier applied (all files under browser/branding/ plus registration siblings).`
-      );
-    }
-    const patchIssues = await lintExportedPatch(
-      paths.engine,
-      existing,
-      diff,
-      config,
-      ctx,
-      ignore,
-      patch.tier
-    );
-    for (const issue of patchIssues) {
-      issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
-    }
-    linted++;
-  }
-
-  // Cross-patch rules over the whole queue — rescoping per-patch would
-  // lose these findings, so they run exactly once against the full
-  // context.
-  issues.push(...lintPatchQueue(ctx));
-
-  if (issues.length === 0) {
-    // 2026-04-26 eval Finding 7: pre-fix the success line read
-    // `No lint issues found across 0 patch(es).` whenever the queue
-    // had not been applied to the engine — every patch's
-    // `filesAffected` filtered out, so `existing` was empty and the
-    // patch was silently skipped. Operators read that as "the queue
-    // is clean" when in reality nothing was checked. Surface the
-    // skipped count and, when nothing was linted at all, point at
-    // `fireforge import` as the missing prerequisite.
-    if (linted === 0 && skipped > 0) {
-      info(
-        `No patches in the queue have been applied to engine/. Run "fireforge import" first if you want lint findings against the staged hunks; otherwise this is expected.`
-      );
-    }
-    const summary =
-      skipped > 0
-        ? `No lint issues found across ${linted} patch(es) (${skipped} skipped — files not present in engine/).`
-        : `No lint issues found across ${linted} patch(es).`;
-    success(summary);
-    outro('Lint passed');
-    return;
-  }
-
-  const errors = issues.filter((i) => i.severity === 'error');
-  const warnings = issues.filter((i) => i.severity === 'warning');
-  const notices = issues.filter((i) => i.severity === 'notice');
-  for (const issue of notices) info(`NOTICE [${issue.check}] ${issue.file}: ${issue.message}`);
-  for (const issue of warnings) warn(`[${issue.check}] ${issue.file}: ${issue.message}`);
-  for (const issue of errors) warn(`ERROR [${issue.check}] ${issue.file}: ${issue.message}`);
-
-  info(
-    `\nLint (per-patch over ${linted} patch(es)): ${errors.length} error(s), ${warnings.length} warning(s)`
-  );
-
-  if (errors.length > 0) {
-    outro('Lint failed');
-    throw new GeneralError(
-      `Patch lint found ${errors.length} error(s) across ${linted} patch(es). Fix these before exporting.`
-    );
-  }
-
-  if (options.maxWarnings !== undefined && warnings.length > options.maxWarnings) {
-    outro('Lint failed');
-    throw new GeneralError(
-      buildMaxWarningsMessage(warnings.length, options.maxWarnings, `across ${linted} patch(es)`)
-    );
-  }
-
-  if (warnings.length > 0) {
-    outro('Lint passed with warnings');
-  } else if (notices.length > 0) {
-    outro('Lint passed with notices');
-  } else {
-    outro('Lint passed');
-  }
-}
-
 /** Registers the lint command on the CLI program. */
 export function registerLint(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const lint = program
     .command('lint [paths...]')
     .description(
       'Lint engine changes against patch quality rules. Default: aggregate diff against HEAD ' +
@@ -712,6 +571,7 @@ export function registerLint(
       '--max-warnings <n>',
       'Fail when lint reports more than <n> warning(s); use 0 for warning-clean release gates.'
     )
+    .option('--no-cache', 'Bypass per-patch lint result cache reads and writes.')
     .action(
       withErrorHandling(
         async (
@@ -721,6 +581,7 @@ export function registerLint(
             onlyIntroduced?: boolean;
             perPatch?: boolean;
             maxWarnings?: string;
+            cache?: boolean;
           }
         ) => {
           const lintOptions: LintCommandOptions = {};
@@ -740,8 +601,25 @@ export function registerLint(
             }
             lintOptions.maxWarnings = maxWarnings;
           }
+          if (options.cache === false) {
+            lintOptions.noCache = true;
+          }
           await lintCommand(getProjectRoot(), paths, lintOptions);
         }
       )
+    );
+
+  lint
+    .command('cache')
+    .description('Manage the per-patch lint result cache')
+    .command('clear')
+    .description('Clear cached per-patch lint results')
+    .action(
+      withErrorHandling(async () => {
+        intro('FireForge Lint Cache');
+        await clearPerPatchLintCache(getProjectRoot());
+        success('Cleared per-patch lint cache.');
+        outro('Lint cache cleared');
+      })
     );
 }

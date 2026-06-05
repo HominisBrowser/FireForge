@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.30.0
+
+- Added safe repo-local per-patch lint result caching for `lint --per-patch`, plus `--no-cache` and `lint cache clear` escape hatches while preserving release-gate severity accounting and queue-wide checks.
+
 ## 0.29.0
 
 - Improved `fireforge test --build` failure reporting so post-rebuild focused test failures name the rebuild command, requested paths, and first failure line separately from stale-artifact rebuild advice.

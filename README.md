@@ -57,6 +57,7 @@ npx fireforge export browser/base/content/browser.js --name custom-toolbar --cat
 npx fireforge re-export custom-toolbar
 npx fireforge re-export --scan --scan-files generated-assets.json --dry-run
 npx fireforge lint --per-patch
+npx fireforge lint --per-patch --max-warnings 0
 npx fireforge verify
 npm run whitespace:check
 npx fireforge build
@@ -64,6 +65,11 @@ npx fireforge test browser/base/content/test/browser/
 ```
 
 Use `fireforge --help` for the full set of commands.
+
+`lint --per-patch` reuses safe repo-local results for unchanged patches from
+`.fireforge/lint-cache/`, while still running queue-wide checks every time. Use
+`npx fireforge lint --per-patch --no-cache` to force a fresh run, or
+`npx fireforge lint cache clear` to drop cached per-patch lint results.
 
 For large generated asset batches, `re-export --scan --scan-files <manifest>` assigns files to
 their owner patches without broad directory scanning. The manifest is JSON:

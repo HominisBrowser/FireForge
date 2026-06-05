@@ -79,6 +79,9 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // re-export.ts to keep that command under max-lines.
   're-export-bulk-scan.ts',
   're-export-options.ts',
+  // Per-patch lint orchestration split out of lint.ts so the aggregate
+  // command and cache-backed queue path both stay under max-lines.
+  'lint-per-patch.ts',
   // Scan planning helpers for re-export, including targeted --scan-file.
   // Consumed by re-export.ts; no top-level registrar.
   're-export-scan.ts',

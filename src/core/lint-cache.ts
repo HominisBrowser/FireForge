@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: EUPL-1.2
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+
+import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
+import type { FireForgeConfig } from '../types/config.js';
+import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { getPackageVersion } from '../utils/package-root.js';
+import { getFurnacePaths } from './furnace-config.js';
+import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-lint.js';
+
+export const LINT_CACHE_SCHEMA_VERSION = 1;
+export const LINT_IMPLEMENTATION_VERSION = 1;
+
+const LINT_CACHE_DIRNAME = 'lint-cache';
+const PER_PATCH_CACHE_FILENAME = 'per-patch-v1.json';
+
+export interface PerPatchLintCacheEntry {
+  key: string;
+  patchFilename: string;
+  issues: PatchLintIssue[];
+  updatedAt: string;
+}
+
+export interface PerPatchLintCacheFile {
+  schemaVersion: typeof LINT_CACHE_SCHEMA_VERSION;
+  entries: Record<string, PerPatchLintCacheEntry>;
+}
+
+export interface PerPatchLintCacheKeyInput {
+  projectRoot: string;
+  engineDir: string;
+  patchesDir: string;
+  patch: PatchMetadata;
+  existingFiles: string[];
+  config: FireForgeConfig;
+  queueContext: PatchQueueContext;
+  packageVersion?: string;
+}
+
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue | undefined };
+
+function stableJson(value: JsonValue): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+  const entries = Object.entries(value)
+    .filter(([, item]) => item !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item as JsonValue)}`)
+    .join(',')}}`;
+}
+
+/** Computes a SHA-256 hex digest for text or binary content. */
+export function sha256Hex(content: string | Buffer): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+/** Computes a stable SHA-256 digest for JSON-compatible data. */
+export function stableHash(value: JsonValue): string {
+  return sha256Hex(stableJson(value));
+}
+
+/** Returns the repo-local per-patch lint cache file path. */
+export function getPerPatchLintCachePath(projectRoot: string): string {
+  return join(projectRoot, '.fireforge', LINT_CACHE_DIRNAME, PER_PATCH_CACHE_FILENAME);
+}
+
+async function fileHash(path: string): Promise<{ exists: boolean; sha256?: string }> {
+  if (!(await pathExists(path))) {
+    return { exists: false };
+  }
+  return { exists: true, sha256: sha256Hex(await readFile(path)) };
+}
+
+function normalizePatchMetadata(patch: PatchMetadata): JsonValue {
+  return {
+    filesAffected: patch.filesAffected,
+    lintIgnore: patch.lintIgnore,
+    stagedDependencies: patch.stagedDependencies as JsonValue | undefined,
+    tier: patch.tier,
+  };
+}
+
+function normalizeLintConfig(config: FireForgeConfig): JsonValue {
+  return {
+    binaryName: config.binaryName,
+    license: config.license,
+    patchLint: config.patchLint as JsonValue | undefined,
+  };
+}
+
+function isOwnershipRelevantFile(file: string): boolean {
+  return file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.jsm');
+}
+
+function buildOwnershipFingerprint(
+  files: ReadonlyArray<string>,
+  ctx: PatchQueueContext
+): JsonValue {
+  const creators = collectNewFileCreatorsByPath(ctx);
+  const entries: Record<string, JsonValue> = {};
+  const relevantFiles = [...files]
+    .filter(isOwnershipRelevantFile)
+    .sort((a, b) => a.localeCompare(b));
+  for (const file of relevantFiles) {
+    entries[file] = [...(creators.get(file) ?? [])].sort((a, b) => a.localeCompare(b));
+  }
+  return entries;
+}
+
+/**
+ * Builds the complete per-patch lint cache key for one lintable patch.
+ * The key includes source, metadata, config, engine state, and ownership inputs.
+ */
+export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput): Promise<string> {
+  const engineFiles: Record<string, JsonValue> = {};
+  for (const file of [...input.existingFiles].sort((a, b) => a.localeCompare(b))) {
+    engineFiles[file] = await fileHash(join(input.engineDir, file));
+  }
+
+  const furnaceConfigPath = getFurnacePaths(input.projectRoot).furnaceConfig;
+  const extraShimPath = input.config.patchLint?.checkJsExtraShim;
+  const extraShim =
+    extraShimPath === undefined
+      ? null
+      : {
+          path: extraShimPath,
+          hash: await fileHash(resolve(input.projectRoot, extraShimPath)),
+        };
+
+  return stableHash({
+    cacheSchemaVersion: LINT_CACHE_SCHEMA_VERSION,
+    lintImplementationVersion: LINT_IMPLEMENTATION_VERSION,
+    packageVersion: input.packageVersion ?? getPackageVersion(),
+    patchFile: await fileHash(join(input.patchesDir, input.patch.filename)),
+    patchMetadata: normalizePatchMetadata(input.patch),
+    lintConfig: normalizeLintConfig(input.config),
+    furnaceConfig: await fileHash(furnaceConfigPath),
+    checkJsExtraShim: extraShim,
+    engineFiles,
+    queueOwnership: buildOwnershipFingerprint(input.existingFiles, input.queueContext),
+  });
+}
+
+/** Creates an empty cache document using the current cache schema. */
+export function createEmptyPerPatchLintCache(): PerPatchLintCacheFile {
+  return { schemaVersion: LINT_CACHE_SCHEMA_VERSION, entries: {} };
+}
+
+function isCacheEntry(value: unknown): value is PerPatchLintCacheEntry {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entry = value as Partial<PerPatchLintCacheEntry>;
+  return (
+    typeof entry.key === 'string' &&
+    typeof entry.patchFilename === 'string' &&
+    Array.isArray(entry.issues) &&
+    typeof entry.updatedAt === 'string'
+  );
+}
+
+/** Loads the per-patch lint cache, treating missing or invalid files as empty. */
+export async function loadPerPatchLintCache(projectRoot: string): Promise<PerPatchLintCacheFile> {
+  const cachePath = getPerPatchLintCachePath(projectRoot);
+  if (!(await pathExists(cachePath))) {
+    return createEmptyPerPatchLintCache();
+  }
+  try {
+    const raw = await readJson<unknown>(cachePath);
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      return createEmptyPerPatchLintCache();
+    }
+    const candidate = raw as Partial<PerPatchLintCacheFile>;
+    if (candidate.schemaVersion !== LINT_CACHE_SCHEMA_VERSION || !candidate.entries) {
+      return createEmptyPerPatchLintCache();
+    }
+    const entries: Record<string, PerPatchLintCacheEntry> = {};
+    for (const [filename, entry] of Object.entries(candidate.entries)) {
+      if (isCacheEntry(entry)) {
+        entries[filename] = entry;
+      }
+    }
+    return { schemaVersion: LINT_CACHE_SCHEMA_VERSION, entries };
+  } catch {
+    return createEmptyPerPatchLintCache();
+  }
+}
+
+/** Persists the per-patch lint cache atomically through the shared JSON writer. */
+export async function savePerPatchLintCache(
+  projectRoot: string,
+  cache: PerPatchLintCacheFile
+): Promise<void> {
+  await writeJson(getPerPatchLintCachePath(projectRoot), {
+    schemaVersion: LINT_CACHE_SCHEMA_VERSION,
+    entries: cache.entries,
+  });
+}
+
+/** Clears the per-patch lint cache by replacing it with an empty document. */
+export async function clearPerPatchLintCache(projectRoot: string): Promise<void> {
+  await writeJson(getPerPatchLintCachePath(projectRoot), createEmptyPerPatchLintCache());
+}
+
+/** Returns cached issues for a patch when the stored key still matches. */
+export function getCachedPerPatchLintIssues(
+  cache: PerPatchLintCacheFile,
+  patchFilename: string,
+  key: string
+): PatchLintIssue[] | undefined {
+  const entry = cache.entries[patchFilename];
+  if (!entry || entry.key !== key) return undefined;
+  return entry.issues.map((issue) => ({ ...issue }));
+}
+
+/** Stores per-patch lint issues after a successful lint calculation. */
+export function setCachedPerPatchLintIssues(
+  cache: PerPatchLintCacheFile,
+  patchFilename: string,
+  key: string,
+  issues: PatchLintIssue[]
+): void {
+  cache.entries[patchFilename] = {
+    key,
+    patchFilename,
+    issues: issues.map((issue) => ({ ...issue })),
+    updatedAt: new Date().toISOString(),
+  };
+}

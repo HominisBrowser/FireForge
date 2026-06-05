@@ -69,6 +69,15 @@ vi.mock('../../core/patch-lint.js', () => ({
   resolvePatchSizeTier: vi.fn(() => ({ tier: 'general' })),
 }));
 
+vi.mock('../../core/lint-cache.js', () => ({
+  buildPerPatchLintCacheKey: vi.fn(() => Promise.resolve('cache-key')),
+  clearPerPatchLintCache: vi.fn(() => Promise.resolve()),
+  getCachedPerPatchLintIssues: vi.fn(() => undefined),
+  loadPerPatchLintCache: vi.fn(() => Promise.resolve({ schemaVersion: 1, entries: {} })),
+  savePerPatchLintCache: vi.fn(() => Promise.resolve()),
+  setCachedPerPatchLintIssues: vi.fn(),
+}));
+
 vi.mock('../../core/patch-manifest.js', () => ({
   loadPatchesManifest: vi.fn(() => Promise.resolve(null)),
 }));
@@ -93,6 +102,8 @@ vi.mock('../../utils/logger.js', () => ({
 import type { Stats } from 'node:fs';
 import { stat } from 'node:fs/promises';
 
+import { Command } from 'commander';
+
 import { loadConfig } from '../../core/config.js';
 import { getStatusWithCodes, hasChanges } from '../../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../../core/git-diff.js';
@@ -102,6 +113,15 @@ import {
   getUntrackedFilesInDir,
   getWorkingTreeStatus,
 } from '../../core/git-status.js';
+import type { PerPatchLintCacheFile } from '../../core/lint-cache.js';
+import {
+  buildPerPatchLintCacheKey,
+  clearPerPatchLintCache,
+  getCachedPerPatchLintIssues,
+  loadPerPatchLintCache,
+  savePerPatchLintCache,
+  setCachedPerPatchLintIssues,
+} from '../../core/lint-cache.js';
 import {
   buildPatchQueueContext,
   lintExportedPatch,
@@ -113,7 +133,7 @@ import { GeneralError } from '../../errors/base.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
-import { applyAggregateLintIgnoreSuppression, lintCommand } from '../lint.js';
+import { applyAggregateLintIgnoreSuppression, lintCommand, registerLint } from '../lint.js';
 
 function fakeStats(overrides: Partial<Stats>): Stats {
   return { isDirectory: () => false, isFile: () => true, ...overrides } as Stats;
@@ -456,6 +476,8 @@ describe('lintCommand — branch coverage', () => {
   });
 
   describe('--per-patch', () => {
+    let memoryCache: PerPatchLintCacheFile;
+
     function makePatch(filename: string, filesAffected: string[]): PatchMetadata {
       return {
         filename,
@@ -471,6 +493,29 @@ describe('lintCommand — branch coverage', () => {
     function makeManifest(patches: PatchMetadata[]): PatchesManifest {
       return { version: 1, patches };
     }
+
+    beforeEach(() => {
+      memoryCache = { schemaVersion: 1, entries: {} };
+      vi.mocked(loadPerPatchLintCache).mockResolvedValue(memoryCache);
+      vi.mocked(buildPerPatchLintCacheKey).mockImplementation((input) =>
+        Promise.resolve(`key:${input.patch.filename}`)
+      );
+      vi.mocked(getCachedPerPatchLintIssues).mockImplementation((cache, filename, key) => {
+        const entry = cache.entries[filename];
+        if (!entry || entry.key !== key) return undefined;
+        return entry.issues.map((issue) => ({ ...issue }));
+      });
+      vi.mocked(setCachedPerPatchLintIssues).mockImplementation((cache, filename, key, issues) => {
+        cache.entries[filename] = {
+          key,
+          patchFilename: filename,
+          issues: issues.map((issue) => ({ ...issue })),
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        };
+      });
+      vi.mocked(savePerPatchLintCache).mockResolvedValue();
+      vi.mocked(clearPerPatchLintCache).mockResolvedValue();
+    });
 
     it('rejects --per-patch when combined with explicit file paths', async () => {
       await expect(lintCommand('/project', ['src/app.ts'], { perPatch: true })).rejects.toThrow(
@@ -534,6 +579,105 @@ describe('lintCommand — branch coverage', () => {
       const secondCall = vi.mocked(lintExportedPatch).mock.calls[1];
       expect(firstCall?.[6]).toBeUndefined();
       expect(secondCall?.[6]).toBe('branding');
+    });
+
+    it('populates the per-patch lint cache on the first run', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(loadPerPatchLintCache).toHaveBeenCalledWith('/project');
+      expect(buildPerPatchLintCacheKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectRoot: '/project',
+          engineDir: '/project/engine',
+          patchesDir: '/project/patches',
+          patch,
+          existingFiles: ['a.ts'],
+        })
+      );
+      expect(setCachedPerPatchLintIssues).toHaveBeenCalledWith(
+        memoryCache,
+        '001-ui-test.patch',
+        'key:001-ui-test.patch',
+        []
+      );
+      expect(savePerPatchLintCache).toHaveBeenCalledWith('/project', memoryCache);
+    });
+
+    it('reuses the per-patch lint cache on the second identical run', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+      vi.mocked(lintExportedPatch).mockResolvedValue([
+        {
+          severity: 'notice',
+          check: 'file-too-large',
+          file: 'a.ts',
+          message: 'notice',
+        },
+      ]);
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+      vi.mocked(lintExportedPatch).mockClear();
+      vi.mocked(info).mockClear();
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(lintExportedPatch).not.toHaveBeenCalled();
+      expect(vi.mocked(info)).toHaveBeenCalledWith('Reused lint cache for 1 patch.');
+      expect(vi.mocked(info)).toHaveBeenCalledWith(
+        'NOTICE [file-too-large] 001-ui-test.patch :: a.ts: notice'
+      );
+    });
+
+    it('--no-cache bypasses per-patch cache reads and writes', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+      await expect(
+        lintCommand('/project', [], { perPatch: true, noCache: true })
+      ).resolves.toBeUndefined();
+
+      expect(loadPerPatchLintCache).not.toHaveBeenCalled();
+      expect(buildPerPatchLintCacheKey).not.toHaveBeenCalled();
+      expect(getCachedPerPatchLintIssues).not.toHaveBeenCalled();
+      expect(setCachedPerPatchLintIssues).not.toHaveBeenCalled();
+      expect(savePerPatchLintCache).not.toHaveBeenCalled();
+      expect(lintExportedPatch).toHaveBeenCalledTimes(1);
+    });
+
+    it('cached warnings still fail per-patch lint when they exceed --max-warnings', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+      memoryCache.entries[patch.filename] = {
+        key: `key:${patch.filename}`,
+        patchFilename: patch.filename,
+        issues: [
+          {
+            severity: 'warning',
+            check: 'large-patch-files',
+            file: '(patch)',
+            message: 'Patch affects 8 files',
+          },
+        ],
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+
+      await expect(lintCommand('/project', [], { perPatch: true, maxWarnings: 0 })).rejects.toThrow(
+        /exceeding --max-warnings 0/
+      );
+
+      expect(lintExportedPatch).not.toHaveBeenCalled();
+      expect(vi.mocked(outro)).toHaveBeenCalledWith('Lint failed');
     });
 
     it('namespaces issues with the patch filename so triage can attribute findings', async () => {
@@ -631,6 +775,24 @@ describe('lintCommand — branch coverage', () => {
       expect(lintPatchQueue).toHaveBeenCalledTimes(1);
     });
 
+    it('still runs cross-patch rules when per-patch results come from cache', async () => {
+      const patch = makePatch('001-ui-test.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+      memoryCache.entries[patch.filename] = {
+        key: `key:${patch.filename}`,
+        patchFilename: patch.filename,
+        issues: [],
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+
+      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+
+      expect(lintExportedPatch).not.toHaveBeenCalled();
+      expect(lintPatchQueue).toHaveBeenCalledTimes(1);
+    });
+
     it('skips a patch whose filesAffected are all missing on disk', async () => {
       const patch = makePatch('001-ui-test.patch', ['missing.ts']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
@@ -703,6 +865,20 @@ describe('lintCommand — branch coverage', () => {
       expect(vi.mocked(success)).toHaveBeenCalledWith(
         expect.stringContaining('No lint issues found across 1 patch(es) (1 skipped')
       );
+    });
+
+    it('clears the per-patch lint cache from the nested subcommand', async () => {
+      const program = new Command();
+      program.exitOverride();
+      registerLint(program, {
+        getProjectRoot: () => '/project',
+        withErrorHandling: (handler) => handler,
+      });
+
+      await program.parseAsync(['node', 'fireforge', 'lint', 'cache', 'clear']);
+
+      expect(clearPerPatchLintCache).toHaveBeenCalledWith('/project');
+      expect(vi.mocked(success)).toHaveBeenCalledWith('Cleared per-patch lint cache.');
     });
   });
 });

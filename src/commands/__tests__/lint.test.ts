@@ -73,6 +73,7 @@ vi.mock('../../core/lint-cache.js', () => ({
   buildPerPatchLintCacheKey: vi.fn(() => Promise.resolve('cache-key')),
   clearPerPatchLintCache: vi.fn(() => Promise.resolve()),
   getCachedPerPatchLintIssues: vi.fn(() => undefined),
+  getPerPatchLintCacheHeadSha: vi.fn(() => Promise.resolve('test-head-sha')),
   loadPerPatchLintCache: vi.fn(() => Promise.resolve({ schemaVersion: 1, entries: {} })),
   savePerPatchLintCache: vi.fn(() => Promise.resolve()),
   setCachedPerPatchLintIssues: vi.fn(),
@@ -118,6 +119,7 @@ import {
   buildPerPatchLintCacheKey,
   clearPerPatchLintCache,
   getCachedPerPatchLintIssues,
+  getPerPatchLintCacheHeadSha,
   loadPerPatchLintCache,
   savePerPatchLintCache,
   setCachedPerPatchLintIssues,
@@ -497,6 +499,7 @@ describe('lintCommand — branch coverage', () => {
     beforeEach(() => {
       memoryCache = { schemaVersion: 1, entries: {} };
       vi.mocked(loadPerPatchLintCache).mockResolvedValue(memoryCache);
+      vi.mocked(getPerPatchLintCacheHeadSha).mockResolvedValue('test-head-sha');
       vi.mocked(buildPerPatchLintCacheKey).mockImplementation((input) =>
         Promise.resolve(`key:${input.patch.filename}`)
       );
@@ -597,6 +600,7 @@ describe('lintCommand — branch coverage', () => {
           patchesDir: '/project/patches',
           patch,
           existingFiles: ['a.ts'],
+          engineHeadSha: 'test-head-sha',
         })
       );
       expect(setCachedPerPatchLintIssues).toHaveBeenCalledWith(
@@ -629,6 +633,7 @@ describe('lintCommand — branch coverage', () => {
       await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
 
       expect(lintExportedPatch).not.toHaveBeenCalled();
+      expect(getDiffForFilesAgainstHead).toHaveBeenCalledTimes(1);
       expect(vi.mocked(info)).toHaveBeenCalledWith('Reused lint cache for 1 patch.');
       expect(vi.mocked(info)).toHaveBeenCalledWith(
         'NOTICE [file-too-large] 001-ui-test.patch :: a.ts: notice'
@@ -677,6 +682,7 @@ describe('lintCommand — branch coverage', () => {
       );
 
       expect(lintExportedPatch).not.toHaveBeenCalled();
+      expect(getDiffForFilesAgainstHead).not.toHaveBeenCalled();
       expect(vi.mocked(outro)).toHaveBeenCalledWith('Lint failed');
     });
 
@@ -790,6 +796,7 @@ describe('lintCommand — branch coverage', () => {
       await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
 
       expect(lintExportedPatch).not.toHaveBeenCalled();
+      expect(getDiffForFilesAgainstHead).not.toHaveBeenCalled();
       expect(lintPatchQueue).toHaveBeenCalledTimes(1);
     });
 

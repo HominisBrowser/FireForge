@@ -90,6 +90,7 @@ describe('per-patch lint cache', () => {
       existingFiles: overrides.existingFiles ?? ['browser/a.js'],
       config: overrides.config ?? config,
       queueContext: overrides.queueContext ?? ctx,
+      engineHeadSha: 'test-head-sha',
       packageVersion: 'test-version',
     });
   }
@@ -132,6 +133,23 @@ describe('per-patch lint cache', () => {
     await writeFiles(engineDir, { 'browser/a.js': 'const a = 2;\n' });
 
     await expect(key()).resolves.not.toBe(before);
+  });
+
+  it('invalidates when the engine HEAD baseline changes', async () => {
+    const before = await key();
+    const after = await buildPerPatchLintCacheKey({
+      projectRoot,
+      engineDir,
+      patchesDir,
+      patch,
+      existingFiles: ['browser/a.js'],
+      config,
+      queueContext: ctx,
+      engineHeadSha: 'different-head-sha',
+      packageVersion: 'test-version',
+    });
+
+    expect(after).not.toBe(before);
   });
 
   it('invalidates when relevant fireforge lint config changes', async () => {

@@ -66,11 +66,6 @@ npx fireforge test browser/base/content/test/browser/
 
 Use `fireforge --help` for the full set of commands.
 
-`lint --per-patch` reuses safe repo-local results for unchanged patches from
-`.fireforge/lint-cache/`, while still running queue-wide checks every time. Use
-`npx fireforge lint --per-patch --no-cache` to force a fresh run, or
-`npx fireforge lint cache clear` to drop cached per-patch lint results.
-
 For large generated asset batches, `re-export --scan --scan-files <manifest>` assigns files to
 their owner patches without broad directory scanning. The manifest is JSON:
 

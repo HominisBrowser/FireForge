@@ -2,7 +2,7 @@
 
 ## 0.30.0
 
-- Added safe repo-local per-patch lint result caching for `lint --per-patch`, plus `--no-cache` and `lint cache clear` escape hatches while preserving release-gate severity accounting and queue-wide checks.
+- Added safe repo-local per-patch lint result caching for `lint --per-patch`, plus `--no-cache` and `lint cache clear` escape hatches while preserving release-gate severity accounting and queue-wide checks. Warm cache hits now skip per-patch diff generation as well as lint rule execution, guarded by patch, config, engine content, queue ownership, and engine HEAD inputs.
 
 ## 0.29.0
 

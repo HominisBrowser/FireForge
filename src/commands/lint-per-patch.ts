@@ -6,6 +6,7 @@ import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import {
   buildPerPatchLintCacheKey,
   getCachedPerPatchLintIssues,
+  getPerPatchLintCacheHeadSha,
   loadPerPatchLintCache,
   savePerPatchLintCache,
   setCachedPerPatchLintIssues,
@@ -19,7 +20,7 @@ import {
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
-import type { PatchLintIssue } from '../types/commands/index.js';
+import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, outro, success, warn } from '../utils/logger.js';
 import type { LintCommandOptions } from './lint.js';
@@ -32,6 +33,16 @@ function buildPerPatchMaxWarningsMessage(
   return (
     `Patch lint found ${count} warning(s) across ${linted} patch(es), exceeding --max-warnings ${maxWarnings}.` +
     ' If this is a release gate, run with --per-patch to identify the owning patch. For intentional staged imports, use patch staged-dependency; for ownership repairs, preview patch move-files, patch reorder --dry-run, or re-export --files --dry-run; add scoped lintIgnore only after review.'
+  );
+}
+
+function emitTierNotice(filename: string, files: string[], tier: PatchMetadata['tier']): void {
+  const decision = resolvePatchSizeTier(files, tier);
+  if (decision.tier !== 'branding') return;
+  info(
+    decision.source === 'explicit'
+      ? `${filename}: branding threshold tier applied via patches.json \`tier: "branding"\` opt-in.`
+      : `${filename}: branding threshold tier applied (all files under browser/branding/ plus registration siblings).`
   );
 }
 
@@ -55,6 +66,7 @@ export async function lintPerPatch(
   const config = await loadConfig(projectRoot);
   const ctx = await buildPatchQueueContext(paths.patches);
   const cache = options.noCache === true ? undefined : await loadPerPatchLintCache(projectRoot);
+  const engineHeadSha = cache ? await getPerPatchLintCacheHeadSha(paths.engine) : undefined;
   let cacheDirty = false;
   let reusedCacheEntries = 0;
 
@@ -80,25 +92,11 @@ export async function lintPerPatch(
       continue;
     }
 
-    const diff = await getDiffForFilesAgainstHead(paths.engine, existing);
-    if (!diff.trim()) {
-      skipped++;
-      continue;
-    }
-
     const ignore = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
-    const decision = resolvePatchSizeTier(existing, patch.tier);
-    if (decision.tier === 'branding') {
-      info(
-        decision.source === 'explicit'
-          ? `${patch.filename}: branding threshold tier applied via patches.json \`tier: "branding"\` opt-in.`
-          : `${patch.filename}: branding threshold tier applied (all files under browser/branding/ plus registration siblings).`
-      );
-    }
-
     let patchIssues: PatchLintIssue[] | undefined;
+    let cacheKey: string | undefined;
     if (cache) {
-      const cacheKey = await buildPerPatchLintCacheKey({
+      cacheKey = await buildPerPatchLintCacheKey({
         projectRoot,
         engineDir: paths.engine,
         patchesDir: paths.patches,
@@ -106,23 +104,40 @@ export async function lintPerPatch(
         existingFiles: existing,
         config,
         queueContext: ctx,
+        ...(engineHeadSha === undefined ? {} : { engineHeadSha }),
       });
       patchIssues = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey);
       if (patchIssues) {
         reusedCacheEntries++;
-      } else {
-        patchIssues = await lintExportedPatch(
-          paths.engine,
-          existing,
-          diff,
-          config,
-          ctx,
-          ignore,
-          patch.tier
-        );
-        setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, patchIssues);
-        cacheDirty = true;
+        emitTierNotice(patch.filename, existing, patch.tier);
+        for (const issue of patchIssues) {
+          issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
+        }
+        linted++;
+        continue;
       }
+    }
+
+    const diff = await getDiffForFilesAgainstHead(paths.engine, existing);
+    if (!diff.trim()) {
+      skipped++;
+      continue;
+    }
+
+    emitTierNotice(patch.filename, existing, patch.tier);
+
+    if (cache && cacheKey) {
+      patchIssues = await lintExportedPatch(
+        paths.engine,
+        existing,
+        diff,
+        config,
+        ctx,
+        ignore,
+        patch.tier
+      );
+      setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, patchIssues);
+      cacheDirty = true;
     } else {
       patchIssues = await lintExportedPatch(
         paths.engine,

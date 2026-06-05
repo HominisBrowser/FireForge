@@ -8,6 +8,7 @@ import type { FireForgeConfig } from '../types/config.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { getPackageVersion } from '../utils/package-root.js';
 import { getFurnacePaths } from './furnace-config.js';
+import { git } from './git-base.js';
 import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-lint.js';
 
 export const LINT_CACHE_SCHEMA_VERSION = 1;
@@ -36,6 +37,7 @@ export interface PerPatchLintCacheKeyInput {
   existingFiles: string[];
   config: FireForgeConfig;
   queueContext: PatchQueueContext;
+  engineHeadSha?: string;
   packageVersion?: string;
 }
 
@@ -75,6 +77,11 @@ export function stableHash(value: JsonValue): string {
 /** Returns the repo-local per-patch lint cache file path. */
 export function getPerPatchLintCachePath(projectRoot: string): string {
   return join(projectRoot, '.fireforge', LINT_CACHE_DIRNAME, PER_PATCH_CACHE_FILENAME);
+}
+
+/** Returns the engine git HEAD identity used to guard diff-derived cache hits. */
+export async function getPerPatchLintCacheHeadSha(engineDir: string): Promise<string> {
+  return (await git(['rev-parse', 'HEAD'], engineDir)).trim();
 }
 
 async function fileHash(path: string): Promise<{ exists: boolean; sha256?: string }> {
@@ -142,6 +149,7 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
 
   return stableHash({
     cacheSchemaVersion: LINT_CACHE_SCHEMA_VERSION,
+    engineHeadSha: input.engineHeadSha ?? null,
     lintImplementationVersion: LINT_IMPLEMENTATION_VERSION,
     packageVersion: input.packageVersion ?? getPackageVersion(),
     patchFile: await fileHash(join(input.patchesDir, input.patch.filename)),

@@ -22,17 +22,14 @@
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../../core/config.js';
 import { appendHistory } from '../../core/destructive.js';
 import { mutatePatchMetadata } from '../../core/patch-export.js';
-import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
-import { loadPatchesManifest, resolvePatchIdentifier } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchLintIgnoreOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
-import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
+import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 type LintIgnoreMode = 'add' | 'remove' | 'clear';
 
@@ -142,23 +139,8 @@ export async function patchLintIgnoreCommand(
   const values: ReadonlyArray<string> =
     mode === 'add' ? (options.add ?? []) : mode === 'remove' ? (options.remove ?? []) : [];
 
-  const paths = getProjectPaths(projectRoot);
-  if (!(await pathExists(paths.patches))) {
-    throw new GeneralError('Patches directory not found.');
-  }
-
-  const manifest = await loadPatchesManifest(paths.patches);
-  if (!manifest || manifest.patches.length === 0) {
-    throw new GeneralError('No patches in manifest.');
-  }
-
-  const target = resolvePatchIdentifier(identifier, manifest.patches);
-  if (!target) {
-    throw new InvalidArgumentError(
-      formatPatchNotFoundError(identifier, manifest.patches),
-      identifier
-    );
-  }
+  const { paths, manifest } = await requirePatchQueue(projectRoot);
+  const target = requirePatchTarget(identifier, manifest.patches);
 
   if (isDryRun) {
     const existing = target.lintIgnore ?? [];

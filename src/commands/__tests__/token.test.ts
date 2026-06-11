@@ -146,6 +146,55 @@ describe('tokenAddCommand', () => {
     });
   });
 
+  it('treats a bare name already starting with the prefix text as fully qualified', async () => {
+    // Field report E1: "token add mybrowser-shadow-low" with tokenPrefix
+    // "--mybrowser-" used to produce "--mybrowser-mybrowser-shadow-low".
+    await tokenAddCommand('/project', 'mybrowser-shadow-low', '0 1px 2px #000', {
+      category: 'Shadows',
+      mode: 'static',
+      dryRun: true,
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('already starts with the configured prefix')
+    );
+    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+      tokenName: '--mybrowser-shadow-low',
+      value: '0 1px 2px #000',
+      category: 'Shadows',
+      mode: 'static',
+      dryRun: true,
+    });
+  });
+
+  it('treats a bare name equal to the prefix text as fully qualified', async () => {
+    await tokenAddCommand('/project', 'mybrowser', '#fff', {
+      category: 'Colors',
+      mode: 'static',
+      dryRun: true,
+    });
+
+    expect(mockedValidateTokenAdd).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({ tokenName: '--mybrowser' })
+    );
+  });
+
+  it('does not misfire the prefix guard on names merely sharing a prefix substring', async () => {
+    // "mybrowserish-gap" starts with the prefix *text* but not the
+    // prefix-dash boundary, so it must still be prefixed normally.
+    await tokenAddCommand('/project', 'mybrowserish-gap', '4px', {
+      category: 'Spacing',
+      mode: 'static',
+      dryRun: true,
+    });
+
+    expect(mockedValidateTokenAdd).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({ tokenName: '--mybrowser-mybrowserish-gap' })
+    );
+  });
+
   it('falls back to generic normalization when Furnace config is unavailable', async () => {
     mockedLoadFurnaceConfig.mockRejectedValue(new Error('missing furnace config'));
 

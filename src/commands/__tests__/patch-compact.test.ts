@@ -123,6 +123,24 @@ function policyManifest(): PatchesManifest {
   };
 }
 
+function rangedPatch(
+  filename: string,
+  category: string,
+  order: number,
+  file: string
+): PatchesManifest['patches'][number] {
+  return {
+    filename,
+    name: filename.replace(/\.patch$/, ''),
+    description: filename,
+    category,
+    order,
+    filesAffected: [file],
+    sourceEsrVersion: '140.0',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+}
+
 function policyConfig(mutationMode?: 'error' | 'warn' | 'force'): FireForgeConfig {
   return {
     ...baseConfig,
@@ -236,33 +254,165 @@ describe('patchCompactCommand', () => {
     );
   });
 
-  it('refuses a global compact plan that violates patchPolicy ranges', async () => {
+  it('treats a range-compliant queue as already compact under patchPolicy ranges', async () => {
+    // Pre-0.31.0 behaviour renumbered the whole queue from 1, projecting
+    // the ui patch into the branding range and refusing. Range-aware
+    // compaction recognises this layout as gapless per range.
     vi.mocked(loadConfig).mockResolvedValue(policyConfig());
     vi.mocked(loadPatchesManifest).mockResolvedValue(policyManifest());
+
+    await patchCompactCommand('/project', { yes: true });
+
+    expect(info).toHaveBeenCalledWith('Patch queue is already compact. Nothing to do.');
+    expect(confirmDestructive).not.toHaveBeenCalled();
+    expect(renumberPatchesInManifest).not.toHaveBeenCalled();
+  });
+
+  it('compacts each category range independently and preserves inter-range numbering', async () => {
+    vi.mocked(loadConfig).mockResolvedValue(policyConfig());
+    const queue: PatchesManifest = {
+      version: 1,
+      patches: [
+        rangedPatch('001-branding-logo.patch', 'branding', 1, 'browser/branding/test/logo.svg'),
+        rangedPatch('003-branding-icons.patch', 'branding', 3, 'browser/branding/test/icon.svg'),
+        rangedPatch('100-infra-build.patch', 'infra', 100, 'build/moz.build'),
+        rangedPatch('105-infra-prefs.patch', 'infra', 105, 'modules/libpref/init/all.js'),
+        rangedPatch('201-ui-shell.patch', 'ui', 201, 'browser/base/content/shell.js'),
+        rangedPatch('204-ui-panel.patch', 'ui', 204, 'browser/base/content/panel.js'),
+        rangedPatch('207-ui-menu.patch', 'ui', 207, 'browser/base/content/menu.js'),
+      ],
+    };
+    vi.mocked(loadPatchesManifest).mockResolvedValue(queue);
+
+    await patchCompactCommand('/project', { yes: true });
+
+    const renameMap = vi.mocked(renumberPatchesInManifest).mock.calls[0]?.[1];
+    expect(renameMap?.size).toBe(4);
+    expect(renameMap?.get('003-branding-icons.patch')).toMatchObject({ newOrder: 2 });
+    expect(renameMap?.get('105-infra-prefs.patch')).toMatchObject({ newOrder: 101 });
+    expect(renameMap?.get('204-ui-panel.patch')).toMatchObject({ newOrder: 202 });
+    expect(renameMap?.get('207-ui-menu.patch')).toMatchObject({ newOrder: 203 });
+    // Anchors stay put — no patch crosses into another category's range.
+    expect(renameMap?.has('001-branding-logo.patch')).toBe(false);
+    expect(renameMap?.has('100-infra-build.patch')).toBe(false);
+    expect(renameMap?.has('201-ui-shell.patch')).toBe(false);
+  });
+
+  it('closes mid-range gaps under allowGaps:false without policy refusal', async () => {
+    // The field-reported scenario: deleting 244/245/246 left a ui-range
+    // gap that no single reorder could close. enforcePatchPolicy runs for
+    // real here, so a wrong projection would throw numeric-gap.
+    const config: FireForgeConfig = {
+      ...baseConfig,
+      patchPolicy: {
+        allowGaps: false,
+        ranges: [
+          { from: 1, to: 99, category: 'branding' },
+          { from: 200, to: 299, category: 'ui' },
+        ],
+      },
+    };
+    vi.mocked(loadConfig).mockResolvedValue(config);
+    const queue: PatchesManifest = {
+      version: 1,
+      patches: [
+        rangedPatch('243-ui-a.patch', 'ui', 243, 'browser/a.js'),
+        rangedPatch('247-ui-b.patch', 'ui', 247, 'browser/b.js'),
+        rangedPatch('248-ui-c.patch', 'ui', 248, 'browser/c.js'),
+      ],
+    };
+    vi.mocked(loadPatchesManifest).mockResolvedValue(queue);
+
+    await patchCompactCommand('/project', { yes: true });
+
+    const renameMap = vi.mocked(renumberPatchesInManifest).mock.calls[0]?.[1];
+    expect(renameMap?.get('247-ui-b.patch')).toMatchObject({ newOrder: 244 });
+    expect(renameMap?.get('248-ui-c.patch')).toMatchObject({ newOrder: 245 });
+  });
+
+  it('treats reserved orders as non-gaps when compacting a range', async () => {
+    const config: FireForgeConfig = {
+      ...baseConfig,
+      patchPolicy: {
+        ranges: [{ from: 100, to: 199, category: 'infra' }],
+        reservedRanges: [{ from: 105, to: 106, allowed: [] }],
+      },
+    };
+    vi.mocked(loadConfig).mockResolvedValue(config);
+    const queue: PatchesManifest = {
+      version: 1,
+      patches: [
+        rangedPatch('103-infra-a.patch', 'infra', 103, 'a.js'),
+        rangedPatch('104-infra-b.patch', 'infra', 104, 'b.js'),
+        rangedPatch('107-infra-c.patch', 'infra', 107, 'c.js'),
+      ],
+    };
+    vi.mocked(loadPatchesManifest).mockResolvedValue(queue);
+
+    await patchCompactCommand('/project', { yes: true });
+
+    // 105/106 are reserved, so 103-104-(reserved)-107 is already gapless.
+    expect(info).toHaveBeenCalledWith('Patch queue is already compact. Nothing to do.');
+    expect(renumberPatchesInManifest).not.toHaveBeenCalled();
+  });
+
+  it('warns about out-of-range strays and leaves them in place', async () => {
+    const config = policyConfig('warn');
+    vi.mocked(loadConfig).mockResolvedValue(config);
+    const queue: PatchesManifest = {
+      version: 1,
+      patches: [
+        rangedPatch('001-branding-logo.patch', 'branding', 1, 'logo.svg'),
+        rangedPatch('004-branding-icons.patch', 'branding', 4, 'icon.svg'),
+        // ui patch parked in the branding range — already a policy
+        // violation; compact must not move it silently.
+        rangedPatch('050-ui-stray.patch', 'ui', 50, 'stray.js'),
+      ],
+    };
+    vi.mocked(loadPatchesManifest).mockResolvedValue(queue);
+
+    await patchCompactCommand('/project', { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('050-ui-stray.patch (order 50, category ui) sits outside')
+    );
+    const renameMap = vi.mocked(renumberPatchesInManifest).mock.calls[0]?.[1];
+    expect(renameMap?.has('050-ui-stray.patch')).toBe(false);
+    expect(renameMap?.get('004-branding-icons.patch')).toMatchObject({ newOrder: 2 });
+  });
+
+  it('still refuses range-compact plans whose projection violates policy in error mode', async () => {
+    // A stray in error mode keeps its pre-existing category-range error in
+    // the projected manifest, so enforcePatchPolicy refuses even though
+    // compact itself never moves the stray.
+    vi.mocked(loadConfig).mockResolvedValue(policyConfig('error'));
+    const queue: PatchesManifest = {
+      version: 1,
+      patches: [
+        rangedPatch('001-branding-logo.patch', 'branding', 1, 'logo.svg'),
+        rangedPatch('004-branding-icons.patch', 'branding', 4, 'icon.svg'),
+        rangedPatch('050-ui-stray.patch', 'ui', 50, 'stray.js'),
+      ],
+    };
+    vi.mocked(loadPatchesManifest).mockResolvedValue(queue);
 
     await expect(patchCompactCommand('/project', { yes: true })).rejects.toBeInstanceOf(
       InvalidArgumentError
     );
-
-    expect(confirmDestructive).not.toHaveBeenCalled();
-    expect(withPatchDirectoryLock).not.toHaveBeenCalled();
-    expect(renumberPatchesInManifest).not.toHaveBeenCalled();
-  });
-
-  it('still refuses policy violations with --force-unsafe when mutationMode is error', async () => {
-    vi.mocked(loadConfig).mockResolvedValue(policyConfig('error'));
-    vi.mocked(loadPatchesManifest).mockResolvedValue(policyManifest());
-
-    await expect(
-      patchCompactCommand('/project', { yes: true, forceUnsafe: true })
-    ).rejects.toBeInstanceOf(InvalidArgumentError);
-
     expect(renumberPatchesInManifest).not.toHaveBeenCalled();
   });
 
   it('allows --force-unsafe to bypass compact policy violations in force mode', async () => {
     vi.mocked(loadConfig).mockResolvedValue(policyConfig('force'));
-    vi.mocked(loadPatchesManifest).mockResolvedValue(policyManifest());
+    const queue: PatchesManifest = {
+      version: 1,
+      patches: [
+        rangedPatch('001-branding-logo.patch', 'branding', 1, 'logo.svg'),
+        rangedPatch('004-branding-icons.patch', 'branding', 4, 'icon.svg'),
+        rangedPatch('050-ui-stray.patch', 'ui', 50, 'stray.js'),
+      ],
+    };
+    vi.mocked(loadPatchesManifest).mockResolvedValue(queue);
 
     await patchCompactCommand('/project', { yes: true, forceUnsafe: true });
 

@@ -24,7 +24,7 @@ export async function restoreTrackedPath(repoDir: string, filePath: string): Pro
  * @param repoDir - Repository directory
  * @param filePath - Path to the file (relative to repo)
  */
-export async function removeUntrackedPath(repoDir: string, filePath: string): Promise<void> {
+async function removeUntrackedPath(repoDir: string, filePath: string): Promise<void> {
   const fullPath = join(repoDir, filePath);
   await removeFile(fullPath);
 }
@@ -34,7 +34,7 @@ export async function removeUntrackedPath(repoDir: string, filePath: string): Pr
  * @param repoDir - Repository directory
  * @param filePath - Path to remove
  */
-export async function removeAddedPath(repoDir: string, filePath: string): Promise<void> {
+async function removeAddedPath(repoDir: string, filePath: string): Promise<void> {
   await ensureGit();
   await git(['reset', 'HEAD', '--', filePath], repoDir);
   await removeUntrackedPath(repoDir, filePath);

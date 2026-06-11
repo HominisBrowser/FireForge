@@ -11,6 +11,10 @@ const sharedRules = {
   'no-throw-literal': 'error',
   'prefer-const': 'error',
   'no-var': 'error',
+  // Ceiling chosen in 0.31.0 after refactoring everything that exceeded
+  // it; command orchestrators legitimately sit in the 20s, so a lower
+  // bar would force splits that spread linear flows across helpers.
+  complexity: ['error', 30],
   'max-lines': ['error', { max: 500, skipBlankLines: true, skipComments: true }],
   'max-lines-per-function': [
     'error',
@@ -78,6 +82,24 @@ export default tseslint.config(
         },
       ],
       'no-console': ['error', { allow: ['error'] }],
+      // The "process.exit only in bin/" invariant was previously enforced
+      // by comments alone; the bin/** override below grants the one
+      // legitimate caller. Setting process.exitCode stays legal everywhere.
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'process',
+          property: 'exit',
+          message:
+            'Only bin/fireforge.ts may call process.exit(); set process.exitCode or throw a FireForgeError instead.',
+        },
+      ],
+    },
+  },
+  {
+    files: ['bin/**/*.ts'],
+    rules: {
+      'no-restricted-properties': 'off',
     },
   },
   {

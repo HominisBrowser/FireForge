@@ -17,16 +17,16 @@ export const FIREFORGE_DIR = '.fireforge';
 export const STATE_FILENAME = 'state.json';
 
 /** Name of the engine directory */
-export const ENGINE_DIR = 'engine';
+const ENGINE_DIR = 'engine';
 
 /** Name of the patches directory */
-export const PATCHES_DIR = 'patches';
+const PATCHES_DIR = 'patches';
 
 /** Name of the configs directory */
-export const CONFIGS_DIR = 'configs';
+const CONFIGS_DIR = 'configs';
 
 /** Name of the source directory */
-export const SRC_DIR = 'src';
+const SRC_DIR = 'src';
 
 /** Supported top-level fireforge.json keys backed by the current schema. */
 export const SUPPORTED_CONFIG_ROOT_KEYS = [

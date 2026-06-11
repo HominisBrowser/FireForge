@@ -12,7 +12,7 @@ import { hasChanges, isGitRepository } from '../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
-import { commitExportedPatch, findAllPatchesForFiles } from '../core/patch-export.js';
+import { commitExportedPatch } from '../core/patch-export.js';
 import {
   buildPatchQueueContext,
   collectNewFileCreatorsByPath,
@@ -29,10 +29,9 @@ import { pickDefined } from '../utils/options.js';
 import { renderDryRunPreview } from './export-flow.js';
 import {
   autoFixLicenseHeaders,
-  confirmSupersedePatches,
-  guardOwnershipOverlap,
   promptExportPatchMetadata,
   runPatchLint,
+  runSupersedeAndOverlapGates,
 } from './export-shared.js';
 
 async function checkBrandingManagedFiles(
@@ -362,31 +361,15 @@ export async function exportAllCommand(
       return;
     }
 
-    // Check how many existing patches would be superseded
-    const shouldProceed = await confirmSupersedePatches(
-      paths.patches,
-      filesAffected,
-      options.supersede,
-      isInteractive,
-      s
-    );
-    if (!shouldProceed) return;
-
-    // Overlap gate — see the matching comment in `export.ts`. The same
-    // cross-patch ownership problem applies to `export-all` because a
-    // mixed aggregate diff often touches shared files like manifest
-    // fragments that other patches already claim.
-    const willSupersede = await findAllPatchesForFiles(paths.patches, filesAffected);
-    const supersedingFilenames = new Set(willSupersede.map((p) => p.filename));
-    const shouldProceedPastOverlap = await guardOwnershipOverlap({
+    const shouldProceedPastGates = await runSupersedeAndOverlapGates({
       patchesDir: paths.patches,
       filesAffected,
-      supersedingFilenames,
+      supersede: options.supersede,
       allowOverlap: options.allowOverlap === true,
       isInteractive,
       s,
     });
-    if (!shouldProceedPastOverlap) return;
+    if (!shouldProceedPastGates) return;
 
     // Get Firefox version for metadata
     const { patchFilename, superseded } = await commitExportedPatch({

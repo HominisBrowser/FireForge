@@ -12,8 +12,6 @@ export const SYNTHETIC_FIREFOX_PATHS = {
   machLog: '.mach-state/commands.jsonl',
 } as const;
 
-export { TINY_PNG };
-
 const MACH_SCRIPT = `MIN_PYTHON_VERSION = (3, 8)
 MAX_PYTHON_VERSION_TO_CONSIDER = (3, 12)
 

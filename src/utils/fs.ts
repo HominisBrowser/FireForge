@@ -70,7 +70,7 @@ export async function ensureDir(path: string): Promise<void> {
  * Ensures the parent directory of a file exists.
  * @param filePath - Path to a file
  */
-export async function ensureParentDir(filePath: string): Promise<void> {
+async function ensureParentDir(filePath: string): Promise<void> {
   const parent = dirname(filePath);
   await ensureDir(parent);
 }

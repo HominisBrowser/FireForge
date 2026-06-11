@@ -51,6 +51,7 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   info: vi.fn(),
+  note: vi.fn(),
   outro: vi.fn(),
   success: vi.fn(),
   warn: vi.fn(),
@@ -124,7 +125,7 @@ import {
 import { GeneralError } from '../../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
-import { outro, success, warn } from '../../utils/logger.js';
+import { note, outro, success, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 
 describe('testCommand', () => {
@@ -303,7 +304,11 @@ describe('testCommand', () => {
   });
 
   it('calls prepareBuildEnvironment before an incremental test rebuild', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
@@ -368,7 +373,11 @@ describe('testCommand', () => {
   });
 
   it('normalizes engine-prefixed test paths and passes headless through to mach test', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['engine/browser/components/tests/unit/test_distribution.js'], {
@@ -384,7 +393,11 @@ describe('testCommand', () => {
   });
 
   it('strips a case-insensitive engine prefix on case-insensitive filesystems', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['Engine/browser/components/tests/unit/test_distribution.js'])
@@ -398,7 +411,11 @@ describe('testCommand', () => {
   });
 
   it('strips engine prefix using a Windows-style backslash separator', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['engine\\browser\\components\\tests\\unit\\test_distribution.js'])
@@ -414,7 +431,11 @@ describe('testCommand', () => {
   });
 
   it('trims surrounding whitespace from supplied test paths', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['  engine/browser/components/tests/unit/test_distribution.js  '])
@@ -506,7 +527,11 @@ describe('testCommand', () => {
         binaryName: 'mybrowser',
       },
     });
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
@@ -525,7 +550,11 @@ describe('testCommand', () => {
     // --build already refreshes the obj-* bundle, so an additional
     // stale-build warning would be actively misleading — it reports drift
     // against a baseline that the rebuild just invalidated.
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
@@ -537,7 +566,11 @@ describe('testCommand', () => {
   });
 
   it('does not warn when the stale-build preflight reports no packageable changes', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
     // Default mock already returns stale: false.
 
     await expect(
@@ -554,7 +587,11 @@ describe('testCommand', () => {
       durationMs: 120,
       detail: 'handshake',
     });
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'], {
@@ -682,7 +719,11 @@ describe('testCommand', () => {
         stdout: `FileExistsError: [Errno 17] File exists: '/src/bug455906_block.xml' -> '${staleLink}'`,
         stderr: '',
       })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' });
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+        stderr: '',
+      });
 
     await expect(
       testCommand('/project', [
@@ -707,7 +748,11 @@ describe('testCommand', () => {
         stdout: `FileExistsError: [Errno 17] File exists: '/src/autocomplete_address_basic.html' -> '${staleLink}'`,
         stderr: '',
       })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' });
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+        stderr: '',
+      });
 
     await expect(
       testCommand('/project', ['browser/extensions/formautofill/test/unit/test_sync.js'])
@@ -762,7 +807,11 @@ describe('testCommand', () => {
   });
 
   it('forwards --mach-arg values verbatim to testWithOutput after --headless', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
@@ -780,7 +829,11 @@ describe('testCommand', () => {
   });
 
   it('filters redundant --flavor=xpcshell when xpcshell is inferred from the manifest', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/base/content/test/foo/xpcshell.toml'
     );
@@ -814,7 +867,11 @@ describe('testCommand', () => {
   });
 
   it('ignores an empty --mach-arg array without appending anything', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
@@ -835,7 +892,11 @@ describe('testCommand', () => {
     // absolute path it computed against obj-debug/dist/, and the test
     // command must append `--app-path=<abs>` to the mach test args so
     // the harness uses the right root rather than falling back to xrePath.
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
     vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
       kind: 'injected',
       result: {
@@ -866,7 +927,11 @@ describe('testCommand', () => {
     // Operator override takes precedence: the resolver must not even be
     // consulted to compute its outcome. The recorded call confirms the
     // skip path runs before resolution.
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
     vi.mocked(operatorAlreadySetAppPath).mockReturnValueOnce(true);
 
     await expect(
@@ -884,17 +949,24 @@ describe('testCommand', () => {
   });
 
   it('warns and skips injection when the resolver reports a mismatch across paths', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
     vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
       kind: 'mismatch',
       values: ['/p/A/dist/bin/browser', '/p/B/dist/bin/xulrunner'],
     });
 
+    // Multi-path appdir mismatch only arises in a combined invocation;
+    // default sharding would probe each path's manifest separately.
     await expect(
-      testCommand('/project', [
-        'browser/base/content/test/A/test_a.js',
-        'browser/base/content/test/B/test_b.js',
-      ])
+      testCommand(
+        '/project',
+        ['browser/base/content/test/A/test_a.js', 'browser/base/content/test/B/test_b.js'],
+        { shard: false }
+      )
     ).resolves.toBeUndefined();
 
     expect(warn).toHaveBeenCalledWith(
@@ -909,7 +981,11 @@ describe('testCommand', () => {
   });
 
   it('warns and skips injection when the resolver cannot find the appdir under dist', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
     vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
       kind: 'unresolved',
       relativeAppdir: 'browser',
@@ -968,7 +1044,11 @@ describe('testCommand', () => {
   // ── --marionette-port option ──────────────────────────────────────────
 
   it('passes --marionette-port through to the stale-browser probe', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
@@ -983,7 +1063,11 @@ describe('testCommand', () => {
   });
 
   it('auto-forwards setpref and mochitest --marionette client for browser-chrome paths', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
@@ -999,7 +1083,11 @@ describe('testCommand', () => {
   });
 
   it('auto-forwards --setpref=marionette.port=N for toolkit widget HTML paths', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['toolkit/content/tests/widgets/test_moz-example.html'], {
@@ -1015,7 +1103,11 @@ describe('testCommand', () => {
   });
 
   it('auto-forwards --setpref for xpcshell filesystem paths without --flavor=xpcshell', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['toolkit/components/tests/xpcshell/test_observer.js'], {
@@ -1034,7 +1126,11 @@ describe('testCommand', () => {
     // The forwarded mach-arg is recognised by extractForwardedMarionettePort;
     // the wrapper preflight then targets 2838 too, but the auto-forward must
     // not duplicate the operator's arg in extraArgs.
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
@@ -1055,7 +1151,11 @@ describe('testCommand', () => {
   });
 
   it('does not add a second --marionette when --mach-arg already sets the client endpoint', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
@@ -1076,7 +1176,11 @@ describe('testCommand', () => {
     // Pre-fix, the wrapper preflight checked the default 2828 before the
     // forwarded arg ever reached mach. Now extractForwardedMarionettePort
     // surfaces the value to the probe so the workaround actually works.
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/base/content/test/general/browser_focus.js'], {
@@ -1091,7 +1195,11 @@ describe('testCommand', () => {
   });
 
   it('does not auto-forward to mach for an explicit xpcshell flavor', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['toolkit/components/tests/xpcshell/test_observer.js'], {
@@ -1112,7 +1220,11 @@ describe('testCommand', () => {
   });
 
   it('passes --marionette-port through to the doctor preflight', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
     vi.mocked(runMarionettePreflight).mockResolvedValue({
       ok: true,
       durationMs: 12_000,
@@ -1127,5 +1239,194 @@ describe('testCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(runMarionettePreflight).toHaveBeenCalledWith('/project/engine', { port: 2838 });
+  });
+});
+
+describe('testCommand harness resilience (C1-C4)', () => {
+  const GREEN = {
+    exitCode: 0,
+    stdout: 'TEST-START | requested-test\nTEST-OK | requested-test\nPassed: 3',
+    stderr: '',
+  };
+  const CRASH = {
+    exitCode: 1,
+    stdout: [
+      'Traceback (most recent call last):',
+      "AttributeError: 'SystemResourceMonitor' object has no attribute 'poll_interval'",
+      'Error running mach',
+    ].join('\n'),
+    stderr: '',
+  };
+  const REAL_FAILURE = {
+    exitCode: 1,
+    stdout:
+      'TEST-START | browser_a.js\nTEST-UNEXPECTED-FAIL | browser_a.js | Assertion failed\nFailed: 1',
+    stderr: '',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
+    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(null);
+    vi.mocked(isSymlink).mockResolvedValue(false);
+  });
+
+  it('retries a recognized harness crash and succeeds on a green re-run', async () => {
+    vi.mocked(testWithOutput).mockResolvedValueOnce(CRASH).mockResolvedValueOnce(GREEN);
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'])
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Harness crash detected'));
+  });
+
+  it('exhausts the default retry budget and reports the harness signature', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue(CRASH);
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'])
+    ).rejects.toThrow(/crashed in the harness itself.*all 3 attempt/s);
+
+    // Default budget: 2 retries → 3 attempts.
+    expect(testWithOutput).toHaveBeenCalledTimes(3);
+  });
+
+  it('honours --harness-retries 0 (single attempt, no retry)', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue(CRASH);
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'], {
+        harnessRetries: 0,
+      })
+    ).rejects.toThrow(/crashed in the harness itself/);
+
+    expect(testWithOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a post-green shutdown re-entry as a harness crash, not a test failure', async () => {
+    const shutdownReentry = {
+      exitCode: 1,
+      stdout: [
+        'TEST-START | browser_foo.js',
+        'TEST-OK | browser_foo.js',
+        'Passed: 12',
+        'must wait for focus',
+        'TEST-UNEXPECTED-FAIL | browser_foo.js | Application shut down (without crashing) in the middle of a test!',
+      ].join('\n'),
+      stderr: '',
+    };
+    vi.mocked(testWithOutput).mockResolvedValueOnce(shutdownReentry).mockResolvedValueOnce(GREEN);
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'])
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails a zero-exit run whose summary shows no TEST-START (silent false green)', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'Passed: 0\nFailed: 0',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'])
+    ).rejects.toThrow(/without starting any of the requested tests/);
+  });
+
+  it('shards multi-path requests into sequential single-path invocations', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue(GREEN);
+
+    await expect(
+      testCommand('/project', [
+        'browser/components/a/test/browser_a.js',
+        'browser/components/b/test/browser_b.js',
+      ])
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(testWithOutput).mock.calls[0]?.[1]).toEqual([
+      'browser/components/a/test/browser_a.js',
+    ]);
+    expect(vi.mocked(testWithOutput).mock.calls[1]?.[1]).toEqual([
+      'browser/components/b/test/browser_b.js',
+    ]);
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining('2/2 shard(s) passed'),
+      'Sharded Test Summary'
+    );
+  });
+
+  it('runs every shard, warns per failure, and throws one aggregate error', async () => {
+    vi.mocked(testWithOutput).mockResolvedValueOnce(GREEN).mockResolvedValueOnce(REAL_FAILURE);
+
+    await expect(
+      testCommand('/project', [
+        'browser/components/a/test/browser_a.js',
+        'browser/components/b/test/browser_b.js',
+      ])
+    ).rejects.toThrow(/1 of 2 sharded test run\(s\) did not pass: browser\/components\/b/);
+
+    expect(testWithOutput).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Tests failed with exit code 1'));
+  });
+
+  it('--no-shard keeps multiple paths in one combined invocation', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue(GREEN);
+
+    await expect(
+      testCommand(
+        '/project',
+        ['browser/components/a/test/browser_a.js', 'browser/components/b/test/browser_b.js'],
+        { shard: false }
+      )
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(testWithOutput).mock.calls[0]?.[1]).toEqual([
+      'browser/components/a/test/browser_a.js',
+      'browser/components/b/test/browser_b.js',
+    ]);
+  });
+
+  it('--perf-samples publishes the artifact path via <BINARYNAME>_PERF_SAMPLE_JSON', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue(GREEN);
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'], {
+        perfSamples: 'artifacts/perf-samples.json',
+      })
+    ).resolves.toBeUndefined();
+
+    const envArg = vi.mocked(testWithOutput).mock.calls[0]?.[3];
+    expect(envArg).toEqual({
+      MYBROWSER_PERF_SAMPLE_JSON: '/project/artifacts/perf-samples.json',
+    });
+  });
+
+  it('retries shards independently and reports attempts in the summary', async () => {
+    vi.mocked(testWithOutput)
+      .mockResolvedValueOnce(GREEN)
+      .mockResolvedValueOnce(CRASH)
+      .mockResolvedValueOnce(GREEN);
+
+    await expect(
+      testCommand('/project', [
+        'browser/components/a/test/browser_a.js',
+        'browser/components/b/test/browser_b.js',
+      ])
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledTimes(3);
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining('(2 attempts)'),
+      'Sharded Test Summary'
+    );
   });
 });

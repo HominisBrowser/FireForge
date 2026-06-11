@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Command, Option } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import { appendHistory, confirmDestructive } from '../core/destructive.js';
+import { appendHistory } from '../core/destructive.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getStatusWithCodes, isGitRepository } from '../core/git.js';
 import { generateBinaryFilePatch, generateFullFilePatch } from '../core/git-diff.js';
@@ -16,38 +16,25 @@ import {
   getUntrackedFilesInDir,
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
-import { commitExportedPatch, findAllPatchesForFiles } from '../core/patch-export.js';
-import { loadPatchesManifest } from '../core/patch-manifest.js';
-import {
-  applyRenameMapToManifest,
-  buildProjectedManifest,
-  enforcePatchPolicy,
-} from '../core/patch-policy.js';
+import { commitExportedPatch } from '../core/patch-export.js';
 import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions, PatchMetadata } from '../types/commands/index.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { parsePositiveIntegerFlag } from '../utils/validation.js';
-import {
-  commitPlacementExport,
-  type PlacementPlan,
-  placementSummary,
-  projectPlacementForLint,
-  renderDryRunPreview,
-  resolvePlacementPlan,
-} from './export-flow.js';
-import { assertPlacementPreservesReservedRanges } from './export-placement-policy.js';
+import { commitPlacementExport, type PlacementPlan, renderDryRunPreview } from './export-flow.js';
+import { gatePlacementPlan, patchMetadataExtras } from './export-placement-gate.js';
 import {
   autoFixLicenseHeaders,
-  confirmSupersedePatches,
-  guardOwnershipOverlap,
   promptExportPatchMetadata,
   runPatchLint,
+  runSupersedeAndOverlapGates,
 } from './export-shared.js';
 
 async function collectExportFiles(
@@ -140,26 +127,29 @@ async function generatePatchDiff(engineDir: string, allFiles: string[]): Promise
   return diffs.join('\n');
 }
 
+/** Everything `exportCommand` resolves before the spinner starts. */
+interface ExportPreparation {
+  paths: ReturnType<typeof getProjectPaths>;
+  placementFlagCount: number;
+  diff: string;
+  config: FireForgeConfig;
+  isInteractive: boolean;
+  metadata: NonNullable<Awaited<ReturnType<typeof promptExportPatchMetadata>>>;
+}
+
 /**
- * Runs the export command to export file changes as a patch.
- * Accepts one or more file/directory paths and bundles them into a single patch.
- * @param projectRoot - Root directory of the project
- * @param files - File or directory paths to export (relative to engine/)
- * @param options - Export options
+ * Validation + diff phase of `exportCommand`: checks flag combinations and
+ * the engine checkout, collects the export file set (honouring
+ * `--exclude-furnace`), generates the diff, auto-fixes license headers,
+ * and prompts for patch metadata. Returns `null` when the operator
+ * cancelled the metadata prompt (the command ends silently, matching the
+ * prompt's own cancel handling).
  */
-// The command body is intentionally linear: validation → diff → placement
-// gate → dry-run/placement/default write. Splitting it further would
-// spread the error-handling (spinner.error, try/catch) across multiple
-// helpers and hurt readability more than it would help.
-// eslint-disable-next-line max-lines-per-function
-export async function exportCommand(
+async function prepareExport(
   projectRoot: string,
   files: string[],
   options: ExportOptions
-): Promise<void> {
-  const isDryRun = options.dryRun === true;
-  intro(isDryRun ? 'FireForge Export (dry run)' : 'FireForge Export');
-
+): Promise<ExportPreparation | null> {
   // Placement flags are mutually exclusive with each other.
   const placementFlagCount = [
     options.order !== undefined,
@@ -238,7 +228,29 @@ export async function exportCommand(
   }
 
   const metadata = await promptExportPatchMetadata(options, isInteractive, 'export', config);
-  if (!metadata) return;
+  if (!metadata) return null;
+
+  return { paths, placementFlagCount, diff, config, isInteractive, metadata };
+}
+
+/**
+ * Runs the export command to export file changes as a patch.
+ * Accepts one or more file/directory paths and bundles them into a single patch.
+ * @param projectRoot - Root directory of the project
+ * @param files - File or directory paths to export (relative to engine/)
+ * @param options - Export options
+ */
+export async function exportCommand(
+  projectRoot: string,
+  files: string[],
+  options: ExportOptions
+): Promise<void> {
+  const isDryRun = options.dryRun === true;
+  intro(isDryRun ? 'FireForge Export (dry run)' : 'FireForge Export');
+
+  const prepared = await prepareExport(projectRoot, files, options);
+  if (!prepared) return;
+  const { paths, placementFlagCount, diff, config, isInteractive, metadata } = prepared;
   const { patchName, selectedCategory, description } = metadata;
 
   const s = spinner(isDryRun ? 'Planning export...' : 'Exporting patch...');
@@ -271,89 +283,20 @@ export async function exportCommand(
     // exclusive with supersede — the semantics overlap confusingly.
     let placementPlan: PlacementPlan | null = null;
     if (placementFlagCount > 0) {
-      if (options.supersede) {
-        throw new InvalidArgumentError(
-          'Placement flags (--order/--before/--after) cannot be combined with --supersede.',
-          'export placement'
-        );
-      }
-      placementPlan = await resolvePlacementPlan(
-        paths.patches,
+      const gated = await gatePlacementPlan({
+        patchesDir: paths.patches,
         options,
         selectedCategory,
-        patchName
-      );
-
-      const currentManifest = await loadPatchesManifest(paths.patches);
-      if (currentManifest !== null) {
-        assertPlacementPreservesReservedRanges(
-          placementPlan,
-          currentManifest.patches,
-          config,
-          selectedCategory
-        );
-      }
-      const conflicts = await projectPlacementForLint(paths.patches, placementPlan, diff);
-      const renamed =
-        currentManifest !== null
-          ? applyRenameMapToManifest(currentManifest, placementPlan.renameMap)
-          : buildProjectedManifest(null, []);
-      enforcePatchPolicy({
+        patchName,
+        description,
+        filesAffected,
+        diff,
         config,
-        manifest: buildProjectedManifest(renamed, [
-          ...renamed.patches,
-          {
-            filename: placementPlan.newFilename,
-            order: placementPlan.insertionOrder,
-            category: selectedCategory,
-            name: patchName,
-            description,
-            createdAt: new Date().toISOString(),
-            ...buildPatchSourceMetadata(config.firefox),
-            filesAffected,
-            ...(options.tier !== undefined ? { tier: options.tier } : {}),
-            ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
-              ? { lintIgnore: options.lintIgnore }
-              : {}),
-          },
-        ]),
-        command: 'export',
-        forceUnsafe: options.forceUnsafe === true,
+        isDryRun,
+        s,
       });
-      const summary = placementSummary(placementPlan);
-      const renameCount = placementPlan.renameMap.size;
-
-      // Route through confirmDestructive when the operation is destructive
-      // enough to warrant a prompt (more than one rename) OR when the user
-      // asked for a dry-run. The dry-run branch must always print the
-      // placement summary — previously, single-rename/no-rename dry-runs
-      // exited silently with no filename or projected layout.
-      if (renameCount > 1 || isDryRun) {
-        s.stop();
-        const decision = await confirmDestructive({
-          operation: 'export-order',
-          title: `Export with placement at order ${placementPlan.insertionOrder}`,
-          summary,
-          yes: options.yes === true,
-          dryRun: isDryRun,
-          unsafeOverride: options.forceUnsafe === true,
-          conflicts,
-        });
-        if (decision === 'dry-run') {
-          outro('Dry run complete — no changes made');
-          return;
-        }
-        if (decision === 'cancelled') {
-          outro('Export cancelled');
-          return;
-        }
-      } else if (conflicts && options.forceUnsafe !== true) {
-        s.stop();
-        throw new InvalidArgumentError(
-          `Refusing to run export: ${conflicts.reason}. Pass --force-unsafe to override.`,
-          '--force-unsafe'
-        );
-      }
+      if (gated === 'stop') return;
+      placementPlan = gated;
     }
 
     // Dry-run path: compute the plan and print it, never write.
@@ -368,10 +311,7 @@ export async function exportCommand(
         ...buildPatchSourceMetadata(config.firefox),
         explicitSupersede: options.supersede === true,
         allowOverlap: options.allowOverlap === true,
-        ...(options.tier !== undefined ? { tier: options.tier } : {}),
-        ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
-          ? { lintIgnore: options.lintIgnore }
-          : {}),
+        ...patchMetadataExtras(options),
         config,
         forceUnsafe: options.forceUnsafe === true,
       });
@@ -393,10 +333,7 @@ export async function exportCommand(
         createdAt: new Date().toISOString(),
         ...buildPatchSourceMetadata(config.firefox),
         filesAffected,
-        ...(options.tier !== undefined ? { tier: options.tier } : {}),
-        ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
-          ? { lintIgnore: options.lintIgnore }
-          : {}),
+        ...patchMetadataExtras(options),
       };
       const committedPlan = await commitPlacementExport({
         patchesDir: paths.patches,
@@ -440,35 +377,15 @@ export async function exportCommand(
     }
 
     // Default (no dry-run, no placement) path: the pre-existing behavior.
-    // Check how many existing patches would be superseded
-    const shouldProceed = await confirmSupersedePatches(
-      paths.patches,
-      filesAffected,
-      options.supersede,
-      isInteractive,
-      s
-    );
-    if (!shouldProceed) return;
-
-    // Overlap gate: pre-0.16.0 `export` only caught FULL-coverage
-    // supersedes, so a second export targeting a shared file like
-    // `browser/themes/shared/jar.inc.mn` happily created a queue where
-    // two patches both listed the same file in `filesAffected`. `verify`
-    // then failed immediately on "cross-patch filesAffected conflicts".
-    // `confirmSupersedePatches` might already have confirmed full
-    // supersedes above; pass their filenames through so we do not flag
-    // a file claimed by a patch that is about to be removed.
-    const willSupersede = await findAllPatchesForFiles(paths.patches, filesAffected);
-    const supersedingFilenames = new Set(willSupersede.map((p) => p.filename));
-    const shouldProceedPastOverlap = await guardOwnershipOverlap({
+    const shouldProceedPastGates = await runSupersedeAndOverlapGates({
       patchesDir: paths.patches,
       filesAffected,
-      supersedingFilenames,
+      supersede: options.supersede,
       allowOverlap: options.allowOverlap === true,
       isInteractive,
       s,
     });
-    if (!shouldProceedPastOverlap) return;
+    if (!shouldProceedPastGates) return;
 
     const { patchFilename, superseded } = await commitExportedPatch({
       patchesDir: paths.patches,
@@ -478,10 +395,7 @@ export async function exportCommand(
       diff,
       filesAffected,
       ...buildPatchSourceMetadata(config.firefox),
-      ...(options.tier !== undefined ? { tier: options.tier } : {}),
-      ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0
-        ? { lintIgnore: options.lintIgnore }
-        : {}),
+      ...patchMetadataExtras(options),
       config,
       policyCommand: 'export',
       forceUnsafe: options.forceUnsafe === true,

@@ -146,6 +146,15 @@ export interface FurnaceConfig {
    * Always includes `toolkit/content/widgets` by default.
    */
   scanPaths?: string[];
+  /**
+   * Project-relative path to a consumer-owned jsconfig/tsconfig whose
+   * `compilerOptions.paths` entries for deployed component modules
+   * (`chrome://global/content/elements/<file>.mjs`) Furnace keeps in sync
+   * on deploy. Only entries under that chrome prefix that map into
+   * `components/custom/` are managed; everything else is preserved.
+   * Unset disables jsconfig maintenance.
+   */
+  typecheckJsconfig?: string;
   /** Stock components tracked for preview */
   stock: string[];
   /** Override components */
@@ -252,6 +261,7 @@ export interface DryRunAction {
   component: string;
   action:
     | 'copy'
+    | 'expand-fragments'
     | 'register-ce'
     | 'register-jar'
     | 'copy-ftl'
@@ -304,3 +314,6 @@ export interface ValidationIssue {
   /** Human-readable description of the issue */
   message: string;
 }
+
+/** Resolved test-harness selection for a `furnace create` run. */
+export type ResolvedTestStyle = 'mochikit' | 'browser-chrome' | 'xpcshell' | 'none';

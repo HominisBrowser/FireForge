@@ -14,7 +14,7 @@ vi.mock('../../utils/logger.js', () => ({
 import { ensureDir, writeText } from '../../utils/fs.js';
 import { info, verbose, warn } from '../../utils/logger.js';
 import { auditBuildArtifacts, isPackageablePath } from '../build-audit.js';
-import type { BuildBaseline } from '../build-baseline.js';
+import type { BuildBaseline } from '../build-baseline-types.js';
 import * as git from '../git.js';
 import * as gitBase from '../git-base.js';
 import * as gitStatus from '../git-status.js';

@@ -36,7 +36,7 @@ import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceCreateOptions } from '../../types/commands/index.js';
 import type { ProjectLicense } from '../../types/config.js';
-import type { FurnaceConfig } from '../../types/furnace.js';
+import type { FurnaceConfig, ResolvedTestStyle } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { cancel, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
@@ -273,9 +273,6 @@ async function writeComponentFiles(
 
   return files;
 }
-
-/** Resolved test-harness selection for a `furnace create` run. */
-export type ResolvedTestStyle = 'mochikit' | 'browser-chrome' | 'xpcshell' | 'none';
 
 /**
  * Collapses `--with-tests`, `--xpcshell`, and `--test-style` into the single

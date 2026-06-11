@@ -320,6 +320,34 @@ export interface PatchStagedDependencyOptions {
  * It validates an ownership transfer and prints the explicit
  * `re-export --files` commands needed to perform it.
  */
+/**
+ * Options for the `patch split` command.
+ */
+export interface PatchSplitOptions {
+  /** Files to move out of the source patch (engine-relative). */
+  files: string[];
+  /** Name for the new patch (used in its filename slug). */
+  name: string;
+  /** Category for the new patch; defaults to the source patch's category. */
+  category?: string;
+  /** Description for the new patch. */
+  description?: string;
+  /** Exact sparse order for the new patch (mutually exclusive with before/after). */
+  order?: number;
+  /** Place the new patch before this patch identifier. */
+  before?: string;
+  /** Place the new patch after this patch identifier (default: the source). */
+  after?: string;
+  /** Preview without writing. */
+  dryRun?: boolean;
+  /** Skip interactive confirmation (required for non-TTY). */
+  yes?: boolean;
+  /** Bypass projected-lint refusals. */
+  forceUnsafe?: boolean;
+  /** Skip per-patch lint of the projected bodies. */
+  skipLint?: boolean;
+}
+
 export interface PatchMoveFilesOptions {
   /** File paths relative to engine/ to move from the source patch to the target patch. */
   file?: string[];
@@ -413,6 +441,25 @@ export interface TestOptions {
    * stale process holds the default port or CI uses another port.
    */
   marionettePort?: number;
+  /**
+   * Retry budget for recognized harness crashes (resource-monitor
+   * tracebacks, pre-test no-output hangs, post-green shutdown re-entry).
+   * 0 disables retries. Defaults to {@link DEFAULT_HARNESS_RETRIES} at the
+   * command layer.
+   */
+  harnessRetries?: number;
+  /**
+   * Commander negation flag for `--no-shard`. When false, multiple test
+   * paths run in one combined mach invocation; by default they shard into
+   * sequential single-file harness runs with an aggregate report.
+   */
+  shard?: boolean;
+  /**
+   * Project-relative (or absolute) artifact path published to the harness
+   * run as `<BINARYNAME>_PERF_SAMPLE_JSON`, for downstream perf-budget
+   * checkers that consume a sample artifact after the run.
+   */
+  perfSamples?: string;
 }
 
 /**
@@ -684,6 +731,8 @@ export interface TokenAddOptions {
   description?: string;
   darkValue?: string;
   dryRun?: boolean;
+  /** Declare the category banner in the tokens CSS when it does not exist yet. */
+  createCategory?: boolean;
 }
 
 /**
@@ -718,4 +767,62 @@ export interface DoctorOptions {
 export interface GlobalOptions {
   /** Enable verbose/debug output */
   verbose?: boolean;
+}
+
+/** Options controlling how the lint command filters and tags its output. */
+export interface LintCommandOptions {
+  /**
+   * When set, tag each issue as `introduced` or `cumulative` based on
+   * whether its file changed since this git revision (e.g. `HEAD`, a
+   * branch name, or a SHA). Issues are not filtered — the full set still
+   * prints — but a diff-scoped summary makes it trivial to see which
+   * errors the current task introduced.
+   */
+  since?: string;
+  /**
+   * When set together with {@link since}, scope the exit code to issues
+   * tagged `introduced`. Cumulative pre-existing errors still print (so
+   * the operator can still see the full queue state) but do not fail
+   * lint. Motivating case: a branch whose diff is clean but whose repo
+   * already carries unrelated `raw-color` / license-header errors from
+   * older patches. Without this flag, CI treats the clean branch as
+   * failing; with it, a branch "breaks the build" only when its own diff
+   * introduced a new error.
+   *
+   * Requires {@link since}: without a revision to diff against there is
+   * no distinction between introduced and cumulative, so the flag is
+   * rejected up-front rather than silently ignored.
+   */
+  onlyIntroduced?: boolean;
+  /**
+   * Lint each patch in the queue as its own isolated diff, rather than
+   * the aggregate `git diff HEAD` across all applied patches.
+   *
+   * Motivating case: running `fireforge lint` (no args) on a repo where
+   * `fireforge import` or `fireforge rebase` has just applied the full
+   * patch queue produces an aggregate diff (every patch's changes
+   * summed). The patch-size advisory rules (`large-patch-lines`,
+   * `large-patch-files`) then fire against the sum — e.g. "Patch is
+   * 37529 lines" on a queue of 22 individually-fine patches — which
+   * reads as a task-specific regression when it is really an artefact
+   * of the aggregation. `--per-patch` rescopes the diff to each patch's
+   * own `filesAffected`, honours the patch's own `lintIgnore`, and runs
+   * the cross-patch rules once over the whole queue so queue-level
+   * findings (duplicate creations, forward imports) still surface.
+   *
+   * Mutually exclusive with passing explicit file paths — the two
+   * scope contracts are different.
+   */
+  perPatch?: boolean;
+  /**
+   * Maximum warning count tolerated before lint exits non-zero. Mirrors
+   * ESLint's `--max-warnings` shape for release gates that want advisory
+   * findings to become blocking without changing default CLI behavior.
+   */
+  maxWarnings?: number;
+  /**
+   * Bypass per-patch lint cache reads and writes. Accepted in aggregate mode
+   * for CLI consistency, but only `--per-patch` currently uses the cache.
+   */
+  noCache?: boolean;
 }

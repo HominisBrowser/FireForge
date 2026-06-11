@@ -33,3 +33,22 @@ export function prefixChecksums(
 
   return result;
 }
+
+/**
+ * Returns the filenames present in `previous` that are absent from `current`
+ * — i.e. files we know we deployed last time but the workspace has since
+ * deleted. The order of returned names is intentionally stable
+ * (sorted alphabetically) so test snapshots and CLI output are deterministic.
+ */
+export function diffDeletedFiles(
+  previous: Record<string, string>,
+  current: Record<string, string>
+): string[] {
+  const deleted: string[] = [];
+  for (const key of Object.keys(previous)) {
+    if (!(key in current)) {
+      deleted.push(key);
+    }
+  }
+  return deleted.sort();
+}

@@ -46,7 +46,16 @@ function parsePatchPolicyCategory(raw: unknown, label: string): string {
   return raw;
 }
 
-function parsePatchPolicyRange(raw: unknown, label: string): PatchPolicyRange {
+/**
+ * Shared head of every patch-policy range shape: the value must be an
+ * object carrying positive integer `from`/`to` endpoints with
+ * `to >= from`. Returns the parsed record so callers can read their
+ * shape-specific fields from it.
+ */
+function parseRangeBounds(
+  raw: unknown,
+  label: string
+): { rec: ReturnType<typeof parseObject>; from: number; to: number } {
   let rec;
   try {
     rec = parseObject(raw, label);
@@ -58,6 +67,11 @@ function parsePatchPolicyRange(raw: unknown, label: string): PatchPolicyRange {
   if (to < from) {
     throw new ConfigError(`Config field "${label}.to" must be greater than or equal to from`);
   }
+  return { rec, from, to };
+}
+
+function parsePatchPolicyRange(raw: unknown, label: string): PatchPolicyRange {
+  const { rec, from, to } = parseRangeBounds(raw, label);
   return {
     from,
     to,
@@ -108,17 +122,7 @@ function parseReservedAllowedPatch(raw: unknown, label: string): PatchPolicyRese
 }
 
 function parsePatchPolicyReservedRange(raw: unknown, label: string): PatchPolicyReservedRange {
-  let rec;
-  try {
-    rec = parseObject(raw, label);
-  } catch {
-    throw new ConfigError(`Config field "${label}" must be an object`);
-  }
-  const from = parsePositiveRangeEndpoint(rec.raw('from'), `${label}.from`);
-  const to = parsePositiveRangeEndpoint(rec.raw('to'), `${label}.to`);
-  if (to < from) {
-    throw new ConfigError(`Config field "${label}.to" must be greater than or equal to from`);
-  }
+  const { rec, from, to } = parseRangeBounds(raw, label);
   const allowedRaw = rec.raw('allowed');
   if (!Array.isArray(allowedRaw)) {
     throw new ConfigError(`Config field "${label}.allowed" must be an array`);

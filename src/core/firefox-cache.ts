@@ -23,7 +23,7 @@ import { downloadFile } from './firefox-download.js';
  * Computes the SHA-256 hex digest of a file.
  * @param filePath - Path to the file
  */
-export async function sha256File(filePath: string): Promise<string> {
+async function sha256File(filePath: string): Promise<string> {
   const hash = createHash('sha256');
   const stream = createReadStream(filePath);
   await pipeline(stream, hash);

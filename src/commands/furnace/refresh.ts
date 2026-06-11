@@ -241,6 +241,66 @@ async function refreshSingleOverride(
   return { results, currentVersion };
 }
 
+/** Accumulated outcome of a `--all` batch refresh. */
+interface BatchRefreshTally {
+  totalMerged: number;
+  totalConflicts: number;
+  totalUnchanged: number;
+  totalSkipped: number;
+  conflictComponents: string[];
+  failedOverrides: { name: string; message: string }[];
+}
+
+/**
+ * Refreshes every override sequentially, tallying merged/conflict/
+ * unchanged file counts. Per-override errors are expected (warned and
+ * recorded as failures) and do not abort the batch; only an error that
+ * escapes this function entirely warrants the caller's journal rollback.
+ */
+async function runBatchRefresh(
+  projectRoot: string,
+  overrideNames: string[],
+  options: FurnaceRefreshOptions
+): Promise<BatchRefreshTally> {
+  let totalMerged = 0;
+  let totalConflicts = 0;
+  let totalUnchanged = 0;
+  let totalSkipped = 0;
+  const conflictComponents: string[] = [];
+  const failedOverrides: { name: string; message: string }[] = [];
+
+  for (const overrideName of overrideNames) {
+    try {
+      const { results } = await refreshSingleOverride(projectRoot, overrideName, options);
+      if (results.length === 0) {
+        totalSkipped++;
+        continue;
+      }
+      for (const r of results) {
+        if (r.status === 'merged') totalMerged++;
+        else if (r.status === 'conflict') {
+          totalConflicts++;
+          if (!conflictComponents.includes(overrideName)) {
+            conflictComponents.push(overrideName);
+          }
+        } else if (r.status === 'unchanged') totalUnchanged++;
+      }
+    } catch (error: unknown) {
+      const message = toError(error).message;
+      warn(`${overrideName}: ${message}`);
+      failedOverrides.push({ name: overrideName, message });
+    }
+  }
+  return {
+    totalMerged,
+    totalConflicts,
+    totalUnchanged,
+    totalSkipped,
+    conflictComponents,
+    failedOverrides,
+  };
+}
+
 /**
  * Runs the furnace refresh command to merge upstream Firefox changes into
  * an override component using three-way merge.
@@ -303,13 +363,6 @@ export async function furnaceRefreshCommand(
     return;
   }
 
-  let totalMerged = 0;
-  let totalConflicts = 0;
-  let totalUnchanged = 0;
-  let totalSkipped = 0;
-  const conflictComponents: string[] = [];
-  const failedOverrides: { name: string; message: string }[] = [];
-
   // Snapshot furnace.json before the batch loop so an unexpected failure
   // (process crash, unhandled error) can be recovered from. Per-component
   // errors caught below are expected and do not trigger a restore — only
@@ -320,29 +373,9 @@ export async function furnaceRefreshCommand(
     await snapshotFile(batchJournal, furnacePaths.furnaceConfig);
   }
 
+  let tally: BatchRefreshTally;
   try {
-    for (const overrideName of overrideNames) {
-      try {
-        const { results } = await refreshSingleOverride(projectRoot, overrideName, options);
-        if (results.length === 0) {
-          totalSkipped++;
-          continue;
-        }
-        for (const r of results) {
-          if (r.status === 'merged') totalMerged++;
-          else if (r.status === 'conflict') {
-            totalConflicts++;
-            if (!conflictComponents.includes(overrideName)) {
-              conflictComponents.push(overrideName);
-            }
-          } else if (r.status === 'unchanged') totalUnchanged++;
-        }
-      } catch (error: unknown) {
-        const message = toError(error).message;
-        warn(`${overrideName}: ${message}`);
-        failedOverrides.push({ name: overrideName, message });
-      }
-    }
+    tally = await runBatchRefresh(projectRoot, overrideNames, options);
   } catch (error: unknown) {
     // Unexpected batch-level failure: restore furnace.json to its
     // pre-batch state so the config is not left partially updated.
@@ -352,6 +385,8 @@ export async function furnaceRefreshCommand(
     throw error;
   }
 
+  const { totalMerged, totalConflicts, totalUnchanged, totalSkipped } = tally;
+  const { conflictComponents, failedOverrides } = tally;
   const summary =
     `${overrideNames.length} override(s) processed, ${totalSkipped} already up-to-date\n` +
     `${totalMerged} file(s) merged, ${totalUnchanged} unchanged, ${totalConflicts} conflict(s), ` +

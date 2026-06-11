@@ -89,7 +89,7 @@ function sanitizeProjectState(data: unknown): StateValidationResult {
  * @param data - Parsed JSON state data
  * @returns Validated FireForgeState
  */
-export function validateFireForgeState(data: unknown): FireForgeState {
+function validateFireForgeState(data: unknown): FireForgeState {
   const result = sanitizeProjectState(data);
   if (result.issues.length > 0) {
     throw new ConfigError(`Invalid FireForge state: ${result.issues.join('; ')}`);

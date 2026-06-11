@@ -183,6 +183,11 @@ export async function patchMoveFilesCommand(
   note(`${dryRunSource}\n${dryRunTarget}`, 'Preview commands');
   note(`${applySource}\n${applyTarget}`, 'Apply commands');
 
+  info(
+    'Tip: to move files into a brand-new patch in one transaction (including ' +
+      'staged-dependency owner rewrites), use "fireforge patch split" instead.'
+  );
+
   outro('Move plan complete - no changes made');
 }
 

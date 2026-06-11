@@ -62,6 +62,7 @@ import {
   guardOwnershipOverlap,
   promptExportPatchMetadata,
   runPatchLint,
+  runSupersedeAndOverlapGates,
 } from '../export-shared.js';
 
 const mockSpinner: SpinnerHandle = {
@@ -520,5 +521,42 @@ describe('guardOwnershipOverlap', () => {
     });
     expect(result).toBe(false);
     expect(cancel).toHaveBeenCalledWith('Export cancelled');
+  });
+});
+
+describe('runSupersedeAndOverlapGates', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns true when neither gate has anything to flag', async () => {
+    const result = await runSupersedeAndOverlapGates({
+      patchesDir: '/patches',
+      filesAffected: ['a.js'],
+      supersede: undefined,
+      allowOverlap: false,
+      isInteractive: false,
+      s: mockSpinner,
+    });
+    expect(result).toBe(true);
+  });
+
+  it('returns false when the operator declines the supersede gate', async () => {
+    vi.mocked(findAllPatchesForFiles).mockResolvedValue([
+      { path: '/patches/old.patch', filename: 'old.patch', order: 1 },
+    ]);
+    vi.mocked(isCancel).mockReturnValueOnce(true);
+    vi.mocked(clack.confirm).mockResolvedValueOnce(Symbol('cancel'));
+
+    const result = await runSupersedeAndOverlapGates({
+      patchesDir: '/patches',
+      filesAffected: ['a.js'],
+      supersede: undefined,
+      allowOverlap: false,
+      isInteractive: true,
+      s: mockSpinner,
+    });
+    expect(result).toBe(false);
+    expect(vi.mocked(loadPatchesManifest)).not.toHaveBeenCalled();
   });
 });

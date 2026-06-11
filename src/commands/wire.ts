@@ -206,6 +206,144 @@ async function ensureSubscriptSourceExists(
 }
 
 /**
+ * Validates the `--dom` fragment argument and computes its engine-root-
+ * relative path. Accepts absolute, repo-root-relative (`engine/...`), and
+ * engine-relative inputs; rejects missing files and paths escaping
+ * engine/. Returns undefined when `--dom` was not supplied.
+ */
+async function resolveDomFragmentPath(
+  projectRoot: string,
+  dom: string | undefined
+): Promise<string | undefined> {
+  // Validate DOM fragment file exists and compute path relative to engine root.
+  //
+  // Accepts three shapes:
+  //  - Absolute paths (`/project/engine/browser/base/content/foo.inc.xhtml`)
+  //  - Repo-root-relative forms (`engine/browser/base/content/foo.inc.xhtml`)
+  //  - Engine-relative forms (`browser/base/content/foo.inc.xhtml`)
+  //
+  // Before the engine-prefix normalization, passing an `engine/…`-prefixed
+  // relative path from the repo root double-rooted through
+  // `toRootRelativePath(engineDir, …)` — `resolve(engineDir, 'engine/…')`
+  // landed at `engineDir/engine/…`, which is still "inside" engineDir but
+  // named as a second-level `engine/…` entry. The computed `#include`
+  // then read `../../../engine/browser/base/content/foo.inc.xhtml`,
+  // packaging-breaking nonsense. For absolute inputs this pre-existing
+  // contract was fine — `toRootRelativePath` handles absolute candidates
+  // correctly — so we only strip the prefix when the input is relative.
+  if (!dom) return undefined;
+  {
+    const paths = getProjectPaths(projectRoot);
+    const domCandidate = isExplicitAbsolutePath(dom) ? dom : stripEnginePrefix(dom);
+    // `pathExists` resolves relative paths against CWD, so an engine-
+    // relative `domCandidate` (e.g. `browser/base/content/foo.inc.xhtml`)
+    // would be probed inside the operator's shell directory rather than
+    // the engine root and fail "DOM fragment file not found" even when
+    // the file is sitting at engine/<path>. Mirror `register.ts`: probe
+    // the absolute path as-is, otherwise join with `paths.engine` first.
+    // The `isPathInsideRoot` / `toRootRelativePath` calls below keep
+    // operating on `domCandidate` because they internally resolve
+    // relative candidates against the engine root, which matches the
+    // probe path we just built.
+    const domProbePath = isExplicitAbsolutePath(domCandidate)
+      ? domCandidate
+      : join(paths.engine, domCandidate);
+    if (!(await pathExists(domProbePath))) {
+      throw new InvalidArgumentError(`DOM fragment file not found: ${dom}`, 'dom');
+    }
+    if (!isPathInsideRoot(paths.engine, domCandidate)) {
+      throw new InvalidArgumentError(`DOM fragment file must stay within engine/: ${dom}`, 'dom');
+    }
+    return toRootRelativePath(paths.engine, domCandidate);
+  }
+}
+
+/**
+ * Builds the wireSubscript option bag from the command flags, omitting
+ * every key whose flag is absent (exactOptionalPropertyTypes) and the
+ * defaults the lower layer already assumes.
+ */
+function buildWireSubscriptOptions(
+  options: WireOptions,
+  domFilePath: string | undefined,
+  domTargetPath: string,
+  subscriptDir: string
+): Parameters<typeof wireSubscript>[2] {
+  return {
+    ...(options.init !== undefined ? { init: options.init } : {}),
+    ...(options.destroy !== undefined ? { destroy: options.destroy } : {}),
+    ...(domFilePath !== undefined ? { domFilePath } : {}),
+    ...(domFilePath !== undefined && domTargetPath !== DEFAULT_DOM_TARGET ? { domTargetPath } : {}),
+    ...(options.after !== undefined ? { after: options.after } : {}),
+    ...(subscriptDir !== DEFAULT_BROWSER_SUBSCRIPT_DIR ? { subscriptDir } : {}),
+    dryRun: false,
+  };
+}
+
+/**
+ * Surfaces any legacy parser fallbacks the wiring run consumed, so the
+ * operator knows which files were mutated by the regex path rather than
+ * the AST path.
+ */
+function reportParserFallbacks(): void {
+  const parserFallbacks = consumeParserFallbackEvents();
+  if (parserFallbacks.length > 0) {
+    const contexts = [...new Set(parserFallbacks.map((event) => event.context))];
+    info(
+      `Legacy parser fallback was used for ${contexts.length} file${contexts.length === 1 ? '' : 's'}: ${contexts.join(', ')}`
+    );
+  }
+}
+
+/**
+ * Prints the per-mutation success/skip rows for a completed (non-dry-run)
+ * wire invocation.
+ */
+function reportWireResult(
+  result: Awaited<ReturnType<typeof wireSubscript>>,
+  name: string,
+  options: WireOptions,
+  domFilePath: string | undefined,
+  domTargetPath: string
+): void {
+  if (result.subscriptAdded) {
+    success(`Added loadSubScript for ${name}.js to browser-main.js`);
+  } else {
+    info(`${name}.js already registered in browser-main.js (skipped)`);
+  }
+
+  if (options.init) {
+    if (result.initAdded) {
+      success(`Added init expression to browser-init.js onLoad()`);
+    } else {
+      info(`Init expression already present in browser-init.js (skipped)`);
+    }
+  }
+
+  if (options.destroy) {
+    if (result.destroyAdded) {
+      success(`Added destroy expression to browser-init.js onUnload()`);
+    } else {
+      info(`Destroy expression already present in browser-init.js (skipped)`);
+    }
+  }
+
+  if (domFilePath) {
+    if (result.domInserted) {
+      success(`Inserted #include directive into ${domTargetPath}`);
+    } else {
+      info(`#include directive already present in ${domTargetPath} (skipped)`);
+    }
+  }
+
+  if (result.jarMnResult.skipped) {
+    info(`${name}.js already registered in jar.mn (skipped)`);
+  } else {
+    success(`Registered ${name}.js in ${result.jarMnResult.manifest}`);
+  }
+}
+
+/**
  * Wires a chrome subscript into the browser.
  *
  * @param projectRoot - Root directory of the project
@@ -247,52 +385,7 @@ export async function wireCommand(
 
   const subscriptDir = await resolveWireSubscriptDir(projectRoot, options);
 
-  // Validate DOM fragment file exists and compute path relative to engine root.
-  //
-  // Accepts three shapes:
-  //  - Absolute paths (`/project/engine/browser/base/content/foo.inc.xhtml`)
-  //  - Repo-root-relative forms (`engine/browser/base/content/foo.inc.xhtml`)
-  //  - Engine-relative forms (`browser/base/content/foo.inc.xhtml`)
-  //
-  // Before the engine-prefix normalization, passing an `engine/…`-prefixed
-  // relative path from the repo root double-rooted through
-  // `toRootRelativePath(engineDir, …)` — `resolve(engineDir, 'engine/…')`
-  // landed at `engineDir/engine/…`, which is still "inside" engineDir but
-  // named as a second-level `engine/…` entry. The computed `#include`
-  // then read `../../../engine/browser/base/content/foo.inc.xhtml`,
-  // packaging-breaking nonsense. For absolute inputs this pre-existing
-  // contract was fine — `toRootRelativePath` handles absolute candidates
-  // correctly — so we only strip the prefix when the input is relative.
-  let domFilePath: string | undefined;
-  if (options.dom) {
-    const paths = getProjectPaths(projectRoot);
-    const domCandidate = isExplicitAbsolutePath(options.dom)
-      ? options.dom
-      : stripEnginePrefix(options.dom);
-    // `pathExists` resolves relative paths against CWD, so an engine-
-    // relative `domCandidate` (e.g. `browser/base/content/foo.inc.xhtml`)
-    // would be probed inside the operator's shell directory rather than
-    // the engine root and fail "DOM fragment file not found" even when
-    // the file is sitting at engine/<path>. Mirror `register.ts`: probe
-    // the absolute path as-is, otherwise join with `paths.engine` first.
-    // The `isPathInsideRoot` / `toRootRelativePath` calls below keep
-    // operating on `domCandidate` because they internally resolve
-    // relative candidates against the engine root, which matches the
-    // probe path we just built.
-    const domProbePath = isExplicitAbsolutePath(domCandidate)
-      ? domCandidate
-      : join(paths.engine, domCandidate);
-    if (!(await pathExists(domProbePath))) {
-      throw new InvalidArgumentError(`DOM fragment file not found: ${options.dom}`, 'dom');
-    }
-    if (!isPathInsideRoot(paths.engine, domCandidate)) {
-      throw new InvalidArgumentError(
-        `DOM fragment file must stay within engine/: ${options.dom}`,
-        'dom'
-      );
-    }
-    domFilePath = toRootRelativePath(paths.engine, domCandidate);
-  }
+  const domFilePath = await resolveDomFragmentPath(projectRoot, options.dom);
 
   // Resolve the chrome document the `#include` directive will land in.
   // Only consulted when `--dom` is supplied — we still resolve it here so
@@ -344,59 +437,14 @@ export async function wireCommand(
     return;
   }
 
-  const result = await wireSubscript(projectRoot, name, {
-    ...(options.init !== undefined ? { init: options.init } : {}),
-    ...(options.destroy !== undefined ? { destroy: options.destroy } : {}),
-    ...(domFilePath !== undefined ? { domFilePath } : {}),
-    ...(domFilePath !== undefined && domTargetPath !== DEFAULT_DOM_TARGET ? { domTargetPath } : {}),
-    ...(options.after !== undefined ? { after: options.after } : {}),
-    ...(subscriptDir !== DEFAULT_BROWSER_SUBSCRIPT_DIR ? { subscriptDir } : {}),
-    dryRun: false,
-  });
+  const result = await wireSubscript(
+    projectRoot,
+    name,
+    buildWireSubscriptOptions(options, domFilePath, domTargetPath, subscriptDir)
+  );
 
-  const parserFallbacks = consumeParserFallbackEvents();
-  if (parserFallbacks.length > 0) {
-    const contexts = [...new Set(parserFallbacks.map((event) => event.context))];
-    info(
-      `Legacy parser fallback was used for ${contexts.length} file${contexts.length === 1 ? '' : 's'}: ${contexts.join(', ')}`
-    );
-  }
-
-  if (result.subscriptAdded) {
-    success(`Added loadSubScript for ${name}.js to browser-main.js`);
-  } else {
-    info(`${name}.js already registered in browser-main.js (skipped)`);
-  }
-
-  if (options.init) {
-    if (result.initAdded) {
-      success(`Added init expression to browser-init.js onLoad()`);
-    } else {
-      info(`Init expression already present in browser-init.js (skipped)`);
-    }
-  }
-
-  if (options.destroy) {
-    if (result.destroyAdded) {
-      success(`Added destroy expression to browser-init.js onUnload()`);
-    } else {
-      info(`Destroy expression already present in browser-init.js (skipped)`);
-    }
-  }
-
-  if (domFilePath) {
-    if (result.domInserted) {
-      success(`Inserted #include directive into ${domTargetPath}`);
-    } else {
-      info(`#include directive already present in ${domTargetPath} (skipped)`);
-    }
-  }
-
-  if (result.jarMnResult.skipped) {
-    info(`${name}.js already registered in jar.mn (skipped)`);
-  } else {
-    success(`Registered ${name}.js in ${result.jarMnResult.manifest}`);
-  }
+  reportParserFallbacks();
+  reportWireResult(result, name, options, domFilePath, domTargetPath);
 
   outro('Wiring complete');
 }

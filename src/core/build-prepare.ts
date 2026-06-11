@@ -11,7 +11,8 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, spinner, verbose, warn } from '../utils/logger.js';
 import { isBrandingSetup, setupBranding } from './branding.js';
-import type { BuildBaseline } from './build-baseline.js';
+import type { BuildBaseline } from './build-baseline-types.js';
+import { collectChangedEnginePaths } from './engine-changes.js';
 import { applyAllComponents } from './furnace-apply.js';
 import {
   furnaceConfigExists,
@@ -21,9 +22,6 @@ import {
 } from './furnace-config.js';
 import { runFurnaceMutation } from './furnace-operation.js';
 import { cleanStories } from './furnace-stories.js';
-import { hasChanges, isMissingHeadError } from './git.js';
-import { git } from './git-base.js';
-import { getUntrackedFiles } from './git-status.js';
 import { generateMozconfig, runMach } from './mach.js';
 
 /**
@@ -60,52 +58,6 @@ export function isBackendInvalidatingFile(path: string): boolean {
     if (path === suffix || path.endsWith(`/${suffix}`)) return true;
   }
   return false;
-}
-
-/**
- * Collects engine-relative paths of files changed since the baseline's HEAD
- * SHA plus any workdir modifications. Defensive — git failures surface as
- * verbose lines and return the files collected so far. An empty result
- * means "no drift we can prove" rather than "no drift occurred".
- */
-async function collectBackendRelevantChanges(
-  engineDir: string,
-  baseline: BuildBaseline
-): Promise<string[]> {
-  const collected = new Set<string>();
-
-  if (baseline.engineHeadSha) {
-    try {
-      const diff = await git(['diff', '--name-only', `${baseline.engineHeadSha}..HEAD`], engineDir);
-      for (const line of diff.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed) collected.add(trimmed);
-      }
-    } catch (error: unknown) {
-      if (!isMissingHeadError(error)) {
-        verbose(
-          `Auto-configure: could not diff engine against baseline — ${toError(error).message}`
-        );
-      }
-    }
-  }
-
-  try {
-    if (await hasChanges(engineDir)) {
-      const worktreeDiff = await git(['diff', '--name-only', 'HEAD'], engineDir);
-      for (const line of worktreeDiff.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed) collected.add(trimmed);
-      }
-      for (const file of await getUntrackedFiles(engineDir)) {
-        collected.add(file);
-      }
-    }
-  } catch (error: unknown) {
-    verbose(`Auto-configure: could not enumerate workdir changes — ${toError(error).message}`);
-  }
-
-  return [...collected];
 }
 
 /**
@@ -146,7 +98,11 @@ export async function prepareBuildEnvironment(
   // work against a stale recursive-make backend.
   let reconfigured = false;
   if (options.previousBaseline) {
-    const changed = await collectBackendRelevantChanges(paths.engine, options.previousBaseline);
+    const changed = await collectChangedEnginePaths(
+      paths.engine,
+      options.previousBaseline,
+      'Auto-configure'
+    );
     const invalidating = changed.filter(isBackendInvalidatingFile);
     if (invalidating.length > 0) {
       info(

@@ -50,8 +50,6 @@ import {
 import { runPostApplyConsistencyChecks } from './furnace-validate-registration.js';
 
 export {
-  applyCustomComponent,
-  applyOverrideComponent,
   computeComponentChecksums,
   extractComponentChecksums,
   hasComponentChanged,

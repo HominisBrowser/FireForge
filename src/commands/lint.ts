@@ -22,69 +22,11 @@ import { buildPatchQueueContext, lintExportedPatch, lintPatchQueue } from '../co
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
-import type { PatchLintIssue } from '../types/commands/index.js';
+import type { LintCommandOptions, PatchLintIssue } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { lintPerPatch } from './lint-per-patch.js';
-
-/** Options controlling how the lint command filters and tags its output. */
-export interface LintCommandOptions {
-  /**
-   * When set, tag each issue as `introduced` or `cumulative` based on
-   * whether its file changed since this git revision (e.g. `HEAD`, a
-   * branch name, or a SHA). Issues are not filtered — the full set still
-   * prints — but a diff-scoped summary makes it trivial to see which
-   * errors the current task introduced.
-   */
-  since?: string;
-  /**
-   * When set together with {@link since}, scope the exit code to issues
-   * tagged `introduced`. Cumulative pre-existing errors still print (so
-   * the operator can still see the full queue state) but do not fail
-   * lint. Motivating case: a branch whose diff is clean but whose repo
-   * already carries unrelated `raw-color` / license-header errors from
-   * older patches. Without this flag, CI treats the clean branch as
-   * failing; with it, a branch "breaks the build" only when its own diff
-   * introduced a new error.
-   *
-   * Requires {@link since}: without a revision to diff against there is
-   * no distinction between introduced and cumulative, so the flag is
-   * rejected up-front rather than silently ignored.
-   */
-  onlyIntroduced?: boolean;
-  /**
-   * Lint each patch in the queue as its own isolated diff, rather than
-   * the aggregate `git diff HEAD` across all applied patches.
-   *
-   * Motivating case: running `fireforge lint` (no args) on a repo where
-   * `fireforge import` or `fireforge rebase` has just applied the full
-   * patch queue produces an aggregate diff (every patch's changes
-   * summed). The patch-size advisory rules (`large-patch-lines`,
-   * `large-patch-files`) then fire against the sum — e.g. "Patch is
-   * 37529 lines" on a queue of 22 individually-fine patches — which
-   * reads as a task-specific regression when it is really an artefact
-   * of the aggregation. `--per-patch` rescopes the diff to each patch's
-   * own `filesAffected`, honours the patch's own `lintIgnore`, and runs
-   * the cross-patch rules once over the whole queue so queue-level
-   * findings (duplicate creations, forward imports) still surface.
-   *
-   * Mutually exclusive with passing explicit file paths — the two
-   * scope contracts are different.
-   */
-  perPatch?: boolean;
-  /**
-   * Maximum warning count tolerated before lint exits non-zero. Mirrors
-   * ESLint's `--max-warnings` shape for release gates that want advisory
-   * findings to become blocking without changing default CLI behavior.
-   */
-  maxWarnings?: number;
-  /**
-   * Bypass per-patch lint cache reads and writes. Accepted in aggregate mode
-   * for CLI consistency, but only `--per-patch` currently uses the cache.
-   */
-  noCache?: boolean;
-}
 
 /**
  * Resolves the diff the lint command should run against. Returns `null` when
@@ -312,18 +254,12 @@ export function applyAggregateLintIgnoreSuppression(
 }
 
 /**
- * Runs the lint command to check engine changes against patch quality rules.
- * @param projectRoot - Root directory of the project
- * @param files - Optional file/directory paths to lint (relative to engine/)
- * @param options - Additional lint options such as `--since` diff-scoping
+ * Up-front flag validation for `lintCommand`: rejects `--only-introduced`
+ * without `--since`, non-integer `--max-warnings`, and `--per-patch`
+ * combined with explicit file paths — each a misconfiguration that should
+ * fail loud rather than silently narrow the result.
  */
-export async function lintCommand(
-  projectRoot: string,
-  files: string[],
-  options: LintCommandOptions = {}
-): Promise<void> {
-  intro('FireForge Lint');
-
+function validateLintFlags(options: LintCommandOptions, files: string[]): void {
   // `--only-introduced` scopes the exit code to `--since`-tagged issues, so
   // without a revision to anchor the diff there is no "introduced" subset
   // to scope to — reject the combination up-front so a misconfigured CI
@@ -352,90 +288,21 @@ export async function lintCommand(
       '--per-patch cannot be combined with explicit file paths. Pass either --per-patch or a file list, not both.'
     );
   }
+}
 
-  const paths = getProjectPaths(projectRoot);
-
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
-
-  if (!(await isGitRepository(paths.engine))) {
-    throw new GeneralError(
-      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
-    );
-  }
-
-  if (options.perPatch) {
-    await lintPerPatch(projectRoot, paths, options);
-    return;
-  }
-
-  // Load the config before resolving the diff so we can pass
-  // `binaryName` into the aggregate-mode branding exclusion in
-  // `resolveLintDiff`. The config was previously loaded only after
-  // the diff was resolved; hoisting it is cheap and keeps the two
-  // call sites close together.
-  const config = await loadConfig(projectRoot);
-  // Pull the Furnace-managed prefix set up-front so aggregate lint can
-  // mirror the branding exclusion for Furnace material — without it,
-  // preview-generated stories under `browser/components/storybook/
-  // stories/furnace/` show up as license-header errors on every
-  // post-preview lint run.
-  const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
-  const diff = await resolveLintDiff(paths.engine, files, config.binaryName, furnacePrefixes);
-  if (diff === null) return;
-
-  const filesAffected = extractAffectedFiles(diff);
-
-  // Build patch queue context once so it can be shared between the
-  // per-patch ownership resolver and the cross-patch rules.
-  let ctx: import('../core/patch-lint.js').PatchQueueContext | undefined;
-  if (await pathExists(paths.patches)) {
-    ctx = await buildPatchQueueContext(paths.patches);
-  }
-
-  let issues: PatchLintIssue[] = [
-    ...(await lintExportedPatch(paths.engine, filesAffected, diff, config, ctx)),
-  ];
-
-  // Cross-patch rules operate over the whole queue, so run them whenever a
-  // patches directory exists — they surface duplicate /dev/null creations
-  // and forward-import chains that the per-patch orchestrator cannot see.
-  if (ctx) {
-    issues.push(...lintPatchQueue(ctx));
-  }
-
-  // Honor per-patch `lintIgnore` in aggregate mode by attributing each
-  // issue's file to its owning patches via the manifest's
-  // `filesAffected`. Per-patch mode threads `lintIgnore` directly into
-  // `lintExportedPatch`; aggregate mode previously had no patch-level
-  // scope to consult, so a check an operator had explicitly waived in
-  // `patches.json` re-surfaced on every `--since` run (CI default).
-  if (ctx) {
-    const result = applyAggregateLintIgnoreSuppression(issues, ctx);
-    issues = result.issues;
-    if (result.dropped > 0) {
-      info(`Suppressed ${result.dropped} issue(s) via per-patch lintIgnore (aggregate mode).`);
-    }
-  }
-
-  // When a queue manifest exists AND files were NOT scoped explicitly, the
-  // "diff" we just linted is every applied patch summed together. Patch-
-  // size rules (`large-patch-lines`, `large-patch-files`) then fire against
-  // the aggregate rather than any individual patch, producing counts like
-  // "Patch is 37529 lines" that read as a task-specific regression but are
-  // really an artefact of aggregation. Surface a one-line note pointing at
-  // `--per-patch` so the operator knows the per-patch scope exists before
-  // they read the error message as "my queue is broken".
-  //
-  // In aggregate mode over a multi-patch queue we also downgrade the two
-  // size rules from `error` to `warning`. Before this downgrade, a
-  // fresh-imported patch stack of 20+ patches hard-failed `fireforge lint`
-  // on lines-per-aggregate counts that are mathematically impossible to
-  // satisfy without splitting patches that were already split — the
-  // actionable unit is the individual patch, and `--per-patch` is the
-  // mode that matches. Per-patch mode keeps errors as errors (see
-  // `lintPerPatch` below).
+/**
+ * Aggregate-mode patch-size softening: when the linted diff is every
+ * applied patch summed (no explicit file scope, multi-patch queue), the
+ * `large-patch-lines` / `large-patch-files` counts are an artefact of
+ * aggregation rather than a property of any one patch. Surface the
+ * `--per-patch` hint and downgrade those two rules to warnings; per-patch
+ * mode keeps them as errors.
+ */
+function downgradeAggregateSizeRules(
+  issues: PatchLintIssue[],
+  files: string[],
+  ctx: import('../core/patch-lint.js').PatchQueueContext | undefined
+): void {
   const aggregateHintApplicable = files.length === 0 && ctx !== undefined && ctx.entries.length > 1;
   if (
     aggregateHintApplicable &&
@@ -453,20 +320,26 @@ export async function lintCommand(
       }
     }
   }
+}
 
-  if (issues.length === 0) {
-    success('No lint issues found.');
-    outro('Lint passed');
-    return;
-  }
-
+/**
+ * Reporting + exit phase of `lintCommand`: tags issues against `--since`,
+ * renders every notice/warning/error row, prints the summary, and applies
+ * the failure criteria (`--only-introduced` scoping, `--max-warnings`)
+ * by throwing GeneralError. Issues must be non-empty.
+ */
+async function reportLintOutcome(
+  engineDir: string,
+  issues: PatchLintIssue[],
+  options: LintCommandOptions
+): Promise<void> {
   // Diff-scoping: tag each issue as introduced-in-current-task vs
   // cumulative-pre-existing-drift. Never filters — full set still prints
   // and exit code semantics are unchanged — but the per-line prefix and
   // summary make triage trivial on a large patch series.
   const sinceActive = Boolean(options.since);
   if (options.since) {
-    const diffFiles = await collectDiffFilePaths(paths.engine, options.since);
+    const diffFiles = await collectDiffFilePaths(engineDir, options.since);
     tagLintIssues(issues, diffFiles);
   }
 
@@ -541,6 +414,98 @@ export async function lintCommand(
   } else {
     outro('Lint passed');
   }
+}
+
+/**
+ * Runs the lint command to check engine changes against patch quality rules.
+ * @param projectRoot - Root directory of the project
+ * @param files - Optional file/directory paths to lint (relative to engine/)
+ * @param options - Additional lint options such as `--since` diff-scoping
+ */
+export async function lintCommand(
+  projectRoot: string,
+  files: string[],
+  options: LintCommandOptions = {}
+): Promise<void> {
+  intro('FireForge Lint');
+
+  validateLintFlags(options, files);
+
+  const paths = getProjectPaths(projectRoot);
+
+  if (!(await pathExists(paths.engine))) {
+    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
+  }
+
+  if (!(await isGitRepository(paths.engine))) {
+    throw new GeneralError(
+      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
+    );
+  }
+
+  if (options.perPatch) {
+    await lintPerPatch(projectRoot, paths, options);
+    return;
+  }
+
+  // Load the config before resolving the diff so we can pass
+  // `binaryName` into the aggregate-mode branding exclusion in
+  // `resolveLintDiff`. The config was previously loaded only after
+  // the diff was resolved; hoisting it is cheap and keeps the two
+  // call sites close together.
+  const config = await loadConfig(projectRoot);
+  // Pull the Furnace-managed prefix set up-front so aggregate lint can
+  // mirror the branding exclusion for Furnace material — without it,
+  // preview-generated stories under `browser/components/storybook/
+  // stories/furnace/` show up as license-header errors on every
+  // post-preview lint run.
+  const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
+  const diff = await resolveLintDiff(paths.engine, files, config.binaryName, furnacePrefixes);
+  if (diff === null) return;
+
+  const filesAffected = extractAffectedFiles(diff);
+
+  // Build patch queue context once so it can be shared between the
+  // per-patch ownership resolver and the cross-patch rules.
+  let ctx: import('../core/patch-lint.js').PatchQueueContext | undefined;
+  if (await pathExists(paths.patches)) {
+    ctx = await buildPatchQueueContext(paths.patches);
+  }
+
+  let issues: PatchLintIssue[] = [
+    ...(await lintExportedPatch(paths.engine, filesAffected, diff, config, ctx)),
+  ];
+
+  // Cross-patch rules operate over the whole queue, so run them whenever a
+  // patches directory exists — they surface duplicate /dev/null creations
+  // and forward-import chains that the per-patch orchestrator cannot see.
+  if (ctx) {
+    issues.push(...lintPatchQueue(ctx));
+  }
+
+  // Honor per-patch `lintIgnore` in aggregate mode by attributing each
+  // issue's file to its owning patches via the manifest's
+  // `filesAffected`. Per-patch mode threads `lintIgnore` directly into
+  // `lintExportedPatch`; aggregate mode previously had no patch-level
+  // scope to consult, so a check an operator had explicitly waived in
+  // `patches.json` re-surfaced on every `--since` run (CI default).
+  if (ctx) {
+    const result = applyAggregateLintIgnoreSuppression(issues, ctx);
+    issues = result.issues;
+    if (result.dropped > 0) {
+      info(`Suppressed ${result.dropped} issue(s) via per-patch lintIgnore (aggregate mode).`);
+    }
+  }
+
+  downgradeAggregateSizeRules(issues, files, ctx);
+
+  if (issues.length === 0) {
+    success('No lint issues found.');
+    outro('Lint passed');
+    return;
+  }
+
+  await reportLintOutcome(paths.engine, issues, options);
 }
 
 /** Registers the lint command on the CLI program. */

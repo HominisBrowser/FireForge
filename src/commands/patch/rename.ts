@@ -22,14 +22,13 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
-import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { loadConfig } from '../../core/config.js';
 import { appendHistory, confirmDestructive } from '../../core/destructive.js';
 import { sanitizeName } from '../../core/patch-export.js';
-import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
   loadPatchesManifest,
-  resolvePatchIdentifier,
+  rewriteStagedDependencyOwners,
   savePatchesManifest,
 } from '../../core/patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../../core/patch-policy.js';
@@ -41,6 +40,7 @@ import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { pickDefined } from '../../utils/options.js';
+import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /**
  * Pulls the ordinal-string + category prefix out of a patch filename so
@@ -148,6 +148,12 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
         name: newName,
         ...(descriptionChanging ? { description: newDescription ?? '' } : {}),
       };
+      // Staged-dependency owners on other patches reference the old
+      // filename; remap them so forward-import declarations survive the
+      // rename instead of dangling.
+      const ownerLookup = (old: string): string | undefined =>
+        old === target.filename ? newFilename : undefined;
+      fresh.patches = fresh.patches.map((p) => rewriteStagedDependencyOwners(p, ownerLookup));
     } else {
       fresh.patches[idx] = {
         ...before,
@@ -226,24 +232,9 @@ export async function patchRenameCommand(
     );
   }
 
-  const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
-  if (!(await pathExists(paths.patches))) {
-    throw new GeneralError('Patches directory not found.');
-  }
-
-  const manifest = await loadPatchesManifest(paths.patches);
-  if (!manifest || manifest.patches.length === 0) {
-    throw new GeneralError('No patches in manifest.');
-  }
-
-  const target = resolvePatchIdentifier(identifier, manifest.patches);
-  if (!target) {
-    throw new InvalidArgumentError(
-      formatPatchNotFoundError(identifier, manifest.patches),
-      identifier
-    );
-  }
+  const { paths, manifest } = await requirePatchQueue(projectRoot);
+  const target = requirePatchTarget(identifier, manifest.patches);
 
   const split = splitPatchFilename(target.filename);
   if (!split) {

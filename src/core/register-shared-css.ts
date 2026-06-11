@@ -8,9 +8,9 @@ import { basename, join } from 'node:path';
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { findAlphabeticalPosition, findAlphabeticalTokenPosition } from './manifest-helpers.js';
-import type { RegisterResult } from './manifest-register.js';
 import { tokenizeJarMn } from './manifest-tokenizers.js';
 import { withParserFallback } from './parser-fallback.js';
+import type { RegisterResult } from './register-result.js';
 
 /**
  * Tokenizer-based implementation for shared CSS registration.

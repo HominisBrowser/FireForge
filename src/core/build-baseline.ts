@@ -25,42 +25,11 @@ import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { isPackageablePath } from './build-audit.js';
+import type { BuildBaseline } from './build-baseline-types.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { getHead, hasChanges, isMissingHeadError } from './git.js';
 import { git } from './git-base.js';
 import { getUntrackedFiles } from './git-status.js';
-
-/** Shape of the on-disk baseline marker. */
-export interface BuildBaseline {
-  /** SHA of engine HEAD at the time the build succeeded. */
-  engineHeadSha: string;
-  /**
-   * ISO-8601 timestamp of when the baseline was recorded. Informational —
-   * downstream code keys off `engineHeadSha` for diffs, but the timestamp
-   * helps operators reason about stale markers.
-   */
-  builtAt: string;
-  /**
-   * The binaryName used at build time. Captured so the dist-tree audit
-   * can resolve the expected bundle root under obj-star/dist/ even when
-   * the project has since been renamed.
-   */
-  binaryName: string;
-  /**
-   * Content hash per packageable engine path that was dirty at build
-   * time (modified-against-HEAD or untracked). Used by
-   * `checkStaleBuildForTest` to distinguish "this file's content was
-   * already in `dist/` when the build completed" from "this file has
-   * been edited since". Missing on baselines written before 0.16.0; the
-   * stale-check falls back to the path-only comparison in that case,
-   * so older baselines retain their existing behavior.
-   *
-   * Keys are engine-relative POSIX paths. Values are hex-encoded
-   * SHA-256 digests of the file contents at the moment the baseline
-   * was recorded.
-   */
-  packageableFingerprints?: Record<string, string>;
-}
 
 /** Name of the last-build marker file under `.fireforge/`. */
 export const BUILD_BASELINE_FILENAME = 'last-build.json';

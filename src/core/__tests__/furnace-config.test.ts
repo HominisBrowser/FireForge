@@ -50,6 +50,7 @@ describe('furnace-config helpers', () => {
       componentsDir: '/project/components',
       overridesDir: '/project/components/overrides',
       customDir: '/project/components/custom',
+      sharedDir: '/project/components/shared',
       furnaceState: '/project/.fireforge/furnace-state.json',
     });
   });

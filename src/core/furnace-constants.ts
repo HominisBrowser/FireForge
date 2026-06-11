@@ -15,7 +15,7 @@ export const FTL_DIR = 'toolkit/locales/en-US/toolkit/global';
  * Centralised so `create` / `remove` / `rename` / `validate` all agree on
  * the path template (2026-04-24 eval Finding 5).
  */
-export const XPCSHELL_TEST_DIR_SUFFIX = '-xpcshell';
+const XPCSHELL_TEST_DIR_SUFFIX = '-xpcshell';
 
 /**
  * Returns the engine-relative directory that holds xpcshell scaffolds for
@@ -27,7 +27,7 @@ export function xpcshellTestParentDir(binaryName: string): string {
 }
 
 /** File extensions that constitute a Furnace component's source files. */
-export const COMPONENT_FILE_EXTENSIONS = ['.mjs', '.css', '.ftl'] as const;
+const COMPONENT_FILE_EXTENSIONS = ['.mjs', '.css', '.ftl'] as const;
 
 /** Returns true when `fileName` has one of the standard component file extensions. */
 export function isComponentSourceFile(fileName: string): boolean {

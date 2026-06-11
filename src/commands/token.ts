@@ -32,6 +32,16 @@ async function normalizeTokenNameForProject(
     if (furnaceConfig.tokenPrefix) {
       const strippedPrefix = furnaceConfig.tokenPrefix.replace(/^--/, '').replace(/-$/, '');
       const strippedName = rawTokenName.replace(/^--/, '');
+      // A bare name that already starts with the configured prefix text is
+      // treated as fully qualified — blindly prepending would silently
+      // produce a double-prefixed token (e.g. "--hominis-hominis-shadow-low").
+      if (strippedName === strippedPrefix || strippedName.startsWith(`${strippedPrefix}-`)) {
+        info(
+          `Token name "${rawTokenName}" already starts with the configured prefix ` +
+            `"${strippedPrefix}"; using --${strippedName} instead of prefixing it again.`
+        );
+        return normalizeTokenName(strippedName);
+      }
       return `--${strippedPrefix}-${strippedName}`;
     }
   } catch (error: unknown) {
@@ -95,13 +105,16 @@ export async function tokenAddCommand(
       mode: options.mode as TokenMode,
       ...(options.description !== undefined ? { description: options.description } : {}),
       ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
+      ...(options.createCategory === true ? { createCategory: true } : {}),
       dryRun: true,
     });
 
     info('[dry-run] Would add token:');
     info(`  Name: ${tokenName}`);
     info(`  Value: ${value}`);
-    info(`  Category: ${options.category}`);
+    info(
+      `  Category: ${options.category}${options.createCategory === true ? ' (created if missing)' : ''}`
+    );
     info(`  Mode: ${options.mode}`);
     if (options.description) info(`  Description: ${options.description}`);
     if (options.darkValue) info(`  Dark value: ${options.darkValue}`);
@@ -116,6 +129,7 @@ export async function tokenAddCommand(
     mode: options.mode as TokenMode,
     ...(options.description !== undefined ? { description: options.description } : {}),
     ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
+    ...(options.createCategory === true ? { createCategory: true } : {}),
   });
 
   if (result.skipped) {
@@ -123,6 +137,7 @@ export async function tokenAddCommand(
   } else {
     const forgeConfig = await loadConfig(projectRoot);
     const tokensCssFile = getTokensCssPath(forgeConfig.binaryName).split('/').pop();
+    if (result.categoryCreated) success(`Created category "${options.category}"`);
     if (result.cssAdded) success(`Added ${tokenName} to ${tokensCssFile}`);
     if (result.docsAdded) success(`Added ${tokenName} to SRC_TOKENS.md`);
     if (result.unmappedAdded) info(`Added to unmapped tokens table (literal value)`);
@@ -174,6 +189,10 @@ export function registerToken(
     )
     .option('--description <desc>', 'Comment description for the CSS file')
     .option('--dark-value <val>', 'Dark mode value (required if mode is "override")')
+    .option(
+      '--create-category',
+      'Declare the category banner in the tokens CSS if it does not exist yet'
+    )
     .option('--dry-run', 'Show what would be changed without writing')
     .action(
       withErrorHandling(
@@ -186,6 +205,7 @@ export function registerToken(
             description?: string;
             darkValue?: string;
             dryRun?: boolean;
+            createCategory?: boolean;
           }
         ) => {
           await tokenAddCommand(getProjectRoot(), tokenName, value, {
@@ -195,6 +215,7 @@ export function registerToken(
               description: options.description,
               darkValue: options.darkValue,
               dryRun: options.dryRun,
+              createCategory: options.createCategory,
             }),
           });
         }

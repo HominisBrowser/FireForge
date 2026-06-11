@@ -160,14 +160,14 @@ export function isValidPatchCategory(
 /**
  * Checks whether a Firefox version string has an ESR suffix.
  */
-export function isEsrVersion(version: string): boolean {
+function isEsrVersion(version: string): boolean {
   return /esr$/i.test(version);
 }
 
 /**
  * Checks whether a Firefox version string is a beta version (e.g. "147.0b1").
  */
-export function isBetaVersion(version: string): boolean {
+function isBetaVersion(version: string): boolean {
   return /b\d+$/.test(version);
 }
 

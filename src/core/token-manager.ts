@@ -42,6 +42,8 @@ export interface AddTokenOptions {
   darkValue?: string | undefined;
   /** Dry run mode */
   dryRun?: boolean | undefined;
+  /** Declare the category banner in the tokens CSS when it does not exist yet. */
+  createCategory?: boolean | undefined;
 }
 
 /**
@@ -58,6 +60,8 @@ export interface AddTokenResult {
   countUpdated: boolean;
   /** Whether the operation was skipped (already exists) */
   skipped: boolean;
+  /** Whether a new category banner was declared by this add. */
+  categoryCreated?: boolean;
 }
 
 interface TokenAddContext {
@@ -132,10 +136,40 @@ function validateDarkValue(options: AddTokenOptions): void {
   }
 }
 
+/**
+ * True when `lines` contain a category header (single-line or multi-line
+ * banner shape) naming `category`. Shared by the pre-add assertion and the
+ * in-memory banner creation path so both agree on what "exists" means.
+ */
+function categoryHeaderExists(lines: string[], category: string): boolean {
+  const escapedCategory = escapeRegex(category);
+  const singleLinePattern = new RegExp(`\\/\\*\\s*=.*${escapedCategory}.*=\\s*\\*\\/`);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+
+    if (singleLinePattern.test(line)) {
+      return true;
+    }
+
+    if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
+      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+        const blockLine = lines[j] ?? '';
+        if (new RegExp(escapedCategory).test(blockLine)) {
+          return true;
+        }
+        if (/\*\//.test(blockLine)) break;
+      }
+    }
+  }
+  return false;
+}
+
 async function assertTokenCategoryExists(
   engineDir: string,
   tokensCssPath: string,
-  category: string
+  category: string,
+  createCategory = false
 ): Promise<void> {
   const filePath = join(engineDir, tokensCssPath);
 
@@ -145,38 +179,23 @@ async function assertTokenCategoryExists(
 
   const content = await readText(filePath);
   const lines = content.split('\n');
-  const escapedCategory = escapeRegex(category);
-  const singleLinePattern = new RegExp(`\\/\\*\\s*=.*${escapedCategory}.*=\\s*\\*\\/`);
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-
-    if (singleLinePattern.test(line)) {
-      return;
-    }
-
-    if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
-      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-        const blockLine = lines[j] ?? '';
-        if (new RegExp(escapedCategory).test(blockLine)) {
-          return;
-        }
-        if (/\*\//.test(blockLine)) break;
-      }
-    }
-  }
+  if (categoryHeaderExists(lines, category)) return;
+  // The write path declares the banner in the same edit as the token
+  // insertion, so a missing category is fine when creation was requested.
+  if (createCategory) return;
 
   const discoveredCategories = discoverCategoryHeaders(lines);
   const available =
     discoveredCategories.length > 0
       ? `Available categories in the file: ${discoveredCategories.map((name) => `"${name}"`).join(', ')}.`
-      : 'The file currently has no category headers. Add one by hand near the top of the :root { … } block — the format is "/* = My Category = */" — or run "fireforge furnace init --force" to re-scaffold the default seed set.';
+      : 'The file currently has no category headers.';
 
   throw new GeneralError(
     `Category "${category}" not found in ${tokensCssPath}.\n\n` +
       `${available}\n\n` +
       'Categories are declared by comment headers. Single-line shape: /* = My Category = */. ' +
-      'Multi-line shape: /* =============\\n * My Category\\n * ============= */.'
+      'Multi-line shape: /* =============\\n * My Category\\n * ============= */.\n\n' +
+      'Re-run with --create-category to declare the banner and insert the token in one step.'
   );
 }
 
@@ -233,7 +252,12 @@ export async function validateTokenAdd(root: string, options: AddTokenOptions): 
   validateTokenNameSyntax(options.tokenName);
   await validateTokenPrefix(root, options);
   validateDarkValue(options);
-  await assertTokenCategoryExists(engineDir, tokensCssPath, options.category);
+  await assertTokenCategoryExists(
+    engineDir,
+    tokensCssPath,
+    options.category,
+    options.createCategory === true
+  );
 }
 
 /**
@@ -267,7 +291,11 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
   }
 
   // --- CSS file ---
-  const cssAdded = await addTokenToCSS(engineDir, options, tokensCssPath);
+  const { added: cssAdded, categoryCreated } = await addTokenToCSS(
+    engineDir,
+    options,
+    tokensCssPath
+  );
 
   if (!cssAdded) {
     return {
@@ -288,7 +316,43 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
     unmappedAdded: docsResult.unmappedAdded,
     countUpdated: docsResult.countUpdated,
     skipped: false,
+    categoryCreated,
   };
+}
+
+/**
+ * Splices a new single-line category banner ("= Name =" comment shape, the
+ * same format `discoverCategoryHeaders` recognises) just before the closing
+ * brace of the `:root` block, making the new category the last section.
+ * Mutates `lines` in place.
+ */
+function declareCategoryBanner(lines: string[], category: string, tokensCssPath: string): void {
+  let rootOpen = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/:root\s*\{/.test(lines[i] ?? '')) {
+      rootOpen = i;
+      break;
+    }
+  }
+  if (rootOpen === -1) {
+    throw new GeneralError(
+      `Cannot create category "${category}": no :root block found in ${tokensCssPath}. ` +
+        'Run "fireforge furnace init --force" to re-scaffold the tokens CSS file.'
+    );
+  }
+  let rootClose = -1;
+  for (let i = rootOpen + 1; i < lines.length; i++) {
+    if (/^\s*\}/.test(lines[i] ?? '')) {
+      rootClose = i;
+      break;
+    }
+  }
+  if (rootClose === -1) {
+    throw new GeneralError(
+      `Cannot create category "${category}": the :root block in ${tokensCssPath} never closes.`
+    );
+  }
+  lines.splice(rootClose, 0, '', `  /* = ${category} = */`);
 }
 
 function findCategorySection(
@@ -404,20 +468,34 @@ async function addTokenToCSS(
   engineDir: string,
   options: AddTokenOptions,
   tokensCssPath: string
-): Promise<boolean> {
+): Promise<{ added: boolean; categoryCreated: boolean }> {
   const filePath = join(engineDir, tokensCssPath);
-  await assertTokenCategoryExists(engineDir, tokensCssPath, options.category);
+  await assertTokenCategoryExists(
+    engineDir,
+    tokensCssPath,
+    options.category,
+    options.createCategory === true
+  );
 
   let content = await readText(filePath);
 
   // Idempotency check — strip CSS block comments so we don't match inside them
   const stripped = content.replace(/\/\*[\s\S]*?\*\//g, '');
   if (stripped.includes(options.tokenName + ':')) {
-    return false;
+    return { added: false, categoryCreated: false };
   }
 
   const lines = content.split('\n');
   const annotation = getModeAnnotation(options.mode, options.value);
+
+  // Declare a missing category banner in the same in-memory edit as the
+  // token insertion — the file is written exactly once, so a failure
+  // between "banner declared" and "token inserted" cannot occur.
+  let categoryCreated = false;
+  if (options.createCategory === true && !categoryHeaderExists(lines, options.category)) {
+    declareCategoryBanner(lines, options.category, tokensCssPath);
+    categoryCreated = true;
+  }
 
   const { categoryLine, sectionEnd } = findCategorySection(lines, options.category, tokensCssPath);
 
@@ -444,7 +522,7 @@ async function addTokenToCSS(
 
   content = lines.join('\n');
   await writeText(filePath, content);
-  return true;
+  return { added: true, categoryCreated };
 }
 
 /**

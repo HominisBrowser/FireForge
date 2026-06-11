@@ -14,7 +14,8 @@ export async function retryAfterXpcshellSymlinkRepair(
   result: MachCommandResult,
   classification: XpcshellRetryClassification,
   normalizedPaths: string[],
-  extraArgs: string[]
+  extraArgs: string[],
+  env?: Record<string, string>
 ): Promise<MachCommandResult> {
   if (
     result.exitCode !== 0 &&
@@ -27,7 +28,9 @@ export async function retryAfterXpcshellSymlinkRepair(
       `${result.stdout}\n${result.stderr}`
     );
     if (repaired) {
-      return testWithOutput(engineDir, normalizedPaths, extraArgs);
+      return env
+        ? testWithOutput(engineDir, normalizedPaths, extraArgs, env)
+        : testWithOutput(engineDir, normalizedPaths, extraArgs);
     }
   }
   return result;

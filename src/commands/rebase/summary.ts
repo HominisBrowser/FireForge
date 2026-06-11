@@ -9,7 +9,7 @@ import { info } from '../../utils/logger.js';
 /**
  * Formats a status label for a rebase patch entry.
  */
-export function statusLabel(status: RebasePatchEntry['status'], fuzzFactor?: number): string {
+function statusLabel(status: RebasePatchEntry['status'], fuzzFactor?: number): string {
   switch (status) {
     case 'applied-clean':
       return 'applied cleanly';

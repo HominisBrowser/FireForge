@@ -239,6 +239,46 @@ export interface PatchRenameEntry {
 }
 
 /**
+ * Rewrites `stagedDependencies.forwardImports[].owner` references on one
+ * patch through a rename lookup. Owners embed exact patch filenames, so any
+ * renumber (compact, reorder, placement export, rename) that does not remap
+ * them leaves dangling references that surface as false forward-import
+ * errors on the next lint.
+ *
+ * Pure and allocation-conservative: returns the input object unchanged when
+ * no owner matches the lookup, so callers can map whole manifests cheaply.
+ *
+ * @param patch - Manifest row to rewrite
+ * @param renameLookup - Maps an old patch filename to its new filename, or
+ *   undefined when the filename is not being renamed
+ * @returns The same row, or a copy with remapped owners
+ */
+export function rewriteStagedDependencyOwners(
+  patch: PatchMetadata,
+  renameLookup: (oldFilename: string) => string | undefined
+): PatchMetadata {
+  const forwardImports = patch.stagedDependencies?.forwardImports;
+  if (!forwardImports || forwardImports.length === 0) return patch;
+
+  const rewritten = forwardImports.map((fi) => {
+    if (!fi.owner) return fi;
+    const newOwner = renameLookup(fi.owner);
+    if (newOwner === undefined || newOwner === fi.owner) return fi;
+    return { ...fi, owner: newOwner };
+  });
+
+  const changed = rewritten.some((fi, index) => fi !== forwardImports[index]);
+  if (!changed) return patch;
+  return {
+    ...patch,
+    stagedDependencies: {
+      ...patch.stagedDependencies,
+      forwardImports: rewritten,
+    },
+  };
+}
+
+/**
  * Renames patch files on disk and rewrites the corresponding manifest rows
  * atomically-ish: file renames use a two-phase staging strategy (rename each
  * entry to a unique temp filename first, then rename the temp to its final
@@ -389,11 +429,16 @@ export async function renumberPatchesInManifest(
   for (const [oldFilename, entry] of renameMap) {
     filenameUpdates.set(oldFilename, entry);
   }
+  // Owner references live on *other* patches than the renamed ones, so every
+  // row is passed through the staged-dependency rewrite, not just renamed rows.
+  const ownerLookup = (oldFilename: string): string | undefined =>
+    filenameUpdates.get(oldFilename)?.newFilename;
   const updatedPatches: PatchMetadata[] = manifest.patches.map((p) => {
     const update = filenameUpdates.get(p.filename);
-    if (!update) return p;
+    const withOwners = rewriteStagedDependencyOwners(p, ownerLookup);
+    if (!update) return withOwners;
     return {
-      ...p,
+      ...withOwners,
       filename: update.newFilename,
       order: update.newOrder,
     };

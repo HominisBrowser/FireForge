@@ -17,6 +17,7 @@ import { stripJsComments } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, FTL_DIR, JAR_MN } from './furnace-constants.js';
+import { expandCssFragments, listFragmentIncludes } from './furnace-css-fragments.js';
 import { isTagInCorrectCustomElementsPlacement } from './furnace-registration-validate.js';
 import { getTokensCssPath } from './token-manager.js';
 
@@ -123,7 +124,20 @@ export async function checkRegistrationConsistency(
         continue;
       }
 
-      const srcContent = await readText(srcPath);
+      // Deploy writes CSS-with-include-directives in fragment-expanded form,
+      // so the drift oracle must compare the *expanded* source — otherwise a
+      // freshly deployed component would read as permanently drifted, and a
+      // fragment edit would never read as drifted at all.
+      let srcContent = await readText(srcPath);
+      if (entry.name.endsWith('.css') && listFragmentIncludes(srcContent).length > 0) {
+        try {
+          srcContent = (await expandCssFragments(srcContent, furnacePaths.sharedDir)).expanded;
+        } catch {
+          // Missing fragment: validate reports it as `missing-fragment`;
+          // for drift purposes fall back to the raw source so the compare
+          // still happens deterministically.
+        }
+      }
       const destContent = await readText(destPath);
       const srcHash = createHash('sha256').update(srcContent).digest('hex');
       const destHash = createHash('sha256').update(destContent).digest('hex');

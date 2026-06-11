@@ -34,18 +34,21 @@ export const SHIM_FILENAME = '__fireforge_firefox_globals.d.ts';
  * - Browser chrome globals like `gBrowser`, `gURLBar` are common in
  *   content scripts wired via `browser.js`.
  * - Dynamic `import("resource:-…")` / `import("chrome:-…")` under patch
- *   checkJs: the compiler sees empty stubs (`noResolve`); without URL
- *   ambient modules namespaces degrade to unusable typings. Wildcards
- *   keep Firefox URL imports pragmatically loose, same posture as globals.
+ *   checkJs: imports of *patch-owned* modules resolve to their real
+ *   sources (see `patch-lint-checkjs.ts`); everything else fails host
+ *   resolution and lands on these URL ambient wildcards, keeping
+ *   upstream Firefox imports pragmatically loose, same posture as globals.
  */
-export const FIREFOX_GLOBALS_SHIM = `
+const FIREFOX_GLOBALS_SHIM = `
 declare var Services: any;
 declare var ChromeUtils: {
   defineESModuleGetters(target: any, modules: Record<string, string>): void;
   importESModule(specifier: string): any;
   import(specifier: string): any;
   defineModuleGetter(target: any, name: string, specifier: string): void;
+  defineLazyGetter(target: any, name: string, getter: () => any): void;
   generateQI(interfaces: any[]): Function;
+  getClassName(obj: any, unwrap?: boolean): string;
   isClassInfo(obj: any): boolean;
 };
 declare var Cu: any;
@@ -62,6 +65,25 @@ declare var gBrowser: any;
 declare var gURLBar: any;
 declare var gNavigatorBundle: any;
 declare var AppConstants: any;
+// Fluent localization — a stable chrome global. Members stay loose (any),
+// but the constructor shape is declared so "new Localization([...])" and
+// "new Localization([...], true)" typecheck without a local cast.
+declare var Localization: {
+  new (
+    resourceIds: Array<string | { path: string; optional?: boolean }>,
+    sync?: boolean
+  ): {
+    formatValue(id: string, args?: Record<string, unknown>): any;
+    formatValues(keys: any[]): any;
+    formatMessages(keys: any[]): any;
+    formatValueSync(id: string, args?: Record<string, unknown>): any;
+    formatValuesSync(keys: any[]): any;
+    formatMessagesSync(keys: any[]): any;
+    addResourceIds(ids: Array<string | { path: string; optional?: boolean }>): void;
+    removeResourceIds(ids: string[]): number;
+    setAsync(): void;
+  };
+};
 
 // Shorthand ambient modules — exports from matching URL imports are loosely typed,
 // avoiding noResolve empty-graph namespaces. (Named member access broke when we tried

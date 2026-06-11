@@ -7,13 +7,13 @@ export function escapeRegex(str: string): string {
 }
 
 /** Matches hex color values like #fff, #ff00ff, #ff00ff80 (longest-first alternation) */
-export const CSS_HEX_COLOR = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b/;
+const CSS_HEX_COLOR = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b/;
 
 /** Matches rgb() or rgba() function calls */
-export const CSS_RGB_COLOR = /\brgba?\s*\(/;
+const CSS_RGB_COLOR = /\brgba?\s*\(/;
 
 /** Matches hsl() or hsla() function calls */
-export const CSS_HSL_COLOR = /\bhsla?\s*\(/;
+const CSS_HSL_COLOR = /\bhsla?\s*\(/;
 
 // Global variants for counting (cached to avoid re-creation per call)
 const CSS_HEX_COLOR_G = new RegExp(CSS_HEX_COLOR.source, 'g');

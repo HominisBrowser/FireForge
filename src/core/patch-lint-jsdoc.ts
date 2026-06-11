@@ -82,12 +82,65 @@ function findAttachedJsDoc(
 // JSDoc tag parsing
 // ---------------------------------------------------------------------------
 
+/**
+ * Skips a balanced `{ … }` JSDoc type expression starting at `start`
+ * (which must point at the opening brace). Braces nest in inline object
+ * types (`{{ id: string, args?: Record<string, boolean> }}`), so a flat
+ * "anything but `}`" regex truncates at the first inner close brace and
+ * loses the param name. String literal types may contain braces too, so
+ * quoted runs are skipped verbatim.
+ *
+ * @returns Index just past the matching close brace, or -1 when the type
+ *   expression never closes (malformed doc — caller skips the tag).
+ */
+function skipBalancedTypeBraces(jsDoc: string, start: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = start; i < jsDoc.length; i++) {
+    const ch = jsDoc[i];
+    if (quote !== null) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
 function extractParamNames(jsDoc: string): string[] {
   const names: string[] = [];
-  const paramPattern = /@param\s+(?:\{[^}]*\}\s+)?(\w+)/g;
+  const tagPattern = /@param\b/g;
   let m: RegExpExecArray | null;
-  while ((m = paramPattern.exec(jsDoc)) !== null) {
-    if (m[1]) names.push(m[1]);
+  while ((m = tagPattern.exec(jsDoc)) !== null) {
+    let i = m.index + m[0].length;
+    while (i < jsDoc.length && /\s/.test(jsDoc[i] ?? '')) i++;
+
+    // Optional `{type}` expression — depth-aware so nested braces inside
+    // inline object types or Record<…> generics don't truncate the scan.
+    if (jsDoc[i] === '{') {
+      const afterType = skipBalancedTypeBraces(jsDoc, i);
+      if (afterType === -1) continue;
+      i = afterType;
+      while (i < jsDoc.length && /\s/.test(jsDoc[i] ?? '')) i++;
+    }
+
+    // Name token: bare `name`, optional `[name]`, or defaulted `[name=x]`.
+    // Dotted property docs (`opts.id`) record the base object name once.
+    const optional = jsDoc[i] === '[';
+    if (optional) i++;
+    const nameMatch = /^[A-Za-z_$][\w$]*/.exec(jsDoc.slice(i));
+    if (!nameMatch) continue;
+    const name = nameMatch[0];
+    if (!names.includes(name)) names.push(name);
   }
   return names;
 }

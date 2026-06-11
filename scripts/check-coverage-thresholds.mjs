@@ -6,6 +6,19 @@ const COVERAGE_SUMMARY_PATH = resolve('coverage/coverage-summary.json');
 
 const MODULE_THRESHOLDS = {
   'src/core/mach.ts': { lines: 95, branches: 88 },
+  // 0.31.0 modules — pinned just below their landing coverage so
+  // regressions surface without blocking unrelated refactors.
+  'src/core/test-harness-crash.ts': { lines: 98, branches: 90 },
+  'src/core/furnace-css-fragments.ts': { lines: 96, branches: 78 },
+  'src/core/furnace-jsconfig.ts': { lines: 89, branches: 78 },
+  'src/core/patch-lint-observer.ts': { lines: 94, branches: 85 },
+  'src/commands/test-run.ts': { lines: 94, branches: 75 },
+  'src/commands/test-diagnose.ts': { lines: 92, branches: 85 },
+  // The command body's uncovered ranges are the under-lock rollback warns
+  // and the commander registration block; the planning logic carries the
+  // higher split-plan.ts thresholds.
+  'src/commands/patch/split.ts': { lines: 78, branches: 64 },
+  'src/commands/patch/split-plan.ts': { lines: 89, branches: 78 },
   'src/cli.ts': { lines: 98, branches: 88, functions: 98 },
   'src/commands/setup.ts': { lines: 98, branches: 79 },
   'src/commands/setup-support.ts': { lines: 96, branches: 85 },
@@ -39,6 +52,15 @@ const MODULE_THRESHOLDS = {
   // Post-build audit (warn-only) — critical because misdetections here
   // cause noisy warnings on every successful build.
   'src/core/build-audit.ts': { lines: 88, branches: 75 },
+  // Shared "what changed since the last build" collector behind the
+  // audit, auto-configure, and stale-build preflights. Small and fully
+  // exercised through all three consumers (measured 100/90/100); a drop
+  // below the pin means one of those probe paths lost its coverage.
+  'src/core/engine-changes.ts': { lines: 95, branches: 85, functions: 100 },
+  // Shared patch-command preamble (queue load + identifier resolve).
+  // Direct unit tests pin the error wording every patch subcommand
+  // surfaces (measured 100/100/100).
+  'src/commands/patch/patch-context.ts': { lines: 95, branches: 95, functions: 100 },
   // Audit helpers — pure path-resolution and Python-style moz.build
   // gate detection. Both are easy to unit-test exhaustively.
   'src/core/build-audit-resolve.ts': { lines: 90, branches: 80 },

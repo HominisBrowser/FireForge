@@ -82,6 +82,19 @@ assignment before refreshing the patch. For release whitespace checks, use
 `npm run whitespace:check`; it still checks source diffs while excluding generated
 `patches/*.patch` diff syntax.
 
+Queue maintenance lives under `fireforge patch`: `patch compact` closes ordinal gaps
+(range-aware when `patchPolicy.ranges` is configured), `patch reorder` moves a patch, and
+`patch split <source> --files <paths...> --name <name>` carves files out of a patch into a
+new one as a single transaction — including staged-dependency owner rewrites — with
+`--dry-run` support.
+
+`fireforge test` runs multiple test paths as sequential per-file shards by default
+(`--no-shard` restores one combined invocation), retries recognized harness crashes up to
+`--harness-retries <n>` times (default 2), and can publish a perf-sample artifact path to
+the harness via `--perf-samples <path>` (exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
+Design tokens are managed with `fireforge token add`; pass `--create-category` to declare a
+new category banner and insert the token in one step.
+
 ## Rebasing Firefox Source
 
 When Mozilla publishes a new Firefox source release you need to update the configured version/product, download the new source code and reapply the patches:
@@ -108,6 +121,15 @@ npx fireforge furnace preview
 ```
 
 Use `fireforge furnace --help` for the full set of component commands.
+
+Cross-widget CSS can be single-sourced as shared fragments: place the fragment in
+`components/shared/` and reference it from a widget stylesheet with a
+`/* @fireforge-include <fragment>.css */` comment — deploy expands it into the deployed
+copy only, and editing the fragment surfaces as component drift until the next deploy.
+For typed cross-module imports of multi-file components, set
+`furnace.json#typecheckJsconfig` to a consumer-owned jsconfig and deploy will maintain
+`compilerOptions.paths` entries mapping each deployed
+`chrome://global/content/elements/<file>.mjs` URL to its workspace source.
 
 ## Roadmap
 

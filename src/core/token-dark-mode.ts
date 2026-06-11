@@ -109,13 +109,23 @@ export function findDarkRootInsertionIndex(lines: string[]): number | null {
   }
   if (rootOpenLine === -1) return -1;
 
-  // Depth-count starting from the `:root` opener. The first `{`
-  // encountered sets the entry depth to the initial counter value; the
-  // closing brace that returns to that depth terminates the block.
+  // Depth-count starting from the `:root` opener; see findBlockCloseIndex.
+  return findBlockCloseIndex(stripped, rootOpenLine);
+}
+
+/**
+ * Depth-counts braces from `startLine` (whose lines must already have
+ * block comments stripped), returning the index of the line on which the
+ * block opened there returns to its entry depth — i.e. the line carrying
+ * the block's closing `}` — or -1 when the block never closes. The first
+ * `{` encountered sets the entry depth, so the scan may start on the
+ * selector/at-rule line itself rather than on the opener.
+ */
+function findBlockCloseIndex(stripped: string[], startLine: number): number {
   let depth = 0;
   let entryDepth = 0;
   let enteredBlock = false;
-  for (let i = rootOpenLine; i < stripped.length; i++) {
+  for (let i = startLine; i < stripped.length; i++) {
     const line = stripped[i] ?? '';
     for (const ch of line) {
       if (ch === '{') {
@@ -154,25 +164,5 @@ export function findDarkMediaCloseIndex(lines: string[]): number {
   }
   if (darkMediaLine === -1) return -1;
 
-  let depth = 0;
-  let entryDepth = 0;
-  let enteredBlock = false;
-  for (let i = darkMediaLine; i < stripped.length; i++) {
-    const line = stripped[i] ?? '';
-    for (const ch of line) {
-      if (ch === '{') {
-        depth++;
-        if (!enteredBlock) {
-          entryDepth = depth - 1;
-          enteredBlock = true;
-        }
-      } else if (ch === '}') {
-        depth--;
-      }
-    }
-    if (enteredBlock && depth === entryDepth) {
-      return i;
-    }
-  }
-  return -1;
+  return findBlockCloseIndex(stripped, darkMediaLine);
 }

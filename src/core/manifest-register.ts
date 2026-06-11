@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Manifest registration barrel — re-exports all registration targets
- * and provides the shared RegisterResult interface.
+ * and the shared RegisterResult interface (which lives in
+ * `register-result.ts` so the leaf modules can import it without
+ * creating a cycle through this barrel).
  */
 
 import { join } from 'node:path';
@@ -9,22 +11,9 @@ import { join } from 'node:path';
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { findAlphabeticalPosition } from './manifest-helpers.js';
+import type { RegisterResult } from './register-result.js';
 
-/**
- * Result of a manifest registration operation.
- */
-export interface RegisterResult {
-  /** The manifest file that was modified */
-  manifest: string;
-  /** The entry that was inserted */
-  entry: string;
-  /** The entry after which the new entry was inserted (for user display) */
-  previousEntry?: string | undefined;
-  /** Whether the entry already existed (skipped) */
-  skipped: boolean;
-  /** Whether --after target was not found and fell back to alphabetical */
-  afterFallback?: boolean | undefined;
-}
+export type { RegisterResult } from './register-result.js';
 
 // Re-export from split modules so existing import sites continue working
 export { registerBrowserContent } from './register-browser-content.js';

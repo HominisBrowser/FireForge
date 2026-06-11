@@ -21,9 +21,9 @@ import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
 import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
+import type { LintCommandOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, outro, success, warn } from '../utils/logger.js';
-import type { LintCommandOptions } from './lint.js';
 
 function buildPerPatchMaxWarningsMessage(
   count: number,
@@ -46,124 +46,98 @@ function emitTierNotice(filename: string, files: string[], tier: PatchMetadata['
   );
 }
 
+/** Shared inputs threaded into every per-patch lint invocation. */
+interface QueuedPatchLintContext {
+  projectRoot: string;
+  paths: ReturnType<typeof getProjectPaths>;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  ctx: Awaited<ReturnType<typeof buildPatchQueueContext>>;
+  cache: Awaited<ReturnType<typeof loadPerPatchLintCache>> | undefined;
+  engineHeadSha: string | undefined;
+  issues: PatchLintIssue[];
+}
+
 /**
- * Lints each patch in the queue as its own isolated diff, honouring
- * per-patch `lintIgnore` entries. Cross-patch rules still run once over
- * the whole queue so queue-level findings are not lost by the rescoping.
+ * Lints one queued patch against its own isolated diff, reusing the cache
+ * entry when the cache key matches. Pushes the patch's issues (prefixed
+ * with its filename) onto `ctx.issues`. Returns whether the patch was
+ * skipped (no files present / empty diff), served from cache, or linted
+ * fresh — and whether a fresh result was written to the cache.
  */
-export async function lintPerPatch(
-  projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  options: LintCommandOptions = {}
-): Promise<void> {
-  const manifest = await loadPatchesManifest(paths.patches);
-  if (!manifest || manifest.patches.length === 0) {
-    info('No patches in manifest — nothing to lint per-patch.');
-    outro('Nothing to lint');
-    return;
+async function lintQueuedPatch(
+  patch: PatchMetadata,
+  lintCtx: QueuedPatchLintContext
+): Promise<{ status: 'skipped' | 'cached' | 'linted'; wroteCache: boolean }> {
+  const { projectRoot, paths, config, ctx, cache, engineHeadSha, issues } = lintCtx;
+  const existing: string[] = [];
+  for (const f of patch.filesAffected) {
+    if (await pathExists(join(paths.engine, f))) existing.push(f);
+  }
+  if (existing.length === 0) {
+    return { status: 'skipped', wroteCache: false };
   }
 
-  const config = await loadConfig(projectRoot);
-  const ctx = await buildPatchQueueContext(paths.patches);
-  const cache = options.noCache === true ? undefined : await loadPerPatchLintCache(projectRoot);
-  const engineHeadSha = cache ? await getPerPatchLintCacheHeadSha(paths.engine) : undefined;
-  let cacheDirty = false;
-  let reusedCacheEntries = 0;
-
-  const issues: PatchLintIssue[] = [];
-  for (const issue of evaluatePatchPolicy(config, manifest)) {
-    issues.push({
-      file: issue.filename,
-      check: `patch-policy/${issue.code}`,
-      message: issue.message,
-      severity: issue.severity,
+  const ignore = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
+  let cacheKey: string | undefined;
+  if (cache) {
+    cacheKey = await buildPerPatchLintCacheKey({
+      projectRoot,
+      engineDir: paths.engine,
+      patchesDir: paths.patches,
+      patch,
+      existingFiles: existing,
+      config,
+      queueContext: ctx,
+      ...(engineHeadSha === undefined ? {} : { engineHeadSha }),
     });
-  }
-
-  let linted = 0;
-  let skipped = 0;
-  for (const patch of manifest.patches) {
-    const existing: string[] = [];
-    for (const f of patch.filesAffected) {
-      if (await pathExists(join(paths.engine, f))) existing.push(f);
-    }
-    if (existing.length === 0) {
-      skipped++;
-      continue;
-    }
-
-    const ignore = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
-    let patchIssues: PatchLintIssue[] | undefined;
-    let cacheKey: string | undefined;
-    if (cache) {
-      cacheKey = await buildPerPatchLintCacheKey({
-        projectRoot,
-        engineDir: paths.engine,
-        patchesDir: paths.patches,
-        patch,
-        existingFiles: existing,
-        config,
-        queueContext: ctx,
-        ...(engineHeadSha === undefined ? {} : { engineHeadSha }),
-      });
-      patchIssues = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey);
-      if (patchIssues) {
-        reusedCacheEntries++;
-        emitTierNotice(patch.filename, existing, patch.tier);
-        for (const issue of patchIssues) {
-          issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
-        }
-        linted++;
-        continue;
+    const cached = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey);
+    if (cached) {
+      emitTierNotice(patch.filename, existing, patch.tier);
+      for (const issue of cached) {
+        issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
       }
+      return { status: 'cached', wroteCache: false };
     }
-
-    const diff = await getDiffForFilesAgainstHead(paths.engine, existing);
-    if (!diff.trim()) {
-      skipped++;
-      continue;
-    }
-
-    emitTierNotice(patch.filename, existing, patch.tier);
-
-    if (cache && cacheKey) {
-      patchIssues = await lintExportedPatch(
-        paths.engine,
-        existing,
-        diff,
-        config,
-        ctx,
-        ignore,
-        patch.tier
-      );
-      setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, patchIssues);
-      cacheDirty = true;
-    } else {
-      patchIssues = await lintExportedPatch(
-        paths.engine,
-        existing,
-        diff,
-        config,
-        ctx,
-        ignore,
-        patch.tier
-      );
-    }
-    for (const issue of patchIssues) {
-      issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
-    }
-    linted++;
   }
 
-  issues.push(...lintPatchQueue(ctx));
-
-  if (cache && cacheDirty) await savePerPatchLintCache(projectRoot, cache);
-  if (reusedCacheEntries > 0) {
-    info(
-      `Reused lint cache for ${reusedCacheEntries} patch${reusedCacheEntries === 1 ? '' : 'es'}.`
-    );
+  const diff = await getDiffForFilesAgainstHead(paths.engine, existing);
+  if (!diff.trim()) {
+    return { status: 'skipped', wroteCache: false };
   }
 
+  emitTierNotice(patch.filename, existing, patch.tier);
+
+  const patchIssues = await lintExportedPatch(
+    paths.engine,
+    existing,
+    diff,
+    config,
+    ctx,
+    ignore,
+    patch.tier
+  );
+  let wroteCache = false;
+  if (cache && cacheKey) {
+    setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, patchIssues);
+    wroteCache = true;
+  }
+  for (const issue of patchIssues) {
+    issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
+  }
+  return { status: 'linted', wroteCache };
+}
+
+/**
+ * Reporting + exit phase of per-patch lint: renders every issue row,
+ * prints the per-patch summary, and applies the failure criteria
+ * (errors, `--max-warnings`) by throwing GeneralError.
+ */
+function reportPerPatchOutcome(
+  issues: PatchLintIssue[],
+  linted: number,
+  skipped: number,
+  options: LintCommandOptions
+): void {
   if (issues.length === 0) {
     if (linted === 0 && skipped > 0) {
       info(
@@ -211,4 +185,70 @@ export async function lintPerPatch(
   } else {
     outro('Lint passed');
   }
+}
+
+/**
+ * Lints each patch in the queue as its own isolated diff, honouring
+ * per-patch `lintIgnore` entries. Cross-patch rules still run once over
+ * the whole queue so queue-level findings are not lost by the rescoping.
+ */
+export async function lintPerPatch(
+  projectRoot: string,
+  paths: ReturnType<typeof getProjectPaths>,
+  options: LintCommandOptions = {}
+): Promise<void> {
+  const manifest = await loadPatchesManifest(paths.patches);
+  if (!manifest || manifest.patches.length === 0) {
+    info('No patches in manifest — nothing to lint per-patch.');
+    outro('Nothing to lint');
+    return;
+  }
+
+  const config = await loadConfig(projectRoot);
+  const ctx = await buildPatchQueueContext(paths.patches);
+  const cache = options.noCache === true ? undefined : await loadPerPatchLintCache(projectRoot);
+  const engineHeadSha = cache ? await getPerPatchLintCacheHeadSha(paths.engine) : undefined;
+  const issues: PatchLintIssue[] = [];
+  for (const issue of evaluatePatchPolicy(config, manifest)) {
+    issues.push({
+      file: issue.filename,
+      check: `patch-policy/${issue.code}`,
+      message: issue.message,
+      severity: issue.severity,
+    });
+  }
+
+  let linted = 0;
+  let skipped = 0;
+  let cacheDirty = false;
+  let reusedCacheEntries = 0;
+  for (const patch of manifest.patches) {
+    const result = await lintQueuedPatch(patch, {
+      projectRoot,
+      paths,
+      config,
+      ctx,
+      cache,
+      engineHeadSha,
+      issues,
+    });
+    if (result.status === 'skipped') {
+      skipped++;
+      continue;
+    }
+    if (result.status === 'cached') reusedCacheEntries++;
+    if (result.wroteCache) cacheDirty = true;
+    linted++;
+  }
+
+  issues.push(...lintPatchQueue(ctx));
+
+  if (cache && cacheDirty) await savePerPatchLintCache(projectRoot, cache);
+  if (reusedCacheEntries > 0) {
+    info(
+      `Reused lint cache for ${reusedCacheEntries} patch${reusedCacheEntries === 1 ? '' : 'es'}.`
+    );
+  }
+
+  reportPerPatchOutcome(issues, linted, skipped, options);
 }

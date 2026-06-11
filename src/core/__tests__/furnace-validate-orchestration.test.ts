@@ -16,6 +16,9 @@ vi.mock('../furnace-config.js', () => ({
     overridesDir: '/project/components/overrides',
   })),
   loadFurnaceConfig: vi.fn(),
+  // Orphan detection (D1) reads furnace state for custom components.
+  // Default to empty state so existing orchestration tests stay quiet.
+  loadFurnaceState: vi.fn(() => Promise.resolve({ appliedChecksums: {} })),
 }));
 
 vi.mock('../config.js', () => ({

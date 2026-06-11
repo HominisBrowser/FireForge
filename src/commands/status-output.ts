@@ -134,6 +134,20 @@ export async function renderUnmanagedOnly(
   );
 }
 
+/** Renders the cross-patch ownership conflict section. */
+function renderConflictSection(conflict: ClassifiedFile[]): void {
+  warn('Cross-patch ownership conflicts (same file claimed by multiple patches):');
+  printStatusGroups(conflict);
+  for (const entry of conflict) {
+    if (entry.claimedBy && entry.claimedBy.length > 0) {
+      info(`  ${entry.file} — claimed by ${entry.claimedBy.join(', ')}`);
+    }
+  }
+  info(
+    'Run "fireforge status --ownership" for the full conflict table, then repartition with "fireforge re-export --files <paths> <patch>".'
+  );
+}
+
 /** Renders the default classified status buckets. */
 export async function renderDefaultStatus(
   totalModified: number,
@@ -144,85 +158,78 @@ export async function renderDefaultStatus(
   const { conflict, unmanaged, patchBacked, patchOwnedDrift, branding, furnace } = buckets;
   info(`${totalModified} modified file${totalModified === 1 ? '' : 's'}:\n`);
 
-  if (conflict.length > 0) {
-    warn('Cross-patch ownership conflicts (same file claimed by multiple patches):');
-    printStatusGroups(conflict);
-    for (const entry of conflict) {
-      if (entry.claimedBy && entry.claimedBy.length > 0) {
-        info(`  ${entry.file} — claimed by ${entry.claimedBy.join(', ')}`);
-      }
-    }
-    info(
-      'Run "fireforge status --ownership" for the full conflict table, then repartition with "fireforge re-export --files <paths> <patch>".'
-    );
-  }
+  // Sections render in this fixed order, separated by a blank line
+  // whenever an earlier section already printed (the pre-refactor code
+  // expressed the same rule as per-section "any earlier bucket
+  // non-empty" conditions).
+  const sections: { files: ClassifiedFile[]; label: string; render: () => Promise<void> | void }[] =
+    [
+      {
+        files: conflict,
+        label: 'conflict',
+        render: () => {
+          renderConflictSection(conflict);
+        },
+      },
+      {
+        files: unmanaged,
+        label: 'unmanaged',
+        render: async () => {
+          warn('Unmanaged changes:');
+          printStatusGroups(unmanaged);
+          await printUnregisteredWarnings(unmanaged, projectRoot, binaryName);
+        },
+      },
+      {
+        files: patchBacked,
+        label: 'patch-backed',
+        render: () => {
+          warn('Patch-backed materialized changes:');
+          printStatusGroups(patchBacked);
+        },
+      },
+      {
+        files: patchOwnedDrift,
+        label: 'patch-owned drift',
+        render: () => {
+          warn('Patch-owned drift:');
+          printStatusGroups(patchOwnedDrift);
+          info(
+            'These files are claimed by exactly one patch, but engine/ no longer matches that patch output. Re-export the owning patch after reviewing the manual resolution.'
+          );
+        },
+      },
+      {
+        files: branding,
+        label: 'branding',
+        render: () => {
+          warn('Tool-managed branding changes:');
+          printStatusGroups(branding);
+        },
+      },
+      {
+        files: furnace,
+        label: 'furnace',
+        render: () => {
+          warn('Furnace-managed component changes:');
+          printStatusGroups(furnace);
+        },
+      },
+    ];
 
-  if (unmanaged.length > 0) {
-    if (conflict.length > 0) info('');
-    warn('Unmanaged changes:');
-    printStatusGroups(unmanaged);
-    await printUnregisteredWarnings(unmanaged, projectRoot, binaryName);
+  let printedAny = false;
+  for (const section of sections) {
+    if (section.files.length === 0) continue;
+    if (printedAny) info('');
+    await section.render();
+    printedAny = true;
   }
-
-  if (patchBacked.length > 0) {
-    if (conflict.length > 0 || unmanaged.length > 0) info('');
-    warn('Patch-backed materialized changes:');
-    printStatusGroups(patchBacked);
-  }
-
-  if (patchOwnedDrift.length > 0) {
-    if (conflict.length > 0 || unmanaged.length > 0 || patchBacked.length > 0) info('');
-    warn('Patch-owned drift:');
-    printStatusGroups(patchOwnedDrift);
-    info(
-      'These files are claimed by exactly one patch, but engine/ no longer matches that patch output. Re-export the owning patch after reviewing the manual resolution.'
-    );
-  }
-
-  if (branding.length > 0) {
-    if (
-      conflict.length > 0 ||
-      unmanaged.length > 0 ||
-      patchBacked.length > 0 ||
-      patchOwnedDrift.length > 0
-    ) {
-      info('');
-    }
-    warn('Tool-managed branding changes:');
-    printStatusGroups(branding);
-  }
-
-  if (furnace.length > 0) {
-    if (
-      conflict.length > 0 ||
-      unmanaged.length > 0 ||
-      patchBacked.length > 0 ||
-      patchOwnedDrift.length > 0 ||
-      branding.length > 0
-    ) {
-      info('');
-    }
-    warn('Furnace-managed component changes:');
-    printStatusGroups(furnace);
-  }
-
-  if (
-    conflict.length === 0 &&
-    unmanaged.length === 0 &&
-    patchBacked.length === 0 &&
-    patchOwnedDrift.length === 0 &&
-    branding.length === 0 &&
-    furnace.length === 0
-  ) {
+  if (!printedAny) {
     info('No changes');
   }
 
-  const parts: string[] = [];
-  if (conflict.length > 0) parts.push(`${conflict.length} conflict`);
-  if (unmanaged.length > 0) parts.push(`${unmanaged.length} unmanaged`);
-  if (patchBacked.length > 0) parts.push(`${patchBacked.length} patch-backed`);
-  if (patchOwnedDrift.length > 0) parts.push(`${patchOwnedDrift.length} patch-owned drift`);
-  if (branding.length > 0) parts.push(`${branding.length} branding`);
-  if (furnace.length > 0) parts.push(`${furnace.length} furnace`);
+  const parts = sections
+    .filter((section) => section.files.length > 0)
+    .map((section) => `${section.files.length} ${section.label}`);
   outro(parts.join(', '));
 }

@@ -13,9 +13,10 @@ import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js'
 import type { FireForgeConfig, PatchPolicyConfig, PatchPolicyRange } from '../types/config.js';
 import { warn } from '../utils/logger.js';
 import { PATCH_CATEGORIES } from '../utils/validation.js';
+import { rewriteStagedDependencyOwners } from './patch-manifest-io.js';
 
 /** Default patch filename contract used when a policy omits `filenamePattern`. */
-export const DEFAULT_PATCH_POLICY_FILENAME_PATTERN =
+const DEFAULT_PATCH_POLICY_FILENAME_PATTERN =
   '^(?<order>\\d{3})-(?<category>[a-z][a-z0-9-]*)-(?<slug>[a-z0-9-]+)\\.patch$';
 
 /** Stable issue codes returned by patch policy evaluation. */
@@ -60,7 +61,7 @@ function issueSeverity(config: FireForgeConfig): 'error' | 'warning' {
 }
 
 /** Returns true when the loaded config includes an opt-in patch policy. */
-export function hasPatchPolicy(config: FireForgeConfig): boolean {
+function hasPatchPolicy(config: FireForgeConfig): boolean {
   return policy(config) !== undefined;
 }
 
@@ -408,13 +409,19 @@ export function applyRenameMapToManifest(
   manifest: PatchesManifest,
   renameMap: ReadonlyMap<string, { newFilename: string; newOrder: number }>
 ): PatchesManifest {
+  const ownerLookup = (oldFilename: string): string | undefined =>
+    renameMap.get(oldFilename)?.newFilename;
   return buildProjectedManifest(
     manifest,
     manifest.patches.map((patch) => {
+      // Staged-dependency owners reference other patches' filenames, so the
+      // projection rewrites them on every row to mirror what
+      // renumberPatchesInManifest persists.
+      const withOwners = rewriteStagedDependencyOwners(patch, ownerLookup);
       const rename = renameMap.get(patch.filename);
-      if (!rename) return patch;
+      if (!rename) return withOwners;
       return {
-        ...patch,
+        ...withOwners,
         filename: rename.newFilename,
         order: rename.newOrder,
       };

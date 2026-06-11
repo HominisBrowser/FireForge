@@ -9,6 +9,7 @@ import type {
 } from '../types/furnace.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { getProjectPaths } from './config.js';
+import { extractComponentChecksums } from './furnace-checksum-utils.js';
 
 /** Creates a normalized validation issue object. */
 export function createIssue(
@@ -321,7 +322,7 @@ export function hasCustomElementDefineCall(mjsContent: string): boolean {
  * `furnace override` of a valid upstream component fails its own
  * `furnace validate` pass with nothing the operator can fix.
  */
-export function hasCustomElementExtendsOption(mjsContent: string): boolean {
+function hasCustomElementExtendsOption(mjsContent: string): boolean {
   // Match `customElements.define(..., { ..., extends: "..." })`. Tolerant of
   // whitespace, line breaks, and other object properties. The `[^)]*` stops
   // the inner greedy match at the closing define call paren so a later
@@ -458,4 +459,55 @@ export async function getTokenPrefixContext(
     inheritedOverrideVars: await collectInheritedOverrideVariables(tagName, config, root),
     runtimeVariables,
   };
+}
+
+/**
+ * Flags engine-side files that a previous deploy of `tagName` left behind
+ * after their workspace source was renamed or removed (field report D1).
+ *
+ * Detection keys on the furnace state file: every `appliedChecksums` entry
+ * under `custom/<tagName>/` whose workspace source no longer exists but
+ * whose engine target is still present is an orphan — the next deploy will
+ * prune it, but until then jar.mn and the deployed directory disagree with
+ * the workspace, and a re-export could capture the stale state into a patch.
+ *
+ * Custom components only: override undeploys restore the upstream baseline
+ * rather than deleting files, so "orphan" has no meaning there.
+ */
+export async function findOrphanedEngineFiles(
+  root: string,
+  config: FurnaceConfig,
+  tagName: string,
+  state: { appliedChecksums?: Record<string, string> },
+  ftlDir: string
+): Promise<ValidationIssue[]> {
+  const customConfig = config.custom[tagName];
+  if (!customConfig) return [];
+
+  const previous = extractComponentChecksums(state.appliedChecksums, 'custom', tagName);
+  const fileNames = Object.keys(previous);
+  if (fileNames.length === 0) return [];
+
+  const { engine: engineDir, componentsDir } = getProjectPaths(root);
+  const componentDir = join(componentsDir, 'custom', tagName);
+
+  const issues: ValidationIssue[] = [];
+  for (const fileName of fileNames) {
+    if (await pathExists(join(componentDir, fileName))) continue;
+    const enginePath = fileName.endsWith('.ftl')
+      ? join(engineDir, ftlDir, fileName)
+      : join(engineDir, customConfig.targetPath, fileName);
+    if (!(await pathExists(enginePath))) continue;
+    issues.push(
+      createIssue(
+        tagName,
+        'warning',
+        'orphaned-engine-file',
+        `Engine file ${fileName} was deployed by a previous apply but its workspace source ` +
+          `is gone (renamed or deleted). The deployed copy${customConfig.register ? ' and any stale jar.mn entry' : ''} ` +
+          `will linger until the next deploy prunes it. Run "fireforge furnace deploy ${tagName}".`
+      )
+    );
+  }
+  return issues;
 }

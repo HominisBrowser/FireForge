@@ -36,7 +36,7 @@ const DOWNLOAD_STALL_TIMEOUT_MS = 30_000;
  *
  * Non-retryable errors (e.g. 404) are thrown immediately.
  */
-export async function fetchWithRetry(url: string): Promise<Response> {
+async function fetchWithRetry(url: string): Promise<Response> {
   let lastError: unknown;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {

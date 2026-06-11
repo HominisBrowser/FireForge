@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 /** Formats elapsed milliseconds for progress messages. */
-export function formatElapsed(ms: number): string {
+function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;

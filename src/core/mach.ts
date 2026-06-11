@@ -417,11 +417,16 @@ export async function test(
 
 /**
  * Runs mach test while capturing streamed output for better diagnostics.
+ *
+ * @param env - Optional extra environment variables for the mach process
+ *   (merged over `process.env` by the exec layer). Used by
+ *   `fireforge test --perf-samples` to publish the artifact-path contract.
  */
 export async function testWithOutput(
   engineDir: string,
   testPaths: string[] = [],
-  args: string[] = []
+  args: string[] = [],
+  env?: Record<string, string>
 ): Promise<MachCommandResult> {
-  return runMachCapture(['test', ...testPaths, ...args], engineDir);
+  return runMachCapture(['test', ...testPaths, ...args], engineDir, env ? { env } : {});
 }

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://unpkg.com/knip@latest/schema.json",
+  "entry": ["src/index.ts", "scripts/*.mjs"],
+  "project": ["src/**/*.ts", "bin/**/*.ts", "scripts/**/*.mjs"],
+  "ignoreBinaries": ["xcrun"],
+  "ignoreDependencies": ["chrome", "husky"],
+  "ignoreExportsUsedInFile": {
+    "type": true,
+    "interface": true
+  }
+}

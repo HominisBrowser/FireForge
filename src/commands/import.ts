@@ -24,7 +24,7 @@ import {
 import { getPatchSourceVersion } from '../core/patch-source-metadata.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
-import type { ImportOptions } from '../types/commands/index.js';
+import type { ImportOptions, PatchesManifest } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import {
@@ -282,6 +282,141 @@ function buildUntilFilenameSet(
 }
 
 /**
+ * Runs the manifest consistency check, scoped to the `--until` subset:
+ * global (manifest-level) issues always block, per-patch issues only
+ * block when the patch is in scope. Throws GeneralError with the repair
+ * hint when anything in scope is broken.
+ */
+async function assertScopedManifestConsistency(
+  patchesDir: string,
+  untilFilenameSet: Set<string>,
+  until: string | undefined
+): Promise<void> {
+  const manifestConsistencyIssues = await validatePatchesManifestConsistency(patchesDir);
+  const scopedManifestIssues =
+    until !== undefined
+      ? manifestConsistencyIssues.filter(
+          (issue) =>
+            // Global (manifest-level) issues have no specific filename to scope
+            // against — a missing or unparseable patches.json blocks any
+            // import. Per-patch issues only block when the patch is in scope.
+            issue.code === 'manifest-missing' ||
+            issue.code === 'manifest-invalid' ||
+            untilFilenameSet.has(issue.filename)
+        )
+      : manifestConsistencyIssues;
+  if (scopedManifestIssues.length > 0) {
+    const issueSummary = scopedManifestIssues.map((issue) => issue.message).join('\n  ');
+    throw new GeneralError(
+      'Patch manifest consistency check failed. Repair patches/patches.json before importing.\n' +
+        `  ${issueSummary}\n\n` +
+        'Run "fireforge doctor --repair-patches-manifest" to rebuild the manifest from on-disk patch files.'
+    );
+  }
+}
+
+/**
+ * Prints advisory version-compatibility warnings for every in-scope patch
+ * whose recorded source version differs meaningfully from the configured
+ * Firefox version. Advisory only — never blocks the import.
+ */
+async function warnVersionCompatibility(
+  projectRoot: string,
+  manifest: PatchesManifest | null,
+  untilFilenameSet: Set<string>,
+  until: string | undefined
+): Promise<void> {
+  if (!manifest) return;
+  const config = await loadConfig(projectRoot);
+  const currentVersion = config.firefox.version;
+
+  for (const patch of manifest.patches) {
+    // Scope the advisory warnings too: an operator running with --until
+    // doesn't need to see version warnings for patches outside the range.
+    if (until !== undefined && !untilFilenameSet.has(patch.filename)) continue;
+    const warning = checkVersionCompatibility(getPatchSourceVersion(patch), currentVersion);
+    if (warning) {
+      warn(`${patch.filename}: ${warning}`);
+    }
+  }
+}
+
+/**
+ * Patch-integrity gate: surfaces orphaned-modification issues scoped to
+ * the `--until` range and decides whether the import may proceed —
+ * `--force` continues with a warning, non-TTY refuses loudly, and an
+ * interactive operator is prompted. Returns false when the import should
+ * stop (the cancel outro has been printed).
+ */
+async function gateImportIntegrity(
+  paths: ReturnType<typeof getProjectPaths>,
+  untilFilenameSet: Set<string>,
+  until: string | undefined,
+  forceImport: boolean
+): Promise<boolean> {
+  const allIntegrityIssues = await validatePatchIntegrity(paths.patches, paths.engine);
+  const integrityIssues =
+    until !== undefined
+      ? allIntegrityIssues.filter((issue) => untilFilenameSet.has(issue.filename))
+      : allIntegrityIssues;
+  if (integrityIssues.length > 0) {
+    warn('\nPatch integrity issues detected:');
+    for (const issue of integrityIssues) {
+      warn(`  ${issue.filename}: ${issue.message}`);
+    }
+    info('Run "fireforge doctor" for more details.');
+
+    if (forceImport) {
+      warn('Continuing because --force was provided. Integrity issues were not resolved.\n');
+    } else if (!process.stdin.isTTY) {
+      throw new GeneralError(
+        `Refusing to import while ${integrityIssues.length} patch integrity issue(s) are unresolved. ` +
+          `Fix the issues reported above (see "fireforge doctor") or re-run with --force to continue anyway.`
+      );
+    } else {
+      const shouldContinue = await confirm({
+        message:
+          'Patch integrity issues detected. Continuing may fail with cascading errors during patch application. Continue anyway?',
+        initialValue: false,
+      });
+      if (isCancel(shouldContinue) || !shouldContinue) {
+        outro('Import cancelled — fix the integrity issues and re-run');
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Dry-run rendering: lists the in-scope patches (or the bare count when no
+ * manifest exists) and prints the dry-run outro.
+ */
+function renderImportDryRun(
+  manifest: PatchesManifest | null,
+  untilFilenameSet: Set<string>,
+  until: string | undefined,
+  patchCount: number
+): void {
+  if (manifest) {
+    const patches =
+      until !== undefined
+        ? manifest.patches.filter((p) => untilFilenameSet.has(p.filename))
+        : manifest.patches;
+
+    info(`\n[dry-run] Would apply ${patches.length} patch(es) in order:`);
+    for (const patch of patches) {
+      info(
+        `  ${patch.filename} (${patch.filesAffected.length} file${patch.filesAffected.length === 1 ? '' : 's'})`
+      );
+    }
+  } else {
+    info(`\n[dry-run] Would apply ${patchCount} patch(es)`);
+  }
+  outro('Dry run complete — no changes made');
+}
+
+/**
  * Runs the import command to apply patches.
  * @param projectRoot - Root directory of the project
  * @param options - Import options
@@ -342,43 +477,9 @@ export async function importCommand(
     }`
   );
 
-  const manifestConsistencyIssues = await validatePatchesManifestConsistency(paths.patches);
-  const scopedManifestIssues =
-    options.until !== undefined
-      ? manifestConsistencyIssues.filter(
-          (issue) =>
-            // Global (manifest-level) issues have no specific filename to scope
-            // against — a missing or unparseable patches.json blocks any
-            // import. Per-patch issues only block when the patch is in scope.
-            issue.code === 'manifest-missing' ||
-            issue.code === 'manifest-invalid' ||
-            untilFilenameSet.has(issue.filename)
-        )
-      : manifestConsistencyIssues;
-  if (scopedManifestIssues.length > 0) {
-    const issueSummary = scopedManifestIssues.map((issue) => issue.message).join('\n  ');
-    throw new GeneralError(
-      'Patch manifest consistency check failed. Repair patches/patches.json before importing.\n' +
-        `  ${issueSummary}\n\n` +
-        'Run "fireforge doctor --repair-patches-manifest" to rebuild the manifest from on-disk patch files.'
-    );
-  }
+  await assertScopedManifestConsistency(paths.patches, untilFilenameSet, options.until);
 
-  // Version compatibility warnings (advisory only)
-  if (manifest) {
-    const config = await loadConfig(projectRoot);
-    const currentVersion = config.firefox.version;
-
-    for (const patch of manifest.patches) {
-      // Scope the advisory warnings too: an operator running with --until
-      // doesn't need to see version warnings for patches outside the range.
-      if (options.until !== undefined && !untilFilenameSet.has(patch.filename)) continue;
-      const warning = checkVersionCompatibility(getPatchSourceVersion(patch), currentVersion);
-      if (warning) {
-        warn(`${patch.filename}: ${warning}`);
-      }
-    }
-  }
+  await warnVersionCompatibility(projectRoot, manifest, untilFilenameSet, options.until);
 
   // Validate patch integrity (detect orphaned modification patches). Warn
   // and prompt the operator to confirm before proceeding — the legacy
@@ -390,56 +491,16 @@ export async function importCommand(
   // integrity problems should not block importing an earlier good subset,
   // which is exactly what operators reach for when the tail of the queue
   // is broken and they want to keep working against an earlier checkpoint.
-  const allIntegrityIssues = await validatePatchIntegrity(paths.patches, paths.engine);
-  const integrityIssues =
-    options.until !== undefined
-      ? allIntegrityIssues.filter((issue) => untilFilenameSet.has(issue.filename))
-      : allIntegrityIssues;
-  if (integrityIssues.length > 0) {
-    warn('\nPatch integrity issues detected:');
-    for (const issue of integrityIssues) {
-      warn(`  ${issue.filename}: ${issue.message}`);
-    }
-    info('Run "fireforge doctor" for more details.');
+  const integrityOk = await gateImportIntegrity(
+    paths,
+    untilFilenameSet,
+    options.until,
+    forceImport
+  );
+  if (!integrityOk) return;
 
-    if (forceImport) {
-      warn('Continuing because --force was provided. Integrity issues were not resolved.\n');
-    } else if (!process.stdin.isTTY) {
-      throw new GeneralError(
-        `Refusing to import while ${integrityIssues.length} patch integrity issue(s) are unresolved. ` +
-          `Fix the issues reported above (see "fireforge doctor") or re-run with --force to continue anyway.`
-      );
-    } else {
-      const shouldContinue = await confirm({
-        message:
-          'Patch integrity issues detected. Continuing may fail with cascading errors during patch application. Continue anyway?',
-        initialValue: false,
-      });
-      if (isCancel(shouldContinue) || !shouldContinue) {
-        outro('Import cancelled — fix the integrity issues and re-run');
-        return;
-      }
-    }
-  }
-
-  // Dry-run: list patches that would be applied and exit
   if (isDryRun) {
-    if (manifest) {
-      const patches =
-        options.until !== undefined
-          ? manifest.patches.filter((p) => untilFilenameSet.has(p.filename))
-          : manifest.patches;
-
-      info(`\n[dry-run] Would apply ${patches.length} patch(es) in order:`);
-      for (const patch of patches) {
-        info(
-          `  ${patch.filename} (${patch.filesAffected.length} file${patch.filesAffected.length === 1 ? '' : 's'})`
-        );
-      }
-    } else {
-      info(`\n[dry-run] Would apply ${patchCount} patch(es)`);
-    }
-    outro('Dry run complete — no changes made');
+    renderImportDryRun(manifest, untilFilenameSet, options.until, patchCount);
     return;
   }
 

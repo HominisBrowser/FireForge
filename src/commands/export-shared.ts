@@ -422,3 +422,54 @@ export async function guardOwnershipOverlap(args: {
 
   return true;
 }
+
+/**
+ * Runs the two pre-commit gates shared by `export` and `export-all` in
+ * order: the supersede confirmation, then the cross-patch ownership
+ * overlap guard. The overlap guard receives the filenames of the patches
+ * the export would fully supersede so it does not flag a file claimed by
+ * a patch that is about to be removed (pre-0.16.0 `export` only caught
+ * FULL-coverage supersedes, so a second export targeting a shared file
+ * like `browser/themes/shared/jar.inc.mn` created a queue where two
+ * patches both claimed the file and `verify` failed immediately).
+ *
+ * @param args - Gate inputs shared by both export commands
+ * @param args.patchesDir - Absolute path of the patches directory
+ * @param args.filesAffected - Engine-relative files the export claims
+ * @param args.supersede - The command's `--supersede` flag
+ * @param args.allowOverlap - The command's `--allow-overlap` flag
+ * @param args.isInteractive - Whether prompting the operator is possible
+ * @param args.s - Active spinner, stopped before any prompt
+ * @returns `true` when both gates passed; `false` when the operator
+ *   declined (the caller returns without committing)
+ */
+export async function runSupersedeAndOverlapGates(args: {
+  patchesDir: string;
+  filesAffected: string[];
+  supersede: boolean | undefined;
+  allowOverlap: boolean;
+  isInteractive: boolean;
+  s: SpinnerHandle;
+}): Promise<boolean> {
+  const { patchesDir, filesAffected, supersede, allowOverlap, isInteractive, s } = args;
+
+  const shouldProceed = await confirmSupersedePatches(
+    patchesDir,
+    filesAffected,
+    supersede,
+    isInteractive,
+    s
+  );
+  if (!shouldProceed) return false;
+
+  const willSupersede = await findAllPatchesForFiles(patchesDir, filesAffected);
+  const supersedingFilenames = new Set(willSupersede.map((p) => p.filename));
+  return guardOwnershipOverlap({
+    patchesDir,
+    filesAffected,
+    supersedingFilenames,
+    allowOverlap,
+    isInteractive,
+    s,
+  });
+}

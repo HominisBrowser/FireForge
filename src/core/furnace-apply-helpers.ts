@@ -20,6 +20,11 @@ import {
 } from './furnace-apply-ftl.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
 import {
+  deployFileWithFragments,
+  describeFragmentExpansion,
+  SHARED_FRAGMENTS_DIR,
+} from './furnace-css-fragments.js';
+import {
   addCustomElementRegistration,
   addJarMnEntries,
   validateCustomElementRegistration,
@@ -142,25 +147,6 @@ export async function computeComponentChecksums(
   }
 
   return checksums;
-}
-
-/**
- * Returns the filenames present in `previous` that are absent from `current`
- * — i.e. files we know we deployed last time but the workspace has since
- * deleted. The order of returned names is intentionally stable
- * (sorted alphabetically) so test snapshots and CLI output are deterministic.
- */
-export function diffDeletedFiles(
-  previous: Record<string, string>,
-  current: Record<string, string>
-): string[] {
-  const deleted: string[] = [];
-  for (const key of Object.keys(previous)) {
-    if (!(key in current)) {
-      deleted.push(key);
-    }
-  }
-  return deleted.sort();
 }
 
 /**
@@ -403,12 +389,13 @@ async function buildCustomDryRunActions(
   for (const entry of entries) {
     if (!isRegularFile(entry)) continue;
     if (!entry.name.endsWith('.mjs') && !entry.name.endsWith('.css')) continue;
+    const fragmentNote = await describeFragmentExpansion(join(componentDir, entry.name));
     actions.push({
       component: name,
-      action: 'copy',
+      action: fragmentNote ? 'expand-fragments' : 'copy',
       source: join(componentDir, entry.name),
       target: join(targetDir, entry.name),
-      description: `Copy ${entry.name} to ${config.targetPath}`,
+      description: `Copy ${entry.name} to ${config.targetPath}${fragmentNote}`,
     });
   }
 
@@ -553,12 +540,16 @@ export async function applyCustomComponent(
     }
   }
 
-  // Copy phase (parallel — independent file writes to different paths)
+  // Copy phase (parallel — independent file writes to different paths).
+  // CSS files carrying @fireforge-include directives are written as their
+  // fragment-expanded form (field report D2); the workspace source keeps
+  // only the directive, so shared CSS stays single-sourced.
+  const sharedDir = join(componentDir, '..', '..', SHARED_FRAGMENTS_DIR);
   await Promise.all(
     filesToCopy.map(async (entry) => {
       const src = join(componentDir, entry.name);
       const dest = join(targetDir, entry.name);
-      await copyFile(src, dest);
+      await deployFileWithFragments(src, dest, sharedDir);
       affectedPaths.push(relative(engineDir, dest));
       copiedFileNames.push(entry.name);
     })
@@ -694,4 +685,8 @@ export async function applyOverrideComponent(
   return { affectedPaths };
 }
 
-export { extractComponentChecksums, prefixChecksums } from './furnace-checksum-utils.js';
+export {
+  diffDeletedFiles,
+  extractComponentChecksums,
+  prefixChecksums,
+} from './furnace-checksum-utils.js';

@@ -73,9 +73,7 @@ export function countBraceDepth(
   inBlockComment: boolean
 ): { depth: number; inBlockComment: boolean } {
   let depth = 0;
-  let inSingle = false;
-  let inDouble = false;
-  let inTemplate = false;
+  let quote: "'" | '"' | '`' | null = null;
   let inLine = false;
   let inBlock = inBlockComment;
 
@@ -91,20 +89,12 @@ export function countBraceDepth(
       }
       continue;
     }
-    if (ch === '\\' && (inSingle || inDouble || inTemplate)) {
+    if (ch === '\\' && quote !== null) {
       i++;
       continue;
     }
-    if (inSingle) {
-      if (ch === "'") inSingle = false;
-      continue;
-    }
-    if (inDouble) {
-      if (ch === '"') inDouble = false;
-      continue;
-    }
-    if (inTemplate) {
-      if (ch === '`') inTemplate = false;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
       continue;
     }
 
@@ -117,34 +107,12 @@ export function countBraceDepth(
       i++;
       continue;
     }
-    // Heuristic for regex literals: if / follows an operator or keyword boundary,
-    // treat it as a regex start and skip to the closing /
-    if (ch === '/' && next !== undefined) {
-      const prev = i > 0 ? line[i - 1] : undefined;
-      if (prev === undefined || /[=(:,!|&?;~^{[\n+\-*%<>]/.test(prev)) {
-        // Skip to closing /
-        i++;
-        while (i < line.length) {
-          if (line[i] === '\\') {
-            i++; // skip escaped character
-          } else if (line[i] === '/') {
-            break;
-          }
-          i++;
-        }
-        continue;
-      }
-    }
-    if (ch === "'") {
-      inSingle = true;
+    if (ch === '/' && next !== undefined && isRegexLiteralStart(line, i)) {
+      i = scanToRegexLiteralEnd(line, i);
       continue;
     }
-    if (ch === '"') {
-      inDouble = true;
-      continue;
-    }
-    if (ch === '`') {
-      inTemplate = true;
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
       continue;
     }
 
@@ -152,6 +120,35 @@ export function countBraceDepth(
     if (ch === '}') depth--;
   }
   return { depth, inBlockComment: inBlock };
+}
+
+/**
+ * Regex-literal opener heuristic for the fallback scanner: a `/` is
+ * treated as starting a regex when it follows an operator or
+ * keyword-boundary character (or starts the line). See the misfire notes
+ * on {@link countBraceDepth}.
+ */
+function isRegexLiteralStart(line: string, i: number): boolean {
+  const prev = i > 0 ? line[i - 1] : undefined;
+  return prev === undefined || /[=(:,!|&?;~^{[\n+\-*%<>]/.test(prev);
+}
+
+/**
+ * Scans from the opening `/` of a regex literal to its closing `/`
+ * (honouring escapes), returning the index of the closing slash — or the
+ * end of the line when the literal never closes.
+ */
+function scanToRegexLiteralEnd(line: string, start: number): number {
+  let i = start + 1;
+  while (i < line.length) {
+    if (line[i] === '\\') {
+      i++; // skip escaped character
+    } else if (line[i] === '/') {
+      break;
+    }
+    i++;
+  }
+  return i;
 }
 
 /**

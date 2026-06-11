@@ -11,14 +11,13 @@
 
 import { Command, Option } from 'commander';
 
-import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { loadConfig } from '../../core/config.js';
 import {
   appendHistory,
   confirmDestructive,
   type ConflictReport,
   type HistoryEntry,
 } from '../../core/destructive.js';
-import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import {
   buildPatchQueueContext,
   lintPatchQueue,
@@ -31,19 +30,20 @@ import {
   type PatchRenameEntry,
   renumberPatchesInManifest,
   resolvePatchIdentifier,
+  rewriteStagedDependencyOwners,
 } from '../../core/patch-manifest.js';
 import { applyRenameMapToManifest, enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchReorderOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
-import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { pickDefined } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
+import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /** Zero-pads an ordinal number to the given width. */
-export function padOrder(value: number, width: number): string {
+function padOrder(value: number, width: number): string {
   return String(value).padStart(width, '0');
 }
 
@@ -164,11 +164,23 @@ function projectReorder(
   base: PatchQueueContext,
   renameMap: Map<string, PatchRenameEntry>
 ): PatchQueueContext {
+  const ownerLookup = (oldFilename: string): string | undefined =>
+    renameMap.get(oldFilename)?.newFilename;
   const projectedEntries: PatchQueueEntry[] = base.entries.map((entry) => {
+    // Project staged-dependency owner references through the rename map on
+    // every entry — owners point at *other* patches' filenames, so a
+    // projection that skips non-renamed entries would lint against stale
+    // owners and report false forward-import regressions.
+    const metadata = entry.metadata
+      ? rewriteStagedDependencyOwners(entry.metadata, ownerLookup)
+      : entry.metadata;
     const rename = renameMap.get(entry.filename);
-    if (!rename) return entry;
+    if (!rename) {
+      return metadata === entry.metadata ? entry : { ...entry, metadata };
+    }
     return {
       ...entry,
+      metadata,
       filename: rename.newFilename,
       order: rename.newOrder,
     };
@@ -370,24 +382,9 @@ export async function patchReorderCommand(
     );
   }
 
-  const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
-  if (!(await pathExists(paths.patches))) {
-    throw new GeneralError('Patches directory not found.');
-  }
-
-  const manifest = await loadPatchesManifest(paths.patches);
-  if (!manifest || manifest.patches.length === 0) {
-    throw new GeneralError('No patches in manifest.');
-  }
-
-  const target = resolvePatchIdentifier(identifier, manifest.patches);
-  if (!target) {
-    throw new InvalidArgumentError(
-      formatPatchNotFoundError(identifier, manifest.patches),
-      identifier
-    );
-  }
+  const { paths, manifest } = await requirePatchQueue(projectRoot);
+  const target = requirePatchTarget(identifier, manifest.patches);
 
   const { destinationOrder, anchorFilename } = resolveDestination(
     target,

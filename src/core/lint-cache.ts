@@ -12,7 +12,7 @@ import { git } from './git-base.js';
 import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-lint.js';
 
 export const LINT_CACHE_SCHEMA_VERSION = 1;
-export const LINT_IMPLEMENTATION_VERSION = 1;
+const LINT_IMPLEMENTATION_VERSION = 1;
 
 const LINT_CACHE_DIRNAME = 'lint-cache';
 const PER_PATCH_CACHE_FILENAME = 'per-patch-v1.json';
@@ -65,17 +65,17 @@ function stableJson(value: JsonValue): string {
 }
 
 /** Computes a SHA-256 hex digest for text or binary content. */
-export function sha256Hex(content: string | Buffer): string {
+function sha256Hex(content: string | Buffer): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
 /** Computes a stable SHA-256 digest for JSON-compatible data. */
-export function stableHash(value: JsonValue): string {
+function stableHash(value: JsonValue): string {
   return sha256Hex(stableJson(value));
 }
 
 /** Returns the repo-local per-patch lint cache file path. */
-export function getPerPatchLintCachePath(projectRoot: string): string {
+function getPerPatchLintCachePath(projectRoot: string): string {
   return join(projectRoot, '.fireforge', LINT_CACHE_DIRNAME, PER_PATCH_CACHE_FILENAME);
 }
 
@@ -163,7 +163,7 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
 }
 
 /** Creates an empty cache document using the current cache schema. */
-export function createEmptyPerPatchLintCache(): PerPatchLintCacheFile {
+function createEmptyPerPatchLintCache(): PerPatchLintCacheFile {
   return { schemaVersion: LINT_CACHE_SCHEMA_VERSION, entries: {} };
 }
 

@@ -31,11 +31,9 @@ import { join } from 'node:path';
 import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { isPackageablePath } from './build-audit.js';
-import type { BuildBaseline } from './build-baseline.js';
 import { readBuildBaseline } from './build-baseline.js';
-import { hasChanges, isMissingHeadError } from './git.js';
-import { git } from './git-base.js';
-import { getUntrackedFiles } from './git-status.js';
+import type { BuildBaseline } from './build-baseline-types.js';
+import { collectChangedEnginePaths } from './engine-changes.js';
 
 /** Result of the stale-build preflight probe. */
 export interface StaleBuildResult {
@@ -66,55 +64,6 @@ export interface StaleBuildResult {
 const STALE_PATHS_LIMIT = 10;
 
 /**
- * Collects engine paths that changed since the baseline SHA plus any
- * workdir modifications. Mirrors the helper inside `build-prepare.ts` but
- * is kept separate so the test-side preflight does not need to pull in
- * the full build-prepare dependency graph (mozconfig generation, furnace
- * apply hooks, …).
- */
-async function collectChangedEnginePaths(
-  engineDir: string,
-  baseline: BuildBaseline
-): Promise<string[]> {
-  const collected = new Set<string>();
-
-  if (baseline.engineHeadSha) {
-    try {
-      const diff = await git(['diff', '--name-only', `${baseline.engineHeadSha}..HEAD`], engineDir);
-      for (const line of diff.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed) collected.add(trimmed);
-      }
-    } catch (error: unknown) {
-      if (!isMissingHeadError(error)) {
-        verbose(
-          `Stale-build preflight: could not diff engine against baseline — ${toError(error).message}`
-        );
-      }
-    }
-  }
-
-  try {
-    if (await hasChanges(engineDir)) {
-      const worktreeDiff = await git(['diff', '--name-only', 'HEAD'], engineDir);
-      for (const line of worktreeDiff.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed) collected.add(trimmed);
-      }
-      for (const untracked of await getUntrackedFiles(engineDir)) {
-        collected.add(untracked);
-      }
-    }
-  } catch (error: unknown) {
-    verbose(
-      `Stale-build preflight: could not enumerate workdir changes — ${toError(error).message}`
-    );
-  }
-
-  return [...collected];
-}
-
-/**
  * Probes the engine tree for packageable changes since the last successful
  * `fireforge build`. Returns a summary the `fireforge test` handler renders
  * as an up-front warning when `--build` was NOT passed. The probe never
@@ -133,7 +82,7 @@ export async function checkStaleBuildForTest(
     return { stale: false, changedPaths: [], truncated: 0, baseline: undefined };
   }
 
-  const changed = await collectChangedEnginePaths(engineDir, baseline);
+  const changed = await collectChangedEnginePaths(engineDir, baseline, 'Stale-build preflight');
   let packageable = changed.filter((path) => isPackageablePath(path)).sort();
 
   // Content-hash comparison: when the baseline carries a fingerprint set,

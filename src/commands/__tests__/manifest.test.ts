@@ -46,6 +46,11 @@ const COMMANDS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HELPER_FILES: ReadonlySet<string> = new Set([
   'manifest.ts',
   'export-flow.ts',
+  // Placement-flag gating split out of export.ts so the command body
+  // stays inside the per-function complexity and line budgets. Exports
+  // `gatePlacementPlan` / `patchMetadataExtras` consumed by export.ts;
+  // no top-level register* is exported and none is wanted.
+  'export-placement-gate.ts',
   'export-placement-policy.ts',
   'export-shared.ts',
   'setup-support.ts',
@@ -88,6 +93,11 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // Xpcshell appdir auto-injection helper consumed by test.ts; no
   // top-level registrar.
   'test-appdir.ts',
+  // Harness retry/shard orchestration and failure diagnosis split out of
+  // test.ts so all three stay under the max-lines threshold. Consumed by
+  // test.ts; no top-level registrar.
+  'test-run.ts',
+  'test-diagnose.ts',
 ]);
 
 const ALLOWED_GROUPS = new Set(['project', 'workflow', 'engine', 'diagnostics', 'components']);

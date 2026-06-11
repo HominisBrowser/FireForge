@@ -5,9 +5,11 @@ import { join } from 'node:path';
 import type { ComponentType, FurnaceConfig, ValidationIssue } from '../types/furnace.js';
 import { pathExists } from '../utils/fs.js';
 import { getProjectPaths, loadConfig } from './config.js';
-import { getFurnacePaths, loadFurnaceConfig } from './furnace-config.js';
-import { xpcshellTestParentDir } from './furnace-constants.js';
+import { getFurnacePaths, loadFurnaceConfig, loadFurnaceState } from './furnace-config.js';
+import { resolveFtlDir, xpcshellTestParentDir } from './furnace-constants.js';
+import { validateCssFragments } from './furnace-css-fragments.js';
 import { detectComposesCycles, validateComposesReferences } from './furnace-graph-utils.js';
+import { findJsconfigPathsDrift } from './furnace-jsconfig.js';
 import {
   validateAccessibility,
   validateCompatibility,
@@ -16,6 +18,7 @@ import {
   validateStructure,
   validateTokenLink,
 } from './furnace-validate-checks.js';
+import { findOrphanedEngineFiles } from './furnace-validate-helpers.js';
 import {
   findOverrideBaseVersionDrift,
   type OverrideVersionDrift,
@@ -90,6 +93,43 @@ export async function validateComponent(
         root,
         config?.tokenPrefix,
         config?.tokenHostDocuments
+      ))
+    );
+  }
+
+  // CSS fragment checks (field report D2): missing fragment files are
+  // structural errors; stale deployed expansions are drift the next deploy
+  // refreshes.
+  if (type === 'custom') {
+    const furnacePaths = getFurnacePaths(root ?? join(componentDir, '..', '..', '..'));
+    const engineTargetDir =
+      root && config?.custom[tagName]
+        ? join(getProjectPaths(root).engine, config.custom[tagName].targetPath)
+        : undefined;
+    issues.push(
+      ...(await validateCssFragments(
+        componentDir,
+        tagName,
+        furnacePaths.sharedDir,
+        engineTargetDir
+      ))
+    );
+  }
+
+  // Engine-side orphan detection (field report D1): files a previous deploy
+  // placed in the engine whose workspace source has since been renamed or
+  // deleted. Surfaces as drift even when every current workspace file is
+  // in sync, which is exactly the gap that let stale jar.mn lines reach a
+  // later re-export.
+  if (root && config && type === 'custom') {
+    const state = await loadFurnaceState(root);
+    issues.push(
+      ...(await findOrphanedEngineFiles(
+        root,
+        config,
+        tagName,
+        state,
+        resolveFtlDir(config.ftlBasePath)
       ))
     );
   }
@@ -246,6 +286,37 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
     // directory, permission denial reading the scaffold tree, or any
     // other transient fs issue should never cascade into false
     // "orphan" reports.
+  }
+
+  // jsconfig chrome-module paths drift (field report D3): when
+  // `typecheckJsconfig` is configured, deploy maintains a paths mapping per
+  // deployed module file; missing or stale entries mean typed cross-module
+  // imports are silently degrading to `any` in the consumer's typecheck.
+  if (config.typecheckJsconfig) {
+    try {
+      const drift = await findJsconfigPathsDrift(root, config);
+      if (drift.changed) {
+        const detail = [
+          ...drift.added.map((key) => `missing: ${key}`),
+          ...drift.updated.map((key) => `stale: ${key}`),
+          ...drift.pruned.map((key) => `orphaned: ${key}`),
+        ].join('; ');
+        const issue: ValidationIssue = {
+          component: 'furnace',
+          severity: 'warning',
+          check: 'jsconfig-paths-drift',
+          message:
+            `${config.typecheckJsconfig} chrome-module paths are out of sync with the workspace (${detail}). ` +
+            'Run "fireforge furnace deploy" to update them.',
+        };
+        const existing = results.get(issue.component) ?? [];
+        existing.push(issue);
+        results.set(issue.component, existing);
+      }
+    } catch {
+      // Drift detection must not break validation when the jsconfig is
+      // missing or unparsable — deploy reports those cases with guidance.
+    }
   }
 
   return results;

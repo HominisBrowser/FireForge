@@ -8,7 +8,7 @@
  * independently of the mutation plumbing.
  */
 
-import type { ResolvedTestStyle } from './create.js';
+import type { ResolvedTestStyle } from '../../types/furnace.js';
 
 export interface DryRunPlanInput {
   componentName: string;

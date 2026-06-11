@@ -55,7 +55,7 @@ function parseStagedDependencies(data: unknown, label: string): PatchStagedDepen
  * @param index - Array index for error messages
  * @returns Validated PatchMetadata
  */
-export function validatePatchMetadata(data: unknown, index: number): PatchMetadata {
+function validatePatchMetadata(data: unknown, index: number): PatchMetadata {
   const rec = parseObject(data, `patches[${index}]`);
 
   const filename = rec.string('filename');

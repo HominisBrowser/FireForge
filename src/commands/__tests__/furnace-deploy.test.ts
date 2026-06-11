@@ -112,13 +112,10 @@ vi.mock('../../utils/logger.js', () => ({
 import { loadConfig } from '../../core/config.js';
 import {
   applyAllComponents,
-  applyCustomComponent,
-  applyOverrideComponent,
   computeComponentChecksums,
   prefixChecksums,
 } from '../../core/furnace-apply.js';
 import { loadFurnaceConfig, updateFurnaceState } from '../../core/furnace-config.js';
-import { restoreRollbackJournalOrThrow } from '../../core/furnace-rollback.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import { pathExists } from '../../utils/fs.js';
 import { success, warn } from '../../utils/logger.js';
@@ -131,7 +128,12 @@ describe('furnaceDeployCommand', () => {
   });
 
   it('skips validation noise when the selected component fails apply', async () => {
-    vi.mocked(applyOverrideComponent).mockRejectedValue(new Error('apply state mismatch'));
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [],
+      skipped: [],
+      errors: [{ name: 'moz-card', error: 'apply state mismatch' }],
+      actions: [],
+    });
 
     await expect(
       furnaceDeployCommand('/project', 'moz-card', {
@@ -171,9 +173,17 @@ describe('furnaceDeployCommand', () => {
     expect(vi.mocked(success)).toHaveBeenCalled();
   });
 
-  it('deploys a single override component', async () => {
-    vi.mocked(applyOverrideComponent).mockResolvedValue({
-      affectedPaths: ['toolkit/content/widgets/moz-card/moz-card.css'],
+  it('deploys a single override component through the batch pipeline', async () => {
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [
+        {
+          name: 'moz-card',
+          type: 'override',
+          filesAffected: ['toolkit/content/widgets/moz-card/moz-card.css'],
+        },
+      ],
+      skipped: [],
+      errors: [],
       actions: [],
     });
     vi.mocked(validateComponent).mockResolvedValue([]);
@@ -182,13 +192,28 @@ describe('furnaceDeployCommand', () => {
 
     await expect(furnaceDeployCommand('/project', 'moz-card')).resolves.toBeUndefined();
 
-    expect(applyOverrideComponent).toHaveBeenCalled();
+    // Named deploys run the same pipeline as deploy-all (D1: deletion
+    // detection + jar.mn re-sync), but must never let the batch persist
+    // path wipe other components' checksums.
+    expect(applyAllComponents).toHaveBeenCalledWith(
+      '/project',
+      false,
+      expect.objectContaining({ componentName: 'moz-card', persistState: false })
+    );
     expect(updateFurnaceState).toHaveBeenCalled();
   });
 
   it('replaces stale checksum entries for the selected component during named deploy', async () => {
-    vi.mocked(applyOverrideComponent).mockResolvedValue({
-      affectedPaths: ['toolkit/content/widgets/moz-card/moz-card.css'],
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [
+        {
+          name: 'moz-card',
+          type: 'override',
+          filesAffected: ['toolkit/content/widgets/moz-card/moz-card.css'],
+        },
+      ],
+      skipped: [],
+      errors: [],
       actions: [],
     });
     vi.mocked(validateComponent).mockResolvedValue([]);
@@ -243,9 +268,10 @@ describe('furnaceDeployCommand', () => {
         },
       },
     });
-    vi.mocked(applyCustomComponent).mockResolvedValue({
-      affectedPaths: ['sidebar.mjs'],
-      stepErrors: [],
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [{ name: 'moz-sidebar', type: 'custom', filesAffected: ['sidebar.mjs'] }],
+      skipped: [],
+      errors: [],
       actions: [],
     });
     vi.mocked(validateComponent).mockResolvedValue([]);
@@ -254,7 +280,11 @@ describe('furnaceDeployCommand', () => {
 
     await expect(furnaceDeployCommand('/project', 'moz-sidebar')).resolves.toBeUndefined();
 
-    expect(applyCustomComponent).toHaveBeenCalled();
+    expect(applyAllComponents).toHaveBeenCalledWith(
+      '/project',
+      false,
+      expect.objectContaining({ componentName: 'moz-sidebar', persistState: false })
+    );
   });
 
   it('validates dry-run custom deploys against the projected jar.mn registration', async () => {
@@ -272,9 +302,10 @@ describe('furnaceDeployCommand', () => {
         },
       },
     });
-    vi.mocked(applyCustomComponent).mockResolvedValue({
-      affectedPaths: [],
-      stepErrors: [],
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [{ name: 'moz-sidebar', type: 'custom', filesAffected: [] }],
+      skipped: [],
+      errors: [],
       actions: [
         {
           component: 'moz-sidebar',
@@ -322,20 +353,28 @@ describe('furnaceDeployCommand', () => {
         },
       },
     });
-    vi.mocked(applyCustomComponent).mockResolvedValue({
-      affectedPaths: ['sidebar.mjs'],
-      stepErrors: [{ step: 'register', error: 'customElements.js missing' }],
+    // Rollback itself now happens inside applyAllComponents (covered by
+    // furnace-apply tests); deploy's contract is to refuse persisting and
+    // skip validation when the result carries step errors.
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [
+        {
+          name: 'moz-sidebar',
+          type: 'custom',
+          filesAffected: ['sidebar.mjs'],
+          stepErrors: [{ step: 'register', error: 'customElements.js missing' }],
+        },
+      ],
+      skipped: [],
+      errors: [],
       actions: [],
+      rolledBack: true,
     });
 
     await expect(furnaceDeployCommand('/project', 'moz-sidebar')).rejects.toThrow(
       /apply error\(s\)/i
     );
 
-    expect(restoreRollbackJournalOrThrow).toHaveBeenCalledWith(
-      expect.any(Object),
-      'Furnace deploy failed for "moz-sidebar"'
-    );
     expect(updateFurnaceState).not.toHaveBeenCalled();
     expect(validateComponent).not.toHaveBeenCalled();
   });
@@ -355,16 +394,18 @@ describe('furnaceDeployCommand', () => {
         },
       },
     });
-    vi.mocked(applyCustomComponent).mockRejectedValue(new Error('copy failed'));
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [],
+      skipped: [],
+      errors: [{ name: 'moz-sidebar', error: 'copy failed' }],
+      actions: [],
+      rolledBack: true,
+    });
 
     await expect(furnaceDeployCommand('/project', 'moz-sidebar')).rejects.toThrow(
       /apply error\(s\)/i
     );
 
-    expect(restoreRollbackJournalOrThrow).toHaveBeenCalledWith(
-      expect.any(Object),
-      'Furnace deploy failed for "moz-sidebar"'
-    );
     expect(updateFurnaceState).not.toHaveBeenCalled();
     expect(validateComponent).not.toHaveBeenCalled();
   });
@@ -384,14 +425,17 @@ describe('furnaceDeployCommand', () => {
       },
       custom: {},
     });
-    vi.mocked(applyOverrideComponent).mockRejectedValue(new Error('copy failed'));
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [],
+      skipped: [],
+      errors: [{ name: 'moz-card', error: 'copy failed' }],
+      actions: [],
+      rolledBack: true,
+    });
 
     await expect(furnaceDeployCommand('/project', 'moz-card')).rejects.toThrow(/apply error\(s\)/i);
 
-    expect(restoreRollbackJournalOrThrow).toHaveBeenCalledWith(
-      expect.any(Object),
-      'Furnace deploy failed for "moz-card"'
-    );
+    expect(updateFurnaceState).not.toHaveBeenCalled();
     expect(validateComponent).not.toHaveBeenCalled();
   });
 
@@ -419,8 +463,7 @@ describe('furnaceDeployCommand', () => {
 
     await expect(furnaceDeployCommand('/project', 'moz-stock-card')).resolves.toBeUndefined();
 
-    expect(applyOverrideComponent).not.toHaveBeenCalled();
-    expect(applyCustomComponent).not.toHaveBeenCalled();
+    expect(applyAllComponents).not.toHaveBeenCalled();
     expect(validateComponent).not.toHaveBeenCalled();
     expect(vi.mocked(warn)).toHaveBeenCalledWith(
       '"moz-stock-card" is a stock component. Stock components are not applied locally.'
@@ -499,8 +542,10 @@ describe('furnaceDeployCommand', () => {
       },
       custom: {},
     });
-    vi.mocked(applyOverrideComponent).mockResolvedValue({
-      affectedPaths: ['a.css'],
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [{ name: 'moz-card', type: 'override', filesAffected: ['a.css'] }],
+      skipped: [],
+      errors: [],
       actions: [{ action: 'copy', component: 'moz-card', description: 'Copy CSS' }],
     });
     vi.mocked(validateComponent).mockResolvedValue([]);
@@ -540,10 +585,6 @@ describe('furnaceDeployCommand', () => {
       binaryName: 'testbrowser',
       firefox: { version: '147.0', product: 'firefox' },
     });
-    vi.mocked(applyOverrideComponent).mockResolvedValue({
-      affectedPaths: ['moz-card.css'],
-      actions: [],
-    });
     vi.mocked(validateComponent).mockResolvedValue([]);
     vi.mocked(computeComponentChecksums).mockResolvedValue({});
     vi.mocked(prefixChecksums).mockReturnValue({});
@@ -562,7 +603,7 @@ describe('furnaceDeployCommand', () => {
     expect(driftWarnings).toHaveLength(1);
     expect(driftWarnings[0]).toContain('moz-card');
     expect(driftWarnings[0]).not.toContain('moz-panel');
-    expect(applyOverrideComponent).not.toHaveBeenCalled();
+    expect(applyAllComponents).not.toHaveBeenCalled();
   });
 
   it('blocks deploy when the selected component has baseVersion drift without --force', async () => {
@@ -592,7 +633,7 @@ describe('furnaceDeployCommand', () => {
       /stale/i
     );
 
-    expect(applyOverrideComponent).not.toHaveBeenCalled();
+    expect(applyAllComponents).not.toHaveBeenCalled();
   });
 
   it('allows deploy with --force despite baseVersion drift', async () => {
@@ -617,8 +658,10 @@ describe('furnaceDeployCommand', () => {
       binaryName: 'testbrowser',
       firefox: { version: '147.0', product: 'firefox' },
     });
-    vi.mocked(applyOverrideComponent).mockResolvedValue({
-      affectedPaths: ['moz-card.css'],
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [{ name: 'moz-card', type: 'override', filesAffected: ['moz-card.css'] }],
+      skipped: [],
+      errors: [],
       actions: [],
     });
     vi.mocked(validateComponent).mockResolvedValue([]);
@@ -627,7 +670,11 @@ describe('furnaceDeployCommand', () => {
       furnaceDeployCommand('/project', 'moz-card', { dryRun: true, force: true })
     ).resolves.toBeUndefined();
 
-    expect(applyOverrideComponent).toHaveBeenCalled();
+    expect(applyAllComponents).toHaveBeenCalledWith(
+      '/project',
+      true,
+      expect.objectContaining({ componentName: 'moz-card', persistState: false })
+    );
   });
 
   it('refuses all-components deploy when overrides have baseVersion drift without --force', async () => {
@@ -731,8 +778,10 @@ describe('furnaceDeployCommand', () => {
       binaryName: 'testbrowser',
       firefox: { version: '145.0', product: 'firefox' },
     });
-    vi.mocked(applyOverrideComponent).mockResolvedValue({
-      affectedPaths: ['moz-card.css'],
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [{ name: 'moz-card', type: 'override', filesAffected: ['moz-card.css'] }],
+      skipped: [],
+      errors: [],
       actions: [],
     });
     vi.mocked(computeComponentChecksums).mockResolvedValue({ 'moz-card.css': 'hash' });

@@ -4,8 +4,6 @@ import { join } from 'node:path';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import {
   applyAllComponents,
-  applyCustomComponent,
-  applyOverrideComponent,
   computeComponentChecksums,
   prefixChecksums,
 } from '../../core/furnace-apply.js';
@@ -16,18 +14,8 @@ import {
   loadFurnaceConfig,
   updateFurnaceState,
 } from '../../core/furnace-config.js';
-import { resolveFtlDir } from '../../core/furnace-constants.js';
-import { resolveFurnaceMarkerComment } from '../../core/furnace-marker.js';
-import {
-  type FurnaceOperationContext,
-  recordFurnaceRollbackFailure,
-  runFurnaceMutation,
-} from '../../core/furnace-operation.js';
-import {
-  createRollbackJournal,
-  restoreRollbackJournalOrThrow,
-  type RollbackJournal,
-} from '../../core/furnace-rollback.js';
+import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
+import { type FurnaceOperationContext, runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
   findOverrideBaseVersionDrift,
   formatOverrideBaseVersionDriftError,
@@ -35,7 +23,6 @@ import {
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceDeployOptions } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, spinner, warn } from '../../utils/logger.js';
 import { runDeployValidation } from './validation-output.js';
@@ -185,159 +172,48 @@ async function persistSingleComponentState(
 }
 
 /**
- * True when an applied-result carries any signal that the deploy did not
- * complete cleanly. Any such signal must trigger the rollback journal and
- * must suppress state persistence, so both call sites read from here.
- *
- * An apply failure on a single-component deploy means one of:
- *   - `result.errors` has an entry (the apply body threw)
- *   - an `applied[].stepErrors` entry is present (a registration step
- *     failed after the copy succeeded)
- *
- * Both are treated identically for atomicity purposes: rollback runs,
- * state stays on the previous checkpoint, and the caller raises a deploy
- * failure so the operator sees the error.
- */
-function namedDeployHasFailures(result: Awaited<ReturnType<typeof applyAllComponents>>): boolean {
-  return result.errors.length > 0 || getStepFailureCount(result) > 0;
-}
-
-async function restoreNamedDeployRollback(
-  rollbackJournal: RollbackJournal | undefined,
-  name: string,
-  projectRoot?: string
-): Promise<void> {
-  if (!rollbackJournal) return;
-  try {
-    await restoreRollbackJournalOrThrow(rollbackJournal, `Furnace deploy failed for "${name}"`);
-  } catch (rollbackError) {
-    if (projectRoot) {
-      await recordFurnaceRollbackFailure(
-        projectRoot,
-        'deploy-rollback',
-        `component "${name}": ${toError(rollbackError).message}`
-      );
-    }
-    throw rollbackError;
-  }
-}
-
-/**
  * Applies a single named override or custom component in targeted deploy mode.
  *
- * Atomicity contract: the helper owns a single rollback journal for the
- * deploy. If any apply path fails (thrown error or step error), the journal
- * restores the engine to its pre-deploy state and the returned `result` is
- * still reported as failed to the caller. The caller must consult
- * {@link shouldPersistNamedDeployState} before touching furnace-state.json —
- * partial checksums must never be persisted on top of a rollback.
+ * Delegates to {@link applyAllComponents} with a `componentName` filter so
+ * targeted deploys run the exact same pipeline as deploy-all — including
+ * workspace-deletion detection, engine orphan undeploy, and jar.mn /
+ * customElements.js re-sync. The previous implementation called the
+ * per-component apply helpers directly and never pruned: renaming a helper
+ * file in the workspace left the old deployed file and its stale jar.mn
+ * line in the engine (field report D1).
+ *
+ * `persistState: false` is load-bearing: the batch persist path *replaces*
+ * `appliedChecksums` wholesale with only this run's entries, which for a
+ * named deploy would wipe every other component's state. Named deploy keeps
+ * its per-component state merge ({@link persistSingleComponentState}) and
+ * its atomicity gate ({@link shouldPersistNamedDeployState}) at the call
+ * site. Rollback on failure happens inside `applyAllComponents`; the
+ * journal returned on success is ignored (the deploy keeps its files).
  *
  * @param name - Component name to apply
- * @param engineDir - Firefox engine source directory
- * @param furnacePaths - Resolved Furnace workspace paths
  * @param config - Loaded Furnace configuration
  * @param isDryRun - Whether file writes should be skipped
  * @returns Apply result for the named component, or `stock` for stock-only entries
  */
 async function applyNamedComponent(
   name: string,
-  engineDir: string,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
   config: Awaited<ReturnType<typeof loadFurnaceConfig>>,
-  ftlDir: string,
   isDryRun: boolean,
-  operationContext?: FurnaceOperationContext,
-  projectRoot?: string,
-  markerComment?: string
+  projectRoot: string,
+  operationContext?: FurnaceOperationContext
 ): Promise<Awaited<ReturnType<typeof applyAllComponents>> | 'stock'> {
-  const rollbackJournal = isDryRun ? undefined : createRollbackJournal();
-  if (rollbackJournal && operationContext) {
-    operationContext.registerJournal(rollbackJournal);
-  }
-  const result: Awaited<ReturnType<typeof applyAllComponents>> = {
-    applied: [],
-    skipped: [],
-    errors: [],
-    actions: [],
-  };
-
-  const overrideConfig = config.overrides[name];
-  const customConfig = config.custom[name];
-
-  if (overrideConfig) {
-    const componentDir = join(furnacePaths.overridesDir, name);
-    if (!(await pathExists(componentDir))) {
-      throw new FurnaceError(`Component directory not found: components/overrides/${name}`, name);
+  if (!(name in config.overrides) && !(name in config.custom)) {
+    if (config.stock.includes(name)) {
+      return 'stock';
     }
-    try {
-      const { affectedPaths: filesAffected, actions } = await applyOverrideComponent(
-        engineDir,
-        name,
-        componentDir,
-        overrideConfig,
-        ftlDir,
-        isDryRun,
-        rollbackJournal
-      );
-      if (isDryRun && actions) {
-        result.actions = actions;
-      }
-      result.applied.push({ name, type: 'override', filesAffected });
-    } catch (error: unknown) {
-      result.errors.push({ name, error: toError(error).message });
-    }
-
-    if (!isDryRun && namedDeployHasFailures(result)) {
-      await restoreNamedDeployRollback(rollbackJournal, name, projectRoot);
-    }
-
-    return result;
+    throw new FurnaceError(`Component "${name}" not found in furnace.json.`, name);
   }
 
-  if (customConfig) {
-    const componentDir = join(furnacePaths.customDir, name);
-    if (!(await pathExists(componentDir))) {
-      throw new FurnaceError(`Component directory not found: components/custom/${name}`, name);
-    }
-    try {
-      const {
-        affectedPaths: filesAffected,
-        stepErrors,
-        actions,
-      } = await applyCustomComponent(
-        engineDir,
-        name,
-        componentDir,
-        customConfig,
-        ftlDir,
-        isDryRun,
-        rollbackJournal,
-        markerComment !== undefined ? { markerComment } : {}
-      );
-      if (isDryRun && actions) {
-        result.actions = actions;
-      }
-      result.applied.push({
-        name,
-        type: 'custom',
-        filesAffected,
-        ...(stepErrors.length > 0 ? { stepErrors } : {}),
-      });
-    } catch (error: unknown) {
-      result.errors.push({ name, error: toError(error).message });
-    }
-    if (!isDryRun && namedDeployHasFailures(result)) {
-      await restoreNamedDeployRollback(rollbackJournal, name, projectRoot);
-    }
-
-    return result;
-  }
-
-  if (config.stock.includes(name)) {
-    return 'stock';
-  }
-
-  throw new FurnaceError(`Component "${name}" not found in furnace.json.`, name);
+  return applyAllComponents(projectRoot, isDryRun, {
+    componentName: name,
+    persistState: false,
+    ...(operationContext ? { operationContext } : {}),
+  });
 }
 
 /**
@@ -438,7 +314,7 @@ export async function furnaceDeployCommand(
   }
 
   const config = await loadFurnaceConfig(projectRoot);
-  const [furnacePaths, ftlDir] = [getFurnacePaths(projectRoot), resolveFtlDir(config.ftlBasePath)];
+  const furnacePaths = getFurnacePaths(projectRoot);
   const overrideCount = Object.keys(config.overrides).length;
   const customCount = Object.keys(config.custom).length;
 
@@ -453,14 +329,6 @@ export async function furnaceDeployCommand(
   // the plan before deciding whether to refresh the override or acknowledge
   // the new baseline in furnace.json.
   const forgeConfig = await loadConfig(projectRoot);
-  // 2026-04-26 eval Finding 6: when `markerComment` is unset in
-  // fireforge.json, default it to `binaryName.toUpperCase()` so the
-  // furnace-emitted edits to upstream files satisfy
-  // `lintModificationComments` on the next `lint`/`export` round-trip.
-  // The lint rule keys on the same uppercased binaryName, so the
-  // implicit default is identical to what the rule expects. Threaded
-  // through `applyNamedComponent` below.
-  const resolvedMarkerComment = resolveFurnaceMarkerComment(forgeConfig);
   const driftEntries = findOverrideBaseVersionDrift(config, forgeConfig.firefox.version);
   const force = options.force ?? false;
   const scopedDrift = name ? driftEntries.filter((entry) => entry.name === name) : driftEntries;
@@ -486,14 +354,10 @@ export async function furnaceDeployCommand(
       if (name) {
         const namedApplyResult = await applyNamedComponent(
           name,
-          paths.engine,
-          furnacePaths,
           config,
-          ftlDir,
           isDryRun,
-          ctx,
           projectRoot,
-          resolvedMarkerComment
+          ctx
         );
 
         if (namedApplyResult === 'stock') {
@@ -536,6 +400,13 @@ export async function furnaceDeployCommand(
   applySpinner.stop(isDryRun ? 'Planned actions calculated' : 'Components applied');
 
   logApplyResult(result, isDryRun);
+
+  // Keep the consumer jsconfig's chrome-module `paths` in step with the
+  // deployed module set (field report D3). Only after a clean apply —
+  // a rolled-back deploy must not advance the typecheck mapping either.
+  if (result.errors.length === 0 && getStepFailureCount(result) === 0) {
+    await reportJsconfigPathsSync(projectRoot, config, isDryRun);
+  }
 
   // --- Step 2: Validate (read-only, runs even in dry-run to show what would fail) ---
   if (options.skipValidate) {

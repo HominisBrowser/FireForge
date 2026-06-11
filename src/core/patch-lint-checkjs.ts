@@ -18,7 +18,7 @@
  * shim composition or suppressed diagnostic codes.
  */
 
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import type { PatchLintCheckJsCompilerOptions, PatchLintConfig } from '../types/config.js';
@@ -29,6 +29,46 @@ import { composeShimSource, SHIM_FILENAME, SUPPRESSED_DIAGNOSTIC_CODES } from '.
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Builds the host-side module resolver for the checkJs pass: maps an import
+ * specifier to a patch-owned absolute path when the specifier's final
+ * segment uniquely matches an owned file. URL specifiers
+ * (chrome://browser/content/Foo.sys.mjs, resource:///modules/Foo.sys.mjs)
+ * are matched by basename, with a `.mjs` → `.sys.mjs` fallback for deployed
+ * widget URLs. Ambiguous or unknown basenames stay unresolved — loose
+ * wildcard typing beats guessing the wrong module — and relative specifiers
+ * are left to fail resolution (the relative-import lint rule bans them).
+ */
+function createOwnedSpecifierResolver(
+  ts: typeof import('typescript'),
+  ownedAbsolute: ReadonlySet<string>
+): (specifier: string) => import('typescript').ResolvedModuleFull | undefined {
+  const ownedByBasename = new Map<string, string[]>();
+  for (const abs of ownedAbsolute) {
+    const base = basename(abs);
+    const list = ownedByBasename.get(base) ?? [];
+    list.push(abs);
+    ownedByBasename.set(base, list);
+  }
+
+  return (specifier) => {
+    if (specifier.startsWith('.')) return undefined;
+    const cleaned = specifier.split(/[?#]/)[0] ?? specifier;
+    const segment = cleaned.slice(cleaned.lastIndexOf('/') + 1);
+    if (!segment) return undefined;
+    const candidates = [...(ownedByBasename.get(segment) ?? [])];
+    if (segment.endsWith('.mjs') && !segment.endsWith('.sys.mjs')) {
+      candidates.push(...(ownedByBasename.get(segment.replace(/\.mjs$/, '.sys.mjs')) ?? []));
+    }
+    if (candidates.length !== 1) return undefined;
+    return {
+      resolvedFileName: candidates[0] as string,
+      extension: ts.Extension.Mjs,
+      isExternalLibraryImport: false,
+    };
+  };
+}
 
 /**
  * Runs TypeScript's checkJs pass on patch-owned `.sys.mjs` files.
@@ -143,15 +183,19 @@ export async function runCheckJs(
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     skipLibCheck: true,
-    // Do not follow import/reference directives into the Firefox tree.
-    // We only want to check the patch-owned files themselves.
-    // Without this, TS would try (and fail) to resolve every
-    // resource:// and chrome:// import, flooding the output with
-    // "Cannot find module" errors for upstream Firefox modules.
-    noResolve: true,
+    // Module resolution is host-controlled (see resolveOwnedSpecifier
+    // below): imports that match a patch-owned file resolve to the real
+    // source so JSDoc type-guard predicates and @template generics
+    // survive the module boundary; everything else deliberately fails
+    // resolution, falling back to the chrome:*/resource:* ambient
+    // wildcards plus the suppressed "cannot find module" codes. The
+    // host resolver is authoritative — TS never crawls the Firefox
+    // tree looking for upstream modules.
     ...strictness,
     ...overrides,
   };
+
+  const resolveOwnedSpecifier = createOwnedSpecifierResolver(ts, ownedAbsolute);
 
   // Custom compiler host: reads patch-owned files from disk, returns
   // the shim for the shim path, and returns empty content for
@@ -183,6 +227,11 @@ export async function runCheckJs(
     readFile(fileName) {
       if (fileName === shimPath) return shimSource;
       return defaultHost.readFile(fileName);
+    },
+    resolveModuleNameLiterals(moduleLiterals) {
+      return moduleLiterals.map((literal) => ({
+        resolvedModule: resolveOwnedSpecifier(literal.text),
+      }));
     },
   };
 

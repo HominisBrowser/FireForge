@@ -24,20 +24,15 @@ import { SUPPORTED_CONFIG_ROOT_KEYS } from './config-paths.js';
 import { parsePatchPolicyBlock } from './config-validate-patch-policy.js';
 
 /**
- * Validates a raw config object and returns a typed FireForgeConfig.
- * @param data - Raw data to validate
- * @returns Validated FireForgeConfig
- * @throws Error if validation fails
+ * Parses and validates the four required identity fields (`name`,
+ * `vendor`, `appId`, `binaryName`): all non-empty strings, with
+ * `binaryName` additionally barred from path separators/traversal and
+ * `appId` required to be a reverse-domain identifier.
  */
-export function validateConfig(data: unknown): FireForgeConfig {
-  let rec;
-  try {
-    rec = parseObject(data, 'Config');
-  } catch {
-    throw new ConfigError('Config must be an object');
-  }
-
-  // Required string fields. Empty strings would technically pass the
+function parseIdentityFields(
+  rec: ReturnType<typeof parseObject>
+): Pick<FireForgeConfig, 'name' | 'vendor' | 'appId' | 'binaryName'> {
+  // Empty strings would technically pass the
   // typeof-check below but are never valid for any of these identifier
   // fields — rejecting them here prevents downstream code (Firefox build,
   // launcher binary lookup, AppID assertions) from failing with confusing
@@ -79,7 +74,15 @@ export function validateConfig(data: unknown): FireForgeConfig {
     );
   }
 
-  // Firefox config
+  return { name, vendor, appId, binaryName };
+}
+
+/**
+ * Parses and validates the required `firefox` block: version shape,
+ * product allowlist, product/version cross-compatibility, and the
+ * optional sha256 digest (normalized to lowercase).
+ */
+function parseFirefoxBlock(rec: ReturnType<typeof parseObject>): FireForgeConfig['firefox'] {
   let firefoxRec;
   try {
     firefoxRec = rec.object('firefox');
@@ -115,20 +118,15 @@ export function validateConfig(data: unknown): FireForgeConfig {
     );
   }
 
-  // Optional configs
-  const config: FireForgeConfig = {
-    name,
-    vendor,
-    appId,
-    binaryName,
-    firefox: {
-      version: firefoxVersion,
-      product: firefoxProduct as FireForgeConfig['firefox']['product'],
-      ...(firefoxSha256 !== undefined ? { sha256: firefoxSha256.toLowerCase() } : {}),
-    },
+  return {
+    version: firefoxVersion,
+    product: firefoxProduct as FireForgeConfig['firefox']['product'],
+    ...(firefoxSha256 !== undefined ? { sha256: firefoxSha256.toLowerCase() } : {}),
   };
+}
 
-  // Build
+/** Parses the optional `build` block (currently just `build.jobs`). */
+function parseBuildBlock(rec: ReturnType<typeof parseObject>, config: FireForgeConfig): void {
   const buildRec = optionalConfigObject(rec, 'build');
   if (buildRec) {
     config.build = {};
@@ -140,8 +138,10 @@ export function validateConfig(data: unknown): FireForgeConfig {
       config.build.jobs = jobs;
     }
   }
+}
 
-  // Wire
+/** Parses the optional `wire` block (currently just `wire.subscriptDir`). */
+function parseWireBlock(rec: ReturnType<typeof parseObject>, config: FireForgeConfig): void {
   const wireRec = optionalConfigObject(rec, 'wire');
   if (wireRec) {
     config.wire = {};
@@ -153,8 +153,10 @@ export function validateConfig(data: unknown): FireForgeConfig {
       config.wire.subscriptDir = subscriptDir;
     }
   }
+}
 
-  // License
+/** Parses the optional `license` field against the supported-license list. */
+function parseLicenseField(rec: ReturnType<typeof parseObject>, config: FireForgeConfig): void {
   const licenseRaw = rec.raw('license');
   if (licenseRaw !== undefined) {
     if (typeof licenseRaw !== 'string') {
@@ -167,6 +169,30 @@ export function validateConfig(data: unknown): FireForgeConfig {
     }
     config.license = licenseRaw;
   }
+}
+
+/**
+ * Validates a raw config object and returns a typed FireForgeConfig.
+ * @param data - Raw data to validate
+ * @returns Validated FireForgeConfig
+ * @throws Error if validation fails
+ */
+export function validateConfig(data: unknown): FireForgeConfig {
+  let rec;
+  try {
+    rec = parseObject(data, 'Config');
+  } catch {
+    throw new ConfigError('Config must be an object');
+  }
+
+  const identity = parseIdentityFields(rec);
+  const firefox = parseFirefoxBlock(rec);
+
+  const config: FireForgeConfig = { ...identity, firefox };
+
+  parseBuildBlock(rec, config);
+  parseWireBlock(rec, config);
+  parseLicenseField(rec, config);
 
   // Marker comment — appended to lines FireForge writes into upstream files.
   const markerComment = parseMarkerComment(rec.raw('markerComment'));

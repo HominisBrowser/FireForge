@@ -21,7 +21,7 @@
  * Exposed as a named constant so test code and external checks can
  * reference the exact attribute name without hardcoding the string.
  */
-export const FURNACE_CHROME_DOC_SENTINEL = 'data-furnace-chrome-doc';
+const FURNACE_CHROME_DOC_SENTINEL = 'data-furnace-chrome-doc';
 
 /**
  * XHTML shell for a top-level chrome document.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { Command } from 'commander';
 
@@ -10,7 +10,6 @@ import {
   buildUI,
   hasBuildArtifacts,
   hasRunnableBundle,
-  testWithOutput,
   withBuildLock,
 } from '../core/mach.js';
 import {
@@ -24,16 +23,8 @@ import {
   reportMarionettePreflight,
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
-import {
-  buildHarnessEarlyExitMessage,
-  classifyHarnessEarlyExit,
-  completePostRebuildFailureContext,
-  createPostRebuildFailureContext,
-  type PostRebuildFailureContext,
-  prependPostRebuildFailureContext,
-} from '../core/test-harness-output.js';
+import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
-import { retryAfterXpcshellSymlinkRepair } from '../core/test-xpcshell-retry.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
@@ -43,7 +34,14 @@ import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
-import { maybeInjectAppdirArg } from './test-appdir.js';
+import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
+import {
+  DEFAULT_HARNESS_RETRIES,
+  runShardedTests,
+  runTestsWithRetries,
+  type TestRunContext,
+  type TestRunOutcome,
+} from './test-run.js';
 
 async function assertTestPathsExist(engineDir: string, testPaths: string[]): Promise<void> {
   const missingPaths: string[] = [];
@@ -61,30 +59,6 @@ async function assertTestPathsExist(engineDir: string, testPaths: string[]): Pro
   throw new GeneralError(
     `Test path${missingPaths.length === 1 ? '' : 's'} not found under engine/: ${missingPaths.join(', ')}\n\n` +
       'If you expected these files to come from your patch stack, run "fireforge import" first.'
-  );
-}
-
-function buildUnknownTestMessage(testPaths: string[]): string {
-  return (
-    `mach could not discover the requested test path${testPaths.length === 1 ? '' : 's'}: ${testPaths.join(', ')}\n\n` +
-    'The file may exist, but Firefox does not currently resolve it as a runnable test.\n\n' +
-    'Check the nearest test manifest (for example browser.toml or xpcshell.toml), confirm the file is listed under the correct test type, and make sure each parent moz.build registers that manifest before retrying.'
-  );
-}
-
-function buildStaleBuildMessage(postRebuild: boolean): string {
-  if (postRebuild) {
-    return (
-      'Firefox test runtime still reported stale-artifact-shaped resource failures after the rebuild completed.\n\n' +
-      'FireForge already ran the requested rebuild before this focused test, so treat the remaining failure as a real runtime, registration, routing, or test-contract regression rather than another stale deployed-artifact-only blocker.\n\n' +
-      'Check the first post-rebuild failure above and the raw mach output for the concrete path or module that still fails.'
-    );
-  }
-
-  return (
-    'Firefox test runtime appears to be using stale build artifacts.\n\n' +
-    'The failing output referenced missing branding or distribution resources, which usually means the current obj-* build does not match recent engine or branding changes.\n\n' +
-    'Re-run "fireforge build --ui" or "fireforge test --build" and then retry.'
   );
 }
 
@@ -141,92 +115,6 @@ function filterRedundantXpcshellFlavorArgs(
   return filtered;
 }
 
-function hasStaleBuildArtifactsSignal(output: string): boolean {
-  // Deliberately narrow: only fire on branding-specific resource paths
-  // that are always a stale-artifact symptom. The earlier pattern also
-  // matched `resource:///modules/distribution.sys.mjs`, which surfaced on
-  // real packaging / module-resolution failures too (e.g. a fork's
-  // `MyBrowserStore.sys.mjs` missing from the installed app dir after a
-  // successful build). That false-positive pushed operators toward
-  // "rebuild" advice for what was actually a module-registration issue.
-  return (
-    /chrome:\/\/branding\/locale\/brand\.properties/i.test(output) ||
-    /browser\/branding\/[^/\s]+\/moz\.build/i.test(output)
-  );
-}
-
-/**
- * Fork-module-not-registered signal. 2026-04-21 eval Finding #14:
- * a fork's test failed with `Failed to load resource:///modules/mybrowser/
- * MyBrowserStore.sys.mjs`. The branding pattern happened to also match
- * because the test harness printed a branding warning during its
- * teardown, and the stale-build branch won by precedence — telling the
- * operator to rebuild when the real fix is to register the module in
- * the fork's `browser/modules/<binary>/moz.build`. Match a
- * `resource:///modules/<binaryName>/` pattern so fork-owned module
- * failures surface the right diagnosis.
- */
-function hasForkModuleSignal(output: string, binaryName: string): boolean {
-  const pattern = new RegExp(
-    `Failed to load resource:\\/\\/\\/modules\\/${binaryName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\/`,
-    'i'
-  );
-  return pattern.test(output);
-}
-
-function buildForkModuleMessage(binaryName: string): string {
-  return (
-    `Test failed to load a fork-owned module at resource:///modules/${binaryName}/*.sys.mjs.\n\n` +
-    'This is almost always a module-registration issue, not a stale build. The fork module directory is missing an entry that maps its file into the resource URI tree, so `ChromeUtils.importESModule` cannot resolve it.\n\n' +
-    'Check that:\n' +
-    `  - browser/modules/${binaryName}/moz.build lists the missing module in EXTRA_JS_MODULES.\n` +
-    `  - browser/modules/moz.build references the ${binaryName}/ subdirectory (DIRS += [...]).\n` +
-    '  - The last `fireforge build` (or `fireforge build --ui`) completed successfully against the current manifests. If the registration is new, the UI-faster build path may not pick it up — a full build may be required.\n\n' +
-    'Use `fireforge register browser/modules/' +
-    binaryName +
-    '/<file>.sys.mjs` to add the EXTRA_JS_MODULES entry if it is missing.'
-  );
-}
-
-// Detects the broader xpcshell symptom where every `resource:///modules/...`
-// import fails — the signature of xpcshell running with the wrong app-dir on
-// a manifest that sets `firefox-appdir = "browser"`. Checked AFTER the
-// stale-build signal (which matches the narrower `distribution.sys.mjs`
-// path) so the more specific diagnosis wins when both patterns apply.
-function hasXpcshellAppdirSignal(output: string): boolean {
-  return /Failed to load resource:\/\/\/modules\//i.test(output);
-}
-
-function buildXpcshellAppdirMessage(injectionAttempted: boolean): string {
-  const isMacos = process.platform === 'darwin';
-  const macosNote = isMacos
-    ? 'Detected: macOS host. On macOS the xpcshell harness binds `-a` to `<obj>/dist/<App>.app/Contents/Resources` by default and frequently ignores `--app-path` overrides when the `.app` bundle is present — the surest fix is the `<appname>-appdir` migration below rather than trying to force a different path.\n\n'
-    : '';
-  const triggerLines = injectionAttempted
-    ? 'FireForge auto-injected `--app-path=<absolute>` against the resolved obj-dir before mach test ran, but the failure persists. The injected path either does not match the appdir layout your harness expects, or (on macOS) the harness bound `-a` to the `.app/Contents/Resources` default and ignored the override.\n\n'
-    : 'Likely triggers:\n' +
-      '  - The nearest xpcshell.toml sets `firefox-appdir = "browser"` but the harness reads `<appname>-appdir` instead — the literal `firefox-appdir` directive is silently ignored on rebranded forks (appname != "firefox").\n' +
-      '  - FireForge could not find an xpcshell.toml above the test path, so the auto-injection never ran.\n\n';
-  return (
-    'xpcshell failed to load core resource:///modules/*.sys.mjs imports.\n\n' +
-    'This is the canonical symptom of xpcshell running with the wrong app directory: the runtime resolves `resource:///modules/` against the parent of the expected app root, so every `ChromeUtils.importESModule("resource:///modules/…")` throws.\n\n' +
-    macosNote +
-    triggerLines +
-    'Options:\n' +
-    '  - Add `<appname>-appdir = "browser"` alongside `firefox-appdir = "browser"` in the xpcshell.toml [DEFAULT] so the harness reads the appname-keyed value directly. This is the most reliable fix on rebranded macOS builds.\n' +
-    '  - Pass overrides through `fireforge test <path> --mach-arg="--app-path=<absolute>"` to inject the path verbatim (operator overrides always win over auto-injection, but see the macOS caveat above).\n' +
-    '  - Remove `firefox-appdir = "browser"` from the xpcshell.toml [DEFAULT] and move browser-chrome dependencies into a browser-chrome mochitest (see `fireforge furnace create --test-style=browser-chrome`).\n' +
-    '  - If the test only touches toolkit chrome (chrome://global/*), drop the `firefox-appdir` setting entirely — toolkit chrome is registered without it.'
-  );
-}
-
-function buildHarnessSymlinkMessage(): string {
-  return (
-    'mach failed while preparing test harness symlinks before the requested tests ran.\n\n' +
-    'This usually means the objdir contains stale harness setup from an earlier run. Re-run with `fireforge test --build` to refresh the harness state, or remove the stale harness symlink in the active obj-* directory before retrying.'
-  );
-}
-
 async function resolveLaunchablePathForTests(
   engineDir: string,
   binaryName: string,
@@ -273,98 +161,143 @@ function logTestSelection(normalizedPaths: readonly string[]): void {
   info('');
 }
 
-// Detects the `AttributeError: 'MochitestDesktop' object has no attribute
-// 'http3Server'` teardown crash. The attribute is lazy-initialized inside
-// harness code paths that presume chrome://branding resolves correctly; a
-// missing or miswired branding registration short-circuits the setup and
-// leaves the cleanup path looking up an attribute that was never assigned.
-function hasMochitestHttp3ServerSignal(output: string): boolean {
-  return /'MochitestDesktop' object has no attribute 'http3Server'/.test(output);
+/**
+ * Validates the build-artifact preconditions for running tests: rejects
+ * ambiguous multi-objdir checkouts, platform-mismatched artifacts, and
+ * missing/incomplete builds with the actionable message for each. Returns
+ * the successful artifact probe for downstream objdir use.
+ */
+async function assertTestBuildArtifacts(
+  engineDir: string
+): Promise<Awaited<ReturnType<typeof hasBuildArtifacts>>> {
+  const buildCheck = await hasBuildArtifacts(engineDir);
+  if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
+    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
+  }
+  const mismatchMessage = buildArtifactMismatchMessage(engineDir, buildCheck, 'Tests');
+  if (mismatchMessage) {
+    throw new GeneralError(mismatchMessage);
+  }
+  if (!buildCheck.exists) {
+    const detail = buildCheck.objDir
+      ? `Build artifacts incomplete in ${buildCheck.objDir}/`
+      : 'No build artifacts found (obj-*/ directory missing)';
+    throw new GeneralError(
+      `Tests require a completed build. ${detail}\n\n` +
+        "Run 'fireforge build' first, then run 'fireforge test'."
+    );
+  }
+
+  return buildCheck;
 }
 
-function buildMochitestHttp3ServerMessage(): string {
-  return (
-    "Mochitest raised `AttributeError: 'MochitestDesktop' object has no attribute 'http3Server'`.\n\n" +
-    'This is almost always a symptom of `chrome://branding` not registering correctly in your fork — the mochitest harness lazy-initializes `http3Server` only after branding resolves, and a missing branding registration short-circuits setup. The cleanup path then trips the AttributeError, masking the real error.\n\n' +
-    'Check that:\n' +
-    "  - Your fork's branding directory is listed in `browser/branding/moz.build` (or equivalent) and ships a `brand.properties` / `brand.ftl`.\n" +
-    '  - `chrome://branding/locale/brand.properties` resolves at runtime (try `fireforge run` and inspect the Browser Console).\n' +
-    "  - The `BROWSER_CHROME_MANIFESTS` entry for your fork's chrome.manifest is registered.\n\n" +
-    'This is an upstream Firefox harness interaction; FireForge can only diagnose it.'
+/**
+ * Runs the `--doctor` marionette handshake probe. With no test paths the
+ * probe is the entire command (returns `'stop'` after reporting); with
+ * paths it gates the mach invocation — a FAIL throws before mach runs.
+ */
+async function runDoctorPreflight(args: {
+  engineDir: string;
+  effectivePort: number | undefined;
+  hasTestPaths: boolean;
+  objDir: string | undefined;
+  binaryName: string;
+  launchablePath: string | undefined;
+}): Promise<'stop' | 'continue'> {
+  const { engineDir, effectivePort, hasTestPaths, objDir, binaryName, launchablePath } = args;
+  // Write the "Running marionette preflight..." banner via
+  // `process.stdout.write` directly before `info()` so non-TTY captures
+  // always see the banner even if clack's renderer defers output in
+  // pipe mode. `info()` is still called so TTY users keep the normal
+  // clack box-drawing framing.
+  process.stdout.write('Running marionette preflight...\n');
+  info('Running marionette preflight...');
+  const preflight =
+    effectivePort !== undefined
+      ? await runMarionettePreflight(engineDir, { port: effectivePort })
+      : await runMarionettePreflight(engineDir);
+  // 2026-04-24 eval Finding 7: the pre-0.18.1 code used
+  // `success()` + `outro()` + a direct `process.stdout.write` as a
+  // belt-and-suspenders but still reproducibly dropped the PASS summary
+  // under non-TTY capture (observed: `tee`-wrapped eval output saw only
+  // the intro). The fix writes the authoritative PASS/FAIL line via
+  // `process.stdout.write` as the very first output after the probe
+  // returns, so the captured stream has an unambiguous summary no
+  // matter what clack does on top. The clack-rendered banner
+  // (`info`/`warn`) is retained so TTY users keep the visual framing.
+  const directLine = formatMarionettePreflightLine(preflight);
+  process.stdout.write(`${directLine}\n`);
+  process.stdout.write(
+    `Marionette preflight environment: objdir=${objDir ?? '(none)'}; binary=${binaryName}; app=${launchablePath ? `engine/${launchablePath}` : '(unknown)'}; port=${effectivePort ?? 2828}; elapsed=${preflight.durationMs}ms\n`
   );
+  reportMarionettePreflight(preflight);
+  if (!hasTestPaths) {
+    if (!preflight.ok) {
+      throw new GeneralError('Marionette preflight reported FAIL — see output above.');
+    }
+    success(directLine);
+    outro('Test completed');
+    return 'stop';
+  }
+  if (!preflight.ok) {
+    throw new GeneralError(
+      'Marionette preflight reported FAIL — see output above. Aborting before mach test runs.'
+    );
+  }
+  return 'continue';
 }
 
-function handleNonZeroTestExit(
-  result: { stdout: string; stderr: string; exitCode: number },
-  normalizedPaths: string[],
-  appdirInjectionAttempted: boolean,
-  binaryName: string,
-  postRebuildContext: PostRebuildFailureContext | undefined
+/**
+ * Auto-forwards `--marionette-port` to mach (`--setpref=marionette.port`
+ * for the listener, `--marionette=127.0.0.1:<n>` for the mochitest
+ * client), skipping each piece the operator already forwarded via
+ * `--mach-arg` and the xpcshell flavor that ignores the pref entirely.
+ * Mutates `extraArgs` in place.
+ */
+function appendMarionetteForwardingArgs(
+  extraArgs: string[],
+  options: TestOptions,
+  forwardedPort: number | undefined
 ): void {
-  if (result.exitCode === 0 || result.exitCode === 130) return;
-  const combinedOutput = `${result.stdout}\n${result.stderr}`;
-  const failureContext = postRebuildContext
-    ? completePostRebuildFailureContext(postRebuildContext, combinedOutput)
-    : undefined;
-  const withContext = (message: string): string =>
-    prependPostRebuildFailureContext(message, failureContext);
-  const throwGeneral = (message: string): never => {
-    throw new GeneralError(withContext(message));
-  };
-  if (/UNKNOWN TEST\b/i.test(combinedOutput)) {
-    throwGeneral(buildUnknownTestMessage(normalizedPaths));
+  // Auto-forward the Marionette port to mach when `--marionette-port` is
+  // set. `--setpref=marionette.port=<n>` configures where the browser
+  // listener binds; `--marionette=127.0.0.1:<n>` tells the mochitest harness
+  // client to connect there (default client is 127.0.0.1:2828). xpcshell
+  // ignores both for browser Marionette.
+  //
+  // Skip setpref forwarding when the operator already supplied an equivalent
+  // arg via `--mach-arg` — duplicates would be confusing without changing
+  // semantics. Skip when mach args explicitly request `--flavor=xpcshell`
+  // (or `xpcshell-tests`): the preflight still honours `--marionette-port`,
+  // but mach does not use the marionette.port pref on that harness. Any
+  // other arg shape still forwards so toolkit widget paths and mixed suites
+  // stay aligned with the probe without duplicate `--mach-arg` flags.
+  //
+  // Skip auto `--marionette=...` when `--mach-arg` already includes a client
+  // `--marionette=...` (or two-token `--marionette host:port`).
+  if (options.marionettePort === undefined) return;
+  {
+    const operatorAlreadyForwarded = forwardedPort !== undefined;
+    const machArgs = options.machArg ?? [];
+    if (operatorAlreadyForwarded) {
+      info(
+        `--marionette-port=${options.marionettePort} set, but the same port is already forwarded via --mach-arg; skipping auto-forward.`
+      );
+    } else if (shouldAutoForwardMarionettePortToMach(machArgs)) {
+      extraArgs.push(`--setpref=marionette.port=${options.marionettePort}`);
+    } else {
+      info(
+        `--marionette-port=${options.marionettePort} applied to the preflight probe, but --flavor=xpcshell is set — mach is not auto-configured with --setpref=marionette.port or --marionette (xpcshell ignores the browser Marionette path). Pass --mach-arg --setpref=marionette.port=${options.marionettePort} explicitly if you still need mach to see the port.`
+      );
+    }
+
+    if (
+      shouldAutoForwardMarionettePortToMach(machArgs) &&
+      !forwardedMachArgsIncludeMarionetteClient(machArgs)
+    ) {
+      extraArgs.push(`--marionette=127.0.0.1:${options.marionettePort}`);
+    }
   }
-  const earlyExit = classifyHarnessEarlyExit(combinedOutput, normalizedPaths);
-  if (earlyExit) {
-    throwGeneral(buildHarnessEarlyExitMessage(earlyExit, normalizedPaths));
-  }
-  // Fork-owned module load failures must beat the branding stale-build
-  // branch: 2026-04-21 eval (Finding #14) saw a fork's test fail with
-  // `Failed to load resource:///modules/mybrowser/MyBrowserStore.sys.mjs`
-  // while the harness teardown printed a branding warning that the old
-  // stale-build pattern matched, so the operator was told to rebuild
-  // when the real fix is to register the missing module.
-  if (hasForkModuleSignal(combinedOutput, binaryName)) {
-    throwGeneral(buildForkModuleMessage(binaryName));
-  }
-  // Branding-specific stale-build signals keep priority over the broader
-  // xpcshell-appdir hint: when `chrome://branding/locale/brand.properties`
-  // fails to resolve, the fix really is "rebuild", not "pass --app-path".
-  // But the stale-build check is now narrower — it no longer matches
-  // `resource:///modules/distribution.sys.mjs` alone, which was producing
-  // false-positive rebuild advice on fork-custom module-load failures
-  // (the eval saw this for `MyBrowserStore.sys.mjs`). Cases that once
-  // landed on `distribution.sys.mjs` fall through to xpcshell-appdir,
-  // which is the more useful diagnosis in practice for `Failed to load
-  // resource:///modules/…`.
-  if (hasStaleBuildArtifactsSignal(combinedOutput)) {
-    throwGeneral(buildStaleBuildMessage(Boolean(failureContext)));
-  }
-  if (hasXpcshellAppdirSignal(combinedOutput)) {
-    throwGeneral(buildXpcshellAppdirMessage(appdirInjectionAttempted));
-  }
-  if (hasMochitestHttp3ServerSignal(combinedOutput)) {
-    throwGeneral(buildMochitestHttp3ServerMessage());
-  }
-  if (
-    /FileExistsError/i.test(combinedOutput) &&
-    /(mochitest|xpcshell|_tests)/i.test(combinedOutput)
-  ) {
-    throwGeneral(buildHarnessSymlinkMessage());
-  }
-  if (
-    /invalid filename/i.test(combinedOutput) ||
-    /chrome:\/\/mochitests.*not found/i.test(combinedOutput)
-  ) {
-    info('Hint: The test file may not be registered in browser.toml or jar.mn.');
-    info('Run "fireforge register <test-path>" to register it.');
-  }
-  throw new BuildError(
-    withContext(
-      `Tests failed with exit code ${result.exitCode}. Check the output above for details.`
-    ),
-    'mach test'
-  );
 }
 
 /**
@@ -387,24 +320,7 @@ export async function testCommand(
     throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
   }
 
-  // Check for build artifacts before running tests
-  const buildCheck = await hasBuildArtifacts(paths.engine);
-  if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
-    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
-  }
-  const mismatchMessage = buildArtifactMismatchMessage(paths.engine, buildCheck, 'Tests');
-  if (mismatchMessage) {
-    throw new GeneralError(mismatchMessage);
-  }
-  if (!buildCheck.exists) {
-    const detail = buildCheck.objDir
-      ? `Build artifacts incomplete in ${buildCheck.objDir}/`
-      : 'No build artifacts found (obj-*/ directory missing)';
-    throw new GeneralError(
-      `Tests require a completed build. ${detail}\n\n` +
-        "Run 'fireforge build' first, then run 'fireforge test'."
-    );
-  }
+  const buildCheck = await assertTestBuildArtifacts(paths.engine);
 
   // Load the project config once so both the build and the port
   // probe have access to `binaryName` (the port probe uses it to
@@ -469,50 +385,16 @@ export async function testCommand(
   // the sibling `mybrowser/` workspace.
   await assertMarionettePortAvailable(effectivePort, { binaryName: projectConfig.binaryName });
 
-  // `--doctor` runs a short marionette handshake probe. When test paths are
-  // supplied the probe gates the mach test invocation (a FAIL bails out). When
-  // no paths are supplied this is the only step — it's the fastest way to tell
-  // marionette-wedged apart from test-discovery-failure.
   if (options.doctor) {
-    // Write the "Running marionette preflight..." banner via
-    // `process.stdout.write` directly before `info()` so non-TTY captures
-    // always see the banner even if clack's renderer defers output in
-    // pipe mode. `info()` is still called so TTY users keep the normal
-    // clack box-drawing framing.
-    process.stdout.write('Running marionette preflight...\n');
-    info('Running marionette preflight...');
-    const preflight =
-      effectivePort !== undefined
-        ? await runMarionettePreflight(paths.engine, { port: effectivePort })
-        : await runMarionettePreflight(paths.engine);
-    // 2026-04-24 eval Finding 7: the pre-0.18.1 code used
-    // `success()` + `outro()` + a direct `process.stdout.write` as a
-    // belt-and-suspenders but still reproducibly dropped the PASS summary
-    // under non-TTY capture (observed: `tee`-wrapped eval output saw only
-    // the intro). The fix writes the authoritative PASS/FAIL line via
-    // `process.stdout.write` as the very first output after the probe
-    // returns, so the captured stream has an unambiguous summary no
-    // matter what clack does on top. The clack-rendered banner
-    // (`info`/`warn`) is retained so TTY users keep the visual framing.
-    const directLine = formatMarionettePreflightLine(preflight);
-    process.stdout.write(`${directLine}\n`);
-    process.stdout.write(
-      `Marionette preflight environment: objdir=${buildCheck.objDir ?? '(none)'}; binary=${projectConfig.binaryName}; app=${launchablePath ? `engine/${launchablePath}` : '(unknown)'}; port=${effectivePort ?? 2828}; elapsed=${preflight.durationMs}ms\n`
-    );
-    reportMarionettePreflight(preflight);
-    if (testPaths.length === 0) {
-      if (!preflight.ok) {
-        throw new GeneralError('Marionette preflight reported FAIL — see output above.');
-      }
-      success(directLine);
-      outro('Test completed');
-      return;
-    }
-    if (!preflight.ok) {
-      throw new GeneralError(
-        'Marionette preflight reported FAIL — see output above. Aborting before mach test runs.'
-      );
-    }
+    const doctorOutcome = await runDoctorPreflight({
+      engineDir: paths.engine,
+      effectivePort,
+      hasTestPaths: testPaths.length > 0,
+      objDir: buildCheck.objDir,
+      binaryName: projectConfig.binaryName,
+      launchablePath,
+    });
+    if (doctorOutcome === 'stop') return;
   }
 
   const normalizedPaths = testPaths.map((p) => stripEnginePrefix(p).trim());
@@ -541,66 +423,46 @@ export async function testCommand(
     extraArgs.push(...forwardedMachArgs);
   }
 
-  // Auto-forward the Marionette port to mach when `--marionette-port` is
-  // set. `--setpref=marionette.port=<n>` configures where the browser
-  // listener binds; `--marionette=127.0.0.1:<n>` tells the mochitest harness
-  // client to connect there (default client is 127.0.0.1:2828). xpcshell
-  // ignores both for browser Marionette.
-  //
-  // Skip setpref forwarding when the operator already supplied an equivalent
-  // arg via `--mach-arg` — duplicates would be confusing without changing
-  // semantics. Skip when mach args explicitly request `--flavor=xpcshell`
-  // (or `xpcshell-tests`): the preflight still honours `--marionette-port`,
-  // but mach does not use the marionette.port pref on that harness. Any
-  // other arg shape still forwards so toolkit widget paths and mixed suites
-  // stay aligned with the probe without duplicate `--mach-arg` flags.
-  //
-  // Skip auto `--marionette=...` when `--mach-arg` already includes a client
-  // `--marionette=...` (or two-token `--marionette host:port`).
-  if (options.marionettePort !== undefined) {
-    const operatorAlreadyForwarded = forwardedPort !== undefined;
-    const machArgs = options.machArg ?? [];
-    if (operatorAlreadyForwarded) {
-      info(
-        `--marionette-port=${options.marionettePort} set, but the same port is already forwarded via --mach-arg; skipping auto-forward.`
-      );
-    } else if (shouldAutoForwardMarionettePortToMach(machArgs)) {
-      extraArgs.push(`--setpref=marionette.port=${options.marionettePort}`);
-    } else {
-      info(
-        `--marionette-port=${options.marionettePort} applied to the preflight probe, but --flavor=xpcshell is set — mach is not auto-configured with --setpref=marionette.port or --marionette (xpcshell ignores the browser Marionette path). Pass --mach-arg --setpref=marionette.port=${options.marionettePort} explicitly if you still need mach to see the port.`
-      );
-    }
+  appendMarionetteForwardingArgs(extraArgs, options, forwardedPort);
 
-    if (
-      shouldAutoForwardMarionettePortToMach(machArgs) &&
-      !forwardedMachArgsIncludeMarionetteClient(machArgs)
-    ) {
-      extraArgs.push(`--marionette=127.0.0.1:${options.marionettePort}`);
-    }
-  }
-
-  // xpcshell appdir auto-injection — see src/core/xpcshell-appdir.ts for the
-  // full motivation. On rebranded forks (appname != "firefox") the upstream
-  // harness silently ignores `firefox-appdir = "browser"` directives in the
-  // xpcshell.toml, so every `resource:///modules/…` import throws. We probe
-  // the nearest manifest, compute the absolute appdir under obj-*/dist/, and
-  // inject `--app-path=<abs>` so the harness uses the right root. Operator
-  // overrides via `--mach-arg=--app-path=…` always win — we skip injection
-  // when the operator already passed one.
-  const appdirInjection = await maybeInjectAppdirArg(
-    paths.engine,
-    normalizedPaths,
-    buildCheck.objDir,
-    extraArgs
-  );
-
+  // xpcshell appdir auto-injection happens per harness invocation inside
+  // `runTestsWithRetries` (src/commands/test-run.ts) so sharded runs probe
+  // the manifest for each file individually. See src/core/xpcshell-appdir.ts
+  // for the full motivation.
   logTestSelection(normalizedPaths);
 
-  let result: Awaited<ReturnType<typeof testWithOutput>>;
+  const perfSampleEnv = buildPerfSampleEnv(
+    projectRoot,
+    projectConfig.binaryName,
+    options.perfSamples
+  );
 
+  const runCtx: TestRunContext = {
+    engineDir: paths.engine,
+    objDir: buildCheck.objDir,
+    classification,
+    baseExtraArgs: extraArgs,
+    harnessRetries: options.harnessRetries ?? DEFAULT_HARNESS_RETRIES,
+    ...(perfSampleEnv ? { env: perfSampleEnv } : {}),
+  };
+  const postRebuildContext = options.build
+    ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)
+    : undefined;
+
+  // Multi-file requests shard into sequential single-file harness runs by
+  // default (field report C3): one shared mochitest profile across files
+  // bleeds pref/media-query state into later files. --no-shard restores
+  // the combined invocation.
+  if (normalizedPaths.length > 1 && options.shard !== false) {
+    await runShardedTests(runCtx, normalizedPaths, (outcome, path) =>
+      diagnoseShardOutcome(outcome, path, projectConfig.binaryName, postRebuildContext)
+    );
+    return;
+  }
+
+  let outcome: TestRunOutcome;
   try {
-    result = await testWithOutput(paths.engine, normalizedPaths, extraArgs);
+    outcome = await runTestsWithRetries(runCtx, normalizedPaths);
   } catch (error: unknown) {
     throw new BuildError(
       'Test process failed to start',
@@ -609,24 +471,24 @@ export async function testCommand(
     );
   }
 
-  result = await retryAfterXpcshellSymlinkRepair(
-    paths.engine,
-    buildCheck.objDir,
-    result,
-    classification,
-    normalizedPaths,
-    extraArgs
-  );
+  finalizeSingleRunOutcome(outcome, normalizedPaths, projectConfig.binaryName, postRebuildContext);
+}
 
-  handleNonZeroTestExit(
-    result,
-    normalizedPaths,
-    appdirInjection,
-    projectConfig.binaryName,
-    options.build
-      ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)
-      : undefined
-  );
+/**
+ * Builds the perf-sample env contract for the harness run (field report
+ * C4): `--perf-samples <path>` exports `<BINARYNAME>_PERF_SAMPLE_JSON`
+ * naming the artifact file a budget checker consumes after the run.
+ */
+function buildPerfSampleEnv(
+  projectRoot: string,
+  binaryName: string,
+  perfSamples: string | undefined
+): Record<string, string> | undefined {
+  if (!perfSamples) return undefined;
+  const envName = `${binaryName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_PERF_SAMPLE_JSON`;
+  const artifactPath = resolve(projectRoot, perfSamples);
+  info(`Perf sample contract: ${envName}=${artifactPath}`);
+  return { [envName]: artifactPath };
 }
 
 /** Registers the test command on the CLI program. */
@@ -653,6 +515,25 @@ export function registerTest(
       [] as string[]
     )
     .option(
+      '--harness-retries <n>',
+      `Retry budget for recognized harness crashes (resource-monitor tracebacks, pre-test hangs, post-green shutdown re-entry). 0 disables retries. Default: ${String(DEFAULT_HARNESS_RETRIES)}.`,
+      (raw: string) => {
+        const n = Number.parseInt(raw, 10);
+        if (!Number.isFinite(n) || n < 0 || n > 10) {
+          throw new GeneralError(`--harness-retries must be an integer in 0..10 (got "${raw}")`);
+        }
+        return n;
+      }
+    )
+    .option(
+      '--no-shard',
+      'Run multiple test paths in one combined mach invocation instead of sequential per-file shards'
+    )
+    .option(
+      '--perf-samples <path>',
+      'Publish a perf-sample artifact path to the harness via <BINARYNAME>_PERF_SAMPLE_JSON (resolved against the project root)'
+    )
+    .option(
       '--marionette-port <port>',
       'Override the Marionette control port (default 2828) for the stale-browser probe, the --doctor preflight, and (unless --mach-arg includes --flavor=xpcshell) auto-forwarded mach args: --setpref=marionette.port=<n> (browser listener) and --marionette=127.0.0.1:<n> (mochitest client). Omits the client flag when --mach-arg already sets --marionette. Use when 2828 is busy or CI assigns another port.',
       (raw: string) => {
@@ -673,6 +554,9 @@ export function registerTest(
             doctor?: boolean;
             machArg?: string[];
             marionettePort?: number;
+            harnessRetries?: number;
+            shard?: boolean;
+            perfSamples?: string;
           }
         ) => {
           await testCommand(getProjectRoot(), paths, pickDefined(options));

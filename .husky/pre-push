@@ -3,3 +3,5 @@
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 npm run typecheck
+npm run deadcode:check
+npm run cycles:check

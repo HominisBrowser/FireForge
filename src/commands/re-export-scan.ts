@@ -85,9 +85,16 @@ async function scanPatchFiles(args: {
     for (const f of [...modifiedFiles, ...untrackedFiles]) discoveredFiles.add(f);
   }
 
+  // Git pathspecs recurse, so a claimed file in a shallow directory would
+  // sweep entire subtrees into the candidate set — with several patches
+  // sharing a parent directory, every unmanaged file in the tree gets
+  // offered to whichever patch is scanned first. Constrain the broad scan
+  // to the patch's exact directory footprint; deeper paths need an
+  // explicit --scan-file / --scan-files assignment.
+  const parentDirSet = new Set(parentDirs);
   const currentSet = new Set(currentFilesAffected);
   const added = [...discoveredFiles]
-    .filter((f) => !currentSet.has(f) && !claimedByOthers.has(f))
+    .filter((f) => parentDirSet.has(dirname(f)) && !currentSet.has(f) && !claimedByOthers.has(f))
     .sort();
   const removed = await findRemovedFiles(currentFilesAffected, engineDir);
   return reportScanResult(currentFilesAffected, patchFilename, isDryRun, added, removed);

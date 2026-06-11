@@ -17,6 +17,7 @@ import { registerPatchLintIgnore } from './lint-ignore.js';
 import { registerPatchMoveFiles } from './move-files.js';
 import { registerPatchRename } from './rename.js';
 import { registerPatchReorder } from './reorder.js';
+import { registerPatchSplit } from './split.js';
 import { registerPatchStagedDependency } from './staged-dependency.js';
 import { registerPatchTier } from './tier.js';
 
@@ -48,6 +49,7 @@ export function registerPatch(program: Command, context: CommandContext): void {
   registerPatchMoveFiles(patch, context);
   registerPatchRename(patch, context);
   registerPatchReorder(patch, context);
+  registerPatchSplit(patch, context);
   registerPatchStagedDependency(patch, context);
   registerPatchTier(patch, context);
 }

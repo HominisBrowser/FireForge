@@ -436,6 +436,62 @@ describe('applyAllComponents', () => {
     );
   });
 
+  it('prunes renamed helper files and stale jar.mn lines in named (componentName) mode', async () => {
+    // Field report D1: `furnace deploy <name>` used to bypass the batch
+    // deletion path entirely, so renaming a multi-file helper left the old
+    // deployed file and its jar.mn line in the engine. Named deploys now
+    // run this same pipeline with a componentName filter.
+    vi.mocked(hasComponentChanged).mockResolvedValue(true);
+    vi.mocked(extractComponentChecksums).mockReturnValue({
+      'moz-panel.mjs': 'mjs-hash',
+      'panel-helper-old.mjs': 'old-helper-hash',
+    });
+    vi.mocked(computeComponentChecksums).mockResolvedValue({
+      'moz-panel.mjs': 'mjs-hash',
+      'panel-helper-new.mjs': 'new-helper-hash',
+    });
+    vi.mocked(diffDeletedFiles).mockReturnValueOnce(['panel-helper-old.mjs']);
+    vi.mocked(undeployCustomFiles).mockResolvedValue([
+      'browser/components/panel/panel-helper-old.mjs',
+    ]);
+    vi.mocked(applyCustomComponent).mockResolvedValue({
+      affectedPaths: [
+        'browser/components/panel/moz-panel.mjs',
+        'browser/components/panel/panel-helper-new.mjs',
+      ],
+      stepErrors: [],
+      actions: [],
+    });
+
+    const result = await applyAllComponents('/project', false, {
+      componentName: 'moz-panel',
+      persistState: false,
+    });
+
+    // The override component is filtered out; only the named component runs.
+    expect(applyOverrideComponent).not.toHaveBeenCalled();
+    // Orphaned helper is undeployed and jar.mn re-synced to the live set.
+    expect(undeployCustomFiles).toHaveBeenCalledWith(
+      '/project/engine',
+      expect.objectContaining({ register: true }),
+      ['panel-helper-old.mjs'],
+      'toolkit/locales/en-US/toolkit/global',
+      expect.any(Object)
+    );
+    expect(removeJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-panel');
+    expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-panel', [
+      'moz-panel.mjs',
+      'panel-helper-new.mjs',
+    ]);
+    // The main module still exists, so the custom element stays registered.
+    expect(removeCustomElementRegistration).not.toHaveBeenCalled();
+    // persistState:false — named deploy owns its per-component state merge;
+    // the batch wholesale-replace must not run (it would wipe other
+    // components' checksums).
+    expect(updateFurnaceState).not.toHaveBeenCalled();
+    expect(result.applied.map((entry) => entry.name)).toEqual(['moz-panel']);
+  });
+
   it('deregisters the customElement when the .mjs source file is deleted', async () => {
     // Edge case: developer deleted moz-panel.mjs from the workspace
     // without running `furnace remove`. Re-apply must drop the dangling

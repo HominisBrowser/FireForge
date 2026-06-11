@@ -20,6 +20,7 @@ import {
   removePatchFileAndManifest,
   removePatchFromManifest,
   renumberPatchesInManifest,
+  rewriteStagedDependencyOwners,
   savePatchesManifest,
 } from '../patch-manifest-io.js';
 
@@ -81,6 +82,60 @@ describe('removePatchFromManifest', () => {
     await seed(patchesDir, [{ filename: '001-infra-a.patch', order: 1, body: 'a' }]);
     const removed = await removePatchFromManifest(patchesDir, 'ghost.patch');
     expect(removed).toBe(false);
+  });
+});
+
+describe('rewriteStagedDependencyOwners', () => {
+  const base: PatchMetadata = {
+    filename: '001-infra-a.patch',
+    order: 1,
+    category: 'infra',
+    name: 'test',
+    description: 'test',
+    createdAt: '2025-01-01T00:00:00.000Z',
+    sourceEsrVersion: '140.9.0esr',
+    filesAffected: ['foo/A.sys.mjs'],
+  };
+
+  it('returns the same object when there are no staged dependencies', () => {
+    expect(rewriteStagedDependencyOwners(base, () => 'x.patch')).toBe(base);
+  });
+
+  it('returns the same object when no owner matches the lookup', () => {
+    const patch: PatchMetadata = {
+      ...base,
+      stagedDependencies: {
+        forwardImports: [
+          { file: 'a', specifier: 's', creates: 'c', owner: '005-infra-e.patch' },
+          { file: 'b', specifier: 't', creates: 'd' },
+        ],
+      },
+    };
+    expect(rewriteStagedDependencyOwners(patch, () => undefined)).toBe(patch);
+  });
+
+  it('remaps matching owners and leaves other imports untouched', () => {
+    const patch: PatchMetadata = {
+      ...base,
+      stagedDependencies: {
+        forwardImports: [
+          { file: 'a', specifier: 's', creates: 'c', owner: '005-infra-e.patch' },
+          { file: 'b', specifier: 't', creates: 'd', owner: '007-infra-g.patch' },
+          { file: 'e', specifier: 'u', creates: 'f' },
+        ],
+      },
+    };
+    const result = rewriteStagedDependencyOwners(patch, (old) =>
+      old === '005-infra-e.patch' ? '003-infra-e.patch' : undefined
+    );
+    expect(result).not.toBe(patch);
+    expect(result.stagedDependencies?.forwardImports?.map((fi) => fi.owner)).toEqual([
+      '003-infra-e.patch',
+      '007-infra-g.patch',
+      undefined,
+    ]);
+    // Input must not be mutated.
+    expect(patch.stagedDependencies?.forwardImports?.[0]?.owner).toBe('005-infra-e.patch');
   });
 });
 
@@ -158,6 +213,39 @@ describe('renumberPatchesInManifest', () => {
     await renumberPatchesInManifest(patchesDir, new Map());
     const manifest = await loadPatchesManifest(patchesDir);
     expect(manifest?.patches).toHaveLength(1);
+  });
+
+  it('rewrites staged-dependency owners on non-renamed rows', async () => {
+    // 001 declares a forward import owned by 003; renumbering 003 → 002
+    // must remap the owner even though 001 itself is not in the rename map.
+    await seed(patchesDir, [
+      { filename: '001-infra-a.patch', order: 1, body: 'a' },
+      { filename: '003-infra-c.patch', order: 3, body: 'c' },
+    ]);
+    const manifest = await loadPatchesManifest(patchesDir);
+    if (!manifest) throw new Error('manifest missing');
+    const holder = manifest.patches.find((p) => p.filename === '001-infra-a.patch');
+    if (!holder) throw new Error('holder missing');
+    holder.stagedDependencies = {
+      forwardImports: [
+        {
+          file: 'foo/A.sys.mjs',
+          specifier: 'resource:///modules/C.sys.mjs',
+          creates: 'foo/C.sys.mjs',
+          owner: '003-infra-c.patch',
+        },
+      ],
+    };
+    await savePatchesManifest(patchesDir, manifest);
+
+    await renumberPatchesInManifest(
+      patchesDir,
+      new Map([['003-infra-c.patch', { newFilename: '002-infra-c.patch', newOrder: 2 }]])
+    );
+
+    const updated = await loadPatchesManifest(patchesDir);
+    const holderAfter = updated?.patches.find((p) => p.filename === '001-infra-a.patch');
+    expect(holderAfter?.stagedDependencies?.forwardImports?.[0]?.owner).toBe('002-infra-c.patch');
   });
 
   it('rolls the queue back to the pre-operation state when phase 2 fails', async () => {

@@ -331,6 +331,62 @@ describe('patch delete', () => {
   });
 });
 
+describe('patch delete staged-dependency owner warning', () => {
+  let projectRoot: string;
+  let patchesDir: string;
+  let restoreTTY: () => void = () => undefined;
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-pd-owner-');
+    await writeFireForgeConfig(projectRoot);
+    patchesDir = join(projectRoot, 'patches');
+    vi.mocked(confirm).mockReset();
+  });
+  afterEach(async () => {
+    restoreTTY();
+    vi.restoreAllMocks();
+    await removeTempProject(projectRoot);
+  });
+
+  it('warns when another patch declares the deleted patch as a staged-dependency owner', async () => {
+    restoreTTY = setInteractiveMode(false);
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    const holderMetadata: PatchMetadata = {
+      ...makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs']),
+      stagedDependencies: {
+        forwardImports: [
+          {
+            file: 'foo/A.sys.mjs',
+            specifier: 'resource:///modules/Helper.sys.mjs',
+            creates: 'foo/Helper.sys.mjs',
+            owner: '003-infra-c.patch',
+          },
+        ],
+      },
+    };
+    await seed(patchesDir, [
+      {
+        metadata: holderMetadata,
+        body: createDiff('foo/A.sys.mjs', 'export const A = 1;'),
+      },
+      {
+        metadata: makeMetadata('003-infra-c.patch', 3, ['foo/Helper.sys.mjs']),
+        body: createDiff('foo/Helper.sys.mjs', 'export const H = 1;'),
+      },
+    ]);
+
+    await patchDeleteCommand(projectRoot, '003-infra-c.patch', { yes: true });
+
+    expect(await pathExists(join(patchesDir, '003-infra-c.patch'))).toBe(false);
+    const output = writes.join('');
+    expect(output).toContain('001-infra-a.patch declares a staged dependency with owner');
+  });
+});
+
 describe('patch reorder', () => {
   let projectRoot: string;
   let patchesDir: string;
@@ -767,6 +823,53 @@ describe('patch reorder', () => {
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
     expect(entries).toEqual(['001-infra-a.patch', '002-infra-b.patch', '003-infra-c.patch']);
     expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+  });
+
+  it('rewrites staged-dependency owners when the owning patch is renumbered', async () => {
+    restoreTTY = setInteractiveMode(false);
+    // 001 forward-imports Helper.sys.mjs created by 003, declared via a
+    // staged dependency whose owner names 003's exact filename. Moving 003
+    // to slot 2 must remap the owner or the projected lint would refuse the
+    // reorder with a false forward-import error.
+    const importerDiff = createDiff(
+      'foo/A.sys.mjs',
+      'import { H } from "resource:///modules/Helper.sys.mjs";\nexport const A = H;'
+    );
+    const importerMetadata: PatchMetadata = {
+      ...makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs']),
+      stagedDependencies: {
+        forwardImports: [
+          {
+            file: 'foo/A.sys.mjs',
+            specifier: 'resource:///modules/Helper.sys.mjs',
+            creates: 'foo/Helper.sys.mjs',
+            owner: '003-infra-c.patch',
+          },
+        ],
+      },
+    };
+    await seed(patchesDir, [
+      { metadata: importerMetadata, body: importerDiff },
+      {
+        metadata: makeMetadata('002-infra-b.patch', 2, ['foo/B.sys.mjs']),
+        body: createDiff('foo/B.sys.mjs', 'export const B = 1;'),
+      },
+      {
+        metadata: makeMetadata('003-infra-c.patch', 3, ['foo/Helper.sys.mjs']),
+        body: createDiff('foo/Helper.sys.mjs', 'export const H = 1;'),
+      },
+    ]);
+
+    await patchReorderCommand(projectRoot, '003-infra-c.patch', { to: 2, yes: true });
+
+    const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
+    expect(entries).toEqual(['001-infra-a.patch', '002-infra-c.patch', '003-infra-b.patch']);
+
+    const manifest = JSON.parse(
+      await readFile(join(patchesDir, 'patches.json'), 'utf-8')
+    ) as PatchesManifest;
+    const importer = manifest.patches.find((p) => p.filename === '001-infra-a.patch');
+    expect(importer?.stagedDependencies?.forwardImports?.[0]?.owner).toBe('002-infra-c.patch');
   });
 
   it('rejects --after self-reference resolved via ordinal', async () => {

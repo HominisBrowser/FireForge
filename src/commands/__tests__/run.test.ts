@@ -108,6 +108,7 @@ const FURNACE_PATHS = {
   componentsDir: '/project/components',
   overridesDir: '/project/furnace/overrides',
   customDir: '/project/furnace/custom',
+  sharedDir: '/project/components/shared',
   furnaceState: '/project/.fireforge/furnace-state.json',
 };
 

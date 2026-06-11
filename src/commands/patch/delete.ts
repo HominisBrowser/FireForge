@@ -12,9 +12,7 @@ import { basename } from 'node:path';
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../../core/config.js';
 import { appendHistory, confirmDestructive, type ConflictReport } from '../../core/destructive.js';
-import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import {
   buildPatchQueueContext,
   extractImportSpecifiersWithLines,
@@ -22,18 +20,13 @@ import {
   isForwardImportableFile,
 } from '../../core/patch-lint.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
-import {
-  loadPatchesManifest,
-  removePatchFileAndManifest,
-  resolvePatchIdentifier,
-} from '../../core/patch-manifest.js';
-import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
+import { removePatchFileAndManifest } from '../../core/patch-manifest.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchDeleteOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
-import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { pickDefined } from '../../utils/options.js';
+import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /**
  * Runs the `patch delete` command: removes a patch file and its manifest
@@ -51,23 +44,10 @@ export async function patchDeleteCommand(
 ): Promise<void> {
   intro(options.dryRun ? 'FireForge patch delete (dry run)' : 'FireForge patch delete');
 
-  const paths = getProjectPaths(projectRoot);
-  if (!(await pathExists(paths.patches))) {
-    throw new GeneralError('Patches directory not found. No patches to delete.');
-  }
-
-  const manifest = await loadPatchesManifest(paths.patches);
-  if (!manifest || manifest.patches.length === 0) {
-    throw new GeneralError('No patches in manifest.');
-  }
-
-  const target = resolvePatchIdentifier(identifier, manifest.patches);
-  if (!target) {
-    throw new InvalidArgumentError(
-      formatPatchNotFoundError(identifier, manifest.patches),
-      identifier
-    );
-  }
+  const { paths, manifest } = await requirePatchQueue(projectRoot, {
+    missingDirMessage: 'Patches directory not found. No patches to delete.',
+  });
+  const target = requirePatchTarget(identifier, manifest.patches);
 
   // Build the full queue context once so we can scan each patch's newFiles
   // without re-parsing for the dependency check below.
@@ -137,6 +117,25 @@ export async function patchDeleteCommand(
     for (const [modifiedPath, addedContent] of entry.modifiedFileAdditions) {
       if (scanSite(entry.filename, modifiedPath, addedContent)) break;
     }
+  }
+
+  // Staged-dependency declarations on other patches may name the deleted
+  // patch as their forward-import owner. The dangling reference also
+  // surfaces via cross-patch lint later, but warning here puts the exact
+  // cleanup command in front of the operator at decision time.
+  const danglingOwnerHolders = baseCtx.entries.filter(
+    (entry) =>
+      entry.filename !== target.filename &&
+      (entry.metadata?.stagedDependencies?.forwardImports ?? []).some(
+        (fi) => fi.owner === target.filename
+      )
+  );
+  for (const holder of danglingOwnerHolders) {
+    warn(
+      `${holder.filename} declares a staged dependency with owner ${target.filename}; ` +
+        `after the delete, update it via "fireforge patch staged-dependency ${holder.filename} --remove ..." ` +
+        'or re-point the owner at the patch that will create the file.'
+    );
   }
 
   const conflicts: ConflictReport | null =

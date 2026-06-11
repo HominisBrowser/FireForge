@@ -166,6 +166,338 @@ describe('runCheckJs', () => {
     }
   });
 
+  it('carries JSDoc type-guard predicates across owned chrome:// module boundaries', async () => {
+    // Field report B1: per-patch lint used to type all cross-module imports
+    // as `any` (noResolve + wildcard ambient modules), so `value is Element`
+    // guards lost their narrowing and call sites accumulated false
+    // checkjs-type-errors. Owned imports now resolve to real sources.
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-guard-'));
+    await writeFile(
+      join(tmpDir, 'guards.sys.mjs'),
+      [
+        '/**',
+        ' * @param {unknown} value - Candidate value',
+        ' * @returns {value is HTMLElement} Whether value is an HTMLElement',
+        ' */',
+        'export function isHtmlElement(value) {',
+        "  return typeof value === 'object' && value !== null && 'tagName' in value;",
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(
+      join(tmpDir, 'consumer.sys.mjs'),
+      [
+        "import { isHtmlElement } from 'chrome://browser/content/guards.sys.mjs';",
+        '/**',
+        ' * @param {unknown} node - Candidate node',
+        ' * @returns {string}',
+        ' */',
+        'export function describe(node) {',
+        '  if (isHtmlElement(node)) {',
+        '    return node.tagName;',
+        '  }',
+        "  return 'not-an-element';",
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(
+        tmpDir,
+        new Set(['guards.sys.mjs', 'consumer.sys.mjs']),
+        undefined,
+        undefined,
+        { strict: true }
+      );
+      expect(issues.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports real type errors across owned module boundaries (types actually flow)', async () => {
+    // Negative control for the resolver: without narrowing, accessing
+    // .tagName on unknown must fail — proving the import is typed from the
+    // real source rather than silently any.
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-guard-neg-'));
+    await writeFile(
+      join(tmpDir, 'guards.sys.mjs'),
+      [
+        '/**',
+        ' * @param {unknown} value - Candidate value',
+        ' * @returns {value is HTMLElement} Whether value is an HTMLElement',
+        ' */',
+        'export function isHtmlElement(value) {',
+        "  return typeof value === 'object' && value !== null && 'tagName' in value;",
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(
+      join(tmpDir, 'consumer.sys.mjs'),
+      [
+        "import { isHtmlElement } from 'chrome://browser/content/guards.sys.mjs';",
+        '/**',
+        ' * @param {unknown} node - Candidate node',
+        ' * @returns {string}',
+        ' */',
+        'export function describe(node) {',
+        '  if (!isHtmlElement(node)) {',
+        '    return node.tagName;',
+        '  }',
+        '  return node.tagName;',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(
+        tmpDir,
+        new Set(['guards.sys.mjs', 'consumer.sys.mjs']),
+        undefined,
+        undefined,
+        { strict: true }
+      );
+      const errors = issues.filter((i) => i.check === 'checkjs-type-error');
+      expect(errors.length).toBeGreaterThanOrEqual(1);
+      expect(errors.some((i) => i.file === 'consumer.sys.mjs')).toBe(true);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('carries @template generic inference across owned module boundaries', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-template-'));
+    await writeFile(
+      join(tmpDir, 'helpers.sys.mjs'),
+      [
+        '/**',
+        ' * @template TItem',
+        ' * @param {TItem[]} items - Source array',
+        ' * @returns {TItem} The first item',
+        ' */',
+        'export function first(items) {',
+        '  if (items.length === 0) {',
+        "    throw new Error('empty');",
+        '  }',
+        '  return /** @type {TItem} */ (items[0]);',
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(
+      join(tmpDir, 'consumer.sys.mjs'),
+      [
+        "import { first } from 'resource:///modules/helpers.sys.mjs';",
+        '/**',
+        ' * @returns {number} Inferred misuse — actually a string',
+        ' */',
+        'export function misuse() {',
+        "  return first(['a', 'b']);",
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(
+        tmpDir,
+        new Set(['helpers.sys.mjs', 'consumer.sys.mjs']),
+        undefined,
+        undefined,
+        { strict: true }
+      );
+      const errors = issues.filter((i) => i.check === 'checkjs-type-error');
+      // Inference resolves TItem to string, so returning it as number errors.
+      expect(errors.some((i) => i.file === 'consumer.sys.mjs')).toBe(true);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves ambiguous basenames unresolved (loose wildcard typing, no error)', async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-ambig-'));
+    await mkdir(join(tmpDir, 'a'), { recursive: true });
+    await mkdir(join(tmpDir, 'b'), { recursive: true });
+    const utilBody = [
+      '/**',
+      ' * @returns {number}',
+      ' */',
+      'export function util() {',
+      '  return 1;',
+      '}',
+      '',
+    ].join('\n');
+    await writeFile(join(tmpDir, 'a', 'util.sys.mjs'), utilBody);
+    await writeFile(join(tmpDir, 'b', 'util.sys.mjs'), utilBody);
+    await writeFile(
+      join(tmpDir, 'consumer.sys.mjs'),
+      [
+        "import { util } from 'chrome://browser/content/util.sys.mjs';",
+        '/**',
+        ' * @returns {unknown}',
+        ' */',
+        'export function use() {',
+        '  return util();',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(
+        tmpDir,
+        new Set(['a/util.sys.mjs', 'b/util.sys.mjs', 'consumer.sys.mjs']),
+        undefined,
+        undefined,
+        { strict: true }
+      );
+      expect(issues.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a plain .mjs specifier to an owned .sys.mjs source', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-mjs-'));
+    await writeFile(
+      join(tmpDir, 'widget-helper.sys.mjs'),
+      [
+        '/**',
+        ' * @param {unknown} value - Candidate',
+        ' * @returns {value is HTMLElement} Guard result',
+        ' */',
+        'export function isWidget(value) {',
+        "  return typeof value === 'object' && value !== null;",
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(
+      join(tmpDir, 'consumer.sys.mjs'),
+      [
+        "import { isWidget } from 'chrome://global/content/elements/widget-helper.mjs';",
+        '/**',
+        ' * @param {unknown} node - Candidate',
+        ' * @returns {string}',
+        ' */',
+        'export function describe(node) {',
+        "  return isWidget(node) ? node.tagName : 'no';",
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(
+        tmpDir,
+        new Set(['widget-helper.sys.mjs', 'consumer.sys.mjs']),
+        undefined,
+        undefined,
+        { strict: true }
+      );
+      expect(issues.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts ChromeUtils.getClassName, defineLazyGetter, and Localization under strict checkJs', async () => {
+    // Field report B3: these are stable chrome globals; the shim's closed
+    // ChromeUtils member list rejected the two methods (TS2339 is not in
+    // the suppressed-code set) and Localization was undeclared.
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-globals-'));
+    const filePath = join(tmpDir, 'ChromeGlobals.sys.mjs');
+    await writeFile(
+      filePath,
+      [
+        'const lazyLocal = {};',
+        "ChromeUtils.defineLazyGetter(lazyLocal, 'l10n', () => {",
+        "  return new Localization(['browser/foo.ftl'], true);",
+        '});',
+        '/**',
+        ' * @param {object} obj - Inspected object',
+        ' * @returns {string}',
+        ' */',
+        'export function classify(obj) {',
+        '  return ChromeUtils.getClassName(obj, true);',
+        '}',
+        '/**',
+        ' * @returns {Promise<unknown>}',
+        ' */',
+        'export async function localize() {',
+        "  const l10n = new Localization(['browser/foo.ftl']);",
+        "  return l10n.formatValue('some-id', { count: 1 });",
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(
+        tmpDir,
+        new Set(['ChromeGlobals.sys.mjs']),
+        undefined,
+        undefined,
+        { strict: true }
+      );
+      expect(issues.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('honours patchLint.checkJsExtraShim by appending it to the built-in shim', async () => {
     // The fixture declares `MozHTMLElement`. Without the extra shim, a
     // file referencing it should produce no diagnostic about the symbol

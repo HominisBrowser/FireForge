@@ -37,7 +37,6 @@
 import { stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
-import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, verbose, warn } from '../utils/logger.js';
 import { detectPlatformGate } from './build-audit-platform.js';
@@ -52,10 +51,8 @@ import {
   resolveBestArtifact,
 } from './build-audit-resolve.js';
 import { resolveArtifactByKnownTransform } from './build-audit-transforms.js';
-import type { BuildBaseline } from './build-baseline.js';
-import { hasChanges, isMissingHeadError } from './git.js';
-import { git } from './git-base.js';
-import { getUntrackedFiles } from './git-status.js';
+import type { BuildBaseline } from './build-baseline-types.js';
+import { collectChangedEnginePaths } from './engine-changes.js';
 
 /** Path extensions that are conventionally packaged into the Firefox bundle. */
 const PACKAGEABLE_EXTENSIONS = [
@@ -153,53 +150,6 @@ export function isPackageablePath(sourcePath: string): boolean {
     if (sourcePath.includes(fragment)) return true;
   }
   return false;
-}
-
-/**
- * Collects engine-relative paths changed since the baseline's HEAD SHA.
- * Always includes modified + untracked workdir paths. When the baseline is
- * missing or the engine has no HEAD yet, falls back to workdir-only diffs.
- */
-async function collectChangedFiles(
-  engineDir: string,
-  baseline: BuildBaseline | undefined
-): Promise<string[]> {
-  const collected = new Set<string>();
-
-  if (baseline?.engineHeadSha) {
-    try {
-      const output = await git(
-        ['diff', '--name-only', `${baseline.engineHeadSha}..HEAD`],
-        engineDir
-      );
-      for (const line of output.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed) collected.add(trimmed);
-      }
-    } catch (error: unknown) {
-      if (!isMissingHeadError(error)) {
-        verbose(`Audit: could not diff against baseline SHA — ${toError(error).message}`);
-      }
-    }
-  }
-
-  try {
-    if (await hasChanges(engineDir)) {
-      const worktreeDiff = await git(['diff', '--name-only', 'HEAD'], engineDir);
-      for (const line of worktreeDiff.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed) collected.add(trimmed);
-      }
-      const untracked = await getUntrackedFiles(engineDir);
-      for (const file of untracked) {
-        collected.add(file);
-      }
-    }
-  } catch (error: unknown) {
-    verbose(`Audit: could not enumerate workdir changes — ${toError(error).message}`);
-  }
-
-  return [...collected].sort();
 }
 
 /*
@@ -590,7 +540,7 @@ export async function auditBuildArtifacts(
   const testsRoot = await resolveTestsRoot(engineDir);
   const testsPackaged = await hasPackagedTestsMarker(testsRoot);
 
-  const changed = await collectChangedFiles(engineDir, baseline);
+  const changed = await collectChangedEnginePaths(engineDir, baseline, 'Audit');
   if (changed.length === 0) {
     return summary;
   }

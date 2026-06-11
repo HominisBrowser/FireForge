@@ -124,6 +124,11 @@ const MOCK_TOKENS_DOC = `# Design Tokens
 beforeEach(() => {
   vi.clearAllMocks();
   mockPathExists.mockResolvedValue(true);
+  // Default fixture so tests stay order-independent: `vi.clearAllMocks()`
+  // clears call records but keeps implementations, so without this a test
+  // that relies on an earlier test's mockImplementation breaks when run
+  // in isolation (e.g. via `vitest -t`).
+  mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 });
 
 function makeReadTextImpl(css: string, doc: string) {
@@ -525,5 +530,118 @@ describe('addToken', () => {
 
     expect(warn).not.toHaveBeenCalled();
     expect(result.skipped).toBe(false);
+  });
+});
+
+describe('addToken --create-category', () => {
+  it('rejects a missing category without the flag and advertises --create-category', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-shadow-low',
+        value: '0 1px 2px #000',
+        category: 'Shadows',
+        mode: 'static',
+      })
+    ).rejects.toThrow(/--create-category/);
+
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('declares the banner inside :root and inserts the token under it in one write', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-shadow-low',
+      value: '0 1px 2px #000',
+      category: 'Shadows',
+      mode: 'static',
+      createCategory: true,
+    });
+
+    expect(result.cssAdded).toBe(true);
+    expect(result.categoryCreated).toBe(true);
+
+    const cssCalls = mockWriteText.mock.calls.filter((c) =>
+      c[0].includes('testbrowser-tokens.css')
+    );
+    // Exactly one CSS write — banner + token land in the same edit.
+    expect(cssCalls).toHaveLength(1);
+    const cssContent = cssCalls[0]?.[1] ?? '';
+
+    const bannerIdx = cssContent.indexOf('/* = Shadows = */');
+    const tokenIdx = cssContent.indexOf('--testbrowser-shadow-low: 0 1px 2px #000;');
+    const rootCloseIdx = cssContent.indexOf('\n}');
+    expect(bannerIdx).toBeGreaterThan(cssContent.indexOf('Spacing'));
+    expect(tokenIdx).toBeGreaterThan(bannerIdx);
+    expect(tokenIdx).toBeLessThan(rootCloseIdx);
+  });
+
+  it('round-trips: a category created by one add is found by the next add', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await addToken('/project', {
+      tokenName: '--testbrowser-shadow-low',
+      value: '0 1px 2px #000',
+      category: 'Shadows',
+      mode: 'static',
+      createCategory: true,
+    });
+
+    const firstWrite =
+      mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'))?.[1] ?? '';
+    mockWriteText.mockClear();
+    mockReadText.mockImplementation(makeReadTextImpl(firstWrite, MOCK_TOKENS_DOC));
+
+    const second = await addToken('/project', {
+      tokenName: '--testbrowser-shadow-high',
+      value: '0 4px 8px #000',
+      category: 'Shadows',
+      mode: 'static',
+    });
+
+    expect(second.cssAdded).toBe(true);
+    const secondWrite =
+      mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'))?.[1] ?? '';
+    // No duplicate banner; new token sits in the existing section.
+    expect(secondWrite.match(/\/\* = Shadows = \*\//g)).toHaveLength(1);
+    const bannerIdx = secondWrite.indexOf('/* = Shadows = */');
+    expect(secondWrite.indexOf('--testbrowser-shadow-high')).toBeGreaterThan(bannerIdx);
+  });
+
+  it('does not declare a duplicate banner when the category already exists', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-space-large',
+      value: '16px',
+      category: 'Spacing',
+      mode: 'static',
+      createCategory: true,
+    });
+
+    expect(result.cssAdded).toBe(true);
+    expect(result.categoryCreated).toBe(false);
+    const cssContent =
+      mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'))?.[1] ?? '';
+    expect(cssContent.match(/= Spacing/g)).toHaveLength(1);
+  });
+
+  it('dry-run with --create-category validates without writing', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-shadow-low',
+      value: '0 1px 2px #000',
+      category: 'Shadows',
+      mode: 'static',
+      createCategory: true,
+      dryRun: true,
+    });
+
+    expect(result.cssAdded).toBe(true);
+    expect(result.skipped).toBe(false);
+    expect(mockWriteText).not.toHaveBeenCalled();
   });
 });

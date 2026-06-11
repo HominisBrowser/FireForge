@@ -343,6 +343,92 @@ describe('validateExportJsDoc — class-method enforcement', () => {
     expect(paramIssues[0]?.message).toContain('key');
   });
 
+  it('accepts inline object types with nested generics in @param (field report B4)', () => {
+    // The exact reported doc shape: nested braces inside the type used to
+    // truncate the flat-regex scan at the first inner "}", losing the
+    // param name and firing "@param message missing or misnamed".
+    const source = wrapClass([
+      '  /**',
+      '   * Send a message.',
+      '   * @param {{ id: string, args?: Record<string, string | number | boolean> }} message - The message',
+      '   * @returns {boolean} Whether send succeeded',
+      '   */',
+      '  send(message) {',
+      '    return Boolean(message);',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues.filter((i) => i.check === 'jsdoc-class-method-param-mismatch')).toHaveLength(0);
+  });
+
+  it('accepts optional and defaulted bracket params after a braced type', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Lookup.',
+      '   * @param {{ depth?: number }} [opts={}] - Options',
+      '   * @returns {number} Result',
+      '   */',
+      '  lookup(opts) {',
+      '    return Number(opts);',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues.filter((i) => i.check === 'jsdoc-class-method-param-mismatch')).toHaveLength(0);
+  });
+
+  it('still flags a genuinely misnamed param after a nested-brace type', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Send.',
+      '   * @param {{ id: string, args?: Record<string, boolean> }} wrong - Wrong name',
+      '   * @returns {boolean} Whether ok',
+      '   */',
+      '  send(message) {',
+      '    return Boolean(message);',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    const paramIssues = issues.filter((i) => i.check === 'jsdoc-class-method-param-mismatch');
+    expect(paramIssues).toHaveLength(1);
+    expect(paramIssues[0]?.message).toContain('message');
+  });
+
+  it('does not crash on an unterminated brace type and reports the missing param', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Broken doc.',
+      '   * @param {{ id: string message - Truncated type',
+      '   * @returns {boolean} Whether ok',
+      '   */',
+      '  send(message) {',
+      '    return Boolean(message);',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues.some((i) => i.check === 'jsdoc-class-method-param-mismatch')).toBe(true);
+  });
+
+  it('matches dotted property docs through their base name', () => {
+    const source = wrapClass([
+      '  /**',
+      '   * Configure.',
+      '   * @param {object} opts - Options bag',
+      '   * @param {string} opts.id - Identifier',
+      '   * @returns {boolean} Whether ok',
+      '   */',
+      '  configure(opts) {',
+      '    return Boolean(opts);',
+      '  }',
+    ]);
+
+    const issues = validateExportJsDoc(source, { classMethodMode: 'error' });
+    expect(issues.filter((i) => i.check === 'jsdoc-class-method-param-mismatch')).toHaveLength(0);
+  });
+
   it('flags missing @returns on a class method that returns a value', () => {
     const source = wrapClass([
       '  /**',

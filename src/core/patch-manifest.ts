@@ -20,6 +20,7 @@ export {
   type PatchRenameEntry,
   removePatchFileAndManifest,
   renumberPatchesInManifest,
+  rewriteStagedDependencyOwners,
   savePatchesManifest,
 } from './patch-manifest-io.js';
 export {

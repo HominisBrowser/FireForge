@@ -6,11 +6,8 @@
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../../core/config.js';
 import { appendHistory } from '../../core/destructive.js';
 import { mutatePatchMetadata } from '../../core/patch-export.js';
-import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
-import { loadPatchesManifest, resolvePatchIdentifier } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type {
@@ -18,8 +15,8 @@ import type {
   PatchStagedForwardImport,
 } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
-import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
+import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 type StagedDependencyMode = 'add' | 'remove' | 'clear';
 
@@ -105,7 +102,7 @@ function applyMode(
 /**
  * Renders a one-line summary of a staged-dependency metadata change.
  */
-export function describeStagedDependencyChange(
+function describeStagedDependencyChange(
   before: readonly PatchStagedForwardImport[],
   after: readonly PatchStagedForwardImport[],
   mode: StagedDependencyMode,
@@ -147,23 +144,8 @@ export async function patchStagedDependencyCommand(
   const mode = modeFromOptions(options);
   const dependency = mode === 'clear' ? undefined : requireForwardImportOptions(options, mode);
 
-  const paths = getProjectPaths(projectRoot);
-  if (!(await pathExists(paths.patches))) {
-    throw new GeneralError('Patches directory not found.');
-  }
-
-  const manifest = await loadPatchesManifest(paths.patches);
-  if (!manifest || manifest.patches.length === 0) {
-    throw new GeneralError('No patches in manifest.');
-  }
-
-  const target = resolvePatchIdentifier(identifier, manifest.patches);
-  if (!target) {
-    throw new InvalidArgumentError(
-      formatPatchNotFoundError(identifier, manifest.patches),
-      identifier
-    );
-  }
+  const { paths, manifest } = await requirePatchQueue(projectRoot);
+  const target = requirePatchTarget(identifier, manifest.patches);
 
   const existing = target.stagedDependencies?.forwardImports ?? [];
   const projected = applyMode(existing, mode, dependency);

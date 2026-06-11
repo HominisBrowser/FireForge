@@ -79,7 +79,12 @@ function getSortedRenameEntries(
   return Array.from(renameMap.entries()).sort((a, b) => a[1].newOrder - b[1].newOrder);
 }
 
-function placementPlansEqual(left: PlacementPlan, right: PlacementPlan): boolean {
+/**
+ * Structural equality for placement plans — used by placement-mode export
+ * and `patch split` to verify the queue did not change between the
+ * confirmed preview and the under-lock commit.
+ */
+export function placementPlansEqual(left: PlacementPlan, right: PlacementPlan): boolean {
   if (left.insertionOrder !== right.insertionOrder || left.newFilename !== right.newFilename) {
     return false;
   }

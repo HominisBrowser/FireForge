@@ -3,6 +3,7 @@ import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { applyAllComponents } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
+import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
   findOverrideBaseVersionDrift,
@@ -98,6 +99,8 @@ export async function furnaceSyncCommand(
         `${totalFailures} component${totalFailures === 1 ? '' : 's'} failed to apply cleanly`
       );
     }
+
+    await reportJsconfigPathsSync(projectRoot, config, false);
 
     outro(`Sync complete — ${result.applied.length} applied, ${result.skipped.length} skipped`);
   } else {

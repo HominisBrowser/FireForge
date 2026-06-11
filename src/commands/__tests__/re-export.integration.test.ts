@@ -191,6 +191,31 @@ describe('reExportCommand integration', () => {
     expect(patchBody).not.toContain('features/sibling.txt');
   });
 
+  it('broad --scan only offers candidates from the patch directory footprint', async () => {
+    // The patch claims tracked.txt at the engine root. Git pathspecs
+    // recurse, so before the footprint filter the unmanaged files under
+    // features/ would be offered to this patch too — the field-reported
+    // cross-feature mis-assignment hazard.
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': 'changed\n',
+      'rootnew.txt': 'new at root\n',
+      'features/deep/module-a.txt': 'a\n',
+      'features/deep/module-b.txt': 'b\n',
+    });
+
+    await reExportCommand(projectRoot, ['001'], { scan: true, yes: true });
+
+    const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: Array<{ filesAffected: string[] }>;
+    };
+    expect(manifest.patches[0]?.filesAffected).toEqual(['rootnew.txt', 'tracked.txt']);
+
+    const patchBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expect(patchBody).toContain('rootnew.txt');
+    expect(patchBody).not.toContain('features/deep/module-a.txt');
+    expect(patchBody).not.toContain('features/deep/module-b.txt');
+  });
+
   it('preserves blank context markers and verifies cleanly after targeted re-export', async () => {
     await writeFiles(join(projectRoot, 'engine'), {
       'tracked.txt': blankContextModified,

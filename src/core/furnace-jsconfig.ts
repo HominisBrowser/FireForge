@@ -79,12 +79,29 @@ async function computeDesiredChromePathEntries(
     const files = await readdir(componentDir);
     for (const file of files.sort()) {
       if (!file.endsWith('.mjs')) continue;
-      const sourcePath = normalizePathSlashes(relative(jsconfigDir, join(componentDir, file)));
+      // Emit a `./`-prefixed relative value. TypeScript treats a bare
+      // `paths` value (`moz-widget/moz-widget.mjs`) as non-relative and
+      // rejects it without `baseUrl` (TS5090); a `./`-prefixed value
+      // resolves against the jsconfig directory with no `baseUrl` (which
+      // TS6 deprecates, TS5101). `../`-prefixed paths are already relative
+      // and left untouched.
+      const rel = normalizePathSlashes(relative(jsconfigDir, join(componentDir, file)));
+      const sourcePath = rel.startsWith('.') ? rel : `./${rel}`;
       entries[`${CHROME_ELEMENTS_URL_PREFIX}${file}`] = [sourcePath];
     }
   }
 
   return entries;
+}
+
+/**
+ * Compares two `paths` values treating a leading `./` as insignificant, so
+ * the reconciler does not churn between `./x` and bare `x` forms (either
+ * direction). Used to decide whether a managed entry is stale.
+ */
+function samePathValue(a: string, b: string): boolean {
+  const strip = (p: string): string => (p.startsWith('./') ? p.slice(2) : p);
+  return strip(a) === strip(b);
 }
 
 /** True when `key`/`value` is a Furnace-managed chrome-elements mapping. */
@@ -168,7 +185,11 @@ export async function syncFurnaceJsconfigPaths(
       result.pruned.push(key);
       continue;
     }
-    if ((value as string[])[0] !== want[0]) {
+    // Treat `./x` and bare `x` as equal so a previously-synced bare value (or
+    // a hand-written `./` prefix) is not rewritten as "stale" on every run.
+    // The existing value is kept verbatim when equivalent — no churn either
+    // way; only a genuinely different target updates (to the `./` form).
+    if (!samePathValue((value as string[])[0] ?? '', want[0] ?? '')) {
       result.updated.push(key);
       nextPaths[key] = want;
     } else {

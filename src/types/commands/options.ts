@@ -449,6 +449,15 @@ export interface TestOptions {
    */
   harnessRetries?: number;
   /**
+   * Force dispatch through the generic `mach test` command instead of the
+   * suite-specific `mach xpcshell-test` / `mach mochitest` commands a
+   * single-suite run auto-selects. Escape hatch for the rare case where a
+   * suite-specific command misbehaves; on a healthy host the generic command
+   * is equivalent. The default (auto suite dispatch) skips the mozlog
+   * resource monitor that crashes `mach test` on a broken host (E1).
+   */
+  genericMachTest?: boolean;
+  /**
    * Commander negation flag for `--no-shard`. When false, multiple test
    * paths run in one combined mach invocation; by default they shard into
    * sequential single-file harness runs with an aggregate report.
@@ -814,6 +823,14 @@ export interface LintCommandOptions {
    * scope contracts are different.
    */
   perPatch?: boolean;
+  /**
+   * Restrict `--per-patch` to a named subset of the queue (by filename,
+   * filename ± `.patch`, or manifest `name`). Lets a change that touches a
+   * handful of patches run the per-patch gate over just those instead of
+   * the full ~90-patch queue. Only valid with {@link perPatch}; queue-level
+   * findings (policy, cross-patch) are scoped to files the subset touches.
+   */
+  patches?: string[];
   /**
    * Maximum warning count tolerated before lint exits non-zero. Mirrors
    * ESLint's `--max-warnings` shape for release gates that want advisory

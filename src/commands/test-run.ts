@@ -12,13 +12,18 @@
  * combined invocation stays available via `--no-shard`.
  */
 
-import { type MachCommandResult, testWithOutput } from '../core/mach.js';
+import {
+  type MachCommandResult,
+  mochitestWithOutput,
+  testWithOutput,
+  xpcshellTestWithOutput,
+} from '../core/mach.js';
 import {
   buildHarnessCrashMessage,
   classifyHarnessRun,
   type HarnessRunVerdict,
 } from '../core/test-harness-crash.js';
-import { retryAfterXpcshellSymlinkRepair } from '../core/test-xpcshell-retry.js';
+import { retryAfterXpcshellSymlinkRepair, type TestDispatch } from '../core/test-xpcshell-retry.js';
 import { BuildError } from '../errors/build.js';
 import { info, note, warn } from '../utils/logger.js';
 import { maybeInjectAppdirArg } from './test-appdir.js';
@@ -26,11 +31,29 @@ import { maybeInjectAppdirArg } from './test-appdir.js';
 /** Default bounded retry budget for recognized harness crashes. */
 export const DEFAULT_HARNESS_RETRIES = 2;
 
+/**
+ * Which mach command a run dispatches to. Single-suite runs use the
+ * suite-specific command (`mach xpcshell-test` / `mach mochitest`), which
+ * skips the mozlog resource monitor that crashes generic `mach test` on a
+ * broken host (field report E1). `generic` is the historical `mach test`
+ * path (mixed/all-tests runs, or the `--generic-mach-test` opt-out).
+ */
+export type TestSuite = 'xpcshell' | 'mochitest' | 'generic';
+
+/** Resolves the capturing mach dispatcher for a suite. */
+function dispatchForSuite(suite: TestSuite): TestDispatch {
+  if (suite === 'xpcshell') return xpcshellTestWithOutput;
+  if (suite === 'mochitest') return mochitestWithOutput;
+  return testWithOutput;
+}
+
 /** Inputs shared by every harness invocation in one `fireforge test` run. */
 export interface TestRunContext {
   engineDir: string;
   objDir: string | undefined;
   classification: { xpcshell: string[]; nonXpcshell: string[] };
+  /** Suite-specific dispatch target for this run (E1). */
+  suite: TestSuite;
   /** Extra mach args before per-shard appdir injection. */
   baseExtraArgs: readonly string[];
   /** Bounded harness-crash retry budget (0 disables retries). */
@@ -65,6 +88,7 @@ export async function runTestsWithRetries(
     extraArgs
   );
 
+  const dispatch = dispatchForSuite(ctx.suite);
   const maxAttempts = Math.max(1, ctx.harnessRetries + 1);
   let attempts = 0;
   let result: MachCommandResult;
@@ -73,8 +97,8 @@ export async function runTestsWithRetries(
   for (;;) {
     attempts += 1;
     result = ctx.env
-      ? await testWithOutput(ctx.engineDir, paths, extraArgs, ctx.env)
-      : await testWithOutput(ctx.engineDir, paths, extraArgs);
+      ? await dispatch(ctx.engineDir, paths, extraArgs, ctx.env)
+      : await dispatch(ctx.engineDir, paths, extraArgs);
     result = await retryAfterXpcshellSymlinkRepair(
       ctx.engineDir,
       ctx.objDir,
@@ -82,7 +106,8 @@ export async function runTestsWithRetries(
       ctx.classification,
       paths,
       extraArgs,
-      ctx.env
+      ctx.env,
+      dispatch
     );
     const combined = `${result.stdout}\n${result.stderr}`;
     verdict = classifyHarnessRun(result.exitCode, combined, paths);

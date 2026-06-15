@@ -18,7 +18,13 @@ import {
 } from '../core/git-status.js';
 import { clearPerPatchLintCache } from '../core/lint-cache.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
-import { buildPatchQueueContext, lintExportedPatch, lintPatchQueue } from '../core/patch-lint.js';
+import {
+  buildPatchQueueContext,
+  countNonBinaryDiffLines,
+  lintExportedPatch,
+  lintPatchQueue,
+  lintPatchSize,
+} from '../core/patch-lint.js';
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -279,14 +285,23 @@ function validateLintFlags(options: LintCommandOptions, files: string[]): void {
   }
 
   // `--per-patch` rescopes the diff from "aggregate engine state" to "each
-  // patch's own filesAffected". Mixing in explicit file paths would produce
-  // an ambiguous set — is the file list an additional filter, or does it
-  // replace the per-patch scope? Reject up-front so the operator gets a
-  // clear error rather than a silently-narrowed result.
+  // patch's own filesAffected". Mixing in explicit engine file paths would
+  // produce an ambiguous set — is the file list an additional filter, or
+  // does it replace the per-patch scope? Reject up-front, but point at the
+  // first-class subset filter so an operator who wanted to target patches
+  // (not engine files) knows the supported syntax.
   if (options.perPatch && files.length > 0) {
     throw new GeneralError(
-      '--per-patch cannot be combined with explicit file paths. Pass either --per-patch or a file list, not both.'
+      '--per-patch cannot be combined with explicit engine file paths. ' +
+        'To lint a subset of patches, use `--per-patch --patches <name…>`; ' +
+        'to lint specific engine files, drop --per-patch.'
     );
+  }
+
+  // `--patches` only means something in per-patch mode (it filters the
+  // queue); in aggregate/file-list mode there is no patch loop to narrow.
+  if (options.patches !== undefined && !options.perPatch) {
+    throw new GeneralError('--patches requires --per-patch.');
   }
 }
 
@@ -320,6 +335,83 @@ function downgradeAggregateSizeRules(
       }
     }
   }
+}
+
+/**
+ * Evaluates the patch-size rules (`large-patch-files` / `large-patch-lines`)
+ * for an ad-hoc explicit-file-list lint, scoped to each file's **owning
+ * patch** rather than the combined file list.
+ *
+ * The default file-list path used to feed every passed file to
+ * `lintExportedPatch` as one synthetic patch, so a cross-patch selection of
+ * eight files belonging to four patches reported `Patch affects 8 files`
+ * even though no single owning patch was oversized. This helper instead
+ * groups the affected files by their owning patch (via the manifest's
+ * `filesAffected`), then runs `lintPatchSize` against each owner's real file
+ * count + diff, honouring that owner's `tier` and `lintIgnore` — so
+ * `lint <files>`, `lint --per-patch`, and `re-export --dry-run` agree on the
+ * same size findings for the same files. Files no patch claims are evaluated
+ * together as one prospective new patch, preserving the pre-export
+ * oversized-change warning.
+ *
+ * @param engineDir - Absolute engine directory
+ * @param filesAffected - Engine-relative files touched by the ad-hoc diff
+ * @param ctx - Patch queue context used to attribute file → owning patch
+ * @returns Size issues, each attributed to its owning patch by message prefix
+ */
+async function lintOwningPatchSizes(
+  engineDir: string,
+  filesAffected: string[],
+  ctx: import('../core/patch-lint.js').PatchQueueContext
+): Promise<PatchLintIssue[]> {
+  const listed = new Set(filesAffected);
+  const owners = new Map<string, (typeof ctx.entries)[number]>();
+  const ownedListed = new Set<string>();
+  for (const entry of ctx.entries) {
+    const md = entry.metadata;
+    if (!md) continue;
+    let ownsAny = false;
+    for (const f of md.filesAffected) {
+      if (listed.has(f)) {
+        ownedListed.add(f);
+        ownsAny = true;
+      }
+    }
+    if (ownsAny) owners.set(entry.filename, entry);
+  }
+
+  const issues: PatchLintIssue[] = [];
+
+  const lineCountForFiles = async (relPaths: string[]): Promise<number> => {
+    const existing: string[] = [];
+    for (const f of relPaths) {
+      if (await pathExists(join(engineDir, f))) existing.push(f);
+    }
+    if (existing.length === 0) return 0;
+    const diff = await getDiffForFilesAgainstHead(engineDir, existing);
+    return countNonBinaryDiffLines(diff).textLines;
+  };
+
+  for (const entry of owners.values()) {
+    const md = entry.metadata;
+    if (!md) continue;
+    const lineCount = await lineCountForFiles(md.filesAffected);
+    const ignore = md.lintIgnore?.length ? new Set(md.lintIgnore) : undefined;
+    for (const issue of lintPatchSize(md.filesAffected, lineCount, md.tier)) {
+      if (ignore?.has(issue.check)) continue;
+      issues.push({ ...issue, message: `${entry.filename}: ${issue.message}` });
+    }
+  }
+
+  // Files no patch claims are a prospective new patch: evaluate them as one
+  // unit so a genuinely oversized fresh change still surfaces.
+  const unowned = filesAffected.filter((f) => !ownedListed.has(f));
+  if (unowned.length > 0) {
+    const lineCount = await lineCountForFiles(unowned);
+    issues.push(...lintPatchSize(unowned, lineCount));
+  }
+
+  return issues;
 }
 
 /**
@@ -472,9 +564,27 @@ export async function lintCommand(
     ctx = await buildPatchQueueContext(paths.patches);
   }
 
+  // Ad-hoc explicit-file-list mode evaluates the patch-size rules per
+  // owning patch (see `lintOwningPatchSizes`), so suppress the synthetic
+  // combined-list size check in the shared pass — otherwise a cross-patch
+  // selection synthesises a phantom oversized patch from the file count.
+  const fileListMode = files.length > 0 && ctx !== undefined;
   let issues: PatchLintIssue[] = [
-    ...(await lintExportedPatch(paths.engine, filesAffected, diff, config, ctx)),
+    ...(await lintExportedPatch(
+      paths.engine,
+      filesAffected,
+      diff,
+      config,
+      ctx,
+      undefined,
+      undefined,
+      fileListMode ? { skipPatchSize: true } : undefined
+    )),
   ];
+
+  if (files.length > 0 && ctx) {
+    issues.push(...(await lintOwningPatchSizes(paths.engine, filesAffected, ctx)));
+  }
 
   // Cross-patch rules operate over the whole queue, so run them whenever a
   // patches directory exists — they surface duplicate /dev/null creations
@@ -533,6 +643,10 @@ export function registerLint(
       "Lint each patch in the queue as its own isolated diff. Rescopes patch-size rules so they fire against individual patches rather than the aggregate. Honours each patch's `lintIgnore` entries."
     )
     .option(
+      '--patches <names...>',
+      'With --per-patch, lint only the named patches (by filename or manifest name) instead of the whole queue. Queue-level findings are scoped to files those patches touch.'
+    )
+    .option(
       '--max-warnings <n>',
       'Fail when lint reports more than <n> warning(s); use 0 for warning-clean release gates.'
     )
@@ -545,6 +659,7 @@ export function registerLint(
             since?: string;
             onlyIntroduced?: boolean;
             perPatch?: boolean;
+            patches?: string[];
             maxWarnings?: string;
             cache?: boolean;
           }
@@ -558,6 +673,9 @@ export function registerLint(
           }
           if (options.perPatch !== undefined) {
             lintOptions.perPatch = options.perPatch;
+          }
+          if (options.patches !== undefined) {
+            lintOptions.patches = options.patches;
           }
           if (options.maxWarnings !== undefined) {
             const maxWarnings = Number(options.maxWarnings);

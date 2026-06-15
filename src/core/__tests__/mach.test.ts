@@ -15,6 +15,7 @@ import {
   hasBuildArtifacts,
   hasRunnableBundle,
   machPackage,
+  mochitestWithOutput,
   resetResolvedPython,
   run as runBrowser,
   runMach,
@@ -25,6 +26,7 @@ import {
   testWithOutput,
   watch,
   watchWithOutput,
+  xpcshellTestWithOutput,
 } from '../mach.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -604,6 +606,37 @@ describe('mach command execution', () => {
       stderr: 'oops\n',
       exitCode: 3,
     });
+
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('dispatches suite-specific mach commands with and without env (E1)', async () => {
+    const { execStream } = await import('../../utils/process.js');
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await primePythonResolution();
+    vi.mocked(execStream).mockResolvedValue(0);
+
+    await xpcshellTestWithOutput('/engine', ['a_test.js'], ['--headless']);
+    expect(execStream).toHaveBeenLastCalledWith(
+      'python3.12',
+      ['/engine/mach', 'xpcshell-test', 'a_test.js', '--headless'],
+      expect.any(Object)
+    );
+
+    await mochitestWithOutput('/engine', ['browser_x.js'], []);
+    expect(execStream).toHaveBeenLastCalledWith(
+      'python3.12',
+      ['/engine/mach', 'mochitest', 'browser_x.js'],
+      expect.any(Object)
+    );
+
+    // Env-present branch (the `env ? { env } : {}` ternary) for both wrappers.
+    await xpcshellTestWithOutput('/engine', ['a_test.js'], [], { FF_X: '1' });
+    expect(vi.mocked(execStream).mock.lastCall?.[2]).toMatchObject({ env: { FF_X: '1' } });
+    await mochitestWithOutput('/engine', ['b.js'], [], { FF_M: '2' });
+    expect(vi.mocked(execStream).mock.lastCall?.[2]).toMatchObject({ env: { FF_M: '2' } });
 
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();

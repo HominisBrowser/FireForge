@@ -8,23 +8,27 @@ HEAD (every applied patch summed). Use --per-patch for per-patch scope, or pass
 explicit file paths to narrow to those.
 
 Options:
-  --since <git-rev>   Tag issues as [introduced] or [cumulative] based on
-                      whether the file changed since <git-rev> (e.g. HEAD, a
-                      branch, a SHA)
-  --only-introduced   Fail only on issues tagged [introduced] (requires
-                      --since). Cumulative errors still print but do not set a
-                      non-zero exit.
-  --per-patch         Lint each patch in the queue as its own isolated diff.
-                      Rescopes patch-size rules so they fire against individual
-                      patches rather than the aggregate. Honours each patch's
-                      \`lintIgnore\` entries.
-  --max-warnings <n>  Fail when lint reports more than <n> warning(s); use 0 for
-                      warning-clean release gates.
-  --no-cache          Bypass per-patch lint result cache reads and writes.
-  -h, --help          display help for command
+  --since <git-rev>     Tag issues as [introduced] or [cumulative] based on
+                        whether the file changed since <git-rev> (e.g. HEAD, a
+                        branch, a SHA)
+  --only-introduced     Fail only on issues tagged [introduced] (requires
+                        --since). Cumulative errors still print but do not set a
+                        non-zero exit.
+  --per-patch           Lint each patch in the queue as its own isolated diff.
+                        Rescopes patch-size rules so they fire against
+                        individual patches rather than the aggregate. Honours
+                        each patch's \`lintIgnore\` entries.
+  --patches <names...>  With --per-patch, lint only the named patches (by
+                        filename or manifest name) instead of the whole queue.
+                        Queue-level findings are scoped to files those patches
+                        touch.
+  --max-warnings <n>    Fail when lint reports more than <n> warning(s); use 0
+                        for warning-clean release gates.
+  --no-cache            Bypass per-patch lint result cache reads and writes.
+  -h, --help            display help for command
 
 Commands:
-  cache               Manage the per-patch lint result cache
+  cache                 Manage the per-patch lint result cache
 "
 `;
 

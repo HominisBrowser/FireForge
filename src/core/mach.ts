@@ -430,3 +430,36 @@ export async function testWithOutput(
 ): Promise<MachCommandResult> {
   return runMachCapture(['test', ...testPaths, ...args], engineDir, env ? { env } : {});
 }
+
+/**
+ * Runs `mach xpcshell-test` (the suite-specific xpcshell command) while
+ * capturing output. Unlike the generic `mach test`, the suite-specific
+ * commands degrade a broken mozlog resource monitor to a warning instead of
+ * crashing at startup, so `fireforge test` dispatches single-suite runs here
+ * to stay resilient to the host psutil failure (field report E1).
+ *
+ * Signature mirrors {@link testWithOutput} so the two are interchangeable in
+ * the dispatch path.
+ */
+export async function xpcshellTestWithOutput(
+  engineDir: string,
+  testPaths: string[] = [],
+  args: string[] = [],
+  env?: Record<string, string>
+): Promise<MachCommandResult> {
+  return runMachCapture(['xpcshell-test', ...testPaths, ...args], engineDir, env ? { env } : {});
+}
+
+/**
+ * Runs `mach mochitest` (covers browser-chrome / mochitest flavors) while
+ * capturing output. The suite-specific counterpart to {@link testWithOutput}
+ * for non-xpcshell single-suite runs — see {@link xpcshellTestWithOutput}.
+ */
+export async function mochitestWithOutput(
+  engineDir: string,
+  testPaths: string[] = [],
+  args: string[] = [],
+  env?: Record<string, string>
+): Promise<MachCommandResult> {
+  return runMachCapture(['mochitest', ...testPaths, ...args], engineDir, env ? { env } : {});
+}

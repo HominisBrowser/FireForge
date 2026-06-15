@@ -6,7 +6,7 @@ import { GitError } from '../errors/git.js';
 import { removeFile } from '../utils/fs.js';
 import { exec } from '../utils/process.js';
 import type { GitStatusEntry } from './git-base.js';
-import { ensureGit, git } from './git-base.js';
+import { chunkPathspecs, ensureGit, git } from './git-base.js';
 
 /**
  * Restores a tracked path from HEAD, including staged changes.
@@ -98,6 +98,94 @@ export async function unstageFiles(repoDir: string, files: string[]): Promise<vo
 export async function fileExistsInHead(repoDir: string, filePath: string): Promise<boolean> {
   await ensureGit();
   return (await git(['ls-tree', 'HEAD', '--', filePath], repoDir)).trim().length > 0;
+}
+
+/**
+ * Batched equivalent of {@link fileExistsInHead}: returns the subset of `files`
+ * that are tracked in HEAD, using a single `git ls-tree` per ARG_MAX chunk
+ * instead of one spawn per file. This is the cold-run hot path — a Firefox-sized
+ * checkout has hundreds of affected files, and the old per-file fan-out spent
+ * ~99s in serial `git ls-tree`/`git diff` spawns.
+ *
+ * `-r` lists nested blobs by full repo-relative path; `--name-only -z` makes the
+ * output a trivial NUL-split with no quoting to undo. Membership in the returned
+ * Set is exactly `await fileExistsInHead(repoDir, file)` for any non-directory
+ * `file`. Throws (via {@link git}) when HEAD itself is unresolvable, matching the
+ * per-file helper's failure mode.
+ * @param repoDir - Repository directory
+ * @param files - Repo-relative paths to classify
+ * @returns The subset of `files` present in HEAD
+ */
+export async function listTrackedInHead(repoDir: string, files: string[]): Promise<Set<string>> {
+  const tracked = new Set<string>();
+  if (files.length === 0) return tracked;
+  await ensureGit();
+
+  const wanted = new Set(files);
+  for (const chunk of chunkPathspecs(files)) {
+    const output = await git(
+      ['ls-tree', '-r', 'HEAD', '--name-only', '-z', '--', ...chunk],
+      repoDir
+    );
+    for (const name of output.split('\0')) {
+      // `ls-tree -r` can surface entries beyond the literal inputs only when an
+      // input is itself a directory in HEAD; intersect with `wanted` so the
+      // result is always a subset of the requested files, never a superset.
+      if (name.length > 0 && wanted.has(name)) tracked.add(name);
+    }
+  }
+  return tracked;
+}
+
+/**
+ * Batched equivalent of the per-file `git hash-object` in
+ * {@link import('./git-diff.js').generateNewFileDiff}: computes the git blob
+ * hash for every path in one spawn per ARG_MAX chunk and returns a
+ * `Map<fullPath, fullHash>`.
+ *
+ * Uses {@link import('../utils/process.js').exec} rather than {@link git}
+ * (which throws on a non-zero exit) because `git hash-object f1 f2 …` is
+ * all-or-nothing: it aborts at the first unreadable path and emits nothing for
+ * the rest. To preserve the old per-file contract — where one bad path zeroed
+ * only its own index line — a chunk that does not return exactly one hash per
+ * input falls back to hashing that chunk's paths individually. A path that is
+ * still unhashable is simply left out of the map; the caller applies the
+ * `0000000000` zero-hash fallback (and the same verbose log) for any miss, so
+ * the blob hash is byte-identical to `git hash-object` (filters/.gitattributes
+ * are applied per path) without the risk of in-process hashing, which would
+ * diverge under `core.autocrlf`/`text` attributes.
+ * @param repoDir - Repository directory
+ * @param fullPaths - Absolute file paths to hash
+ * @returns Map from each input path to its full blob hash (misses omitted)
+ */
+export async function hashObjectBatch(
+  repoDir: string,
+  fullPaths: string[]
+): Promise<Map<string, string>> {
+  const hashes = new Map<string, string>();
+  if (fullPaths.length === 0) return hashes;
+  await ensureGit();
+
+  for (const chunk of chunkPathspecs(fullPaths)) {
+    const result = await exec('git', ['hash-object', '--', ...chunk], { cwd: repoDir });
+    const lines = result.stdout.split('\n').filter((line) => line.length > 0);
+    if (result.exitCode === 0 && lines.length === chunk.length) {
+      for (let i = 0; i < chunk.length; i++) {
+        hashes.set(chunk[i] as string, lines[i] as string);
+      }
+      continue;
+    }
+
+    // Batch aborted partway (a path became unreadable between the caller's stat
+    // and here, or otherwise failed). Recover per file so one bad path only
+    // loses its own hash, exactly as the pre-batch per-file code behaved.
+    for (const path of chunk) {
+      const single = await exec('git', ['hash-object', '--', path], { cwd: repoDir });
+      const hash = single.stdout.trim();
+      if (single.exitCode === 0 && hash.length > 0) hashes.set(path, hash);
+    }
+  }
+  return hashes;
 }
 
 /**

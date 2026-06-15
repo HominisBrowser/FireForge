@@ -11,7 +11,7 @@
  * operator could not infer from the rule names.
  */
 
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 import { pathExists, readText } from '../utils/fs.js';
 
@@ -126,6 +126,48 @@ export interface ComposedShim {
   extraShimAppended: boolean;
 }
 
+/** Matches a lone triple-slash `/// <reference path="…" />` directive line. */
+const TRIPLE_SLASH_REFERENCE = /^\s*\/\/\/\s*<reference\s+path\s*=\s*["']([^"']+)["']\s*\/?>\s*$/;
+
+/**
+ * Inlines triple-slash `/// <reference path="…">` directives in shim source.
+ *
+ * Both shim consumers feed the text to the compiler at a *synthetic* path
+ * (an in-memory source file, not the extra shim's real location), so TS
+ * resolves a relative `/// <reference>` against that synthetic directory and
+ * silently drops it. Inlining the referenced file's contents (recursively,
+ * resolved against the *referencing* file's directory, deduped by absolute
+ * path) makes the directives self-contained so their declarations survive.
+ *
+ * @param source - Shim source possibly containing reference directives
+ * @param baseDir - Directory the directives' relative paths resolve against
+ * @param seen - Absolute paths already inlined (cycle / duplicate guard)
+ */
+async function inlineTripleSlashReferences(
+  source: string,
+  baseDir: string,
+  seen: Set<string>
+): Promise<string> {
+  const out: string[] = [];
+  for (const line of source.split('\n')) {
+    const match = TRIPLE_SLASH_REFERENCE.exec(line);
+    if (!match?.[1]) {
+      out.push(line);
+      continue;
+    }
+    const absolute = resolve(baseDir, match[1]);
+    if (seen.has(absolute)) continue;
+    seen.add(absolute);
+    if (!(await pathExists(absolute))) {
+      out.push(`// (fireforge: unresolved /// <reference path="${match[1]}">)`);
+      continue;
+    }
+    const referenced = await readText(absolute);
+    out.push(await inlineTripleSlashReferences(referenced, dirname(absolute), seen));
+  }
+  return out.join('\n');
+}
+
 /**
  * Composes the synthetic shim source by concatenating the built-in
  * Firefox globals shim with the contents of an optional user-supplied
@@ -133,7 +175,9 @@ export interface ComposedShim {
  * direction is intentional (declarations later in concat order
  * augment earlier ones), so a project that wants to refine `Services`
  * with a more specific type can do so by declaring it in the extra
- * shim.
+ * shim. Any triple-slash `/// <reference path="…">` directives inside the
+ * extra shim are inlined (resolved against the extra shim's own directory)
+ * so they are not silently dropped at the synthetic shim path.
  *
  * Missing extra-shim files raise a clear error rather than failing
  * silently with a confusing "type not found" downstream — this is the
@@ -158,8 +202,13 @@ export async function composeShimSource(
     );
   }
   const extra = await readText(absoluteShim);
+  const inlinedExtra = await inlineTripleSlashReferences(
+    extra,
+    dirname(absoluteShim),
+    new Set([absoluteShim])
+  );
   return {
-    source: `${FIREFOX_GLOBALS_SHIM}\n// ── extraShim: ${extraShimPath} ──\n${extra}`,
+    source: `${FIREFOX_GLOBALS_SHIM}\n// ── extraShim: ${extraShimPath} ──\n${inlinedExtra}`,
     extraShimAppended: true,
   };
 }

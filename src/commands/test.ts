@@ -23,6 +23,10 @@ import {
   reportMarionettePreflight,
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
+import {
+  buildHarnessCrashMessage,
+  detectHarnessCrashSignature,
+} from '../core/test-harness-crash.js';
 import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
@@ -41,6 +45,7 @@ import {
   runTestsWithRetries,
   type TestRunContext,
   type TestRunOutcome,
+  type TestSuite,
 } from './test-run.js';
 
 async function assertTestPathsExist(engineDir: string, testPaths: string[]): Promise<void> {
@@ -81,6 +86,25 @@ async function classifyTestHarnesses(
     }
   }
   return result;
+}
+
+/**
+ * Picks the mach dispatch target for a (non-mixed) run. A single-suite run
+ * auto-routes to the suite-specific command (`mach xpcshell-test` /
+ * `mach mochitest`), which degrades a broken host resource monitor to a
+ * warning instead of crashing generic `mach test` at startup (E1). Mixed runs
+ * are rejected before this point; a path-less "run all" or an explicit
+ * `--generic-mach-test` opt-out stays on the generic command.
+ */
+function resolveTestSuite(classification: HarnessClassification, forceGeneric: boolean): TestSuite {
+  if (forceGeneric) return 'generic';
+  if (classification.xpcshell.length > 0 && classification.nonXpcshell.length === 0) {
+    return 'xpcshell';
+  }
+  if (classification.nonXpcshell.length > 0 && classification.xpcshell.length === 0) {
+    return 'mochitest';
+  }
+  return 'generic';
 }
 
 function buildMixedHarnessMessage(classification: HarnessClassification): string {
@@ -138,17 +162,38 @@ async function resolveLaunchablePathForTests(
 async function runPreTestBuild(
   projectRoot: string,
   paths: ReturnType<typeof getProjectPaths>,
-  projectConfig: Awaited<ReturnType<typeof loadConfig>>
+  projectConfig: Awaited<ReturnType<typeof loadConfig>>,
+  harnessRetries: number
 ): Promise<void> {
   await withBuildLock(projectRoot, async () => {
     await prepareBuildEnvironment(projectRoot, paths, projectConfig);
     const s = spinner('Running incremental build...');
-    const buildResult = await buildUI(paths.engine);
-    if (buildResult.exitCode !== 0) {
+    // The pre-test build runs through mach too, so the same resource-monitor
+    // startup crash that aborts `mach test` can abort `mach build faster`.
+    // Run the harness-crash classifier over the build output and retry within
+    // the same `--harness-retries` budget rather than hard-failing with a
+    // bare "Pre-test build failed" (field report E2).
+    const maxAttempts = Math.max(1, harnessRetries + 1);
+    for (let attempt = 1; ; attempt += 1) {
+      const buildResult = await buildUI(paths.engine);
+      if (buildResult.exitCode === 0) {
+        s.stop('Build complete');
+        return;
+      }
+      const signature = detectHarnessCrashSignature(`${buildResult.stdout}\n${buildResult.stderr}`);
+      if (signature && attempt < maxAttempts) {
+        s.message(
+          `Pre-test build hit a harness crash (${signature.reason}); ` +
+            `retrying (attempt ${attempt + 1} of ${maxAttempts})...`
+        );
+        continue;
+      }
       s.error('Pre-test build failed');
-      throw new BuildError('Pre-test build failed', 'mach build faster');
+      throw new BuildError(
+        signature ? buildHarnessCrashMessage(signature, attempt) : 'Pre-test build failed',
+        'mach build faster'
+      );
     }
-    s.stop('Build complete');
   });
 }
 
@@ -341,9 +386,11 @@ export async function testCommand(
     buildCheck.objDir
   );
 
+  const harnessRetries = options.harnessRetries ?? DEFAULT_HARNESS_RETRIES;
+
   // Run incremental build if requested
   if (options.build) {
-    await runPreTestBuild(projectRoot, paths, projectConfig);
+    await runPreTestBuild(projectRoot, paths, projectConfig, harnessRetries);
     info('');
   } else {
     // Stale-build preflight — when --build was NOT requested, detect
@@ -403,6 +450,7 @@ export async function testCommand(
   if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {
     throw new GeneralError(buildMixedHarnessMessage(classification));
   }
+  const suite = resolveTestSuite(classification, options.genericMachTest === true);
   const forwardedMachArgs =
     options.machArg && options.machArg.length > 0
       ? filterRedundantXpcshellFlavorArgs(options.machArg, classification)
@@ -441,8 +489,9 @@ export async function testCommand(
     engineDir: paths.engine,
     objDir: buildCheck.objDir,
     classification,
+    suite,
     baseExtraArgs: extraArgs,
-    harnessRetries: options.harnessRetries ?? DEFAULT_HARNESS_RETRIES,
+    harnessRetries,
     ...(perfSampleEnv ? { env: perfSampleEnv } : {}),
   };
   const postRebuildContext = options.build
@@ -526,6 +575,10 @@ export function registerTest(
       }
     )
     .option(
+      '--generic-mach-test',
+      'Force dispatch through generic `mach test` instead of the suite-specific `mach xpcshell-test` / `mach mochitest` a single-suite run auto-selects (the suite-specific commands skip the mozlog resource monitor that crashes `mach test` on some hosts).'
+    )
+    .option(
       '--no-shard',
       'Run multiple test paths in one combined mach invocation instead of sequential per-file shards'
     )
@@ -555,6 +608,7 @@ export function registerTest(
             machArg?: string[];
             marionettePort?: number;
             harnessRetries?: number;
+            genericMachTest?: boolean;
             shard?: boolean;
             perfSamples?: string;
           }

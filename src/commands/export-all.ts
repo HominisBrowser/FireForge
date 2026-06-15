@@ -335,7 +335,10 @@ export async function exportAllCommand(
     // Extract affected files from diff
     const filesAffected = extractAffectedFiles(diff);
 
-    await runPatchLint(paths.engine, filesAffected, diff, config, options.skipLint);
+    const patchQueueCtx = (await pathExists(paths.patches))
+      ? await buildPatchQueueContext(paths.patches)
+      : undefined;
+    await runPatchLint(paths.engine, filesAffected, diff, config, options.skipLint, patchQueueCtx);
 
     // Dry-run: enumerate filename, metadata, and supersede coverage without
     // writing. Mirrors `fireforge export --dry-run` so the same preview

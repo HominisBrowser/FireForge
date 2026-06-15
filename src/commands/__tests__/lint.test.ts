@@ -522,7 +522,13 @@ describe('lintCommand — branch coverage', () => {
 
     it('rejects --per-patch when combined with explicit file paths', async () => {
       await expect(lintCommand('/project', ['src/app.ts'], { perPatch: true })).rejects.toThrow(
-        /cannot be combined with explicit file paths/
+        /cannot be combined with explicit engine file paths/
+      );
+    });
+
+    it('rejects --patches without --per-patch', async () => {
+      await expect(lintCommand('/project', [], { patches: ['001-foo.patch'] })).rejects.toThrow(
+        /--patches requires --per-patch/
       );
     });
 

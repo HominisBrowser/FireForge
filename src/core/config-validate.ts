@@ -312,6 +312,35 @@ const PATCH_LINT_CHECKJS_COMPILER_OPTION_KEYS = [
   'noUnusedParameters',
 ] as const satisfies readonly (keyof PatchLintCheckJsCompilerOptions)[];
 
+/**
+ * Validates the reviewed `paths` mapping: an object of pattern → string[]
+ * targets, each pattern carrying at most one `*`. Lets patch-owned modules
+ * be typed from their real sources without an ambient stub shim.
+ */
+function parseCheckJsPathsMapping(raw: unknown): Record<string, string[]> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new ConfigError(
+      'Config field "patchLint.checkJsCompilerOptions.paths" must be a plain object'
+    );
+  }
+  const rec = raw as Record<string, unknown>;
+  const out: Record<string, string[]> = {};
+  for (const [pattern, targets] of Object.entries(rec)) {
+    if ((pattern.match(/\*/g) ?? []).length > 1) {
+      throw new ConfigError(
+        `Config field "patchLint.checkJsCompilerOptions.paths" key "${pattern}" may contain at most one "*"`
+      );
+    }
+    if (!Array.isArray(targets) || targets.some((t: unknown) => typeof t !== 'string')) {
+      throw new ConfigError(
+        `Config field "patchLint.checkJsCompilerOptions.paths.${pattern}" must be an array of strings`
+      );
+    }
+    out[pattern] = targets as string[];
+  }
+  return out;
+}
+
 function parsePatchLintCheckJsCompilerOptions(raw: unknown): PatchLintCheckJsCompilerOptions {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new ConfigError('Config field "patchLint.checkJsCompilerOptions" must be a plain object');
@@ -320,6 +349,10 @@ function parsePatchLintCheckJsCompilerOptions(raw: unknown): PatchLintCheckJsCom
   const allowed = new Set<string>(PATCH_LINT_CHECKJS_COMPILER_OPTION_KEYS);
   const out: PatchLintCheckJsCompilerOptions = {};
   for (const key of Object.keys(rec)) {
+    if (key === 'paths') {
+      out.paths = parseCheckJsPathsMapping(rec[key]);
+      continue;
+    }
     if (!allowed.has(key)) {
       throw new ConfigError(
         `Config field "patchLint.checkJsCompilerOptions" has unknown key "${key}"`

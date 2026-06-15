@@ -250,3 +250,120 @@ describe('syncFurnaceJsconfigPaths', () => {
     await expect(syncFurnaceJsconfigPaths(projectRoot, makeConfig({}))).rejects.toThrow(/JSONC/);
   });
 });
+
+// ── Item D (0.32.0): root-level jsconfig must emit ./-relative paths (TS5090) ──
+describe('syncFurnaceJsconfigPaths — root-level jsconfig (./-relative, TS5090)', () => {
+  let projectRoot: string;
+  let rootJsconfigPath: string;
+
+  // jsconfig sits beside the components tree (no `tools/` hop), so
+  // `relative()` would yield a bare `components/...` value that TS rejects
+  // without baseUrl.
+  function rootConfig(): FurnaceConfig {
+    return {
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-widget': {
+          description: 'Widget',
+          targetPath: 'toolkit/content/widgets/moz-widget',
+          register: true,
+          localized: false,
+        },
+      },
+      typecheckJsconfig: 'jsconfig.json',
+    };
+  }
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-jsconfig-root-');
+    rootJsconfigPath = join(projectRoot, 'jsconfig.json');
+    const dir = join(projectRoot, 'components', 'custom', 'moz-widget');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'moz-widget.mjs'), '// module\n');
+  });
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it('emits a ./-prefixed relative value and no baseUrl', async () => {
+    await writeFile(
+      rootJsconfigPath,
+      JSON.stringify({ compilerOptions: { checkJs: true } }) + '\n'
+    );
+
+    await syncFurnaceJsconfigPaths(projectRoot, rootConfig());
+
+    const written = await readJson<JsconfigFixture>(rootJsconfigPath);
+    expect(written.compilerOptions?.paths).toEqual({
+      'chrome://global/content/elements/moz-widget.mjs': [
+        './components/custom/moz-widget/moz-widget.mjs',
+      ],
+    });
+    expect(written.compilerOptions).not.toHaveProperty('baseUrl');
+  });
+
+  it('is a no-op on the second run (no stale rewrite of the ./-prefixed value)', async () => {
+    await writeFile(rootJsconfigPath, JSON.stringify({}) + '\n');
+    const config = rootConfig();
+
+    const first = await syncFurnaceJsconfigPaths(projectRoot, config);
+    expect(first.changed).toBe(true);
+    const second = await syncFurnaceJsconfigPaths(projectRoot, config);
+    expect(second.changed).toBe(false);
+    expect(second.updated).toEqual([]);
+  });
+
+  it('does not churn a hand-written bare or ./-prefixed value (both treated as non-stale)', async () => {
+    const key = 'chrome://global/content/elements/moz-widget.mjs';
+    for (const handWritten of [
+      'components/custom/moz-widget/moz-widget.mjs', // bare (legacy / workaround)
+      './components/custom/moz-widget/moz-widget.mjs', // already prefixed
+    ]) {
+      await writeFile(
+        rootJsconfigPath,
+        JSON.stringify({ compilerOptions: { paths: { [key]: [handWritten] } } }) + '\n'
+      );
+      const result = await syncFurnaceJsconfigPaths(projectRoot, rootConfig());
+      expect(result.changed).toBe(false);
+      expect(result.updated).toEqual([]);
+      const written = await readJson<JsconfigFixture>(rootJsconfigPath);
+      // The operator's chosen form is preserved verbatim.
+      expect(written.compilerOptions?.paths?.[key]).toEqual([handWritten]);
+    }
+  });
+
+  it('the emitted paths type-check under TypeScript without baseUrl (no TS5090, no TS5101)', async () => {
+    await writeFile(rootJsconfigPath, JSON.stringify({}) + '\n');
+    await syncFurnaceJsconfigPaths(projectRoot, rootConfig());
+    const written = await readJson<JsconfigFixture>(rootJsconfigPath);
+
+    const ts = await import('typescript');
+    const probe = join(projectRoot, 'probe.ts');
+    await writeFile(probe, 'export const x = 1;\n');
+
+    const buildDiagnostics = (compilerOptions: Record<string, unknown>): number[] => {
+      const { options } = ts.convertCompilerOptionsFromJson(compilerOptions, projectRoot);
+      const program = ts.createProgram([probe], options);
+      return [...program.getOptionsDiagnostics()].map((d) => d.code);
+    };
+
+    // Synced (./-prefixed) options raise neither the non-relative-paths
+    // error (TS5090) nor the baseUrl-deprecated error (TS5101).
+    const synced = buildDiagnostics(written.compilerOptions ?? {});
+    expect(synced).not.toContain(5090);
+    expect(synced).not.toContain(5101);
+
+    // Control: the bare form TS5090s — proving the ./ prefix is what avoids it.
+    const bare = buildDiagnostics({
+      paths: {
+        'chrome://global/content/elements/moz-widget.mjs': [
+          'components/custom/moz-widget/moz-widget.mjs',
+        ],
+      },
+    });
+    expect(bare).toContain(5090);
+  });
+});

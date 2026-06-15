@@ -11,6 +11,7 @@ import {
   lintExportedPatch,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
+import { resolvePatchOwnedSysMjs } from '../core/patch-lint-ownership.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { getPatchPolicyCategories, isCategoryAllowedByConfig } from '../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -69,6 +70,15 @@ export async function runPatchLint(
     );
   }
 
+  // When a whole-queue context is supplied, checkJs resolves cross-patch
+  // `resource:///`/`chrome://` imports against every patch-owned module, but
+  // only this patch's own new modules should report diagnostics. Scope the
+  // report to the files this diff creates so re-exporting one patch does not
+  // surface another patch's findings (and no ambient stub shim is needed).
+  const checkJsReportScope = patchQueueCtx
+    ? resolvePatchOwnedSysMjs(detectNewFilesInDiff(diffContent))
+    : undefined;
+
   const issues = await lintExportedPatch(
     engineDir,
     filesAffected,
@@ -76,7 +86,8 @@ export async function runPatchLint(
     config,
     patchQueueCtx,
     ignoreChecks,
-    patchTier
+    patchTier,
+    checkJsReportScope ? { checkJsReportScope } : undefined
   );
   if (issues.length === 0) return;
 

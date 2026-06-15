@@ -23,20 +23,31 @@ vi.mock('../../core/config.js', () => ({
   })),
 }));
 
-vi.mock('../../core/mach.js', () => ({
-  hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
-  // Default to "launchable bundle present" so existing tests keep passing
-  // through the new runnable-bundle preflight added for finding 17. The
-  // dedicated regression test for the missing-binary branch overrides
-  // this with mockResolvedValueOnce({ runnable: false, ... }).
-  hasRunnableBundle: vi.fn(() =>
-    Promise.resolve({ runnable: true, expectedPath: 'obj-debug/dist/bin/firefox' })
-  ),
-  buildArtifactMismatchMessage: vi.fn(() => undefined),
-  buildUI: vi.fn(),
-  testWithOutput: vi.fn(),
-  withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
-}));
+vi.mock('../../core/mach.js', () => {
+  // One shared dispatch mock backs all three capture entry points. The
+  // default classification (findNearestXpcshellManifest → null) routes runs
+  // to `mochitestWithOutput`; aliasing it (and the xpcshell variant) to the
+  // same fn as `testWithOutput` keeps every existing assertion valid no
+  // matter which suite a test's paths classify as. The dedicated E1 dispatch
+  // test uses its own module mock with distinct fns.
+  const captureDispatch = vi.fn();
+  return {
+    hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
+    // Default to "launchable bundle present" so existing tests keep passing
+    // through the new runnable-bundle preflight added for finding 17. The
+    // dedicated regression test for the missing-binary branch overrides
+    // this with mockResolvedValueOnce({ runnable: false, ... }).
+    hasRunnableBundle: vi.fn(() =>
+      Promise.resolve({ runnable: true, expectedPath: 'obj-debug/dist/bin/firefox' })
+    ),
+    buildArtifactMismatchMessage: vi.fn(() => undefined),
+    buildUI: vi.fn(),
+    testWithOutput: captureDispatch,
+    xpcshellTestWithOutput: captureDispatch,
+    mochitestWithOutput: captureDispatch,
+    withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
+  };
+});
 
 vi.mock('../../core/build-prepare.js', () => ({
   prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0, reconfigured: false })),
@@ -56,6 +67,7 @@ vi.mock('../../utils/logger.js', () => ({
   success: vi.fn(),
   warn: vi.fn(),
   spinner: vi.fn(() => ({
+    message: vi.fn(),
     stop: vi.fn(),
     error: vi.fn(),
   })),
@@ -370,6 +382,69 @@ describe('testCommand', () => {
     expect(message).not.toContain('Post-rebuild test failure:');
 
     expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  // ── Item E2 (0.32.0): the harness-crash classifier covers the pre-test build ──
+
+  const BUILD_RESOURCE_MONITOR_CRASH = {
+    exitCode: 1,
+    stdout: '',
+    stderr: [
+      'Traceback (most recent call last):',
+      "AttributeError: 'SystemResourceMonitor' object has no attribute 'poll_interval'",
+    ].join('\n'),
+  };
+
+  it('retries the pre-test --build on a resource-monitor crash and proceeds (E2)', async () => {
+    // First build attempt crashes in the harness; the beforeEach default
+    // makes the retry succeed.
+    vi.mocked(buildUI).mockResolvedValueOnce(BUILD_RESOURCE_MONITOR_CRASH);
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nTEST-OK | t',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        build: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(buildUI).toHaveBeenCalledTimes(2);
+    expect(testWithOutput).toHaveBeenCalled();
+  });
+
+  it('exhausts the harness-retry budget on a persistent build crash and reports it (E2)', async () => {
+    vi.mocked(buildUI).mockResolvedValue(BUILD_RESOURCE_MONITOR_CRASH);
+
+    let error: unknown;
+    try {
+      await testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        build: true,
+        harnessRetries: 1,
+      });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(BuildError);
+    expect(buildUI).toHaveBeenCalledTimes(2); // initial attempt + 1 retry
+    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(error instanceof Error ? error.message : '').toMatch(/harness/i);
+  });
+
+  it('does not retry a non-crash build failure (E2 — only harness crashes retry)', async () => {
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 1, stdout: 'make: real error', stderr: '' });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        build: true,
+        harnessRetries: 2,
+      })
+    ).rejects.toBeInstanceOf(BuildError);
+
+    expect(buildUI).toHaveBeenCalledTimes(1);
   });
 
   it('normalizes engine-prefixed test paths and passes headless through to mach test', async () => {

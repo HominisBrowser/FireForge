@@ -412,6 +412,46 @@ describe('validateConfig', () => {
     ).toThrow('Config field "patchLint.checkJsStrict" must be a boolean');
   });
 
+  it('accepts and validates a checkJsCompilerOptions paths mapping (item C route 2)', () => {
+    expect(
+      validateConfig(
+        makeValidConfig({
+          patchLint: {
+            checkJs: true,
+            checkJsStrict: true,
+            checkJsCompilerOptions: { paths: { 'resource:///modules/foo/*': ['./*'] } },
+          },
+        })
+      ).patchLint?.checkJsCompilerOptions
+    ).toEqual({ paths: { 'resource:///modules/foo/*': ['./*'] } });
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          patchLint: {
+            checkJs: true,
+            checkJsStrict: true,
+            checkJsCompilerOptions: { paths: { 'a/*': 'not-an-array' as never } },
+          },
+        })
+      )
+    ).toThrow(
+      'Config field "patchLint.checkJsCompilerOptions.paths.a/*" must be an array of strings'
+    );
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          patchLint: {
+            checkJs: true,
+            checkJsStrict: true,
+            checkJsCompilerOptions: { paths: { 'a/*/*': ['./*'] } },
+          },
+        })
+      )
+    ).toThrow('may contain at most one "*"');
+  });
+
   it('accepts a well-formed typecheck block and surfaces field-level errors otherwise', () => {
     const config = validateConfig({
       ...makeValidConfig(),

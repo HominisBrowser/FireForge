@@ -159,8 +159,15 @@ export type PatchLintSeverityGate = 'off' | 'warning' | 'error';
 /**
  * Allowlisted TypeScript `compilerOptions` overrides for the patch
  * `checkJs` pass when {@link PatchLintConfig.checkJsStrict} is true.
- * Merged after the strict preset; only boolean flags — no `paths`,
- * `rootDir`, or other options that would fight the synthetic program.
+ * Merged after the strict preset.
+ *
+ * Boolean flags tighten the strict preset. The optional `paths` mapping
+ * (each pattern may carry a single `*`) lets patch-owned modules be typed
+ * from their real sources — e.g. `"resource:///modules/foo/*": ["./*"]` —
+ * resolved host-side against the engine directory, so no `baseUrl` is set
+ * (TS5090-safe) and no hand-generated ambient stub shim is needed. Other
+ * options (`rootDir`, etc.) stay disallowed: they would fight the
+ * synthetic program.
  */
 export interface PatchLintCheckJsCompilerOptions {
   strictNullChecks?: boolean;
@@ -171,6 +178,8 @@ export interface PatchLintCheckJsCompilerOptions {
   strictPropertyInitialization?: boolean;
   noUnusedLocals?: boolean;
   noUnusedParameters?: boolean;
+  /** Module-resolution `paths` mapping (pattern → targets, engine-relative). */
+  paths?: Record<string, string[]>;
 }
 
 /**

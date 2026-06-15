@@ -115,6 +115,38 @@ export async function git(
 }
 
 /**
+ * Splits a pathspec list into chunks whose joined byte length stays well under
+ * the OS `ARG_MAX` limit, so a single batched `git` invocation over hundreds of
+ * Mozilla-length paths cannot fail with `E2BIG`. The 96 KB budget is
+ * deliberately conservative — even the smallest historical `ARG_MAX` (256 KB)
+ * leaves room for the fixed git arguments plus the inherited environment.
+ *
+ * Chunk boundaries are output-neutral for every batched caller here: each
+ * caller merges the per-chunk results into a single Set/Map keyed by path, so
+ * how the paths are grouped across invocations never affects the result.
+ * @param paths - Pathspecs to chunk
+ * @param budgetBytes - Maximum joined byte length per chunk
+ * @returns Path chunks, each safe to pass as a single argv tail
+ */
+export function chunkPathspecs(paths: string[], budgetBytes = 96_000): string[][] {
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  let used = 0;
+  for (const path of paths) {
+    const cost = Buffer.byteLength(path) + 1;
+    if (current.length > 0 && used + cost > budgetBytes) {
+      chunks.push(current);
+      current = [];
+      used = 0;
+    }
+    current.push(path);
+    used += cost;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+/**
  * Configures git performance settings for large trees.
  * Enables index preloading, untracked cache, and the manyFiles feature
  * flag which significantly reduces `git add` / `git status` time on

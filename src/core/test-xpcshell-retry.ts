@@ -7,7 +7,20 @@ export interface XpcshellRetryClassification {
   nonXpcshell: readonly string[];
 }
 
-/** Removes a stale xpcshell install symlink and retries the focused mach test once. */
+/** Dispatches a (possibly suite-specific) mach test run, mirroring `testWithOutput`. */
+export type TestDispatch = (
+  engineDir: string,
+  testPaths: string[],
+  args: string[],
+  env?: Record<string, string>
+) => Promise<MachCommandResult>;
+
+/**
+ * Removes a stale xpcshell install symlink and retries the focused mach test
+ * once. The retry uses the same `dispatch` (suite-specific or generic) the
+ * caller is already running on, so an xpcshell-suite run repairs and re-runs
+ * via `mach xpcshell-test` rather than falling back to the generic command.
+ */
 export async function retryAfterXpcshellSymlinkRepair(
   engineDir: string,
   objDir: string | undefined,
@@ -15,7 +28,8 @@ export async function retryAfterXpcshellSymlinkRepair(
   classification: XpcshellRetryClassification,
   normalizedPaths: string[],
   extraArgs: string[],
-  env?: Record<string, string>
+  env?: Record<string, string>,
+  dispatch: TestDispatch = testWithOutput
 ): Promise<MachCommandResult> {
   if (
     result.exitCode !== 0 &&
@@ -29,8 +43,8 @@ export async function retryAfterXpcshellSymlinkRepair(
     );
     if (repaired) {
       return env
-        ? testWithOutput(engineDir, normalizedPaths, extraArgs, env)
-        : testWithOutput(engineDir, normalizedPaths, extraArgs);
+        ? dispatch(engineDir, normalizedPaths, extraArgs, env)
+        : dispatch(engineDir, normalizedPaths, extraArgs);
     }
   }
   return result;

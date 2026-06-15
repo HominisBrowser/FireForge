@@ -17,6 +17,7 @@ import {
 } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { commitExportedPatch } from '../core/patch-export.js';
+import { buildPatchQueueContext } from '../core/patch-lint.js';
 import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -268,13 +269,16 @@ export async function exportCommand(
       options.lintIgnore && options.lintIgnore.length > 0
         ? new Set<string>(options.lintIgnore)
         : undefined;
+    const patchQueueCtx = (await pathExists(paths.patches))
+      ? await buildPatchQueueContext(paths.patches)
+      : undefined;
     await runPatchLint(
       paths.engine,
       filesAffected,
       diff,
       config,
       options.skipLint,
-      undefined,
+      patchQueueCtx,
       exportIgnoreChecks,
       options.tier
     );

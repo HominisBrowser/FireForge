@@ -9,6 +9,7 @@ import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
+import { buildPatchQueueContext } from '../core/patch-lint.js';
 import {
   getClaimedFiles,
   loadPatchesManifest,
@@ -240,13 +241,19 @@ async function reExportSinglePatch(
     forceUnsafe: options.forceUnsafe === true,
   });
 
+  // Pass the whole-queue context so checkJs resolves cross-patch
+  // `resource:///` imports against the real owning sources (report scope
+  // stays this patch — see runPatchLint).
+  const patchQueueCtx = (await pathExists(paths.patches))
+    ? await buildPatchQueueContext(paths.patches)
+    : undefined;
   await runPatchLint(
     paths.engine,
     existingFiles,
     diffContent,
     config,
     options.skipLint,
-    undefined,
+    patchQueueCtx,
     ignoreChecks,
     effectiveTier
   );

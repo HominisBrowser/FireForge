@@ -3,11 +3,8 @@ import { dirname, join } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
-import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
-import { verbose } from '../utils/logger.js';
-import { hasRawCssColors, stripJsComments } from '../utils/regex.js';
-import { loadFurnaceConfig } from './furnace-config.js';
+import { stripJsComments } from '../utils/regex.js';
 import {
   type CommentStyle,
   containsUpstreamLicenseText,
@@ -17,6 +14,7 @@ import {
 } from './license-headers.js';
 import { invokePatchLintCheckJs } from './patch-lint-checkjs.js';
 import { lintChromeScriptJsDocForFile } from './patch-lint-chrome-jsdoc.js';
+import { lintPatchedCss } from './patch-lint-css.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
 import { AGGREGATE_PATCH_FILE } from './patch-lint-diff-tag.js';
 import { hasRelativeImport } from './patch-lint-imports.js';
@@ -36,6 +34,11 @@ import { resolvePatchOwnedChromeScripts, resolvePatchOwnedSysMjs } from './patch
 // import from a single module.
 
 export * from './patch-lint-reexports.js';
+
+// The CSS rule bodies live in `patch-lint-css.ts` (same per-file-budget
+// split as the other rule families); re-export the imported binding so
+// callers and tests keep importing `lintPatchedCss` from this module.
+export { lintPatchedCss };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -222,194 +225,6 @@ export function commentStyleForFile(file: string): CommentStyle | null {
   if (file.endsWith('.ftl')) return 'hash';
   if (isJsFile(file)) return 'js';
   return null;
-}
-
-// ---------------------------------------------------------------------------
-// CSS lint
-// ---------------------------------------------------------------------------
-
-/** Furnace token-lint inputs, or undefined when furnace.json is unavailable. */
-interface CssTokenContext {
-  tokenPrefix: string;
-  tokenAllowlist: Set<string>;
-  runtimeVariables: Set<string>;
-}
-
-/**
- * Loads the furnace token-prefix lint inputs gracefully — returns
- * undefined (skipping the token-prefix check) when furnace.json cannot
- * be loaded or no tokenPrefix is configured.
- */
-async function loadCssTokenContext(repoDir: string): Promise<CssTokenContext | undefined> {
-  try {
-    const root = join(repoDir, '..');
-    const furnaceConfig = await loadFurnaceConfig(root);
-    if (furnaceConfig.tokenPrefix) {
-      return {
-        tokenPrefix: furnaceConfig.tokenPrefix,
-        tokenAllowlist: new Set(furnaceConfig.tokenAllowlist ?? []),
-        runtimeVariables: new Set(furnaceConfig.runtimeVariables ?? []),
-      };
-    }
-  } catch (error: unknown) {
-    verbose(
-      `Skipping furnace token-prefix lint hints because furnace.json could not be loaded: ${toError(error).message}`
-    );
-  }
-  return undefined;
-}
-
-/**
- * Raw-color check for one patched CSS file, scoped to introduced lines
- * when diff context is available. Pushes onto `issues`.
- */
-function checkRawColorValues(
-  file: string,
-  rawCss: string,
-  addedLinesByFile: Map<string, string[]> | undefined,
-  config: FireForgeConfig | undefined,
-  issues: PatchLintIssue[]
-): void {
-  // Check only introduced raw color values when diff context is available.
-  // Skip files on the raw-color allowlist (exact path or basename match) and
-  // auto-exempt files under `browser/branding/` — those are the fork's
-  // visual identity assets (app-about dialogs, installer pages, branded
-  // CSS copied from Firefox's `unofficial` template) and belong to the
-  // design-decision layer the design-token system does not govern.
-  // Without this auto-exemption, every first-time setup's copied CSS
-  // failed `raw-color-value` with no actionable fix other than manually
-  // listing each path in `rawColorAllowlist`.
-  const allowlist = config?.patchLint?.rawColorAllowlist;
-  const isAllowlisted = allowlist?.some((entry) => file === entry || file.endsWith('/' + entry));
-  const isBranding = file.startsWith('browser/branding/');
-
-  if (!isAllowlisted && !isBranding) {
-    // Strip lines with inline fireforge-ignore: raw-color-value suppression.
-    // Check against rawCss (before comment stripping) so the CSS comment marker is still present.
-    const sourceForSuppression = addedLinesByFile
-      ? (addedLinesByFile.get(file) ?? []).join('\n')
-      : rawCss;
-    const suppressedContent = sourceForSuppression
-      .split('\n')
-      .filter((line) => !line.includes('fireforge-ignore: raw-color-value'))
-      .join('\n')
-      .replace(/\/\*[\s\S]*?\*\//g, '');
-
-    if (hasRawCssColors(suppressedContent)) {
-      issues.push({
-        file,
-        check: 'raw-color-value',
-        message:
-          'Raw color value found. Use CSS custom properties (var(--...)) for design token consistency.',
-        severity: 'error',
-      });
-    }
-  }
-}
-
-/**
- * Token-prefix check for one patched CSS file: flags `var(--x)` references
- * that match neither the configured prefix, the allowlist, the runtime
- * variables, nor a same-file declaration. Pushes onto `issues`.
- */
-function checkTokenPrefixViolations(
-  file: string,
-  cssContent: string,
-  addedLinesByFile: Map<string, string[]> | undefined,
-  tokenContext: CssTokenContext | undefined,
-  issues: PatchLintIssue[]
-): void {
-  // Check for non-tokenized custom properties. A variable that is both
-  // declared and consumed inside the same file is auto-exempted as a
-  // runtime state channel (see furnace.json → runtimeVariables).
-  //
-  // When diff context is available, scope the `var(...)` scan to
-  // added/modified lines only. `cssContent` (full-file) is still the
-  // source of `localDeclarations` so vars declared anywhere in the file
-  // are recognised as same-file refs regardless of where the consuming
-  // `var(...)` appears. Before this scoping change, a small edit to a
-  // Furnace override of a stock component (e.g. moz-card) produced a
-  // `token-prefix-violation` for every stock `var(--moz-card-*)` the
-  // upstream file already carried, because the scanner saw the full
-  // applied file and flagged each inherited reference as if the fork
-  // had introduced it.
-  if (tokenContext) {
-    const declarationPattern = /(?:^|[{;,\s])(--[\w-]+)\s*:/g;
-    const localDeclarations = new Set<string>();
-    let declMatch: RegExpExecArray | null;
-    while ((declMatch = declarationPattern.exec(cssContent)) !== null) {
-      const name = declMatch[1];
-      if (name) localDeclarations.add(name);
-    }
-
-    const prefixScanSource = addedLinesByFile
-      ? (addedLinesByFile.get(file) ?? []).join('\n').replace(/\/\*[\s\S]*?\*\//g, '')
-      : cssContent;
-
-    if (prefixScanSource.length > 0) {
-      const varPattern = /var\(\s*(--[\w-]+)/g;
-      const flaggedProps = new Set<string>();
-      let match: RegExpExecArray | null;
-      while ((match = varPattern.exec(prefixScanSource)) !== null) {
-        const prop = match[1];
-        if (!prop) continue;
-        if (prop.startsWith(tokenContext.tokenPrefix)) continue;
-        if (tokenContext.tokenAllowlist.has(prop)) continue;
-        if (tokenContext.runtimeVariables.has(prop)) continue;
-        if (localDeclarations.has(prop)) continue;
-        // De-duplicate per (file, prop) pair so the same introduced var
-        // used five times in the added hunk doesn't produce five
-        // identical issue entries.
-        if (flaggedProps.has(prop)) continue;
-        flaggedProps.add(prop);
-
-        issues.push({
-          file,
-          check: 'token-prefix-violation',
-          message: `CSS references var(${prop}) which does not match the required token prefix "${tokenContext.tokenPrefix}". Use a design token, add to tokenAllowlist, or (for runtime state channels) list the variable in runtimeVariables.`,
-          severity: 'error',
-        });
-      }
-    }
-  }
-}
-
-/**
- * Lints patched CSS files for introduced raw color values and non-tokenized
- * custom properties.
- *
- * @param repoDir - Absolute path to the engine (repository) directory
- * @param affectedFiles - File paths (relative to repoDir) affected by the patch
- * @param diffContent - Optional unified diff used to scope raw color checks to introduced lines
- * @returns Array of lint issues found
- */
-export async function lintPatchedCss(
-  repoDir: string,
-  affectedFiles: string[],
-  diffContent?: string,
-  config?: FireForgeConfig
-): Promise<PatchLintIssue[]> {
-  const cssFiles = affectedFiles.filter((f) => f.endsWith('.css'));
-  if (cssFiles.length === 0) return [];
-
-  const tokenContext = await loadCssTokenContext(repoDir);
-
-  const issues: PatchLintIssue[] = [];
-  const addedLinesByFile = diffContent ? extractAddedLinesPerFile(diffContent) : undefined;
-
-  for (const file of cssFiles) {
-    const filePath = join(repoDir, file);
-    if (!(await pathExists(filePath))) continue;
-
-    const rawCss = await readText(filePath);
-    // Strip block comments before scanning
-    const cssContent = rawCss.replace(/\/\*[\s\S]*?\*\//g, '');
-
-    checkRawColorValues(file, rawCss, addedLinesByFile, config, issues);
-    checkTokenPrefixViolations(file, cssContent, addedLinesByFile, tokenContext, issues);
-  }
-
-  return issues;
 }
 
 // ---------------------------------------------------------------------------
@@ -825,6 +640,36 @@ export async function lintModifiedFileHeaders(
 // ---------------------------------------------------------------------------
 
 /**
+ * Optional behaviour switches for {@link lintExportedPatch}.
+ */
+export interface LintExportedPatchOptions {
+  /**
+   * Skip the patch-size rules (`large-patch-files` / `large-patch-lines`).
+   * The ad-hoc `fireforge lint <files>` path passes a cross-patch file
+   * list that does not correspond to a single patch, so it suppresses the
+   * synthetic combined-list size check here and re-evaluates the size
+   * rules per owning patch instead — never synthesising a phantom
+   * oversized patch from the operator's file selection.
+   */
+  skipPatchSize?: boolean;
+  /**
+   * Restrict checkJs diagnostics to these repo-relative files; module
+   * resolution still spans every owned file in `patchQueueCtx`. Export and
+   * re-export pass the patch under export so cross-patch `resource:///`
+   * imports resolve against the whole queue while only that patch's
+   * findings surface.
+   */
+  checkJsReportScope?: ReadonlySet<string>;
+  /**
+   * Pre-computed checkJs issues for this patch. When provided, the internal
+   * checkJs invocation is skipped and these are appended verbatim — the
+   * per-patch lint path builds one queue-wide checkJs program and
+   * attributes findings per patch instead of rebuilding per patch.
+   */
+  precomputedCheckJs?: readonly PatchLintIssue[];
+}
+
+/**
  * Runs all patch lint checks and returns combined issues.
  *
  * @param repoDir - Absolute path to the engine directory
@@ -843,6 +688,8 @@ export async function lintModifiedFileHeaders(
  *   per-patch manifest context (re-export, per-patch lint) should
  *   pass this; aggregate-mode callers without a specific patch
  *   context skip it and fall through to auto-detection.
+ * @param options - Optional behaviour switches; see
+ *   {@link LintExportedPatchOptions}.
  * @returns Array of all lint issues found
  */
 export async function lintExportedPatch(
@@ -852,7 +699,8 @@ export async function lintExportedPatch(
   config: FireForgeConfig,
   patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext,
   ignoreChecks?: ReadonlySet<string>,
-  patchTier?: 'branding'
+  patchTier?: 'branding',
+  options?: LintExportedPatchOptions
 ): Promise<PatchLintIssue[]> {
   const newFiles = detectNewFilesInDiff(diffContent);
   const { textLines: lineCount } = countNonBinaryDiffLines(diffContent);
@@ -874,7 +722,9 @@ export async function lintExportedPatch(
   ]);
 
   const modCommentIssues = lintModificationComments(diffContent, config);
-  const sizeIssues = lintPatchSize(affectedFiles, lineCount, patchTier);
+  const sizeIssues = options?.skipPatchSize
+    ? []
+    : lintPatchSize(affectedFiles, lineCount, patchTier);
 
   const issues = [
     ...sizeIssues,
@@ -885,13 +735,18 @@ export async function lintExportedPatch(
     ...modCommentIssues,
   ];
 
-  if (config.patchLint?.checkJs) {
+  if (options?.precomputedCheckJs) {
+    // Per-patch lint built one queue-wide program and already attributed
+    // this patch's findings — append them instead of rebuilding the program.
+    issues.push(...options.precomputedCheckJs);
+  } else if (config.patchLint?.checkJs) {
     issues.push(
       ...(await invokePatchLintCheckJs(
         repoDir,
         patchOwnedFiles,
         config.patchLint,
-        dirname(repoDir)
+        dirname(repoDir),
+        options?.checkJsReportScope
       ))
     );
   }

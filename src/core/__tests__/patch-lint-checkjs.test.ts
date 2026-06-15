@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { runCheckJs } from '../patch-lint-checkjs.js';
+import { runCheckJs, runCheckJsGrouped } from '../patch-lint-checkjs.js';
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
@@ -581,6 +581,223 @@ describe('runCheckJs', () => {
       if (!issue) throw new Error('expected one issue');
       expect(issue.check).toBe('checkjs-type-error');
       expect(issue.message).toMatch(/Extra TypeScript shim not found/);
+    } finally {
+      await rm(tmpProject, { recursive: true, force: true });
+    }
+  });
+
+  // ── Item B2 / C (0.32.0): scope split — one program, per-file attribution ──
+
+  it('runCheckJsGrouped attributes each diagnostic to its originating file', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-grouped-'));
+    await writeFile(join(tmpDir, 'good.sys.mjs'), 'export const ok = 1;\n');
+    await writeFile(
+      join(tmpDir, 'bad.sys.mjs'),
+      [
+        '/** @returns {number} */',
+        'export function f() {',
+        "  return 'not a number';",
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const { byFile, global } = await runCheckJsGrouped(
+        tmpDir,
+        new Set(['good.sys.mjs', 'bad.sys.mjs'])
+      );
+      expect(global).toHaveLength(0);
+      // The error is attributed to bad.sys.mjs only — not duplicated, not on good.
+      expect(byFile.has('good.sys.mjs')).toBe(false);
+      expect(byFile.get('bad.sys.mjs')?.length ?? 0).toBeGreaterThanOrEqual(1);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reportScope restricts reported diagnostics while resolution spans every owned file', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-scope-'));
+    await writeFile(
+      join(tmpDir, 'A.sys.mjs'),
+      [
+        '/**',
+        ' * @param {number} n - input',
+        ' * @returns {number} doubled',
+        ' */',
+        'export function dbl(n) {',
+        '  return n * 2;',
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(
+      join(tmpDir, 'B.sys.mjs'),
+      [
+        "import { dbl } from 'resource:///modules/A.sys.mjs';",
+        '/** @returns {number} The doubled value */',
+        'export function use() {',
+        "  return dbl('not a number');",
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const owned = new Set(['A.sys.mjs', 'B.sys.mjs']);
+      // B misuses A's API. Resolution spans both (no ambient stub needed);
+      // scoping the report to B surfaces the cross-patch type error.
+      const reportedForB = await runCheckJs(
+        tmpDir,
+        owned,
+        undefined,
+        undefined,
+        { strict: true },
+        new Set(['B.sys.mjs'])
+      );
+      const bErrors = reportedForB.filter((i) => i.check === 'checkjs-type-error');
+      expect(bErrors.length).toBeGreaterThanOrEqual(1);
+      expect(bErrors.every((i) => i.file === 'B.sys.mjs')).toBe(true);
+
+      // Scoping the report to A excludes B's finding — A itself is clean.
+      const reportedForA = await runCheckJs(
+        tmpDir,
+        owned,
+        undefined,
+        undefined,
+        { strict: true },
+        new Set(['A.sys.mjs'])
+      );
+      expect(reportedForA.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('honours a checkJsCompilerOptions paths mapping to type a non-owned module (route 2)', async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-paths-'));
+    await mkdir(join(tmpDir, 'lib'), { recursive: true });
+    await writeFile(
+      join(tmpDir, 'lib', 'Api.sys.mjs'),
+      [
+        '/**',
+        ' * @returns {number} a number',
+        ' */',
+        'export function getNum() {',
+        '  return 1;',
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(
+      join(tmpDir, 'consumer.sys.mjs'),
+      [
+        "import { getNum } from 'resource:///custom/Api.sys.mjs';",
+        '/** @returns {string} A string */',
+        'export function use() {',
+        '  return getNum();',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const owned = new Set(['consumer.sys.mjs']);
+      // Without paths the import is unresolved (any) — no type error surfaces.
+      const noPaths = await runCheckJs(tmpDir, owned, undefined, undefined, { strict: true });
+      expect(noPaths.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+
+      // With the paths mapping the import resolves to lib/Api.sys.mjs, so
+      // returning a number where a string is declared errors.
+      const withPaths = await runCheckJs(tmpDir, owned, undefined, undefined, {
+        strict: true,
+        compilerOptions: { paths: { 'resource:///custom/*': ['lib/*'] } },
+      });
+      const errors = withPaths.filter((i) => i.check === 'checkjs-type-error');
+      expect(errors.length).toBeGreaterThanOrEqual(1);
+      expect(errors.some((i) => i.file === 'consumer.sys.mjs')).toBe(true);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('honours a triple-slash <reference> inside the extra shim instead of dropping it', async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpProject = await mkdtemp(join(tmpdir(), 'ff-checkjs-tripleslash-'));
+    const tmpEngine = join(tmpProject, 'engine');
+    await mkdir(join(tmpProject, 'refs'), { recursive: true });
+    await mkdir(tmpEngine, { recursive: true });
+    // The symbol lives in a referenced file, pulled in only if the
+    // triple-slash directive is honoured.
+    await writeFile(
+      join(tmpProject, 'refs', 'customGreeting.d.ts'),
+      'declare function customGreeting(): string;\n'
+    );
+    await writeFile(
+      join(tmpProject, 'extra.d.ts'),
+      '/// <reference path="./refs/customGreeting.d.ts" />\n'
+    );
+    await writeFile(
+      join(tmpEngine, 'Use.sys.mjs'),
+      [
+        '/** @returns {number} A number */',
+        'export function badNumber() {',
+        '  /** @type {string} */',
+        '  const s = customGreeting();',
+        '  return s;',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+    mockReadText.mockImplementation(async (p) => {
+      const { readFile } = await import('node:fs/promises');
+      return readFile(p, 'utf8');
+    });
+
+    try {
+      const issues = await runCheckJs(
+        tmpEngine,
+        new Set(['Use.sys.mjs']),
+        'extra.d.ts',
+        tmpProject
+      );
+      // The referenced declaration was inlined, so `customGreeting()` is typed
+      // as string and the number-return mismatch is detected (rather than the
+      // symbol being unknown and suppressed).
+      expect(
+        issues.some((i) => /Type 'string' is not assignable to type 'number'/.test(i.message))
+      ).toBe(true);
     } finally {
       await rm(tmpProject, { recursive: true, force: true });
     }

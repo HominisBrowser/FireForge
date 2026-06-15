@@ -279,13 +279,16 @@ export async function reExportFilesInPlace(
   );
   const ignoreChecks = effectiveLintIgnore ? new Set<string>(effectiveLintIgnore) : undefined;
 
+  const patchQueueCtx = (await pathExists(paths.patches))
+    ? await buildPatchQueueContext(paths.patches)
+    : undefined;
   await runPatchLint(
     paths.engine,
     actualProjectedFiles,
     projectedDiff,
     config,
     options.skipLint,
-    undefined,
+    patchQueueCtx,
     ignoreChecks,
     effectiveTier
   );

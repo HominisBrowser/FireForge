@@ -39,6 +39,7 @@ vi.mock('../../utils/fs.js', () => ({
   readJson: vi.fn(),
   readText: vi.fn(),
   writeText: vi.fn(),
+  ensureDir: vi.fn(),
 }));
 
 vi.mock('../../utils/process.js', () => ({
@@ -941,5 +942,37 @@ describe('mach command execution', () => {
     expect(warnMock).toHaveBeenCalledWith(
       expect.stringContaining('post-failure configure summary')
     );
+  });
+
+  it('injects the resource-monitor degrade shim into mach build and build faster', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { ensureDir, writeText } = await import('../../utils/fs.js');
+    await primePythonResolution();
+    vi.mocked(execInheritCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+
+    await build('/engine');
+    await buildUI('/engine');
+
+    // The sitecustomize degrade shim is written (degrades psutil failures).
+    expect(ensureDir).toHaveBeenCalledWith(expect.stringContaining('fireforge-mach-resource-shim'));
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining('sitecustomize.py'),
+      expect.stringContaining('virtual_memory')
+    );
+
+    // Both build entries spawn mach with PYTHONPATH pointing at the shim dir,
+    // so neither depends on the broken host resource monitor.
+    const callsFor = (suffix: string[]): Record<string, unknown> | undefined => {
+      const call = vi
+        .mocked(execInheritCapture)
+        .mock.calls.find(
+          (c) => Array.isArray(c[1]) && c[1].slice(1).join(' ') === suffix.join(' ')
+        );
+      return call?.[2] as Record<string, unknown> | undefined;
+    };
+    const buildEnv = (callsFor(['build'])?.['env'] ?? {}) as Record<string, string>;
+    const buildFasterEnv = (callsFor(['build', 'faster'])?.['env'] ?? {}) as Record<string, string>;
+    expect(buildEnv['PYTHONPATH']).toContain('fireforge-mach-resource-shim');
+    expect(buildFasterEnv['PYTHONPATH']).toContain('fireforge-mach-resource-shim');
   });
 });

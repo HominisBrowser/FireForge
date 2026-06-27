@@ -522,5 +522,37 @@ function parseTypecheckBlock(rec: ReturnType<typeof parseObject>): TypecheckConf
     out.extraShim = parseShimPath(extraShim, 'typecheck.extraShim');
   }
 
+  const overrides = parseTypecheckProjectOverrides(rec.raw('projectOverrides'), projects);
+  if (overrides) {
+    out.projectOverrides = overrides;
+  }
+
+  return out;
+}
+
+/**
+ * Validates the optional `typecheck.projectOverrides` map: keys must name a
+ * declared project, values must be either `null` (opt out of the shared extra
+ * shim) or a contained relative `.d.ts` path (per-project override). Returns
+ * `undefined` when the field is absent.
+ */
+function parseTypecheckProjectOverrides(
+  raw: unknown,
+  projects: readonly string[]
+): Record<string, string | null> | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new ConfigError('Config field "typecheck.projectOverrides" must be an object');
+  }
+  const known = new Set(projects);
+  const out: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!known.has(key)) {
+      throw new ConfigError(
+        `Config field "typecheck.projectOverrides" key "${key}" does not match any entry in "typecheck.projects"`
+      );
+    }
+    out[key] = value === null ? null : parseShimPath(value, `typecheck.projectOverrides["${key}"]`);
+  }
   return out;
 }

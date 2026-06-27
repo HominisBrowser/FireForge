@@ -6,11 +6,13 @@
 
 export {
   buildPatchQueueContext,
+  collectForwardImportEdges,
   collectNewFileCreatorsByPath,
   extractImportSpecifiers,
   extractImportSpecifiersWithLines,
   findForwardImportIgnoreLines,
   FORWARD_IMPORT_IGNORE_MARKER,
+  type ForwardImportEdge,
   isForwardImportableFile,
   lintPatchQueue,
   lintPatchQueueDuplicateCreations,

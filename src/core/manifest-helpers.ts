@@ -2,6 +2,28 @@
 import type { JarMnToken, MozBuildToken } from './manifest-tokenizers.js';
 
 /**
+ * Ordering comparator matching mozbuild's `StrictOrderingOnAppendList`
+ * (`mozbuild.util.UnsortedError`): entries are compared **case-insensitively**,
+ * so `HominisAppearanceController` (`appe`) sorts before
+ * `HominisAppMenuIntegration` (`appm`) even though a raw byte comparison
+ * places the uppercase `M` (0x4D) before the lowercase `e` (0x65).
+ *
+ * A naive `a > b` insertion landed the new entry in byte order, which
+ * `mach configure` then rejected with `UnsortedError`, aborting the build.
+ * Ties on the lower-cased key fall back to byte order so the comparison is
+ * total and stable.
+ */
+function mozbuildSortCompare(a: string, b: string): number {
+  const la = a.toLowerCase();
+  const lb = b.toLowerCase();
+  if (la < lb) return -1;
+  if (la > lb) return 1;
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/**
  * Inserts a line into an array of lines in alphabetical order within a
  * specified range. The comparison key is extracted from each line.
  *
@@ -26,7 +48,7 @@ export function findAlphabeticalPosition(
   }
 
   const isSorted = existingKeys.every(
-    (k, idx) => idx === 0 || k.localeCompare(existingKeys[idx - 1] ?? '') >= 0
+    (k, idx) => idx === 0 || mozbuildSortCompare(k, existingKeys[idx - 1] ?? '') >= 0
   );
   if (!isSorted) {
     return { insertIndex: endLine, previousEntry: undefined };
@@ -41,7 +63,7 @@ export function findAlphabeticalPosition(
     const key = extractKey(line);
     if (key === undefined) continue;
 
-    if (key > newKey) {
+    if (mozbuildSortCompare(key, newKey) > 0) {
       insertIndex = i;
       break;
     }
@@ -86,7 +108,7 @@ export function findAlphabeticalTokenPosition(
     if (!entry.parsed) continue;
     const match = sectionTargetPattern.exec(entry.parsed.target);
     const key = match?.[1] ?? entry.parsed.target;
-    if (key > newKey) {
+    if (mozbuildSortCompare(key, newKey) > 0) {
       insertLineIndex = entry.lineIndex;
       break;
     }
@@ -117,7 +139,7 @@ export function findAlphabeticalMozBuildPosition(
 
   for (const item of items) {
     const key = item.parsed?.value ?? '';
-    if (key > newKey) {
+    if (mozbuildSortCompare(key, newKey) > 0) {
       insertLineIndex = item.lineIndex;
       break;
     }

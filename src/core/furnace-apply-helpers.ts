@@ -13,23 +13,15 @@ import type {
 import { toError } from '../utils/errors.js';
 import { copyFile, ensureDir, pathExists, readText, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { buildCustomDryRunActions } from './furnace-apply-dry-run.js';
 import {
   applyCustomFtlFile,
-  describeLocaleFtlJarMnRegistration,
+  applySharedFtlPrune,
   removeCustomFtlJarMnEntry,
 } from './furnace-apply-ftl.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
-import {
-  deployFileWithFragments,
-  describeFragmentExpansion,
-  SHARED_FRAGMENTS_DIR,
-} from './furnace-css-fragments.js';
-import {
-  addCustomElementRegistration,
-  addJarMnEntries,
-  validateCustomElementRegistration,
-  validateJarMnInsertionForFiles,
-} from './furnace-registration.js';
+import { deployFileWithFragments, SHARED_FRAGMENTS_DIR } from './furnace-css-fragments.js';
+import { addCustomElementRegistration, addJarMnEntries } from './furnace-registration.js';
 import { recordCreatedDir, type RollbackJournal, snapshotFile } from './furnace-rollback.js';
 import { checkRegistrationConsistency } from './furnace-validate-registration.js';
 import { isGitRepository } from './git.js';
@@ -374,98 +366,6 @@ export async function hasCustomEngineDrift(
   return false;
 }
 
-async function buildCustomDryRunActions(
-  name: string,
-  componentDir: string,
-  engineDir: string,
-  config: CustomComponentConfig,
-  targetDir: string,
-  entries: DirectoryEntry[],
-  ftlDir: string
-): Promise<{ actions: DryRunAction[]; stepErrors: StepError[] }> {
-  const actions: DryRunAction[] = [];
-  const stepErrors: StepError[] = [];
-
-  for (const entry of entries) {
-    if (!isRegularFile(entry)) continue;
-    if (!entry.name.endsWith('.mjs') && !entry.name.endsWith('.css')) continue;
-    const fragmentNote = await describeFragmentExpansion(join(componentDir, entry.name));
-    actions.push({
-      component: name,
-      action: fragmentNote ? 'expand-fragments' : 'copy',
-      source: join(componentDir, entry.name),
-      target: join(targetDir, entry.name),
-      description: `Copy ${entry.name} to ${config.targetPath}${fragmentNote}`,
-    });
-  }
-
-  // Per-component .ftl handling is skipped when the component opts into a
-  // shared feature-scoped bundle via `sharedFtl`. The shared file is
-  // registered (and copied) by whoever owns the feature bundle, so
-  // emitting a copy-ftl / register-jar action here would duplicate (or
-  // later orphan) the entry.
-  if (config.localized && !config.sharedFtl) {
-    const ftlFile = `${name}.ftl`;
-    const ftlSrc = join(componentDir, ftlFile);
-    if (await pathExists(ftlSrc)) {
-      actions.push({
-        component: name,
-        action: 'copy-ftl',
-        source: ftlSrc,
-        target: join(engineDir, ftlDir, ftlFile),
-        description: `Copy ${ftlFile} to ${ftlDir}`,
-      });
-
-      const localeAction = describeLocaleFtlJarMnRegistration(name, ftlDir, ftlFile);
-      if (localeAction) {
-        actions.push(localeAction);
-      }
-    }
-  }
-
-  if (config.register) {
-    try {
-      const modulePath = `chrome://global/content/elements/${name}.mjs`;
-      await validateCustomElementRegistration(engineDir, name, modulePath);
-    } catch (error: unknown) {
-      stepErrors.push({
-        step: 'customElements.js registration',
-        error: toError(error).message,
-      });
-    }
-    actions.push({
-      component: name,
-      action: 'register-ce',
-      description: `Register ${name} in customElements.js (DOMContentLoaded block)`,
-    });
-  }
-
-  const copiedFileNames = entries
-    .filter(
-      (entry) =>
-        isRegularFile(entry) && (entry.name.endsWith('.mjs') || entry.name.endsWith('.css'))
-    )
-    .map((entry) => entry.name);
-
-  if (copiedFileNames.length > 0) {
-    try {
-      await validateJarMnInsertionForFiles(engineDir, name, copiedFileNames);
-    } catch (error: unknown) {
-      stepErrors.push({
-        step: 'jar.mn registration',
-        error: toError(error).message,
-      });
-    }
-    actions.push({
-      component: name,
-      action: 'register-jar',
-      description: `Add ${copiedFileNames.join(', ')} to jar.mn`,
-    });
-  }
-
-  return { actions, stepErrors };
-}
-
 /** Extra knobs threaded into `applyCustomComponent` from the project config. */
 export interface CustomApplyOptions {
   /**
@@ -564,6 +464,19 @@ export async function applyCustomComponent(
       name,
       componentDir,
       ftlDir,
+      affectedPaths,
+      stepErrors,
+      rollbackJournal
+    );
+  } else if (config.localized && config.sharedFtl) {
+    // Drop any dangling per-widget locale jar.mn entry that would point at a
+    // non-existent `<chromeSubPath>/<name>.ftl` and fail `mach build`. The
+    // shared bundle (a different chrome path/base name) is never touched.
+    await applySharedFtlPrune(
+      engineDir,
+      name,
+      ftlDir,
+      config,
       affectedPaths,
       stepErrors,
       rollbackJournal

@@ -180,6 +180,77 @@ describe('FTL localization lifecycle', () => {
       const ftlCalls = mockCopyFile.mock.calls.filter((call) => call[1].endsWith('.ftl'));
       expect(ftlCalls).toHaveLength(0);
     });
+
+    it('prunes a dangling per-widget locale jar.mn entry for a sharedFtl widget', async () => {
+      // Field report: a localized sharedFtl widget (moz-hominis-settings) had
+      // a stale `locale/@AB_CD@/toolkit/global/<name>.ftl` line — written by an
+      // older FireForge — pointing at a .ftl that does not exist, so
+      // `mach build` failed hard. Apply must drop that per-widget line while
+      // leaving the shared bundle's own line (browser/...) intact.
+      mockReaddir.mockResolvedValueOnce([fakeEntry('mybrowser-dock-button.mjs')] as never);
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue(
+        [
+          '@AB_CD@.jar:',
+          '  locale/@AB_CD@/browser/mybrowser-dock.ftl (%browser/mybrowser-dock.ftl)',
+          '  locale/@AB_CD@/toolkit/global/mybrowser-dock-button.ftl (%toolkit/global/mybrowser-dock-button.ftl)',
+        ].join('\n')
+      );
+
+      const { removeLocaleFtlJarMnEntry } = await import('../furnace-registration.js');
+
+      const result = await applyCustomComponent(
+        '/engine',
+        'mybrowser-dock-button',
+        '/comp/mybrowser-dock-button',
+        {
+          description: 'Dock button',
+          targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
+          register: false,
+          localized: true,
+          sharedFtl: 'browser/mybrowser-dock.ftl',
+        },
+        FTL_DIR
+      );
+
+      // The per-widget toolkit/global entry is pruned via removeLocaleFtlJarMnEntry;
+      // the shared bundle line (browser/...) is never targeted.
+      expect(removeLocaleFtlJarMnEntry).toHaveBeenCalledWith(
+        '/engine',
+        'toolkit/locales/jar.mn',
+        'mybrowser-dock-button',
+        'toolkit/global'
+      );
+      expect(result.affectedPaths).toContain('toolkit/locales/jar.mn');
+      expect(result.stepErrors).toHaveLength(0);
+    });
+
+    it('does not touch the locale jar.mn when no dangling entry exists', async () => {
+      mockReaddir.mockResolvedValueOnce([fakeEntry('mybrowser-dock-button.mjs')] as never);
+      mockPathExists.mockResolvedValue(true);
+      // Only the shared bundle line is present — nothing dangling to prune.
+      mockReadText.mockResolvedValue(
+        '@AB_CD@.jar:\n  locale/@AB_CD@/browser/mybrowser-dock.ftl (%browser/mybrowser-dock.ftl)\n'
+      );
+
+      const { removeLocaleFtlJarMnEntry } = await import('../furnace-registration.js');
+
+      await applyCustomComponent(
+        '/engine',
+        'mybrowser-dock-button',
+        '/comp/mybrowser-dock-button',
+        {
+          description: 'Dock button',
+          targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
+          register: false,
+          localized: true,
+          sharedFtl: 'browser/mybrowser-dock.ftl',
+        },
+        FTL_DIR
+      );
+
+      expect(removeLocaleFtlJarMnEntry).not.toHaveBeenCalled();
+    });
   });
 
   describe('applyOverrideComponent copies FTL files to shared Fluent tree for full overrides', () => {

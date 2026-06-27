@@ -505,6 +505,48 @@ describe('validateConfig', () => {
     ).toThrow('Config field "typecheck.extraShim" must be a project-relative path');
   });
 
+  it('parses typecheck.projectOverrides (per-project shim override / opt-out)', () => {
+    const config = validateConfig({
+      ...makeValidConfig(),
+      typecheck: {
+        projects: ['a/jsconfig.json', 'b/jsconfig.json'],
+        extraShim: 'shims/hub.d.ts',
+        projectOverrides: { 'a/jsconfig.json': null, 'b/jsconfig.json': 'shims/b.d.ts' },
+      },
+    });
+    expect(config.typecheck?.projectOverrides).toEqual({
+      'a/jsconfig.json': null,
+      'b/jsconfig.json': 'shims/b.d.ts',
+    });
+
+    // Non-object map.
+    expect(() =>
+      validateConfig({
+        ...makeValidConfig(),
+        typecheck: { projects: ['a/jsconfig.json'], projectOverrides: 'bad' },
+      })
+    ).toThrow('Config field "typecheck.projectOverrides" must be an object');
+
+    // Key not in projects.
+    expect(() =>
+      validateConfig({
+        ...makeValidConfig(),
+        typecheck: { projects: ['a/jsconfig.json'], projectOverrides: { 'c/jsconfig.json': null } },
+      })
+    ).toThrow(/does not match any entry in "typecheck.projects"/);
+
+    // Override value with a non-relative path.
+    expect(() =>
+      validateConfig({
+        ...makeValidConfig(),
+        typecheck: {
+          projects: ['a/jsconfig.json'],
+          projectOverrides: { 'a/jsconfig.json': '/abs/shim.d.ts' },
+        },
+      })
+    ).toThrow(/must be a project-relative path/);
+  });
+
   it('returns config.typecheck === undefined when the block is absent (default-off)', () => {
     expect(validateConfig(makeValidConfig()).typecheck).toBeUndefined();
   });

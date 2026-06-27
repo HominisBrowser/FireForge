@@ -533,6 +533,162 @@ describe('addToken', () => {
   });
 });
 
+const MOCK_TOKENS_CSS_WITH_VARIANT = `:root {
+  /* ================================================= */
+  /* = Colors — Canvas                              = */
+  /* ================================================= */
+  --testbrowser-canvas-bg: var(--background-color-box); /* auto */
+}
+
+:root[data-skin="precision"] {
+  --testbrowser-canvas-bg: #fff; /* static */
+}
+`;
+
+/** Mirrors how token coverage recognises a custom-property declaration. */
+const TOKEN_DECL_REGEX = /^\s*(--[\w-]+)\s*:/;
+
+function findTokensCssWrite(): string {
+  const cssCall = mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'));
+  return cssCall?.[1] ?? '';
+}
+
+describe('addToken --variant', () => {
+  it('creates the :root[attr] block when absent and inserts the declaration into it', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-canvas-bg',
+      value: '#101010',
+      category: 'Colors — Canvas',
+      mode: 'static',
+      variant: '[data-skin=precision]',
+    });
+
+    expect(result.cssAdded).toBe(true);
+    expect(result.skipped).toBe(false);
+    // Variant overrides are CSS-only — the base token owns the docs row.
+    expect(result.docsAdded).toBe(false);
+
+    const css = findTokensCssWrite();
+    // Unquoted --variant is normalized to the quoted Mozilla form.
+    const blockIdx = css.indexOf(':root[data-skin="precision"] {');
+    expect(blockIdx).toBeGreaterThan(-1);
+
+    // The declaration sits inside the new block (after its `{`, before `}`).
+    const declIdx = css.indexOf('--testbrowser-canvas-bg: #101010;', blockIdx);
+    const blockCloseIdx = css.indexOf('}', blockIdx);
+    expect(declIdx).toBeGreaterThan(blockIdx);
+    expect(declIdx).toBeLessThan(blockCloseIdx);
+
+    // New block lands after the base :root and before the dark @media block.
+    expect(blockIdx).toBeLessThan(css.indexOf('@media (prefers-color-scheme: dark)'));
+  });
+
+  it('appends into an existing :root[attr] block without creating a second one', async () => {
+    mockReadText.mockImplementation(
+      makeReadTextImpl(MOCK_TOKENS_CSS_WITH_VARIANT, MOCK_TOKENS_DOC)
+    );
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-canvas-fg',
+      value: '#eee',
+      category: 'Colors — Canvas',
+      mode: 'static',
+      variant: '[data-skin="precision"]',
+    });
+
+    expect(result.cssAdded).toBe(true);
+    const css = findTokensCssWrite();
+    // Exactly one precision block.
+    const occurrences = css.split(':root[data-skin="precision"]').length - 1;
+    expect(occurrences).toBe(1);
+    // Both the pre-existing and the new declaration live in that block.
+    expect(css).toContain('--testbrowser-canvas-bg: #fff;');
+    expect(css).toContain('--testbrowser-canvas-fg: #eee;');
+  });
+
+  it('is idempotent within the variant block', async () => {
+    mockReadText.mockImplementation(
+      makeReadTextImpl(MOCK_TOKENS_CSS_WITH_VARIANT, MOCK_TOKENS_DOC)
+    );
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-canvas-bg',
+      value: '#fff',
+      category: 'Colors — Canvas',
+      mode: 'static',
+      variant: '[data-skin=precision]',
+    });
+
+    expect(result.skipped).toBe(true);
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('supports boolean attribute variants like [data-private]', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-canvas-bg',
+      value: '#000',
+      category: 'Colors — Canvas',
+      mode: 'static',
+      variant: '[data-private]',
+    });
+
+    expect(result.cssAdded).toBe(true);
+    expect(findTokensCssWrite()).toContain(':root[data-private] {');
+  });
+
+  it('produces a declaration token coverage still recognises', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await addToken('/project', {
+      tokenName: '--testbrowser-canvas-bg',
+      value: '#101010',
+      category: 'Colors — Canvas',
+      mode: 'static',
+      variant: '[data-skin=precision]',
+    });
+
+    const css = findTokensCssWrite();
+    const declared = css
+      .split('\n')
+      .map((line) => TOKEN_DECL_REGEX.exec(line)?.[1])
+      .filter((name): name is string => name !== undefined);
+    expect(declared).toContain('--testbrowser-canvas-bg');
+  });
+
+  it('rejects an invalid --variant selector', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-canvas-bg',
+        value: '#101010',
+        category: 'Colors — Canvas',
+        mode: 'static',
+        variant: '.not-an-attr',
+      })
+    ).rejects.toThrow(/--variant/);
+  });
+
+  it('rejects combining --variant with --mode override', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-canvas-bg',
+        value: '#101010',
+        category: 'Colors — Canvas',
+        mode: 'override',
+        darkValue: '#000',
+        variant: '[data-skin=precision]',
+      })
+    ).rejects.toThrow(/Cannot combine --variant with --mode override/);
+  });
+});
+
 describe('addToken --create-category', () => {
   it('rejects a missing category without the flag and advertises --create-category', async () => {
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));

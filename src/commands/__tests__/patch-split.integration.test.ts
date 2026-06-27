@@ -203,6 +203,56 @@ describe('patch split integration', () => {
     expect(lintPatchQueue(ctx).filter((i) => i.severity === 'error')).toEqual([]);
   });
 
+  it('auto-declares the forward edge a split introduces into the new patch', async () => {
+    // The remaining source still imports a helper that moves into the new
+    // (later) patch — a forward edge the split itself creates, with no prior
+    // declaration. Before the fix, the projected lint flagged it and the
+    // split refused (the real per-patch gate would have been 0/0 once
+    // declared). Now the split auto-declares it: the dry-run projection is
+    // clean (no refusal) AND the committed queue lints clean.
+    const helperPath = 'browser/modules/Helper.sys.mjs';
+    const importerPath = 'browser/modules/Importer.sys.mjs';
+    await writeFiles(engineDir, {
+      [helperPath]: 'export const H = 1;\n',
+      [importerPath]:
+        'import { H } from "resource:///modules/Helper.sys.mjs";\nexport const I = H;\n',
+    });
+
+    await seedManifest(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-feature.patch', 1, [importerPath, helperPath]),
+        body: '(stale)',
+      },
+    ]);
+
+    // No --force-unsafe: if the projected lint flagged the forward edge,
+    // confirmDestructive would refuse and this would throw.
+    await patchSplitCommand(projectRoot, '001-infra-feature.patch', {
+      files: [helperPath],
+      name: 'helper',
+      yes: true,
+      skipLint: true,
+    });
+
+    const manifest = await readManifest(patchesDir);
+    const source = manifest.patches.find((p) => p.filename === '001-infra-feature.patch');
+    const split = manifest.patches.find((p) => p.filename === '002-infra-helper.patch');
+    expect(split?.filesAffected).toEqual([helperPath]);
+    // The split auto-wrote the staged forward-import declaration onto the
+    // source, owner pointing at the freshly created patch.
+    const decl = source?.stagedDependencies?.forwardImports?.[0];
+    expect(decl).toMatchObject({
+      file: importerPath,
+      specifier: 'resource:///modules/Helper.sys.mjs',
+      creates: helperPath,
+      owner: '002-infra-helper.patch',
+    });
+
+    // The committed queue lints clean end to end — matching the real gate.
+    const ctx = await buildPatchQueueContext(patchesDir);
+    expect(lintPatchQueue(ctx).filter((i) => i.severity === 'error')).toEqual([]);
+  });
+
   it('refuses files the source does not own', async () => {
     await seedManifest(patchesDir, [
       { metadata: makeMetadata('001-infra-feature.patch', 1, [FILE_A]), body: '(stale)' },

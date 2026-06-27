@@ -742,6 +742,11 @@ export interface TokenAddOptions {
   dryRun?: boolean;
   /** Declare the category banner in the tokens CSS when it does not exist yet. */
   createCategory?: boolean;
+  /**
+   * Attribute selector fragment (e.g. `[data-skin=precision]` or
+   * `[data-private]`) routing the declaration into a `:root<variant>` block.
+   */
+  variant?: string;
 }
 
 /**

@@ -185,4 +185,96 @@ describe('runTypecheck', () => {
       false
     );
   });
+
+  /** Writes a jsconfig + a use.mjs that exercises the shim's HubBase signature. */
+  async function writeShimProject(
+    root: string,
+    name: string,
+    mkdir: typeof import('node:fs/promises').mkdir,
+    writeFile: typeof import('node:fs/promises').writeFile
+  ): Promise<void> {
+    await mkdir(join(root, name), { recursive: true });
+    await writeFile(
+      join(root, name, 'jsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {
+          target: 'ES2022',
+          module: 'ES2022',
+          moduleResolution: 'Bundler',
+          allowJs: true,
+          checkJs: true,
+          noEmit: true,
+          skipLibCheck: true,
+        },
+        include: ['use.mjs'],
+      }) + '\n'
+    );
+    // With the shim, `new HubBase().tag({ mode: "y" })` errors (y ∉ {"x"}).
+    // Without the shim, HubBase is unknown → TS2304, which is suppressed.
+    await writeFile(
+      join(root, name, 'use.mjs'),
+      ['export function f() {', '  new HubBase().tag({ mode: "y" });', '}', ''].join('\n')
+    );
+  }
+
+  it('lets a project opt out of the shared extraShim via projectOverrides: null', async () => {
+    const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const root = await mkdtemp(join(tmpdir(), 'ff-typecheck-perproject-'));
+    try {
+      await writeFile(
+        join(root, 'hub.d.ts'),
+        'declare class HubBase { tag(init: { mode: "x" }): void; }\n'
+      );
+      await writeShimProject(root, 'a', mkdir, writeFile);
+      await writeShimProject(root, 'b', mkdir, writeFile);
+
+      const results = await runTypecheck(root, {
+        projects: ['a/jsconfig.json', 'b/jsconfig.json'],
+        extraShim: 'hub.d.ts',
+        projectOverrides: { 'b/jsconfig.json': null },
+      });
+
+      const a = results.find((r) => r.project === 'a/jsconfig.json');
+      const b = results.find((r) => r.project === 'b/jsconfig.json');
+      // Project A absorbed the shim → the signature mismatch surfaces.
+      expect(a?.issues.some((i) => /not assignable to type '"x"'/.test(i.message))).toBe(true);
+      // Project B opted out → it never saw HubBase, so no error (TS2304 suppressed).
+      expect(b?.issues.filter((i) => i.category === 'error')).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('lets a project override the shared extraShim with its own via projectOverrides', async () => {
+    const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const root = await mkdtemp(join(tmpdir(), 'ff-typecheck-override-'));
+    try {
+      // The shared hub rejects mode "y"; the b-only shim accepts it.
+      await writeFile(
+        join(root, 'hub.d.ts'),
+        'declare class HubBase { tag(init: { mode: "x" }): void; }\n'
+      );
+      await writeFile(
+        join(root, 'b-only.d.ts'),
+        'declare class HubBase { tag(init: { mode: "y" }): void; }\n'
+      );
+      await writeShimProject(root, 'b', mkdir, writeFile);
+
+      const results = await runTypecheck(root, {
+        projects: ['b/jsconfig.json'],
+        extraShim: 'hub.d.ts',
+        projectOverrides: { 'b/jsconfig.json': 'b-only.d.ts' },
+      });
+
+      const b = results.find((r) => r.project === 'b/jsconfig.json');
+      // Used b-only.d.ts (accepts "y"), not the shared hub → no error.
+      expect(b?.issues.filter((i) => i.category === 'error')).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

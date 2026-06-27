@@ -43,6 +43,20 @@ export interface HarnessRunVerdict {
 }
 
 const TEST_START_PATTERN = /\bTEST-START\b/;
+/**
+ * Execution signals emitted by the suite-specific xpcshell dispatch
+ * (`mach xpcshell-test`), which does NOT print `TEST-START` lines the way
+ * the generic `mach test` / browser-chrome dispatch does. A passing
+ * single-file xpcshell run prints a result-summary block instead
+ * (`TEST_END: Test PASS`, `Ran 16 checks`, `Unexpected results: 0`), so
+ * keying execution purely on `TEST-START` mis-reads a green xpcshell run as
+ * "no tests started" (field report: a single-file xpcshell pass exited 1).
+ *
+ * These markers are xpcshell-specific on purpose: the bare
+ * `Passed: 0` / `Failed: 0` summary that the no-output hang shape prints is
+ * deliberately NOT matched here — that case must still read as `no-tests`.
+ */
+const XPCSHELL_RESULT_SUMMARY_PATTERN = /\bTEST_END\b|\bRan \d+ checks?\b|\bResult summary:/i;
 const UNEXPECTED_LINE_PATTERN = /^.*\bTEST-UNEXPECTED-[A-Z-]+\b.*$/gm;
 const SHUTDOWN_REENTRY_PATTERN =
   /Application shut down \(without crashing\) in the middle of a test/i;
@@ -70,6 +84,17 @@ function findLine(output: string, patterns: readonly RegExp[]): string | undefin
     if (patterns.some((p) => p.test(line))) return line.trim();
   }
   return undefined;
+}
+
+/**
+ * True when the captured output carries the suite-specific xpcshell
+ * result-summary block, which proves tests executed even though the
+ * xpcshell dispatch emits no `TEST-START` line. Used alongside
+ * `TEST_START_PATTERN` so a green single-file xpcshell run is not
+ * mis-classified as `no-tests`. Exported for direct unit testing.
+ */
+function hasXpcshellResultSummary(output: string): boolean {
+  return XPCSHELL_RESULT_SUMMARY_PATTERN.test(output);
 }
 
 /** Unexpected-failure lines that are NOT the shutdown re-entry artifact. */
@@ -124,9 +149,12 @@ export function detectHarnessCrashSignature(output: string): HarnessCrashSignatu
  * 1. A recognized crash signature wins regardless of exit code (the
  *    shutdown re-entry shape exits non-zero on an otherwise green run;
  *    the hang shape can even exit zero with a `Passed: 0` summary).
- * 2. No `TEST-START` with explicit paths requested means no test ran —
- *    `no-tests`, even when the exit code is zero. Summary lines are not
- *    trusted as evidence of execution.
+ * 2. No execution signal with explicit paths requested means no test ran —
+ *    `no-tests`, even when the exit code is zero. The execution signal is
+ *    a `TEST-START` line (generic `mach test` / browser-chrome dispatch)
+ *    OR the suite-specific xpcshell result-summary block (the xpcshell
+ *    dispatch prints no `TEST-START`). Bare `Passed:`/`Failed:` summary
+ *    lines are still not trusted as evidence of execution.
  * 3. Exit code zero with tests started is a pass; anything else is a
  *    test failure for the regular diagnosis chain.
  */
@@ -140,7 +168,8 @@ export function classifyHarnessRun(
     return { kind: 'harness-crash', signature };
   }
 
-  if (!TEST_START_PATTERN.test(output) && requestedPaths.length > 0) {
+  const ranTests = TEST_START_PATTERN.test(output) || hasXpcshellResultSummary(output);
+  if (!ranTests && requestedPaths.length > 0) {
     return { kind: 'no-tests' };
   }
 

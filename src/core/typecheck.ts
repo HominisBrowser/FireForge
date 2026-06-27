@@ -95,41 +95,69 @@ export async function runTypecheck(
     }));
   }
 
-  // Compose the shim once — extraShim is shared across all projects.
-  // A missing or unreadable shim is a project-wide failure, so we
-  // surface it as one issue per project rather than letting one
-  // project's read failure silently affect the others' results.
-  let shimSource: string;
-  try {
-    const composed = await composeShimSource(projectRoot, cfg.extraShim);
-    shimSource = composed.source;
+  // Compose the shim PER project: the effective extraShim is the per-project
+  // override (a path, or `null` to opt out) when present, else the shared
+  // top-level extraShim. A project that narrows `lib`/`types` can opt out of
+  // a Gecko-lib shim hub that another project needs, so the composed shim is
+  // no longer injected identically everywhere. Compositions are cached by the
+  // resolved extraShim path so projects sharing a shim don't recompose it.
+  const shimCache = new Map<string, string>();
+  const composeForProject = async (extraShim: string | undefined): Promise<string> => {
+    const key = extraShim ?? '';
+    const cached = shimCache.get(key);
+    if (cached !== undefined) return cached;
+    const composed = await composeShimSource(projectRoot, extraShim);
     if (composed.extraShimAppended) {
-      verbose(`typecheck: extra shim ${cfg.extraShim ?? ''} appended to Firefox globals shim`);
+      verbose(`typecheck: extra shim ${extraShim ?? ''} appended to Firefox globals shim`);
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return cfg.projects.map((project) => ({
-      project,
-      issues: [
-        {
-          file: cfg.extraShim ?? '(typecheck)',
-          line: 1,
-          column: 1,
-          code: 0,
-          category: 'error' as const,
-          message,
-          project,
-        },
-      ],
-      filesChecked: 0,
-    }));
-  }
+    shimCache.set(key, composed.source);
+    return composed.source;
+  };
 
   const results: TypecheckProjectResult[] = [];
   for (const projectPath of cfg.projects) {
+    const extraShim = resolveProjectExtraShim(cfg, projectPath);
+    let shimSource: string;
+    try {
+      shimSource = await composeForProject(extraShim);
+    } catch (err) {
+      // A missing or unreadable shim fails only the project(s) that use it,
+      // not the whole run — projects with a different (or no) shim still run.
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({
+        project: projectPath,
+        issues: [
+          {
+            file: extraShim ?? '(typecheck)',
+            line: 1,
+            column: 1,
+            code: 0,
+            category: 'error',
+            message,
+            project: projectPath,
+          },
+        ],
+        filesChecked: 0,
+      });
+      continue;
+    }
     results.push(await runTypecheckForProject(ts, projectRoot, projectPath, shimSource));
   }
   return results;
+}
+
+/**
+ * Resolves the effective extra shim for a single project: a `projectOverrides`
+ * entry wins (a string path overrides; `null` opts out → `undefined`), else
+ * the shared top-level `extraShim` applies.
+ */
+function resolveProjectExtraShim(cfg: TypecheckConfig, projectPath: string): string | undefined {
+  const overrides = cfg.projectOverrides;
+  if (overrides && Object.prototype.hasOwnProperty.call(overrides, projectPath)) {
+    const value = overrides[projectPath];
+    return value === null ? undefined : value;
+  }
+  return cfg.extraShim;
 }
 
 /** Runs typecheck for a single jsconfig path, isolating its failures. */

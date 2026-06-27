@@ -51,6 +51,33 @@ const HANG_WITH_FALSE_SUMMARY = [
   ' 6:14.90 INFO Failed: 0',
 ].join('\n');
 
+// Captured shape of a passing single-file `mach xpcshell-test` dispatch.
+// The suite-specific xpcshell command prints a result-summary block and a
+// per-test `TEST_END: Test PASS` line, but NO `TEST-START` line — so a
+// TEST-START-only execution heuristic mis-reads this green run as no-tests
+// (the wrapper then appended "finished without starting any tests" and
+// exited 1). Strings mirror the runxpcshelltests output, no live build.
+const XPCSHELL_PASS_RUN = [
+  ' 0:00.41 INFO | Running tests sequentially.',
+  ' 0:00.42 INFO | TEST-INFO | (xpcshell/tests/toolkit/.../test_settings.js)',
+  ' 0:02.18 INFO | TEST_END: Test PASS',
+  ' 0:02.19 INFO | Result summary:',
+  ' 0:02.19 INFO | Ran 16 checks (16 subtests, 0 tests)',
+  ' 0:02.19 INFO | Passed: 16',
+  ' 0:02.19 INFO | Failed: 0',
+  ' 0:02.19 INFO | Unexpected results: 0',
+].join('\n');
+
+const XPCSHELL_FAIL_RUN = [
+  ' 0:00.41 INFO | Running tests sequentially.',
+  ' 0:02.18 INFO | TEST_END: Test FAIL',
+  ' 0:02.19 INFO | Result summary:',
+  ' 0:02.19 INFO | Ran 16 checks (16 subtests, 0 tests)',
+  ' 0:02.19 INFO | Passed: 15',
+  ' 0:02.19 INFO | Failed: 1',
+  ' 0:02.19 INFO | Unexpected results: 1',
+].join('\n');
+
 const POST_GREEN_SHUTDOWN_REENTRY = [
   ' 0:05.12 INFO TEST-START | browser/components/foo/test/browser_foo.js',
   ' 0:09.44 INFO TEST-OK | browser/components/foo/test/browser_foo.js | took 4320ms',
@@ -122,6 +149,23 @@ describe('classifyHarnessRun', () => {
 
   it('does not raise no-tests for full-suite runs without explicit paths', () => {
     expect(classifyHarnessRun(0, 'Passed: 0', []).kind).toBe('tests-ran-ok');
+  });
+
+  it('treats a passing xpcshell suite summary (no TEST-START) as tests-ran-ok', () => {
+    const xpcshellPaths = ['toolkit/components/foo/test/unit/test_settings.js'];
+    expect(classifyHarnessRun(0, XPCSHELL_PASS_RUN, xpcshellPaths).kind).toBe('tests-ran-ok');
+  });
+
+  it('still reports test-failures for a failing xpcshell suite summary', () => {
+    const xpcshellPaths = ['toolkit/components/foo/test/unit/test_settings.js'];
+    expect(classifyHarnessRun(1, XPCSHELL_FAIL_RUN, xpcshellPaths).kind).toBe('test-failures');
+  });
+
+  it('does not treat a bare Passed/Failed summary as an xpcshell execution signal', () => {
+    // The no-output hang's `Passed: 0` summary must not be mistaken for an
+    // xpcshell result-summary block — it stays no-tests.
+    const summaryOnly = ' 0:10.01 INFO Passed: 0\n 0:10.01 INFO Failed: 0';
+    expect(classifyHarnessRun(0, summaryOnly, PATHS).kind).toBe('no-tests');
   });
 });
 

@@ -17,6 +17,7 @@ import { createSiblingLockPath, withFileLock } from './file-lock.js';
 import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
 import { explainMachError } from './mach-error-hints.js';
 import { getPython } from './mach-python.js';
+import { resolveMachBuildEnv } from './mach-resource-shim.js';
 
 // Re-export sub-modules so existing `from './mach.js'` imports keep working.
 export {
@@ -223,7 +224,10 @@ export async function build(engineDir: string, jobs?: number): Promise<MachComma
     args.push('-j', String(jobs));
   }
 
-  const result = await runMachInheritCapture(args, engineDir);
+  // Inject the resource-monitor degrade shim so a host psutil failure does
+  // not abort the build regardless of which mach entry FireForge spawns.
+  const env = await resolveMachBuildEnv();
+  const result = await runMachInheritCapture(args, engineDir, { env });
   if (result.exitCode !== 0) {
     surfaceMachErrorHints(result);
   }
@@ -238,7 +242,10 @@ export async function build(engineDir: string, jobs?: number): Promise<MachComma
  * @returns Captured mach result
  */
 export async function buildUI(engineDir: string): Promise<MachCommandResult> {
-  const result = await runMachInheritCapture(['build', 'faster'], engineDir);
+  // Same resource-monitor degrade shim as the full build: raw
+  // `./mach build faster` aborts on the host psutil monitor without it.
+  const env = await resolveMachBuildEnv();
+  const result = await runMachInheritCapture(['build', 'faster'], engineDir, { env });
   if (result.exitCode !== 0) {
     surfaceMachErrorHints(result);
   }

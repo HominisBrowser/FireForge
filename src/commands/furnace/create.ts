@@ -30,7 +30,6 @@ import {
 } from '../../core/furnace-rollback.js';
 import { isComponentInEngine, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
 import { DEFAULT_LICENSE, getLicenseHeader } from '../../core/license-headers.js';
-import { registerTestManifest } from '../../core/manifest-register.js';
 import { validateSharedFtl } from '../../core/shared-ftl.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
@@ -38,8 +37,9 @@ import type { FurnaceCreateOptions } from '../../types/commands/index.js';
 import type { ProjectLicense } from '../../types/config.js';
 import type { FurnaceConfig, ResolvedTestStyle } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
-import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
-import { cancel, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
+import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
+import { cancel, intro, isCancel, note, outro } from '../../utils/logger.js';
+import { resolveValidatedTestDir, scaffoldTestFiles } from './create-browser-test.js';
 import { formatDryRunPlan, formatSuccessNote } from './create-dry-run.js';
 import { resolveCreateFeatures } from './create-features.js';
 import { scaffoldMochikitTestFiles } from './create-mochikit.js';
@@ -95,123 +95,6 @@ function validateTagName(name: string): string | undefined {
   if (!name.includes('-')) return 'Custom element names must contain a hyphen (e.g., "my-widget")';
   if (!CUSTOM_ELEMENT_TAG_PATTERN.test(name)) return `Name ${CUSTOM_ELEMENT_TAG_RULES}`;
   return undefined;
-}
-
-/**
- * Scaffolds browser mochitest files for a newly created custom component.
- * @param componentName - Custom element tag name
- * @param license - Project license used for generated headers
- * @param forgeConfig - Project config fields needed for test naming
- * @param paths - Resolved project paths used to place test files
- * @param journal - Optional rollback journal that snapshots files before writes
- * @returns Relative test filenames created or updated for the component
- */
-async function scaffoldTestFiles(
-  componentName: string,
-  license: ProjectLicense,
-  forgeConfig: { binaryName: string },
-  paths: { engine: string },
-  journal?: RollbackJournal
-): Promise<string[]> {
-  const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;
-  // Avoid double-prefixing: strip binaryName prefix since testDirName already uses it
-  const testDirName = forgeConfig.binaryName;
-  const withoutBinaryPrefix = strippedName.startsWith(testDirName + '-')
-    ? strippedName.slice(testDirName.length + 1)
-    : strippedName;
-  const underscored = withoutBinaryPrefix.replace(/-/g, '_');
-  const testFileName = `browser_${testDirName}_${underscored}.js`;
-  const testDir = join(paths.engine, 'browser/base/content/test', testDirName);
-  if (journal && !(await pathExists(testDir))) {
-    recordCreatedDir(journal, testDir);
-  }
-  await ensureDir(testDir);
-
-  const jsHeader = getLicenseHeader(license, 'js');
-  const hashHeader = getLicenseHeader(license, 'hash');
-  const testFiles: string[] = [];
-
-  // browser.toml — create if missing, append entry if existing
-  const tomlPath = join(testDir, 'browser.toml');
-  if (await pathExists(tomlPath)) {
-    // Defensive guard: only append if the entry is not already present.
-    // With a fresh journal per create, the same test file name cannot be
-    // appended twice in a single run — but retaining the check protects
-    // against accidental re-entrance or a future refactor that reuses the
-    // helper with a stale test directory.
-    const existingToml = await readText(tomlPath);
-    if (!existingToml.includes(`["${testFileName}"]`)) {
-      if (journal) await snapshotFile(journal, tomlPath);
-      await writeText(tomlPath, existingToml.trimEnd() + `\n\n["${testFileName}"]\n`);
-    }
-  } else {
-    if (journal) await snapshotFile(journal, tomlPath);
-    const browserToml = `${hashHeader}
-
-[DEFAULT]
-support-files = ["head.js"]
-
-["${testFileName}"]
-`;
-    await writeText(tomlPath, browserToml);
-  }
-  testFiles.push('browser.toml');
-
-  // head.js — only create if it doesn't exist (shared across components)
-  const headPath = join(testDir, 'head.js');
-  if (!(await pathExists(headPath))) {
-    if (journal) await snapshotFile(journal, headPath);
-    const headJs = `${jsHeader}
-
-"use strict";
-
-/**
- * Wait for a custom element to be defined.
- * @param {string} tag - Custom element tag name
- * @returns {Promise<CustomElementConstructor>}
- */
-async function waitForElement(tag) {
-  document.createElement(tag);
-  return customElements.whenDefined(tag);
-}
-`;
-    await writeText(headPath, headJs);
-    testFiles.push('head.js');
-  }
-
-  // browser_{binaryName}_{stripped}.js
-  const testJs = `${jsHeader}
-
-"use strict";
-
-add_task(async function test_${underscored}_defined() {
-  const ctor = await waitForElement("${componentName}");
-  Assert.ok(ctor, "${componentName} custom element should be defined");
-  Assert.equal(typeof ctor, "function", "Constructor should be a function");
-});
-`;
-  const testFilePath = join(testDir, testFileName);
-  if (journal) await snapshotFile(journal, testFilePath);
-  await writeText(testFilePath, testJs);
-  testFiles.push(testFileName);
-
-  // Register in moz.build. The registration helper edits browser/base/moz.build,
-  // so snapshot it first when a journal is supplied. The existing warn-and-continue
-  // contract is preserved so a missing/unparseable moz.build never trips rollback.
-  try {
-    const mozBuildPath = join(paths.engine, 'browser/base/moz.build');
-    if (journal) await snapshotFile(journal, mozBuildPath);
-    const registerResult = await registerTestManifest(paths.engine, testDirName);
-    if (!registerResult.skipped) {
-      success(`Registered test manifest in ${registerResult.manifest}`);
-    }
-  } catch (error: unknown) {
-    warn(
-      `Could not register test manifest in moz.build — ${toError(error).message}. Register manually with "fireforge register".`
-    );
-  }
-
-  return testFiles;
 }
 
 /**
@@ -328,6 +211,7 @@ async function performCreateMutations(args: {
   paths: { engine: string };
   license: ProjectLicense;
   testStyle: ResolvedTestStyle;
+  testDir: string | undefined;
   operationContext?: FurnaceOperationContext;
 }): Promise<{ files: string[]; testFiles: string[] }> {
   // Invariant: the journal MUST be registered with the operation context
@@ -409,7 +293,8 @@ async function performCreateMutations(args: {
         args.license,
         args.forgeConfig,
         args.paths,
-        journal
+        journal,
+        args.testDir
       );
       testFiles.push(...scafFiles);
     } else if (args.testStyle === 'xpcshell') {
@@ -418,7 +303,8 @@ async function performCreateMutations(args: {
         args.license,
         args.forgeConfig,
         args.paths,
-        journal
+        journal,
+        args.testDir
       );
       testFiles.push(...xpcshellFiles);
     } else if (args.testStyle === 'mochikit') {
@@ -573,6 +459,7 @@ export async function furnaceCreateCommand(
   // incompatible combinations up-front so a bad flag set never strands a
   // partial mutation behind.
   const testStyle = resolveTestStyle(options);
+  const testDir = resolveValidatedTestDir(options.testDir, testStyle);
   if (testStyle !== 'none' && !(await pathExists(paths.engine))) {
     throw new FurnaceError(
       'Engine directory not found. Run "fireforge download" first to use --with-tests, --xpcshell, or --test-style.',
@@ -653,6 +540,7 @@ export async function furnaceCreateCommand(
       paths,
       license,
       testStyle,
+      testDir,
       operationContext: ctx,
     })
   );

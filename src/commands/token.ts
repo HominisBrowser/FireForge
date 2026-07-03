@@ -106,15 +106,20 @@ export async function tokenAddCommand(
       ...(options.description !== undefined ? { description: options.description } : {}),
       ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
       ...(options.createCategory === true ? { createCategory: true } : {}),
+      ...(options.variant !== undefined ? { variant: options.variant } : {}),
       dryRun: true,
     });
 
     info('[dry-run] Would add token:');
     info(`  Name: ${tokenName}`);
     info(`  Value: ${value}`);
-    info(
-      `  Category: ${options.category}${options.createCategory === true ? ' (created if missing)' : ''}`
-    );
+    if (options.variant !== undefined) {
+      info(`  Variant: :root${options.variant}`);
+    } else {
+      info(
+        `  Category: ${options.category}${options.createCategory === true ? ' (created if missing)' : ''}`
+      );
+    }
     info(`  Mode: ${options.mode}`);
     if (options.description) info(`  Description: ${options.description}`);
     if (options.darkValue) info(`  Dark value: ${options.darkValue}`);
@@ -130,6 +135,7 @@ export async function tokenAddCommand(
     ...(options.description !== undefined ? { description: options.description } : {}),
     ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
     ...(options.createCategory === true ? { createCategory: true } : {}),
+    ...(options.variant !== undefined ? { variant: options.variant } : {}),
   });
 
   if (result.skipped) {
@@ -190,6 +196,12 @@ export function registerToken(
     .option('--description <desc>', 'Comment description for the CSS file')
     .option('--dark-value <val>', 'Dark mode value (required if mode is "override")')
     .option(
+      '--variant <selector>',
+      'Attribute selector fragment routing the declaration into a `:root<selector>` block ' +
+        "(e.g. '[data-skin=precision]' or '[data-private]'); creates or updates the block. " +
+        'CSS-only — cannot be combined with --mode override.'
+    )
+    .option(
       '--create-category',
       'Declare the category banner in the tokens CSS if it does not exist yet'
     )
@@ -206,6 +218,7 @@ export function registerToken(
             darkValue?: string;
             dryRun?: boolean;
             createCategory?: boolean;
+            variant?: string;
           }
         ) => {
           await tokenAddCommand(getProjectRoot(), tokenName, value, {
@@ -216,6 +229,7 @@ export function registerToken(
               darkValue: options.darkValue,
               dryRun: options.dryRun,
               createCategory: options.createCategory,
+              variant: options.variant,
             }),
           });
         }

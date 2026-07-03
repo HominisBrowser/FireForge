@@ -123,7 +123,8 @@ describe('registerCommand', () => {
       '/project',
       'browser/base/content/new-widget.js',
       undefined,
-      undefined
+      undefined,
+      {}
     );
     expect(success).toHaveBeenCalledWith(
       expect.stringContaining('Registered browser/base/content/new-widget.js')

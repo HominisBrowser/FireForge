@@ -378,7 +378,10 @@ export async function commitPlacementExport(
     const conflicts = await projectPlacementForLint(input.patchesDir, currentPlan, input.diff);
     if (conflicts && input.unsafeOverride !== true) {
       throw new InvalidArgumentError(
-        `Refusing to run export: ${conflicts.reason}. Pass --force-unsafe to override.`,
+        `Refusing to run export: ${conflicts.reason}. ` +
+          'If the conflict names files owned by another patch (e.g. duplicate-new-file-creation), ' +
+          're-run the export with an explicit file list that leaves those files with their owner — ' +
+          'do NOT bypass with --force-unsafe. Pass --force-unsafe only for a reviewed placement conflict.',
         '--force-unsafe'
       );
     }

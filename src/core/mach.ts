@@ -17,6 +17,8 @@ import { createSiblingLockPath, withFileLock } from './file-lock.js';
 import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
 import { explainMachError } from './mach-error-hints.js';
 import { getPython } from './mach-python.js';
+import { installMachResourceGuard } from './mach-resource-shim.js';
+import { detectHarnessCrashSignature, type HarnessCrashSignature } from './test-harness-crash.js';
 
 // Re-export sub-modules so existing `from './mach.js'` imports keep working.
 export {
@@ -204,11 +206,95 @@ function surfaceMachErrorHints(result: MachCommandResult): void {
 }
 
 /**
- * Runs a full mach build. On a non-zero exit, any matched error hints are
- * surfaced on top of the raw mach output so operators get an actionable
- * nudge alongside the cryptic mozbuild traceback. Returns the captured
- * result so the caller (e.g. `fireforge build`) can inspect the tail
- * for post-build diagnostics that mach prints AFTER "Your build was
+ * Uniform recognized-crash retry budget for the protected mach build
+ * dispatches (`fireforge build`, `build --ui`, and the pre-test `--build`
+ * step). Matches the test harness default so every mach dispatch retries
+ * the same crash family the same number of times.
+ */
+const DEFAULT_BUILD_CRASH_RETRIES = 2;
+
+/** Which mach build entry a protected dispatch runs. */
+export type ProtectedBuildKind = 'full' | 'faster';
+
+/** Options for {@link runProtectedMachBuild}. */
+export interface ProtectedMachBuildOptions {
+  /** Parallel jobs for the full build (ignored for `faster`). */
+  jobs?: number | undefined;
+  /** Recognized-crash retry budget (0 disables retries). */
+  retries?: number | undefined;
+  /** Called before each retry with the detected crash signature. */
+  onRetry?: (signature: HarnessCrashSignature, nextAttempt: number, maxAttempts: number) => void;
+}
+
+/** Captured result of a protected (guarded, retried) mach build dispatch. */
+export interface ProtectedMachBuildResult extends MachCommandResult {
+  /** How many mach processes were spawned (1 = no retry needed). */
+  attempts: number;
+  /** Crash signature of the final failed attempt, when recognized. */
+  crashSignature?: HarnessCrashSignature;
+}
+
+/**
+ * The single protected path every FireForge mach build dispatch routes
+ * through (field report: `build --ui` and the pre-test `--build` step died
+ * on the resource-monitor crash family while plain `build` survived,
+ * because only some entries were protected and retry budgets differed):
+ *
+ *  1. installs the resource-monitor degrade guard IN the mach virtualenvs
+ *     (plus the PYTHONPATH fallback) — re-installed before every attempt,
+ *     so a venv materialized by a crashed first attempt is guarded on the
+ *     next one instead of every retry dying on the same wedged state;
+ *  2. spawns a fresh mach process per attempt;
+ *  3. retries ONLY the recognized harness-crash family (resource monitor /
+ *     psutil startup tracebacks) up to the uniform budget — an ordinary
+ *     compile error is never retried.
+ *
+ * The protected path never runs `mach configure`, never clobbers, and
+ * never widens the requested build kind — a `faster` dispatch retries as
+ * `mach build faster`, so it cannot invalidate more of the objdir than the
+ * command the operator asked for.
+ */
+export async function runProtectedMachBuild(
+  kind: ProtectedBuildKind,
+  engineDir: string,
+  options: ProtectedMachBuildOptions = {}
+): Promise<ProtectedMachBuildResult> {
+  const args = kind === 'faster' ? ['build', 'faster'] : ['build'];
+  if (kind === 'full' && options.jobs !== undefined) {
+    args.push('-j', String(options.jobs));
+  }
+
+  const maxAttempts = Math.max(1, (options.retries ?? DEFAULT_BUILD_CRASH_RETRIES) + 1);
+  for (let attempt = 1; ; attempt += 1) {
+    const { env } = await installMachResourceGuard(engineDir);
+    const result = await runMachInheritCapture(args, engineDir, { env });
+    if (result.exitCode === 0) {
+      return { ...result, attempts: attempt };
+    }
+
+    const signature = detectHarnessCrashSignature(`${result.stdout}\n${result.stderr}`);
+    if (signature && attempt < maxAttempts) {
+      options.onRetry?.(signature, attempt + 1, maxAttempts);
+      warn(
+        `mach ${kind === 'faster' ? 'build faster' : 'build'} hit a recognized harness crash ` +
+          `(${signature.reason}): ${signature.line}\n` +
+          `Retrying with a fresh process (attempt ${attempt + 1} of ${maxAttempts})...`
+      );
+      continue;
+    }
+
+    surfaceMachErrorHints(result);
+    return { ...result, attempts: attempt, ...(signature ? { crashSignature: signature } : {}) };
+  }
+}
+
+/**
+ * Runs a full mach build through the protected dispatch path (resource
+ * guard + recognized-crash retries). On a non-zero exit, any matched error
+ * hints are surfaced on top of the raw mach output so operators get an
+ * actionable nudge alongside the cryptic mozbuild traceback. Returns the
+ * captured result so the caller (e.g. `fireforge build`) can inspect the
+ * tail for post-build diagnostics that mach prints AFTER "Your build was
  * successful!" — notably the stale `config.status is out of date`
  * notice that mach emits when a tool-managed edit landed on
  * `moz.configure` before the build.
@@ -216,33 +302,19 @@ function surfaceMachErrorHints(result: MachCommandResult): void {
  * @param jobs - Number of parallel jobs (optional)
  * @returns Captured mach result (stdout tail, stderr tail, exit code)
  */
-export async function build(engineDir: string, jobs?: number): Promise<MachCommandResult> {
-  const args = ['build'];
-
-  if (jobs !== undefined) {
-    args.push('-j', String(jobs));
-  }
-
-  const result = await runMachInheritCapture(args, engineDir);
-  if (result.exitCode !== 0) {
-    surfaceMachErrorHints(result);
-  }
-  return result;
+export async function build(engineDir: string, jobs?: number): Promise<ProtectedMachBuildResult> {
+  return runProtectedMachBuild('full', engineDir, { jobs });
 }
 
 /**
- * Runs a fast UI-only build. On a non-zero exit, any matched error hints are
- * surfaced on top of the raw mach output. See {@link build} for why the
- * full captured result is returned rather than just the exit code.
+ * Runs a fast UI-only build through the same protected dispatch path as
+ * {@link build}. See {@link build} for why the full captured result is
+ * returned rather than just the exit code.
  * @param engineDir - Path to the engine directory
  * @returns Captured mach result
  */
-export async function buildUI(engineDir: string): Promise<MachCommandResult> {
-  const result = await runMachInheritCapture(['build', 'faster'], engineDir);
-  if (result.exitCode !== 0) {
-    surfaceMachErrorHints(result);
-  }
-  return result;
+export async function buildUI(engineDir: string): Promise<ProtectedMachBuildResult> {
+  return runProtectedMachBuild('faster', engineDir);
 }
 
 /**
@@ -428,7 +500,10 @@ export async function testWithOutput(
   args: string[] = [],
   env?: Record<string, string>
 ): Promise<MachCommandResult> {
-  return runMachCapture(['test', ...testPaths, ...args], engineDir, env ? { env } : {});
+  const guard = await installMachResourceGuard(engineDir);
+  return runMachCapture(['test', ...testPaths, ...args], engineDir, {
+    env: { ...guard.env, ...env },
+  });
 }
 
 /**
@@ -447,7 +522,10 @@ export async function xpcshellTestWithOutput(
   args: string[] = [],
   env?: Record<string, string>
 ): Promise<MachCommandResult> {
-  return runMachCapture(['xpcshell-test', ...testPaths, ...args], engineDir, env ? { env } : {});
+  const guard = await installMachResourceGuard(engineDir);
+  return runMachCapture(['xpcshell-test', ...testPaths, ...args], engineDir, {
+    env: { ...guard.env, ...env },
+  });
 }
 
 /**
@@ -461,5 +539,8 @@ export async function mochitestWithOutput(
   args: string[] = [],
   env?: Record<string, string>
 ): Promise<MachCommandResult> {
-  return runMachCapture(['mochitest', ...testPaths, ...args], engineDir, env ? { env } : {});
+  const guard = await installMachResourceGuard(engineDir);
+  return runMachCapture(['mochitest', ...testPaths, ...args], engineDir, {
+    env: { ...guard.env, ...env },
+  });
 }

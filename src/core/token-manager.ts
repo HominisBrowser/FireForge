@@ -10,14 +10,13 @@ import { escapeRegex } from '../utils/regex.js';
 import { validateTokenName } from '../utils/validation.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { loadFurnaceConfig } from './furnace-config.js';
-import {
-  findTableAfterHeading,
-  findTableByColumns,
-  insertRow,
-  rewriteTableRows,
-  updateCellByKey,
-} from './markdown-table.js';
 import { findDarkMediaCloseIndex, findDarkRootInsertionIndex } from './token-dark-mode.js';
+import { addTokenToDocs } from './token-docs.js';
+import {
+  insertVariantDeclaration,
+  validateVariantSelector,
+  variantBlockHasToken,
+} from './token-variant.js';
 
 /**
  * Dark mode behavior for a token.
@@ -44,6 +43,14 @@ export interface AddTokenOptions {
   dryRun?: boolean | undefined;
   /** Declare the category banner in the tokens CSS when it does not exist yet. */
   createCategory?: boolean | undefined;
+  /**
+   * Attribute selector fragment (e.g. `[data-skin="precision"]` or
+   * `[data-private]`) that routes the declaration into a top-level
+   * `:root<variant>` block instead of the base `:root` / category section.
+   * The block is created if absent and appended to if present. Variant
+   * overrides are CSS-only — the base token already owns its docs row.
+   */
+  variant?: string | undefined;
 }
 
 /**
@@ -73,8 +80,6 @@ interface TokenAddContext {
 export function getTokensCssPath(binaryName: string): string {
   return `browser/themes/shared/${binaryName}-tokens.css`;
 }
-
-const TOKENS_DOC = 'docs/design/SRC_TOKENS.md';
 
 /**
  * Determines the mode annotation string for the CSS comment.
@@ -134,6 +139,63 @@ function validateDarkValue(options: AddTokenOptions): void {
       'darkValue'
     );
   }
+}
+
+/**
+ * Validates and normalizes the `--variant` attribute selector. Returns the
+ * normalized (quoted) selector when set, or `undefined` when no variant was
+ * requested. Rejects combining `--variant` with `--mode override`: an
+ * override authors a dark `@media :root` block, which variant routing
+ * bypasses, so the combination would silently drop the dark value.
+ */
+function normalizeVariantOption(options: AddTokenOptions): string | undefined {
+  if (options.variant === undefined) return undefined;
+  if (options.mode === 'override') {
+    throw new InvalidArgumentError(
+      'Cannot combine --variant with --mode override; author the variant declaration with ' +
+        '--mode auto/static instead.',
+      'variant'
+    );
+  }
+  const result = validateVariantSelector(options.variant);
+  if (!result.ok) {
+    throw new InvalidArgumentError(`--variant ${result.reason}.`, 'variant');
+  }
+  return result.value;
+}
+
+/** Throws when the tokens CSS file is missing (variant mode skips category checks). */
+async function assertTokensCssExists(engineDir: string, tokensCssPath: string): Promise<void> {
+  if (!(await pathExists(join(engineDir, tokensCssPath)))) {
+    throw new GeneralError(`Token CSS file not found: ${tokensCssPath}`);
+  }
+}
+
+/**
+ * Routes a declaration into the top-level `:root<variant>` block — creating
+ * the block after the base `:root` block if absent, or appending to it if
+ * present. Idempotent within the block. Returns `{ added: false }` when the
+ * token already lives in that block.
+ */
+async function addVariantTokenToCSS(
+  engineDir: string,
+  options: AddTokenOptions,
+  tokensCssPath: string,
+  variant: string
+): Promise<{ added: boolean }> {
+  await assertTokensCssExists(engineDir, tokensCssPath);
+  const filePath = join(engineDir, tokensCssPath);
+  const lines = (await readText(filePath)).split('\n');
+  if (variantBlockHasToken(lines, variant, options.tokenName)) return { added: false };
+
+  const annotation = getModeAnnotation(options.mode, options.value);
+  insertVariantDeclaration(
+    lines,
+    variant,
+    `  ${options.tokenName}: ${options.value}; /* ${annotation} */`
+  );
+  await writeText(filePath, lines.join('\n'));
+  return { added: true };
 }
 
 /**
@@ -252,6 +314,12 @@ export async function validateTokenAdd(root: string, options: AddTokenOptions): 
   validateTokenNameSyntax(options.tokenName);
   await validateTokenPrefix(root, options);
   validateDarkValue(options);
+  // Variant mode targets a `:root<attr>` block, not a category section, so it
+  // only needs the tokens CSS file to exist — category checks do not apply.
+  if (normalizeVariantOption(options) !== undefined) {
+    await assertTokensCssExists(engineDir, tokensCssPath);
+    return;
+  }
   await assertTokenCategoryExists(
     engineDir,
     tokensCssPath,
@@ -272,12 +340,27 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
   validateTokenNameSyntax(options.tokenName);
   await validateTokenPrefix(root, options);
   validateDarkValue(options);
+  const normalizedVariant = normalizeVariantOption(options);
 
   if (options.dryRun) {
     await validateTokenAdd(root, options);
 
     const filePath = join(engineDir, tokensCssPath);
     const content = await readText(filePath);
+    if (normalizedVariant !== undefined) {
+      const skipped = variantBlockHasToken(
+        content.split('\n'),
+        normalizedVariant,
+        options.tokenName
+      );
+      return {
+        cssAdded: !skipped,
+        docsAdded: false,
+        unmappedAdded: false,
+        countUpdated: false,
+        skipped,
+      };
+    }
     const stripped = content.replace(/\/\*[\s\S]*?\*\//g, '');
     const skipped = stripped.includes(options.tokenName + ':');
 
@@ -287,6 +370,26 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
       unmappedAdded: !skipped && !options.value.startsWith('var('),
       countUpdated: !skipped,
       skipped,
+    };
+  }
+
+  // Variant overrides are CSS-only: route the declaration into the
+  // `:root<attr>` block and leave docs untouched (the base token owns its
+  // docs row). Done before the base-CSS path so an override of an existing
+  // base token is not short-circuited by the global idempotency check.
+  if (normalizedVariant !== undefined) {
+    const { added } = await addVariantTokenToCSS(
+      engineDir,
+      options,
+      tokensCssPath,
+      normalizedVariant
+    );
+    return {
+      cssAdded: added,
+      docsAdded: false,
+      unmappedAdded: false,
+      countUpdated: false,
+      skipped: !added,
     };
   }
 
@@ -308,7 +411,11 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
   }
 
   // --- Documentation ---
-  const docsResult = await addTokenToDocs(engineDir, options);
+  const docsResult = await addTokenToDocs(
+    engineDir,
+    options,
+    getModeAnnotation(options.mode, options.value)
+  );
 
   return {
     cssAdded,
@@ -523,122 +630,4 @@ async function addTokenToCSS(
   content = lines.join('\n');
   await writeText(filePath, content);
   return { added: true, categoryCreated };
-}
-
-/**
- * Strips surrounding backticks from a cell, if present. Token cells are
- * usually wrapped in inline code fences (`` `--foo` ``) and the parser
- * returns them verbatim.
- */
-function stripInlineCode(cell: string): string {
-  const trimmed = cell.trim();
-  if (trimmed.startsWith('`') && trimmed.endsWith('`') && trimmed.length >= 2) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed;
-}
-
-/**
- * Adds a token row to the main token table, the unmapped table (for
- * literal values), and bumps the mode count table. Each sub-update runs
- * against a freshly parsed view of the document so that splice indices
- * stay valid as rewrites are layered.
- *
- * The old implementation walked `split('\n')` by hand, detected rows by
- * literal `|`-prefix, and used a whitespace-sensitive regex to increment
- * the mode count. Switching to {@link findTableByColumns} and
- * {@link updateCellByKey} removes those formatting traps.
- */
-async function addTokenToDocs(
-  engineDir: string,
-  options: AddTokenOptions
-): Promise<{ docsAdded: boolean; unmappedAdded: boolean; countUpdated: boolean }> {
-  const filePath = join(engineDir, '..', TOKENS_DOC);
-
-  if (!(await pathExists(filePath))) {
-    // Docs file is optional
-    return { docsAdded: false, unmappedAdded: false, countUpdated: false };
-  }
-
-  const originalContent = await readText(filePath);
-  let lines = originalContent.split('\n');
-
-  let docsAdded = false;
-  let unmappedAdded = false;
-  let countUpdated = false;
-
-  const annotation = getModeAnnotation(options.mode, options.value);
-  const isLiteral = !options.value.startsWith('var(');
-  const mapsTo = isLiteral ? '—' : options.value.replace(/var\(([^)]+)\)/, '$1');
-  const tokenCell = `\`${options.tokenName}\``;
-  const valueCell = `\`${options.value}\``;
-
-  // --- Main token table: Category | Token | Value | Maps to | Mode ---
-  const mainTable = findTableByColumns(lines, ['Category', 'Token', 'Value', 'Mode']);
-  if (mainTable) {
-    // The doc convention allows the Category cell to be blank on
-    // continuation rows that belong to the previous category. Group rows
-    // by carrying the last non-empty Category value forward.
-    let lastGroupRowIndex = -1;
-    let currentCategory = '';
-    for (let i = 0; i < mainTable.rows.length; i++) {
-      const row = mainTable.rows[i];
-      if (!row) continue;
-      const cell = row[0]?.trim() ?? '';
-      if (cell) {
-        currentCategory = cell;
-      }
-      if (currentCategory === options.category) {
-        lastGroupRowIndex = i;
-      }
-    }
-
-    if (lastGroupRowIndex !== -1) {
-      insertRow(mainTable, ['', tokenCell, valueCell, mapsTo, annotation], lastGroupRowIndex + 1);
-      lines = rewriteTableRows(lines, mainTable);
-      docsAdded = true;
-    }
-  }
-
-  // --- Unmapped table: populated for literal (non-var()) values only ---
-  if (isLiteral) {
-    const unmappedTable = findTableAfterHeading(lines, /not yet mapped|unmapped/i);
-    if (unmappedTable) {
-      insertRow(
-        unmappedTable,
-        [tokenCell, valueCell, options.description ?? ''],
-        unmappedTable.rows.length
-      );
-      lines = rewriteTableRows(lines, unmappedTable);
-      unmappedAdded = true;
-    }
-  }
-
-  // --- Mode behavior count table: Mode | Count ---
-  const modeTable = findTableByColumns(lines, ['Mode', 'Count']);
-  if (modeTable) {
-    const modeIndex = modeTable.headers.indexOf('Mode');
-    const countIndex = modeTable.headers.indexOf('Count');
-    const existing = modeTable.rows.find(
-      (row) => stripInlineCode(row[modeIndex] ?? '') === options.mode
-    );
-    if (existing) {
-      const oldCount = parseInt(existing[countIndex] ?? '0', 10);
-      const updated = updateCellByKey(
-        modeTable,
-        'Mode',
-        existing[modeIndex] ?? options.mode,
-        'Count',
-        String((Number.isNaN(oldCount) ? 0 : oldCount) + 1)
-      );
-      if (updated) {
-        lines = rewriteTableRows(lines, modeTable);
-        countUpdated = true;
-      }
-    }
-  }
-
-  await writeText(filePath, lines.join('\n'));
-
-  return { docsAdded, unmappedAdded, countUpdated };
 }

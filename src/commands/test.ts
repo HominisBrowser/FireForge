@@ -3,13 +3,14 @@ import { join, resolve } from 'node:path';
 
 import { Command } from 'commander';
 
+import { readBuildBaseline } from '../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import {
   buildArtifactMismatchMessage,
-  buildUI,
   hasBuildArtifacts,
   hasRunnableBundle,
+  runProtectedMachBuild,
   withBuildLock,
 } from '../core/mach.js';
 import {
@@ -23,10 +24,7 @@ import {
   reportMarionettePreflight,
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
-import {
-  buildHarnessCrashMessage,
-  detectHarnessCrashSignature,
-} from '../core/test-harness-crash.js';
+import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
 import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
@@ -166,34 +164,40 @@ async function runPreTestBuild(
   harnessRetries: number
 ): Promise<void> {
   await withBuildLock(projectRoot, async () => {
-    await prepareBuildEnvironment(projectRoot, paths, projectConfig);
+    // Pass the previous baseline exactly like `fireforge build` does, so
+    // auto-configure runs under the same conditions on both paths. The
+    // pre-test build must never invalidate more of the objdir than a plain
+    // `mach build faster` would (field incident: a failed pre-test build
+    // was followed by a ~64-minute full rebuild where an incremental one
+    // should have sufficed).
+    const previousBaseline = await readBuildBaseline(projectRoot);
+    await prepareBuildEnvironment(projectRoot, paths, projectConfig, { previousBaseline });
     const s = spinner('Running incremental build...');
-    // The pre-test build runs through mach too, so the same resource-monitor
-    // startup crash that aborts `mach test` can abort `mach build faster`.
-    // Run the harness-crash classifier over the build output and retry within
-    // the same `--harness-retries` budget rather than hard-failing with a
-    // bare "Pre-test build failed" (field report E2).
-    const maxAttempts = Math.max(1, harnessRetries + 1);
-    for (let attempt = 1; ; attempt += 1) {
-      const buildResult = await buildUI(paths.engine);
-      if (buildResult.exitCode === 0) {
-        s.stop('Build complete');
-        return;
-      }
-      const signature = detectHarnessCrashSignature(`${buildResult.stdout}\n${buildResult.stderr}`);
-      if (signature && attempt < maxAttempts) {
+    // The pre-test build routes through the same protected mach dispatch as
+    // `fireforge build` / `build --ui`: in-venv resource-monitor guard plus
+    // the uniform recognized-crash retry budget, with a fresh mach process
+    // (and fresh guard install) per attempt. prepareBuildEnvironment runs
+    // ONCE, outside the retry loop — retries never re-run mach configure.
+    const result = await runProtectedMachBuild('faster', paths.engine, {
+      retries: harnessRetries,
+      onRetry: (signature, nextAttempt, maxAttempts) => {
         s.message(
           `Pre-test build hit a harness crash (${signature.reason}); ` +
-            `retrying (attempt ${attempt + 1} of ${maxAttempts})...`
+            `retrying (attempt ${nextAttempt} of ${maxAttempts})...`
         );
-        continue;
-      }
-      s.error('Pre-test build failed');
-      throw new BuildError(
-        signature ? buildHarnessCrashMessage(signature, attempt) : 'Pre-test build failed',
-        'mach build faster'
-      );
+      },
+    });
+    if (result.exitCode === 0) {
+      s.stop('Build complete');
+      return;
     }
+    s.error('Pre-test build failed');
+    throw new BuildError(
+      result.crashSignature
+        ? buildHarnessCrashMessage(result.crashSignature, result.attempts, 'mach build faster')
+        : 'Pre-test build failed',
+      'mach build faster'
+    );
   });
 }
 

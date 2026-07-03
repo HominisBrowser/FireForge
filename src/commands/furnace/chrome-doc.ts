@@ -20,6 +20,7 @@
 import { join } from 'node:path';
 
 import { loadConfig } from '../../core/config.js';
+import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { type FurnaceOperationContext, runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
   createRollbackJournal,
@@ -32,8 +33,9 @@ import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { ProjectLicense } from '../../types/config.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
-import { intro, note, outro } from '../../utils/logger.js';
+import { intro, note, outro, warn } from '../../utils/logger.js';
 import {
+  generateBrowserWindowXhtml,
   generateChromeDocCss,
   generateChromeDocFtl,
   generateChromeDocJs,
@@ -71,6 +73,16 @@ export interface FurnaceChromeDocCreateOptions {
   withTests?: boolean;
   /** Print the scaffold plan without writing files. */
   dryRun?: boolean;
+  /**
+   * Emit the browser.xhtml-like MAIN-WINDOW skeleton (`<html
+   * id="main-window">` with the `windowtype`/`chromehidden`/`persist`
+   * root attributes platform C++ reads before scripts run) instead of
+   * the generic dialog-shaped `<window>` document. Use for the document
+   * configured as the fork's main browser window
+   * (`tokenHostDocuments[0]` / the BROWSER_CHROME_URL target). Implies
+   * the titlebar markup.
+   */
+  browserWindow?: boolean;
 }
 
 /** Chrome-doc name shape: lowercase ASCII, optional hyphens, no leading digit. */
@@ -270,6 +282,7 @@ async function performChromeDocMutations(args: {
   engineDir: string;
   withTitlebar: boolean;
   withTests: boolean;
+  browserWindow: boolean;
   binaryName: string;
   operationContext: FurnaceOperationContext;
 }): Promise<string[]> {
@@ -304,7 +317,12 @@ async function performChromeDocMutations(args: {
       );
     }
     await snapshotFile(journal, xhtmlPath);
-    await writeText(xhtmlPath, generateChromeDocXhtml(args.name, args.withTitlebar, args.license));
+    await writeText(
+      xhtmlPath,
+      args.browserWindow
+        ? generateBrowserWindowXhtml(args.name, args.license)
+        : generateChromeDocXhtml(args.name, args.withTitlebar, args.license)
+    );
     written.push(`browser/base/content/${args.name}.xhtml`);
 
     const jsPath = join(contentDir, `${args.name}.js`);
@@ -427,8 +445,34 @@ export async function furnaceChromeDocCreateCommand(
     );
   }
 
-  const withTitlebar = options.titlebar ?? true;
+  const browserWindow = options.browserWindow ?? false;
+  // The browser-window skeleton always carries its own titlebar markup and
+  // chrome attributes; --no-titlebar only applies to the generic scaffold.
+  const withTitlebar = browserWindow ? true : (options.titlebar ?? true);
   const withTests = options.withTests ?? false;
+
+  // Hint: when the scaffolded document is the configured token-host
+  // document (the fork's main browser window), the generic dialog-shaped
+  // scaffold is almost certainly wrong (0.34.0 field report: correct
+  // jar.mn registrations, wrong document body).
+  if (!browserWindow && (await furnaceConfigExists(projectRoot))) {
+    try {
+      const furnaceConfig = await loadFurnaceConfig(projectRoot);
+      const targetDocPath = `browser/base/content/${name}.xhtml`;
+      if (furnaceConfig.tokenHostDocuments?.includes(targetDocPath)) {
+        warn(
+          `${targetDocPath} is a configured token-host document (the fork's main browser window). ` +
+            'The default scaffold emits a generic dialog-shaped <window> document; you probably ' +
+            'want "fireforge furnace chrome-doc create --browser-window" for the ' +
+            '<html id="main-window"> skeleton platform C++ expects.'
+        );
+      }
+    } catch {
+      // A broken furnace.json must not block chrome-doc scaffolding; the
+      // hint is best-effort.
+    }
+  }
+
   const plan = await buildChromeDocPlan({
     engineDir,
     name,
@@ -450,6 +494,7 @@ export async function furnaceChromeDocCreateCommand(
       engineDir,
       withTitlebar,
       withTests,
+      browserWindow,
       binaryName: forgeConfig.binaryName,
       operationContext: ctx,
     })

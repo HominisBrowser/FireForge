@@ -82,6 +82,29 @@ export function sanitizeName(name: string): string {
 }
 
 /**
+ * Strips a leading `NNN-<category>-` prefix from a sanitized name slug.
+ * Operators frequently pass the DESIRED FILENAME stem to `--name`
+ * (`--name 203-ui-foo --category ui`), which 0.33.0 double-prefixed into
+ * `203-ui-203-ui-foo.patch`. The filename builders prepend the order and
+ * category themselves, so a matching prefix in the name is always
+ * redundant. Applied repeatedly so a twice-prefixed slug (from a previous
+ * double-prefix incident) also collapses. Exported for direct testing.
+ */
+export function stripRedundantCategoryPrefix(sanitizedName: string, category: string): string {
+  const prefix = new RegExp(`^\\d+-${category}-`);
+  let stripped = sanitizedName;
+  while (prefix.test(stripped)) {
+    stripped = stripped.replace(prefix, '');
+  }
+  return stripped.length > 0 ? stripped : sanitizedName;
+}
+
+/** Sanitizes a patch name and drops a redundant `NNN-<category>-` prefix. */
+function patchNameSlug(name: string, category: string): string {
+  return stripRedundantCategoryPrefix(sanitizeName(name), category);
+}
+
+/**
  * Generates the next patch filename with category.
  * @param patchesDir - Path to the patches directory
  * @param category - Patch category
@@ -94,7 +117,7 @@ export async function getNextPatchFilename(
   name: string
 ): Promise<string> {
   const patchNumber = await getNextPatchNumber(patchesDir);
-  const sanitizedName = sanitizeName(name);
+  const sanitizedName = patchNameSlug(name, category);
 
   return `${patchNumber}-${category}-${sanitizedName}.patch`;
 }
@@ -423,7 +446,7 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
       : null;
   const patchFilename =
     policyOrder !== null
-      ? `${String(policyOrder).padStart(3, '0')}-${input.category}-${sanitizeName(input.name)}.patch`
+      ? `${String(policyOrder).padStart(3, '0')}-${input.category}-${patchNameSlug(input.name, input.category)}.patch`
       : await getNextPatchFilename(input.patchesDir, input.category, input.name);
   const patchPath = join(input.patchesDir, patchFilename);
 

@@ -525,6 +525,47 @@ describe('furnace registration validation helpers', () => {
       expect(mjsError).toBeDefined();
       expect(mjsError?.severity).toBe('error');
     });
+
+    it('flags stale registrations pointing at removed component files (0.34.0)', async () => {
+      vi.mocked(pathExists).mockImplementation((filePath: string) => {
+        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
+        if (filePath === '/project/components/custom/moz-dock/moz-dock.mjs') {
+          return Promise.resolve(true);
+        }
+        // The renamed-away helper no longer exists in the workspace.
+        return Promise.resolve(false);
+      });
+      vi.mocked(readText).mockResolvedValue(
+        [
+          '   content/global/elements/moz-dock.mjs  (widgets/moz-dock/moz-dock.mjs)',
+          '   content/global/elements/old-helper.mjs  (widgets/moz-dock/old-helper.mjs)',
+        ].join('\n')
+      );
+
+      const issues = await validateJarMnEntries('/project', baseConfig);
+
+      const stale = issues.filter((i) => i.check === 'stale-jar-registration');
+      expect(stale).toHaveLength(1);
+      expect(stale[0]?.severity).toBe('error');
+      expect(stale[0]?.component).toBe('moz-dock');
+      expect(stale[0]?.message).toContain('old-helper.mjs');
+    });
+
+    it('does not flag live registrations as stale', async () => {
+      vi.mocked(pathExists).mockImplementation((filePath: string) => {
+        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
+        if (filePath.startsWith('/project/components/custom/moz-dock/')) {
+          return Promise.resolve(true);
+        }
+        return Promise.resolve(false);
+      });
+      vi.mocked(readText).mockResolvedValue(
+        '   content/global/elements/moz-dock.mjs  (widgets/moz-dock/moz-dock.mjs)'
+      );
+
+      const issues = await validateJarMnEntries('/project', baseConfig);
+      expect(issues.some((i) => i.check === 'stale-jar-registration')).toBe(false);
+    });
   });
 
   it('reports filesInSync false when source exists but target does not', async () => {

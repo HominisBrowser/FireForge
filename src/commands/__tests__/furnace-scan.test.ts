@@ -320,6 +320,76 @@ describe('furnaceScanCommand', () => {
     expect(restoreRollbackJournalOrThrow).toHaveBeenCalled();
   });
 
+  it('--track persists every untracked component into stock non-interactively (0.34.0)', async () => {
+    setTTY(false, false);
+    vi.mocked(scanWidgetsDirectory).mockResolvedValue([
+      { tagName: 'moz-button', hasCSS: true, hasFTL: false, isRegistered: true },
+      { tagName: 'moz-dialog', hasCSS: false, hasFTL: false, isRegistered: true },
+      { tagName: 'moz-toggle', hasCSS: true, hasFTL: true, isRegistered: true },
+    ] as never);
+    vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: ['moz-button'],
+      overrides: {},
+      custom: {},
+    } as never);
+    vi.mocked(ensureFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: ['moz-button'],
+      overrides: {},
+      custom: {},
+    } as never);
+
+    await furnaceScanCommand('/project', { track: true });
+
+    // Only untracked components are appended; existing entries are kept
+    // and never duplicated.
+    expect(writeFurnaceConfig).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({ stock: ['moz-button', 'moz-dialog', 'moz-toggle'] })
+    );
+    expect(runFurnaceMutation).toHaveBeenCalledWith(
+      '/project',
+      'scan-rollback',
+      expect.any(Function)
+    );
+    expect(success).toHaveBeenCalledWith(expect.stringContaining('Tracked 2 components'));
+    expect(prompts.confirm).not.toHaveBeenCalled();
+  });
+
+  it('--track is a no-op when everything is already tracked (0.34.0)', async () => {
+    vi.mocked(scanWidgetsDirectory).mockResolvedValue([
+      { tagName: 'moz-button', hasCSS: true, hasFTL: false, isRegistered: true },
+    ] as never);
+    vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: ['moz-button'],
+      overrides: {},
+      custom: {},
+    } as never);
+
+    await furnaceScanCommand('/project', { track: true });
+
+    expect(writeFurnaceConfig).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('Nothing to track'));
+  });
+
+  it('non-interactive scan without --track points at --track (0.34.0)', async () => {
+    vi.mocked(scanWidgetsDirectory).mockResolvedValue([
+      { tagName: 'moz-dialog', hasCSS: false, hasFTL: false, isRegistered: true },
+    ] as never);
+
+    await furnaceScanCommand('/project', {});
+
+    expect(writeFurnaceConfig).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('--track'));
+  });
+
   it('exits when user cancels at the confirm prompt', async () => {
     setTTY(true, true);
     vi.mocked(scanWidgetsDirectory).mockResolvedValue([

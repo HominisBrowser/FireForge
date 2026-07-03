@@ -23,6 +23,16 @@ vi.mock('../../core/typecheck.js', () => ({
   relativeForDisplay: (_root: string, file: string) => file,
 }));
 
+vi.mock('../../core/furnace-config.js', () => ({
+  furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
+  loadFurnaceConfig: vi.fn(),
+}));
+
+vi.mock('../../core/furnace-jsconfig.js', () => ({
+  findJsconfigPathsDrift: vi.fn(),
+  syncFurnaceJsconfigPaths: vi.fn(),
+}));
+
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
@@ -33,6 +43,8 @@ vi.mock('../../utils/logger.js', () => ({
 }));
 
 import { loadConfig } from '../../core/config.js';
+import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
+import { findJsconfigPathsDrift, syncFurnaceJsconfigPaths } from '../../core/furnace-jsconfig.js';
 import { runTypecheck } from '../../core/typecheck.js';
 import { GeneralError } from '../../errors/base.js';
 import type { TypecheckProjectResult } from '../../types/typecheck.js';
@@ -42,6 +54,10 @@ import { reportResults, resolveTypecheckProjects, typecheckCommand } from '../ty
 const mockLoadConfig = vi.mocked(loadConfig);
 const mockRunTypecheck = vi.mocked(runTypecheck);
 const mockWarn = vi.mocked(warn);
+const mockFurnaceConfigExists = vi.mocked(furnaceConfigExists);
+const mockLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
+const mockFindJsconfigPathsDrift = vi.mocked(findJsconfigPathsDrift);
+const mockSyncFurnaceJsconfigPaths = vi.mocked(syncFurnaceJsconfigPaths);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -194,6 +210,69 @@ describe('typecheckCommand', () => {
     ]);
     await expect(typecheckCommand('/project', {})).rejects.toThrow(GeneralError);
     expect(mockRunTypecheck).toHaveBeenCalledWith('/project', { projects: ['a/jsconfig.json'] });
+  });
+
+  it('regenerates a stale Furnace-managed jsconfig before typechecking', async () => {
+    mockLoadConfig.mockResolvedValue({
+      name: 'p',
+      vendor: 'v',
+      appId: 'org.v.p',
+      binaryName: 'p',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      typecheck: { projects: ['a/jsconfig.json'] },
+    });
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      typecheckJsconfig: 'a/jsconfig.json',
+    } as never);
+    // Drift detected → the generated paths are stale.
+    mockFindJsconfigPathsDrift.mockResolvedValue({
+      added: ['chrome://global/content/elements/new.mjs'],
+      updated: [],
+      pruned: [],
+      changed: true,
+    });
+    mockRunTypecheck.mockResolvedValue([
+      { project: 'a/jsconfig.json', filesChecked: 1, issues: [] },
+    ]);
+
+    await typecheckCommand('/project', {});
+
+    // The reconciler regenerated the stale jsconfig BEFORE typecheck ran.
+    expect(mockSyncFurnaceJsconfigPaths).toHaveBeenCalledWith('/project', {
+      typecheckJsconfig: 'a/jsconfig.json',
+    });
+    const syncOrder = mockSyncFurnaceJsconfigPaths.mock.invocationCallOrder[0] ?? Infinity;
+    const typecheckOrder = mockRunTypecheck.mock.invocationCallOrder[0] ?? -Infinity;
+    expect(syncOrder).toBeLessThan(typecheckOrder);
+  });
+
+  it('does not regenerate when the generated jsconfig is up to date', async () => {
+    mockLoadConfig.mockResolvedValue({
+      name: 'p',
+      vendor: 'v',
+      appId: 'org.v.p',
+      binaryName: 'p',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      typecheck: { projects: ['a/jsconfig.json'] },
+    });
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      typecheckJsconfig: 'a/jsconfig.json',
+    } as never);
+    mockFindJsconfigPathsDrift.mockResolvedValue({
+      added: [],
+      updated: [],
+      pruned: [],
+      changed: false,
+    });
+    mockRunTypecheck.mockResolvedValue([
+      { project: 'a/jsconfig.json', filesChecked: 1, issues: [] },
+    ]);
+
+    await typecheckCommand('/project', {});
+
+    expect(mockSyncFurnaceJsconfigPaths).not.toHaveBeenCalled();
   });
 
   it('honours --project for one-off runs even when config has no typecheck block', async () => {

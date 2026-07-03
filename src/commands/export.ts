@@ -18,6 +18,7 @@ import {
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { commitExportedPatch } from '../core/patch-export.js';
 import { buildPatchQueueContext } from '../core/patch-lint.js';
+import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -38,11 +39,19 @@ import {
   runSupersedeAndOverlapGates,
 } from './export-shared.js';
 
+/** Collected export candidates, tracking which came from directory expansion. */
+interface CollectedExportFiles {
+  files: string[];
+  /** Files discovered by expanding a DIRECTORY argument (not named explicitly). */
+  fromDirectory: Set<string>;
+}
+
 async function collectExportFiles(
   paths: ReturnType<typeof getProjectPaths>,
   files: string[]
-): Promise<string[]> {
+): Promise<CollectedExportFiles> {
   const collectedFiles = new Set<string>();
+  const fromDirectory = new Set<string>();
 
   let fileStatuses: { status: string; file: string }[] | undefined;
   let untrackedFiles: string[] | undefined;
@@ -71,8 +80,14 @@ async function collectExportFiles(
       const dirPath = inputPath.endsWith('/') ? inputPath.slice(0, -1) : inputPath;
       const modifiedFiles = await getModifiedFilesInDir(paths.engine, dirPath);
       const dirUntrackedFiles = await getUntrackedFilesInDir(paths.engine, dirPath);
-      for (const f of modifiedFiles) collectedFiles.add(f);
-      for (const f of dirUntrackedFiles) collectedFiles.add(f);
+      for (const f of modifiedFiles) {
+        collectedFiles.add(f);
+        fromDirectory.add(f);
+      }
+      for (const f of dirUntrackedFiles) {
+        collectedFiles.add(f);
+        fromDirectory.add(f);
+      }
     } else {
       if (inputPath.endsWith('/')) {
         throw new GeneralError(`"${inputPath}" is not a valid file or directory.`);
@@ -96,10 +111,58 @@ async function collectExportFiles(
       }
 
       collectedFiles.add(inputPath);
+      // A file named explicitly always stays in the export set, even if a
+      // directory argument also swept it up.
+      fromDirectory.delete(inputPath);
     }
   }
 
-  return [...collectedFiles].sort();
+  return { files: [...collectedFiles].sort(), fromDirectory };
+}
+
+/**
+ * Auto-excludes directory-derived files already owned by OTHER patches
+ * (0.34.0 field report): a directory export used to plan files owned by
+ * earlier patches into the new patch, and the duplicate-new-file-creation
+ * refusal surfaced only at placement lint, suggesting --force-unsafe —
+ * the wrong tool for "leave that file with its owner". Explicitly named
+ * files are never excluded (the overlap gates still confront the operator
+ * with those). Prints one notice per exclusion.
+ */
+async function excludeFilesOwnedByOtherPatches(
+  patchesDir: string,
+  collected: CollectedExportFiles
+): Promise<string[]> {
+  if (collected.fromDirectory.size === 0) return collected.files;
+  const manifest = await loadPatchesManifest(patchesDir);
+  if (!manifest) return collected.files;
+
+  const owners = new Map<string, string>();
+  for (const patch of manifest.patches) {
+    for (const file of patch.filesAffected) {
+      if (!owners.has(file)) owners.set(file, patch.filename);
+    }
+  }
+
+  const kept: string[] = [];
+  let excludedCount = 0;
+  for (const file of collected.files) {
+    const owner = collected.fromDirectory.has(file) ? owners.get(file) : undefined;
+    if (owner !== undefined) {
+      info(`Excluding ${file} from the directory export (owned by ${owner})`);
+      excludedCount += 1;
+    } else {
+      kept.push(file);
+    }
+  }
+  if (excludedCount > 0) {
+    info(
+      `Excluded ${excludedCount} file${excludedCount === 1 ? '' : 's'} owned by other patches. ` +
+        'Use "fireforge re-export <patch> --files ..." to update the owning patch, or name the ' +
+        'file explicitly in this export to move it deliberately.'
+    );
+  }
+  return kept;
 }
 
 async function generatePatchDiff(engineDir: string, allFiles: string[]): Promise<string> {
@@ -178,7 +241,9 @@ async function prepareExport(
     );
   }
 
-  let allFiles = await collectExportFiles(paths, files);
+  const collected = await collectExportFiles(paths, files);
+  let allFiles = await excludeFilesOwnedByOtherPatches(paths.patches, collected);
+  const ownershipExclusions = collected.files.length - allFiles.length;
 
   // Filter out furnace-managed files when --exclude-furnace is set
   if (options.excludeFurnace) {
@@ -197,6 +262,13 @@ async function prepareExport(
 
   if (allFiles.length === 0) {
     const pathList = files.join(', ');
+    if (ownershipExclusions > 0) {
+      throw new GeneralError(
+        `Every changed file under "${pathList}" is already owned by another patch ` +
+          '(see the exclusions above).\n\n' +
+          'Use "fireforge re-export <patch> --files ..." to refresh the owning patch instead.'
+      );
+    }
     throw new GeneralError(
       `Paths "${pathList}" have no changes to export.\n\n` +
         'Run "fireforge status" to see modified files.'

@@ -47,7 +47,9 @@ function legacyRegisterTestManifest(
   const lines = content.split('\n');
 
   const extractKey = (line: string): string | undefined => {
-    const match = /"content\/test\/([^/]+)\/browser\.toml"/.exec(line);
+    // Nested manifests (`content/test/a/b/browser.toml`) are supported —
+    // capture the whole directory chain, not just one segment.
+    const match = /"content\/test\/(.+)\/browser\.toml"/.exec(line);
     return match?.[1];
   };
 

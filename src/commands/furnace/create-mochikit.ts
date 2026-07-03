@@ -60,9 +60,17 @@ export async function scaffoldMochikitTestFiles(
 
   const testFileName = mochikitTestFileName(componentName);
   const testFilePath = join(testDir, testFileName);
-  if (journal) await snapshotFile(journal, testFilePath);
-  await writeText(testFilePath, generateMochikitTestContent(componentName));
-  writtenFiles.push(testFileName);
+  if (await pathExists(testFilePath)) {
+    // Never clobber an existing test implementation (0.34.0 collision
+    // safety, matching the browser-chrome and xpcshell scaffolds).
+    warn(
+      `toolkit/content/tests/widgets/${testFileName} already exists — keeping the existing file.`
+    );
+  } else {
+    if (journal) await snapshotFile(journal, testFilePath);
+    await writeText(testFilePath, generateMochikitTestContent(componentName));
+    writtenFiles.push(testFileName);
+  }
 
   // chrome.toml — append entry if the file already exists, otherwise write
   // a fresh skeleton + entry. Idempotency: if the entry is already present

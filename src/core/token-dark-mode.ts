@@ -121,7 +121,7 @@ export function findDarkRootInsertionIndex(lines: string[]): number | null {
  * `{` encountered sets the entry depth, so the scan may start on the
  * selector/at-rule line itself rather than on the opener.
  */
-function findBlockCloseIndex(stripped: string[], startLine: number): number {
+export function findBlockCloseIndex(stripped: string[], startLine: number): number {
   let depth = 0;
   let entryDepth = 0;
   let enteredBlock = false;

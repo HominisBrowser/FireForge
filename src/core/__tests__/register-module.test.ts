@@ -100,6 +100,30 @@ describe('registerFireForgeModule', () => {
     expect(result.entry).toBe('    "CharlieModule.sys.mjs",');
   });
 
+  it('inserts case-insensitively to match mozbuild UnsortedError ordering', async () => {
+    // Field report: registering HominisAppearanceController next to
+    // HominisAppMenuIntegration landed it AFTER (byte order: uppercase 'M'
+    // < lowercase 'e') so `mach configure` aborted with UnsortedError.
+    // mozbuild compares case-insensitively, where 'appe' < 'appm', so
+    // Appearance must sort BEFORE AppMenu.
+    mockReadText.mockResolvedValue(
+      ['EXTRA_JS_MODULES += [', '    "HominisAppMenuIntegration.sys.mjs",', ']', ''].join('\n')
+    );
+
+    const result = await registerFireForgeModule(
+      '/engine',
+      'HominisAppearanceController.sys.mjs',
+      'browser/modules/testbrowser'
+    );
+
+    expect(result.skipped).toBe(false);
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    const appearanceIdx = written.indexOf('HominisAppearanceController');
+    const appMenuIdx = written.indexOf('HominisAppMenuIntegration');
+    expect(appearanceIdx).toBeGreaterThan(-1);
+    expect(appearanceIdx).toBeLessThan(appMenuIdx);
+  });
+
   it('inserts into a single-line empty EXTRA_JS_MODULES list (Eval 2)', async () => {
     // The eval-2 repro: a freshly-scaffolded browser/modules/<fork>/moz.build
     // started with `EXTRA_JS_MODULES += []` on one line. The register

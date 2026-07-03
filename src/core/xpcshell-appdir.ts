@@ -39,7 +39,7 @@
  * forwarded args).
  */
 
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
 import { pathExists, readJson, readText } from '../utils/fs.js';
@@ -132,6 +132,13 @@ function stripQuotes(raw: string): string | undefined {
  *
  * Special-cases `startPath` itself when it already ends with
  * `xpcshell.toml` — operators sometimes pass a manifest path directly.
+ *
+ * When `startPath` is a DIRECTORY, the walk starts at the directory itself
+ * (checking `<dir>/xpcshell.toml` first) rather than at its parent. Field
+ * report (0.34.0 cycle): a directory whose own manifest is an
+ * `xpcshell.toml` was classified non-xpcshell — the walk began at the
+ * parent, missed the manifest, and `fireforge test <dir>` dispatched to
+ * the mochitest runner, which found no mochitests.
  */
 export async function findNearestXpcshellManifest(
   engineDir: string,
@@ -142,13 +149,19 @@ export async function findNearestXpcshellManifest(
     return (await pathExists(absStart)) ? absStart : null;
   }
 
+  const startIsDirectory = await stat(absStart).then(
+    (stats) => stats.isDirectory(),
+    () => false
+  );
+
   const engineAbs = resolve(engineDir);
   let current = absStart;
-  // First iteration walks down to a directory; subsequent ones walk up.
+  // First iteration resolves the starting directory (the path itself for a
+  // directory argument, its parent for a file); subsequent ones walk up.
   // Cap iterations defensively — a pathological symlink loop would
   // otherwise spin until the call stack overflows.
   for (let i = 0; i < 64; i += 1) {
-    const dir = i === 0 ? dirname(absStart) : dirname(current);
+    const dir = i === 0 ? (startIsDirectory ? absStart : dirname(absStart)) : dirname(current);
     const candidate = join(dir, 'xpcshell.toml');
     if (await pathExists(candidate)) return candidate;
     if (dir === engineAbs || dir === dirname(dir)) return null;

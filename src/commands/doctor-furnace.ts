@@ -22,6 +22,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import type { CheckResult, DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, warning } from './doctor-check-core.js';
+import { furnaceStaleJarRegistrationCheck } from './doctor-furnace-jar.js';
 import { furnaceManifestSyncCheck } from './doctor-furnace-manifest-sync.js';
 
 const ENGINE_REPAIRABLE_OPERATIONS: readonly FurnacePendingRepairOperation[] = [
@@ -653,6 +654,7 @@ const furnaceStaleLockCheck: DoctorCheckDefinition = {
 export const FURNACE_DOCTOR_CHECKS: readonly DoctorCheckDefinition[] = [
   furnaceConfigurationCheck,
   furnaceStateConsistencyCheck,
+  furnaceStaleJarRegistrationCheck,
   furnaceEnginePathsCheck,
   furnaceStorybookCheck,
   furnaceStaleLockCheck,

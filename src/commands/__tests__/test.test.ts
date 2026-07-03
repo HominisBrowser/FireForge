@@ -41,7 +41,7 @@ vi.mock('../../core/mach.js', () => {
       Promise.resolve({ runnable: true, expectedPath: 'obj-debug/dist/bin/firefox' })
     ),
     buildArtifactMismatchMessage: vi.fn(() => undefined),
-    buildUI: vi.fn(),
+    runProtectedMachBuild: vi.fn(),
     testWithOutput: captureDispatch,
     xpcshellTestWithOutput: captureDispatch,
     mochitestWithOutput: captureDispatch,
@@ -51,6 +51,10 @@ vi.mock('../../core/mach.js', () => {
 
 vi.mock('../../core/build-prepare.js', () => ({
   prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0, reconfigured: false })),
+}));
+
+vi.mock('../../core/build-baseline.js', () => ({
+  readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -118,8 +122,8 @@ vi.mock('../../core/xpcshell-appdir.js', () => ({
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import {
   buildArtifactMismatchMessage,
-  buildUI,
   hasBuildArtifacts,
+  runProtectedMachBuild,
   testWithOutput,
   withBuildLock,
 } from '../../core/mach.js';
@@ -146,7 +150,12 @@ describe('testCommand', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(runProtectedMachBuild).mockResolvedValue({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      attempts: 1,
+    });
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(null);
     vi.mocked(isSymlink).mockResolvedValue(false);
     vi.mocked(removeFile).mockResolvedValue();
@@ -331,10 +340,17 @@ describe('testCommand', () => {
     expect(prepareBuildEnvironment).toHaveBeenCalledWith(
       '/project',
       expect.objectContaining({ engine: '/project/engine' }),
-      expect.objectContaining({ binaryName: 'mybrowser' })
+      expect.objectContaining({ binaryName: 'mybrowser' }),
+      // The pre-test build passes the previous baseline like `fireforge
+      // build` does, so auto-configure conditions match on both paths.
+      expect.objectContaining({})
     );
     expect(withBuildLock).toHaveBeenCalledWith('/project', expect.any(Function));
-    expect(buildUI).toHaveBeenCalledWith('/project/engine');
+    expect(runProtectedMachBuild).toHaveBeenCalledWith(
+      'faster',
+      '/project/engine',
+      expect.objectContaining({ retries: 2 })
+    );
   });
 
   it('fails with an AmbiguousBuildArtifactsError when multiple objdirs are detected', async () => {
@@ -366,7 +382,12 @@ describe('testCommand', () => {
   });
 
   it('throws a BuildError when the incremental pre-test build fails', async () => {
-    vi.mocked(buildUI).mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
+    vi.mocked(runProtectedMachBuild).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr: '',
+      attempts: 1,
+    });
 
     let error: unknown;
     try {
@@ -384,21 +405,18 @@ describe('testCommand', () => {
     expect(testWithOutput).not.toHaveBeenCalled();
   });
 
-  // ── Item E2 (0.32.0): the harness-crash classifier covers the pre-test build ──
+  // ── Item E2 (0.32.0) / 0.34.0: pre-test --build routes through the
+  //    protected mach dispatch (in-venv guard + uniform crash retries) ──
 
-  const BUILD_RESOURCE_MONITOR_CRASH = {
-    exitCode: 1,
-    stdout: '',
-    stderr: [
-      'Traceback (most recent call last):',
-      "AttributeError: 'SystemResourceMonitor' object has no attribute 'poll_interval'",
-    ].join('\n'),
-  };
-
-  it('retries the pre-test --build on a resource-monitor crash and proceeds (E2)', async () => {
-    // First build attempt crashes in the harness; the beforeEach default
-    // makes the retry succeed.
-    vi.mocked(buildUI).mockResolvedValueOnce(BUILD_RESOURCE_MONITOR_CRASH);
+  it('proceeds to tests when the protected pre-test build recovered via retry (E2)', async () => {
+    // The protected dispatch retried internally and reports success on the
+    // second attempt; the command layer proceeds to mach test.
+    vi.mocked(runProtectedMachBuild).mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      attempts: 2,
+    });
     vi.mocked(testWithOutput).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | t\nTEST-OK | t',
@@ -411,12 +429,21 @@ describe('testCommand', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(buildUI).toHaveBeenCalledTimes(2);
+    expect(runProtectedMachBuild).toHaveBeenCalledTimes(1);
     expect(testWithOutput).toHaveBeenCalled();
   });
 
-  it('exhausts the harness-retry budget on a persistent build crash and reports it (E2)', async () => {
-    vi.mocked(buildUI).mockResolvedValue(BUILD_RESOURCE_MONITOR_CRASH);
+  it('forwards --harness-retries into the protected pre-test build and reports an exhausted crash budget (E2)', async () => {
+    vi.mocked(runProtectedMachBuild).mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr: '',
+      attempts: 2,
+      crashSignature: {
+        reason: 'harness startup traceback (resource monitor/psutil)',
+        line: "AttributeError: 'SystemResourceMonitor' object has no attribute 'poll_interval'",
+      },
+    });
 
     let error: unknown;
     try {
@@ -429,22 +456,106 @@ describe('testCommand', () => {
     }
 
     expect(error).toBeInstanceOf(BuildError);
-    expect(buildUI).toHaveBeenCalledTimes(2); // initial attempt + 1 retry
+    expect(runProtectedMachBuild).toHaveBeenCalledWith(
+      'faster',
+      '/project/engine',
+      expect.objectContaining({ retries: 1 })
+    );
     expect(testWithOutput).not.toHaveBeenCalled();
     expect(error instanceof Error ? error.message : '').toMatch(/harness/i);
   });
 
-  it('does not retry a non-crash build failure (E2 — only harness crashes retry)', async () => {
-    vi.mocked(buildUI).mockResolvedValue({ exitCode: 1, stdout: 'make: real error', stderr: '' });
+  it('reports a plain pre-test build failure without the crash framing (E2 — only harness crashes retry)', async () => {
+    vi.mocked(runProtectedMachBuild).mockResolvedValue({
+      exitCode: 1,
+      stdout: 'make: real error',
+      stderr: '',
+      attempts: 1,
+    });
+
+    let error: unknown;
+    try {
+      await testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        build: true,
+        harnessRetries: 2,
+      });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(BuildError);
+    expect(error instanceof Error ? error.message : '').not.toMatch(/crashed in the harness/i);
+  });
+
+  it('runs prepareBuildEnvironment once, outside the protected retry loop', async () => {
+    vi.mocked(runProtectedMachBuild).mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      attempts: 3, // dispatch retried twice internally
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nTEST-OK | t',
+      stderr: '',
+    });
 
     await expect(
       testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
         build: true,
-        harnessRetries: 2,
       })
-    ).rejects.toBeInstanceOf(BuildError);
+    ).resolves.toBeUndefined();
 
-    expect(buildUI).toHaveBeenCalledTimes(1);
+    // Retries must never re-run mach configure / build prep — the field's
+    // 64-minute rebuild incident is exactly what re-preparing would risk.
+    expect(prepareBuildEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a green embedded summary with a non-zero exit as a pass (0.34.0 --no-shard field case)', async () => {
+    // mach exited 1 on harness noise (degradation warnings + caught
+    // telemetry traceback), but the embedded summary completed green — the
+    // wrapper must exit 0 instead of forcing operators to parse embedded
+    // summaries by hand.
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: [
+        'UserWarning: psutil failed to run: host_statistics64 syscall failed',
+        ' 0:00.60 TEST_START | test_one.js',
+        ' 0:02.18 INFO | TEST_END: Test PASS',
+        'Traceback (most recent call last):',
+        '  File "mach/telemetry.py", line 661, in submit_telemetry',
+        'ConnectionError: telemetry submission failed',
+        ' 0:04.10 INFO | Unexpected results: 0',
+        ' 0:04.11 SUITE_END',
+      ].join('\n'),
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'])
+    ).resolves.toBeUndefined();
+  });
+
+  it('sharded green runs with degradation noise pass instead of reporting CRASH (0.34.0)', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: [
+        'UserWarning: psutil failed to run: host_statistics64 syscall failed',
+        '_collect failed: poll_interval unavailable',
+        ' 0:00.60 TEST_START | shard-test',
+        ' 0:02.18 INFO | TEST_END: Test PASS',
+        ' 0:04.10 INFO | Unexpected results: 0',
+        ' 0:04.11 SUITE_END',
+      ].join('\n'),
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', [
+        'browser/components/tests/unit/test_one.js',
+        'browser/components/tests/unit/test_two.js',
+      ])
+    ).resolves.toBeUndefined();
   });
 
   it('normalizes engine-prefixed test paths and passes headless through to mach test', async () => {

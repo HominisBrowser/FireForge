@@ -72,46 +72,7 @@ async function promptAddComponents(
     return;
   }
 
-  // Wrap the furnace.json mutation in the standard furnace lifecycle so the
-  // write goes through the furnace-wide lock and is visible to the global
-  // SIGINT/SIGTERM rollback pathway. The journal snapshots furnace.json
-  // *before* `ensureFurnaceConfig` runs, so a failed run after the file is
-  // auto-created cleans up after itself instead of leaving an unwanted
-  // default config behind.
-  await runFurnaceMutation(projectRoot, 'scan-rollback', async (ctx) => {
-    const journal = createRollbackJournal();
-    ctx.registerJournal(journal);
-
-    const furnacePaths = getFurnacePaths(projectRoot);
-    await snapshotFile(journal, furnacePaths.furnaceConfig);
-
-    try {
-      const config = await ensureFurnaceConfig(projectRoot);
-      // Defensive: `selected` is already filtered to exclude components
-      // currently in config.stock (see untrackedComponents above). This
-      // re-filter catches the edge case where the config on disk changed
-      // between the scan's read and the write (concurrent scan / manual
-      // edit). Without it a duplicate scan would introduce duplicate
-      // entries into stock; writeFurnaceConfig's validator would then
-      // reject the write, but the error would be less actionable than
-      // silently de-duplicating here.
-      const toAdd = (selected as string[]).filter((s) => !config.stock.includes(s));
-      config.stock.push(...toAdd);
-      await writeFurnaceConfig(projectRoot, config);
-    } catch (error: unknown) {
-      try {
-        await restoreRollbackJournalOrThrow(journal, 'Failed to update furnace.json during scan');
-      } catch (rollbackError) {
-        await recordFurnaceRollbackFailure(
-          projectRoot,
-          'scan-rollback',
-          `furnace.json update during scan: ${toError(rollbackError).message}`
-        );
-        throw rollbackError;
-      }
-      throw error;
-    }
-  });
+  await persistStockComponents(projectRoot, selected as string[]);
 
   const addedNames = selected as string[];
   success(
@@ -141,13 +102,63 @@ async function promptAddComponents(
 }
 
 /**
+ * Persists discovered component tag names into the `stock` section of
+ * furnace.json. Shared by the interactive confirm flow and the
+ * non-interactive `--track` flag (0.34.0 field report: scan printed a full
+ * inventory but persisted nothing and said nothing about where the
+ * inventory goes).
+ *
+ * Wraps the furnace.json mutation in the standard furnace lifecycle so the
+ * write goes through the furnace-wide lock and is visible to the global
+ * SIGINT/SIGTERM rollback pathway. The journal snapshots furnace.json
+ * *before* `ensureFurnaceConfig` runs, so a failed run after the file is
+ * auto-created cleans up after itself instead of leaving an unwanted
+ * default config behind.
+ */
+async function persistStockComponents(projectRoot: string, names: string[]): Promise<void> {
+  await runFurnaceMutation(projectRoot, 'scan-rollback', async (ctx) => {
+    const journal = createRollbackJournal();
+    ctx.registerJournal(journal);
+
+    const furnacePaths = getFurnacePaths(projectRoot);
+    await snapshotFile(journal, furnacePaths.furnaceConfig);
+
+    try {
+      const config = await ensureFurnaceConfig(projectRoot);
+      // Defensive: callers already filter to untracked components. This
+      // re-filter catches the edge case where the config on disk changed
+      // between the scan's read and the write (concurrent scan / manual
+      // edit). Without it a duplicate scan would introduce duplicate
+      // entries into stock; writeFurnaceConfig's validator would then
+      // reject the write, but the error would be less actionable than
+      // silently de-duplicating here.
+      const toAdd = names.filter((s) => !config.stock.includes(s));
+      config.stock.push(...toAdd);
+      await writeFurnaceConfig(projectRoot, config);
+    } catch (error: unknown) {
+      try {
+        await restoreRollbackJournalOrThrow(journal, 'Failed to update furnace.json during scan');
+      } catch (rollbackError) {
+        await recordFurnaceRollbackFailure(
+          projectRoot,
+          'scan-rollback',
+          `furnace.json update during scan: ${toError(rollbackError).message}`
+        );
+        throw rollbackError;
+      }
+      throw error;
+    }
+  });
+}
+
+/**
  * Runs the furnace scan command to discover MozLitElement components.
  * @param projectRoot - Root directory of the project
  * @param options - Scan options
  */
 export async function furnaceScanCommand(
   projectRoot: string,
-  options: { deep?: boolean } = {}
+  options: { deep?: boolean; track?: boolean } = {}
 ): Promise<void> {
   intro(options.deep ? 'Furnace Scan (deep)' : 'Furnace Scan');
 
@@ -231,11 +242,37 @@ export async function furnaceScanCommand(
     'Summary'
   );
 
+  // --track: persist the discovered untracked inventory into the `stock`
+  // section without prompting (works non-interactively). Without it, scan
+  // stays report-only; the interactive confirm flow below is the other
+  // persistence path.
+  if (options.track) {
+    if (untrackedCount === 0) {
+      info('Nothing to track: every discovered component is already in furnace.json.');
+      outro('Scan complete');
+      return;
+    }
+    const untrackedNames = components.filter((c) => !tracked.has(c.tagName)).map((c) => c.tagName);
+    await persistStockComponents(projectRoot, untrackedNames);
+    success(
+      `Tracked ${untrackedNames.length} component${untrackedNames.length === 1 ? '' : 's'} in the stock section of furnace.json`
+    );
+    outro('Scan complete');
+    return;
+  }
+
   const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
 
   if (isInteractive && untrackedCount > 0) {
     await promptAddComponents(components, tracked, projectRoot);
     return;
+  }
+
+  if (untrackedCount > 0) {
+    info(
+      'Scan is report-only: re-run with --track to persist the untracked components into the ' +
+        'stock section of furnace.json (deploy/validate consume them from there).'
+    );
   }
 
   outro('Scan complete');

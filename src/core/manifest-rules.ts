@@ -13,6 +13,7 @@ import {
   registerTestManifest,
   registerToolkitWidget,
 } from './manifest-register.js';
+import { isXpcshellTestRegistered, registerXpcshellTest } from './register-xpcshell-test.js';
 
 /** Pattern rules mapping file paths to manifest types */
 export interface PatternRule {
@@ -31,8 +32,14 @@ export interface PatternRule {
   extractArgs: (match: RegExpMatchArray) => string[];
 }
 
-/** Returns manifest registration rules for the supported engine file patterns. */
-export function getRules(binaryName: string): PatternRule[] {
+/**
+ * Returns manifest registration rules for the supported engine file
+ * patterns. `createManifest` (from `register --create-manifest`) lets the
+ * module and xpcshell-test rules scaffold a missing manifest (directory
+ * moz.build / xpcshell.toml) and wire the parent chain instead of failing
+ * with "Manifest not found".
+ */
+export function getRules(binaryName: string, createManifest = false): PatternRule[] {
   const moduleDir = `browser/modules/${binaryName}`;
   return [
     {
@@ -67,7 +74,10 @@ export function getRules(binaryName: string): PatternRule[] {
       extractArgs: (m) => [m[1] ?? ''],
     },
     {
-      pattern: /^browser\/base\/content\/test\/([^/]+)\/browser\.toml$/,
+      // Fork-owned browser.toml manifests at ARBITRARY depth under
+      // browser/base/content/test/ (0.34.0 field report: only one level
+      // was supported, rejecting nested browser-chrome manifests).
+      pattern: /^browser\/base\/content\/test\/((?:[^/]+\/)*[^/]+)\/browser\.toml$/,
       isRegistered: (_engineDir, testDir) => isTestManifestRegistered(_engineDir, testDir),
       register: (_engineDir, _after, dryRun, testDir) =>
         registerTestManifest(_engineDir, testDir, dryRun),
@@ -78,7 +88,7 @@ export function getRules(binaryName: string): PatternRule[] {
       isRegistered: (_engineDir, fileName) =>
         isFireForgeModuleRegistered(_engineDir, fileName, moduleDir),
       register: (_engineDir, _after, dryRun, fileName) =>
-        registerFireForgeModule(_engineDir, fileName, moduleDir, dryRun),
+        registerFireForgeModule(_engineDir, fileName, moduleDir, dryRun, createManifest),
       extractArgs: (m) => [m[1] ?? ''],
     },
     {
@@ -88,6 +98,22 @@ export function getRules(binaryName: string): PatternRule[] {
       register: (_engineDir, _after, dryRun, tagName, fileName) =>
         registerToolkitWidget(_engineDir, tagName, fileName, dryRun),
       extractArgs: (m) => [m[1] ?? '', m[2] ?? ''],
+    },
+    {
+      // xpcshell test files (0.34.0 field report: rejected as "Unknown
+      // file pattern"). Any `test_*.js` outside browser/base/content/test/
+      // (which stays browser-chrome territory with its browser.toml
+      // guidance) registers into the directory's xpcshell.toml; with
+      // --create-manifest a missing manifest is scaffolded and wired via
+      // XPCSHELL_TESTS_MANIFESTS.
+      pattern: /^(?!browser\/base\/content\/test\/)(.+)\/(test_[^/]+\.js)$/,
+      isRegistered: (engineDir, dirRel, fileName) =>
+        isXpcshellTestRegistered(engineDir, dirRel, fileName),
+      register: (engineDir, _after, dryRun, dirRel, fileName) =>
+        registerXpcshellTest(engineDir, dirRel, fileName, dryRun, createManifest),
+      // Both groups are guaranteed by the pattern; slice avoids dead
+      // fallback branches.
+      extractArgs: (m) => m.slice(1, 3),
     },
   ];
 }
@@ -209,7 +235,8 @@ function getUnregistrableAdvice(filePath: string): string | null {
       `xpcshell.toml manifests are not auto-registered by "fireforge register". ` +
       `Add "XPCSHELL_TESTS_MANIFESTS += ['${basename(filePath)}']" to the ` +
       `moz.build that covers ${filePath.replace(/\/xpcshell\.toml$/, '/')}, ` +
-      'or let `furnace create --test-style xpcshell` print the warning that names the canonical wiring location. ' +
+      'or register one of its test files with "fireforge register <path>/test_*.js --create-manifest", ' +
+      'which scaffolds the manifest and wires XPCSHELL_TESTS_MANIFESTS automatically. ' +
       'Browser-chrome tests (browser.toml) are auto-registered via "fireforge register <path>/browser.toml".'
     );
   }
@@ -253,13 +280,21 @@ export async function isFileRegistered(root: string, filePath: string): Promise<
   }
 
   throw new InvalidArgumentError(
-    `Unknown file pattern: "${normalizedPath}". Supported patterns:\n` +
-      '  browser/themes/shared/*.css\n' +
-      '  browser/base/content/*.{js,mjs,xhtml,css}\n' +
-      '  browser/base/content/test/*/browser.toml\n' +
-      `  browser/modules/${config.binaryName}/*.sys.mjs\n` +
-      '  toolkit/content/widgets/*/*.{mjs,css}',
+    buildUnknownPatternMessage(normalizedPath, config.binaryName),
     'path'
+  );
+}
+
+/** Shared "Unknown file pattern" message naming every supported pattern. */
+function buildUnknownPatternMessage(normalizedPath: string, binaryName: string): string {
+  return (
+    `Unknown file pattern: "${normalizedPath}". Supported patterns:\n` +
+    '  browser/themes/shared/*.css\n' +
+    '  browser/base/content/*.{js,mjs,xhtml,css}\n' +
+    '  browser/base/content/test/**/browser.toml\n' +
+    `  browser/modules/${binaryName}/*.sys.mjs\n` +
+    '  toolkit/content/widgets/*/*.{mjs,css}\n' +
+    '  **/test_*.js (xpcshell test files; registers into the nearest xpcshell.toml)'
   );
 }
 
@@ -270,17 +305,20 @@ export async function isFileRegistered(root: string, filePath: string): Promise<
  * @param filePath - Path relative to engine/
  * @param dryRun - If true, return what would be done without writing
  * @param after - Optional substring to place entry after (instead of alphabetical)
+ * @param options - `createManifest` scaffolds a missing manifest (directory
+ *   moz.build / xpcshell.toml) and wires the parent chain instead of failing
  * @returns Registration result
  */
 export async function registerFile(
   root: string,
   filePath: string,
   dryRun = false,
-  after?: string
+  after?: string,
+  options: { createManifest?: boolean } = {}
 ): Promise<RegisterResult> {
   const { engine: engineDir } = getProjectPaths(root);
   const config = await loadConfig(root);
-  const rules = getRules(config.binaryName);
+  const rules = getRules(config.binaryName, options.createManifest === true);
 
   // Normalize path separators
   const normalizedPath = filePath.replace(/\\/g, '/');
@@ -299,12 +337,7 @@ export async function registerFile(
   }
 
   throw new InvalidArgumentError(
-    `Unknown file pattern: "${normalizedPath}". Supported patterns:\n` +
-      '  browser/themes/shared/*.css\n' +
-      '  browser/base/content/*.{js,mjs,xhtml,css}\n' +
-      '  browser/base/content/test/*/browser.toml\n' +
-      `  browser/modules/${config.binaryName}/*.sys.mjs\n` +
-      '  toolkit/content/widgets/*/*.{mjs,css}',
+    buildUnknownPatternMessage(normalizedPath, config.binaryName),
     'path'
   );
 }

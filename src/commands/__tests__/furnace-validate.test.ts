@@ -22,6 +22,7 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/furnace-registration.js', () => ({
   addJarMnEntries: vi.fn(() => Promise.resolve()),
   addCustomElementRegistration: vi.fn(() => Promise.resolve()),
+  pruneStaleJarMnEntries: vi.fn(() => Promise.resolve([])),
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
@@ -80,7 +81,11 @@ vi.mock('../../utils/logger.js', () => ({
 import { readdir } from 'node:fs/promises';
 
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
-import { addCustomElementRegistration, addJarMnEntries } from '../../core/furnace-registration.js';
+import {
+  addCustomElementRegistration,
+  addJarMnEntries,
+  pruneStaleJarMnEntries,
+} from '../../core/furnace-registration.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import type { ValidationIssue } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
@@ -349,6 +354,83 @@ describe('furnaceValidateCommand', () => {
       isSymbolicLink: () => false,
       name,
       parentPath: '',
+    });
+
+    const staleJarIssue = (component: string): ValidationIssue => ({
+      component,
+      check: 'stale-jar-registration',
+      severity: 'error',
+      message: `jar.mn registers old-helper.mjs for ${component}, but the source file no longer exists`,
+    });
+
+    it('prunes stale jar.mn registrations with --fix (0.34.0)', async () => {
+      vi.mocked(validateComponent)
+        .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
+        .mockResolvedValueOnce([]);
+      vi.mocked(pruneStaleJarMnEntries).mockResolvedValueOnce([
+        {
+          tagName: 'moz-sidebar',
+          fileName: 'old-helper.mjs',
+          line: 'content/global/elements/old-helper.mjs  (widgets/moz-sidebar/old-helper.mjs)',
+        },
+      ]);
+
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).resolves.toBeUndefined();
+
+      expect(pruneStaleJarMnEntries).toHaveBeenCalledWith(
+        '/project/engine',
+        '/project/components/custom',
+        ['moz-sidebar']
+      );
+      expect(info).toHaveBeenCalledWith(
+        'Fixed: pruned stale jar.mn line for moz-sidebar/old-helper.mjs'
+      );
+    });
+
+    it('warns when pruning stale jar.mn lines fails (0.34.0)', async () => {
+      vi.mocked(validateComponent)
+        .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
+        .mockResolvedValueOnce([staleJarIssue('moz-sidebar')]);
+      vi.mocked(pruneStaleJarMnEntries).mockRejectedValueOnce(new Error('jar.mn is read-only'));
+
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).rejects.toThrow();
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Could not prune stale jar.mn lines: jar.mn is read-only')
+      );
+    });
+
+    it('stringifies a non-Error prune failure (0.34.0)', async () => {
+      vi.mocked(validateComponent)
+        .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
+        .mockResolvedValueOnce([staleJarIssue('moz-sidebar')]);
+      vi.mocked(pruneStaleJarMnEntries).mockRejectedValueOnce('disk detached');
+
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).rejects.toThrow();
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Could not prune stale jar.mn lines: disk detached')
+      );
+    });
+
+    it('skips fixable issues for components not present in furnace.json custom', async () => {
+      // A fixable check id whose component is unknown (e.g. removed from
+      // furnace.json between validate and --fix) is skipped rather than
+      // crashing the fix pass; re-validation also skips the unknown
+      // component, so the run completes without a write.
+      vi.mocked(validateComponent).mockResolvedValueOnce([mjsIssue('moz-ghost')]);
+
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).resolves.toBeUndefined();
+
+      expect(addJarMnEntries).not.toHaveBeenCalled();
     });
 
     it('auto-fixes jar.mn mjs issues and reports fixed count from a true re-validation', async () => {

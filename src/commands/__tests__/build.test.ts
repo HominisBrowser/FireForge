@@ -109,8 +109,8 @@ describe('buildCommand', () => {
       furnaceApplied: 0,
       reconfigured: false,
     });
-    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
-    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', attempts: 1 });
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', attempts: 1 });
   });
 
   it('fails before starting when the engine checkout is missing', async () => {
@@ -268,6 +268,7 @@ describe('buildCommand', () => {
   it('wraps non-zero mach exits as build failures', async () => {
     vi.mocked(build).mockResolvedValue({
       exitCode: 2,
+      attempts: 1,
       stdout: 'make[4]: *** [tools] Error 1\nmake: *** [build] Error 2\n',
       stderr:
         'cp: /project/engine/browser/branding/hominis/Assets.car: No such file or directory\n',
@@ -296,6 +297,7 @@ describe('buildCommand', () => {
   it('prioritizes real make failures over trailing Python warning noise', async () => {
     vi.mocked(build).mockResolvedValue({
       exitCode: 2,
+      attempts: 1,
       stdout: [
         '35:12.42 gmake[4]: Entering directory `/project/engine/obj-debug/browser/app/tools`',
         '35:12.43 /usr/bin/python3 /project/engine/browser/app/tools/repackage.py',
@@ -335,7 +337,12 @@ describe('buildCommand', () => {
       'Configure complete!',
       'Be sure to run |mach build| to pick up any changes',
     ].join('\n');
-    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: staleStdout, stderr: '' });
+    vi.mocked(build).mockResolvedValue({
+      exitCode: 0,
+      stdout: staleStdout,
+      stderr: '',
+      attempts: 1,
+    });
 
     await expect(buildCommand('/project', { jobs: 4 })).resolves.toBeUndefined();
 
@@ -359,7 +366,12 @@ describe('buildCommand', () => {
       'Configure complete!',
       'Be sure to run |mach build| to pick up any changes',
     ].join('\n');
-    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: staleStdout, stderr: '' });
+    vi.mocked(build).mockResolvedValue({
+      exitCode: 0,
+      stdout: staleStdout,
+      stderr: '',
+      attempts: 1,
+    });
 
     await expect(buildCommand('/project', { jobs: 4 })).resolves.toBeUndefined();
 
@@ -382,7 +394,12 @@ describe('buildCommand', () => {
       'Config object not found by mach.',
       'Configure complete!',
     ].join('\n');
-    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: staleStdout, stderr: '' });
+    vi.mocked(build).mockResolvedValue({
+      exitCode: 0,
+      stdout: staleStdout,
+      stderr: '',
+      attempts: 1,
+    });
 
     await expect(buildCommand('/project', { jobs: 4 })).resolves.toBeUndefined();
 
@@ -458,8 +475,8 @@ describe('registerBuild', () => {
       furnaceApplied: 0,
       reconfigured: false,
     });
-    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
-    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', attempts: 1 });
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', attempts: 1 });
   });
 
   it('routes parsed CLI options through the registered action', async () => {

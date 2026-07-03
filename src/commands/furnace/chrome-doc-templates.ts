@@ -107,6 +107,59 @@ export function generateChromeDocXhtml(
 }
 
 /**
+ * browser.xhtml-like scaffold for the document that ships as the fork's
+ * MAIN BROWSER WINDOW (0.34.0 field report): the generic dialog-shaped
+ * `<window>` scaffold was wrong for the `tokenHostDocuments[0]` /
+ * BROWSER_CHROME_URL target — platform C++ reads the root element BEFORE
+ * any script runs, and expects the `browser.xhtml` shape:
+ *
+ * - `<html id="main-window">` root (not `<window id="<name>-window">`) —
+ *   upstream code from nsXULWindow sizing to session restore looks up
+ *   `main-window` by id;
+ * - `windowtype="navigator:browser"`, `chromehidden=""` and the geometry
+ *   `persist` allowlist declared as ROOT ATTRIBUTES so the platform's
+ *   pre-script pass (window tracking, XULStore geometry, chrome flags)
+ *   sees them;
+ * - the same head/bootstrap wiring (customElements.js, per-doc subscript,
+ *   CSS + Fluent links) and `data-furnace-chrome-doc` sentinel as the
+ *   generic scaffold, so jar.mn registration and the platform-module
+ *   guard pattern are unchanged.
+ */
+export function generateBrowserWindowXhtml(name: string, license: string): string {
+  return `<?xml version="1.0"?>
+<!-- SPDX-License-Identifier: ${license} -->
+<html
+    xmlns="http://www.w3.org/1999/xhtml"
+    xmlns:xul="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+    id="main-window"
+    windowtype="navigator:browser"
+    customtitlebar="true"
+    chromehidden=""
+    width="1024"
+    height="640"
+    persist="screenX screenY width height sizemode"
+    ${FURNACE_CHROME_DOC_SENTINEL}="${name}"
+    role="application">
+  <head>
+    <meta charset="utf-8" />
+    <title data-l10n-id="${name}-window-title"></title>
+    <link rel="localization" href="browser/${name}.ftl" />
+    <link rel="stylesheet" href="chrome://global/skin/global.css" />
+    <link rel="stylesheet" href="chrome://browser/content/${name}-chrome.css" />
+    <script src="chrome://global/content/customElements.js"></script>
+    <script src="chrome://browser/content/${name}.js"></script>
+  </head>
+  <body>
+    <hbox class="titlebar-buttonbox-container">
+      <hbox class="titlebar-buttonbox"></hbox>
+    </hbox>
+    <main id="${name}-main"></main>
+  </body>
+</html>
+`;
+}
+
+/**
  * ESM bootstrap script for the chrome document.
  *
  * The generated script fires a startup observer topic on the first idle

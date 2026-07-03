@@ -13,7 +13,7 @@ import type { JarMnToken, MozBuildToken } from './manifest-tokenizers.js';
  * Ties on the lower-cased key fall back to byte order so the comparison is
  * total and stable.
  */
-function mozbuildSortCompare(a: string, b: string): number {
+export function mozbuildSortCompare(a: string, b: string): number {
   const la = a.toLowerCase();
   const lb = b.toLowerCase();
   if (la < lb) return -1;

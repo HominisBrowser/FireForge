@@ -11,6 +11,7 @@ import { findAlphabeticalMozBuildPosition, findAlphabeticalPosition } from './ma
 import { tokenizeMozBuildList } from './manifest-tokenizers.js';
 import { withParserFallback } from './parser-fallback.js';
 import type { RegisterResult } from './register-result.js';
+import { scaffoldModuleMozBuild } from './register-scaffold.js';
 
 /**
  * Tokenizer-based implementation for module registration.
@@ -89,13 +90,28 @@ export async function registerFireForgeModule(
   engineDir: string,
   fileName: string,
   moduleDir: string,
-  dryRun = false
+  dryRun = false,
+  createManifest = false
 ): Promise<RegisterResult> {
   const manifest = `${moduleDir}/moz.build`;
   const manifestPath = join(engineDir, manifest);
 
   if (!(await pathExists(manifestPath))) {
-    throw new GeneralError(`Manifest not found: ${manifest}`);
+    if (createManifest) {
+      // 0.34.0 field report: registering a module under a directory with
+      // no moz.build failed with "Manifest not found". Scaffold the
+      // directory manifest and wire the parent DIRS chain.
+      const scaffoldActions = await scaffoldModuleMozBuild(engineDir, moduleDir, fileName, dryRun);
+      return {
+        manifest,
+        entry: `    "${fileName}",`,
+        skipped: false,
+        scaffoldActions,
+      };
+    }
+    throw new GeneralError(
+      `Manifest not found: ${manifest}. Pass --create-manifest to scaffold it and wire the parent DIRS entry.`
+    );
   }
 
   const entry = `    "${fileName}",`.replace(/\\/g, '/');

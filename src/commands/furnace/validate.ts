@@ -8,7 +8,11 @@ import {
   getFurnacePaths,
   loadFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { addCustomElementRegistration, addJarMnEntries } from '../../core/furnace-registration.js';
+import {
+  addCustomElementRegistration,
+  addJarMnEntries,
+  pruneStaleJarMnEntries,
+} from '../../core/furnace-registration.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceValidateOptions } from '../../types/commands/index.js';
@@ -22,6 +26,7 @@ const FIXABLE_CHECKS = new Set([
   'missing-jar-mn-mjs',
   'missing-jar-mn-css',
   'wrong-registration-pattern',
+  'stale-jar-registration',
 ]);
 
 /**
@@ -49,6 +54,27 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
       const existing = jarMnFixesByComponent.get(issue.component) ?? [];
       existing.push(fileName);
       jarMnFixesByComponent.set(issue.component, existing);
+    }
+  }
+
+  // Prune stale jar.mn registrations (lines pointing at removed/renamed
+  // component files — 0.34.0 field report: these broke packaging while
+  // validate --fix reported success without touching them).
+  if (issues.some((issue) => issue.check === 'stale-jar-registration')) {
+    try {
+      const pruned = await pruneStaleJarMnEntries(
+        engineDir,
+        furnacePaths.customDir,
+        Object.keys(config.custom)
+      );
+      fixed += pruned.length;
+      for (const entry of pruned) {
+        info(`Fixed: pruned stale jar.mn line for ${entry.tagName}/${entry.fileName}`);
+      }
+    } catch (err: unknown) {
+      warn(
+        `Could not prune stale jar.mn lines: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 

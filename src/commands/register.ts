@@ -60,7 +60,15 @@ export async function registerCommand(
     }
   }
 
-  const result = await registerFile(projectRoot, engineRelativePath, options.dryRun, options.after);
+  const result = await registerFile(
+    projectRoot,
+    engineRelativePath,
+    options.dryRun,
+    options.after,
+    {
+      ...(options.createManifest !== undefined ? { createManifest: options.createManifest } : {}),
+    }
+  );
 
   if (options.dryRun) {
     // 2026-04-21 eval (Finding #8): dry-run always said "Would
@@ -77,6 +85,9 @@ export async function registerCommand(
     info(`[dry-run] Would register ${engineRelativePath}`);
     info(`  manifest: ${result.manifest}`);
     info(`  entry: ${result.entry}`);
+    for (const action of result.scaffoldActions ?? []) {
+      info(`  scaffold: ${action.manifest} — ${action.change}`);
+    }
     if (result.previousEntry) {
       info(`  insert after: ${result.previousEntry}`);
     } else {
@@ -97,6 +108,9 @@ export async function registerCommand(
     }
     const position = result.previousEntry ? ` (after ${result.previousEntry})` : '';
     success(`Registered ${engineRelativePath} in ${result.manifest}${position}`);
+    for (const action of result.scaffoldActions ?? []) {
+      info(`  scaffold: ${action.manifest} — ${action.change}`);
+    }
     info("hint: Run 'fireforge build --ui' to make the new module available at runtime");
   }
 
@@ -116,9 +130,18 @@ export function registerRegister(
       '--after <entry>',
       'Place entry after line containing this substring (instead of alphabetical)'
     )
+    .option(
+      '--create-manifest',
+      'Scaffold a missing manifest (directory moz.build with EXTRA_JS_MODULES / XPCSHELL_TESTS_MANIFESTS, or xpcshell.toml) and wire the parent DIRS chain instead of failing with "Manifest not found"'
+    )
     .action(
-      withErrorHandling(async (path: string, options: { dryRun?: boolean; after?: string }) => {
-        await registerCommand(getProjectRoot(), path, pickDefined(options));
-      })
+      withErrorHandling(
+        async (
+          path: string,
+          options: { dryRun?: boolean; after?: string; createManifest?: boolean }
+        ) => {
+          await registerCommand(getProjectRoot(), path, pickDefined(options));
+        }
+      )
     );
 }

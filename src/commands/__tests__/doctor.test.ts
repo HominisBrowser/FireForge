@@ -1768,6 +1768,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
       'Post-rebase registration audit',
       'Furnace configuration',
       'Furnace state consistency',
+      'Furnace jar.mn registrations',
       'Furnace engine paths',
       'Furnace Storybook backend',
       'Furnace lock',

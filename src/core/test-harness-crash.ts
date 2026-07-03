@@ -40,9 +40,24 @@ export interface HarnessCrashSignature {
 export interface HarnessRunVerdict {
   kind: HarnessRunClassification;
   signature?: HarnessCrashSignature;
+  /**
+   * Set when a non-zero mach exit code was overridden because the output
+   * embeds a completed green summary — the exit code followed harness
+   * noise, not a test result. Callers should surface a note.
+   */
+  greenSummaryOverride?: boolean;
 }
 
 const TEST_START_PATTERN = /\bTEST-START\b/;
+/**
+ * Structured-log execution marker (`mach xpcshell-test` mozlog output uses
+ * `TEST_START`/`SUITE_END` with underscores, not the hyphenated
+ * `TEST-START` the browser-chrome dispatch prints).
+ */
+const STRUCTURED_TEST_START_PATTERN = /\bTEST_START\b/;
+const SUITE_END_PATTERN = /\bSUITE_END\b/;
+const GREEN_UNEXPECTED_SUMMARY_PATTERN = /\bUnexpected results:\s*0\b/;
+const NONZERO_UNEXPECTED_SUMMARY_PATTERN = /\bUnexpected results:\s*[1-9]/;
 /**
  * Execution signals emitted by the suite-specific xpcshell dispatch
  * (`mach xpcshell-test`), which does NOT print `TEST-START` lines the way
@@ -87,6 +102,94 @@ function findLine(output: string, patterns: readonly RegExp[]): string | undefin
 }
 
 /**
+ * Non-signal noise lines: the resource-monitor degrade path (FireForge's
+ * own guard plus mozlog's `_collect failed`) prints warnings on runs that
+ * then complete green. Field report (0.34.0 cycle): every multi-file suite
+ * was reported CRASH because these lines matched the startup-traceback
+ * signals even though the embedded summary was fully green. They are
+ * excluded from crash evidence entirely.
+ */
+const NOISE_LINE_PATTERNS: readonly RegExp[] = [
+  /\bUserWarning\b/,
+  /psutil failed to run/i,
+  /_collect failed/i,
+  /FireForge: host resource monitor degraded/i,
+  /warnings\.warn\(/,
+];
+
+/** Matches the caught/telemetry context that marks a traceback as benign. */
+const BENIGN_TRACEBACK_CONTEXT = /telemetry|glean/i;
+
+/**
+ * Strips non-signal noise from captured output before crash-signature
+ * matching: resource-monitor degradation warnings, and traceback blocks
+ * that mach caught itself (telemetry submission tracebacks are printed but
+ * never abort the run). The stripped text is used ONLY as crash evidence —
+ * classification of test results still reads the full output.
+ */
+export function stripNonSignalNoise(output: string): string {
+  const lines = output.split(/\r?\n/);
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (NOISE_LINE_PATTERNS.some((p) => p.test(line))) continue;
+    if (TRACEBACK_PATTERN.test(line)) {
+      // Collect the whole traceback block: the header, indented frame/code
+      // lines, and the trailing unindented exception line.
+      const block: string[] = [line];
+      let j = i + 1;
+      for (; j < lines.length; j += 1) {
+        const blockLine = lines[j] ?? '';
+        block.push(blockLine);
+        const isIndented = /^\s/.test(blockLine) || blockLine.trim().length === 0;
+        if (!isIndented) break; // unindented exception line terminates the block
+      }
+      if (BENIGN_TRACEBACK_CONTEXT.test(block.join('\n'))) {
+        i = j; // drop the whole caught-telemetry traceback block
+        continue;
+      }
+      // A real traceback stays in evidence line-by-line (minus noise lines
+      // already filtered above).
+    }
+    kept.push(line);
+  }
+  return kept.join('\n');
+}
+
+/**
+ * True when the output carries any execution signal: the browser-chrome
+ * `TEST-START` marker, the structured-log `TEST_START` marker, or the
+ * suite-specific xpcshell result-summary block.
+ */
+function hasExecutionSignal(output: string): boolean {
+  return (
+    TEST_START_PATTERN.test(output) ||
+    STRUCTURED_TEST_START_PATTERN.test(output) ||
+    hasXpcshellResultSummary(output)
+  );
+}
+
+/**
+ * True when the output embeds a COMPLETED, GREEN suite summary: an
+ * execution signal, `Unexpected results: 0` (and no non-zero unexpected
+ * count), a `SUITE_END` marker, and no real `TEST-UNEXPECTED-*` lines.
+ * Such a run finished its suite; any startup-traceback-shaped noise in the
+ * same output is by definition non-fatal, so this vetoes signature-based
+ * crash classification (field report: fully green sharded runs reported
+ * `CRASH (N attempts)` because degradation warnings matched the psutil
+ * signals). Exported for direct unit testing.
+ */
+export function hasCompletedGreenSummary(output: string): boolean {
+  return (
+    hasExecutionSignal(output) &&
+    SUITE_END_PATTERN.test(output) &&
+    GREEN_UNEXPECTED_SUMMARY_PATTERN.test(output) &&
+    !NONZERO_UNEXPECTED_SUMMARY_PATTERN.test(output) &&
+    realUnexpectedFailureLines(output).length === 0
+  );
+}
+
+/**
  * True when the captured output carries the suite-specific xpcshell
  * result-summary block, which proves tests executed even though the
  * xpcshell dispatch emits no `TEST-START` line. Used alongside
@@ -108,14 +211,23 @@ function realUnexpectedFailureLines(output: string): string[] {
  * Returns undefined for anything that looks like a genuine test result.
  */
 export function detectHarnessCrashSignature(output: string): HarnessCrashSignature | undefined {
-  const hasTestStart = TEST_START_PATTERN.test(output);
+  const hasTestStart = hasExecutionSignal(output);
   const realFailures = realUnexpectedFailureLines(output);
+  // A completed green embedded summary vetoes signature-based crash
+  // classification outright: the suite finished, so any startup-shaped
+  // noise in the same output was non-fatal. (The post-green shutdown
+  // re-entry shape below is exempt — it is deliberately a crash verdict on
+  // an otherwise-green log, keyed on its own explicit markers.)
+  const greenSummaryVeto = hasCompletedGreenSummary(output);
 
-  // Startup traceback cluster (resource monitor / psutil). Real test
-  // failures take precedence: a traceback printed during teardown of a
-  // genuinely failing run must not get the whole run retried.
-  if (TRACEBACK_PATTERN.test(output) && realFailures.length === 0) {
-    const signalLine = findLine(output, STARTUP_TRACEBACK_SIGNALS);
+  // Startup traceback cluster (resource monitor / psutil), scanned over
+  // noise-stripped evidence so degradation warnings and caught telemetry
+  // tracebacks never count. Real test failures take precedence: a
+  // traceback printed during teardown of a genuinely failing run must not
+  // get the whole run retried.
+  const evidence = stripNonSignalNoise(output);
+  if (!greenSummaryVeto && TRACEBACK_PATTERN.test(evidence) && realFailures.length === 0) {
+    const signalLine = findLine(evidence, STARTUP_TRACEBACK_SIGNALS);
     if (signalLine) {
       return { reason: 'harness startup traceback (resource monitor/psutil)', line: signalLine };
     }
@@ -125,7 +237,7 @@ export function detectHarnessCrashSignature(output: string): HarnessCrashSignatu
   // the no-output timeout. A trailing "Passed: 0" summary is part of this
   // shape and must not be read as a result.
   if (!hasTestStart) {
-    const timeoutLine = findLine(output, [NO_OUTPUT_TIMEOUT_PATTERN]);
+    const timeoutLine = findLine(evidence, [NO_OUTPUT_TIMEOUT_PATTERN]);
     if (timeoutLine) {
       return { reason: 'no-output timeout before any test started', line: timeoutLine };
     }
@@ -168,21 +280,33 @@ export function classifyHarnessRun(
     return { kind: 'harness-crash', signature };
   }
 
-  const ranTests = TEST_START_PATTERN.test(output) || hasXpcshellResultSummary(output);
+  const ranTests = hasExecutionSignal(output);
   if (!ranTests && requestedPaths.length > 0) {
     return { kind: 'no-tests' };
   }
 
-  return exitCode === 0 ? { kind: 'tests-ran-ok' } : { kind: 'test-failures' };
+  if (exitCode === 0) {
+    return { kind: 'tests-ran-ok' };
+  }
+  // Exit codes follow the corrected verdict: a run whose embedded summary
+  // completed green is a pass even when the wrapper exit code went
+  // non-zero on harness noise (field report: a fully green --no-shard run
+  // exited 1). Real failures always carry a non-zero unexpected count or
+  // TEST-UNEXPECTED lines, both of which fail the green-summary check.
+  if (hasCompletedGreenSummary(output)) {
+    return { kind: 'tests-ran-ok', greenSummaryOverride: true };
+  }
+  return { kind: 'test-failures' };
 }
 
 /** Builds the operator-facing failure message after retries are exhausted. */
 export function buildHarnessCrashMessage(
   signature: HarnessCrashSignature,
-  attempts: number
+  attempts: number,
+  commandLabel = 'mach test'
 ): string {
   return (
-    `mach test crashed in the harness itself (not in your tests) on all ${attempts} attempt(s).\n\n` +
+    `${commandLabel} crashed in the harness itself (not in your tests) on all ${attempts} attempt(s).\n\n` +
     `Detected shape: ${signature.reason}\n` +
     `Evidence line: ${signature.line}\n\n` +
     'This failure mode is environmental (mozlog resource monitor / psutil on macOS, focus-stall ' +

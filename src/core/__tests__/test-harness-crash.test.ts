@@ -10,6 +10,8 @@ import {
   buildNoTestsRanMessage,
   classifyHarnessRun,
   detectHarnessCrashSignature,
+  hasCompletedGreenSummary,
+  stripNonSignalNoise,
 } from '../test-harness-crash.js';
 
 const PATHS = ['browser/components/foo/test/browser_foo.js'];
@@ -166,6 +168,118 @@ describe('classifyHarnessRun', () => {
     // xpcshell result-summary block — it stays no-tests.
     const summaryOnly = ' 0:10.01 INFO Passed: 0\n 0:10.01 INFO Failed: 0';
     expect(classifyHarnessRun(0, summaryOnly, PATHS).kind).toBe('no-tests');
+  });
+});
+
+// ── 0.34.0 field report: fully green sharded runs reported CRASH ──
+//
+// A completed multi-file xpcshell suite whose output ALSO carries the
+// non-fatal resource-monitor degradation warnings and a caught telemetry
+// traceback. The embedded summary is green (Unexpected results: 0,
+// SUITE_END), yet the signature strings (psutil, _collect) matched the
+// startup-traceback cluster and every suite was classified CRASH.
+const GREEN_XPCSHELL_WITH_DEGRADATION_NOISE = [
+  ' 0:00.30 SUITE_START',
+  ' 0:00.41 INFO | Running tests sequentially.',
+  '/x/_venv/lib/python3.11/site-packages/fireforge_mach_guard.py:12: UserWarning: psutil failed to run: host_statistics64(HOST_VM_INFO64) syscall failed',
+  '  warnings.warn(',
+  ' 0:00.50 WARNING _collect failed: poll_interval unavailable on degraded monitor',
+  ' 0:00.60 TEST_START | test_one.js',
+  ' 0:02.18 INFO | TEST_END: Test PASS',
+  ' 0:02.20 TEST_START | test_two.js',
+  ' 0:04.02 INFO | TEST_END: Test PASS',
+  'Traceback (most recent call last):',
+  '  File "mach/telemetry.py", line 661, in submit_telemetry',
+  '    record_telemetry_event(data)',
+  'ConnectionError: telemetry submission failed (offline)',
+  ' 0:04.10 INFO | Result summary:',
+  ' 0:04.10 INFO | Ran 42 checks (40 subtests, 2 tests)',
+  ' 0:04.10 INFO | Passed: 42',
+  ' 0:04.10 INFO | Failed: 0',
+  ' 0:04.10 INFO | Unexpected results: 0',
+  ' 0:04.11 SUITE_END',
+].join('\n');
+
+const XPCSHELL_DIR_PATHS = ['toolkit/components/foo/test/unit'];
+
+describe('green-summary veto and noise exclusion (0.34.0)', () => {
+  it('does not classify a completed green suite with degradation noise as a crash', () => {
+    expect(detectHarnessCrashSignature(GREEN_XPCSHELL_WITH_DEGRADATION_NOISE)).toBeUndefined();
+  });
+
+  it('classifies the green-with-noise run as tests-ran-ok on exit 0', () => {
+    expect(
+      classifyHarnessRun(0, GREEN_XPCSHELL_WITH_DEGRADATION_NOISE, XPCSHELL_DIR_PATHS).kind
+    ).toBe('tests-ran-ok');
+  });
+
+  it('overrides a non-zero exit code when the embedded summary completed green (--no-shard field case)', () => {
+    const verdict = classifyHarnessRun(
+      1,
+      GREEN_XPCSHELL_WITH_DEGRADATION_NOISE,
+      XPCSHELL_DIR_PATHS
+    );
+    expect(verdict.kind).toBe('tests-ran-ok');
+    expect(verdict.greenSummaryOverride).toBe(true);
+  });
+
+  it('does NOT override a non-zero exit when the summary reports unexpected results', () => {
+    const redSummary = GREEN_XPCSHELL_WITH_DEGRADATION_NOISE.replace(
+      'Unexpected results: 0',
+      'Unexpected results: 2'
+    );
+    expect(classifyHarnessRun(1, redSummary, XPCSHELL_DIR_PATHS).kind).toBe('test-failures');
+  });
+
+  it('excludes degradation warnings and caught telemetry tracebacks from crash evidence', () => {
+    // Without the green summary the run is NOT vetoed — but the remaining
+    // evidence (warnings + telemetry traceback only) must still not read
+    // as a startup crash, because none of it is a fatal signal.
+    const noiseOnly = [
+      'UserWarning: psutil failed to run: host_statistics64 syscall failed',
+      '  warnings.warn(',
+      '_collect failed: poll_interval unavailable',
+      'Traceback (most recent call last):',
+      '  File "mach/telemetry.py", line 661, in submit_telemetry',
+      'ConnectionError: telemetry submission failed',
+      ' 0:00.60 TEST_START | test_one.js',
+      ' 0:02.18 INFO | TEST_END: Test PASS',
+    ].join('\n');
+    expect(detectHarnessCrashSignature(noiseOnly)).toBeUndefined();
+  });
+
+  it('keeps a real (non-telemetry) traceback in the evidence after stripping noise', () => {
+    const stripped = stripNonSignalNoise(RESOURCE_MONITOR_TRACEBACK);
+    expect(stripped).toContain("no attribute 'poll_interval'");
+    const strippedNoise = stripNonSignalNoise(GREEN_XPCSHELL_WITH_DEGRADATION_NOISE);
+    expect(strippedNoise).not.toContain('UserWarning');
+    expect(strippedNoise).not.toContain('telemetry');
+    expect(strippedNoise).not.toContain('_collect failed');
+  });
+
+  it('hasCompletedGreenSummary requires execution signal, green count, and SUITE_END', () => {
+    expect(hasCompletedGreenSummary(GREEN_XPCSHELL_WITH_DEGRADATION_NOISE)).toBe(true);
+    // No SUITE_END → incomplete, no veto.
+    expect(
+      hasCompletedGreenSummary(GREEN_XPCSHELL_WITH_DEGRADATION_NOISE.replace(/SUITE_END/g, ''))
+    ).toBe(false);
+    // Non-zero unexpected count → not green.
+    expect(
+      hasCompletedGreenSummary(
+        GREEN_XPCSHELL_WITH_DEGRADATION_NOISE.replace(
+          'Unexpected results: 0',
+          'Unexpected results: 3'
+        )
+      )
+    ).toBe(false);
+    // Summary lines without any execution signal → not a completed run.
+    expect(hasCompletedGreenSummary('Unexpected results: 0\nSUITE_END')).toBe(false);
+  });
+
+  it('keeps the post-green shutdown re-entry shape as a crash despite green-looking lines', () => {
+    expect(detectHarnessCrashSignature(POST_GREEN_SHUTDOWN_REENTRY)?.reason).toContain(
+      'shutdown re-entry'
+    );
   });
 });
 

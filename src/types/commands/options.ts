@@ -559,6 +559,16 @@ export interface FurnaceRemoveOptions {
 export interface FurnaceCreateOptions {
   /** Component description */
   description?: string;
+  /**
+   * Engine-relative directory the test scaffold writes into, instead of
+   * the default `browser/base/content/test/<binaryName>/` (browser-chrome)
+   * or `browser/base/content/test/<binaryName>-xpcshell/<component>/`
+   * (xpcshell). Must stay under `browser/base/content/test/` so the
+   * manifest registration keeps working. Not supported for
+   * `--test-style=mochikit` (that harness lives in the upstream
+   * toolkit/content/tests/widgets tree).
+   */
+  testDir?: string;
   /** Include Fluent l10n support */
   localized?: boolean;
   /** Register in customElements.js (default: true) */
@@ -645,6 +655,8 @@ export interface WireOptions {
 export interface RegisterOptions {
   dryRun?: boolean;
   after?: string;
+  /** Scaffold a missing manifest (moz.build / xpcshell.toml) and wire the parent chain. */
+  createManifest?: boolean;
 }
 
 /**

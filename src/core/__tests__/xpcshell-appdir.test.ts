@@ -144,6 +144,41 @@ describe('findNearestXpcshellManifest', () => {
     const found = await findNearestXpcshellManifest(workspace, 'missing/xpcshell.toml');
     expect(found).toBeNull();
   });
+
+  it('finds the manifest inside a DIRECTORY argument (0.34.0 field report)', async () => {
+    // `fireforge test <dir>` where <dir> itself holds the xpcshell.toml:
+    // the walk must start at the directory, not its parent, or the run is
+    // misdispatched to the mochitest runner.
+    const dir = join(workspace, 'browser/components/mybrowser/test/unit');
+    await ensureDir(dir);
+    await writeText(join(dir, 'xpcshell.toml'), '[DEFAULT]\n');
+    const found = await findNearestXpcshellManifest(
+      workspace,
+      'browser/components/mybrowser/test/unit'
+    );
+    expect(found).toBe(join(dir, 'xpcshell.toml'));
+  });
+
+  it('still walks up from a directory without its own manifest', async () => {
+    const parent = join(workspace, 'browser/components/mybrowser/test');
+    await ensureDir(join(parent, 'unit'));
+    await writeText(join(parent, 'xpcshell.toml'), '[DEFAULT]\n');
+    const found = await findNearestXpcshellManifest(
+      workspace,
+      'browser/components/mybrowser/test/unit'
+    );
+    expect(found).toBe(join(parent, 'xpcshell.toml'));
+  });
+
+  it('returns null for a directory with no manifest anywhere up to the engine root', async () => {
+    const dir = join(workspace, 'browser/components/mybrowser/content');
+    await ensureDir(dir);
+    const found = await findNearestXpcshellManifest(
+      workspace,
+      'browser/components/mybrowser/content'
+    );
+    expect(found).toBeNull();
+  });
 });
 
 describe('readMozinfoAppname', () => {

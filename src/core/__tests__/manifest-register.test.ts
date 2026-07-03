@@ -281,6 +281,17 @@ BROWSER_CHROME_MANIFESTS += [
     expect(result.skipped).toBe(true);
     expect(mockWriteText).not.toHaveBeenCalled();
   });
+
+  it('registers a NESTED test directory (0.34.0: arbitrary-depth browser.toml)', async () => {
+    mockReadText.mockResolvedValue(MOCK_MOZ_BUILD);
+
+    const result = await registerTestManifest('/engine', 'mybrowser/settings');
+
+    expect(result.skipped).toBe(false);
+    expect(result.entry).toContain('content/test/mybrowser/settings/browser.toml');
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    expect(written).toContain('"content/test/mybrowser/settings/browser.toml",');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -433,6 +444,40 @@ describe('registerFile', () => {
     await expect(registerFile('/project', 'some/random/path.txt')).rejects.toThrow(
       'Unknown file pattern'
     );
+    // The supported-pattern list names the 0.34.0 additions.
+    await expect(registerFile('/project', 'some/random/path.txt')).rejects.toThrow(
+      /test_\*\.js.*xpcshell\.toml/s
+    );
+  });
+
+  it('dispatches nested browser.toml manifests to registerTestManifest (0.34.0)', async () => {
+    mockReadText.mockResolvedValue('    "content/test/aaa/browser.toml",\n');
+
+    const result = await registerFile(
+      '/project',
+      'browser/base/content/test/custom-widget/settings/browser.toml'
+    );
+    expect(result.manifest).toBe('browser/base/moz.build');
+    expect(result.entry).toContain('content/test/custom-widget/settings/browser.toml');
+  });
+
+  it('dispatches xpcshell test files to the xpcshell.toml writer (0.34.0)', async () => {
+    // The directory's xpcshell.toml exists and already lists another test.
+    mockReadText.mockResolvedValue('[DEFAULT]\n\n["test_aaa.js"]\n');
+
+    const result = await registerFile(
+      '/project',
+      'browser/components/testbrowser/test/unit/test_store.js'
+    );
+    expect(result.manifest).toBe('browser/components/testbrowser/test/unit/xpcshell.toml');
+    expect(result.skipped).toBe(false);
+  });
+
+  it('xpcshell test files without a manifest fail with a --create-manifest hint (0.34.0)', async () => {
+    mockPathExists.mockResolvedValue(false);
+    await expect(
+      registerFile('/project', 'browser/components/testbrowser/test/unit/test_store.js')
+    ).rejects.toThrow(/Manifest not found[\s\S]*--create-manifest/);
   });
 
   it('dispatches browser/base/content/*.xhtml to registerBrowserContent', async () => {
@@ -543,6 +588,86 @@ describe('isFileRegistered', () => {
     await expect(
       isFileRegistered('/project', 'browser/base/content/my-fragment.inc.xhtml')
     ).rejects.toThrow(/\.inc\.xhtml/);
+  });
+
+  it('checks xpcshell test files against their xpcshell.toml (0.34.0)', async () => {
+    mockReadText.mockResolvedValue('[DEFAULT]\n\n["test_store.js"]\n');
+    await expect(
+      isFileRegistered('/project', 'browser/components/testbrowser/test/unit/test_store.js')
+    ).resolves.toBe(true);
+    mockReadText.mockResolvedValue('[DEFAULT]\n\n["test_other.js"]\n');
+    await expect(
+      isFileRegistered('/project', 'browser/components/testbrowser/test/unit/test_store.js')
+    ).resolves.toBe(false);
+  });
+
+  it('checks nested browser.toml manifests (0.34.0)', async () => {
+    mockReadText.mockResolvedValue('    "content/test/widget/inner/browser.toml",\n');
+    await expect(
+      isFileRegistered('/project', 'browser/base/content/test/widget/inner/browser.toml')
+    ).resolves.toBe(true);
+  });
+
+  it('mentions the register-based scaffold path in xpcshell.toml advice (0.34.0)', async () => {
+    await expect(
+      isFileRegistered('/project', 'browser/components/testbrowser/test/unit/xpcshell.toml')
+    ).rejects.toThrow(/--create-manifest/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// registerFile --create-manifest threading (0.34.0)
+// ---------------------------------------------------------------------------
+
+describe('registerFile with createManifest', () => {
+  it('scaffolds a missing module moz.build instead of failing', async () => {
+    // No manifests exist anywhere except the parent browser/modules/moz.build.
+    mockPathExists.mockImplementation((filePath: string) =>
+      Promise.resolve(filePath === '/project/engine/browser/modules/moz.build')
+    );
+    mockReadText.mockResolvedValue('DIRS += [\n    "newtab",\n]\n');
+
+    const result = await registerFile(
+      '/project',
+      'browser/modules/testbrowser/Overlay.sys.mjs',
+      false,
+      undefined,
+      { createManifest: true }
+    );
+
+    expect(result.manifest).toBe('browser/modules/testbrowser/moz.build');
+    expect(result.scaffoldActions?.some((a) => a.manifest === 'browser/modules/moz.build')).toBe(
+      true
+    );
+    expect(mockWriteText).toHaveBeenCalledWith(
+      '/project/engine/browser/modules/testbrowser/moz.build',
+      expect.stringContaining('EXTRA_JS_MODULES.testbrowser')
+    );
+  });
+
+  it('creates the xpcshell.toml and wires XPCSHELL_TESTS_MANIFESTS (0.34.0)', async () => {
+    mockPathExists.mockImplementation((filePath: string) =>
+      Promise.resolve(filePath === '/project/engine/browser/components/testbrowser/moz.build')
+    );
+    mockReadText.mockResolvedValue('EXTRA_JS_MODULES.testbrowser += [\n    "Store.sys.mjs",\n]\n');
+
+    const result = await registerFile(
+      '/project',
+      'browser/components/testbrowser/test/unit/test_store.js',
+      false,
+      undefined,
+      { createManifest: true }
+    );
+
+    expect(result.manifest).toBe('browser/components/testbrowser/test/unit/xpcshell.toml');
+    expect(mockWriteText).toHaveBeenCalledWith(
+      '/project/engine/browser/components/testbrowser/test/unit/xpcshell.toml',
+      expect.stringContaining('["test_store.js"]')
+    );
+    expect(mockWriteText).toHaveBeenCalledWith(
+      '/project/engine/browser/components/testbrowser/moz.build',
+      expect.stringContaining('XPCSHELL_TESTS_MANIFESTS')
+    );
   });
 });
 

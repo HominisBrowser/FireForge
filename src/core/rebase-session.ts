@@ -17,12 +17,7 @@ import { createSiblingLockPath, withFileLock } from './file-lock.js';
 // ── Types ──
 
 export type RebasePatchStatus =
-  | 'pending'
-  | 'applied-clean'
-  | 'applied-fuzz'
-  | 'failed'
-  | 'resolved'
-  | 'skipped';
+  'pending' | 'applied-clean' | 'applied-fuzz' | 'failed' | 'resolved' | 'skipped';
 
 export interface RebasePatchEntry {
   filename: string;

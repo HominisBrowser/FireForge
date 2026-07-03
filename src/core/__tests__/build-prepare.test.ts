@@ -327,8 +327,7 @@ describe('prepareBuildEnvironment', () => {
     expect(result.furnaceApplied).toBe(0);
     // The second spinner call (index 1) is the Furnace spinner
     const furnaceSpinner = mockSpinner.mock.results[1]?.value as
-      | { stop: ReturnType<typeof vi.fn> }
-      | undefined;
+      { stop: ReturnType<typeof vi.fn> } | undefined;
     expect(furnaceSpinner?.stop).toHaveBeenCalledWith('Components up to date');
   });
 

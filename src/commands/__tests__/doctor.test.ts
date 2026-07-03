@@ -1445,8 +1445,7 @@ describe('doctorCommand', () => {
       const writeCall = vi.mocked(writeFurnaceConfig).mock.calls[0];
       expect(writeCall?.[0]).toBe('/project');
       const written = writeCall?.[1] as
-        | { overrides?: Record<string, { type?: string; description?: string }> }
-        | undefined;
+        { overrides?: Record<string, { type?: string; description?: string }> } | undefined;
       expect(written?.overrides?.['moz-button']?.type).toBe('css-only');
       expect(written?.overrides?.['moz-button']?.description).toBe('Recovered');
       expect(result.exitCode).toBe(0);

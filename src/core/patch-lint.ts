@@ -479,9 +479,7 @@ export function lintModificationComments(
  * this alongside the issues array from `lintPatchSize`.
  */
 export type PatchSizeTierDecision =
-  | { tier: 'general' }
-  | { tier: 'test' }
-  | { tier: 'branding'; source: 'auto' | 'explicit' };
+  { tier: 'general' } | { tier: 'test' } | { tier: 'branding'; source: 'auto' | 'explicit' };
 
 /**
  * Decides which `large-patch-lines` threshold tier applies to a patch.

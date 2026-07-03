@@ -43,8 +43,7 @@ const {
     (
       root: string,
       updates:
-        | Record<string, unknown>
-        | ((current: Record<string, unknown>) => Record<string, unknown>)
+        Record<string, unknown> | ((current: Record<string, unknown>) => Record<string, unknown>)
     ) => Promise<void>
   >(() => Promise.resolve()),
   getProjectPathsMock: vi.fn(),
@@ -130,8 +129,8 @@ vi.mock('../../core/patch-export.js', () => ({
 }));
 
 vi.mock('../../core/patch-lock.js', () => ({
-  withPatchDirectoryLock: vi.fn(
-    <T>(_patchesDir: string, operation: () => Promise<T>): Promise<T> => operation()
+  withPatchDirectoryLock: vi.fn(<T>(_patchesDir: string, operation: () => Promise<T>): Promise<T> =>
+    operation()
   ),
 }));
 
@@ -160,8 +159,8 @@ vi.mock('../../core/rebase-session.js', () => ({
 }));
 
 vi.mock('../../core/signal-critical.js', () => ({
-  runInSignalCriticalSection: vi.fn(
-    async <T>(_label: string, fn: () => Promise<T>): Promise<T> => fn()
+  runInSignalCriticalSection: vi.fn(async <T>(_label: string, fn: () => Promise<T>): Promise<T> =>
+    fn()
   ),
 }));
 

@@ -25,10 +25,7 @@
 
 /** How a completed harness run should be interpreted. */
 export type HarnessRunClassification =
-  | 'tests-ran-ok'
-  | 'test-failures'
-  | 'harness-crash'
-  | 'no-tests';
+  'tests-ran-ok' | 'test-failures' | 'harness-crash' | 'no-tests';
 
 /** A recognized harness-crash shape with its evidence line. */
 export interface HarnessCrashSignature {

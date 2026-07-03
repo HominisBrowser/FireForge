@@ -1118,8 +1118,7 @@ describe('reExportCommand - --scan flag', () => {
 
     expect(spinner).toHaveBeenCalledTimes(1);
     const handle = vi.mocked(spinner).mock.results[0]?.value as
-      | { message: ReturnType<typeof vi.fn> }
-      | undefined;
+      { message: ReturnType<typeof vi.fn> } | undefined;
     expect(handle?.message).toHaveBeenCalledWith(
       expect.stringContaining('Re-exporting 1/2: 001-ui-first.patch')
     );

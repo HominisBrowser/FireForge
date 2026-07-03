@@ -42,12 +42,7 @@ export interface PerPatchLintCacheKeyInput {
 }
 
 type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue | undefined };
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue | undefined };
 
 function stableJson(value: JsonValue): string {
   if (value === null || typeof value !== 'object') {

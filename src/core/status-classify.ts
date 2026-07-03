@@ -38,12 +38,7 @@ import { loadPatchesManifest } from './patch-manifest.js';
  *   into treating the file as routine local drift.
  */
 export type FileClassification =
-  | 'patch-backed'
-  | 'patch-owned-drift'
-  | 'unmanaged'
-  | 'branding'
-  | 'furnace'
-  | 'conflict';
+  'patch-backed' | 'patch-owned-drift' | 'unmanaged' | 'branding' | 'furnace' | 'conflict';
 
 export interface StatusFile {
   status: string;

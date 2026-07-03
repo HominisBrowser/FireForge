@@ -14,10 +14,135 @@ import { join, relative } from 'node:path';
 
 import type { CustomComponentConfig, DryRunAction, StepError } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
-import { copyFile, pathExists } from '../utils/fs.js';
+import { copyFile, pathExists, readText } from '../utils/fs.js';
+import { escapeRegex } from '../utils/regex.js';
 import { resolveFtlChromeSubPath, resolveFtlLocaleJarMnPath } from './furnace-constants.js';
 import { addLocaleFtlJarMnEntry, removeLocaleFtlJarMnEntry } from './furnace-registration.js';
 import { type RollbackJournal, snapshotFile } from './furnace-rollback.js';
+
+/**
+ * Builds the presence regex for a per-widget locale jar.mn line
+ * (`locale/@AB_CD@/<chromeSubPath>/<tagName>.ftl`). Shared by the prune
+ * helper and its dry-run describer so both agree on what "dangling" means.
+ */
+function perWidgetLocaleEntryPattern(chromeSubPath: string, tagName: string): RegExp {
+  return new RegExp(
+    `locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapeRegex(chromeSubPath)}\\/${escapeRegex(tagName)}\\.ftl`,
+    'm'
+  );
+}
+
+/**
+ * Resolves the engine-relative locale jar.mn and the per-widget entry regex
+ * for a `sharedFtl` widget, or `undefined` when the FTL tree exposes no
+ * locale jar.mn we can confidently name.
+ */
+function resolveSharedFtlPruneTarget(
+  name: string,
+  ftlDir: string
+): { localeJarRel: string; pattern: RegExp } | undefined {
+  const chromeSubPath = resolveFtlChromeSubPath(ftlDir);
+  const localeJarRel = resolveFtlLocaleJarMnPath(ftlDir);
+  if (chromeSubPath === undefined || localeJarRel === undefined) return undefined;
+  return { localeJarRel, pattern: perWidgetLocaleEntryPattern(chromeSubPath, name) };
+}
+
+/**
+ * Removes a dangling per-widget locale jar.mn entry for a `sharedFtl` widget.
+ *
+ * A `localized: true` widget that opts into a feature-scoped `sharedFtl`
+ * bundle (its strings live under `browser/...` and load via
+ * `insertFTLIfNeeded`) must NOT carry a per-widget
+ * `locale/@AB_CD@/<chromeSubPath>/<name>.ftl` line. Such a line — written by
+ * an older FireForge before the sharedFtl apply guard, or by a layout
+ * migration — points at a `.ftl` that does not exist, so `mach build` fails
+ * hard (`Cannot find <chromeSubPath>/<name>.ftl`) and blocks every build.
+ *
+ * The pruned line is the per-widget toolkit entry only; the shared bundle's
+ * own line (a different chrome sub-path / base name) is never matched, so
+ * pruning one widget cannot orphan the shared bundle. Idempotent: when no
+ * dangling entry exists the file is left untouched (no journal churn).
+ * Returns the engine-relative jar.mn path when a line was removed, else
+ * `undefined`.
+ */
+async function pruneSharedFtlPerWidgetLocaleEntry(
+  engineDir: string,
+  name: string,
+  ftlDir: string,
+  config: CustomComponentConfig,
+  rollbackJournal?: RollbackJournal
+): Promise<string | undefined> {
+  if (!config.sharedFtl) return undefined;
+  const target = resolveSharedFtlPruneTarget(name, ftlDir);
+  if (!target) return undefined;
+
+  const chromeSubPath = resolveFtlChromeSubPath(ftlDir);
+  if (chromeSubPath === undefined) return undefined;
+
+  const localeJarAbs = join(engineDir, target.localeJarRel);
+  if (!(await pathExists(localeJarAbs))) return undefined;
+  if (!target.pattern.test(await readText(localeJarAbs))) return undefined;
+
+  if (rollbackJournal) {
+    await snapshotFile(rollbackJournal, localeJarAbs);
+  }
+  await removeLocaleFtlJarMnEntry(engineDir, target.localeJarRel, name, chromeSubPath);
+  return target.localeJarRel;
+}
+
+/**
+ * Apply-path wrapper around {@link pruneSharedFtlPerWidgetLocaleEntry} that
+ * records the affected path / step error in the caller's collectors, mirroring
+ * {@link applyCustomFtlFile}'s contract so the main apply helper stays terse.
+ */
+export async function applySharedFtlPrune(
+  engineDir: string,
+  name: string,
+  ftlDir: string,
+  config: CustomComponentConfig,
+  affectedPaths: string[],
+  stepErrors: StepError[],
+  rollbackJournal?: RollbackJournal
+): Promise<void> {
+  try {
+    const prunedPath = await pruneSharedFtlPerWidgetLocaleEntry(
+      engineDir,
+      name,
+      ftlDir,
+      config,
+      rollbackJournal
+    );
+    if (prunedPath) affectedPaths.push(prunedPath);
+  } catch (error: unknown) {
+    stepErrors.push({ step: 'locale jar.mn prune', error: toError(error).message });
+  }
+}
+
+/**
+ * Read-only dry-run describer for {@link pruneSharedFtlPerWidgetLocaleEntry}:
+ * returns an action when a dangling per-widget locale entry exists for a
+ * `sharedFtl` widget, else `undefined`.
+ */
+export async function describeSharedFtlPrune(
+  engineDir: string,
+  name: string,
+  ftlDir: string,
+  config: CustomComponentConfig
+): Promise<DryRunAction | undefined> {
+  if (!config.sharedFtl) return undefined;
+  const target = resolveSharedFtlPruneTarget(name, ftlDir);
+  if (!target) return undefined;
+
+  const localeJarAbs = join(engineDir, target.localeJarRel);
+  if (!(await pathExists(localeJarAbs))) return undefined;
+  if (!target.pattern.test(await readText(localeJarAbs))) return undefined;
+
+  return {
+    component: name,
+    action: 'register-jar',
+    description: `Remove dangling per-widget locale entry for ${name} from ${target.localeJarRel} (sharedFtl bundle owns its strings)`,
+  };
+}
 
 /**
  * Copies a component's `.ftl` into the FTL tree and registers the chrome URI

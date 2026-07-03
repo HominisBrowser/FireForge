@@ -243,6 +243,20 @@ export function finalizeSingleRunOutcome(
   if (outcome.verdict.kind === 'harness-crash' && outcome.verdict.signature) {
     throw new GeneralError(buildHarnessCrashMessage(outcome.verdict.signature, outcome.attempts));
   }
+  if (outcome.verdict.kind === 'tests-ran-ok') {
+    // The verdict is authoritative over the raw exit code: a completed
+    // green embedded summary overrides a non-zero exit caused by harness
+    // noise (field report: fully green --no-shard runs exited 1, forcing
+    // operators to parse embedded summaries by hand).
+    if (outcome.verdict.greenSummaryOverride) {
+      info(
+        `Note: mach exited ${outcome.result.exitCode}, but the embedded suite summary completed ` +
+          'green (Unexpected results: 0). FireForge treats the run as passed; the non-zero exit ' +
+          'came from non-fatal harness noise (resource-monitor degradation / telemetry).'
+      );
+    }
+    return;
+  }
   if (outcome.verdict.kind === 'no-tests' && outcome.result.exitCode === 0) {
     // The silent false green: exit 0 plus a "Passed: 0"-style summary with
     // zero TEST-START lines must fail, not pass.

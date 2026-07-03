@@ -6,7 +6,7 @@ import { auditBuildArtifacts } from '../core/build-audit.js';
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import type { MachCommandResult } from '../core/mach.js';
+import type { MachCommandResult, ProtectedMachBuildResult } from '../core/mach.js';
 import {
   attemptMozinfoRewrite,
   build,
@@ -17,6 +17,7 @@ import {
   runMach,
   withBuildLock,
 } from '../core/mach.js';
+import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
@@ -291,7 +292,7 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   info(''); // Empty line before build output
 
   const startTime = Date.now();
-  let result: MachCommandResult;
+  let result: ProtectedMachBuildResult;
 
   try {
     // Hold the per-project build lock across the mach invocation so two
@@ -325,8 +326,15 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   if (result.exitCode !== 0) {
     error(`Build failed after ${timeStr}`);
     const machCommand = options.ui ? 'mach build faster' : 'mach build';
+    // When the protected dispatch exhausted its recognized-crash retry
+    // budget, lead with the environmental-crash explanation so the
+    // operator does not read a resource-monitor traceback as a build
+    // regression.
+    const crashPreamble = result.crashSignature
+      ? `${buildHarnessCrashMessage(result.crashSignature, result.attempts, machCommand)}\n\n`
+      : '';
     throw new BuildError(
-      buildFailureDiagnostics(result, paths.engine, buildCheck.objDir, machCommand),
+      crashPreamble + buildFailureDiagnostics(result, paths.engine, buildCheck.objDir, machCommand),
       machCommand
     );
   }

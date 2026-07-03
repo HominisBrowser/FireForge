@@ -29,7 +29,10 @@ import { pickDefined } from '../utils/options.js';
 import { runPatchLint } from './export-shared.js';
 import { loadScanFilesAssignments, withDryRunReExportLock } from './re-export-bulk-scan.js';
 import { reExportFilesInPlace } from './re-export-files.js';
-import { validateReExportOptionCombinations } from './re-export-options.js';
+import {
+  applyReExportFilesPositionalFolding,
+  validateReExportOptionCombinations,
+} from './re-export-options.js';
 import {
   assertScanFileAdditionsHaveDiffHunks,
   confirmBroadScanAdditions,
@@ -374,6 +377,10 @@ export async function reExportCommand(
 
   const isDryRun = options.dryRun === true;
   intro(isDryRun ? 'FireForge Re-export (dry run)' : 'FireForge Re-export');
+
+  // Accept export-style space-separated paths after --files by folding
+  // path-shaped extra positionals into the file list (0.34.0 field report).
+  ({ patches, options } = applyReExportFilesPositionalFolding(patches, options));
 
   validateReExportOptionCombinations(patches, options);
 

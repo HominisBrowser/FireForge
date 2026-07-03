@@ -19,6 +19,8 @@
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
+import { findJsconfigPathsDrift, syncFurnaceJsconfigPaths } from '../core/furnace-jsconfig.js';
 import { relativeForDisplay, runTypecheck } from '../core/typecheck.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -53,6 +55,11 @@ export function resolveTypecheckProjects(
     return {
       projects: [override],
       ...(configTypecheck?.extraShim !== undefined ? { extraShim: configTypecheck.extraShim } : {}),
+      // Preserve any per-project override for the targeted path so a one-off
+      // `--project` run honours its opt-out / shim override just like a full run.
+      ...(configTypecheck?.projectOverrides !== undefined
+        ? { projectOverrides: configTypecheck.projectOverrides }
+        : {}),
     };
   }
   if (!configTypecheck) {
@@ -95,12 +102,43 @@ export async function typecheckCommand(
 
   const cfg = resolveTypecheckProjects(config.typecheck, options.project);
 
+  // Regenerate a stale Furnace-managed jsconfig before running: the generated
+  // `compilerOptions.paths` shim drifts when components are added/renamed
+  // without a re-deploy, and a stale shim reports type errors in files the
+  // session never touched (e.g. 47 phantom errors from an out-of-date
+  // chrome-module mapping). Run the same reconciler `furnace deploy`/`sync`
+  // use so typecheck checks against the current workspace.
+  await regenerateStaleGeneratedJsconfig(projectRoot);
+
   info(
     `Running typecheck across ${String(cfg.projects.length)} project(s): ${cfg.projects.join(', ')}`
   );
 
   const results = await runTypecheck(projectRoot, cfg);
   reportResults(projectRoot, results);
+}
+
+/**
+ * Staleness-checks and regenerates the Furnace-managed jsconfig
+ * (`furnace.json` → `typecheckJsconfig`) before typecheck runs. No-op when
+ * the project has no furnace.json or no `typecheckJsconfig` is configured.
+ * A missing `typecheckJsconfig` file surfaces the reconciler's own clear
+ * error rather than producing phantom type diagnostics.
+ */
+async function regenerateStaleGeneratedJsconfig(projectRoot: string): Promise<void> {
+  if (!(await furnaceConfigExists(projectRoot))) return;
+  const furnaceConfig = await loadFurnaceConfig(projectRoot);
+  if (!furnaceConfig.typecheckJsconfig) return;
+
+  const drift = await findJsconfigPathsDrift(projectRoot, furnaceConfig);
+  if (!drift.changed) return;
+
+  info(
+    `Regenerating stale generated jsconfig ${furnaceConfig.typecheckJsconfig} before typecheck ` +
+      `(+${String(drift.added.length)} added, ~${String(drift.updated.length)} updated, ` +
+      `-${String(drift.pruned.length)} pruned).`
+  );
+  await syncFurnaceJsconfigPaths(projectRoot, furnaceConfig);
 }
 
 /**

@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addJarMnEntries,
   addLocaleFtlJarMnEntry,
+  findStaleJarMnEntries,
+  pruneStaleJarMnEntries,
   removeJarMnEntries,
   removeLocaleFtlJarMnEntry,
 } from '../furnace-registration.js';
@@ -213,6 +215,104 @@ describe('removeJarMnEntries', () => {
 
     await removeJarMnEntries('/engine', 'search-textbox');
 
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+});
+
+describe('removeJarMnEntries — renamed helpers (0.34.0)', () => {
+  it('removes helper lines whose basename does not start with the tag name', async () => {
+    // The field bug: `foo-utils.mjs` under (widgets/moz-panel/...) survived
+    // the tag-prefixed remove pass and left a stale line that broke
+    // packaging. Removal now keys on the source-mapping segment.
+    const jar = [
+      'toolkit.jar:',
+      '% content global %content/global/',
+      '   content/global/elements/foo-utils.mjs  (widgets/moz-panel/foo-utils.mjs)',
+      '   content/global/elements/moz-panel.mjs  (widgets/moz-panel/moz-panel.mjs)',
+      '   content/global/elements/wizard.js  (widgets/wizard/wizard.js)',
+    ].join('\n');
+    mockReadText.mockResolvedValue(jar);
+
+    await removeJarMnEntries('/engine', 'moz-panel');
+
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    expect(written).not.toContain('foo-utils.mjs');
+    expect(written).not.toContain('moz-panel.mjs');
+    expect(written).toContain('wizard.js');
+  });
+
+  it('still removes legacy lines without a widgets source mapping', async () => {
+    const jar = [
+      'toolkit.jar:',
+      '   content/global/elements/moz-panel.css',
+      '   content/global/elements/wizard.js  (widgets/wizard/wizard.js)',
+    ].join('\n');
+    mockReadText.mockResolvedValue(jar);
+
+    await removeJarMnEntries('/engine', 'moz-panel');
+
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    expect(written).not.toContain('moz-panel.css');
+    expect(written).toContain('wizard.js');
+  });
+});
+
+describe('stale jar.mn registrations (0.34.0)', () => {
+  const JAR_WITH_STALE = [
+    'toolkit.jar:',
+    '% content global %content/global/',
+    '   content/global/elements/moz-panel.mjs  (widgets/moz-panel/moz-panel.mjs)',
+    '   content/global/elements/old-helper.mjs  (widgets/moz-panel/old-helper.mjs)',
+    '   content/global/elements/wizard.js  (widgets/wizard/wizard.js)',
+  ].join('\n');
+
+  it('finds lines whose workspace source file no longer exists', async () => {
+    mockReadText.mockResolvedValue(JAR_WITH_STALE);
+    mockPathExists.mockImplementation((p: string) =>
+      // jar.mn exists; moz-panel.mjs exists in the workspace; old-helper.mjs does not.
+      Promise.resolve(!p.endsWith('old-helper.mjs'))
+    );
+
+    const stale = await findStaleJarMnEntries('/engine', '/ws/custom', ['moz-panel']);
+
+    expect(stale).toEqual([
+      {
+        tagName: 'moz-panel',
+        fileName: 'old-helper.mjs',
+        line: 'content/global/elements/old-helper.mjs  (widgets/moz-panel/old-helper.mjs)',
+      },
+    ]);
+  });
+
+  it('ignores tags that are not furnace-managed', async () => {
+    mockReadText.mockResolvedValue(JAR_WITH_STALE);
+    mockPathExists.mockImplementation((p: string) => Promise.resolve(p.endsWith('jar.mn')));
+
+    const stale = await findStaleJarMnEntries('/engine', '/ws/custom', []);
+    expect(stale).toEqual([]);
+  });
+
+  it('prunes exactly the stale lines and keeps live ones', async () => {
+    mockReadText.mockResolvedValue(JAR_WITH_STALE);
+    mockPathExists.mockImplementation((p: string) =>
+      Promise.resolve(!p.endsWith('old-helper.mjs'))
+    );
+
+    const pruned = await pruneStaleJarMnEntries('/engine', '/ws/custom', ['moz-panel']);
+
+    expect(pruned.map((entry) => entry.fileName)).toEqual(['old-helper.mjs']);
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    expect(written).not.toContain('old-helper.mjs');
+    expect(written).toContain('moz-panel.mjs');
+    expect(written).toContain('wizard.js');
+  });
+
+  it('prune is a no-op write when nothing is stale', async () => {
+    mockReadText.mockResolvedValue(JAR_WITH_STALE);
+    mockPathExists.mockResolvedValue(true);
+
+    const pruned = await pruneStaleJarMnEntries('/engine', '/ws/custom', ['moz-panel']);
+    expect(pruned).toEqual([]);
     expect(mockWriteText).not.toHaveBeenCalled();
   });
 });

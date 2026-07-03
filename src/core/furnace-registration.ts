@@ -287,15 +287,89 @@ export async function removeJarMnEntries(engineDir: string, tagName: string): Pr
 
   let content = await readText(filePath);
   const lines = content.split('\n');
-  // Use a regex with word boundary so "moz-card" does not match "moz-card-group".
-  const pattern = new RegExp(`content/global/elements/${escapeForRegex(tagName)}\\.`);
+  // Match by the SOURCE MAPPING segment `(widgets/<tagName>/...)` so every
+  // line the component registered is removed regardless of the target
+  // basename — a helper `.mjs` whose name does not start with the tag
+  // (e.g. a renamed `foo-utils.mjs`) used to survive the remove pass and
+  // leave a stale registration that broke packaging (0.34.0 field
+  // report). The legacy target-path match is kept as an OR for lines
+  // written by older FireForge versions without a source mapping. Word
+  // boundaries keep "moz-card" from matching "moz-card-group".
+  const sourcePattern = new RegExp(`\\(widgets/${escapeForRegex(tagName)}/`);
+  const legacyTargetPattern = new RegExp(`content/global/elements/${escapeForRegex(tagName)}\\.`);
 
-  const filtered = lines.filter((line) => !pattern.test(line));
+  const filtered = lines.filter(
+    (line) => !sourcePattern.test(line) && !legacyTargetPattern.test(line)
+  );
 
   if (filtered.length === lines.length) return;
 
   content = filtered.join('\n');
   await writeText(filePath, content);
+}
+
+/** A jar.mn widget registration line whose source file no longer exists. */
+export interface StaleJarMnEntry {
+  /** Component tag name from the `(widgets/<tag>/<file>)` source mapping. */
+  tagName: string;
+  /** File name from the source mapping. */
+  fileName: string;
+  /** The full (trimmed) jar.mn line. */
+  line: string;
+}
+
+const WIDGET_SOURCE_MAPPING_PATTERN = /\(widgets\/([^/)]+)\/([^)]+)\)/;
+
+/**
+ * Scans jar.mn for widget registration lines `(widgets/<tag>/<file>)`
+ * whose workspace source file no longer exists (0.34.0 field report: a
+ * renamed component helper left the old line pointing at a deleted file,
+ * and every build failed at packaging). Only tags in `managedTags`
+ * (furnace-managed custom components) are inspected so upstream lines are
+ * never touched.
+ */
+export async function findStaleJarMnEntries(
+  engineDir: string,
+  customDir: string,
+  managedTags: readonly string[]
+): Promise<StaleJarMnEntry[]> {
+  const filePath = join(engineDir, JAR_MN);
+  if (!(await pathExists(filePath))) return [];
+
+  const managed = new Set(managedTags);
+  const stale: StaleJarMnEntry[] = [];
+  for (const line of (await readText(filePath)).split('\n')) {
+    const match = WIDGET_SOURCE_MAPPING_PATTERN.exec(line);
+    if (!match) continue;
+    const tagName = match[1] ?? '';
+    const fileName = match[2] ?? '';
+    if (!managed.has(tagName)) continue;
+    if (!(await pathExists(join(customDir, tagName, fileName)))) {
+      stale.push({ tagName, fileName, line: line.trim() });
+    }
+  }
+  return stale;
+}
+
+/**
+ * Removes every stale widget registration line found by
+ * {@link findStaleJarMnEntries}. Returns the removed entries. Used by
+ * `furnace validate --fix` and `doctor --repair-furnace`.
+ */
+export async function pruneStaleJarMnEntries(
+  engineDir: string,
+  customDir: string,
+  managedTags: readonly string[]
+): Promise<StaleJarMnEntry[]> {
+  const stale = await findStaleJarMnEntries(engineDir, customDir, managedTags);
+  if (stale.length === 0) return [];
+
+  const filePath = join(engineDir, JAR_MN);
+  const staleLines = new Set(stale.map((entry) => entry.line));
+  const lines = (await readText(filePath)).split('\n');
+  const filtered = lines.filter((line) => !staleLines.has(line.trim()));
+  await writeText(filePath, filtered.join('\n'));
+  return stale;
 }
 
 /**

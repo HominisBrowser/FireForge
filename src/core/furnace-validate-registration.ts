@@ -18,6 +18,7 @@ import { getProjectPaths, loadConfig } from './config.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, FTL_DIR, JAR_MN } from './furnace-constants.js';
 import { expandCssFragments, listFragmentIncludes } from './furnace-css-fragments.js';
+import { findStaleJarMnEntries } from './furnace-registration.js';
 import { isTagInCorrectCustomElementsPlacement } from './furnace-registration-validate.js';
 import { getTokensCssPath } from './token-manager.js';
 
@@ -253,6 +254,29 @@ export async function validateJarMnEntries(
         message: `${name}.css is not registered in jar.mn.`,
       });
     }
+  }
+
+  // Stale registrations: lines pointing at component files that no longer
+  // exist in the workspace (left behind by a rename/delete under an older
+  // FireForge). These break `mach build` at packaging ("File ... not
+  // found"), so they are errors and `--fix` prunes them (0.34.0 field
+  // report: both validate --fix and doctor --repair-furnace reported
+  // success without pruning).
+  const staleEntries = await findStaleJarMnEntries(
+    engineDir,
+    furnacePaths.customDir,
+    Object.keys(config.custom)
+  );
+  for (const stale of staleEntries) {
+    issues.push({
+      component: stale.tagName,
+      severity: 'error',
+      check: 'stale-jar-registration',
+      message:
+        `jar.mn registers ${stale.fileName} for ${stale.tagName}, but the source file no longer exists ` +
+        `(stale line: "${stale.line}"). Packaging will fail until the line is removed — run ` +
+        '"fireforge furnace validate --fix" or "fireforge doctor --repair-furnace" to prune it.',
+    });
   }
 
   return issues;

@@ -22,7 +22,7 @@ import {
 } from './furnace-config.js';
 import { runFurnaceMutation } from './furnace-operation.js';
 import { cleanStories } from './furnace-stories.js';
-import { generateMozconfig, runMach } from './mach.js';
+import { generateMozconfig, type MachCommandResult, runMachCapture } from './mach.js';
 
 /**
  * Result of the build preparation phase.
@@ -48,6 +48,20 @@ export interface PrepareBuildOptions {
 
 /** Path fragments of files whose edits invalidate the recursive-make backend. */
 const BACKEND_INVALIDATING_SUFFIXES = ['moz.build', 'moz.configure', 'Makefile.in'];
+
+/**
+ * Extracts the tail of captured `mach configure` output so the underlying
+ * mozbuild failure (e.g. `mozbuild.util.UnsortedError: ... is not in sorted
+ * order`) is carried into the thrown `BuildError` instead of being reduced to
+ * a bare exit code. mozbuild writes the error and its traceback to stderr;
+ * stdout is included as a fallback for shells that interleave the streams.
+ * Returns an empty string when nothing useful was captured.
+ */
+function extractMachConfigureError(result: MachCommandResult): string {
+  const combined = `${result.stderr}\n${result.stdout}`.trim();
+  if (!combined) return '';
+  return combined.split('\n').slice(-40).join('\n').trim();
+}
 
 /**
  * Returns true when the file path matches a pattern that forces
@@ -111,11 +125,17 @@ export async function prepareBuildEnvironment(
       info(`Backend command: mach configure`);
       const configureSpinner = spinner('Running mach configure...');
       try {
-        const exitCode = await runMach(['configure'], paths.engine);
+        const captured = await runMachCapture(['configure'], paths.engine);
+        const exitCode = captured.exitCode;
         if (exitCode !== 0) {
           configureSpinner.error(`mach configure failed with exit code ${exitCode}`);
+          // Surface the underlying mozbuild error (e.g. UnsortedError) instead
+          // of a bare exit code — the generic message hid the actual cause.
+          const detail = extractMachConfigureError(captured);
           throw new BuildError(
-            `Backend regeneration failed: mach configure exited with code ${exitCode}. Build stopped because continuing would hide the real configure failure.`,
+            `Backend regeneration failed: mach configure exited with code ${exitCode}.` +
+              (detail ? `\n\nmach configure output (tail):\n${detail}` : '') +
+              '\n\nBuild stopped because continuing would hide the real configure failure.',
             'mach configure'
           );
         } else {

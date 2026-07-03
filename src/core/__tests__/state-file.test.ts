@@ -65,8 +65,7 @@ describe('withStateFileLock', () => {
     await withStateFileLock('/project/.fireforge/state.json', () => Promise.resolve('ok'));
 
     const options = mockWithFileLock.mock.calls[0]?.[2] as
-      | { onStaleLockMessage: (ageMs: number) => string }
-      | undefined;
+      { onStaleLockMessage: (ageMs: number) => string } | undefined;
     const message = options?.onStaleLockMessage(60000);
     expect(message).toContain('Removing stale FireForge state lock');
     expect(message).toContain('state.json');

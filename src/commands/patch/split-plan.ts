@@ -16,6 +16,7 @@ import { extractAffectedFiles } from '../../core/patch-apply.js';
 import {
   buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
+  collectForwardImportEdges,
   detectNewFilesInDiff,
   lintPatchQueue,
   type PatchQueueEntry,
@@ -25,6 +26,7 @@ import { applyRenameMapToManifest, buildProjectedManifest } from '../../core/pat
 import { buildPatchSourceMetadata } from '../../core/patch-source-metadata.js';
 import { extractNewFileContentFromDiff } from '../../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
+import type { PatchStagedForwardImport } from '../../types/commands/index.js';
 import type { PatchCategory, PatchMetadata } from '../../types/commands/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { pathExists } from '../../utils/fs.js';
@@ -46,6 +48,14 @@ export interface SplitPlan {
   description: string;
   /** Patches (by current filename) whose staged-dependency owners re-point to the new patch. */
   ownerRewrites: string[];
+  /**
+   * Staged forward-import declarations the split introduces, keyed by the
+   * importing patch's post-rename filename. These are the new forward edges
+   * from existing patches into the freshly-created patch (owner known); they
+   * are injected into the projected lint so dry-run matches the real gate,
+   * and persisted on commit so the real per-patch gate stays clean.
+   */
+  stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
 }
 
 /**
@@ -148,21 +158,20 @@ function buildEntryProjection(
   return { diff, newFiles, modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff) };
 }
 
-/**
- * Projects the full split (renumber + shrunken source + synthetic new
- * patch + owner rewrites) through cross-patch lint, reporting only the
- * regressions the split itself would introduce.
- */
-export async function runProjectedSplitLint(
+/** Builds the projected post-split queue entries (renumber + shrunken source + new patch). */
+async function buildProjectedSplitEntries(
   patchesDir: string,
   plan: SplitPlan
-): Promise<ConflictReport | null> {
+): Promise<{
+  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>;
+  entries: PatchQueueEntry[];
+}> {
   const movedSet = new Set(plan.movedFiles);
   const ownerLookup = (old: string): string | undefined =>
     plan.placement.renameMap.get(old)?.newFilename;
   const baseCtx = await buildPatchQueueContext(patchesDir);
 
-  const projectedEntries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
+  const entries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
     let metadata = entry.metadata;
     if (metadata) {
       metadata = rewriteStagedDependencyOwners(metadata, ownerLookup);
@@ -181,13 +190,114 @@ export async function runProjectedSplitLint(
     return { ...base, ...buildEntryProjection(plan.remainingDiff) };
   });
 
-  projectedEntries.push({
+  entries.push({
     filename: plan.placement.newFilename,
     order: plan.placement.insertionOrder,
     metadata: null,
     ...buildEntryProjection(plan.movedDiff),
   });
-  projectedEntries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
+  entries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
+  return { baseCtx, entries };
+}
+
+/**
+ * Computes the staged forward-import declarations the split introduces:
+ * forward edges from existing patches into the freshly-created patch (its
+ * `creates` files are the moved files; the owner is the new patch, so it is
+ * known). Keyed by the importing patch's projected (post-rename) filename.
+ *
+ * These edges did not exist before the split (importer and imported file
+ * lived in the same patch), so they have no declaration yet — without this
+ * the projected lint flags them while the real per-patch gate would resolve
+ * them once declared. Auto-declaring keeps the two in lock-step and lets a
+ * sound split read as sound.
+ */
+function computeSplitStagedDependencyAdditions(
+  projectedEntries: PatchQueueEntry[],
+  newFilename: string
+): Map<string, PatchStagedForwardImport[]> {
+  const additions = new Map<string, PatchStagedForwardImport[]>();
+  for (const edge of collectForwardImportEdges({ entries: projectedEntries })) {
+    if (edge.owner !== newFilename) continue;
+    const decl: PatchStagedForwardImport = {
+      file: edge.sitePath,
+      specifier: edge.specifier,
+      creates: edge.creates,
+      owner: newFilename,
+    };
+    const list = additions.get(edge.entry) ?? [];
+    const dup = list.some(
+      (d) =>
+        d.file === decl.file &&
+        d.specifier === decl.specifier &&
+        d.creates === decl.creates &&
+        d.owner === decl.owner
+    );
+    if (!dup) list.push(decl);
+    additions.set(edge.entry, list);
+  }
+  return additions;
+}
+
+/** Merges `decls` into a patch's `stagedDependencies.forwardImports` (no duplicates). */
+export function mergeStagedForwardImports(
+  patch: PatchMetadata,
+  decls: readonly PatchStagedForwardImport[]
+): PatchMetadata {
+  if (decls.length === 0) return patch;
+  const existing = patch.stagedDependencies?.forwardImports ?? [];
+  const merged = [...existing];
+  for (const decl of decls) {
+    const dup = merged.some(
+      (d) =>
+        d.file === decl.file &&
+        d.specifier === decl.specifier &&
+        d.creates === decl.creates &&
+        (d.owner ?? '') === (decl.owner ?? '')
+    );
+    if (!dup) merged.push(decl);
+  }
+  return {
+    ...patch,
+    stagedDependencies: { ...patch.stagedDependencies, forwardImports: merged },
+  };
+}
+
+/** Injects the computed staged-dependency additions into projected entries' metadata. */
+function injectStagedDependencyAdditions(
+  entries: PatchQueueEntry[],
+  additions: Map<string, PatchStagedForwardImport[]>
+): void {
+  for (const entry of entries) {
+    const decls = additions.get(entry.filename);
+    if (!decls?.length || !entry.metadata) continue;
+    entry.metadata = mergeStagedForwardImports(entry.metadata, decls);
+  }
+}
+
+/**
+ * Projects the full split (renumber + shrunken source + synthetic new
+ * patch + owner rewrites) through cross-patch lint, reporting only the
+ * regressions the split itself would introduce. Forward edges into the new
+ * patch are auto-declared (and the declarations returned) so the projection
+ * matches the real per-patch gate the split leaves behind.
+ */
+export async function runProjectedSplitLint(
+  patchesDir: string,
+  plan: SplitPlan
+): Promise<{
+  conflicts: ConflictReport | null;
+  stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
+}> {
+  const { baseCtx, entries: projectedEntries } = await buildProjectedSplitEntries(patchesDir, plan);
+
+  // Discover and auto-declare the forward edges this split introduces into
+  // the new patch, then inject them before linting so they resolve.
+  const stagedDependencyAdditions = computeSplitStagedDependencyAdditions(
+    projectedEntries,
+    plan.placement.newFilename
+  );
+  injectStagedDependencyAdditions(projectedEntries, stagedDependencyAdditions);
 
   const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
   const projectedIssues = lintPatchQueue({ entries: projectedEntries }).filter(
@@ -200,11 +310,14 @@ export async function runProjectedSplitLint(
         'error(s) unrelated to this split. Run "fireforge verify" to list them.'
     );
   }
-  if (regressions.length === 0) return null;
-  return {
-    reason: `split would introduce ${regressions.length} cross-patch lint error(s)`,
-    details: regressions.map((i) => `[${i.check}] ${i.file}: ${i.message}`),
-  };
+  const conflicts =
+    regressions.length === 0
+      ? null
+      : {
+          reason: `split would introduce ${regressions.length} cross-patch lint error(s)`,
+          details: regressions.map((i) => `[${i.check}] ${i.file}: ${i.message}`),
+        };
+  return { conflicts, stagedDependencyAdditions };
 }
 
 /** Builds the projected manifest for policy enforcement. */

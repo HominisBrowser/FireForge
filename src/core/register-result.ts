@@ -20,4 +20,10 @@ export interface RegisterResult {
   skipped: boolean;
   /** Whether --after target was not found and fell back to alphabetical */
   afterFallback?: boolean | undefined;
+  /**
+   * Manifests created or wired by `--create-manifest` scaffolding
+   * (directory moz.build, parent DIRS chain, XPCSHELL_TESTS_MANIFESTS),
+   * for user display.
+   */
+  scaffoldActions?: { manifest: string; change: string }[] | undefined;
 }

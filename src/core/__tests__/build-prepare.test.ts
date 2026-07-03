@@ -12,7 +12,7 @@ vi.mock('../furnace-stories.js', () => ({
 
 vi.mock('../mach.js', () => ({
   generateMozconfig: vi.fn(),
-  runMach: vi.fn(),
+  runMachCapture: vi.fn(),
 }));
 
 vi.mock('../git-base.js', () => ({
@@ -327,8 +327,7 @@ describe('prepareBuildEnvironment', () => {
     expect(result.furnaceApplied).toBe(0);
     // The second spinner call (index 1) is the Furnace spinner
     const furnaceSpinner = mockSpinner.mock.results[1]?.value as
-      | { stop: ReturnType<typeof vi.fn> }
-      | undefined;
+      { stop: ReturnType<typeof vi.fn> } | undefined;
     expect(furnaceSpinner?.stop).toHaveBeenCalledWith('Components up to date');
   });
 
@@ -384,7 +383,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
   it('runs mach configure when moz.build changed since the baseline', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');
-    const { runMach } = await import('../mach.js');
+    const { runMachCapture } = await import('../mach.js');
 
     vi.mocked(git).mockImplementation((args: string[]) => {
       if (args.includes('abc..HEAD')) {
@@ -393,7 +392,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
       return Promise.resolve('');
     });
     vi.mocked(hasChanges).mockResolvedValue(false);
-    vi.mocked(runMach).mockResolvedValue(0);
+    vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
 
     const result = await prepareBuildEnvironment('/project', paths, config, {
       previousBaseline: {
@@ -404,7 +403,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     });
 
     expect(result.reconfigured).toBe(true);
-    expect(runMach).toHaveBeenCalledWith(['configure'], '/project/engine');
+    expect(runMachCapture).toHaveBeenCalledWith(['configure'], '/project/engine');
     expect(mockInfo).toHaveBeenCalledWith(
       expect.stringContaining('Backend config changed; running backend regeneration first')
     );
@@ -415,7 +414,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
   it('skips mach configure when no backend-invalidating files changed', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');
-    const { runMach } = await import('../mach.js');
+    const { runMachCapture } = await import('../mach.js');
 
     vi.mocked(git).mockResolvedValue('browser/base/browser.js\n'); // .js is not backend-invalidating
     vi.mocked(hasChanges).mockResolvedValue(false);
@@ -429,17 +428,25 @@ describe('prepareBuildEnvironment auto-configure', () => {
     });
 
     expect(result.reconfigured).toBe(false);
-    expect(runMach).not.toHaveBeenCalled();
+    expect(runMachCapture).not.toHaveBeenCalled();
   });
 
-  it('stops the build when mach configure exits non-zero', async () => {
+  it('stops the build and surfaces the mozbuild UnsortedError text on non-zero configure', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');
-    const { runMach } = await import('../mach.js');
+    const { runMachCapture } = await import('../mach.js');
+
+    const unsorted =
+      'mozbuild.util.UnsortedError: An attempt was made to add an unsorted sequence to a list. ' +
+      "The incoming list is: ['HominisAppMenuIntegration.sys.mjs', 'HominisAppearanceController.sys.mjs']";
 
     vi.mocked(git).mockResolvedValue('browser/moz.build\n');
     vi.mocked(hasChanges).mockResolvedValue(false);
-    vi.mocked(runMach).mockResolvedValue(1);
+    vi.mocked(runMachCapture).mockResolvedValue({
+      stdout: '',
+      stderr: `Traceback (most recent call last):\n${unsorted}\n`,
+      exitCode: 1,
+    });
 
     await expect(
       prepareBuildEnvironment('/project', paths, config, {
@@ -449,19 +456,19 @@ describe('prepareBuildEnvironment auto-configure', () => {
           binaryName: 'testbrowser',
         },
       })
-    ).rejects.toThrow(/Backend regeneration failed: mach configure exited with code 1/);
+    ).rejects.toThrow(/mozbuild\.util\.UnsortedError/);
 
-    expect(runMach).toHaveBeenCalledWith(['configure'], '/project/engine');
+    expect(runMachCapture).toHaveBeenCalledWith(['configure'], '/project/engine');
   });
 
   it('surfaces mach configure exceptions and stops building', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');
-    const { runMach } = await import('../mach.js');
+    const { runMachCapture } = await import('../mach.js');
 
     vi.mocked(git).mockResolvedValue('browser/moz.configure\n');
     vi.mocked(hasChanges).mockResolvedValue(false);
-    vi.mocked(runMach).mockRejectedValue(new Error('python missing'));
+    vi.mocked(runMachCapture).mockRejectedValue(new Error('python missing'));
 
     await expect(
       prepareBuildEnvironment('/project', paths, config, {
@@ -477,7 +484,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
   it('picks up workdir-modified moz.build when the baseline diff is empty', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');
-    const { runMach } = await import('../mach.js');
+    const { runMachCapture } = await import('../mach.js');
     const { getUntrackedFiles } = await import('../git-status.js');
 
     vi.mocked(git).mockImplementation((args: string[]) => {
@@ -491,7 +498,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     });
     vi.mocked(hasChanges).mockResolvedValue(true);
     vi.mocked(getUntrackedFiles).mockResolvedValue([]);
-    vi.mocked(runMach).mockResolvedValue(0);
+    vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
 
     const result = await prepareBuildEnvironment('/project', paths, config, {
       previousBaseline: {
@@ -505,12 +512,12 @@ describe('prepareBuildEnvironment auto-configure', () => {
   });
 
   it('skips auto-configure entirely when no baseline is provided', async () => {
-    const { runMach } = await import('../mach.js');
+    const { runMachCapture } = await import('../mach.js');
 
     const result = await prepareBuildEnvironment('/project', paths, config);
 
     expect(result.reconfigured).toBe(false);
-    expect(runMach).not.toHaveBeenCalled();
+    expect(runMachCapture).not.toHaveBeenCalled();
   });
 });
 

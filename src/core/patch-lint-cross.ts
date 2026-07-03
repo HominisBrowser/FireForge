@@ -469,7 +469,24 @@ interface NewFileOwner {
  *   engine file — not our concern).
  * - Imports on a line suppressed by the ignore marker.
  */
-export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintIssue[] {
+/** One discovered forward-import edge: a site importing a later-created file. */
+export interface ForwardImportEdge {
+  /** Importing patch filename. */
+  entry: string;
+  /** Importing file path relative to engine/. */
+  sitePath: string;
+  /** Exact import specifier as it appears in source. */
+  specifier: string;
+  /** Specifier with any query/hash stripped (used for fingerprints). */
+  cleaned: string;
+  /** Later-ordered patch creating the imported file. */
+  owner: string;
+  /** Path of the later-created file (relative to engine/). */
+  creates: string;
+}
+
+/** Builds the basename → later-creators index used by the forward-import scan. */
+function buildNewFileIndex(ctx: PatchQueueContext): Map<string, NewFileOwner[]> {
   const newFileIndex = new Map<string, NewFileOwner[]>();
   for (const entry of ctx.entries) {
     for (const fullPath of entry.newFiles.keys()) {
@@ -482,24 +499,34 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
       owners.push({ filename: entry.filename, order: entry.order, fullPath });
     }
   }
+  return newFileIndex;
+}
 
-  const issues: PatchLintIssue[] = [];
-  const usedStagedDeclarations = new Set<string>();
-
-  // Runs the forward-import check against one source site — either a file
-  // the patch creates (`content` = full file) or a file the patch modifies
-  // (`content` = concatenated added lines only). We deliberately scan added
-  // lines rather than the full resulting file for modifications: we only
-  // want to flag imports *this patch introduces*, not imports that already
-  // exist on HEAD and happen to match a later-created file by coincidence.
+/**
+ * Visits every forward-import site (an import whose leaf is created by a
+ * later-ordered patch). Shared by {@link lintPatchQueueForwardImports} (which
+ * resolves/reports each) and {@link collectForwardImportEdges} (which returns
+ * them structurally). We scan a created file's full body and a modified
+ * file's added lines only — flagging imports *this patch introduces*, not
+ * pre-existing HEAD imports that happen to collide with a later-created file.
+ */
+function eachForwardImportSite(
+  ctx: PatchQueueContext,
+  newFileIndex: Map<string, NewFileOwner[]>,
+  visit: (
+    entry: PatchQueueEntry,
+    sitePath: string,
+    specifier: string,
+    cleaned: string,
+    laterOwners: NewFileOwner[]
+  ) => void
+): void {
   const checkSite = (entry: PatchQueueEntry, sitePath: string, content: string): void => {
     if (!isForwardImportableFile(sitePath)) return;
 
     const ignoreLines = findForwardImportIgnoreLines(content);
-    const extracted = extractImportSpecifiersWithLines(content);
-    for (const { specifier, line } of extracted) {
+    for (const { specifier, line } of extractImportSpecifiersWithLines(content)) {
       if (ignoreLines.has(line)) continue;
-      // Take the leaf and strip query/hash if any.
       const cleaned = specifier.split(/[?#]/)[0] ?? specifier;
       const leaf = basename(cleaned);
       if (!leaf || !isForwardImportableFile(leaf)) continue;
@@ -507,52 +534,13 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
       const owners = newFileIndex.get(leaf);
       if (!owners) continue;
 
-      // Is the owner a later-ordered patch (or one ordered equal but
-      // lexicographically later as a tiebreaker)?
       const laterOwners = owners.filter(
         (owner) =>
           owner.order > entry.order ||
           (owner.order === entry.order && owner.filename > entry.filename)
       );
       if (laterOwners.length === 0) continue;
-
-      const stagedDependency = findMatchingStagedDependency(
-        entry,
-        sitePath,
-        specifier,
-        laterOwners
-      );
-      if (stagedDependency) {
-        usedStagedDeclarations.add(stagedDependencyKey(entry, stagedDependency));
-        continue;
-      }
-
-      const ownersSummary = laterOwners
-        .map((o) => `${o.filename} (creates ${o.fullPath})`)
-        .join(', ');
-      const fingerprintOwners = [...laterOwners]
-        .map((o) => `${o.filename}:${o.fullPath}`)
-        .sort((a, b) => a.localeCompare(b))
-        .join(',');
-      // Lowest ordinal that lands AFTER every later-ordered creator —
-      // turns the operator's "guess and re-run" loop into a single shot
-      // when the only fix is reordering.
-      const suggestedOrder = Math.max(...laterOwners.map((o) => o.order)) + 1;
-
-      issues.push({
-        file: sitePath,
-        check: 'forward-import',
-        fingerprint: `forward-import|${sitePath}|${cleaned}|${fingerprintOwners}`,
-        message:
-          `${sitePath} in ${entry.filename} imports "${specifier}", ` +
-          `but the matching new file is created by a later patch: ${ownersSummary}. ` +
-          'Reorder the patches so the dependency is created first, move the import ' +
-          'into the later patch, declare the intentional staged dependency with ' +
-          '"fireforge patch staged-dependency --add", or mark the import with ' +
-          `"// ${FORWARD_IMPORT_IGNORE_MARKER}" if the basename collision is a false positive. ` +
-          `Closest legal ordinal that satisfies this dependency: ${suggestedOrder}.`,
-        severity: 'error',
-      });
+      visit(entry, sitePath, specifier, cleaned, laterOwners);
     }
   };
 
@@ -560,6 +548,80 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
     for (const [path, content] of entry.newFiles) checkSite(entry, path, content);
     for (const [path, added] of entry.modifiedFileAdditions) checkSite(entry, path, added);
   }
+}
+
+/**
+ * Returns every forward-import edge in the queue, one per (site, later
+ * creator) pair, regardless of any staged-dependency declarations. Used by
+ * `patch split` to discover the forward edges it introduces into the new
+ * patch so it can auto-declare them (and so its projected lint matches the
+ * real per-patch gate).
+ */
+export function collectForwardImportEdges(ctx: PatchQueueContext): ForwardImportEdge[] {
+  const newFileIndex = buildNewFileIndex(ctx);
+  const edges: ForwardImportEdge[] = [];
+  eachForwardImportSite(ctx, newFileIndex, (entry, sitePath, specifier, cleaned, laterOwners) => {
+    for (const owner of laterOwners) {
+      edges.push({
+        entry: entry.filename,
+        sitePath,
+        specifier,
+        cleaned,
+        owner: owner.filename,
+        creates: owner.fullPath,
+      });
+    }
+  });
+  return edges;
+}
+
+/**
+ * Cross-patch lint rule: flag imports of a module a later-ordered patch is
+ * responsible for creating, unless the patch declares an exact staged
+ * forward-import for it. Also warns on staged-dependency declarations that
+ * never matched (stale). Matching is conservative — by basename, not by
+ * resolving `resource://`/`chrome://` URLs — with an inline ignore marker as
+ * an escape hatch for unrelated basename collisions.
+ */
+export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintIssue[] {
+  const newFileIndex = buildNewFileIndex(ctx);
+  const issues: PatchLintIssue[] = [];
+  const usedStagedDeclarations = new Set<string>();
+
+  eachForwardImportSite(ctx, newFileIndex, (entry, sitePath, specifier, cleaned, laterOwners) => {
+    const stagedDependency = findMatchingStagedDependency(entry, sitePath, specifier, laterOwners);
+    if (stagedDependency) {
+      usedStagedDeclarations.add(stagedDependencyKey(entry, stagedDependency));
+      return;
+    }
+
+    const ownersSummary = laterOwners
+      .map((o) => `${o.filename} (creates ${o.fullPath})`)
+      .join(', ');
+    const fingerprintOwners = [...laterOwners]
+      .map((o) => `${o.filename}:${o.fullPath}`)
+      .sort((a, b) => a.localeCompare(b))
+      .join(',');
+    // Lowest ordinal that lands AFTER every later-ordered creator —
+    // turns the operator's "guess and re-run" loop into a single shot
+    // when the only fix is reordering.
+    const suggestedOrder = Math.max(...laterOwners.map((o) => o.order)) + 1;
+
+    issues.push({
+      file: sitePath,
+      check: 'forward-import',
+      fingerprint: `forward-import|${sitePath}|${cleaned}|${fingerprintOwners}`,
+      message:
+        `${sitePath} in ${entry.filename} imports "${specifier}", ` +
+        `but the matching new file is created by a later patch: ${ownersSummary}. ` +
+        'Reorder the patches so the dependency is created first, move the import ' +
+        'into the later patch, declare the intentional staged dependency with ' +
+        '"fireforge patch staged-dependency --add", or mark the import with ' +
+        `"// ${FORWARD_IMPORT_IGNORE_MARKER}" if the basename collision is a false positive. ` +
+        `Closest legal ordinal that satisfies this dependency: ${suggestedOrder}.`,
+      severity: 'error',
+    });
+  });
 
   for (const entry of ctx.entries) {
     for (const dependency of entry.metadata?.stagedDependencies?.forwardImports ?? []) {

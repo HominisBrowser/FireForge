@@ -140,6 +140,19 @@ export interface TypecheckConfig {
    * built-in shim first, extraShim second — augment, don't redeclare.
    */
   extraShim?: string;
+  /**
+   * Per-project override of {@link extraShim}, keyed by the project's path
+   * exactly as it appears in {@link projects}. A string value points the
+   * project at a different `.d.ts`; `null` opts the project out of the shared
+   * extra shim entirely (it absorbs only the built-in Firefox globals shim).
+   *
+   * Needed because the shared shim is injected into every project: a shim hub
+   * that references Gecko declaration libs (`lib.gecko.dom.d.ts`, …) is wanted
+   * by projects that include it but collides with a project that narrows
+   * `lib: ["ES2024", "DOM"]` (Element/Node identity splits, nsIPrincipal
+   * mismatch). A narrowed project sets `null` here to stay clean.
+   */
+  projectOverrides?: Record<string, string | null>;
 }
 
 /**

@@ -64,6 +64,10 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // DoctorCheckDefinition values that doctor.ts splices into its
   // registry; no top-level register* is exported and none is wanted.
   'doctor-furnace.ts',
+  // Stale jar.mn registration check split out of doctor-furnace.ts to
+  // keep that file within the line budget; exports a
+  // DoctorCheckDefinition consumed by doctor-furnace.ts (0.34.0).
+  'doctor-furnace-jar.ts',
   // Orphan-override detection split out of doctor-furnace.ts to keep
   // that file under the max-lines threshold. Exports a single
   // `DoctorCheckDefinition` consumed by doctor-furnace.ts.

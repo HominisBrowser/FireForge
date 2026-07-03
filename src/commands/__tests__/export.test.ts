@@ -39,6 +39,11 @@ vi.mock('../../core/git-status.js', () => ({
   getUntrackedFilesInDir: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock('../../core/patch-manifest.js', () => ({
+  // Default: no patches.json yet — ownership auto-exclusion is a no-op.
+  loadPatchesManifest: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock('../../core/patch-apply.js', () => ({
   extractAffectedFiles: vi.fn().mockReturnValue([]),
 }));
@@ -115,6 +120,7 @@ import {
 } from '../../core/git-status.js';
 import { extractAffectedFiles } from '../../core/patch-apply.js';
 import { commitExportedPatch, findAllPatchesForFiles } from '../../core/patch-export.js';
+import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, warn } from '../../utils/logger.js';
 import { exportCommand, registerExport } from '../export.js';
@@ -201,6 +207,71 @@ describe('exportCommand - directory support', () => {
     expect(generateFullFilePatch).toHaveBeenCalledTimes(2);
     expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/a.js');
     expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/b.js');
+  });
+
+  it('auto-excludes directory-derived files owned by other patches (0.34.0)', async () => {
+    mockStatForPaths(['dir']);
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue(['dir/a.js', 'dir/b.js']);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
+      version: 1,
+      patches: [
+        {
+          filename: '002-ui-earlier.patch',
+          order: 2,
+          category: 'ui',
+          name: 'earlier',
+          description: 'earlier patch owning dir/a.js',
+          createdAt: '2025-01-01T00:00:00.000Z',
+          sourceEsrVersion: '140.0esr',
+          filesAffected: ['dir/a.js'],
+        },
+      ],
+    });
+    vi.mocked(generateFullFilePatch).mockResolvedValue(
+      'diff --git a/dir/b.js b/dir/b.js\n+content b\n'
+    );
+    vi.mocked(extractAffectedFiles).mockReturnValue(['dir/b.js']);
+
+    await exportCommand('/fake/root', ['dir'], {
+      name: 'test-dir',
+      category: 'ui',
+      description: 'test',
+    });
+
+    // Only the unowned file is diffed; the owned one is excluded with a notice.
+    expect(generateFullFilePatch).toHaveBeenCalledTimes(1);
+    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/b.js');
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Excluding dir/a.js from the directory export (owned by 002-ui-earlier.patch)'
+      )
+    );
+  });
+
+  it('errors clearly when every directory file is owned by other patches (0.34.0)', async () => {
+    mockStatForPaths(['dir']);
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue(['dir/a.js']);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
+      version: 1,
+      patches: [
+        {
+          filename: '002-ui-earlier.patch',
+          order: 2,
+          category: 'ui',
+          name: 'earlier',
+          description: 'earlier',
+          createdAt: '2025-01-01T00:00:00.000Z',
+          sourceEsrVersion: '140.0esr',
+          filesAffected: ['dir/a.js'],
+        },
+      ],
+    });
+
+    await expect(
+      exportCommand('/fake/root', ['dir'], { name: 'x', category: 'ui', description: 'x' })
+    ).rejects.toThrow(/already owned by another patch/);
   });
 
   it('should include binary files via binary diff', async () => {

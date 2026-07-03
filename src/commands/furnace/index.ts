@@ -78,10 +78,18 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
 
   furnace
     .command('scan')
-    .description('Scan engine for available components')
+    .description(
+      'Scan engine for available components. Report-only by default: persist the discovered ' +
+        'inventory into the stock section of furnace.json with --track (or the interactive ' +
+        'prompt); deploy/validate consume the inventory from there.'
+    )
     .option('--deep', 'Search additional Firefox directories beyond the default widgets path')
+    .option(
+      '--track',
+      'Persist every discovered untracked component into the stock section of furnace.json (non-interactive)'
+    )
     .action(
-      withErrorHandling(async (options: { deep?: boolean }) => {
+      withErrorHandling(async (options: { deep?: boolean; track?: boolean }) => {
         await furnaceScanCommand(getProjectRoot(), pickDefined(options));
       })
     );
@@ -127,6 +135,10 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
       }
     )
     .option(
+      '--test-dir <dir>',
+      'Redirect the --with-tests scaffold to this engine-relative directory under browser/base/content/test/ (browser-chrome and xpcshell styles) instead of the default <binaryName>-derived directory; existing manifests are appended to, never overwritten'
+    )
+    .option(
       '--compose <tags>',
       'Record stock tags composed internally (metadata only, comma-separated)',
       (val: string) => val.split(',').map((s) => s.trim())
@@ -151,6 +163,7 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
             withTests?: boolean;
             xpcshell?: boolean;
             testStyle?: 'mochikit' | 'browser-chrome' | 'xpcshell';
+            testDir?: string;
             compose?: string[];
             sharedFtl?: string;
             dryRun?: boolean;
@@ -177,6 +190,10 @@ function registerChromeDocCommands(furnace: Command, context: CommandContext): v
     .description('Scaffold a new top-level chrome document')
     .option('--no-titlebar', 'Frameless overlay-style document (omits titlebar-buttonbox)')
     .option(
+      '--browser-window',
+      'Emit the browser.xhtml-like main-window skeleton (<html id="main-window"> with windowtype/chromehidden/persist root attributes platform C++ reads before scripts run) for the document configured as the fork\'s main browser window; implies the titlebar markup'
+    )
+    .option(
       '--with-tests',
       'Scaffold an xpcshell packaging-verification test that probes XCurProcD/chrome/browser/... directly (bypasses the xpcshell chrome:// URI limitation).'
     )
@@ -185,7 +202,12 @@ function registerChromeDocCommands(furnace: Command, context: CommandContext): v
       withErrorHandling(
         async (
           name: string,
-          options: { titlebar?: boolean; withTests?: boolean; dryRun?: boolean }
+          options: {
+            titlebar?: boolean;
+            withTests?: boolean;
+            dryRun?: boolean;
+            browserWindow?: boolean;
+          }
         ) => {
           await furnaceChromeDocCreateCommand(getProjectRoot(), name, pickDefined(options));
         }

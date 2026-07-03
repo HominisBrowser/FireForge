@@ -22,6 +22,7 @@ import {
   runMachCapture,
   runMachInheritCapture,
   runMachSmoke,
+  runProtectedMachBuild,
   test as runMachTest,
   testWithOutput,
   watch,
@@ -39,6 +40,7 @@ vi.mock('../../utils/fs.js', () => ({
   readJson: vi.fn(),
   readText: vi.fn(),
   writeText: vi.fn(),
+  ensureDir: vi.fn(),
 }));
 
 vi.mock('../../utils/process.js', () => ({
@@ -941,5 +943,224 @@ describe('mach command execution', () => {
     expect(warnMock).toHaveBeenCalledWith(
       expect.stringContaining('post-failure configure summary')
     );
+  });
+
+  it('injects the resource-monitor degrade shim into mach build and build faster', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { ensureDir, writeText } = await import('../../utils/fs.js');
+    await primePythonResolution();
+    vi.mocked(execInheritCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+
+    await build('/engine');
+    await buildUI('/engine');
+
+    // The sitecustomize degrade shim is written (degrades psutil failures).
+    expect(ensureDir).toHaveBeenCalledWith(expect.stringContaining('fireforge-mach-resource-shim'));
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining('sitecustomize.py'),
+      expect.stringContaining('virtual_memory')
+    );
+
+    // Both build entries spawn mach with PYTHONPATH pointing at the shim dir,
+    // so neither depends on the broken host resource monitor.
+    const callsFor = (suffix: string[]): Record<string, unknown> | undefined => {
+      const call = vi
+        .mocked(execInheritCapture)
+        .mock.calls.find(
+          (c) => Array.isArray(c[1]) && c[1].slice(1).join(' ') === suffix.join(' ')
+        );
+      return call?.[2] as Record<string, unknown> | undefined;
+    };
+    const buildEnv = (callsFor(['build'])?.['env'] ?? {}) as Record<string, string>;
+    const buildFasterEnv = (callsFor(['build', 'faster'])?.['env'] ?? {}) as Record<string, string>;
+    expect(buildEnv['PYTHONPATH']).toContain('fireforge-mach-resource-shim');
+    expect(buildFasterEnv['PYTHONPATH']).toContain('fireforge-mach-resource-shim');
+  });
+});
+
+// ── 0.34.0: protected mach build dispatch (in-venv guard + uniform retries) ──
+
+describe('runProtectedMachBuild', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetResolvedPython();
+  });
+
+  async function prime(engineDir = '/engine'): Promise<void> {
+    const { executableExists, exec } = await import('../../utils/process.js');
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === `${engineDir}/mach`)
+    );
+    vi.mocked(readText).mockResolvedValue('MIN_PYTHON_VERSION = (3, 10)\n');
+    vi.mocked(executableExists).mockResolvedValue(true);
+    vi.mocked(exec).mockResolvedValue({ stdout: '3.11.5\n', stderr: '', exitCode: 0 });
+    await ensurePython(engineDir);
+    vi.mocked(exec).mockClear();
+  }
+
+  const CRASH_OUTPUT = [
+    'Traceback (most recent call last):',
+    '  File "mozlog/handlers/resource.py", line 23, in start',
+    "AttributeError: 'SystemResourceMonitor' object has no attribute 'poll_interval'",
+  ].join('\n');
+
+  it('installs the in-venv guard (.pth + module) into every discovered mach virtualenv', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    await prime();
+    const dirent = (name: string): { name: string; isDirectory: () => boolean } => ({
+      name,
+      isDirectory: () => true,
+    });
+    vi.mocked(readdir).mockImplementation(((dir: string) => {
+      if (dir === '/engine') return Promise.resolve([dirent('obj-debug'), dirent('browser')]);
+      if (dir === '/engine/obj-debug/_virtualenvs') return Promise.resolve([dirent('build')]);
+      if (dir === '/engine/obj-debug/_virtualenvs/build/lib')
+        return Promise.resolve([dirent('python3.11')]);
+      return Promise.reject(new Error('ENOENT'));
+    }) as never);
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === '/engine/mach' || path.endsWith('site-packages'))
+    );
+    vi.mocked(execInheritCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+
+    const result = await runProtectedMachBuild('full', '/engine');
+
+    expect(result.attempts).toBe(1);
+    const sitePackages = '/engine/obj-debug/_virtualenvs/build/lib/python3.11/site-packages';
+    // The guard module survives mach's venv re-exec (unlike PYTHONPATH) and
+    // covers the whole crash family: psutil wrappers AND the constructor
+    // guard that pre-populates poll_interval.
+    expect(writeText).toHaveBeenCalledWith(
+      `${sitePackages}/fireforge_mach_guard.py`,
+      expect.stringContaining('poll_interval')
+    );
+    expect(writeText).toHaveBeenCalledWith(
+      `${sitePackages}/fireforge_mach_guard.py`,
+      expect.stringContaining('virtual_memory')
+    );
+    expect(writeText).toHaveBeenCalledWith(
+      `${sitePackages}/fireforge_mach_guard.py`,
+      expect.stringContaining('__init__')
+    );
+    // The degraded fallback is a full namedtuple duck type (downstream
+    // report: mozsystemmonitor subscripts and unpacks the reading).
+    expect(writeText).toHaveBeenCalledWith(
+      `${sitePackages}/fireforge_mach_guard.py`,
+      expect.stringContaining('_asdict')
+    );
+    expect(writeText).toHaveBeenCalledWith(
+      `${sitePackages}/fireforge_mach_guard.pth`,
+      expect.stringContaining('import fireforge_mach_guard')
+    );
+  });
+
+  it('keeps the PYTHONPATH sitecustomize fallback when no venv exists yet', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    await prime();
+    vi.mocked(readdir).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(execInheritCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+
+    await runProtectedMachBuild('faster', '/engine');
+
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining('sitecustomize.py'),
+      expect.stringContaining('virtual_memory')
+    );
+    const call = vi.mocked(execInheritCapture).mock.calls.at(-1);
+    const env = (call?.[2] as { env?: Record<string, string> } | undefined)?.env ?? {};
+    expect(env['PYTHONPATH']).toContain('fireforge-mach-resource-shim');
+  });
+
+  it('retries a recognized resource-monitor crash with a fresh process and guard install', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    await prime();
+    vi.mocked(readdir).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(execInheritCapture)
+      .mockResolvedValueOnce({ stdout: '', stderr: CRASH_OUTPUT, exitCode: 1 })
+      .mockResolvedValueOnce({ stdout: 'Your build was successful!', stderr: '', exitCode: 0 });
+
+    const guardInstallsBefore = vi
+      .mocked(writeText)
+      .mock.calls.filter((c) => c[0].includes('sitecustomize.py')).length;
+    const result = await runProtectedMachBuild('faster', '/engine');
+
+    expect(result.exitCode).toBe(0);
+    expect(result.attempts).toBe(2);
+    expect(execInheritCapture).toHaveBeenCalledTimes(2);
+    // Fresh guard install per attempt: a venv materialized by a crashed
+    // first attempt is guarded on the retry (the field's "all retries died
+    // on the same wedged state").
+    const guardInstalls = vi
+      .mocked(writeText)
+      .mock.calls.filter((c) => c[0].includes('sitecustomize.py')).length;
+    expect(guardInstalls - guardInstallsBefore).toBe(2);
+  });
+
+  it('does not retry an ordinary build failure', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    await prime();
+    vi.mocked(readdir).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(execInheritCapture).mockResolvedValue({
+      stdout: 'make: *** [build] Error 2',
+      stderr: '',
+      exitCode: 2,
+    });
+
+    const result = await runProtectedMachBuild('full', '/engine', { jobs: 4 });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.attempts).toBe(1);
+    expect(result.crashSignature).toBeUndefined();
+    expect(execInheritCapture).toHaveBeenCalledTimes(1);
+    expect(execInheritCapture).toHaveBeenCalledWith(
+      expect.any(String),
+      ['/engine/mach', 'build', '-j', '4'],
+      expect.anything()
+    );
+  });
+
+  it('exhausts the uniform budget on a persistent crash and reports the signature', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    await prime();
+    vi.mocked(readdir).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(execInheritCapture).mockResolvedValue({
+      stdout: '',
+      stderr: CRASH_OUTPUT,
+      exitCode: 1,
+    });
+
+    const result = await runProtectedMachBuild('faster', '/engine', { retries: 2 });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.attempts).toBe(3); // uniform budget: initial + 2 retries
+    expect(result.crashSignature?.reason).toContain('resource monitor');
+    expect(execInheritCapture).toHaveBeenCalledTimes(3);
+  });
+
+  it('build() and buildUI() route through the protected dispatch with the default budget', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    await prime();
+    vi.mocked(readdir).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(execInheritCapture).mockResolvedValue({
+      stdout: '',
+      stderr: CRASH_OUTPUT,
+      exitCode: 1,
+    });
+
+    const fullResult = await build('/engine');
+    expect(fullResult.attempts).toBe(3);
+    vi.mocked(execInheritCapture).mockClear();
+    vi.mocked(execInheritCapture).mockResolvedValue({
+      stdout: '',
+      stderr: CRASH_OUTPUT,
+      exitCode: 1,
+    });
+    const uiResult = await buildUI('/engine');
+    expect(uiResult.attempts).toBe(3);
+    expect(
+      vi
+        .mocked(execInheritCapture)
+        .mock.calls.every((c) => Array.isArray(c[1]) && c[1].slice(1).join(' ') === 'build faster')
+    ).toBe(true);
   });
 });

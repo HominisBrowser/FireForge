@@ -290,6 +290,38 @@ describe('tokenAddCommand', () => {
     expect(info).toHaveBeenCalledWith('  Description: Primary canvas spacing token');
   });
 
+  it('previews the variant selector instead of the category in dry-run', async () => {
+    await tokenAddCommand('/project', '--mybrowser-canvas-bg', '#101010', {
+      category: 'Colors',
+      mode: 'static',
+      variant: '[data-skin=precision]',
+      dryRun: true,
+    });
+
+    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+      tokenName: '--mybrowser-canvas-bg',
+      value: '#101010',
+      category: 'Colors',
+      mode: 'static',
+      variant: '[data-skin=precision]',
+      dryRun: true,
+    });
+    expect(info).toHaveBeenCalledWith('  Variant: :root[data-skin=precision]');
+  });
+
+  it('threads the variant through a non-dry-run add', async () => {
+    await tokenAddCommand('/project', '--mybrowser-canvas-bg', '#101010', {
+      category: 'Colors',
+      mode: 'static',
+      variant: '[data-private]',
+    });
+
+    expect(mockedAddToken).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({ variant: '[data-private]' })
+    );
+  });
+
   it('reports skipped non-dry-run token additions without loading fireforge config', async () => {
     mockedAddToken.mockResolvedValue({
       cssAdded: false,

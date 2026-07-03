@@ -15,7 +15,7 @@ import {
 } from '../../core/furnace-rollback.js';
 import { getLicenseHeader } from '../../core/license-headers.js';
 import type { ProjectLicense } from '../../types/config.js';
-import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
+import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 import {
   generateXpcshellManifestContent,
@@ -43,12 +43,16 @@ export async function scaffoldXpcshellTestFiles(
   license: ProjectLicense,
   forgeConfig: { binaryName: string },
   paths: { engine: string },
-  journal?: RollbackJournal
+  journal?: RollbackJournal,
+  testDirOverride?: string
 ): Promise<string[]> {
   const parentRelDir = xpcshellTestParentDir(forgeConfig.binaryName);
   const parentDirName =
     parentRelDir.split('/').slice(-1)[0] ?? `${forgeConfig.binaryName}-xpcshell`;
-  const testDir = join(paths.engine, parentRelDir, componentName);
+  // --test-dir names the FINAL directory (no per-component segment is
+  // appended) so the operator controls the exact scaffold target.
+  const testDirRel = testDirOverride ?? `${parentRelDir}/${componentName}`;
+  const testDir = join(paths.engine, testDirRel);
   if (journal && !(await pathExists(testDir))) {
     recordCreatedDir(journal, testDir);
   }
@@ -60,17 +64,39 @@ export async function scaffoldXpcshellTestFiles(
 
   const testFileName = xpcshellTestFileName(componentName);
   const testFilePath = join(testDir, testFileName);
-  if (journal) await snapshotFile(journal, testFilePath);
-  await writeText(testFilePath, generateXpcshellTestContent(componentName, jsHeader));
-  testFiles.push(testFileName);
+  if (await pathExists(testFilePath)) {
+    // Never clobber an existing test implementation (0.34.0 field report:
+    // the scaffold overwrote files owned by a different patch).
+    warn(`${testDirRel}/${testFileName} already exists — keeping the existing file.`);
+  } else {
+    if (journal) await snapshotFile(journal, testFilePath);
+    await writeText(testFilePath, generateXpcshellTestContent(componentName, jsHeader));
+    testFiles.push(testFileName);
+  }
 
+  // xpcshell.toml — append the test entry to an existing manifest instead
+  // of scaffolding over it; write a fresh one only when absent.
   const manifestPath = join(testDir, 'xpcshell.toml');
-  if (journal) await snapshotFile(journal, manifestPath);
-  await writeText(manifestPath, generateXpcshellManifestContent(componentName, hashHeader));
-  testFiles.push('xpcshell.toml');
+  if (await pathExists(manifestPath)) {
+    const existing = await readText(manifestPath);
+    if (!existing.includes(`["${testFileName}"]`)) {
+      if (journal) await snapshotFile(journal, manifestPath);
+      await writeText(manifestPath, existing.trimEnd() + `\n\n["${testFileName}"]\n`);
+      warn(
+        `Appended ["${testFileName}"] to the existing ${testDirRel}/xpcshell.toml — the manifest is shared; existing entries were left untouched.`
+      );
+    }
+  } else {
+    if (journal) await snapshotFile(journal, manifestPath);
+    await writeText(manifestPath, generateXpcshellManifestContent(componentName, hashHeader));
+    testFiles.push('xpcshell.toml');
+  }
 
   warn(
-    `xpcshell scaffold written under browser/base/content/test/${parentDirName}/${componentName}/. ` +
+    `xpcshell scaffold written under ${testDirRel}/ ` +
+      '(default: browser/base/content/test/' +
+      parentDirName +
+      '/<component>/). ' +
       'Add the directory to XPCSHELL_TESTS_MANIFESTS in the nearest moz.build to run it via "fireforge test".'
   );
 

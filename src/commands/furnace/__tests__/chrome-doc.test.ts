@@ -7,9 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as config from '../../../core/config.js';
 import { ensureDir, writeText } from '../../../utils/fs.js';
+import * as logger from '../../../utils/logger.js';
 import { furnaceChromeDocCreateCommand } from '../chrome-doc.js';
 import { furnaceChromeDocRemoveCommand } from '../chrome-doc-remove.js';
 import {
+  generateBrowserWindowXhtml,
   generateChromeDocCss,
   generateChromeDocFtl,
   generateChromeDocJs,
@@ -173,6 +175,24 @@ describe('chrome-doc templates', () => {
   });
 });
 
+describe('generateBrowserWindowXhtml (0.34.0 --browser-window)', () => {
+  it('emits the browser.xhtml-like main-window skeleton', () => {
+    const xhtml = generateBrowserWindowXhtml('mybrowser', 'MPL-2.0');
+    // Root element and id platform C++ looks up before scripts run.
+    expect(xhtml).toContain('<html');
+    expect(xhtml).toContain('id="main-window"');
+    expect(xhtml).not.toContain('<window');
+    // Pre-script root attributes.
+    expect(xhtml).toContain('windowtype="navigator:browser"');
+    expect(xhtml).toContain('chromehidden=""');
+    expect(xhtml).toContain('persist="screenX screenY width height sizemode"');
+    // Same bootstrap wiring and sentinel as the generic scaffold.
+    expect(xhtml).toContain('chrome://global/content/customElements.js');
+    expect(xhtml).toContain('data-furnace-chrome-doc="mybrowser"');
+    expect(xhtml).toContain('titlebar-buttonbox');
+  });
+});
+
 describe('furnaceChromeDocCreateCommand', () => {
   let projectRoot: string;
 
@@ -259,6 +279,76 @@ describe('furnaceChromeDocCreateCommand', () => {
 
     const localeJarMn = await readFile(join(engineDir, 'browser/locales/jar.mn'), 'utf8');
     expect(localeJarMn).toContain('locale/browser/mybrowser.ftl');
+  });
+
+  async function seedEngineJarTree(engineDir: string): Promise<void> {
+    await ensureDir(join(engineDir, 'browser/base/content'));
+    await ensureDir(join(engineDir, 'browser/themes/shared'));
+    await ensureDir(join(engineDir, 'browser/locales/en-US/browser'));
+    await writeText(join(engineDir, 'browser/base/jar.mn'), '# existing header\n');
+    await writeText(join(engineDir, 'browser/themes/shared/jar.inc.mn'), '# existing shared\n');
+    await writeText(join(engineDir, 'browser/locales/jar.mn'), '# existing locales\n');
+  }
+
+  it('--browser-window writes the main-window skeleton with unchanged jar.mn registrations (0.34.0)', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    await seedEngineJarTree(engineDir);
+
+    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser', { browserWindow: true });
+
+    const xhtml = await readFile(join(engineDir, 'browser/base/content/mybrowser.xhtml'), 'utf8');
+    expect(xhtml).toContain('id="main-window"');
+    expect(xhtml).toContain('windowtype="navigator:browser"');
+    expect(xhtml).toContain('chromehidden=""');
+    expect(xhtml).not.toContain('<window');
+
+    // jar.mn registrations are identical to the generic scaffold (the
+    // field report confirmed those were already correct).
+    const jarMn = await readFile(join(engineDir, 'browser/base/jar.mn'), 'utf8');
+    expect(jarMn).toContain('content/browser/mybrowser.xhtml');
+    expect(jarMn).toContain('content/browser/mybrowser.js');
+  });
+
+  it('hints at --browser-window when the target is a configured token-host document (0.34.0)', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    await seedEngineJarTree(engineDir);
+    await writeText(
+      join(projectRoot, 'furnace.json'),
+      JSON.stringify({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+        tokenHostDocuments: ['browser/base/content/mybrowser.xhtml'],
+      })
+    );
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser', {});
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('--browser-window'));
+  });
+
+  it('does not hint when the target is not a token-host document (0.34.0)', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    await seedEngineJarTree(engineDir);
+    await writeText(
+      join(projectRoot, 'furnace.json'),
+      JSON.stringify({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+        tokenHostDocuments: ['browser/base/content/browser.xhtml'],
+      })
+    );
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser', {});
+
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('--browser-window'));
   });
 
   it('previews the chrome-doc scaffold without writing files', async () => {

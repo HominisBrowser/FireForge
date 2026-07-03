@@ -50,6 +50,7 @@ import {
   buildSplitDiff,
   buildSplitSummary,
   findOwnerRewriteHolders,
+  mergeStagedForwardImports,
   projectSplitManifest,
   rewriteSplitOwners,
   runProjectedSplitLint,
@@ -115,12 +116,18 @@ async function commitPatchSplit(
       const fresh = await loadPatchesManifest(patchesDir);
       if (!fresh) throw new GeneralError('Manifest disappeared during split commit.');
       const updatedPatches = fresh.patches.map((patch) => {
-        const withOwners = rewriteSplitOwners(
+        let withOwners = rewriteSplitOwners(
           patch,
           effectiveSourceFilename,
           movedSet,
           plan.placement.newFilename
         );
+        // Persist the auto-declared forward edges into the new patch so the
+        // real per-patch gate stays clean (keyed by post-rename filename).
+        const decls = plan.stagedDependencyAdditions.get(withOwners.filename);
+        if (decls?.length) {
+          withOwners = mergeStagedForwardImports(withOwners, decls);
+        }
         if (patch.filename !== effectiveSourceFilename) return withOwners;
         return { ...withOwners, filesAffected: plan.remainingFiles };
       });
@@ -274,6 +281,8 @@ export async function patchSplitCommand(
     name: options.name,
     description: options.description ?? '',
     ownerRewrites: findOwnerRewriteHolders(manifest.patches, source.filename, movedSet),
+    // Populated by runProjectedSplitLint below (forward edges into the new patch).
+    stagedDependencyAdditions: new Map(),
   };
 
   // Per-patch lint both projected bodies, threading the source patch's
@@ -300,7 +309,8 @@ export async function patchSplitCommand(
     source.tier
   );
 
-  const conflicts = await runProjectedSplitLint(paths.patches, plan);
+  const { conflicts, stagedDependencyAdditions } = await runProjectedSplitLint(paths.patches, plan);
+  plan.stagedDependencyAdditions = stagedDependencyAdditions;
   const newMetadata = buildNewPatchMetadata(plan, config);
   enforcePatchPolicy({
     config,

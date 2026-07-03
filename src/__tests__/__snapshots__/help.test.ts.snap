@@ -172,6 +172,12 @@ Options:
                             browser-chrome (default, needs tabbrowser), mochikit
                             (toolkit/widgets, non-tabbrowser chrome), or
                             xpcshell (headless)
+  --test-dir <dir>          Redirect the --with-tests scaffold to this
+                            engine-relative directory under
+                            browser/base/content/test/ (browser-chrome and
+                            xpcshell styles) instead of the default
+                            <binaryName>-derived directory; existing manifests
+                            are appended to, never overwritten
   --compose <tags>          Record stock tags composed internally (metadata
                             only, comma-separated)
   --shared-ftl <path>       Participate in an existing feature-scoped .ftl at
@@ -301,11 +307,15 @@ Options:
 exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace scan --help 1`] = `
 "Usage: fireforge furnace scan [options]
 
-Scan engine for available components
+Scan engine for available components. Report-only by default: persist the
+discovered inventory into the stock section of furnace.json with --track (or the
+interactive prompt); deploy/validate consume the inventory from there.
 
 Options:
   --deep      Search additional Firefox directories beyond the default widgets
               path
+  --track     Persist every discovered untracked component into the stock
+              section of furnace.json (non-interactive)
   -h, --help  display help for command
 "
 `;

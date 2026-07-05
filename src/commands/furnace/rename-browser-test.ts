@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { tagNameToClassName } from '../../core/furnace-constants.js';
-
-/** Escapes regex metacharacters so a user-supplied name is literal inside a RegExp. */
-function escapeRegex(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+import { escapeRegex } from '../../utils/regex.js';
 
 function deriveTestStem(componentName: string, binaryName: string): string {
   const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;

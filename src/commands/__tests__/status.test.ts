@@ -51,6 +51,7 @@ vi.mock('../../core/git.js', () => ({
 }));
 
 vi.mock('../../core/git-status.js', () => ({
+  resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
   getUntrackedFilesInDir: vi.fn(),
 }));
 

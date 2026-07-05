@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { isFileRegistered, matchesRegistrablePattern } from '../core/manifest-rules.js';
 import type { ClassifiedFile, StatusFile } from '../core/status-classify.js';
+import { getPrimaryStatusCode } from '../core/status-classify.js';
 import { GeneralError } from '../errors/base.js';
 import { info, outro, warn } from '../utils/logger.js';
 
@@ -26,15 +27,6 @@ export interface ClassifiedBuckets {
 
 function getStatusDescription(code: string): string {
   return STATUS_DESCRIPTIONS[code] ?? 'changed';
-}
-
-function getPrimaryStatusCode(status: string): string {
-  if (status.includes('?')) return '?';
-  if (status.includes('!')) return '!';
-  for (const code of status) {
-    if (code !== ' ') return code;
-  }
-  return status;
 }
 
 function isNewFileStatus(status: string): boolean {

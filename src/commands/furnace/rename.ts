@@ -50,6 +50,7 @@ import {
   writeText,
 } from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
+import { escapeRegex } from '../../utils/regex.js';
 import { updateBrowserChromeTestContent } from './rename-browser-test.js';
 import {
   rekeyStateChecksums,
@@ -58,11 +59,6 @@ import {
   updateConfigForOverrideRename,
 } from './rename-helpers.js';
 import { renameXpcshellTestFiles } from './rename-xpcshell.js';
-
-/** Escapes regex metacharacters so a user-supplied name is literal inside a RegExp. */
-function escapeRegex(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /**
  * Derives the test file name for a component, matching the convention used by

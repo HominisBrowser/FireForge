@@ -14,7 +14,7 @@
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import { getFurnacePaths, updateFurnaceState } from '../../core/furnace-config.js';
+import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { getHead, isGitRepository, isMissingHeadError, resetChanges } from '../../core/git.js';
 import { discoverPatches } from '../../core/patch-files.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
@@ -135,13 +135,7 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
   resetSpinner.stop('Engine reset to baseline');
 
   // Clear Furnace state — the engine no longer contains deployed components.
-  // Preserve pendingRepair since that tracks authoring-side rollback issues.
-  const furnacePaths = getFurnacePaths(projectRoot);
-  if (await pathExists(furnacePaths.furnaceState)) {
-    await updateFurnaceState(projectRoot, (current) => ({
-      ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
-    }));
-  }
+  await clearAppliedFurnaceState(projectRoot);
 
   // Create rebase session
   const allPatches = await discoverPatches(paths.patches);

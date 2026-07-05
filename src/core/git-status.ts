@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { warn } from '../utils/logger.js';
 import type { GitStatusEntry } from './git-base.js';
 import { ensureGit, git } from './git-base.js';
 
@@ -53,9 +54,37 @@ export async function getWorkingTreeStatus(repoDir: string): Promise<GitStatusEn
   return parsePorcelainStatus(await git(['status', '--porcelain=v1', '-z'], repoDir));
 }
 
+/** Default per-directory cap for untracked-directory expansion. */
+const DEFAULT_MAX_UNTRACKED_FILES_PER_DIR = 5000;
+
+/**
+ * Resolves the per-directory expansion cap, honoring the same
+ * FIREFORGE_MAX_UNTRACKED_FILES override the status command documents.
+ */
+export function resolveMaxUntrackedFilesPerDir(): number {
+  const raw = process.env['FIREFORGE_MAX_UNTRACKED_FILES'];
+  if (raw === undefined || raw.length === 0) return DEFAULT_MAX_UNTRACKED_FILES_PER_DIR;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    warn(
+      `Ignoring FIREFORGE_MAX_UNTRACKED_FILES="${raw}" — expected a positive integer. Falling back to ${String(DEFAULT_MAX_UNTRACKED_FILES_PER_DIR)}.`
+    );
+    return DEFAULT_MAX_UNTRACKED_FILES_PER_DIR;
+  }
+  return parsed;
+}
+
 /**
  * Expands collapsed untracked directory entries into individual file entries.
  * Git status may report "?? dir/" instead of listing each file underneath.
+ *
+ * Expansion is capped per directory (FIREFORGE_MAX_UNTRACKED_FILES, default
+ * 5000) with a warning on overflow. The cap used to exist only in the
+ * status command's private expander; this shared one — used by reset,
+ * discard, verify, lint, export-all — was unbounded, so e.g. `reset
+ * --dry-run` after an interrupted download (unborn HEAD, the entire ~300k
+ * file tree untracked) enumerated and printed every file.
+ *
  * @param repoDir - Repository directory
  * @param entries - Parsed status entries
  * @returns Status entries with untracked directories expanded to individual files
@@ -65,6 +94,7 @@ export async function expandUntrackedDirectoryEntries(
   entries: GitStatusEntry[]
 ): Promise<GitStatusEntry[]> {
   const expanded: GitStatusEntry[] = [];
+  const maxPerDir = resolveMaxUntrackedFilesPerDir();
 
   for (const entry of entries) {
     if (!entry.isUntracked || !entry.file.endsWith('/')) {
@@ -73,7 +103,12 @@ export async function expandUntrackedDirectoryEntries(
     }
 
     const individualFiles = await getUntrackedFilesInDir(repoDir, entry.file);
-    for (const file of individualFiles) {
+    if (individualFiles.length > maxPerDir) {
+      warn(
+        `Untracked directory ${entry.file} contains ${String(individualFiles.length)} files — only the first ${String(maxPerDir)} are listed. Add a .gitignore entry or clean the directory.`
+      );
+    }
+    for (const file of individualFiles.slice(0, maxPerDir)) {
       expanded.push({
         status: '??',
         indexStatus: '?',

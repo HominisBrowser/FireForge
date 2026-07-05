@@ -445,6 +445,24 @@ export async function loadFurnaceConfig(root: string): Promise<FurnaceConfig> {
 }
 
 /**
+ * Clears applied furnace state while preserving `pendingRepair`.
+ *
+ * Used whenever the engine baseline is replaced or reset (download --force,
+ * reset, rebase, rebase --abort): every applied checksum describes content
+ * that no longer exists, but pendingRepair tracks authoring-side rollback
+ * issues in the component WORKSPACE and must survive an engine refresh.
+ * No-ops when the state file does not exist. Centralized because the same
+ * reset logic had drifted into four separate command files.
+ */
+export async function clearAppliedFurnaceState(root: string): Promise<void> {
+  const paths = getFurnacePaths(root);
+  if (!(await pathExists(paths.furnaceState))) return;
+  await updateFurnaceState(root, (current) => ({
+    ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
+  }));
+}
+
+/**
  * Writes a furnace configuration to furnace.json.
  * @param root - Root directory of the project
  * @param config - Configuration to write

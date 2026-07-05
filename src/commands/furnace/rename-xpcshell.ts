@@ -36,11 +36,7 @@ import {
   writeText,
 } from '../../utils/fs.js';
 import { info, warn } from '../../utils/logger.js';
-
-/** Escapes regex metacharacters so a user-supplied name stays literal. */
-function escapeRegex(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+import { escapeRegex } from '../../utils/regex.js';
 
 /**
  * Renames an xpcshell test scaffold in place. Moves the directory,

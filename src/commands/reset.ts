@@ -3,8 +3,14 @@ import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
-import { getFurnacePaths, updateFurnaceState } from '../core/furnace-config.js';
-import { hasChanges, isGitRepository, resetChanges } from '../core/git.js';
+import { clearAppliedFurnaceState } from '../core/furnace-config.js';
+import {
+  getHead,
+  hasChanges,
+  isGitRepository,
+  isMissingHeadError,
+  resetChanges,
+} from '../core/git.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -32,6 +38,19 @@ export async function resetCommand(projectRoot: string, options: ResetOptions): 
   if (!(await isGitRepository(paths.engine))) {
     throw new GeneralError(
       'Engine directory is not a git repository. Run "fireforge download" to initialize.'
+    );
+  }
+
+  // Unborn-HEAD guard (mirrors status): an interrupted download leaves a
+  // repo with no baseline commit, where the entire ~300k-file tree reads
+  // as untracked — a reset against that state is never what the operator
+  // wants, and the guidance names the actual fix.
+  try {
+    await getHead(paths.engine);
+  } catch (headError: unknown) {
+    if (!isMissingHeadError(headError)) throw headError;
+    throw new GeneralError(
+      'Engine repository has no baseline commit yet — a previous "fireforge download" was interrupted before git created the initial Firefox source commit. Re-run "fireforge download --force" to recreate the baseline repository cleanly.'
     );
   }
 
@@ -100,12 +119,7 @@ export async function resetCommand(projectRoot: string, options: ResetOptions): 
     // consistent regardless of the drift oracle.) Preserve pendingRepair:
     // authoring-side rollback markers are about the workspace/component
     // tree, not the engine checkout, so reset must not silently forget them.
-    const furnacePaths = getFurnacePaths(projectRoot);
-    if (await pathExists(furnacePaths.furnaceState)) {
-      await updateFurnaceState(projectRoot, (current) => ({
-        ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
-      }));
-    }
+    await clearAppliedFurnaceState(projectRoot);
 
     s.stop('Changes reset');
     outro('Working tree restored to clean state');

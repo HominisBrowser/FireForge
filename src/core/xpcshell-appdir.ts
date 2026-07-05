@@ -43,6 +43,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
 import { pathExists, readJson, readText } from '../utils/fs.js';
+import { escapeRegex } from '../utils/regex.js';
 import { isObject, isString } from '../utils/validation.js';
 
 /**
@@ -108,10 +109,6 @@ export function parseAppdirFromToml(
     return { value, lineIndex: i };
   }
   return undefined;
-}
-
-function escapeRegex(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function stripQuotes(raw: string): string | undefined {

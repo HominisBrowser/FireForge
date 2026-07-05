@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
-import { getUntrackedFilesInDir } from '../core/git-status.js';
+import { getUntrackedFilesInDir, resolveMaxUntrackedFilesPerDir } from '../core/git-status.js';
 import { buildOwnershipTable, renderOwnershipTable } from '../core/ownership-table.js';
 import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../core/patch-lint.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
@@ -35,24 +35,10 @@ function renderRawStatus(files: StatusFile[]): void {
   }
 }
 
-const DEFAULT_MAX_UNTRACKED_FILES_PER_DIR = 5000;
-
-function resolveMaxUntrackedFilesPerDir(): number {
-  const raw = process.env['FIREFORGE_MAX_UNTRACKED_FILES'];
-  if (raw === undefined || raw.length === 0) return DEFAULT_MAX_UNTRACKED_FILES_PER_DIR;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    warn(
-      `Ignoring FIREFORGE_MAX_UNTRACKED_FILES="${raw}" — expected a positive integer. Falling back to ${DEFAULT_MAX_UNTRACKED_FILES_PER_DIR}.`
-    );
-    return DEFAULT_MAX_UNTRACKED_FILES_PER_DIR;
-  }
-  return parsed;
-}
-
-// Resolved lazily at first use: this module is imported by the command
-// manifest for EVERY command, so a module-load-time parse printed the
-// status-specific env warning during `fireforge build` etc.
+// Resolved lazily at first use (shared with core/git-status): this module
+// is imported by the command manifest for EVERY command, so a
+// module-load-time parse printed the status-specific env warning during
+// `fireforge build` etc.
 let maxUntrackedFilesPerDir: number | undefined;
 
 function getMaxUntrackedFilesPerDir(): number {

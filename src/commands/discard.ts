@@ -4,7 +4,7 @@ import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
-import { isGitRepository } from '../core/git.js';
+import { getHead, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { discardStatusEntry } from '../core/git-file-ops.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -139,6 +139,19 @@ export async function discardCommand(
   if (!(await isGitRepository(paths.engine))) {
     throw new GeneralError(
       'Engine directory is not a git repository. Run "fireforge download" to initialize.'
+    );
+  }
+
+  // Unborn-HEAD guard (mirrors status): an interrupted download leaves a
+  // repo with no baseline commit, where the entire ~300k-file tree reads
+  // as untracked — a discard against that state is never what the operator
+  // wants, and the guidance names the actual fix.
+  try {
+    await getHead(paths.engine);
+  } catch (headError: unknown) {
+    if (!isMissingHeadError(headError)) throw headError;
+    throw new GeneralError(
+      'Engine repository has no baseline commit yet — a previous "fireforge download" was interrupted before git created the initial Firefox source commit. Re-run "fireforge download --force" to recreate the baseline repository cleanly.'
     );
   }
 

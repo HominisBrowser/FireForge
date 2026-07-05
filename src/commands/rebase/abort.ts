@@ -4,11 +4,10 @@
  */
 
 import { getProjectPaths, updateState } from '../../core/config.js';
-import { getFurnacePaths, updateFurnaceState } from '../../core/furnace-config.js';
+import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { resetChanges } from '../../core/git.js';
 import { clearRebaseSession, loadRebaseSession } from '../../core/rebase-session.js';
 import { NoRebaseSessionError } from '../../errors/rebase.js';
-import { pathExists } from '../../utils/fs.js';
 import { intro, outro, spinner, success } from '../../utils/logger.js';
 import { confirmDirtyEngineReset } from './confirm.js';
 
@@ -55,12 +54,7 @@ export async function handleAbort(projectRoot: string, yes?: boolean): Promise<v
   // misleading now that reset already succeeded). The rebase session is
   // still kept on disk so the user can retry the abort and let it
   // idempotently re-clear furnace state.
-  const furnacePaths = getFurnacePaths(projectRoot);
-  if (await pathExists(furnacePaths.furnaceState)) {
-    await updateFurnaceState(projectRoot, (current) => ({
-      ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
-    }));
-  }
+  await clearAppliedFurnaceState(projectRoot);
 
   // Step 3: clear pending resolution transactionally.
   await updateState(projectRoot, (current) => {

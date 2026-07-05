@@ -13,7 +13,7 @@ import type {
 import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
-import { stripJsComments } from '../utils/regex.js';
+import { escapeRegex, stripJsComments } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, FTL_DIR, JAR_MN } from './furnace-constants.js';
@@ -63,10 +63,6 @@ export async function validateRegistrationPatterns(
   }
 
   return issues;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

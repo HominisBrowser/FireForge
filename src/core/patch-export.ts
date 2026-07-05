@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type {
@@ -315,49 +314,6 @@ export async function findExistingPatchForFile(
  */
 export async function updatePatch(patchPath: string, newContent: string): Promise<void> {
   await writeText(patchPath, normalizePatchArtifact(newContent));
-}
-
-/**
- * Deletes a patch file and removes it from the manifest.
- * @param patchesDir - Path to the patches directory
- * @param filename - Patch filename to delete
- */
-export async function deletePatch(patchesDir: string, filename: string): Promise<void> {
-  await withPatchDirectoryLock(patchesDir, async () => {
-    const patchPath = join(patchesDir, filename);
-    const manifest = await loadPatchesManifestForWrite(patchesDir);
-    const updatedManifest = manifest
-      ? {
-          ...manifest,
-          patches: manifest.patches.filter((patch) => patch.filename !== filename),
-        }
-      : null;
-
-    // Update manifest first so interrupted deletions leave an explicit repairable
-    // extra patch file rather than silently dropping metadata for an absent file.
-    if (updatedManifest) {
-      await savePatchesManifest(patchesDir, updatedManifest);
-    }
-
-    if (!(await pathExists(patchPath))) {
-      return;
-    }
-
-    try {
-      await unlink(patchPath);
-    } catch (error: unknown) {
-      if (manifest) {
-        try {
-          await savePatchesManifest(patchesDir, manifest);
-        } catch (error: unknown) {
-          warn(
-            `Failed to restore manifest after patch deletion error for "${filename}": ${toError(error).message}`
-          );
-        }
-      }
-      throw error;
-    }
-  });
 }
 
 /**

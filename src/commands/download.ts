@@ -12,7 +12,7 @@ import {
   formatBytes,
   sweepOrphanedEngineWorkDirs,
 } from '../core/firefox.js';
-import { getFurnacePaths, updateFurnaceState } from '../core/furnace-config.js';
+import { clearAppliedFurnaceState } from '../core/furnace-config.js';
 import {
   getHead,
   initRepository,
@@ -162,15 +162,8 @@ function closeRestoreSpinner(
 
 async function clearStaleFurnaceApplyState(projectRoot: string): Promise<void> {
   // --force installs a new baseCommit, which invalidates every applied
-  // checksum in furnace-state.json. Preserve pendingRepair: authoring-side
-  // rollback markers describe unresolved component workspace state and
-  // should survive an engine refresh.
-  const furnacePaths = getFurnacePaths(projectRoot);
-  if (await pathExists(furnacePaths.furnaceState)) {
-    await updateFurnaceState(projectRoot, (current) => ({
-      ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
-    }));
-  }
+  // checksum in furnace-state.json.
+  await clearAppliedFurnaceState(projectRoot);
 }
 
 async function activateReplacementEngine(args: {

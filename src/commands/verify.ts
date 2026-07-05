@@ -27,6 +27,7 @@ import { buildPatchQueueContext, lintPatchQueue } from '../core/patch-lint.js';
 import { loadPatchesManifest, validatePatchesManifestConsistency } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { collectPatchRegistrationReferences } from '../core/patch-registration-refs.js';
+import { buildPatchClaims } from '../core/status-classify.js';
 import { classifyFiles } from '../core/status-classify.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -128,14 +129,7 @@ async function detectDanglingRegistrations(
 function detectCrossPatchFileClaims(
   manifestPatches: ReadonlyArray<{ filename: string; filesAffected: string[] }>
 ): Array<{ path: string; filenames: string[] }> {
-  const claims = new Map<string, string[]>();
-  for (const patch of manifestPatches) {
-    for (const file of patch.filesAffected) {
-      const existing = claims.get(file) ?? [];
-      existing.push(patch.filename);
-      claims.set(file, existing);
-    }
-  }
+  const claims = buildPatchClaims(manifestPatches);
   const results: Array<{ path: string; filenames: string[] }> = [];
   for (const [path, filenames] of claims) {
     if (filenames.length > 1) {

@@ -94,19 +94,9 @@ function buildOverrideUndeployActions(
   }));
 }
 
-async function applyOverrideBatch(
-  config: FurnaceConfigData,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
-  state: FurnaceStateData,
-  engineDir: string,
-  ftlDir: string,
-  dryRun: boolean,
-  result: ApplyAccumulator,
-  allActions: DryRunAction[],
-  newChecksums: Record<string, string>,
-  rollbackJournal?: RollbackJournal,
-  componentName?: string
-): Promise<void> {
+async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
+  const { config, furnacePaths, state, engineDir, ftlDir, dryRun } = ctx;
+  const { result, allActions, newChecksums, rollbackJournal, componentName } = ctx;
   const overrideEntries = Object.entries(config.overrides).filter(
     ([name]) => !componentName || name === componentName
   );
@@ -293,20 +283,12 @@ async function reconcileCustomRegistrationAfterUndeploy(
 }
 
 async function applyCustomBatch(
+  ctx: ApplyBatchContext,
   root: string,
-  config: FurnaceConfigData,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
-  state: FurnaceStateData,
-  engineDir: string,
-  ftlDir: string,
-  dryRun: boolean,
-  result: ApplyAccumulator,
-  allActions: DryRunAction[],
-  newChecksums: Record<string, string>,
-  rollbackJournal?: RollbackJournal,
-  componentName?: string,
   markerComment?: string
 ): Promise<void> {
+  const { config, furnacePaths, state, engineDir, ftlDir, dryRun } = ctx;
+  const { result, allActions, newChecksums, rollbackJournal, componentName } = ctx;
   const allKnown = new Set([
     ...config.stock,
     ...Object.keys(config.overrides),
@@ -546,21 +528,7 @@ export async function applyAllComponents(
     }
   }
 
-  await applyOverrideBatch(
-    config,
-    furnacePaths,
-    state,
-    engineDir,
-    ftlDir,
-    dryRun,
-    result,
-    allActions,
-    newChecksums,
-    rollbackJournal,
-    componentName
-  );
-  await applyCustomBatch(
-    root,
+  const batchContext: ApplyBatchContext = {
     config,
     furnacePaths,
     state,
@@ -572,8 +540,9 @@ export async function applyAllComponents(
     newChecksums,
     rollbackJournal,
     componentName,
-    markerComment
-  );
+  };
+  await applyOverrideBatch(batchContext);
+  await applyCustomBatch(batchContext, root, markerComment);
 
   // Check for any partial failures (blocking step errors on applied
   // components). Advisory step errors (e.g. FTL degradation) are warnings
@@ -637,4 +606,24 @@ export async function applyAllComponents(
   }
 
   return result;
+} /**
+ * Shared context threaded through the batch apply loops. Bundles the state
+ * both loops mutate (result/actions/checksums) with the immutable run
+ * parameters — the previous 12–13 positional parameters let call sites
+ * drift (the named-apply state-wipe bug) and made every new parameter a
+ * two-signature change.
+ */
+interface ApplyBatchContext {
+  config: FurnaceConfigData;
+  furnacePaths: ReturnType<typeof getFurnacePaths>;
+  state: FurnaceStateData;
+  engineDir: string;
+  ftlDir: string;
+  dryRun: boolean;
+  /** Mutated by both loops: results, dry-run actions, run checksums. */
+  result: ApplyAccumulator;
+  allActions: DryRunAction[];
+  newChecksums: Record<string, string>;
+  rollbackJournal?: RollbackJournal | undefined;
+  componentName?: string | undefined;
 }

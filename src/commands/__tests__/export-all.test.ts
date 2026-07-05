@@ -67,10 +67,16 @@ vi.mock('../../core/patch-lint.js', () => ({
   resolvePatchSizeTier: vi.fn().mockReturnValue({ tier: 'general' }),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn().mockResolvedValue(true),
-  ensureDir: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock('../../utils/fs.js', () => {
+  // Shared instance: the manifest probes moved to pathExistsStrict, and the
+  // tests toggle existence via pathExists — keep both names in lockstep.
+  const pathExists = vi.fn().mockResolvedValue(true);
+  return {
+    pathExists,
+    pathExistsStrict: pathExists,
+    ensureDir: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock('../../core/furnace-config.js', () => ({
   collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set())),

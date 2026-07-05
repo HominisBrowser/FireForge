@@ -71,6 +71,35 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
       '`<objdir>/release/build/gecko-profiler-*/out/gecko/bindings.rs`.',
   },
   {
+    // Firefox declares per-release toolchain minimums in-tree
+    // (`build/moz.configure/bindgen.configure` for cbindgen; mozboot's
+    // MINIMUM_RUST_VERSION for rustc/cargo), and a source hop can move
+    // them. The 152.0b7 → 153.0b8 source-refresh drill hit exactly this:
+    // the first post-hop build died ~8s into `mach configure` with
+    // "ERROR: cbindgen version 0.29.1 is too old. At least version
+    // 0.29.4 is required." — and mach's own remediation text names
+    // "./mach bootstrap", the wrong entry point for a FireForge-managed
+    // repo. Pattern matches configure's cbindgen die() shape.
+    pattern: /\bversion [\d.]+ is too old\.?\s+At least version [\d.]+ is required/i,
+    hint:
+      'A toolchain component is older than the minimum this Firefox source declares — typical ' +
+      'after "fireforge download --force" moved the engine to a new Firefox major version. ' +
+      'Run "fireforge bootstrap" (not mach\'s suggested "./mach bootstrap") to update the ' +
+      'toolchain, then retry the build.',
+  },
+  {
+    // Same family, rust.configure's die() shapes: "Rust compiler {v} is
+    // too old." / "Cargo package manager {v} is too old." — the minimum
+    // is only named further down that message, so the pattern keys on
+    // the first line.
+    pattern: /\b(?:Rust compiler|Cargo package manager) [\d.]+(?:[\w.-]*)? is too old/i,
+    hint:
+      "The Rust toolchain is older than the minimum this Firefox source declares (mozboot's " +
+      'MINIMUM_RUST_VERSION) — typical after "fireforge download --force" moved the engine to a ' +
+      'new Firefox major version. Run "fireforge bootstrap" to update the toolchain, then retry ' +
+      'the build.',
+  },
+  {
     // When `mach build` fails mid-compile, mach's own shutdown pipeline still
     // runs its trailing "Config object not found by mach. / Configure
     // complete! / Be sure to run |mach build|..." summary on the way out.

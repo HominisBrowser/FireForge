@@ -555,6 +555,118 @@ describe('runCheckJs', () => {
     }
   });
 
+  it('accepts ChromeUtils.predictRemoteTypeForURI out of the box under strict checkJs', async () => {
+    // 152.0b7 → 153.0b8 source-refresh drill: porting consumer code to
+    // the Firefox 153 API tripped checkjs-type-error because the shim's
+    // ChromeUtils predated the member — while whole-project `fireforge
+    // typecheck` (engine tools/@types Gecko types) accepted the call.
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-predict-'));
+    const filePath = join(tmpDir, 'Predict.sys.mjs');
+    await writeFile(
+      filePath,
+      [
+        '/**',
+        ' * @param {string} uriString - URI to classify',
+        ' * @returns {string | null}',
+        ' */',
+        'export function predict(uriString) {',
+        '  return ChromeUtils.predictRemoteTypeForURI(uriString, { forNewTab: true });',
+        '}',
+        'export const noOptions = ChromeUtils.predictRemoteTypeForURI(null);',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(tmpDir, new Set(['Predict.sys.mjs']), undefined, undefined, {
+        strict: true,
+      });
+      expect(issues.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('lets an extra shim ADD members to shim globals via interface merging', async () => {
+    // The drill's second half: `ChromeUtilsShim` is a mergeable global
+    // interface, so a project extra shim can extend `ChromeUtils` without
+    // the duplicate-identifier error a second `declare var ChromeUtils`
+    // produces. The fixture adds a novel member; the correct use must
+    // pass (proving no duplicate-identifier / missing-member diagnostics)
+    // and a misuse must still be flagged (proving the member is TYPED by
+    // the merge, not swallowed by a suppressed cannot-find-name code).
+    const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpProject = await mkdtemp(join(tmpdir(), 'ff-checkjs-merge-'));
+    const tmpEngine = join(tmpProject, 'engine');
+    await mkdir(tmpEngine);
+    await writeFile(
+      join(tmpEngine, 'GoodUse.sys.mjs'),
+      [
+        '/** @returns {number} */',
+        'export function ranking() {',
+        "  return ChromeUtils.novelRanker('https://example.com/');",
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(
+      join(tmpEngine, 'BadUse.sys.mjs'),
+      [
+        '/** @returns {string} */',
+        'export function label() {',
+        "  return ChromeUtils.novelRanker('https://example.com/');",
+        '}',
+        '',
+      ].join('\n')
+    );
+    const shimPath = join(tmpProject, 'extra.d.ts');
+    await writeFile(
+      shimPath,
+      ['interface ChromeUtilsShim {', '  novelRanker(uri: string): number;', '}', ''].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+    mockReadText.mockImplementation(async (p) => {
+      const { readFile } = await import('node:fs/promises');
+      return readFile(p, 'utf8');
+    });
+
+    try {
+      const goodIssues = await runCheckJs(
+        tmpEngine,
+        new Set(['GoodUse.sys.mjs']),
+        'extra.d.ts',
+        tmpProject
+      );
+      expect(goodIssues.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+
+      const badIssues = await runCheckJs(
+        tmpEngine,
+        new Set(['BadUse.sys.mjs']),
+        'extra.d.ts',
+        tmpProject
+      );
+      expect(
+        badIssues.some((i) => /Type 'number' is not assignable to type 'string'/.test(i.message))
+      ).toBe(true);
+    } finally {
+      await rm(tmpProject, { recursive: true, force: true });
+    }
+  });
+
   it('returns a clear error when the extra shim file is missing', async () => {
     const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');

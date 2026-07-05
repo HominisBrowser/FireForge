@@ -10,7 +10,7 @@ import {
 } from '../errors/git.js';
 import { elapsedSince } from '../utils/elapsed.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, removeFile } from '../utils/fs.js';
+import { pathExists, pathExistsStrict, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
 import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
@@ -33,7 +33,7 @@ import { getWorkingTreeStatus } from './git-status.js';
  */
 export async function isGitRepository(dir: string): Promise<boolean> {
   const gitDir = join(dir, '.git');
-  return pathExists(gitDir);
+  return pathExistsStrict(gitDir);
 }
 
 /**

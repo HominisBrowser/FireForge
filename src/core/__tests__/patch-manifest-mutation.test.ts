@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { ensureDir } from '../../utils/fs.js';
+import { withPatchDirectoryLock } from '../patch-lock.js';
 import {
   addPatchToManifest,
   loadPatchesManifest,
@@ -23,6 +24,7 @@ import {
   rewriteStagedDependencyOwners,
   savePatchesManifest,
 } from '../patch-manifest-io.js';
+import { stampPatchVersions } from '../patch-manifest-query.js';
 
 interface PatchSetup {
   filename: string;
@@ -371,5 +373,63 @@ describe('addPatchToManifest (smoke)', () => {
     });
     const manifest = await loadPatchesManifest(patchesDir);
     expect(manifest?.patches.map((p) => p.order)).toEqual([1, 2]);
+  });
+});
+
+describe('stampPatchVersions', () => {
+  let projectRoot: string;
+  let patchesDir: string;
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-mf-stamp-');
+    patchesDir = join(projectRoot, 'patches');
+  });
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it('stamps sourceVersion and sourceProduct on the selected rows', async () => {
+    await seed(patchesDir, [
+      { filename: '001-infra-a.patch', order: 1, body: 'a' },
+      { filename: '002-infra-b.patch', order: 2, body: 'b' },
+    ]);
+    await stampPatchVersions(patchesDir, ['002-infra-b.patch'], '141.0.0esr', 'firefox-esr');
+    const manifest = await loadPatchesManifest(patchesDir);
+    expect(manifest?.patches[0]?.sourceEsrVersion).toBe('140.9.0esr');
+    expect(manifest?.patches[1]?.sourceEsrVersion).toBe('141.0.0esr');
+  });
+
+  it('waits for the patch-directory lock before mutating the manifest', async () => {
+    await seed(patchesDir, [{ filename: '001-infra-a.patch', order: 1, body: 'a' }]);
+
+    let releaseLock: () => void = () => undefined;
+    const lockHeld = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    let lockAcquired: () => void = () => undefined;
+    const lockAcquiredPromise = new Promise<void>((resolve) => {
+      lockAcquired = resolve;
+    });
+
+    const holder = withPatchDirectoryLock(patchesDir, async () => {
+      lockAcquired();
+      await lockHeld;
+    });
+    await lockAcquiredPromise;
+
+    const stamp = stampPatchVersions(patchesDir, ['001-infra-a.patch'], '141.0.0esr');
+
+    // Give the stamp time to run if it were (incorrectly) not honoring the
+    // lock; the manifest must still carry the old version while it is held.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const during = await loadPatchesManifest(patchesDir);
+    expect(during?.patches[0]?.sourceEsrVersion).toBe('140.9.0esr');
+
+    releaseLock();
+    await holder;
+    await stamp;
+
+    const after = await loadPatchesManifest(patchesDir);
+    expect(after?.patches[0]?.sourceEsrVersion).toBe('141.0.0esr');
   });
 });

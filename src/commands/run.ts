@@ -161,7 +161,7 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
 
   info('Launching browser...\n');
 
-  const exitCode = await run(paths.engine);
+  const exitCode = await run(paths.engine, options.headless ? ['--headless'] : []);
 
   // Exit-code whitelist:
   //   0   — clean shutdown
@@ -271,12 +271,26 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     findings.push({ stream, line });
   };
 
+  // A headed smoke window on a developer desktop absorbs live input:
+  // during the drill a human interacted with the window mid-run, the
+  // password-manager import scan probed an unreadable Chrome profile
+  // dir, and the resulting console errors failed the smoke run looking
+  // like a product regression. CI hosts (CI env var set) are assumed
+  // display-free/unattended, so the notice stays quiet there.
+  if (!options.headless && !process.env['CI']) {
+    warn(
+      'Headed smoke window: keyboard/mouse input during the window will contaminate the ' +
+        'console capture and can fail the run. Pass --headless (or run on an unattended host) ' +
+        'for reliable smoke checks.'
+    );
+  }
+
   info(`Launching browser (smoke-exit after ${String(smokeExit)}s)...\n`);
 
   const startedAt = Date.now();
   let result;
   try {
-    result = await runMachSmoke(['run'], engineDir, {
+    result = await runMachSmoke(options.headless ? ['run', '--headless'] : ['run'], engineDir, {
       smokeTimeoutMs,
       onStdoutLine: (line) => {
         handleLine('stdout', line);
@@ -435,6 +449,10 @@ export function registerRun(
       '--capture-console <file>',
       'Mirror captured console output to <file> for post-exit inspection.'
     )
+    .option(
+      '--headless',
+      'Launch the browser with --headless. Recommended for --smoke-exit on a shared desktop: input into a headed smoke window contaminates the console capture.'
+    )
     .action(
       withErrorHandling(
         async (options: {
@@ -442,6 +460,7 @@ export function registerRun(
           consoleAllow?: string[];
           consoleAllowFile?: string;
           captureConsole?: string;
+          headless?: boolean;
         }) => {
           await runCommand(getProjectRoot(), pickDefined(options));
         }

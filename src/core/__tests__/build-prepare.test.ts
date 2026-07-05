@@ -461,6 +461,38 @@ describe('prepareBuildEnvironment auto-configure', () => {
     expect(runMachCapture).toHaveBeenCalledWith(['configure'], '/project/engine');
   });
 
+  it('appends the fireforge bootstrap hint when configure fails on a moved toolchain minimum', async () => {
+    // 152.0b7 → 153.0b8 source-refresh drill: the auto-configure path
+    // must feed its captured output through the same hint translator the
+    // protected build dispatch uses, so the cbindgen too-old failure
+    // names `fireforge bootstrap` here too (mach's own remediation text
+    // suggests "./mach bootstrap", the wrong tool for a managed repo).
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMachCapture } = await import('../mach.js');
+
+    vi.mocked(git).mockResolvedValue('browser/moz.build\n');
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(runMachCapture).mockResolvedValue({
+      stdout: '',
+      stderr:
+        'ERROR: cbindgen version 0.29.1 is too old. At least version 0.29.4 is required.\n' +
+        "Please update using 'cargo install cbindgen --force' or running\n" +
+        "'./mach bootstrap', after removing the existing executable.\n",
+      exitCode: 1,
+    });
+
+    await expect(
+      prepareBuildEnvironment('/project', paths, config, {
+        previousBaseline: {
+          engineHeadSha: 'abc',
+          builtAt: new Date().toISOString(),
+          binaryName: 'testbrowser',
+        },
+      })
+    ).rejects.toThrow(/Hint: .*"fireforge bootstrap"/);
+  });
+
   it('surfaces mach configure exceptions and stops building', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');

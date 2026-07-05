@@ -62,6 +62,18 @@ vi.mock('../../core/build-audit.js', () => ({
   ),
 }));
 
+// The probe itself is covered by src/core/__tests__/toolchain-preflight.test.ts;
+// here it defaults to "no mismatch" so every existing command test proceeds,
+// and the dedicated preflight tests below override per-case. The message
+// formatter stays real so the fail-fast assertion pins the actual wording.
+vi.mock('../../core/toolchain-preflight.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/toolchain-preflight.js')>();
+  return {
+    ...actual,
+    runToolchainPreflight: vi.fn(() => Promise.resolve([])),
+  };
+});
+
 import { validateBrandOverride } from '../../core/brand-validation.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
@@ -74,6 +86,7 @@ import {
   hasRunnableBundle,
   runMach,
 } from '../../core/mach.js';
+import { runToolchainPreflight } from '../../core/toolchain-preflight.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, verbose } from '../../utils/logger.js';
 import { buildCommand, registerBuild } from '../build.js';
@@ -453,6 +466,34 @@ describe('buildCommand', () => {
     // The success banner must not have been emitted either — a user
     // reading only the trailing output should not see "Build completed".
     expect(outro).not.toHaveBeenCalled();
+  });
+
+  it('fails fast naming fireforge bootstrap when the toolchain preflight reports a mismatch', async () => {
+    // 152.0b7 → 153.0b8 source-refresh drill: the post-hop build died
+    // ~8s into mach configure on a moved cbindgen minimum. The preflight
+    // must abort BEFORE any expensive pre-build work (Furnace apply,
+    // mozconfig, mach), with `fireforge bootstrap` as the named remedy.
+    vi.mocked(runToolchainPreflight).mockResolvedValueOnce([
+      {
+        tool: 'cbindgen',
+        hostVersion: '0.29.1',
+        minimumVersion: '0.29.4',
+        declaredIn: 'build/moz.configure/bindgen.configure',
+      },
+    ]);
+
+    await expect(buildCommand('/project', {})).rejects.toThrow(/fireforge bootstrap/);
+
+    expect(prepareBuildEnvironment).not.toHaveBeenCalled();
+    expect(build).not.toHaveBeenCalled();
+    expect(buildUI).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to the build when the toolchain preflight passes (fail-soft default)', async () => {
+    await buildCommand('/project', {});
+
+    expect(runToolchainPreflight).toHaveBeenCalledWith('/project/engine');
+    expect(build).toHaveBeenCalled();
   });
 });
 

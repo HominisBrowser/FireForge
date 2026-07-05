@@ -88,12 +88,25 @@ Queue maintenance lives under `fireforge patch`: `patch compact` closes ordinal 
 new one as a single transaction — including staged-dependency owner rewrites — with
 `--dry-run` support.
 
-`fireforge test` runs multiple test paths as sequential per-file shards by default
-(`--no-shard` restores one combined invocation), retries recognized harness crashes up to
-`--harness-retries <n>` times (default 2), and can publish a perf-sample artifact path to
-the harness via `--perf-samples <path>` (exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
+`fireforge test <directory>` runs exactly that directory: the argument is normalized with a
+trailing `/` so mach's prefix-based path matching cannot silently sweep in sibling
+directories sharing the name prefix (excluded siblings are echoed with their test-file
+counts). Multiple test paths run as sequential per-file shards by default — announced with
+a notice, since isolated instances do not exercise cross-file state (`--no-shard` restores
+one combined invocation). Recognized harness crashes retry up to `--harness-retries <n>`
+times (default 2), and `--perf-samples <path>` publishes a perf-sample artifact path to the
+harness (exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
 Design tokens are managed with `fireforge token add`; pass `--create-category` to declare a
 new category banner and insert the token in one step.
+
+For unattended smoke checks, `fireforge run --smoke-exit <s> --headless` launches the
+browser headless — a headed smoke window on a shared desktop absorbs live input, which
+contaminates the console capture (headed non-CI launches print a warning saying so).
+
+Per-patch lint type-checks plain Firefox JS against a built-in Firefox-globals shim that
+tracks upstream WebIDL additions per release; a project's `patchLint.checkJsExtraShim` can
+add members to the structured shim globals via TypeScript interface merging (e.g.
+`interface ChromeUtilsShim { newApi(): any }`).
 
 ## Rebasing Firefox Source
 

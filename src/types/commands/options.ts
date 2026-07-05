@@ -408,6 +408,13 @@ export interface RunOptions {
    * inspect the raw stream after smoke-exit returns.
    */
   captureConsole?: string;
+  /**
+   * Launch the browser with `--headless` (forwarded to the binary via
+   * `mach run`). Primarily for smoke mode on shared desktops: a headed
+   * smoke window absorbs live keyboard/mouse input, and the resulting
+   * console errors contaminate the capture and can fail the run.
+   */
+  headless?: boolean;
 }
 
 /**

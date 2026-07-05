@@ -26,6 +26,7 @@ import {
 } from '../core/marionette-preflight.js';
 import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
 import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
+import { analyzeTestPathScopes, formatScopeNotice } from '../core/test-path-scope.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
@@ -477,11 +478,27 @@ export async function testCommand(
 
   appendMarionetteForwardingArgs(extraArgs, options, forwardedPort);
 
+  // Directory arguments mean EXACTLY that directory: mozbuild's test
+  // resolver matches paths by string prefix, so a bare directory arg
+  // silently swept in prefix-named siblings (152.0b7 → 153.0b8 drill:
+  // `…/test/hominis` also ran `…/test/hominis-tiles`, 1224 tests instead
+  // of ~200, with no indication the scope widened). The dispatch form
+  // gains a trailing `/` (making the prefix match exact) and any
+  // excluded prefix-siblings are echoed so the narrowed scope is
+  // visible. Classification above intentionally used the un-slashed
+  // forms; only the mach dispatch needs the exact-match shape.
+  const scopes = await analyzeTestPathScopes(paths.engine, normalizedPaths);
+  const dispatchPaths = scopes.map((scope) => scope.dispatchPath);
+  for (const scope of scopes) {
+    const notice = formatScopeNotice(scope);
+    if (notice) info(notice);
+  }
+
   // xpcshell appdir auto-injection happens per harness invocation inside
   // `runTestsWithRetries` (src/commands/test-run.ts) so sharded runs probe
   // the manifest for each file individually. See src/core/xpcshell-appdir.ts
   // for the full motivation.
-  logTestSelection(normalizedPaths);
+  logTestSelection(dispatchPaths);
 
   const perfSampleEnv = buildPerfSampleEnv(
     projectRoot,
@@ -505,9 +522,19 @@ export async function testCommand(
   // Multi-file requests shard into sequential single-file harness runs by
   // default (field report C3): one shared mochitest profile across files
   // bleeds pref/media-query state into later files. --no-shard restores
-  // the combined invocation.
-  if (normalizedPaths.length > 1 && options.shard !== false) {
-    await runShardedTests(runCtx, normalizedPaths, (outcome, path) =>
+  // the combined invocation. The default must not be SILENT (drill
+  // finding: a two-file cross-file pollution repro "passed" because the
+  // headed comparison run was sharded without saying so, briefly
+  // misattributing a suite-context bug to an upstream headless
+  // regression), so a one-line notice states what sharding does and
+  // does not exercise.
+  if (dispatchPaths.length > 1 && options.shard !== false) {
+    info(
+      `Sharding: running ${dispatchPaths.length} test paths in isolated browser instances ` +
+        '(one mach invocation per path). Cross-file state is NOT exercised — pass --no-shard ' +
+        'for a combined single-instance run.'
+    );
+    await runShardedTests(runCtx, dispatchPaths, (outcome, path) =>
       diagnoseShardOutcome(outcome, path, projectConfig.binaryName, postRebuildContext)
     );
     return;
@@ -515,7 +542,7 @@ export async function testCommand(
 
   let outcome: TestRunOutcome;
   try {
-    outcome = await runTestsWithRetries(runCtx, normalizedPaths);
+    outcome = await runTestsWithRetries(runCtx, dispatchPaths);
   } catch (error: unknown) {
     throw new BuildError(
       'Test process failed to start',
@@ -584,7 +611,7 @@ export function registerTest(
     )
     .option(
       '--no-shard',
-      'Run multiple test paths in one combined mach invocation instead of sequential per-file shards'
+      'Run multiple test paths in one combined mach invocation instead of sequential per-file shards (isolated instances do not exercise cross-file state, so use this to reproduce cross-file pollution bugs)'
     )
     .option(
       '--perf-samples <path>',
@@ -600,6 +627,24 @@ export function registerTest(
         }
         return n;
       }
+    )
+    .addHelpText(
+      'after',
+      [
+        '',
+        '[paths...] semantics: a directory argument selects EXACTLY that',
+        'directory. FireForge normalizes it with a trailing "/" before',
+        'handing it to mach, because mach resolves test paths by string',
+        'prefix and a bare directory name would silently sweep in sibling',
+        'directories sharing the prefix (e.g. foo also running foo-extras).',
+        'When such siblings exist, the excluded directories are listed with',
+        'their test-file counts; pass them as separate paths to include them.',
+        '',
+        'Multiple paths shard into sequential isolated harness runs (one',
+        'browser instance per path) by default, which does not exercise',
+        'cross-file state; --no-shard restores the combined single-instance',
+        'invocation.',
+      ].join('\n')
     )
     .action(
       withErrorHandling(

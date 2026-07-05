@@ -7,6 +7,10 @@
  * All shared library code propagates errors via CommandError or
  * FireForgeError — never by terminating the process directly.
  *
+ * The signal pipeline below composes several lifecycle modules; the
+ * invariants it upholds (and who owns what) are documented in
+ * docs/lifecycle-invariants.md, and the composed behavior is pinned by
+ * src/core/__tests__/signal-compound-mutation-scenario.test.ts.
  */
 
 import { installBrokenPipeHandler, main } from '../src/cli.js';

@@ -26,6 +26,23 @@ export const SHIM_FILENAME = '__fireforge_firefox_globals.d.ts';
  * for the most common Mozilla APIs. Types are intentionally loose
  * (`any`) because full Firefox type coverage is out of scope.
  *
+ * Structured globals (`ChromeUtils`, `Localization`) are declared via
+ * named global interfaces (`ChromeUtilsShim`, `LocalizationShim`, …)
+ * rather than closed object-literal types, so a project's extra shim
+ * (`patchLint.checkJsExtraShim` / `typecheck.extraShim`) can ADD members
+ * through TypeScript interface merging:
+ *
+ *   // my-extra-shim.d.ts
+ *   interface ChromeUtilsShim {
+ *     someNewApi(arg: string): unknown;
+ *   }
+ *
+ * (A second `declare var ChromeUtils` in the extra shim remains a
+ * duplicate-identifier error by design — merge the interface instead.)
+ * The member lists track upstream WebIDL additions per Firefox release
+ * (`dom/chrome-webidl/ChromeUtils.webidl` for ChromeUtils); when a new
+ * release adds a commonly-patched member, add a loose signature here.
+ *
  * Notable patterns that require shimming:
  * - `const lazy = {};` + `ChromeUtils.defineESModuleGetters(lazy, { ... })`
  *   populates `lazy` at runtime; we declare it as `Record<string, any>`.
@@ -41,7 +58,9 @@ export const SHIM_FILENAME = '__fireforge_firefox_globals.d.ts';
  */
 const FIREFOX_GLOBALS_SHIM = `
 declare var Services: any;
-declare var ChromeUtils: {
+// Extensible via interface merging from a project extra shim — see the
+// module doc comment in typecheck-shim.ts.
+interface ChromeUtilsShim {
   defineESModuleGetters(target: any, modules: Record<string, string>): void;
   importESModule(specifier: string): any;
   import(specifier: string): any;
@@ -50,7 +69,12 @@ declare var ChromeUtils: {
   generateQI(interfaces: any[]): Function;
   getClassName(obj: any, unwrap?: boolean): string;
   isClassInfo(obj: any): boolean;
-};
+  // Firefox 153, dom/chrome-webidl/ChromeUtils.webidl: two overloads
+  // (URI string / nsIURI) with a PredictRemoteTypeOptions dictionary —
+  // collapsed into one loose signature per the shim's pragmatic posture.
+  predictRemoteTypeForURI(uri: string | object | null, options?: object): string | null;
+}
+declare var ChromeUtils: ChromeUtilsShim;
 declare var Cu: any;
 declare var Ci: any;
 declare var Cc: any;
@@ -67,23 +91,27 @@ declare var gNavigatorBundle: any;
 declare var AppConstants: any;
 // Fluent localization — a stable chrome global. Members stay loose (any),
 // but the constructor shape is declared so "new Localization([...])" and
-// "new Localization([...], true)" typecheck without a local cast.
-declare var Localization: {
+// "new Localization([...], true)" typecheck without a local cast. Both
+// interfaces are extensible via interface merging from a project extra
+// shim, same as ChromeUtilsShim.
+interface LocalizationInstanceShim {
+  formatValue(id: string, args?: Record<string, unknown>): any;
+  formatValues(keys: any[]): any;
+  formatMessages(keys: any[]): any;
+  formatValueSync(id: string, args?: Record<string, unknown>): any;
+  formatValuesSync(keys: any[]): any;
+  formatMessagesSync(keys: any[]): any;
+  addResourceIds(ids: Array<string | { path: string; optional?: boolean }>): void;
+  removeResourceIds(ids: string[]): number;
+  setAsync(): void;
+}
+interface LocalizationShim {
   new (
     resourceIds: Array<string | { path: string; optional?: boolean }>,
     sync?: boolean
-  ): {
-    formatValue(id: string, args?: Record<string, unknown>): any;
-    formatValues(keys: any[]): any;
-    formatMessages(keys: any[]): any;
-    formatValueSync(id: string, args?: Record<string, unknown>): any;
-    formatValuesSync(keys: any[]): any;
-    formatMessagesSync(keys: any[]): any;
-    addResourceIds(ids: Array<string | { path: string; optional?: boolean }>): void;
-    removeResourceIds(ids: string[]): number;
-    setAsync(): void;
-  };
-};
+  ): LocalizationInstanceShim;
+}
+declare var Localization: LocalizationShim;
 
 // Shorthand ambient modules — exports from matching URL imports are loosely typed,
 // avoiding noResolve empty-graph namespaces. (Named member access broke when we tried
@@ -175,7 +203,10 @@ async function inlineTripleSlashReferences(
  * direction is intentional (declarations later in concat order
  * augment earlier ones), so a project that wants to refine `Services`
  * with a more specific type can do so by declaring it in the extra
- * shim. Any triple-slash `/// <reference path="…">` directives inside the
+ * shim, and members can be ADDED to the structured globals by merging
+ * their interfaces (`interface ChromeUtilsShim { newMember(): any }` —
+ * see the module doc comment). Any triple-slash
+ * `/// <reference path="…">` directives inside the
  * extra shim are inlined (resolved against the extra shim's own directory)
  * so they are not silently dropped at the synthetic shim path.
  *

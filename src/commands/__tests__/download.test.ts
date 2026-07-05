@@ -9,6 +9,7 @@ vi.mock('../../core/config.js', () => ({
   }),
   getProjectPaths: vi.fn(),
   updateState: vi.fn().mockResolvedValue(undefined),
+  loadState: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../../core/firefox.js', () => ({
@@ -510,5 +511,69 @@ describe('downloadCommand', () => {
       'a'.repeat(64),
       expect.any(Function)
     );
+  });
+
+  describe('major-version-hop toolchain notice', () => {
+    const hopNotice = expect.stringContaining('fireforge bootstrap') as unknown as string;
+
+    it('prints the notice when --force hops the Firefox major version (152 → 153 drill)', async () => {
+      const configMod = await import('../../core/config.js');
+      vi.mocked(configMod.loadConfig).mockResolvedValueOnce({
+        firefox: { version: '153.0b8', product: 'firefox-beta' },
+        name: 'Fire',
+        vendor: 'Forge',
+        appId: 'org.example.fireforge',
+        binaryName: 'fireforge',
+      });
+      vi.mocked(configMod.loadState).mockResolvedValueOnce({ downloadedVersion: '152.0b7' });
+
+      await downloadCommand('/project', { force: true });
+
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('152 → 153'));
+      expect(info).toHaveBeenCalledWith(hopNotice);
+    });
+
+    it('stays quiet on a same-version re-download', async () => {
+      const configMod = await import('../../core/config.js');
+      vi.mocked(configMod.loadState).mockResolvedValueOnce({ downloadedVersion: '140.9.0esr' });
+
+      await downloadCommand('/project', { force: true });
+
+      expect(info).not.toHaveBeenCalledWith(hopNotice);
+    });
+
+    it('stays quiet on a first download with no recorded state', async () => {
+      vi.mocked(pathExistsStrict).mockResolvedValue(false);
+      vi.mocked(pathExists).mockResolvedValue(false);
+
+      await downloadCommand('/project', {});
+
+      expect(info).not.toHaveBeenCalledWith(hopNotice);
+    });
+
+    it('prints the notice on the resume path when state predates the configured major', async () => {
+      const configMod = await import('../../core/config.js');
+      vi.mocked(configMod.loadConfig).mockResolvedValueOnce({
+        firefox: { version: '153.0b8', product: 'firefox-beta' },
+        name: 'Fire',
+        vendor: 'Forge',
+        appId: 'org.example.fireforge',
+        binaryName: 'fireforge',
+      });
+      vi.mocked(configMod.loadState).mockResolvedValueOnce({ downloadedVersion: '152.0b7' });
+      // No --force + a HEAD probe failing with the unborn-branch shape
+      // routes into the resume path.
+      vi.mocked(getHead)
+        .mockRejectedValueOnce(
+          new Error(
+            "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree."
+          )
+        )
+        .mockResolvedValue('resumed-commit');
+
+      await downloadCommand('/project', {});
+
+      expect(info).toHaveBeenCalledWith(hopNotice);
+    });
   });
 });

@@ -11,6 +11,7 @@ import {
   getLicenseHeader,
   hasAnyLicenseHeader,
   hasAnyLicenseHeaderAnyStyle,
+  hasUpstreamMplBlockHeader,
 } from './license-headers.js';
 import { invokePatchLintCheckJs } from './patch-lint-checkjs.js';
 import { lintChromeScriptJsDocForFile } from './patch-lint-chrome-jsdoc.js';
@@ -275,6 +276,16 @@ export async function lintNewFileHeaders(
     // standard Mozilla header on a JS file (e.g. one copied from upstream
     // browser/base/content) do not need `--skip-lint` to land it.
     if (license === 'MPL-2.0' && hasAnyLicenseHeader(content, style)) continue;
+    // Accept the verbatim upstream MPL block header on new JS files
+    // REGARDLESS of the project license: a file copied from the Firefox
+    // tree legitimately keeps Mozilla's header for provenance in an
+    // EUPL/GPL/0BSD project too. The carve-out above is gated on the
+    // project being MPL-2.0 itself, which made this documented case dead
+    // code for every other license — consumers carried repo-side audit
+    // workarounds (recorded 2026-07-04 in the Hominis FORGE.md). Only
+    // the block-comment form is accepted; the `// `-style MPL header is
+    // FireForge-generated, not upstream provenance.
+    if (style === 'js' && hasUpstreamMplBlockHeader(content)) continue;
 
     issues.push({
       file,

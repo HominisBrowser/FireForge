@@ -4,8 +4,8 @@
  * Pure parsing, content transformation, and lock management are in separate modules.
  */
 
-import { lstat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { lstat, readlink, realpath } from 'node:fs/promises';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import { PatchError } from '../errors/patch.js';
 import type { ImportSummary, PatchInfo, PatchResult } from '../types/commands/index.js';
@@ -192,34 +192,68 @@ async function validatePatchTargets(
   affectedFiles: string[],
   engineDir?: string
 ): Promise<void> {
+  // realpath the engine root once so containment is checked against the
+  // physical tree (the root itself may sit behind a symlink, e.g. /tmp on
+  // macOS). An unresolvable engine dir skips the symlink checks — a missing
+  // engine surfaces through `git apply --check` with a better message.
+  const engineRoot = engineDir ? await realpath(engineDir).catch(() => null) : null;
+
   for (const file of affectedFiles) {
     if (!isContainedRelativePath(file)) {
       throw new PatchError(`Patch targets a path outside engine/: ${file}`, patch.filename);
     }
 
-    // When the engine directory is known, verify that existing target paths
-    // are not symlinks pointing outside the engine tree. A crafted patch
-    // could otherwise write through a symlink to an arbitrary location.
-    if (engineDir) {
-      const targetPath = join(engineDir, file);
-      try {
-        const stats = await lstat(targetPath);
-        if (stats.isSymbolicLink()) {
-          const realPath = resolve(engineDir, file);
-          const resolvedEngine = resolve(engineDir);
-          if (!realPath.startsWith(resolvedEngine + '/') && realPath !== resolvedEngine) {
-            throw new PatchError(
-              `Patch targets a symlink that resolves outside engine/: ${file}`,
-              patch.filename
-            );
-          }
-        }
-      } catch (error: unknown) {
-        // File doesn't exist yet (new file) or stat fails — skip check
-        if (error instanceof PatchError) throw error;
+    // Verify that a write to the target would physically land inside the
+    // engine tree. A crafted patch could otherwise write through a symlink
+    // (the target itself, a dangling link, or a symlinked parent directory)
+    // to an arbitrary location.
+    if (engineDir && engineRoot) {
+      const destination = await resolvePatchWriteDestination(join(engineDir, file));
+      if (destination !== engineRoot && !destination.startsWith(engineRoot + sep)) {
+        throw new PatchError(
+          `Patch targets a path that resolves outside engine/ (symlink escape): ${file}`,
+          patch.filename
+        );
       }
     }
   }
+}
+
+/**
+ * Resolves where a write to `targetPath` would physically land, following
+ * symlinks on every path component that already exists.
+ *
+ * - Existing target: `realpath` resolves it fully.
+ * - Dangling symlink: `realpath` rejects it, but a write through the link
+ *   would still be created at the link target, so the target is resolved
+ *   against the link's (real) parent directory. The link target is taken
+ *   textually — a loop or nested dangling link fails at apply time anyway.
+ * - Not-yet-existing file: resolved against the nearest existing ancestor's
+ *   real path. Components below that ancestor do not exist, so they cannot
+ *   be symlinks and are appended verbatim.
+ */
+async function resolvePatchWriteDestination(targetPath: string): Promise<string> {
+  try {
+    return await realpath(targetPath);
+  } catch {
+    // Fall through: the path (or its symlink target) does not exist.
+  }
+
+  try {
+    const stats = await lstat(targetPath);
+    if (stats.isSymbolicLink()) {
+      const linkTarget = await readlink(targetPath);
+      return resolve(await resolvePatchWriteDestination(dirname(targetPath)), linkTarget);
+    }
+  } catch {
+    // The path component itself does not exist.
+  }
+
+  const parent = dirname(targetPath);
+  if (parent === targetPath) {
+    return targetPath;
+  }
+  return join(await resolvePatchWriteDestination(parent), basename(targetPath));
 }
 
 /**

@@ -107,6 +107,19 @@ const MODULE_THRESHOLDS = {
   'src/commands/patch/compact.ts': { lines: 88, branches: 75, functions: 85 },
   // xpcshell scaffold rename — filesystem rewrite helper for component rename.
   'src/commands/furnace/rename-xpcshell.ts': { lines: 100, branches: 80, functions: 100 },
+  // 0.35.0 edge modules — previously masked by the global threshold.
+  // Signal-deferred critical sections: the SIGINT/SIGTERM exit path
+  // depends on this registry behaving exactly as specified.
+  'src/core/signal-critical.ts': { lines: 98, branches: 95, functions: 80 },
+  // Bootstrap output pattern scanner + SDK-probe branching.
+  'src/commands/bootstrap-checks.ts': { lines: 95, branches: 90, functions: 95 },
+  // Destructive command: directory-recursion fallback, batch partial
+  // failures, and the Furnace-managed warnings must stay exercised.
+  'src/commands/discard.ts': { lines: 92, branches: 80, functions: 85 },
+  // Furnace compatibility validation incl. compose/CSS hygiene warnings.
+  'src/core/furnace-validate-compatibility.ts': { lines: 94, branches: 88, functions: 95 },
+  // Tar extraction preflight — rejects traversal names and escaping links.
+  'src/core/firefox-extract.ts': { lines: 90, branches: 85, functions: 85 },
 };
 
 function loadCoverageSummary() {

@@ -11,7 +11,7 @@ import { pipeline } from 'node:stream/promises';
 
 import { ChecksumMismatchError } from '../errors/download.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readJson, removeFile, writeJson } from '../utils/fs.js';
+import { pathExistsStrict, readJson, removeFile, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { createSiblingLockPath, withFileLock } from './file-lock.js';
 import type { ArchiveMetadata, ResolvedArchive } from './firefox-archive.js';
@@ -63,8 +63,8 @@ export async function ensureCachedArchive(
 
 async function cacheEntryExists(archive: ResolvedArchive, cacheDir: string): Promise<boolean> {
   return (
-    (await pathExists(join(cacheDir, archive.filename))) ||
-    (await pathExists(join(cacheDir, archive.metadataFilename)))
+    (await pathExistsStrict(join(cacheDir, archive.filename))) ||
+    (await pathExistsStrict(join(cacheDir, archive.metadataFilename)))
   );
 }
 
@@ -82,7 +82,10 @@ async function validateCachedArchive(
   const tarballPath = join(cacheDir, archive.filename);
   const metadataPath = join(cacheDir, archive.metadataFilename);
 
-  if (!(await pathExists(tarballPath)) || !(await pathExists(metadataPath))) {
+  // Deliberately outside the try/catch below: a permission error probing the
+  // cache must propagate instead of reading as "invalid cache" and triggering
+  // a re-download into a directory we cannot write anyway.
+  if (!(await pathExistsStrict(tarballPath)) || !(await pathExistsStrict(metadataPath))) {
     return false;
   }
 

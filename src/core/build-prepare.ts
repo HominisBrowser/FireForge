@@ -23,6 +23,7 @@ import {
 import { runFurnaceMutation } from './furnace-operation.js';
 import { cleanStories } from './furnace-stories.js';
 import { generateMozconfig, type MachCommandResult, runMachCapture } from './mach.js';
+import { explainMachError } from './mach-error-hints.js';
 
 /**
  * Result of the build preparation phase.
@@ -61,6 +62,25 @@ function extractMachConfigureError(result: MachCommandResult): string {
   const combined = `${result.stderr}\n${result.stdout}`.trim();
   if (!combined) return '';
   return combined.split('\n').slice(-40).join('\n').trim();
+}
+
+/**
+ * Builds the `BuildError` for a non-zero auto-configure exit: the output
+ * tail (so the underlying mozbuild failure survives), any matched
+ * mach-error hints (so e.g. a toolchain minimum that moved with a source
+ * hop names `fireforge bootstrap` on this path too, exactly like the
+ * protected build dispatch), and the stop rationale.
+ */
+function buildConfigureFailureError(captured: MachCommandResult): BuildError {
+  const detail = extractMachConfigureError(captured);
+  const hints = explainMachError(`${captured.stderr}\n${captured.stdout}`);
+  return new BuildError(
+    `Backend regeneration failed: mach configure exited with code ${captured.exitCode}.` +
+      (detail ? `\n\nmach configure output (tail):\n${detail}` : '') +
+      (hints.length > 0 ? `\n\n${hints.map((hint) => `Hint: ${hint}`).join('\n')}` : '') +
+      '\n\nBuild stopped because continuing would hide the real configure failure.',
+    'mach configure'
+  );
 }
 
 /**
@@ -130,14 +150,9 @@ export async function prepareBuildEnvironment(
         if (exitCode !== 0) {
           configureSpinner.error(`mach configure failed with exit code ${exitCode}`);
           // Surface the underlying mozbuild error (e.g. UnsortedError) instead
-          // of a bare exit code — the generic message hid the actual cause.
-          const detail = extractMachConfigureError(captured);
-          throw new BuildError(
-            `Backend regeneration failed: mach configure exited with code ${exitCode}.` +
-              (detail ? `\n\nmach configure output (tail):\n${detail}` : '') +
-              '\n\nBuild stopped because continuing would hide the real configure failure.',
-            'mach configure'
-          );
+          // of a bare exit code — the generic message hid the actual cause —
+          // plus any matched mach-error hints (see the helper).
+          throw buildConfigureFailureError(captured);
         } else {
           configureSpinner.stop('Backend regenerated successfully (mach configure exit code 0)');
           info('Backend regeneration succeeded; continuing with build.');

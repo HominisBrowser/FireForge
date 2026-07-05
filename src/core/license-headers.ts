@@ -141,6 +141,28 @@ export function hasAnyLicenseHeader(content: string, style: CommentStyle): boole
 }
 
 /**
+ * Returns true if `content` starts with the verbatim upstream Mozilla
+ * MPL-2.0 block header (`/* This Source Code Form … *\/`), optionally
+ * preceded by editor-directive comments — the exact shape a JS file
+ * copied from the Firefox source tree carries.
+ *
+ * Deliberately independent of the project license: a new JS file that
+ * legitimately keeps its upstream MPL block header (copied-from-upstream
+ * provenance) is valid in an EUPL/GPL/0BSD project too. Before 0.35.0
+ * this acceptance only existed behind a `license === 'MPL-2.0'` gate in
+ * patch-lint, making it dead code for every other project license and
+ * forcing repo-side audit workarounds.
+ *
+ * @param content - File content to check
+ */
+export function hasUpstreamMplBlockHeader(content: string): boolean {
+  const blockHeader = getLicenseHeader('MPL-2.0', 'css');
+  return (
+    content.startsWith(blockHeader) || stripLeadingEditorDirectives(content).startsWith(blockHeader)
+  );
+}
+
+/**
  * Returns true if `content` starts with any known license header in any
  * comment style (js, css, hash).
  *

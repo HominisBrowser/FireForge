@@ -511,6 +511,78 @@ describe('lintNewFileHeaders', () => {
     );
     expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
   });
+
+  it('accepts the verbatim upstream MPL block header on a new JS file regardless of project license', async () => {
+    // Recorded 2026-07-04 in the consumer FORGE.md: the MPL block-header
+    // carve-out was gated on `license === 'MPL-2.0'`, making it dead code
+    // for an EUPL-1.2 project — a file legitimately copied from upstream
+    // Firefox (verbatim Mozilla header, anywhere in the tree, not just
+    // browser/branding/) had no sanctioned path.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
+        ` * License, v. 2.0. If a copy of the MPL was not distributed with this\n` +
+        ` * file, You can obtain one at http://mozilla.org/MPL/2.0/. */\n` +
+        `export const UPSTREAM = true;\n`
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders(
+      '/engine',
+      ['browser/base/content/upstream-derived.js'],
+      euplConfig
+    );
+    expect(issues.filter((i) => i.check === 'missing-license-header')).toHaveLength(0);
+  });
+
+  it('accepts the upstream MPL block header behind a leading editor directive', async () => {
+    // Mozilla's canonical layout puts `/* -*- Mode: … -*- */` on line 1
+    // with the MPL header on lines 2+ — the copied-from-upstream shape
+    // must pass with the directive in place.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      `/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */\n` +
+        `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
+        ` * License, v. 2.0. If a copy of the MPL was not distributed with this\n` +
+        ` * file, You can obtain one at http://mozilla.org/MPL/2.0/. */\n` +
+        `export const UPSTREAM = true;\n`
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders('/engine', ['toolkit/copied.mjs'], euplConfig);
+    expect(issues.filter((i) => i.check === 'missing-license-header')).toHaveLength(0);
+  });
+
+  it('still flags the line-comment MPL form on a non-MPL project (block form only)', async () => {
+    // The `// `-style MPL header is what FireForge generates for MPL
+    // projects — it is not upstream provenance, so on an EUPL project it
+    // stays an error and the operator is prompted for the EUPL header.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      '// This Source Code Form is subject to the terms of the Mozilla Public\n' +
+        '// License, v. 2.0. If a copy of the MPL was not distributed with this\n' +
+        '// file, You can obtain one at http://mozilla.org/MPL/2.0/.\n' +
+        'export const X = 1;\n'
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders('/engine', ['module.js'], euplConfig);
+    expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
+  });
+
+  it('does not extend the upstream-MPL carve-out to CSS files outside browser/branding/', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
+        ` * License, v. 2.0. If a copy of the MPL was not distributed with this\n` +
+        ` * file, You can obtain one at http://mozilla.org/MPL/2.0/. */\n` +
+        `.x { color: red; }\n`
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders('/engine', ['browser/themes/new.css'], euplConfig);
+    expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
+  });
 });
 
 describe('isTestFile', () => {

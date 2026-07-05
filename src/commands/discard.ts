@@ -162,12 +162,16 @@ export async function discardCommand(
   // directory-with-trailing-slash form so a path like `foo/bar` doesn't
   // accidentally match `foo/bar2/file`.
   if (!statusEntry) {
-    const dirPrefix = file.endsWith('/') ? file : `${file}/`;
+    // Normalize the operator's input once: `discard foo/` (or `foo//`) must
+    // not produce doubled slashes in the messages and prefix comparisons
+    // below, which all append `/` themselves.
+    const dirPath = file.replace(/\/+$/, '');
+    const dirPrefix = `${dirPath}/`;
     const dirEntries = statusEntries.filter(
       (entry) => entry.file.startsWith(dirPrefix) || entry.originalPath?.startsWith(dirPrefix)
     );
     if (dirEntries.length > 0) {
-      await discardDirectoryEntries(projectRoot, paths.engine, file, dirEntries, options);
+      await discardDirectoryEntries(projectRoot, paths.engine, dirPath, dirEntries, options);
       return;
     }
     throw new GeneralError(`File "${file}" has no changes to discard.`);

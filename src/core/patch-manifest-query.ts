@@ -8,6 +8,7 @@ import type { FirefoxProduct } from '../types/config.js';
 import { readText } from '../utils/fs.js';
 import { fileExistsInHead } from './git-file-ops.js';
 import { discoverPatches, getAllTargetFilesFromPatch } from './patch-files.js';
+import { withPatchDirectoryLock } from './patch-lock.js';
 import { loadPatchesManifest, mutatePatchRowsInManifest } from './patch-manifest-io.js';
 import { isNewFileInPatch } from './patch-parse.js';
 
@@ -141,6 +142,12 @@ export async function validatePatchIntegrity(
 /**
  * Stamps multiple patches with a new source version in a single
  * manifest read-modify-write cycle.
+ *
+ * Acquires the shared patch-directory lock for the read-modify-write, so a
+ * concurrent export/reorder/metadata update cannot interleave with the stamp.
+ * The lock is not reentrant — callers must NOT invoke this while already
+ * holding {@link withPatchDirectoryLock} on the same patches directory.
+ *
  * @param patchesDir - Path to the patches directory
  * @param filenames - Patch filenames to update
  * @param newVersion - Version string to set (e.g. "140.9.0esr")
@@ -151,20 +158,22 @@ export async function stampPatchVersions(
   newVersion: string,
   newProduct?: FirefoxProduct
 ): Promise<void> {
-  await mutatePatchRowsInManifest(patchesDir, filenames, (patch, rawPatch) => {
-    if (
-      patch.sourceEsrVersion !== newVersion ||
-      rawPatch['sourceVersion'] !== newVersion ||
-      (newProduct !== undefined && rawPatch['sourceProduct'] !== newProduct)
-    ) {
-      return {
-        set: {
-          sourceEsrVersion: newVersion,
-          sourceVersion: newVersion,
-          ...(newProduct !== undefined ? { sourceProduct: newProduct } : {}),
-        },
-      };
-    }
-    return null;
-  });
+  await withPatchDirectoryLock(patchesDir, () =>
+    mutatePatchRowsInManifest(patchesDir, filenames, (patch, rawPatch) => {
+      if (
+        patch.sourceEsrVersion !== newVersion ||
+        rawPatch['sourceVersion'] !== newVersion ||
+        (newProduct !== undefined && rawPatch['sourceProduct'] !== newProduct)
+      ) {
+        return {
+          set: {
+            sourceEsrVersion: newVersion,
+            sourceVersion: newVersion,
+            ...(newProduct !== undefined ? { sourceProduct: newProduct } : {}),
+          },
+        };
+      }
+      return null;
+    })
+  );
 }

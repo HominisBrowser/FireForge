@@ -57,6 +57,29 @@ vi.mock('../../core/build-baseline.js', () => ({
   readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
 }));
 
+// Default to the pass-through analysis (file args, no siblings) so every
+// existing dispatch assertion stays valid; the directory-scope tests
+// override per case. formatScopeNotice stays real so notice assertions
+// pin the actual wording. The fs-walking analysis itself is covered by
+// src/core/__tests__/test-path-scope.test.ts.
+vi.mock('../../core/test-path-scope.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/test-path-scope.js')>();
+  return {
+    ...actual,
+    analyzeTestPathScopes: vi.fn((_engineDir: string, paths: readonly string[]) =>
+      Promise.resolve(
+        paths.map((p) => ({
+          requestedPath: p,
+          dispatchPath: p,
+          isDirectory: false,
+          testFileCount: 0,
+          siblingPrefixMatches: [],
+        }))
+      )
+    ),
+  };
+});
+
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
   isSymlink: vi.fn(() => Promise.resolve(false)),
@@ -132,6 +155,7 @@ import {
   reportMarionettePreflight,
   runMarionettePreflight,
 } from '../../core/marionette-preflight.js';
+import { analyzeTestPathScopes } from '../../core/test-path-scope.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../../core/test-stale-check.js';
 import {
   findNearestXpcshellManifest,
@@ -141,7 +165,7 @@ import {
 import { GeneralError } from '../../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
-import { note, outro, success, warn } from '../../utils/logger.js';
+import { info, note, outro, success, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 
 describe('testCommand', () => {
@@ -556,6 +580,76 @@ describe('testCommand', () => {
         'browser/components/tests/unit/test_two.js',
       ])
     ).resolves.toBeUndefined();
+  });
+
+  it('announces per-file sharding and points at --no-shard (drill finding: silent shards mask cross-file state bugs)', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
+      stderr: '',
+    });
+
+    await testCommand('/project', [
+      'browser/components/tests/unit/test_one.js',
+      'browser/components/tests/unit/test_two.js',
+    ]);
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Cross-file state is NOT exercised — pass --no-shard')
+    );
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('running 2 test paths'));
+  });
+
+  it('does not announce sharding for a single path or under --no-shard', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
+      stderr: '',
+    });
+
+    await testCommand('/project', ['browser/components/tests/unit/test_one.js']);
+    await testCommand(
+      '/project',
+      ['browser/components/tests/unit/test_one.js', 'browser/components/tests/unit/test_two.js'],
+      { shard: false }
+    );
+
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('pass --no-shard'));
+  });
+
+  it('dispatches directory arguments with a trailing slash and echoes excluded prefix siblings', async () => {
+    // The drill's exact failure shape: `…/test/hominis` also ran the
+    // sibling `…/test/hominis-tiles` via mach's string-prefix match.
+    // The dispatch form must carry the trailing "/" (exact match) and
+    // the excluded sibling must be echoed with its test-file count.
+    vi.mocked(analyzeTestPathScopes).mockResolvedValueOnce([
+      {
+        requestedPath: 'browser/base/content/test/hominis',
+        dispatchPath: 'browser/base/content/test/hominis/',
+        isDirectory: true,
+        testFileCount: 198,
+        siblingPrefixMatches: [
+          { path: 'browser/base/content/test/hominis-tiles', testFileCount: 1026 },
+        ],
+      },
+    ]);
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
+      stderr: '',
+    });
+
+    await testCommand('/project', ['browser/base/content/test/hominis']);
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/hominis/'],
+      []
+    );
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Selected exactly browser/base/content/test/hominis/')
+    );
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('hominis-tiles/ (1026 test files)'));
   });
 
   it('normalizes engine-prefixed test paths and passes headless through to mach test', async () => {

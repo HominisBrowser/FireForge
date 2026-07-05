@@ -46,4 +46,17 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:package
+      # Cross-platform unit subset: the path/fs/git/process/lock helpers do
+      # the platform-sensitive work (path handling, spawning, git orchestration),
+      # so they run on every OS in the matrix, not just the Ubuntu quality gate.
+      - run: >-
+          npm test --
+          src/utils/__tests__/fs.test.ts
+          src/utils/__tests__/paths.test.ts
+          src/utils/__tests__/process.test.ts
+          src/core/__tests__/git.test.ts
+          src/core/__tests__/git-diff.test.ts
+          src/core/__tests__/git-index-lock.test.ts
+          src/core/__tests__/git-performance.test.ts
+          src/core/__tests__/file-lock.test.ts
       - run: npm test -- src/commands/__tests__/firefox-workflows.integration.test.ts

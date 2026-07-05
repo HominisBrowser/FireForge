@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
-import { getProjectPaths, loadConfig, updateState } from '../core/config.js';
+import { getProjectPaths, loadConfig, loadState, updateState } from '../core/config.js';
 import { withFileLock } from '../core/file-lock.js';
 import { downloadFirefoxSource, formatBytes } from '../core/firefox.js';
 import { getFurnacePaths, updateFurnaceState } from '../core/furnace-config.js';
@@ -19,6 +19,7 @@ import {
 import { restoreTrackedPath } from '../core/git-file-ops.js';
 import { getDirtyFiles } from '../core/git-status.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
+import { formatMajorVersionHopNotice } from '../core/toolchain-preflight.js';
 import { EngineExistsError, PartialEngineExistsError } from '../errors/download.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DownloadOptions } from '../types/commands/index.js';
@@ -272,16 +273,39 @@ async function downloadAndExtractFirefox(args: {
   }
 }
 
+/**
+ * Prints the major-version-hop toolchain nudge when this download moved
+ * the engine across a Firefox MAJOR version (152.0b7 → 153.0b8 drill:
+ * the first post-hop build died in `mach configure` on a moved cbindgen
+ * minimum, and nothing in the download output suggested re-running
+ * `fireforge bootstrap`). Quiet on first downloads and same-major
+ * re-downloads.
+ */
+function noteMajorVersionHop(previousVersion: string | undefined, version: string): void {
+  const hopNotice = formatMajorVersionHopNotice(previousVersion, version);
+  if (hopNotice) {
+    info(hopNotice);
+  }
+}
+
 async function initializeDownloadedEngine(args: {
   projectRoot: string;
   patchesDir: string;
   version: string;
+  previousVersion: string | undefined;
   engineDir: string;
   replacementActivated: boolean;
   backupEngineDir?: string;
 }): Promise<void> {
-  const { projectRoot, patchesDir, version, engineDir, replacementActivated, backupEngineDir } =
-    args;
+  const {
+    projectRoot,
+    patchesDir,
+    version,
+    previousVersion,
+    engineDir,
+    replacementActivated,
+    backupEngineDir,
+  } = args;
 
   // Finding #17: the git indexing phase of `download` can block for
   // minutes on a ~600 MB Firefox tree. Emit a one-line heads-up banner
@@ -332,6 +356,7 @@ async function initializeDownloadedEngine(args: {
     });
 
     await noteUnappliedPatches(patchesDir);
+    noteMajorVersionHop(previousVersion, version);
 
     if (backupEngineDir) {
       await removeDir(backupEngineDir);
@@ -364,6 +389,9 @@ export async function downloadCommand(
   const config = await loadConfig(projectRoot),
     version = config.firefox.version;
   const paths = getProjectPaths(projectRoot);
+  // Captured BEFORE any state update so the post-download major-hop
+  // notice compares against what was actually on disk until now.
+  const previousVersion = (await loadState(projectRoot)).downloadedVersion;
 
   info(`Firefox version: ${version}`);
 
@@ -427,6 +455,7 @@ export async function downloadCommand(
                 });
 
                 await noteUnappliedPatches(paths.patches);
+                noteMajorVersionHop(previousVersion, version);
 
                 outro(`Firefox ${version} is ready! (resumed from partial init)`);
                 return;
@@ -504,6 +533,7 @@ export async function downloadCommand(
       projectRoot,
       patchesDir: paths.patches,
       version,
+      previousVersion,
       engineDir: installEngineDir,
       replacementActivated,
       ...(backupEngineDir !== undefined ? { backupEngineDir } : {}),

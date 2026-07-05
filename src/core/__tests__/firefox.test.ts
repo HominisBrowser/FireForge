@@ -10,15 +10,21 @@ vi.mock('../../utils/process.js', () => ({
   executableExists: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn().mockResolvedValue(false),
-  ensureDir: vi.fn().mockResolvedValue(undefined),
-  removeDir: vi.fn().mockResolvedValue(undefined),
-  removeFile: vi.fn().mockResolvedValue(undefined),
-  readJson: vi.fn().mockResolvedValue({}),
-  readText: vi.fn().mockResolvedValue(''),
-  writeJson: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock('../../utils/fs.js', () => {
+  // Shared instance: the cache probes moved to pathExistsStrict, and the
+  // tests toggle existence via pathExists — keep both names in lockstep.
+  const pathExists = vi.fn().mockResolvedValue(false);
+  return {
+    pathExists,
+    pathExistsStrict: pathExists,
+    ensureDir: vi.fn().mockResolvedValue(undefined),
+    removeDir: vi.fn().mockResolvedValue(undefined),
+    removeFile: vi.fn().mockResolvedValue(undefined),
+    readJson: vi.fn().mockResolvedValue({}),
+    readText: vi.fn().mockResolvedValue(''),
+    writeJson: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 const mockWithFileLock = vi.hoisted(() =>
   vi.fn((_lockPath: string, operation: () => Promise<unknown>) => operation())

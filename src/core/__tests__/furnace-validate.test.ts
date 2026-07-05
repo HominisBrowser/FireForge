@@ -1164,3 +1164,180 @@ describe('validateAccessibility — hardcoded-text', () => {
     expect(textIssues).toHaveLength(0);
   });
 });
+
+describe('validateCompatibility — compose and CSS hygiene warnings', () => {
+  const composeConfig: FurnaceConfig = {
+    version: 1,
+    componentPrefix: 'moz-',
+    tokenPrefix: '--mybrowser-',
+    tokenAllowlist: [],
+    stock: ['moz-button'],
+    overrides: {},
+    custom: {
+      'moz-panel': {
+        description: 'Composed panel',
+        targetPath: 'browser/components/panel',
+        register: true,
+        localized: false,
+        composes: ['moz-button'],
+      },
+    },
+  };
+
+  function mockComponentFiles(files: Record<string, string>): void {
+    mockPathExists.mockImplementation((path: string) => Promise.resolve(path in files));
+    mockReadText.mockImplementation((path: string) => Promise.resolve(files[path] ?? ''));
+  }
+
+  it('flags excessive !important usage', async () => {
+    mockComponentFiles({
+      '/components/custom/moz-panel/moz-panel.css':
+        ':host { color: var(--mybrowser-a) !important; margin: 0 !important; ' +
+        'padding: 0 !important; border: none !important; }',
+    });
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-panel',
+      'moz-panel',
+      'custom',
+      composeConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'excessive-important')).toBe(true);
+  });
+
+  it('flags animations without a prefers-reduced-motion media query', async () => {
+    mockComponentFiles({
+      '/components/custom/moz-panel/moz-panel.css':
+        ':host { transition: opacity 0.2s var(--mybrowser-ease); }',
+    });
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-panel',
+      'moz-panel',
+      'custom',
+      composeConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'missing-reduced-motion')).toBe(true);
+  });
+
+  it('accepts animations guarded by prefers-reduced-motion', async () => {
+    mockComponentFiles({
+      '/components/custom/moz-panel/moz-panel.css':
+        ':host { transition: opacity 0.2s; }\n' +
+        '@media (prefers-reduced-motion: reduce) { :host { transition: none; } }',
+    });
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-panel',
+      'moz-panel',
+      'custom',
+      composeConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'missing-reduced-motion')).toBe(false);
+  });
+
+  it('warns when a composed tag is never referenced in the source files', async () => {
+    mockComponentFiles({
+      '/components/custom/moz-panel/moz-panel.mjs':
+        'import { html, MozLitElement } from "chrome://global/content/lit.all.mjs";\n' +
+        'class MozPanel extends MozLitElement { render() { return html`<div></div>`; } }\n' +
+        'customElements.define("moz-panel", MozPanel);\n',
+    });
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-panel',
+      'moz-panel',
+      'custom',
+      composeConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'compose-not-referenced')).toBe(true);
+  });
+
+  it('accepts compose references in HTML templates, CSS selectors, and querySelector', async () => {
+    const byHtml =
+      'class MozPanel extends MozLitElement { render() { return html`<moz-button></moz-button>`; } }\n' +
+      'customElements.define("moz-panel", MozPanel);\n';
+    const byCss = ':host { color: var(--mybrowser-a); }\nmoz-button { margin: 0; }';
+    const byQuery =
+      'class MozPanel extends MozLitElement { go() { this.querySelector("moz-button "); } }\n' +
+      'customElements.define("moz-panel", MozPanel);\n';
+
+    for (const files of [
+      { '/components/custom/moz-panel/moz-panel.mjs': byHtml },
+      {
+        '/components/custom/moz-panel/moz-panel.mjs':
+          'class MozPanel extends MozLitElement {}\ncustomElements.define("moz-panel", MozPanel);\n',
+        '/components/custom/moz-panel/moz-panel.css': byCss,
+      },
+      { '/components/custom/moz-panel/moz-panel.mjs': byQuery },
+    ]) {
+      mockComponentFiles(files);
+      const issues = await validateCompatibility(
+        '/components/custom/moz-panel',
+        'moz-panel',
+        'custom',
+        composeConfig,
+        '/project'
+      );
+      expect(issues.some((issue) => issue.check === 'compose-not-referenced')).toBe(false);
+    }
+  });
+
+  it('warns when a composed tag is not registered in furnace.json', async () => {
+    const unregisteredConfig: FurnaceConfig = {
+      ...composeConfig,
+      stock: [],
+      custom: {
+        'moz-panel': {
+          description: 'Composed panel',
+          targetPath: 'browser/components/panel',
+          register: true,
+          localized: false,
+          composes: ['moz-mystery'],
+        },
+      },
+    };
+    mockComponentFiles({
+      '/components/custom/moz-panel/moz-panel.mjs':
+        'class MozPanel extends MozLitElement { render() { return html`<moz-mystery></moz-mystery>`; } }\n' +
+        'customElements.define("moz-panel", MozPanel);\n',
+    });
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-panel',
+      'moz-panel',
+      'custom',
+      unregisteredConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'compose-not-registered')).toBe(true);
+    expect(issues.some((issue) => issue.check === 'compose-not-referenced')).toBe(false);
+  });
+
+  it('does not warn for composed tags registered as stock components', async () => {
+    mockComponentFiles({
+      '/components/custom/moz-panel/moz-panel.mjs':
+        'class MozPanel extends MozLitElement { render() { return html`<moz-button></moz-button>`; } }\n' +
+        'customElements.define("moz-panel", MozPanel);\n',
+    });
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-panel',
+      'moz-panel',
+      'custom',
+      composeConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'compose-not-registered')).toBe(false);
+  });
+});

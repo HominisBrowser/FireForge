@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: EUPL-1.2
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { analyzeTestPathScopes, formatScopeNotice } from '../test-path-scope.js';
+
+describe('analyzeTestPathScopes', () => {
+  let engineDir: string;
+
+  beforeEach(async () => {
+    engineDir = await mkdtemp(join(tmpdir(), 'ff-test-scope-'));
+  });
+
+  afterEach(async () => {
+    await rm(engineDir, { recursive: true, force: true });
+  });
+
+  /** Builds the drill's shape: hominis with a prefix-named sibling. */
+  async function writeDrillFixture(): Promise<void> {
+    const base = join(engineDir, 'browser/base/content/test');
+    await mkdir(join(base, 'hominis/nested'), { recursive: true });
+    await mkdir(join(base, 'hominis-tiles'), { recursive: true });
+    await mkdir(join(base, 'hominess'), { recursive: true }); // NOT prefix-matching
+    await writeFile(join(base, 'hominis/browser_one.js'), '');
+    await writeFile(join(base, 'hominis/nested/browser_two.js'), '');
+    await writeFile(join(base, 'hominis/head.js'), ''); // support file, not counted
+    await writeFile(join(base, 'hominis-tiles/browser_tile.js'), '');
+    await writeFile(join(base, 'hominis-tiles/test_tile_unit.js'), '');
+  }
+
+  it('appends a trailing slash to directory arguments and reports prefix siblings', async () => {
+    await writeDrillFixture();
+
+    const [scope] = await analyzeTestPathScopes(engineDir, ['browser/base/content/test/hominis']);
+
+    expect(scope).toMatchObject({
+      requestedPath: 'browser/base/content/test/hominis',
+      dispatchPath: 'browser/base/content/test/hominis/',
+      isDirectory: true,
+      testFileCount: 2, // browser_one + nested browser_two; head.js not counted
+    });
+    expect(scope?.siblingPrefixMatches).toEqual([
+      { path: 'browser/base/content/test/hominis-tiles', testFileCount: 2 },
+    ]);
+  });
+
+  it('normalizes an operator-supplied trailing slash instead of doubling it', async () => {
+    await writeDrillFixture();
+
+    const [scope] = await analyzeTestPathScopes(engineDir, ['browser/base/content/test/hominis/']);
+
+    expect(scope?.dispatchPath).toBe('browser/base/content/test/hominis/');
+    expect(scope?.siblingPrefixMatches).toHaveLength(1);
+  });
+
+  it('reports no siblings when none share the name prefix', async () => {
+    await writeDrillFixture();
+
+    const [scope] = await analyzeTestPathScopes(engineDir, [
+      'browser/base/content/test/hominis-tiles',
+    ]);
+
+    expect(scope?.dispatchPath).toBe('browser/base/content/test/hominis-tiles/');
+    expect(scope?.siblingPrefixMatches).toEqual([]);
+  });
+
+  it('ignores prefix siblings that contain no test files', async () => {
+    const base = join(engineDir, 'browser/base/content/test');
+    await mkdir(join(base, 'hominis'), { recursive: true });
+    await mkdir(join(base, 'hominis-assets'), { recursive: true });
+    await writeFile(join(base, 'hominis/browser_one.js'), '');
+    await writeFile(join(base, 'hominis-assets/icon.svg'), '');
+
+    const [scope] = await analyzeTestPathScopes(engineDir, ['browser/base/content/test/hominis']);
+
+    expect(scope?.siblingPrefixMatches).toEqual([]);
+  });
+
+  it('passes file arguments through untouched', async () => {
+    const base = join(engineDir, 'browser/base/content/test/hominis');
+    await mkdir(base, { recursive: true });
+    await writeFile(join(base, 'browser_one.js'), '');
+
+    const [scope] = await analyzeTestPathScopes(engineDir, [
+      'browser/base/content/test/hominis/browser_one.js',
+    ]);
+
+    expect(scope).toMatchObject({
+      dispatchPath: 'browser/base/content/test/hominis/browser_one.js',
+      isDirectory: false,
+      siblingPrefixMatches: [],
+    });
+  });
+
+  it('passes non-existent paths through untouched (existence is asserted elsewhere)', async () => {
+    const [scope] = await analyzeTestPathScopes(engineDir, ['no/such/dir']);
+
+    expect(scope).toMatchObject({ dispatchPath: 'no/such/dir', isDirectory: false });
+  });
+});
+
+describe('formatScopeNotice', () => {
+  it('names the exact selection and the excluded siblings with counts', () => {
+    const notice = formatScopeNotice({
+      requestedPath: 'browser/base/content/test/hominis',
+      dispatchPath: 'browser/base/content/test/hominis/',
+      isDirectory: true,
+      testFileCount: 198,
+      siblingPrefixMatches: [
+        { path: 'browser/base/content/test/hominis-tiles', testFileCount: 1026 },
+      ],
+    });
+
+    expect(notice).toContain(
+      'Selected exactly browser/base/content/test/hominis/ (198 test files)'
+    );
+    expect(notice).toContain('hominis-tiles/ (1026 test files)');
+    expect(notice).toContain('separate paths');
+  });
+
+  it('returns undefined for file arguments and directories without prefix siblings', () => {
+    expect(
+      formatScopeNotice({
+        requestedPath: 'a/browser_x.js',
+        dispatchPath: 'a/browser_x.js',
+        isDirectory: false,
+        testFileCount: 0,
+        siblingPrefixMatches: [],
+      })
+    ).toBeUndefined();
+    expect(
+      formatScopeNotice({
+        requestedPath: 'a/dir',
+        dispatchPath: 'a/dir/',
+        isDirectory: true,
+        testFileCount: 3,
+        siblingPrefixMatches: [],
+      })
+    ).toBeUndefined();
+  });
+});

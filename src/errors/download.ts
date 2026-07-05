@@ -84,9 +84,11 @@ export class ExtractionError extends DownloadError {
   }
 
   override get userMessage(): string {
+    const reason = this.cause instanceof Error ? `Reason: ${this.cause.message}\n\n` : '';
     return (
       `Extraction Error: Failed to extract Firefox source archive.\n\n` +
       `Archive: ${this.archivePath}\n\n` +
+      reason +
       'To fix this:\n' +
       '  1. Delete the corrupted archive and try again\n' +
       '  2. Ensure you have enough disk space\n' +

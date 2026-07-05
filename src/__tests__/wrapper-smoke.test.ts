@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { execFile, type ExecFileOptions } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 
 import { afterAll, describe, expect, it } from 'vitest';
@@ -21,6 +21,30 @@ const npmInvocation =
   npmCliPath && /(?:^|[/\\])npm-cli\.js$/i.test(npmCliPath)
     ? { args: [npmCliPath], file: process.execPath }
     : { args: [], file: npmCmd };
+/**
+ * These tests spawn npm (pack/init/install). When the invocation falls back
+ * to the bare `npm` command, a runner without npm on PATH (e.g. a container
+ * with only node + node_modules) would fail every test with an opaque
+ * `spawn npm ENOENT` — detect that up front and skip with a clear message.
+ */
+function isNpmInvocationAvailable(): boolean {
+  if (npmInvocation.file === process.execPath) {
+    return true; // resolved via npm_execpath — runs through the node binary
+  }
+  return (process.env['PATH'] ?? '')
+    .split(delimiter)
+    .some((dir) => dir.length > 0 && existsSync(join(dir, npmInvocation.file)));
+}
+
+const npmAvailable = isNpmInvocationAvailable();
+if (!npmAvailable) {
+  console.error(
+    'Skipping installed-package smoke tests: no npm executable found ' +
+      '(npm_execpath is unset and "npm" is not on PATH). Run these tests via npm, ' +
+      'or install npm, to exercise the packed-tarball surface.'
+  );
+}
+
 const packageManifest = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8')) as {
   name: string;
   version: string;
@@ -38,7 +62,7 @@ afterAll(async () => {
   );
 });
 
-describe('installed package smoke test', () => {
+describe.skipIf(!npmAvailable)('installed package smoke test', () => {
   it('npm pack --dry-run exposes the intended package surface', async () => {
     const { stdout } = await execNpm(['pack', '--dry-run', '--json', '--silent'], {
       cwd: repoRoot,

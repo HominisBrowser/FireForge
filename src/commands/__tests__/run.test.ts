@@ -639,6 +639,56 @@ describe('runCommand', () => {
       expect(thrown).toBeInstanceOf(SmokeRunError);
       expect((thrown as SmokeRunError).code).toBe(SMOKE_EXIT_FAILURE);
     });
+
+    it('warns about input contamination when a headed smoke window launches on a non-CI host', async () => {
+      // Drill finding: a human interacted with a headed --smoke-exit
+      // window mid-run; the resulting console errors failed the run and
+      // initially read as a product regression. The launch must say so
+      // up front on interactive hosts.
+      const { warn } = await import('../../utils/logger.js');
+      vi.stubEnv('CI', undefined);
+      vi.mocked(runMachSmoke).mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 143,
+        timedOut: true,
+      });
+
+      try {
+        await runCommand('/project', { smokeExit: 30 });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('Headed smoke window'));
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('--headless'));
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('suppresses the headed notice under --headless and on CI hosts, and forwards --headless to mach run', async () => {
+      const { warn } = await import('../../utils/logger.js');
+      vi.mocked(runMachSmoke).mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 143,
+        timedOut: true,
+      });
+
+      try {
+        vi.stubEnv('CI', undefined);
+        await runCommand('/project', { smokeExit: 30, headless: true });
+        expect(runMachSmoke).toHaveBeenCalledWith(
+          ['run', '--headless'],
+          '/project/engine',
+          expect.objectContaining({ smokeTimeoutMs: 30_000 })
+        );
+
+        vi.stubEnv('CI', 'true');
+        await runCommand('/project', { smokeExit: 30 });
+
+        expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Headed smoke window'));
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
   });
 
   // --- registerRun coverage ---
@@ -724,6 +774,32 @@ describe('runCommand', () => {
       await expect(
         program.parseAsync(['node', 'fireforge', 'run', '--smoke-exit', '1.5'])
       ).rejects.toThrow(/positive integer/);
+    });
+
+    it('parses --headless and forwards it to the browser in both launch modes', async () => {
+      const program = new Command();
+      vi.mocked(run).mockResolvedValue(0);
+      vi.mocked(runMachSmoke).mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 143,
+        timedOut: true,
+      });
+
+      registerRun(program, {
+        getProjectRoot: () => '/project',
+        withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
+      });
+
+      await program.parseAsync(['node', 'fireforge', 'run', '--headless']);
+      expect(run).toHaveBeenCalledWith('/project/engine', ['--headless']);
+
+      await program.parseAsync(['node', 'fireforge', 'run', '--smoke-exit', '30', '--headless']);
+      expect(runMachSmoke).toHaveBeenCalledWith(
+        ['run', '--headless'],
+        '/project/engine',
+        expect.objectContaining({ smokeTimeoutMs: 30_000 })
+      );
     });
 
     it('accumulates repeated --console-allow values and passes them through', async () => {

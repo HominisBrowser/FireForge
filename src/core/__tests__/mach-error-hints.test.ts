@@ -160,4 +160,55 @@ describe('explainMachError', () => {
     const hints = explainMachError(output);
     expect(hints.some((hint) => hint.includes('post-failure configure summary'))).toBe(false);
   });
+
+  it('surfaces the fireforge bootstrap hint on the cbindgen too-old configure failure', () => {
+    // 152.0b7 → 153.0b8 source-refresh drill: the first post-hop build
+    // died ~8s into `mach configure` with this exact die() text, whose
+    // own remediation names "./mach bootstrap" — the wrong entry point
+    // for a FireForge-managed repo. The hint must name
+    // `fireforge bootstrap` instead.
+    const stderr = [
+      'ERROR: cbindgen version 0.29.1 is too old. At least version 0.29.4 is required.',
+      '',
+      "Please update using 'cargo install cbindgen --force' or running",
+      "'./mach bootstrap', after removing the existing executable located at",
+      '/Users/you/.cargo/bin/cbindgen.',
+    ].join('\n');
+
+    const hints = explainMachError(stderr);
+    expect(hints.length).toBeGreaterThanOrEqual(1);
+    expect(hints.join('\n')).toContain('"fireforge bootstrap"');
+    expect(hints.join('\n')).toContain('./mach bootstrap');
+  });
+
+  it('surfaces the fireforge bootstrap hint on the Rust compiler / Cargo too-old failures', () => {
+    // rust.configure's die() shapes name the minimum only further down
+    // the message, so the pattern keys on the first line.
+    const rustStderr = [
+      'ERROR: Rust compiler 1.80.0 is too old.',
+      '',
+      'To compile Rust language sources please install at least',
+      "version 1.82.0 of the 'rustc' toolchain (or, if using nightly,",
+      'at least one version newer than 1.82.0) and make sure it is',
+      'first in your path.',
+    ].join('\n');
+    const cargoStderr = 'ERROR: Cargo package manager 1.80.0 is too old.';
+
+    for (const stderr of [rustStderr, cargoStderr]) {
+      const hints = explainMachError(stderr);
+      expect(hints.length).toBeGreaterThanOrEqual(1);
+      expect(hints.join('\n')).toContain('"fireforge bootstrap"');
+    }
+  });
+
+  it('does NOT fire the toolchain hints on unrelated "too old" phrasing', () => {
+    // "is too old" appears in other mach output (e.g. clock-skew or
+    // cache-staleness warnings). Without the "At least version … is
+    // required" tail or the Rust/Cargo lead-in, the hints must stay
+    // quiet so operators keep trusting the translator.
+    const stderr = 'WARNING: the build telemetry cache is too old and will be regenerated.';
+
+    const hints = explainMachError(stderr);
+    expect(hints.some((hint) => hint.includes('fireforge bootstrap'))).toBe(false);
+  });
 });

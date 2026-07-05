@@ -18,6 +18,10 @@ import {
   withBuildLock,
 } from '../core/mach.js';
 import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
+import {
+  formatToolchainMismatchMessage,
+  runToolchainPreflight,
+} from '../core/toolchain-preflight.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
@@ -224,6 +228,22 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   // Check if engine exists
   if (!(await pathExists(paths.engine))) {
     throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
+  }
+
+  // Toolchain preflight: compare the minimums the tree itself declares
+  // (cbindgen / rust) against the host binaries mach configure will
+  // resolve, and fail fast naming `fireforge bootstrap` instead of dying
+  // ~8s into configure with mach's "./mach bootstrap" remediation text
+  // (152.0b7 → 153.0b8 source-refresh drill). Fail-soft by design: only
+  // a definitively parsed minimum vs a definitively probed host version
+  // can fail here; anything uncertain proceeds to mach, where the
+  // mach-error-hints translator still names the right remedy.
+  const toolchainMismatches = await runToolchainPreflight(paths.engine);
+  if (toolchainMismatches.length > 0) {
+    throw new BuildError(
+      formatToolchainMismatchMessage(toolchainMismatches),
+      'toolchain preflight'
+    );
   }
 
   const buildCheck = await hasBuildArtifacts(paths.engine);

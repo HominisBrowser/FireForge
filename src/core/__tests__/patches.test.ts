@@ -24,14 +24,20 @@ vi.mock('../patch-apply.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/fs.js', () => ({
-  readText: vi.fn(),
-  writeText: vi.fn(),
-  pathExists: vi.fn(),
-  readJson: vi.fn(),
-  writeJson: vi.fn(),
-  removeFile: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => {
+  // Shared instance: the manifest probes moved to pathExistsStrict, and the
+  // tests toggle existence via pathExists — keep both names in lockstep.
+  const pathExists = vi.fn();
+  return {
+    readText: vi.fn(),
+    writeText: vi.fn(),
+    pathExists,
+    pathExistsStrict: pathExists,
+    readJson: vi.fn(),
+    writeJson: vi.fn(),
+    removeFile: vi.fn(),
+  };
+});
 
 vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),

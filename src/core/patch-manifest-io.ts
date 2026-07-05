@@ -16,7 +16,7 @@ import { FireForgeError } from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readJson, removeFile, writeJson } from '../utils/fs.js';
+import { pathExistsStrict, readJson, removeFile, writeJson } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { isArray, isObject } from '../utils/validation.js';
 import { validatePatchesManifest } from './patch-manifest-validate.js';
@@ -53,7 +53,7 @@ export interface PatchManifestRowMutationResult {
  */
 export async function loadPatchesManifestState(patchesDir: string): Promise<LoadedManifestState> {
   const manifestPath = join(patchesDir, PATCHES_MANIFEST);
-  if (!(await pathExists(manifestPath))) {
+  if (!(await pathExistsStrict(manifestPath))) {
     return { exists: false, manifest: null, parseError: undefined };
   }
 
@@ -111,7 +111,7 @@ export async function mutatePatchRowsInManifest(
   ) => PatchManifestRowMutation | null
 ): Promise<PatchManifestRowMutationResult[] | null> {
   const manifestPath = join(patchesDir, PATCHES_MANIFEST);
-  if (!(await pathExists(manifestPath))) return null;
+  if (!(await pathExistsStrict(manifestPath))) return null;
 
   const rawManifest = await readJson<unknown>(manifestPath);
   const beforeManifest = validatePatchesManifest(rawManifest);
@@ -330,7 +330,7 @@ export async function renumberPatchesInManifest(
   try {
     for (const [oldFilename, entry] of renameMap) {
       const oldPath = join(patchesDir, oldFilename);
-      if (!(await pathExists(oldPath))) {
+      if (!(await pathExistsStrict(oldPath))) {
         throw new Error(`Cannot renumber: patch file is missing on disk: ${oldFilename}`);
       }
       const stagedName = `.fireforge-renumber-${stagingId}-${oldFilename}`;
@@ -360,7 +360,7 @@ export async function renumberPatchesInManifest(
     for (const stagedEntry of stagedRenames) {
       const { staged, toEntry } = stagedEntry;
       const targetPath = join(patchesDir, toEntry.newFilename);
-      if (await pathExists(targetPath)) {
+      if (await pathExistsStrict(targetPath)) {
         throw new Error(
           `Cannot renumber: target patch filename already exists on disk: ${toEntry.newFilename}`
         );
@@ -373,7 +373,7 @@ export async function renumberPatchesInManifest(
       // described: manifest rewrote to new filenames while the old
       // files stayed on disk. If the assert ever fires, the Phase 2
       // rollback will undo prior moves before re-throwing.
-      if (!(await pathExists(targetPath))) {
+      if (!(await pathExistsStrict(targetPath))) {
         throw new Error(
           `Rename postcondition failed: expected ${toEntry.newFilename} to exist after rename, but it was not found on disk.`
         );
@@ -531,7 +531,7 @@ export async function removePatchFileAndManifest(
   const removedFromManifest = await removePatchFromManifest(patchesDir, filename);
 
   try {
-    if (await pathExists(patchPath)) {
+    if (await pathExistsStrict(patchPath)) {
       await removeFile(patchPath);
     }
   } catch (error: unknown) {

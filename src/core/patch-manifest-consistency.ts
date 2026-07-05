@@ -7,6 +7,7 @@ import { stat } from 'node:fs/promises';
 
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
 import { discoverPatches, getAllTargetFilesFromPatch } from './patch-files.js';
+import { withPatchDirectoryLock } from './patch-lock.js';
 import {
   type LoadedManifestState,
   loadPatchesManifestState,
@@ -144,6 +145,20 @@ export interface RebuildPatchesManifestResult {
  *   plus the filenames that were reconstructed from generic defaults.
  */
 export async function rebuildPatchesManifest(
+  patchesDir: string,
+  fallbackSourceEsrVersion: string
+): Promise<RebuildPatchesManifestResult> {
+  // The whole read → discover → rebuild → save cycle runs under the shared
+  // patch-directory lock (invariant 2, docs/lifecycle-invariants.md):
+  // manifest writes serialize on this lock, and a repair racing a
+  // concurrent export/reorder used to be able to clobber the other
+  // writer's manifest. Not reentrant — callers must not already hold it.
+  return withPatchDirectoryLock(patchesDir, () =>
+    rebuildPatchesManifestUnderLock(patchesDir, fallbackSourceEsrVersion)
+  );
+}
+
+async function rebuildPatchesManifestUnderLock(
   patchesDir: string,
   fallbackSourceEsrVersion: string
 ): Promise<RebuildPatchesManifestResult> {

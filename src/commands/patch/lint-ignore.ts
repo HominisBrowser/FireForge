@@ -22,7 +22,7 @@
 
 import { Command } from 'commander';
 
-import { appendHistory } from '../../core/destructive.js';
+import { appendHistory, confirmDestructive } from '../../core/destructive.js';
 import { mutatePatchMetadata } from '../../core/patch-export.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
@@ -142,11 +142,31 @@ export async function patchLintIgnoreCommand(
   const { paths, manifest } = await requirePatchQueue(projectRoot);
   const target = requirePatchTarget(identifier, manifest.patches);
 
-  if (isDryRun) {
-    const existing = target.lintIgnore ?? [];
-    const projected = applyMode(existing, mode, values) ?? [];
-    info(`[dry-run] ${target.filename}: ${describeChange(existing, projected, mode, values)}.`);
+  // Destructive-operation contract (docs/lifecycle-invariants.md): manifest
+  // metadata mutations get summary + dry-run + confirmation/--yes + history
+  // uniformly. This command used to accept --yes without ever prompting, so
+  // the flag only appeared in the history record — and suppressing lint
+  // findings is precisely the mutation an operator should consciously
+  // approve.
+  const projectedSummary = describeChange(
+    target.lintIgnore ?? [],
+    applyMode(target.lintIgnore ?? [], mode, values) ?? [],
+    mode,
+    values
+  );
+  const decision = await confirmDestructive({
+    operation: 'patch-lint-ignore',
+    title: `Patch lint-ignore: ${target.filename}`,
+    summary: [`${target.filename}: ${projectedSummary}`],
+    yes: options.yes === true,
+    dryRun: isDryRun,
+  });
+  if (decision === 'dry-run') {
     outro('Dry run complete — no changes made');
+    return;
+  }
+  if (decision === 'cancelled') {
+    outro('Cancelled — no changes made');
     return;
   }
 

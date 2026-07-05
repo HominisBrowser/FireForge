@@ -32,7 +32,11 @@ mutating command, read the decision table at the bottom first.
 6. **Destructive patch operations are gated and audited**: explicit change
    summary, confirmation (or `--yes`), `--dry-run`, hard refusal on
    structural conflicts (`--force-unsafe` to override), and a JSONL history
-   entry appended only after the mutation succeeded.
+   entry appended only after the mutation succeeded. This covers metadata
+   mutations too: `patch tier` and `patch lint-ignore` route through
+   `confirmDestructive` (they used to accept `--yes` without ever
+   prompting, so the flag only appeared in the history record). Enforced
+   by `patch-tier-and-lint-ignore.integration.test.ts`.
 
 ## Who owns what
 

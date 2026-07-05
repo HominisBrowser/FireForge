@@ -17,7 +17,7 @@
 
 import { Command, Option } from 'commander';
 
-import { appendHistory } from '../../core/destructive.js';
+import { appendHistory, confirmDestructive } from '../../core/destructive.js';
 import { updatePatchMetadata } from '../../core/patch-export.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
@@ -84,9 +84,23 @@ export async function patchTierCommand(
         ? `set tier to "${after}"`
         : `change tier from "${before}" to "${after}"`;
 
-  if (isDryRun) {
-    info(`[dry-run] ${target.filename}: would ${action}.`);
+  // Destructive-operation contract (docs/lifecycle-invariants.md): manifest
+  // metadata mutations get summary + dry-run + confirmation/--yes + history
+  // uniformly. This command used to accept --yes without ever prompting, so
+  // the flag only appeared in the history record.
+  const decision = await confirmDestructive({
+    operation: 'patch-tier',
+    title: `Patch tier: ${target.filename}`,
+    summary: [`${target.filename}: ${action}`],
+    yes: options.yes === true,
+    dryRun: isDryRun,
+  });
+  if (decision === 'dry-run') {
     outro('Dry run complete — no changes made');
+    return;
+  }
+  if (decision === 'cancelled') {
+    outro('Cancelled — no changes made');
     return;
   }
 

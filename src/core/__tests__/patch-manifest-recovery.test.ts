@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { writeFiles } from '../../test-utils/index.js';
+import { withPatchDirectoryLock } from '../patch-lock.js';
 import {
   loadPatchesManifest,
   rebuildPatchesManifest,
@@ -136,5 +137,47 @@ describe('patch manifest recovery paths', () => {
     expect(rebuilt.recoveredFilenames).toEqual(
       expect.arrayContaining(['001-ui-toolbar.patch', '002-sidebar.patch', 'plain.patch'])
     );
+  });
+
+  it('waits for the patch-directory lock before rewriting the manifest', async () => {
+    // Invariant 2 (docs/lifecycle-invariants.md): manifest writes
+    // serialize on the patch lock. doctor --repair-patches-manifest used
+    // to call this rebuild WITHOUT the lock, so a repair racing a
+    // concurrent export/reorder could clobber the other writer's
+    // manifest.
+    const patchesDir = await mkdtemp(join(tmpdir(), 'fireforge-manifest-recovery-'));
+    tempDirs.push(patchesDir);
+    await writeFiles(patchesDir, {
+      '001-ui-toolbar.patch': TOOLBAR_PATCH,
+      'patches.json': JSON.stringify({ version: 1, patches: [] }, null, 2),
+    });
+
+    let releaseLock: () => void = () => undefined;
+    const lockHeld = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    let lockAcquired: () => void = () => undefined;
+    const lockAcquiredPromise = new Promise<void>((resolve) => {
+      lockAcquired = resolve;
+    });
+
+    const holder = withPatchDirectoryLock(patchesDir, async () => {
+      lockAcquired();
+      await lockHeld;
+    });
+    await lockAcquiredPromise;
+
+    const rebuild = rebuildPatchesManifest(patchesDir, '140.9.0esr');
+
+    // While the lock is held, the empty manifest must remain untouched.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const during = await loadPatchesManifest(patchesDir);
+    expect(during?.patches).toEqual([]);
+
+    releaseLock();
+    await holder;
+    const rebuilt = await rebuild;
+
+    expect(rebuilt.manifest.patches.map((p) => p.filename)).toEqual(['001-ui-toolbar.patch']);
   });
 });

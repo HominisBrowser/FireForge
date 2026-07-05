@@ -311,8 +311,15 @@ export async function exportAllCommand(
   // Check for non-interactive mode
   const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
 
-  // Auto-fix missing license headers on new files (interactive only)
-  const headersAdded = await autoFixLicenseHeaders(paths.engine, diff, config, isInteractive);
+  // Auto-fix missing license headers on new files (interactive only;
+  // report-only under --dry-run so the preview never mutates engine/)
+  const headersAdded = await autoFixLicenseHeaders(
+    paths.engine,
+    diff,
+    config,
+    isInteractive,
+    isDryRun
+  );
   if (headersAdded) {
     diff = await getAllDiff(paths.engine);
   }

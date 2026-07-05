@@ -21,6 +21,7 @@ import {
   loadFurnaceState,
 } from './furnace-config.js';
 import { runFurnaceMutation } from './furnace-operation.js';
+import { countEntriesWithBlockingStepErrors } from './furnace-step-errors.js';
 import { cleanStories } from './furnace-stories.js';
 import { generateMozconfig, type MachCommandResult, runMachCapture } from './mach.js';
 import { explainMachError } from './mach-error-hints.js';
@@ -227,9 +228,7 @@ export async function prepareBuildEnvironment(
       // These are distinct from `result.errors`, which captures
       // components that failed before reaching the applied list at all.
       // The sum of the two is the total count of failed components.
-      const appliedWithStepErrorsCount = result.applied.filter(
-        (entry) => (entry.stepErrors?.length ?? 0) > 0
-      ).length;
+      const appliedWithStepErrorsCount = countEntriesWithBlockingStepErrors(result.applied);
       const totalApplyFailures = result.errors.length + appliedWithStepErrorsCount;
 
       if (totalApplyFailures > 0) {

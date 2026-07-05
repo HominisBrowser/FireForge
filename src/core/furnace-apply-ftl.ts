@@ -5,9 +5,13 @@
  * per-file LOC budget.
  *
  * Every helper here degrades gracefully: if the locale jar.mn is missing or
- * the FTL tree is non-standard, apply logs a `stepError` rather than
- * aborting the whole command. Missing jar.mn on a fork without a locale
- * package should not block a working `.mjs`/`.css` from shipping.
+ * the FTL tree is non-standard, apply logs an ADVISORY `stepError`
+ * (`advisory: true`) rather than aborting the whole command. Advisory step
+ * errors are reported as warnings and never trigger rollback — missing
+ * jar.mn on a fork without a locale package should not block a working
+ * `.mjs`/`.css` from shipping (the blocking/advisory split exists because
+ * this contract used to be contradicted: any FTL step error rolled back
+ * the whole apply).
  */
 
 import { join, relative } from 'node:path';
@@ -114,7 +118,7 @@ export async function applySharedFtlPrune(
     );
     if (prunedPath) affectedPaths.push(prunedPath);
   } catch (error: unknown) {
-    stepErrors.push({ step: 'locale jar.mn prune', error: toError(error).message });
+    stepErrors.push({ step: 'locale jar.mn prune', error: toError(error).message, advisory: true });
   }
 }
 
@@ -181,6 +185,7 @@ export async function applyCustomFtlFile(
     stepErrors.push({
       step: 'locale jar.mn registration',
       error: `Locale jar.mn not found at ${localeJarRel}; component "${name}" ships without a chrome URI for ${ftlFile}. Add the file manually or set furnace.json "ftlBasePath" to a tree that owns a jar.mn.`,
+      advisory: true,
     });
     return;
   }
@@ -197,6 +202,7 @@ export async function applyCustomFtlFile(
     stepErrors.push({
       step: 'locale jar.mn registration',
       error: toError(error).message,
+      advisory: true,
     });
   }
 }

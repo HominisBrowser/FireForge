@@ -38,9 +38,18 @@ export { applyPatchToContent, extractNewFileContent } from './patch-transform.js
  * Applies a single patch.
  * @param patch - Patch info
  * @param engineDir - Path to the engine directory
+ * @param protectedFiles - Files touched by patches already applied in the
+ *   current run; the idempotent-recovery reset must not wipe them (see
+ *   applyPatchIdempotent). Overlapping queues (`--allow-overlap`) share
+ *   files between patches, and a later patch's recovery used to reset the
+ *   shared file to HEAD — silently discarding the earlier patch's changes.
  * @returns Patch result
  */
-async function applySinglePatch(patch: PatchInfo, engineDir: string): Promise<PatchResult> {
+async function applySinglePatch(
+  patch: PatchInfo,
+  engineDir: string,
+  protectedFiles?: ReadonlySet<string>
+): Promise<PatchResult> {
   let patchContent = '';
   let affectedFiles: string[] = [];
 
@@ -49,7 +58,9 @@ async function applySinglePatch(patch: PatchInfo, engineDir: string): Promise<Pa
     affectedFiles = extractAffectedFiles(patchContent);
     await validatePatchTargets(patch, affectedFiles, engineDir);
 
-    await applyPatchIdempotent(patch.path, engineDir);
+    await applyPatchIdempotent(patch.path, engineDir, {
+      ...(protectedFiles ? { protectedFiles } : {}),
+    });
     return { patch, success: true };
   } catch (error: unknown) {
     if (error instanceof PatchError) {
@@ -77,7 +88,9 @@ async function applySinglePatch(patch: PatchInfo, engineDir: string): Promise<Pa
 
     if (resolvedNewFiles) {
       try {
-        await applyPatchIdempotent(patch.path, engineDir);
+        await applyPatchIdempotent(patch.path, engineDir, {
+          ...(protectedFiles ? { protectedFiles } : {}),
+        });
         return { patch, success: true, autoResolved: true };
       } catch (retryError: unknown) {
         verbose(
@@ -95,7 +108,10 @@ async function applySinglePatch(patch: PatchInfo, engineDir: string): Promise<Pa
 
     try {
       // Use --reject to apply what we can and create .rej files for what we can't
-      await applyPatchIdempotent(patch.path, engineDir, { reject: true });
+      await applyPatchIdempotent(patch.path, engineDir, {
+        reject: true,
+        ...(protectedFiles ? { protectedFiles } : {}),
+      });
       // If this somehow succeeds with --reject but failed without, it still shouldn't
       // happen because applyPatch first runs --check which would fail.
       // But if it did succeed, we should still return failure because manual fix is needed
@@ -136,10 +152,17 @@ async function rollbackPatches(results: PatchResult[], engineDir: string): Promi
 export async function applyPatches(patchesDir: string, engineDir: string): Promise<PatchResult[]> {
   const patches = await discoverPatches(patchesDir);
   const results: PatchResult[] = [];
+  const appliedFiles = new Set<string>();
 
   for (const patch of patches) {
-    const result = await applySinglePatch(patch, engineDir);
+    const result = await applySinglePatch(patch, engineDir, appliedFiles);
     results.push(result);
+
+    if (result.success) {
+      for (const file of extractAffectedFiles(await readText(patch.path))) {
+        appliedFiles.add(file);
+      }
+    }
 
     // Stop on first failure and roll back all previously applied patches
     if (!result.success) {
@@ -364,6 +387,7 @@ export async function applyPatchesWithContinue(
   const succeeded: PatchResult[] = [];
   const failed: PatchResult[] = [];
   const skipped: PatchInfo[] = [];
+  const appliedFiles = new Set<string>();
 
   for (let i = 0; i < patches.length; i++) {
     const patch = patches[i];
@@ -377,10 +401,13 @@ export async function applyPatchesWithContinue(
       continue;
     }
 
-    const result = await applySinglePatch(patch, engineDir);
+    const result = await applySinglePatch(patch, engineDir, appliedFiles);
 
     if (result.success) {
       succeeded.push(result);
+      for (const file of extractAffectedFiles(await readText(patch.path))) {
+        appliedFiles.add(file);
+      }
     } else {
       // Try to extract conflicting files from error message
       result.conflictingFiles = extractConflictingFiles(result.error);

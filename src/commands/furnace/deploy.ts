@@ -15,6 +15,7 @@ import {
   persistSingleComponentState,
   shouldPersistSingleComponentState,
 } from '../../core/furnace-state-persist.js';
+import { hasBlockingStepErrors } from '../../core/furnace-step-errors.js';
 import {
   findOverrideBaseVersionDrift,
   formatOverrideBaseVersionDriftError,
@@ -57,7 +58,7 @@ function getFailedComponentNames(
   const failed = new Set(result.errors.map((entry) => entry.name));
 
   for (const applied of result.applied) {
-    if ((applied.stepErrors?.length ?? 0) > 0) {
+    if (hasBlockingStepErrors(applied)) {
       failed.add(applied.name);
     }
   }

@@ -6,6 +6,7 @@ import { ensureOriginRemote } from '../core/git.js';
 import { bootstrapWithOutput } from '../core/mach.js';
 import { GeneralError } from '../errors/base.js';
 import { BootstrapError } from '../errors/build.js';
+import { ExitCode } from '../errors/codes.js';
 import type { CommandContext } from '../types/cli.js';
 import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, warn } from '../utils/logger.js';
@@ -51,7 +52,7 @@ function buildBootstrapFailureMessage(output: string): string | undefined {
  * Runs the bootstrap command.
  * @param projectRoot - Root directory of the project
  */
-export async function bootstrapCommand(projectRoot: string): Promise<void> {
+export async function bootstrapCommand(projectRoot: string): Promise<ExitCode> {
   intro('FireForge Bootstrap');
 
   const paths = getProjectPaths(projectRoot);
@@ -96,17 +97,22 @@ export async function bootstrapCommand(projectRoot: string): Promise<void> {
       warn('Bootstrap completed with warnings:');
     }
 
-    reportDoctorResults(checks);
+    const checksExitCode = reportDoctorResults(checks);
 
     if (hasErrors) {
       outro('Build dependencies installed with errors');
-    } else {
-      outro('Build dependencies installed with warnings');
+      // Propagate the failure (mirroring doctor's exit-code handling)
+      // instead of exiting 0 — CI gating on bootstrap used to proceed to a
+      // build that could not succeed because error-severity check results
+      // were discarded here.
+      return checksExitCode;
     }
-    return;
+    outro('Build dependencies installed with warnings');
+    return ExitCode.SUCCESS;
   }
 
   outro('Build dependencies installed successfully!');
+  return ExitCode.SUCCESS;
 }
 
 /** Registers the bootstrap command on the CLI program. */
@@ -119,7 +125,10 @@ export function registerBootstrap(
     .description('Install Firefox build dependencies')
     .action(
       withErrorHandling(async () => {
-        await bootstrapCommand(getProjectRoot());
+        const exitCode = await bootstrapCommand(getProjectRoot());
+        if (exitCode !== ExitCode.SUCCESS) {
+          process.exitCode = exitCode;
+        }
       })
     );
 }

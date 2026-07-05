@@ -358,6 +358,20 @@ describe('autoFixLicenseHeaders', () => {
 
     expect(result).toBe(false);
   });
+
+  it('never prompts or writes under dry-run — reports the missing headers instead', async () => {
+    // Dry-run purity regression: an interactive `export --dry-run` used to
+    // prompt (default Yes) and write license headers into engine/, then
+    // close with "no changes made".
+    vi.mocked(detectNewFilesInDiff).mockReturnValueOnce(new Set(['new.js']));
+
+    const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true, true);
+
+    expect(result).toBe(false);
+    expect(clack.confirm).not.toHaveBeenCalled();
+    expect(addLicenseHeaderToFile).not.toHaveBeenCalled();
+    expect(vi.mocked(info)).toHaveBeenCalledWith(expect.stringContaining('[dry-run]'));
+  });
 });
 
 describe('findPartialOwnershipOverlap', () => {

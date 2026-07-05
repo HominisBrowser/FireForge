@@ -7,7 +7,11 @@ import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig, loadState, updateState } from '../core/config.js';
 import { withFileLock } from '../core/file-lock.js';
-import { downloadFirefoxSource, formatBytes } from '../core/firefox.js';
+import {
+  downloadFirefoxSource,
+  formatBytes,
+  sweepOrphanedEngineWorkDirs,
+} from '../core/firefox.js';
 import { getFurnacePaths, updateFurnaceState } from '../core/furnace-config.js';
 import {
   getHead,
@@ -415,6 +419,19 @@ export async function downloadCommand(
   await withFileLock(
     join(paths.fireforgeDir, 'download.fireforge.lock'),
     async () => {
+      // Reclaim multi-GB partial trees left behind by interrupted runs.
+      // Safe under the download lock: any `.tmp-*`/`.replacement-*` dir
+      // present now is orphaned, since live ones only exist while a
+      // download holds this lock. `.backup-*` dirs are NOT swept — a
+      // backup can hold the previous engine after a failed forced
+      // replacement and is the operator's recovery copy.
+      const sweptDirs = await sweepOrphanedEngineWorkDirs(paths.engine);
+      if (sweptDirs.length > 0) {
+        info(
+          `Removed ${sweptDirs.length} orphaned working director${sweptDirs.length === 1 ? 'y' : 'ies'} from interrupted downloads.`
+        );
+      }
+
       let installEngineDir = paths.engine;
       let replacementEngineDir: string | undefined;
       let backupEngineDir: string | undefined;

@@ -18,6 +18,10 @@ export interface ResolvedArchive {
   url: string;
   filename: string;
   metadataFilename: string;
+  /** URL of Mozilla's published SHA256SUMS file for the release. */
+  checksumsUrl: string;
+  /** The archive's path as listed inside SHA256SUMS (relative to the release dir). */
+  pathInChecksums: string;
 }
 
 /**
@@ -105,5 +109,11 @@ export function resolveArchive(
     url: `${getArchiveBaseUrl(product)}/${archiveVersion}/source/firefox-${archiveVersion}.source.tar.xz`,
     filename: `firefox-${safeProduct}-${archiveVersion}.source.tar.xz`,
     metadataFilename: `firefox-${safeProduct}-${archiveVersion}.source.tar.xz.json`,
+    // Mozilla publishes one SHA256SUMS per release directory listing every
+    // artifact by its release-relative path. Downloads verify against it by
+    // default (fail closed on mismatch), so a compromised CDN response
+    // cannot silently become the trusted git baseline.
+    checksumsUrl: `${getArchiveBaseUrl(product)}/${archiveVersion}/SHA256SUMS`,
+    pathInChecksums: `source/firefox-${archiveVersion}.source.tar.xz`,
   };
 }

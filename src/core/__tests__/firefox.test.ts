@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../utils/process.js', () => ({
   exec: vi.fn().mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' }),
+  // Streaming tar listings (archive-safety preflight): exit 0, no output.
+  execStream: vi.fn().mockResolvedValue(0),
   executableExists: vi.fn().mockResolvedValue(true),
 }));
 
@@ -230,7 +232,10 @@ describe('download retry and timeout behavior', () => {
           status: 200,
           headers: { 'content-length': '4' },
         })
-      );
+      )
+      // Default integrity check fetches the release SHA256SUMS after the
+      // archive lands; 404 exercises the warn-and-continue path.
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }));
 
     const fsMod = await import('../../utils/fs.js');
     vi.mocked(fsMod.pathExists).mockResolvedValue(false);
@@ -240,8 +245,8 @@ describe('download retry and timeout behavior', () => {
     const { downloadFirefoxSource } = await import('../firefox.js');
     await downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache');
 
-    // 500 + 200 = 2 calls
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // 500 + 200 (archive) + 404 (SHA256SUMS) = 3 calls
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
   it('throws DownloadError after exhausting retries on 500', async () => {

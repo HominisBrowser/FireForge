@@ -16,6 +16,7 @@ import {
   persistSingleComponentState,
   shouldPersistSingleComponentState,
 } from '../../core/furnace-state-persist.js';
+import { countEntriesWithBlockingStepErrors } from '../../core/furnace-step-errors.js';
 import {
   findOverrideBaseVersionDrift,
   formatOverrideBaseVersionDriftError,
@@ -360,7 +361,7 @@ export async function furnaceApplyCommand(
 
   const appliedWithStepErrorsCount = dryRun
     ? 0
-    : result.applied.filter((entry) => (entry.stepErrors?.length ?? 0) > 0).length;
+    : countEntriesWithBlockingStepErrors(result.applied);
   const totalApplyFailures = result.errors.length + appliedWithStepErrorsCount;
 
   if (totalApplyFailures > 0) {

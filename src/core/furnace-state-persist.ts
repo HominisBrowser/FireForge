@@ -32,14 +32,16 @@ import {
   prefixChecksums,
 } from './furnace-apply.js';
 import { type getFurnacePaths, updateFurnaceState } from './furnace-config.js';
+import { countEntriesWithBlockingStepErrors } from './furnace-step-errors.js';
 
 type ApplyAllResult = Awaited<ReturnType<typeof applyAllComponents>>;
 
 /**
- * Counts applied entries that carry at least one step error.
+ * Counts applied entries that carry at least one BLOCKING step error
+ * (advisory step errors are warnings and never fail a run).
  */
 export function getStepFailureCount(result: ApplyAllResult): number {
-  return result.applied.filter((entry) => (entry.stepErrors?.length ?? 0) > 0).length;
+  return countEntriesWithBlockingStepErrors(result.applied);
 }
 
 /**

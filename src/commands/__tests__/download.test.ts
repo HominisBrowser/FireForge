@@ -15,6 +15,7 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/firefox.js', () => ({
   downloadFirefoxSource: vi.fn().mockResolvedValue(undefined),
   formatBytes: vi.fn((value: number) => `${value} B`),
+  sweepOrphanedEngineWorkDirs: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../core/file-lock.js', () => ({

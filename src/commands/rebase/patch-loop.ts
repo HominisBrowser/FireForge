@@ -145,7 +145,10 @@ export async function runPatchLoop(
   // patch was tested against if we proceeded to stamp. Refuse to claim
   // success and leave the session in place so the user can recover via
   // `fireforge rebase --continue` after fixing the underlying cause.
-  const reExportFailures = await reExportAppliedPatches(session, paths);
+  const { failures: reExportFailures, overlapSkipped } = await reExportAppliedPatches(
+    session,
+    paths
+  );
   if (reExportFailures.length > 0) {
     for (const f of reExportFailures) {
       error(`  ${f.filename}: ${f.error}`);
@@ -157,12 +160,25 @@ export async function runPatchLoop(
     );
   }
 
-  // Stamp versions
+  if (overlapSkipped.length > 0) {
+    warn(
+      `${overlapSkipped.length} patch(es) share files with other patches and were NOT ` +
+        `re-exported or version-stamped: ${overlapSkipped.join(', ')}. Their .patch files ` +
+        `still describe the pre-rebase source. Re-export them manually (e.g. ` +
+        `"fireforge re-export") and verify the overlapping hunks before the next import.`
+    );
+  }
+
+  // Stamp versions — only for patches whose .patch file now actually
+  // reflects the new source (overlap-skipped ones keep their old stamp so
+  // the queue does not lie about what each patch was tested against).
+  const overlapSkippedSet = new Set(overlapSkipped);
   const appliedFilenames = session.patches
     .filter(
       (p) => p.status === 'applied-clean' || p.status === 'applied-fuzz' || p.status === 'resolved'
     )
-    .map((p) => p.filename);
+    .map((p) => p.filename)
+    .filter((filename) => !overlapSkippedSet.has(filename));
 
   if (appliedFilenames.length > 0) {
     await stampPatchVersions(paths.patches, appliedFilenames, session.toVersion, session.toProduct);
@@ -209,11 +225,30 @@ export async function runPatchLoop(
 async function reExportAppliedPatches(
   session: RebaseSession,
   paths: ReturnType<typeof getProjectPaths>
-): Promise<Array<{ filename: string; error: string }>> {
+): Promise<{
+  failures: Array<{ filename: string; error: string }>;
+  overlapSkipped: string[];
+}> {
   const failures: Array<{ filename: string; error: string }> = [];
+  const overlapSkipped: string[] = [];
 
   const manifest = await loadPatchesManifest(paths.patches);
-  if (!manifest) return failures;
+  if (!manifest) return { failures, overlapSkipped };
+
+  // Re-export writes `getDiffForFilesAgainstHead(files)` — the CUMULATIVE
+  // diff of those files. For a file claimed by two patches (a supported
+  // `--allow-overlap` queue), that diff contains BOTH patches' hunks, so
+  // rewriting each patch with it would duplicate the shared file's hunks
+  // into every owner: the very next import then fails or silently
+  // double-materialises. Refuse to auto-re-export any patch whose files
+  // overlap another patch; the operator re-exports those manually where
+  // per-patch attribution is possible.
+  const fileOwners = new Map<string, number>();
+  for (const patch of manifest.patches) {
+    for (const file of patch.filesAffected) {
+      fileOwners.set(file, (fileOwners.get(file) ?? 0) + 1);
+    }
+  }
 
   const s = spinner('Re-exporting patches...');
 
@@ -225,6 +260,16 @@ async function reExportAppliedPatches(
   for (const [index, entry] of reExportable.entries()) {
     const meta = manifest.patches.find((p) => p.filename === entry.filename);
     if (!meta) continue;
+
+    const sharedFiles = meta.filesAffected.filter((f) => (fileOwners.get(f) ?? 0) > 1);
+    if (sharedFiles.length > 0) {
+      overlapSkipped.push(entry.filename);
+      warn(
+        `Skipping re-export of ${entry.filename}: file(s) shared with other patches ` +
+          `(${sharedFiles.join(', ')}). Re-export it manually once the overlap is resolved.`
+      );
+      continue;
+    }
 
     const existingFiles: string[] = [];
     for (const f of meta.filesAffected) {
@@ -262,5 +307,5 @@ async function reExportAppliedPatches(
     s.stop('Patches re-exported');
   }
 
-  return failures;
+  return { failures, overlapSkipped };
 }

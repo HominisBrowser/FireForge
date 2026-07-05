@@ -49,7 +49,8 @@ export function logApplyResult(result: ApplyResultWithActions, isDryRun: boolean
     for (const applied of result.applied) {
       if (applied.stepErrors && applied.stepErrors.length > 0) {
         for (const stepErr of applied.stepErrors) {
-          warn(`${applied.name}: [${stepErr.step}] ${stepErr.error}`);
+          const advisoryPrefix = stepErr.advisory === true ? '(advisory) ' : '';
+          warn(`${applied.name}: ${advisoryPrefix}[${stepErr.step}] ${stepErr.error}`);
         }
       }
     }

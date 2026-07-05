@@ -288,14 +288,24 @@ async function prepareExport(
     throw new GeneralError('The specified paths have no diff content to export.');
   }
 
-  // Ensure patches directory exists
-  await ensureDir(paths.patches);
+  // Ensure patches directory exists. Skip during a dry-run so the command
+  // is purely read-only (matching export-all's dry-run contract).
+  if (!options.dryRun) {
+    await ensureDir(paths.patches);
+  }
 
   const config = await loadConfig(projectRoot);
   const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
 
-  // Auto-fix missing license headers on new files (interactive only)
-  const headersAdded = await autoFixLicenseHeaders(paths.engine, diff, config, isInteractive);
+  // Auto-fix missing license headers on new files (interactive only;
+  // report-only under --dry-run so the preview never mutates engine/)
+  const headersAdded = await autoFixLicenseHeaders(
+    paths.engine,
+    diff,
+    config,
+    isInteractive,
+    options.dryRun ?? false
+  );
   if (headersAdded) {
     diff = await generatePatchDiff(paths.engine, allFiles);
   }

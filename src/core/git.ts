@@ -16,6 +16,7 @@ import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
 import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
 import {
+  chunkPathspecs,
   configureGitPerformance,
   ensureGit,
   git,
@@ -516,14 +517,22 @@ export async function applyPatch(
  * Applies a patch idempotently using reverse-forward pattern.
  * First tries to reverse the patch (in case it's already applied),
  * then applies it forward.
+ *
  * @param patchPath - Path to the patch file
  * @param repoDir - Repository directory
- * @param options - Application options
+ * @param options.reject - Fall back to `git apply --reject`
+ * @param options.protectedFiles - Files that must NOT be reset to HEAD by
+ *   the recovery step. Callers applying a patch QUEUE pass the files
+ *   already touched by previously applied patches in the same run: two
+ *   overlapping patches (an `--allow-overlap` queue) share files, and the
+ *   blanket `checkout HEAD` used to wipe the earlier patch's changes from
+ *   the shared file before applying the later one — leaving the engine in
+ *   a hybrid state the summary never described.
  */
 export async function applyPatchIdempotent(
   patchPath: string,
   repoDir: string,
-  options: { reject?: boolean } = {}
+  options: { reject?: boolean; protectedFiles?: ReadonlySet<string> } = {}
 ): Promise<void> {
   await ensureGit();
 
@@ -540,16 +549,75 @@ export async function applyPatchIdempotent(
     const touchedFiles = listResult.stdout
       .split('\n')
       .map((line) => line.split('\t')[2])
-      .filter((f): f is string => !!f);
+      .filter((f): f is string => !!f)
+      .filter((f) => !(options.protectedFiles?.has(f) ?? false));
 
     if (touchedFiles.length > 0) {
-      // Restore only the files the patch touches
-      await exec('git', ['checkout', 'HEAD', '--', ...touchedFiles], { cwd: repoDir });
+      await restoreFilesToHead(repoDir, patchPath, touchedFiles);
     }
   }
 
   // Apply forward
   await applyPatch(patchPath, repoDir, options);
+}
+
+/**
+ * Restores `files` to their HEAD state, deleting files the patch would
+ * CREATE (present on disk from a partial apply but absent in HEAD — for
+ * those, `git checkout HEAD --` fails, and the historical code ignored
+ * that failure entirely, leaving stray files that made the subsequent
+ * forward apply die with "already exists" and no hint why).
+ *
+ * Every git invocation is chunked via {@link chunkPathspecs} so a very
+ * large patch cannot hit `E2BIG`, and every exit code is checked — a
+ * silent failed restore is precisely the confusing state this recovery
+ * step exists to prevent.
+ */
+async function restoreFilesToHead(
+  repoDir: string,
+  patchPath: string,
+  files: string[]
+): Promise<void> {
+  // Partition into tracked-in-HEAD (restore via checkout) and absent-in-HEAD
+  // (patch-created leftovers: delete from the worktree).
+  const trackedInHead = new Set<string>();
+  for (const chunk of chunkPathspecs(files)) {
+    const lsTree = await exec('git', ['ls-tree', '-r', '--name-only', 'HEAD', '--', ...chunk], {
+      cwd: repoDir,
+    });
+    if (lsTree.exitCode !== 0) {
+      throw new PatchApplyError(
+        patchPath,
+        new Error(`git ls-tree failed while preparing recovery: ${lsTree.stderr.trim()}`)
+      );
+    }
+    for (const line of lsTree.stdout.split('\n')) {
+      if (line.length > 0) trackedInHead.add(line);
+    }
+  }
+
+  const toCheckout = files.filter((f) => trackedInHead.has(f));
+  const toDelete = files.filter((f) => !trackedInHead.has(f));
+
+  for (const chunk of chunkPathspecs(toCheckout)) {
+    const checkout = await exec('git', ['checkout', 'HEAD', '--', ...chunk], { cwd: repoDir });
+    if (checkout.exitCode !== 0) {
+      throw new PatchApplyError(
+        patchPath,
+        new Error(
+          `Could not restore patch-touched files to HEAD before applying: ${checkout.stderr.trim()}`
+        )
+      );
+    }
+  }
+
+  for (const file of toDelete) {
+    const target = join(repoDir, file);
+    if (await pathExists(target)) {
+      await removeFile(target);
+      verbose(`Removed stray patch-created file before apply: ${file}`);
+    }
+  }
 }
 
 /**

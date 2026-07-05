@@ -12,7 +12,7 @@ import { pipeline } from 'node:stream/promises';
 import { ChecksumMismatchError } from '../errors/download.js';
 import { toError } from '../utils/errors.js';
 import { pathExistsStrict, readJson, removeFile, writeJson } from '../utils/fs.js';
-import { verbose } from '../utils/logger.js';
+import { verbose, warn } from '../utils/logger.js';
 import { createSiblingLockPath, withFileLock } from './file-lock.js';
 import type { ArchiveMetadata, ResolvedArchive } from './firefox-archive.js';
 import { validateArchiveMetadata } from './firefox-archive.js';
@@ -28,6 +28,41 @@ async function sha256File(filePath: string): Promise<string> {
   const stream = createReadStream(filePath);
   await pipeline(stream, hash);
   return hash.digest('hex');
+}
+
+/**
+ * Fetches Mozilla's published SHA256SUMS for the release and extracts the
+ * digest for this archive. Returns null when the checksum file cannot be
+ * fetched or does not list the archive — the caller warns loudly and
+ * continues (offline mirrors and staging hosts legitimately lack it), while
+ * a FETCHED-but-mismatching digest always fails closed.
+ *
+ * Line format (both variants appear in the wild):
+ *   `<64-hex-digest>  <release-relative-path>`
+ *   `<64-hex-digest> *<release-relative-path>`
+ */
+export async function fetchPublishedSha256(archive: ResolvedArchive): Promise<string | null> {
+  try {
+    const response = await fetch(archive.checksumsUrl);
+    if (!response.ok) {
+      verbose(
+        `SHA256SUMS fetch returned HTTP ${String(response.status)} for ${archive.checksumsUrl}`
+      );
+      return null;
+    }
+    const body = await response.text();
+    for (const line of body.split('\n')) {
+      const match = /^([0-9a-f]{64})\s+\*?(.+)$/.exec(line.trim());
+      if (match?.[1] && match[2] === archive.pathInChecksums) {
+        return match[1];
+      }
+    }
+    verbose(`SHA256SUMS at ${archive.checksumsUrl} does not list ${archive.pathInChecksums}`);
+    return null;
+  } catch (error: unknown) {
+    verbose(`SHA256SUMS fetch failed for ${archive.checksumsUrl}: ${toError(error).message}`);
+    return null;
+  }
 }
 
 /**
@@ -153,8 +188,32 @@ async function downloadToCache(
     promotedTarball = true;
     onCacheProgress?.(`Calculating source archive SHA-256 for ${archive.filename}...`);
     const sha256 = await sha256File(tarballPath);
-    if (expectedSha256 && sha256 !== expectedSha256) {
-      throw new ChecksumMismatchError(archive.product, expectedSha256, sha256, archive.url);
+    if (expectedSha256) {
+      // Operator-pinned digest (firefox.sha256 config): takes precedence
+      // and always fails closed.
+      if (sha256 !== expectedSha256) {
+        throw new ChecksumMismatchError(archive.product, expectedSha256, sha256, archive.url);
+      }
+    } else {
+      // Default integrity check: verify against Mozilla's published
+      // SHA256SUMS. TLS alone is thin trust for the artifact that becomes
+      // the git baseline every patch is built on — a compromised CDN
+      // response would otherwise be trusted with no signal. Mismatch fails
+      // closed (the catch below deletes the artifact); an unfetchable
+      // SHA256SUMS degrades to a loud warning so offline/mirror workflows
+      // keep working (pin firefox.sha256 in fireforge.json to fail closed
+      // even then).
+      onCacheProgress?.(`Verifying archive against published SHA256SUMS...`);
+      const publishedSha256 = await fetchPublishedSha256(archive);
+      if (publishedSha256 === null) {
+        warn(
+          `Could not verify ${archive.filename} against Mozilla's published SHA256SUMS ` +
+            `(${archive.checksumsUrl} unavailable). The download is trusted on TLS alone — ` +
+            'set firefox.sha256 in fireforge.json to require checksum verification.'
+        );
+      } else if (sha256 !== publishedSha256) {
+        throw new ChecksumMismatchError(archive.product, publishedSha256, sha256, archive.url);
+      }
     }
     onCacheProgress?.(`Writing source archive cache metadata for ${archive.metadataFilename}...`);
     await writeJson(metadataPath, {

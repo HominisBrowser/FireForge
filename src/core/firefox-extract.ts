@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { ExtractionError } from '../errors/download.js';
 import { elapsedSince } from '../utils/elapsed.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
-import { exec, execStream,executableExists } from '../utils/process.js';
+import { exec, execStream, executableExists } from '../utils/process.js';
 
 /**
  * Returns true when an archive member path could land outside the

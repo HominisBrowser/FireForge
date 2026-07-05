@@ -41,7 +41,7 @@ async function sha256File(filePath: string): Promise<string> {
  *   `<64-hex-digest>  <release-relative-path>`
  *   `<64-hex-digest> *<release-relative-path>`
  */
-export async function fetchPublishedSha256(archive: ResolvedArchive): Promise<string | null> {
+async function fetchPublishedSha256(archive: ResolvedArchive): Promise<string | null> {
   try {
     const response = await fetch(archive.checksumsUrl);
     if (!response.ok) {

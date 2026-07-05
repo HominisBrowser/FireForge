@@ -57,7 +57,7 @@ gh api "repos/$REPO/rulesets" \
         "strict_required_status_checks_policy": true,
         "required_status_checks": [
           {
-            "context": "quality (ubuntu, node 20)"
+            "context": "quality (ubuntu)"
           },
           {
             "context": "codeql"

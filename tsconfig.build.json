@@ -1,7 +1,8 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "declarationMap": false
+    "declarationMap": false,
+    "sourceMap": false
   },
   "exclude": [
     "node_modules",
@@ -9,6 +10,7 @@
     "src/**/__tests__/**",
     "src/**/*.test.ts",
     "src/**/test-utils/**",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "vitest.pack.config.ts"
   ]
 }

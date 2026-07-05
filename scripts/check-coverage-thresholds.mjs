@@ -40,6 +40,15 @@ const MODULE_THRESHOLDS = {
   'src/core/wire-subscript.ts': { lines: 98, branches: 80 },
   'src/core/patch-export.ts': { lines: 93, branches: 75 },
   'src/utils/logger.ts': { lines: 95, branches: 76, functions: 95 },
+  // 2026-07-05 review remediation: the fuzz path is now exercised against a
+  // REAL git binary (the mocked tests had validated impossible behavior),
+  // and the two furnace state/step-error modules own the invariants whose
+  // divergence caused the named-apply state wipe and the rollback-contract
+  // drift. Pins keep those regression nets from silently thinning.
+  'src/core/patch-apply-fuzz.ts': { lines: 90, branches: 80, functions: 100 },
+  'src/core/furnace-state-persist.ts': { lines: 80, branches: 70, functions: 100 },
+  'src/core/furnace-step-errors.ts': { lines: 100, branches: 95, functions: 100 },
+  'src/core/patch-artifact-normalize.ts': { lines: 100, branches: 95, functions: 100 },
   'src/utils/platform.ts': { lines: 100, branches: 100, functions: 100 },
   'src/core/register-browser-content.ts': { lines: 98, branches: 94 },
   'src/core/register-shared-css.ts': { lines: 98, branches: 94 },
@@ -134,7 +143,11 @@ function findCoverageEntry(summary, modulePath) {
   const normalizedPath = modulePath.replace(/\\/g, '/');
 
   for (const [entryPath, entry] of Object.entries(summary)) {
-    if (entryPath.replace(/\\/g, '/').endsWith(normalizedPath)) {
+    const normalizedEntry = entryPath.replace(/\\/g, '/');
+    // Require a path-separator boundary: a bare endsWith could bind
+    // 'core/git.ts' to an unrelated '.../not-core/git.ts'-shaped entry
+    // whose path merely ends with the same characters.
+    if (normalizedEntry === normalizedPath || normalizedEntry.endsWith(`/${normalizedPath}`)) {
       return entry;
     }
   }

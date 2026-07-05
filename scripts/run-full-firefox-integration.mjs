@@ -2,7 +2,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { constants } from 'node:fs';
-import { access, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -549,17 +549,22 @@ async function main() {
   await runFireforge('bootstrap', ['bootstrap']);
   await runFireforge('build', buildMode === 'full' ? ['build'] : ['build', '--ui']);
 
-  const objDirs = runCapture('ls', ['-d', join(engineDir, 'obj-*')], {
-    allowFailure: true,
-  });
-  if (objDirs.exitCode === 0) {
-    const firstObjDir = objDirs.stdout.trim().split('\n')[0];
-    const distBinPath = join(firstObjDir, 'dist', 'bin');
+  // readdir + prefix filter, NOT `ls obj-*`: spawn without a shell never
+  // glob-expands, so the ls form always exited non-zero and allowFailure
+  // swallowed it — this masked-build-failure detection could never fire.
+  const engineEntries = await readdir(engineDir).catch(() => []);
+  const firstObjDir = engineEntries.filter((name) => name.startsWith('obj-')).sort()[0];
+  if (firstObjDir) {
+    const distBinPath = join(engineDir, firstObjDir, 'dist', 'bin');
     if (!(await pathExists(distBinPath))) {
       report.observations.buildArtifactWarning =
         `Build exited successfully but ${distBinPath} does not exist. ` +
         'mach may have masked a build failure with exit code 0.';
     }
+  } else {
+    report.observations.buildArtifactWarning =
+      'Build exited successfully but no obj-* directory exists in engine/. ' +
+      'mach may have masked a build failure with exit code 0.';
   }
 
   await writeFile(targetAbsolutePath, appendMarker(originalTargetContent, patchMarker), 'utf8');

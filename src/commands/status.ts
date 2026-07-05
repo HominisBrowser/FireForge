@@ -18,7 +18,7 @@ import { ExitCode } from '../errors/codes.js';
 import type { CommandContext } from '../types/cli.js';
 import type { StatusOptions } from '../types/commands/index.js';
 import { FIREFORGE_TMP_PATH_PATTERN, pathExists } from '../utils/fs.js';
-import { info, intro, outro, warn } from '../utils/logger.js';
+import { info, intro, outro, setMachineOutputMode, warn } from '../utils/logger.js';
 import {
   type ClassifiedBuckets,
   renderDefaultStatus,
@@ -50,14 +50,22 @@ function resolveMaxUntrackedFilesPerDir(): number {
   return parsed;
 }
 
-const MAX_UNTRACKED_FILES_PER_DIR = resolveMaxUntrackedFilesPerDir();
+// Resolved lazily at first use: this module is imported by the command
+// manifest for EVERY command, so a module-load-time parse printed the
+// status-specific env warning during `fireforge build` etc.
+let maxUntrackedFilesPerDir: number | undefined;
+
+function getMaxUntrackedFilesPerDir(): number {
+  maxUntrackedFilesPerDir ??= resolveMaxUntrackedFilesPerDir();
+  return maxUntrackedFilesPerDir;
+}
 
 /**
  * Expands collapsed untracked directory entries into individual file entries.
  * Git status may report an entire untracked directory as a single entry (e.g. "?? dir/").
  * This function expands those into individual file entries so each file can be classified.
  *
- * Per-directory expansion is capped at {@link MAX_UNTRACKED_FILES_PER_DIR}
+ * Per-directory expansion is capped at FIREFORGE_MAX_UNTRACKED_FILES (default 5000)
  * entries; any overflow is dropped with a warning. Git ls-files itself
  * does not infinite-recurse on symlink loops, but a directory full of
  * generated artefacts can still produce an arbitrarily large list, and
@@ -89,17 +97,17 @@ async function expandDirectoryEntries(
   for (const entry of files) {
     if (entry.file.endsWith('/') && entry.status.includes('?')) {
       const individualFiles = await getUntrackedFilesInDir(engineDir, entry.file);
-      if (individualFiles.length > MAX_UNTRACKED_FILES_PER_DIR) {
-        warn(
-          `Untracked directory ${entry.file} contains ${individualFiles.length} files — only the first ${MAX_UNTRACKED_FILES_PER_DIR} will be classified. Consider adding a .gitignore entry.`
-        );
+      const cap = getMaxUntrackedFilesPerDir();
+      if (individualFiles.length > cap) {
+        // Recorded once here, reported once by renderTruncationBanner —
+        // the previous per-directory warn duplicated the banner's content.
         truncations.push({
           dir: entry.file,
           total: individualFiles.length,
-          shown: MAX_UNTRACKED_FILES_PER_DIR,
+          shown: cap,
         });
       }
-      const limited = individualFiles.slice(0, MAX_UNTRACKED_FILES_PER_DIR);
+      const limited = individualFiles.slice(0, cap);
       for (const f of limited) {
         expanded.push({ status: '??', file: f });
       }
@@ -230,6 +238,13 @@ export async function statusCommand(
   projectRoot: string,
   options: StatusOptions = {}
 ): Promise<void> {
+  // Machine modes own stdout exclusively: every diagnostic (clack warnings,
+  // withErrorHandling's styled errors, spinner steps) routes to stderr so
+  // `status --json | jq .` and `--raw` pipes always parse.
+  if (options.json === true || options.raw === true) {
+    setMachineOutputMode(true);
+  }
+
   const modeCount = [options.raw, options.unmanaged, options.ownership, options.json].filter(
     (v) => v === true
   ).length;

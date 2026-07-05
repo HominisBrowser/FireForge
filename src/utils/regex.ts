@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { tokenizer as acornTokenizer, tokTypes as acornTokTypes } from 'acorn';
+
 /**
  * Escapes special regex characters in a string.
  */
@@ -28,11 +30,59 @@ export function hasRawCssColors(content: string): boolean {
 }
 
 /**
- * Strips JS single-line and multi-line comments from source code, replacing them
- * with spaces of equal length to preserve character offsets. String literals
- * (single-quoted, double-quoted, and template) are preserved intact.
+ * Strips JS single-line and multi-line comments from source code, replacing
+ * comment bytes with spaces (newlines inside block comments are kept) so
+ * both character offsets AND line numbers are preserved. String literals
+ * are preserved intact.
+ *
+ * Uses acorn's tokenizer, which understands regex literals — the previous
+ * pure-regex implementation did not model them, so two adjacent slashes
+ * inside a regex (e.g. the tail of `/https?:\/\//`) were treated as a `//`
+ * line comment and the rest of the line was blanked, corrupting whatever
+ * lint pass consumed the stripped text. Firefox chrome sources contain
+ * preprocessor directives (`#ifdef`) and other constructs acorn cannot
+ * tokenize; those fall back to the legacy regex strip, which handles
+ * strings but NOT regex literals (documented limitation of the fallback).
  */
 export function stripJsComments(source: string): string {
+  const comments: Array<{ start: number; end: number }> = [];
+  try {
+    const t = acornTokenizer(source, {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      allowHashBang: true,
+      onComment: (_isBlock, _text, start, end) => {
+        comments.push({ start, end });
+      },
+    });
+    // Drive the tokenizer to EOF; we only care about onComment callbacks.
+    for (;;) {
+      const token = t.getToken();
+      if (token.type === acornTokTypes.eof) break;
+    }
+  } catch {
+    return stripJsCommentsLegacy(source);
+  }
+
+  if (comments.length === 0) return source;
+  const chars = source.split('');
+  for (const { start, end } of comments) {
+    for (let i = start; i < end; i++) {
+      if (chars[i] !== '\n' && chars[i] !== '\r') {
+        chars[i] = ' ';
+      }
+    }
+  }
+  return chars.join('');
+}
+
+/**
+ * Legacy pure-regex comment strip, used only when acorn cannot tokenize
+ * the source (preprocessor directives, syntax errors). Strings survive;
+ * regex literals are NOT modeled, so `//` inside a regex blanks the rest
+ * of the line.
+ */
+function stripJsCommentsLegacy(source: string): string {
   return source.replace(
     /\/\/.*$|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/gm,
     (match) => (match.startsWith('/') ? ' '.repeat(match.length) : match)

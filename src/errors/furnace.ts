@@ -11,10 +11,24 @@ export class FurnaceError extends FireForgeError {
   constructor(
     message: string,
     public readonly component?: string,
-    cause?: Error
+    cause?: Error,
+    options?: {
+      /**
+       * Suppresses the "run furnace validate" advice line. Set by callers
+       * whose message already tells the user to run validate (or that ARE
+       * the validate command) — an explicit flag, because the previous
+       * `message.includes('furnace validate')` sniffing dropped the advice
+       * from any error that merely MENTIONED the command.
+       */
+      omitValidateAdvice?: boolean;
+    }
   ) {
     super(message, cause);
+    this.omitValidateAdvice =
+      options?.omitValidateAdvice ?? message.includes('Run "fireforge furnace validate"');
   }
+
+  private readonly omitValidateAdvice: boolean;
 
   override get userMessage(): string {
     let msg = this.component
@@ -23,11 +37,10 @@ export class FurnaceError extends FireForgeError {
 
     msg += '\n\nTo fix this:\n';
     msg += '  1. Check the error message above for specifics\n';
-    // Avoid circular advice when the error is thrown during validation itself.
-    if (!this.message.includes('furnace validate')) {
+    if (!this.omitValidateAdvice) {
       msg += '  2. Run "fireforge furnace validate" to diagnose issues\n';
     }
-    msg += `  ${this.message.includes('furnace validate') ? '2' : '3'}. Use "fireforge doctor --repair-furnace" if state is inconsistent`;
+    msg += `  ${this.omitValidateAdvice ? '2' : '3'}. Use "fireforge doctor --repair-furnace" if state is inconsistent`;
 
     return msg;
   }

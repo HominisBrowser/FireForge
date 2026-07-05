@@ -21,7 +21,11 @@ import { join } from 'node:path';
 
 import { loadConfig } from '../../core/config.js';
 import { xpcshellTestParentDir } from '../../core/furnace-constants.js';
-import { type RollbackJournal, snapshotFile } from '../../core/furnace-rollback.js';
+import {
+  recordCreatedDir,
+  type RollbackJournal,
+  snapshotFile,
+} from '../../core/furnace-rollback.js';
 import { toError } from '../../utils/errors.js';
 import {
   ensureDir,
@@ -82,6 +86,10 @@ export async function renameXpcshellTestFiles(
   const newTestFileName = `test_${newUnderscored}_packaged.js`;
 
   try {
+    // Journal the new scaffold dir + files so rollback (including the
+    // SIGINT path) removes them; only the old-name files were journaled
+    // before, so a failed rename stranded the new-name scaffold.
+    recordCreatedDir(journal, newScaffoldDir);
     await ensureDir(newScaffoldDir);
     const entries = await readdir(oldScaffoldDir, { withFileTypes: true });
     for (const entry of entries) {
@@ -90,6 +98,7 @@ export async function renameXpcshellTestFiles(
       const renamedFileName = entry.name === oldTestFileName ? newTestFileName : entry.name;
       const newFilePath = join(newScaffoldDir, renamedFileName);
       await snapshotFile(journal, oldFilePath);
+      await snapshotFile(journal, newFilePath);
 
       const body = await readText(oldFilePath);
       let updated = body;

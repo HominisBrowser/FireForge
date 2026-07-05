@@ -196,10 +196,12 @@ export async function discardCommand(
   }
 
   if (options.dryRun) {
-    const target =
-      statusEntry.originalPath === file
-        ? `${statusEntry.originalPath} -> ${statusEntry.file}`
-        : statusEntry.file;
+    // Show the rename pair regardless of which side the operator passed —
+    // passing the NEW path of a rename used to hide that discarding also
+    // resurrects the old path, exactly when the full picture matters most.
+    const target = statusEntry.originalPath
+      ? `${statusEntry.originalPath} -> ${statusEntry.file}`
+      : statusEntry.file;
     info(`Would discard changes to: ${target}`);
     outro('Dry run complete — no changes made');
     return;

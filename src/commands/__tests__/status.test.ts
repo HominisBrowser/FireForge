@@ -87,6 +87,7 @@ vi.mock('../../utils/logger.js', () => ({
   outro: vi.fn(),
   info: vi.fn(),
   warn: vi.fn(),
+  setMachineOutputMode: vi.fn(),
 }));
 
 describe('statusCommand', () => {
@@ -249,10 +250,10 @@ describe('statusCommand', () => {
 
       await statusCommand(projectRoot);
 
-      // Warning message indicates truncation. The exact cap (5000) lives
-      // in MAX_UNTRACKED_FILES_PER_DIR; this test pins the contract that
-      // truncation surfaces, not the specific number.
-      expect(warnMessages().some((m) => m.includes('only the first'))).toBe(true);
+      // The truncation banner is the single report (the old per-directory
+      // warn duplicated its content). This pins the contract that
+      // truncation surfaces with the directory named, not the exact cap.
+      expect(warnMessages().some((m) => m.includes('Status output is truncated'))).toBe(true);
       expect(warnMessages().some((m) => m.includes('build-output/'))).toBe(true);
     });
 

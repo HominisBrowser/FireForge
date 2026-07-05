@@ -50,16 +50,27 @@ export function getPackageRoot(): string {
   let current = dirname(fileURLToPath(import.meta.url));
 
   for (;;) {
+    const packagePath = join(current, 'package.json');
     try {
-      const packagePath = join(current, 'package.json');
       const pkg = readPackageMetadata(packagePath);
       if (isFireForgePackageMetadata(pkg)) {
         cachedPackageRoot = current;
         return current;
       }
     } catch (error: unknown) {
-      void error;
-      // no package.json here — keep walking
+      // Absent package.json: keep walking. A package.json that EXISTS but
+      // fails to parse is a different animal — walking past it could bind
+      // to a wrong ancestor package (any parent exposing bin.fireforge) or
+      // end in the unhelpful generic "could not locate" error, hiding the
+      // actual syntax problem.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        throw new Error(
+          `Found ${packagePath} but could not parse it: ` +
+            (error instanceof Error ? error.message : String(error)),
+          { cause: error }
+        );
+      }
     }
 
     const parent = dirname(current);

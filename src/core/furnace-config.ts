@@ -190,6 +190,28 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
   // Validate that every composes reference points to a known component.
   validateComposesReferences(stock, overrides, custom);
 
+  // Warn when two custom components share a targetPath. Nothing technically
+  // prevents co-location, but per-component removal and orphan detection
+  // both reason about "files this component deployed into its directory" —
+  // shared directories make those judgements ambiguous, and historically a
+  // shared targetPath meant `furnace remove` of one component deleted the
+  // other's deployed files.
+  const targetPathOwners = new Map<string, string[]>();
+  for (const [name, custom_] of Object.entries(custom)) {
+    const owners = targetPathOwners.get(custom_.targetPath) ?? [];
+    owners.push(name);
+    targetPathOwners.set(custom_.targetPath, owners);
+  }
+  for (const [targetPath, owners] of targetPathOwners) {
+    if (owners.length > 1) {
+      warn(
+        `furnace.json: custom components ${owners.join(', ')} share targetPath "${targetPath}". ` +
+          'Give each component its own directory — shared directories make per-component ' +
+          'removal and drift detection ambiguous.'
+      );
+    }
+  }
+
   const config: FurnaceConfig = {
     version: CURRENT_CONFIG_VERSION,
     componentPrefix: migrated['componentPrefix'],

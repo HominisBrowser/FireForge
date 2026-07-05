@@ -692,9 +692,23 @@ export function registerLint(
       )
     );
 
-  lint
+  const lintCache = lint
     .command('cache')
     .description('Manage the per-patch lint result cache')
+    // Commander routes `fireforge lint cache` here even when the operator
+    // meant to lint an engine directory literally named `cache`. A bare
+    // `lint cache` (no subcommand) used to silently do nothing — make the
+    // ambiguity explicit instead of doing the wrong operation quietly.
+    .action(
+      withErrorHandling(() => {
+        info(
+          'Nothing to do: "lint cache" manages the lint result cache (try "lint cache clear"). ' +
+            'To lint a directory named cache/, disambiguate with a trailing slash: "fireforge lint cache/".'
+        );
+        return Promise.resolve();
+      })
+    );
+  lintCache
     .command('clear')
     .description('Clear cached per-patch lint results')
     .action(

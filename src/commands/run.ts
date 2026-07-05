@@ -29,7 +29,7 @@ import type { RunOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, removeDir, removeFile } from '../utils/fs.js';
 import { info, intro, verbose, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { commanderArgParser, pickDefined } from '../utils/options.js';
 
 /**
  * Exit code returned by smoke-run mode when the captured console stream
@@ -422,7 +422,7 @@ export function registerRun(
     .option(
       '--smoke-exit <seconds>',
       'Smoke-run mode (POSIX only): launch, capture console, SIGTERM the process group after <seconds>. Exit 0 on a clean window, 12 on unallowed errors, 13 on launch failure.',
-      (value: string) => {
+      commanderArgParser((value: string) => {
         const parsed = Number.parseInt(value, 10);
         if (!Number.isFinite(parsed) || parsed < 1 || String(parsed) !== value.trim()) {
           throw new Error(
@@ -430,7 +430,7 @@ export function registerRun(
           );
         }
         return parsed;
-      }
+      })
     )
     .option(
       '--console-allow <regex>',

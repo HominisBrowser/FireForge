@@ -17,7 +17,7 @@ import { exec } from '../utils/process.js';
 import { applyPatchIdempotent, reversePatch } from './git.js';
 import { getFileContentFromHead } from './git-file-ops.js';
 import { discoverPatches } from './patch-files.js';
-import { findPatchesAffectingFile } from './patch-manifest.js';
+import { findPatchesAffectingFile, loadPatchesManifest } from './patch-manifest.js';
 import { extractAffectedFiles, extractConflictingFiles, isNewFileInPatch } from './patch-parse.js';
 import { applyPatchToContent, extractNewFileContent } from './patch-transform.js';
 
@@ -74,16 +74,27 @@ async function applySinglePatch(
 
     // Save original content for files we might overwrite, so we can restore on failure
     const savedContents = new Map<string, string>();
-    for (const file of affectedFiles) {
-      if (isNewFileInPatch(patchContent, file)) {
-        const targetPath = join(engineDir, file);
-        if (await pathExists(targetPath)) {
-          savedContents.set(file, await readText(targetPath));
-          const content = await extractNewFileContent(patch.path, file);
-          await writeText(targetPath, content);
-          resolvedNewFiles = true;
+    try {
+      for (const file of affectedFiles) {
+        if (isNewFileInPatch(patchContent, file)) {
+          const targetPath = join(engineDir, file);
+          if (await pathExists(targetPath)) {
+            savedContents.set(file, await readText(targetPath));
+            const content = await extractNewFileContent(patch.path, file);
+            await writeText(targetPath, content);
+            resolvedNewFiles = true;
+          }
         }
       }
+    } catch (extractError: unknown) {
+      // extractNewFileContent threw for a LATER target (e.g. a binary
+      // section) after earlier targets were already overwritten — restore
+      // them before reporting failure, instead of letting the exception
+      // skip the restore loop entirely and crash the whole import.
+      for (const [file, originalContent] of savedContents) {
+        await writeText(join(engineDir, file), originalContent);
+      }
+      return { patch, success: false, error: toError(extractError).message };
     }
 
     if (resolvedNewFiles) {
@@ -91,7 +102,11 @@ async function applySinglePatch(
         await applyPatchIdempotent(patch.path, engineDir, {
           ...(protectedFiles ? { protectedFiles } : {}),
         });
-        return { patch, success: true, autoResolved: true };
+        // Keep the originals: rollbackPatches needs them if a LATER patch
+        // fails, since reverse-applying this new-file patch deletes the
+        // target and would otherwise permanently discard the pre-existing
+        // content (recoverable from git only if it was tracked at HEAD).
+        return { patch, success: true, autoResolved: true, autoResolvedOriginals: savedContents };
       } catch (retryError: unknown) {
         verbose(
           `Auto-resolved new-file retry failed for ${patch.filename}: ${toError(retryError).message}`
@@ -138,6 +153,18 @@ async function rollbackPatches(results: PatchResult[], engineDir: string): Promi
       verbose(`Rolled back ${result.patch.filename}`);
     } catch (rollbackError: unknown) {
       verbose(`Failed to roll back ${result.patch.filename}: ${toError(rollbackError).message}`);
+    }
+    // Reversing an auto-resolved new-file patch deletes the target; put
+    // back the pre-existing content the auto-resolve overwrote.
+    if (result.autoResolvedOriginals) {
+      for (const [file, originalContent] of result.autoResolvedOriginals) {
+        try {
+          await writeText(join(engineDir, file), originalContent);
+          verbose(`Restored pre-existing content of ${file} after rollback`);
+        } catch (restoreError: unknown) {
+          verbose(`Could not restore ${file}: ${toError(restoreError).message}`);
+        }
+      }
     }
   }
 }
@@ -315,7 +342,7 @@ export interface ApplyPatchesOptions {
  * short-circuit was kept behind the numeric gate so the match stays
  * single-meaning per identifier.
  */
-function matchesUntilFilename(patchFilename: string, needle: string): boolean {
+export function matchesUntilFilename(patchFilename: string, needle: string): boolean {
   const isNumeric = /^\d+$/.test(needle);
   if (isNumeric) {
     const order = parseInt(needle, 10);
@@ -468,4 +495,42 @@ export async function computePatchedContent(
   }
 
   return content;
+}
+
+/**
+ * Builds a batched variant of {@link computePatchedContent} that loads the
+ * manifest and discovers patch files ONCE for many lookups. The per-call
+ * function re-runs `loadPatchesManifest` + `discoverPatches` for every
+ * file — O(dirtyFiles × patches) redundant IO when classifying a broad
+ * engine edit session during `import`.
+ */
+export async function createPatchedContentComputer(
+  patchesDir: string,
+  engineDir: string
+): Promise<(filePath: string) => Promise<string | null>> {
+  const manifest = await loadPatchesManifest(patchesDir);
+  const patches = await discoverPatches(patchesDir);
+  const patchByFilename = new Map(patches.map((p) => [p.filename, p]));
+
+  const affectingByFile = new Map<string, PatchInfo[]>();
+  for (const metadata of manifest?.patches ?? []) {
+    const patch = patchByFilename.get(metadata.filename);
+    if (!patch) continue;
+    for (const file of metadata.filesAffected) {
+      const list = affectingByFile.get(file) ?? [];
+      list.push(patch);
+      affectingByFile.set(file, list);
+    }
+  }
+  for (const list of affectingByFile.values()) {
+    list.sort((a, b) => a.order - b.order);
+  }
+
+  return async (filePath: string): Promise<string | null> => {
+    let content = await getFileContentFromHead(engineDir, filePath);
+    for (const patch of affectingByFile.get(filePath) ?? []) {
+      content = await applyPatchToContent(content, patch.path, filePath);
+    }
+    return content;
+  };
 }

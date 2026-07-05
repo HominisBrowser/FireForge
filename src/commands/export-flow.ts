@@ -11,6 +11,7 @@
 import { join } from 'node:path';
 
 import { type ConflictReport } from '../core/destructive.js';
+import { normalizePatchArtifact } from '../core/patch-artifact-normalize.js';
 import {
   findAllPatchesForFilesWithDetails,
   planExport,
@@ -434,7 +435,9 @@ export async function commitPlacementExport(
         await renumberPatchesInManifest(input.patchesDir, currentPlan.renameMap);
         renumberApplied = true;
       }
-      await writeText(patchPath, input.diff);
+      // Normalize identically to commitExportedPatch — the two export
+      // paths must produce one artifact contract for the same diff.
+      await writeText(patchPath, normalizePatchArtifact(input.diff));
       await addPatchToManifest(input.patchesDir, {
         ...input.metadata,
         filename: currentPlan.newFilename,

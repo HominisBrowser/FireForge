@@ -63,6 +63,7 @@ vi.mock('../../core/furnace-config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-rollback.js', () => ({
+  recordCreatedDir: vi.fn(),
   createRollbackJournal: vi.fn(() => ({
     files: new Map(),
     createdDirs: new Set(),

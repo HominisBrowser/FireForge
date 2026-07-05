@@ -248,6 +248,10 @@ export async function watchCommand(projectRoot: string): Promise<void> {
     );
   }
 
+  // On Ctrl+C the bin signal handler now waits for the mach child to shut
+  // down (waitForActiveChildShutdown) before exiting, so this continuation
+  // can run and whitelist the SIGINT exit code — though the bin may still
+  // win the race and terminate first; both outcomes are acceptable.
   if (result.exitCode !== 0 && result.exitCode !== 130) {
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
     if (hasConfigureTimeWatchmanFailure(combinedOutput)) {

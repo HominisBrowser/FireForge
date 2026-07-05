@@ -14,7 +14,7 @@ import {
   stat,
   statfs,
 } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 const RETRIABLE_REMOVE_ERRORS = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
 
@@ -308,7 +308,10 @@ export const FIREFORGE_TMP_PATH_PATTERN = /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9
  */
 function createAtomicTempPath(path: string): string {
   const directory = dirname(path);
-  const filename = path.slice(directory.length + 1);
+  // basename, not slice(dirname.length + 1): when dirname ends with the
+  // separator (filesystem/drive roots, e.g. dirname('/foo') === '/'), the
+  // slice arithmetic chopped the first filename character ('/foo' → 'oo').
+  const filename = basename(path);
   return join(directory, `.${filename}.fireforge-tmp-${process.pid}-${randomUUID()}`);
 }
 
@@ -330,7 +333,11 @@ export async function checkDiskSpace(
 ): Promise<number | undefined> {
   try {
     const stats = await statfs(path);
-    const availableBytes = stats.bfree * stats.bsize;
+    // bavail = blocks available to UNPRIVILEGED users; bfree includes the
+    // root-reserved blocks (typically 5% on ext4), so it over-reported free
+    // space and silently suppressed the low-space warning exactly when it
+    // mattered.
+    const availableBytes = stats.bavail * stats.bsize;
     if (availableBytes < minBytes) {
       const availableGB = (availableBytes / (1024 * 1024 * 1024)).toFixed(1);
       const requiredGB = (minBytes / (1024 * 1024 * 1024)).toFixed(1);

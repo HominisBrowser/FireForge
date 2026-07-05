@@ -27,7 +27,7 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { commanderArgParser, pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { parsePositiveIntegerFlag } from '../utils/validation.js';
 import { commitPlacementExport, type PlacementPlan, renderDryRunPreview } from './export-flow.js';
@@ -522,7 +522,7 @@ export function registerExport(
       new Option(
         '--order <N>',
         'Place the new patch at this exact unused order without renumbering existing patches'
-      ).argParser((v) => parsePositiveIntegerFlag('--order', v))
+      ).argParser(commanderArgParser((v) => parsePositiveIntegerFlag('--order', v)))
     )
     .option('--before <anchor>', 'Place the new patch immediately before <anchor>')
     .option('--after <anchor>', 'Place the new patch immediately after <anchor>')

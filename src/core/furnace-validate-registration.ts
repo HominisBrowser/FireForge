@@ -19,6 +19,7 @@ import { getFurnacePaths } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, FTL_DIR, JAR_MN } from './furnace-constants.js';
 import { expandCssFragments, listFragmentIncludes } from './furnace-css-fragments.js';
 import { findStaleJarMnEntries } from './furnace-registration.js';
+import { isTagAlreadyRegistered } from './furnace-registration-ast.js';
 import { isTagInCorrectCustomElementsPlacement } from './furnace-registration-validate.js';
 import { getTokensCssPath } from './token-manager.js';
 
@@ -188,8 +189,11 @@ export async function checkRegistrationConsistency(
   const cePath = join(engineDir, CUSTOM_ELEMENTS_JS);
   if (await pathExists(cePath)) {
     const ceContent = await readText(cePath);
-    status.customElementsPresent =
-      ceContent.includes(`"${name}"`) || ceContent.includes(`'${name}'`);
+    // Structure-aware check shared with the ADD path — a bare substring
+    // test counted any mention of the tag (a leftover comment, an
+    // unrelated string) as "registered", masking genuinely missing
+    // registrations from both validate and the re-apply drift oracle.
+    status.customElementsPresent = isTagAlreadyRegistered(ceContent, name);
 
     if (status.customElementsPresent) {
       status.customElementsCorrectBlock = isTagInCorrectCustomElementsPlacement(

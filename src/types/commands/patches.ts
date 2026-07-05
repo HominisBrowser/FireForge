@@ -36,6 +36,14 @@ export interface PatchResult {
   conflictingFiles?: string[];
   /** Whether the patch was auto-resolved (new file vs existing file conflict) */
   autoResolved?: boolean;
+  /**
+   * Pre-existing content of files the auto-resolve overwrote, keyed by
+   * engine-relative path. Kept for the RUN's duration (not just the retry):
+   * if a later patch fails and `rollbackPatches` reverse-applies this one,
+   * reversing a new-file patch DELETES the file — these snapshots are the
+   * only way to restore what was there before the auto-resolve.
+   */
+  autoResolvedOriginals?: Map<string, string>;
 }
 
 /**

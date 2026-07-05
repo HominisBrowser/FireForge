@@ -41,7 +41,7 @@ import type { PatchMetadata, PatchSplitOptions } from '../../types/commands/inde
 import { toError } from '../../utils/errors.js';
 import { readText, removeFile, writeText } from '../../utils/fs.js';
 import { info, intro, outro, success, warn } from '../../utils/logger.js';
-import { pickDefined } from '../../utils/options.js';
+import { commanderArgParser, pickDefined } from '../../utils/options.js';
 import { placementPlansEqual, resolvePlacementPlan } from '../export-flow.js';
 import { runPatchLint } from '../export-shared.js';
 import {
@@ -365,16 +365,20 @@ export function registerPatchSplit(parent: Command, context: CommandContext): vo
     .requiredOption('--name <name>', 'Name for the new patch')
     .option('--category <category>', "Category for the new patch (default: the source patch's)")
     .option('--description <desc>', 'Description for the new patch')
-    .option('--order <n>', 'Exact sparse order for the new patch', (raw: string) => {
-      const n = Number.parseInt(raw, 10);
-      if (!Number.isInteger(n) || n <= 0) {
-        throw new InvalidArgumentError(
-          `--order must be a positive integer, got "${raw}".`,
-          '--order'
-        );
-      }
-      return n;
-    })
+    .option(
+      '--order <n>',
+      'Exact sparse order for the new patch',
+      commanderArgParser((raw: string) => {
+        const n = Number.parseInt(raw, 10);
+        if (!Number.isInteger(n) || n <= 0) {
+          throw new InvalidArgumentError(
+            `--order must be a positive integer, got "${raw}".`,
+            '--order'
+          );
+        }
+        return n;
+      })
+    )
     .option('--before <patch>', 'Place the new patch before this patch')
     .option('--after <patch>', 'Place the new patch after this patch (default: the source patch)')
     .option('--dry-run', 'Show what would happen without writing')

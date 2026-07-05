@@ -148,8 +148,12 @@ export async function applyPatchToContent(
       );
     }
 
-    // Replace the old lines with new lines
-    const startIndex = hunk.oldStart - 1;
+    // Replace the old lines with new lines. Unified-diff convention: for a
+    // pure-insertion hunk (`@@ -N,0 +M,k @@`), N names the line BEFORE the
+    // insertion point, so content is spliced at index N (after line N) —
+    // `N - 1` inserted one line too early, and `@@ -0,0` (insert at top of
+    // file) produced splice(-1, …), which inserts before the LAST element.
+    const startIndex = hunk.oldCount === 0 ? hunk.oldStart : hunk.oldStart - 1;
 
     // Verify context lines match before applying
     let verifyIndex = startIndex;

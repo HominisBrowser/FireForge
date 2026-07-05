@@ -221,6 +221,48 @@ export async function execStream(
 }
 
 /**
+ * Close-promises of children whose shutdown the CLI must wait for when a
+ * termination signal arrives. The bin signal handler used to `process.exit`
+ * within a microtask of the first Ctrl+C, which made `execInherit`'s
+ * documented SIGTERM → grace → SIGKILL escalation unreachable: the parent
+ * was gone before the 1500 ms grace timer could fire, so a hung Firefox
+ * was orphaned forever instead of being SIGKILLed and a healthy one lost
+ * its AsyncShutdown flush window.
+ */
+const activeChildClosures = new Set<Promise<void>>();
+
+function trackChildClosure(): { settle: () => void } {
+  let resolveClosed: (() => void) | undefined;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  activeChildClosures.add(closed);
+  return {
+    settle: (): void => {
+      resolveClosed?.();
+      activeChildClosures.delete(closed);
+    },
+  };
+}
+
+/**
+ * Waits (bounded) for every tracked child process to close. Called by the
+ * bin signal handler after forwarding SIGINT/SIGTERM, so the parent stays
+ * alive long enough for the grace-then-SIGKILL escalation to actually run.
+ * Resolves immediately when no children are active.
+ */
+export async function waitForActiveChildShutdown(timeoutMs: number): Promise<void> {
+  if (activeChildClosures.size === 0) return;
+  await Promise.race([
+    Promise.allSettled([...activeChildClosures]),
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      timer.unref();
+    }),
+  ]);
+}
+
+/**
  * Executes a command and inherits stdio (shows output directly).
  *
  * Graceful shutdown: when the FireForge process receives SIGINT/SIGTERM, the
@@ -251,14 +293,17 @@ export async function execInherit(
 
     const graceMs = options.shutdownGraceMs ?? 1500;
     const { dispose } = installGracefulShutdownForwarder(child, graceMs);
+    const closure = trackChildClosure();
 
     child.on('error', (error) => {
       dispose();
+      closure.settle();
       reject(toExecRejection(error, command, args, options.timeout));
     });
 
     child.on('close', (code, signal) => {
       dispose();
+      closure.settle();
       resolve(exitCodeFromClose(code, signal));
     });
   });
@@ -355,14 +400,17 @@ export async function execInheritCapture(
 
     const graceMs = options.shutdownGraceMs ?? 1500;
     const { dispose } = installGracefulShutdownForwarder(child, graceMs);
+    const closure = trackChildClosure();
 
     child.on('error', (error) => {
       dispose();
+      closure.settle();
       reject(toExecRejection(error, command, args, options.timeout));
     });
 
     child.on('close', (code, signal) => {
       dispose();
+      closure.settle();
       resolve({
         stdout: out.getText(),
         stderr: err.getText(),
@@ -489,6 +537,7 @@ export async function execSmokeRun(
 
     let timedOut = false;
     let graceTimer: NodeJS.Timeout | undefined;
+    let signalGraceTimer: NodeJS.Timeout | undefined;
 
     const signalChildGroup = (signal: NodeJS.Signals): void => {
       if (child.exitCode !== null || child.signalCode !== null) return;
@@ -527,15 +576,52 @@ export async function execSmokeRun(
     }, options.smokeTimeoutMs);
     deadlineTimer.unref();
 
+    // Forward parent SIGINT/SIGTERM to the whole child process group. The
+    // smoke child is a group leader (detached), so it does NOT receive the
+    // terminal's Ctrl+C SIGINT — without this forwarder, the parent exits
+    // and the entire mach → firefox tree is orphaned. Second signal (or
+    // grace expiry) escalates to a group SIGKILL.
+    const forwardedSignals = new Set<NodeJS.Signals>();
+    const onParentSignal = (signal: NodeJS.Signals): void => {
+      if (forwardedSignals.has(signal)) {
+        signalChildGroup('SIGKILL');
+        return;
+      }
+      forwardedSignals.add(signal);
+      signalChildGroup('SIGTERM');
+      signalGraceTimer = setTimeout(() => {
+        signalChildGroup('SIGKILL');
+      }, options.killGraceMs ?? 10000);
+      signalGraceTimer.unref();
+    };
+    const onSigint = (): void => {
+      onParentSignal('SIGINT');
+    };
+    const onSigterm = (): void => {
+      onParentSignal('SIGTERM');
+    };
+    process.on('SIGINT', onSigint);
+    process.on('SIGTERM', onSigterm);
+
+    const closure = trackChildClosure();
+    const cleanupSignalForwarding = (): void => {
+      process.off('SIGINT', onSigint);
+      process.off('SIGTERM', onSigterm);
+      if (signalGraceTimer) clearTimeout(signalGraceTimer);
+      closure.settle();
+    };
+
     child.on('error', (error) => {
       clearTimeout(deadlineTimer);
       if (graceTimer) clearTimeout(graceTimer);
+      cleanupSignalForwarding();
       reject(error);
     });
 
     child.on('close', (code, signal) => {
       clearTimeout(deadlineTimer);
       if (graceTimer) clearTimeout(graceTimer);
+      cleanupSignalForwarding();
 
       // Flush any remaining partial line (child ended without a trailing newline).
       if (stdoutBuffer.length > 0) options.onStdoutLine?.(stdoutBuffer);

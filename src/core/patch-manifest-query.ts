@@ -6,7 +6,7 @@
 import type { PatchesManifest, PatchInfo, PatchMetadata } from '../types/commands/index.js';
 import type { FirefoxProduct } from '../types/config.js';
 import { readText } from '../utils/fs.js';
-import { fileExistsInHead } from './git-file-ops.js';
+import { listTrackedInHead } from './git-file-ops.js';
 import { discoverPatches, getAllTargetFilesFromPatch } from './patch-files.js';
 import { withPatchDirectoryLock } from './patch-lock.js';
 import { loadPatchesManifest, mutatePatchRowsInManifest } from './patch-manifest-io.js';
@@ -115,6 +115,12 @@ export async function validatePatchIntegrity(
 
   const patches = await discoverPatches(patchesDir);
 
+  // Collect every modification target first, then resolve HEAD existence in
+  // ONE batched ls-tree pass (chunked for ARG_MAX). The per-file
+  // fileExistsInHead fan-out spawned one git process per (patch × target) on
+  // every import — a 56-file branding patch alone cost ~56 spawns before a
+  // single patch was applied.
+  const modificationTargets: Array<{ filename: string; targetFile: string }> = [];
   for (const patch of patches) {
     // Check all files in the patch (supports multi-file patches)
     const patchContent = await readText(patch.path);
@@ -123,16 +129,21 @@ export async function validatePatchIntegrity(
     for (const targetFile of targetFiles) {
       // Skip new-file sections — they don't need to exist in HEAD
       if (isNewFileInPatch(patchContent, targetFile)) continue;
+      modificationTargets.push({ filename: patch.filename, targetFile });
+    }
+  }
 
-      const existsInHead = await fileExistsInHead(engineDir, targetFile);
-
-      if (!existsInHead) {
-        issues.push({
-          filename: patch.filename,
-          message: `Modification patch for file that doesn't exist in source. Re-export with: fireforge export ${targetFile}`,
-          targetFile,
-        });
-      }
+  const tracked = await listTrackedInHead(
+    engineDir,
+    modificationTargets.map((t) => t.targetFile)
+  );
+  for (const { filename, targetFile } of modificationTargets) {
+    if (!tracked.has(targetFile)) {
+      issues.push({
+        filename,
+        message: `Modification patch for file that doesn't exist in source. Re-export with: fireforge export ${targetFile}`,
+        targetFile,
+      });
     }
   }
 

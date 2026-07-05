@@ -39,6 +39,12 @@ export const ExitCode = {
    * missing profile, etc.).
    */
   SMOKE_LAUNCH_FAILURE: 13,
+  /**
+   * The user cancelled an interactive prompt. 130 = 128 + SIGINT, the
+   * conventional "interrupted by the user" code — scripts and CI can tell
+   * a deliberate cancellation apart from a real failure (GENERAL_ERROR).
+   */
+  USER_CANCELLED: 130,
 } as const;
 
 export type ExitCode = (typeof ExitCode)[keyof typeof ExitCode];

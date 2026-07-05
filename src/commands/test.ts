@@ -35,7 +35,7 @@ import type { CommandContext } from '../types/cli.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, success, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { commanderArgParser, pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
 import {
@@ -597,13 +597,13 @@ export function registerTest(
     .option(
       '--harness-retries <n>',
       `Retry budget for recognized harness crashes (resource-monitor tracebacks, pre-test hangs, post-green shutdown re-entry). 0 disables retries. Default: ${String(DEFAULT_HARNESS_RETRIES)}.`,
-      (raw: string) => {
+      commanderArgParser((raw: string) => {
         const n = Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n < 0 || n > 10) {
           throw new GeneralError(`--harness-retries must be an integer in 0..10 (got "${raw}")`);
         }
         return n;
-      }
+      })
     )
     .option(
       '--generic-mach-test',
@@ -620,13 +620,13 @@ export function registerTest(
     .option(
       '--marionette-port <port>',
       'Override the Marionette control port (default 2828) for the stale-browser probe, the --doctor preflight, and (unless --mach-arg includes --flavor=xpcshell) auto-forwarded mach args: --setpref=marionette.port=<n> (browser listener) and --marionette=127.0.0.1:<n> (mochitest client). Omits the client flag when --mach-arg already sets --marionette. Use when 2828 is busy or CI assigns another port.',
-      (raw: string) => {
+      commanderArgParser((raw: string) => {
         const n = Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n < 1 || n > 65535) {
           throw new GeneralError(`--marionette-port must be an integer in 1..65535 (got "${raw}")`);
         }
         return n;
-      }
+      })
     )
     .addHelpText(
       'after',

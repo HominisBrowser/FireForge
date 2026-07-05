@@ -247,7 +247,6 @@ function coalescedHunk(
   }
 
   const contextStart = Math.max(0, firstDiff - context);
-  const contextEndOld = Math.min(oldLines.length - 1, lastOldDiff + context);
   const contextEndNew = Math.min(newLines.length - 1, lastNewDiff + context);
 
   const hunkLines: HunkLine[] = [];
@@ -260,14 +259,22 @@ function coalescedHunk(
   for (let k = firstDiff; k <= lastNewDiff; k++) {
     hunkLines.push({ marker: '+', content: newLines[k]! });
   }
-  const trailingStart = Math.max(lastOldDiff + 1, lastNewDiff + 1);
-  const trailingEnd = Math.max(contextEndOld, contextEndNew);
-  for (let k = trailingStart; k <= trailingEnd && k < newLines.length; k++) {
+  // Trailing context comes from the common suffix, which lives at
+  // DIFFERENT indices on each side (lastOldDiff+1… vs lastNewDiff+1…).
+  // The previous mixed-coordinate loop (max() of both sides indexing
+  // newLines) emitted wrong context on asymmetric edits, and the trailing
+  // lines were excluded from the @@ header lengths entirely — so on
+  // >LCS_LINE_LIMIT files the rendered header disagreed with the body.
+  for (let k = lastNewDiff + 1; k <= contextEndNew; k++) {
     hunkLines.push({ marker: ' ', content: newLines[k]! });
   }
 
-  const oldLength = lastOldDiff - firstDiff + 1 + (firstDiff - contextStart);
-  const newLength = lastNewDiff - firstDiff + 1 + (firstDiff - contextStart);
+  const leadingContext = firstDiff - contextStart;
+  // Common-suffix symmetry: oldLen-1-lastOldDiff === newLen-1-lastNewDiff,
+  // so both sides clamp to the same trailing context count.
+  const trailingContext = contextEndNew - lastNewDiff;
+  const oldLength = lastOldDiff - firstDiff + 1 + leadingContext + trailingContext;
+  const newLength = lastNewDiff - firstDiff + 1 + leadingContext + trailingContext;
 
   return [
     {

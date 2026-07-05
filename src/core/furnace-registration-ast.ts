@@ -37,7 +37,7 @@ import { validateRegistrationPlacement, validateTagName } from './furnace-regist
  *   2. Single-line array entry: `["tag", "..."]` — column 0 only, comments allowed after
  *   3. Multi-line array entry: `"tag",` on its own line, optional trailing `//` comment
  */
-function isTagAlreadyRegistered(content: string, tagName: string): boolean {
+export function isTagAlreadyRegistered(content: string, tagName: string): boolean {
   const escaped = escapeRegex(tagName);
   if (
     content.includes(`setElementCreationCallback("${tagName}"`) ||

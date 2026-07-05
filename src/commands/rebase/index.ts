@@ -27,7 +27,7 @@ import type { CommandContext } from '../../types/cli.js';
 import type { RebaseOptions } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, spinner } from '../../utils/logger.js';
-import { pickDefined } from '../../utils/options.js';
+import { commanderArgParser, pickDefined } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { handleAbort } from './abort.js';
 import { confirmDirtyEngineReset } from './confirm.js';
@@ -202,7 +202,7 @@ export function registerRebase(
     .option(
       '--max-fuzz <n>',
       'Maximum context-reduction steps for git apply -C<n> (fuzz-like drift tolerance; default: 3)',
-      (v) => parsePositiveIntegerFlag('--max-fuzz', v)
+      commanderArgParser((v) => parsePositiveIntegerFlag('--max-fuzz', v))
     )
     .option('-y, --yes', 'Skip dirty-tree confirmation prompt')
     .action(

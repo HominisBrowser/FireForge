@@ -21,6 +21,7 @@ import {
 } from '../src/core/furnace-operation.js';
 import { waitForActiveCriticalSections } from '../src/core/signal-critical.js';
 import { CommandError } from '../src/errors/base.js';
+import { waitForActiveChildShutdown } from '../src/utils/process.js';
 
 /**
  * Upper bound (ms) the signal handler will wait for any in-flight critical
@@ -29,6 +30,17 @@ import { CommandError } from '../src/errors/base.js';
  * postpone the exit a user requested with Ctrl+C.
  */
 const SIGNAL_CRITICAL_SECTION_TIMEOUT_MS = 5_000;
+
+/**
+ * Upper bound (ms) the signal handler waits for spawned children (Firefox
+ * under `run`/`test`, mach under `build`) to shut down after the signal was
+ * forwarded to them. Must exceed the largest child grace window
+ * (execSmokeRun's killGraceMs default of 10 s) so the SIGTERM → grace →
+ * SIGKILL escalation can actually complete — exiting earlier is what used
+ * to orphan hung Firefox trees. A second Ctrl+C escalates to SIGKILL
+ * immediately, so an impatient operator is never stuck waiting.
+ */
+const CHILD_SHUTDOWN_TIMEOUT_MS = 12_000;
 
 installBrokenPipeHandler();
 
@@ -57,11 +69,15 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
       // rather than queueing another rollback that will race the first.
       process.exit(exitCode);
     }
-    // Run furnace rollback and signal-critical-section drain in parallel.
-    // Rebase-style operations register critical sections (apply + session
-    // persist) via `runInSignalCriticalSection`; awaiting them here ensures
-    // the CLI never exits with a patch applied to the engine but a stale
-    // session file that would mis-track progress on `--continue`.
+    // Run furnace rollback, signal-critical-section drain, and child
+    // shutdown in parallel. Rebase-style operations register critical
+    // sections (apply + session persist) via `runInSignalCriticalSection`;
+    // awaiting them here ensures the CLI never exits with a patch applied
+    // to the engine but a stale session file that would mis-track progress
+    // on `--continue`. Waiting on child shutdown keeps the parent alive
+    // through the SIGTERM → grace → SIGKILL escalation that
+    // execInherit/execSmokeRun forward to Firefox/mach — exiting before it
+    // ran is what used to orphan hung child trees.
     void Promise.allSettled([
       rollbackActiveOperationsForSignal(signal).catch((error: unknown) => {
         console.error(
@@ -70,6 +86,7 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
         );
       }),
       waitForActiveCriticalSections(SIGNAL_CRITICAL_SECTION_TIMEOUT_MS),
+      waitForActiveChildShutdown(CHILD_SHUTDOWN_TIMEOUT_MS),
     ])
       // Force-release the furnace lock directory after rollback completes.
       // `withFileLock`'s `finally { rm }` never runs when we `process.exit`

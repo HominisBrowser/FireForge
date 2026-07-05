@@ -78,8 +78,9 @@ export function resetBrokenPipeHandlerForTests(): void {
 
 /**
  * Maximum number of directory levels to walk when searching for
- * `fireforge.json`. Guards against symlink cycles and pathologically
- * deep trees.
+ * `fireforge.json`. `dirname()` walking is pure string manipulation and
+ * cannot cycle (the `parent === current` check already terminates at the
+ * root); this cap only bounds the cost on pathologically deep paths.
  */
 const MAX_PROJECT_ROOT_WALK_DEPTH = 50;
 
@@ -126,7 +127,10 @@ export function withErrorHandling<T extends unknown[]>(
     } catch (error: unknown) {
       if (error instanceof CancellationError) {
         cancel('Operation cancelled');
-        throw new CommandError(ExitCode.GENERAL_ERROR);
+        // 130 (128+SIGINT) is the conventional "user interrupted" code —
+        // scripts/CI can distinguish a deliberate prompt cancellation from
+        // a real failure (which exits 1).
+        throw new CommandError(ExitCode.USER_CANCELLED);
       }
 
       if (error instanceof FireForgeError) {
@@ -192,6 +196,11 @@ function buildGroupedHelpFormatter(
       const desc = helper.optionDescription(opt);
       return formatHelpLine(term, desc, termWidth, helpWidth);
     });
+    // -V/--version is handled in main() before commander parses (a real
+    // root-level `.version()` option would claim `--version` ANYWHERE in
+    // argv under commander's default parsing, breaking subcommand flags
+    // like `source set --version <v>`); advertise it here so root help
+    // stays truthful.
     optionLines.unshift(
       formatHelpLine('-V, --version', 'output the version number', termWidth, helpWidth)
     );
@@ -320,7 +329,16 @@ export function createProgram(): Command {
  * Main CLI entry point.
  */
 export async function main(): Promise<void> {
-  if (process.argv.length === 3 && (process.argv[2] === '--version' || process.argv[2] === '-V')) {
+  // Root-level --version/-V handling. Deliberately NOT a commander
+  // `.version()` option: under commander's default (non-positional)
+  // parsing, a root version option claims `--version` anywhere in argv and
+  // hijacks subcommand flags like `source set --version <v>`. The rule
+  // here: when NO subcommand was given, any -V/--version among the root
+  // flags prints the version — so `fireforge --verbose --version` works,
+  // and `fireforge source set --version 152` is untouched.
+  const userArgs = process.argv.slice(2);
+  const hasSubcommand = userArgs.some((arg) => !arg.startsWith('-'));
+  if (!hasSubcommand && userArgs.some((arg) => arg === '--version' || arg === '-V')) {
     process.stdout.write(`${getPackageVersion()}\n`);
     return;
   }

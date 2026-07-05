@@ -249,6 +249,9 @@ describe('patch orchestration helpers', () => {
         patch: { filename: '001-alpha.patch', path: '/patches/001-alpha.patch', order: 1 },
         success: true,
         autoResolved: true,
+        // Originals survive the run so rollbackPatches can restore the
+        // pre-existing file if a later patch fails.
+        autoResolvedOriginals: new Map([['browser/new.js', 'existing file\n']]),
       },
     ]);
     expect(writeText).toHaveBeenCalledWith('/engine/browser/new.js', 'created\n');

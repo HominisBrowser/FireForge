@@ -316,11 +316,6 @@ export interface PatchStagedDependencyOptions {
 }
 
 /**
- * Options for the preview-only `fireforge patch move-files` subcommand.
- * It validates an ownership transfer and prints the explicit
- * `re-export --files` commands needed to perform it.
- */
-/**
  * Options for the `patch split` command.
  */
 export interface PatchSplitOptions {
@@ -348,6 +343,11 @@ export interface PatchSplitOptions {
   skipLint?: boolean;
 }
 
+/**
+ * Options for the preview-only `fireforge patch move-files` subcommand.
+ * It validates an ownership transfer and prints the explicit
+ * `re-export --files` commands needed to perform it.
+ */
 export interface PatchMoveFilesOptions {
   /** File paths relative to engine/ to move from the source patch to the target patch. */
   file?: string[];

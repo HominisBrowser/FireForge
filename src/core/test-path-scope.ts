@@ -6,17 +6,21 @@
  * so `fireforge test browser/base/content/test/hominis` silently also
  * ran the sibling directory `browser/base/content/test/hominis-tiles`
  * (152.0b7 → 153.0b8 source-refresh drill: 1224 tests instead of ~200,
- * with no indication the scope widened). A trailing separator makes the
- * prefix match exact — `hominis/` cannot prefix `hominis-tiles/…`.
+ * with no indication the scope widened).
  *
  * FireForge therefore treats a directory argument as meaning EXACTLY
- * that directory: {@link analyzeTestPathScopes} returns a trailing-`/`
- * dispatch form for every existing directory, plus the sibling
- * directories the raw prefix would have swept in so the command layer
- * can tell the operator what was excluded. Note FireForge already
- * rejects non-existent paths up front, so raw prefix-widening was never
- * something an operator could invoke deliberately — it only ever
- * happened by accident.
+ * that directory: {@link analyzeTestPathScopes} enumerates the test
+ * files of exactly that directory and dispatches THAT explicit file
+ * list to mach — a file list cannot prefix-match anything. (0.35.0
+ * instead normalized the directory with a trailing `/`, assuming the
+ * separator makes the prefix match exact; field verification on Firefox
+ * 153 showed mach still swept in the prefix-named sibling, so the
+ * trailing-slash mechanism was cosmetic and its exclusion echo was
+ * wrong.) The prefix-matching sibling directories are still reported so
+ * the command layer can tell the operator what was excluded. Note
+ * FireForge already rejects non-existent paths up front, so raw
+ * prefix-widening was never something an operator could invoke
+ * deliberately — it only ever happened by accident.
  */
 
 import { readdir, stat } from 'node:fs/promises';
@@ -35,13 +39,17 @@ export interface TestPathScope {
   /** The path as the operator passed it (engine-relative, normalized). */
   requestedPath: string;
   /**
-   * The form to hand to mach: directories gain a trailing `/` so
-   * mozbuild's prefix match is exact; files pass through unchanged.
+   * The paths to hand to mach for this argument: the explicit test-file
+   * list for a directory (mach cannot prefix-widen an explicit file
+   * list), or the argument unchanged for files. A directory containing
+   * no enumerable test files falls back to the trailing-`/` directory
+   * form — there is nothing to list, and mach owns the "no tests found"
+   * failure.
    */
-  dispatchPath: string;
+  dispatchPaths: string[];
   /** True when the path resolved to a directory under engine/. */
   isDirectory: boolean;
-  /** Recursive test-file count inside the requested directory (0 for files). */
+  /** Test files enumerated inside the requested directory (empty for files). */
   testFileCount: number;
   /** Sibling directories a raw prefix match would also have selected. */
   siblingPrefixMatches: SiblingPrefixMatch[];
@@ -51,26 +59,27 @@ export interface TestPathScope {
 const TEST_FILE_PATTERN = /^(?:browser|test)_.*\.m?js$/;
 
 /**
- * Recursively counts test-implementation files under a directory.
- * Returns 0 when the directory cannot be read — the count feeds an
- * informational notice, never a decision.
+ * Recursively enumerates test-implementation files under a directory,
+ * returned engine-relative and sorted for deterministic dispatch order.
+ * Returns [] when the directory cannot be read — the caller then falls
+ * back to the directory form and mach owns the failure.
  */
-async function countTestFiles(dir: string): Promise<number> {
-  let count = 0;
+async function collectTestFiles(dir: string, relPrefix: string): Promise<string[]> {
+  const files: string[] = [];
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
-    return 0;
+    return [];
   }
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      count += await countTestFiles(join(dir, entry.name));
+      files.push(...(await collectTestFiles(join(dir, entry.name), `${relPrefix}${entry.name}/`)));
     } else if (entry.isFile() && TEST_FILE_PATTERN.test(entry.name)) {
-      count += 1;
+      files.push(`${relPrefix}${entry.name}`);
     }
   }
-  return count;
+  return files.sort();
 }
 
 /** Probes whether `path` is a directory, without throwing. */
@@ -96,7 +105,7 @@ async function analyzeTestPathScope(
   if (!(await isDirectorySafe(absolute))) {
     return {
       requestedPath,
-      dispatchPath: requestedPath,
+      dispatchPaths: [requestedPath],
       isDirectory: false,
       testFileCount: 0,
       siblingPrefixMatches: [],
@@ -112,7 +121,9 @@ async function analyzeTestPathScope(
       if (!entry.isDirectory()) continue;
       if (entry.name === base || !entry.name.startsWith(base)) continue;
       const siblingRel = parentRel === '.' ? entry.name : `${parentRel}/${entry.name}`;
-      const testFileCount = await countTestFiles(join(dirname(absolute), entry.name));
+      const testFileCount = (
+        await collectTestFiles(join(dirname(absolute), entry.name), `${siblingRel}/`)
+      ).length;
       // A prefix-matching sibling with no test files never surfaces in a
       // mach run, so listing it would only add noise.
       if (testFileCount > 0) {
@@ -121,14 +132,17 @@ async function analyzeTestPathScope(
     }
   } catch {
     // Unreadable parent: skip the sibling probe; exactness via the
-    // trailing separator is preserved regardless.
+    // explicit file list is preserved regardless.
   }
 
+  const testFiles = await collectTestFiles(absolute, `${stripped}/`);
   return {
     requestedPath,
-    dispatchPath: `${stripped}/`,
+    // The explicit file list is what makes the selection exact; an empty
+    // enumeration falls back to the directory form.
+    dispatchPaths: testFiles.length > 0 ? testFiles : [`${stripped}/`],
     isDirectory: true,
-    testFileCount: await countTestFiles(absolute),
+    testFileCount: testFiles.length,
     siblingPrefixMatches,
   };
 }
@@ -156,13 +170,23 @@ export async function analyzeTestPathScopes(
  */
 export function formatScopeNotice(scope: TestPathScope): string | undefined {
   if (!scope.isDirectory || scope.siblingPrefixMatches.length === 0) return undefined;
+  const requestedDir = scope.requestedPath.replace(/\/+$/, '');
   const siblings = scope.siblingPrefixMatches
     .map((s) => `${s.path}/ (${s.testFileCount} test file${s.testFileCount === 1 ? '' : 's'})`)
     .join(', ');
+  if (scope.testFileCount === 0) {
+    // Fallback dispatch: with nothing to enumerate, the raw directory
+    // form goes to mach, whose prefix matching CAN sweep the siblings in.
+    // Claiming exclusion here would repeat the 0.35.0 mistake.
+    return (
+      `${requestedDir}/ contains no enumerable test files, so the directory is passed to mach ` +
+      `as-is — mach resolves paths by string prefix, which may also select: ${siblings}.`
+    );
+  }
   return (
-    `Selected exactly ${scope.dispatchPath} (${scope.testFileCount} test file${scope.testFileCount === 1 ? '' : 's'}). ` +
-    `Excluded ${scope.siblingPrefixMatches.length} sibling director${scope.siblingPrefixMatches.length === 1 ? 'y' : 'ies'} ` +
-    `that a raw prefix match would also have run: ${siblings}. ` +
+    `Selected exactly ${requestedDir}/ by passing its ${scope.testFileCount} test file${scope.testFileCount === 1 ? '' : 's'} ` +
+    'explicitly to mach (an explicit file list cannot prefix-match a sibling). ' +
+    `Excluded ${scope.siblingPrefixMatches.length} prefix-named sibling director${scope.siblingPrefixMatches.length === 1 ? 'y' : 'ies'}: ${siblings}. ` +
     'Pass them as separate paths to include them.'
   );
 }

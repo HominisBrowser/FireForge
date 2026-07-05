@@ -6,10 +6,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  analyzeTestCompleteness,
+  buildGreenSummaryRejectedMessage,
   buildHarnessCrashMessage,
   buildNoTestsRanMessage,
   classifyHarnessRun,
   detectHarnessCrashSignature,
+  findCrashMarkerLine,
   hasCompletedGreenSummary,
   stripNonSignalNoise,
 } from '../test-harness-crash.js';
@@ -400,6 +403,182 @@ describe('degraded-host drain-loop and log_resource_usage shapes (0.34.1 field r
   });
 });
 
+// ── 0.35.0 field report: crash green-wash ──
+//
+// A browser-chrome manifest of 8 files whose parent process SIGSEGVed at
+// the second file's TEST_START. The remaining six files never started, so
+// the embedded summary was "green" (`Passed: 2 / Failed: 0, Unexpected
+// results: 0`) only because the crash prevented them from producing any
+// results — and 0.35.0's green-summary override reported the mach-exit-1
+// run as PASSED. Log lines below are verbatim from the field log.
+const HOMINIS_DIR = 'browser/base/content/test/hominis';
+const HOMINIS_FILES = [
+  `${HOMINIS_DIR}/browser_hominis_first.js`,
+  `${HOMINIS_DIR}/browser_hominis_cui_telemetry.js`,
+  `${HOMINIS_DIR}/browser_hominis_third.js`,
+  `${HOMINIS_DIR}/browser_hominis_fourth.js`,
+  `${HOMINIS_DIR}/browser_hominis_fifth.js`,
+  `${HOMINIS_DIR}/browser_hominis_sixth.js`,
+  `${HOMINIS_DIR}/browser_hominis_seventh.js`,
+  `${HOMINIS_DIR}/browser_hominis_eighth.js`,
+];
+
+const SIGSEGV_TRUNCATED_RUN = [
+  'SUITE_START',
+  `TEST_START: ${HOMINIS_DIR}/browser_hominis_first.js`,
+  'TEST_END: Test OK',
+  `TEST_START: ${HOMINIS_DIR}/browser_hominis_cui_telemetry.js`,
+  'Exiting due to channel error.',
+  'Exiting due to channel error.',
+  'Main app process: killed by SIGSEGV',
+  'Buffered messages finished',
+  'zombiecheck | Checking for orphan process with PID: 12345',
+  'Browser Chrome Test Summary',
+  '      Passed: 2',
+  '      Failed: 0',
+  '      Unexpected results: 0',
+  'SUITE_END',
+].join('\n');
+
+// Truncation WITHOUT a crash marker: the second file started but the log
+// ends (green-shaped summary included) with no end marker for it.
+const TRUNCATED_NO_CRASH_RUN = [
+  'SUITE_START',
+  `TEST_START: ${HOMINIS_DIR}/browser_hominis_first.js`,
+  'TEST_END: Test OK',
+  `TEST_START: ${HOMINIS_DIR}/browser_hominis_cui_telemetry.js`,
+  'Browser Chrome Test Summary',
+  '      Passed: 1',
+  '      Failed: 0',
+  '      Unexpected results: 0',
+  'SUITE_END',
+].join('\n');
+
+// The genuine noise shape the lenient path was built for: every requested
+// file start/end-paired, green summary, and mach exit 1 caused by a
+// resource-monitor traceback after the suite finished.
+const GREEN_PAIRED_WITH_MONITOR_NOISE = [
+  'SUITE_START',
+  `TEST_START: ${HOMINIS_DIR}/browser_hominis_first.js`,
+  'TEST_END: Test OK',
+  `TEST_START: ${HOMINIS_DIR}/browser_hominis_cui_telemetry.js`,
+  'TEST_END: Test OK',
+  'Browser Chrome Test Summary',
+  '      Passed: 2',
+  '      Failed: 0',
+  '      Unexpected results: 0',
+  'SUITE_END',
+  'Traceback (most recent call last):',
+  '  File "mozlog/handlers/resource.py", line 23, in stop',
+  "AttributeError: 'SystemResourceMonitor' object has no attribute 'poll_interval'",
+  'Error running mach',
+].join('\n');
+
+const TWO_HOMINIS_FILES = HOMINIS_FILES.slice(0, 2);
+
+describe('green-summary rejection on crash/truncation evidence (0.35.0 field report)', () => {
+  it('fails the SIGSEGV-truncated run despite the green summary, naming the signal and the never-started files', () => {
+    const verdict = classifyHarnessRun(1, SIGSEGV_TRUNCATED_RUN, HOMINIS_FILES);
+    expect(verdict.kind).toBe('test-failures');
+    expect(verdict.greenSummaryOverride).toBeUndefined();
+    expect(verdict.greenSummaryRejected?.crashLine).toContain('killed by SIGSEGV');
+    expect(verdict.greenSummaryRejected?.neverStarted).toHaveLength(6);
+    expect(verdict.greenSummaryRejected?.neverStarted).toContain(HOMINIS_FILES[2]);
+    expect(verdict.greenSummaryRejected?.neverEnded).toEqual([
+      `${HOMINIS_DIR}/browser_hominis_cui_telemetry.js`,
+    ]);
+    const message = buildGreenSummaryRejectedMessage(
+      verdict.greenSummaryRejected ?? { neverStarted: [], neverEnded: [] },
+      1
+    );
+    expect(message).toContain('killed by SIGSEGV');
+    expect(message).toContain(HOMINIS_FILES[2] ?? '');
+    expect(message).toContain('NOT');
+  });
+
+  it('fails a started-but-never-ended run even without a crash marker', () => {
+    const verdict = classifyHarnessRun(1, TRUNCATED_NO_CRASH_RUN, TWO_HOMINIS_FILES);
+    expect(verdict.kind).toBe('test-failures');
+    expect(verdict.greenSummaryRejected?.crashLine).toBeUndefined();
+    expect(verdict.greenSummaryRejected?.neverEnded).toEqual([
+      `${HOMINIS_DIR}/browser_hominis_cui_telemetry.js`,
+    ]);
+  });
+
+  it('keeps the lenient path for the genuine noise shape (paired files, green summary, monitor traceback exit)', () => {
+    const verdict = classifyHarnessRun(1, GREEN_PAIRED_WITH_MONITOR_NOISE, TWO_HOMINIS_FILES);
+    expect(verdict.kind).toBe('tests-ran-ok');
+    expect(verdict.greenSummaryOverride).toBe(true);
+    expect(verdict.greenSummaryRejected).toBeUndefined();
+  });
+
+  it('leaves mach exit 0 classification untouched', () => {
+    expect(classifyHarnessRun(0, GREEN_PAIRED_WITH_MONITOR_NOISE, TWO_HOMINIS_FILES)).toEqual({
+      kind: 'tests-ran-ok',
+    });
+    expect(classifyHarnessRun(0, GREEN_RUN, PATHS)).toEqual({ kind: 'tests-ran-ok' });
+  });
+
+  it('findCrashMarkerLine recognizes the mozcrash marker family', () => {
+    expect(findCrashMarkerLine(SIGSEGV_TRUNCATED_RUN)).toContain('killed by SIGSEGV');
+    expect(
+      findCrashMarkerLine('PROCESS-CRASH | browser_foo.js | application crashed [@ mozalloc_abort]')
+    ).toContain('PROCESS-CRASH');
+    expect(findCrashMarkerLine('mozcrash INFO | Saved minidump as /tmp/x.dmp')).toContain(
+      'minidump'
+    );
+    expect(findCrashMarkerLine('Thread 0 (crashed)')).toContain('crashed');
+    expect(findCrashMarkerLine(GREEN_PAIRED_WITH_MONITOR_NOISE)).toBeUndefined();
+  });
+
+  it('a crash marker disqualifies the summary from "completed green"', () => {
+    expect(hasCompletedGreenSummary(SIGSEGV_TRUNCATED_RUN)).toBe(false);
+    expect(hasCompletedGreenSummary(GREEN_PAIRED_WITH_MONITOR_NOISE)).toBe(true);
+  });
+
+  it('analyzeTestCompleteness pairs starts/ends positionally and skips non-file requested paths', () => {
+    const completeness = analyzeTestCompleteness(SIGSEGV_TRUNCATED_RUN, [
+      ...HOMINIS_FILES,
+      HOMINIS_DIR,
+    ]);
+    expect(completeness.neverStarted).toHaveLength(6);
+    expect(completeness.neverStarted).not.toContain(HOMINIS_DIR);
+    expect(completeness.neverEnded).toEqual([`${HOMINIS_DIR}/browser_hominis_cui_telemetry.js`]);
+    // The xpcshell dialect's unnamed `TEST_END: Test PASS` lines pair with
+    // the preceding TEST_START even though they do not name the file.
+    const balanced = analyzeTestCompleteness(GREEN_XPCSHELL_WITH_DEGRADATION_NOISE, [
+      'test_one.js',
+      'test_two.js',
+    ]);
+    expect(balanced.neverStarted).toEqual([]);
+    expect(balanced.neverEnded).toEqual([]);
+  });
+
+  it('reports an unnamed open test when a start marker carries no path token', () => {
+    const open = analyzeTestCompleteness('TEST_START\nno end follows', []);
+    expect(open.neverEnded).toEqual(['(unnamed test)']);
+  });
+
+  it('builds the rejection message for each evidence shape independently', () => {
+    // Truncation without a crash marker (never-ended only).
+    const endedOnly = buildGreenSummaryRejectedMessage(
+      { neverStarted: [], neverEnded: ['browser_a.js'] },
+      1
+    );
+    expect(endedOnly).toContain('started but never finished: browser_a.js');
+    expect(endedOnly).not.toContain('crash evidence');
+    expect(endedOnly).not.toContain('never started');
+    // Never-started only (e.g. the harness skipped a requested file).
+    const startedOnly = buildGreenSummaryRejectedMessage(
+      { neverStarted: ['browser_b.js'], neverEnded: [] },
+      2
+    );
+    expect(startedOnly).toContain('mach exited 2');
+    expect(startedOnly).toContain('never started: browser_b.js');
+    expect(startedOnly).not.toContain('never finished');
+  });
+});
+
 describe('messages', () => {
   it('builds a crash message naming the shape, evidence, and attempts', () => {
     const sig = detectHarnessCrashSignature(RESOURCE_MONITOR_TRACEBACK);
@@ -414,5 +593,10 @@ describe('messages', () => {
     const message = buildNoTestsRanMessage(0, PATHS);
     expect(message).toContain('summary without a single TEST-START');
     expect(message).toContain(PATHS[0] ?? '');
+  });
+
+  it('builds a no-tests message naming the exit code on non-zero exits', () => {
+    const message = buildNoTestsRanMessage(1, PATHS);
+    expect(message).toContain('exited 1 before any TEST-START');
   });
 });

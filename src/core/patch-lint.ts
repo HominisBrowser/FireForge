@@ -2,7 +2,7 @@
 import { dirname, join } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
-import type { FireForgeConfig } from '../types/config.js';
+import type { FireForgeConfig, ProjectLicense } from '../types/config.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { stripJsComments } from '../utils/regex.js';
 import {
@@ -233,7 +233,54 @@ export function commentStyleForFile(file: string): CommentStyle | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Checks new files for required license headers.
+ * Decides whether a NEW file's leading header satisfies the
+ * `missing-license-header` rule. Single owner of the acceptance policy —
+ * `lintNewFileHeaders` (the rule) and `autoFixLicenseHeaders` (the
+ * interactive export fixer) must agree, or the fixer offers to stack a
+ * second header onto a file the lint already accepts.
+ *
+ * Accepted shapes, in order:
+ *  - the project's own header for the file's comment style;
+ *  - under `browser/branding/`, ANY recognised license header in the
+ *    matching style: the setup-generated branding directory is copied
+ *    from Firefox's `unofficial` template and arrives with Mozilla
+ *    MPL-2.0 headers — legitimate for copyright purposes (the assets are
+ *    Mozilla's) even when the fork's own code is 0BSD / EUPL-1.2 /
+ *    GPL-2.0-or-later;
+ *  - on an MPL-2.0 project, any recognised header in the matching style;
+ *  - the verbatim upstream MPL-2.0 block header (`/* … *\/`, optionally
+ *    behind a leading editor-directive comment) REGARDLESS of the
+ *    project license, on any file whose comment syntax is the block form
+ *    (JS and CSS): a file copied from the Firefox tree legitimately
+ *    keeps Mozilla's header for provenance in an EUPL/GPL/0BSD project
+ *    too. 0.35.0 accepted this on JS only; field verification showed a
+ *    derived CSS file carrying the identical three-line block header
+ *    still needed a patch-level lintIgnore. Only the block form is
+ *    accepted — the `// `-style MPL header is FireForge-generated, not
+ *    upstream provenance — and `hash`-style files (FTL) stay excluded
+ *    because `/* … *\/` is not a comment there.
+ *
+ * @param file - Engine-relative path of the new file
+ * @param content - File content
+ * @param style - Comment style resolved for the file
+ * @param license - The project license
+ */
+export function isAcceptableNewFileHeader(
+  file: string,
+  content: string,
+  style: CommentStyle,
+  license: ProjectLicense
+): boolean {
+  if (content.startsWith(getLicenseHeader(license, style))) return true;
+  if (file.startsWith('browser/branding/') && hasAnyLicenseHeader(content, style)) return true;
+  if (license === 'MPL-2.0' && hasAnyLicenseHeader(content, style)) return true;
+  if ((style === 'js' || style === 'css') && hasUpstreamMplBlockHeader(content)) return true;
+  return false;
+}
+
+/**
+ * Checks new files for required license headers (acceptance policy in
+ * {@link isAcceptableNewFileHeader}).
  *
  * @param repoDir - Absolute path to the engine directory
  * @param newFiles - New file paths (relative to repoDir)
@@ -256,36 +303,7 @@ export async function lintNewFileHeaders(
     if (!(await pathExists(filePath))) continue;
 
     const content = await readText(filePath);
-    const expectedHeader = getLicenseHeader(license, style);
-
-    // Auto-exempt `browser/branding/` when the file carries ANY recognised
-    // license header in the matching comment style. The setup-generated
-    // branding directory is copied from Firefox's `unofficial` template,
-    // which arrives with Mozilla MPL-2.0 headers — those are legitimate
-    // for copyright purposes (the assets are Mozilla's) even when the
-    // fork's own code is 0BSD / EUPL-1.2 / GPL-2.0-or-later. The narrower
-    // license-match rule would force operators to either rewrite the
-    // copied headers (misrepresenting authorship) or suppress the lint
-    // with `--skip-lint` (hiding real issues elsewhere).
-    if (content.startsWith(expectedHeader)) continue;
-    if (file.startsWith('browser/branding/') && hasAnyLicenseHeader(content, style)) continue;
-    // Accept the MPL-2.0 block-comment form (`/* ... */` with leading `*`)
-    // for any JS file — that is the canonical upstream Firefox header
-    // shape, and `hasAnyLicenseHeader` above also recognises it. The
-    // explicit guard mirrors the branding carve-out so operators using the
-    // standard Mozilla header on a JS file (e.g. one copied from upstream
-    // browser/base/content) do not need `--skip-lint` to land it.
-    if (license === 'MPL-2.0' && hasAnyLicenseHeader(content, style)) continue;
-    // Accept the verbatim upstream MPL block header on new JS files
-    // REGARDLESS of the project license: a file copied from the Firefox
-    // tree legitimately keeps Mozilla's header for provenance in an
-    // EUPL/GPL/0BSD project too. The carve-out above is gated on the
-    // project being MPL-2.0 itself, which made this documented case dead
-    // code for every other license — consumers carried repo-side audit
-    // workarounds (recorded 2026-07-04 in the Hominis FORGE.md). Only
-    // the block-comment form is accepted; the `// `-style MPL header is
-    // FireForge-generated, not upstream provenance.
-    if (style === 'js' && hasUpstreamMplBlockHeader(content)) continue;
+    if (isAcceptableNewFileHeader(file, content, style, license)) continue;
 
     issues.push({
       file,

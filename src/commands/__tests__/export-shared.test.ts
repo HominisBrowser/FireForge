@@ -16,6 +16,12 @@ vi.mock('../../core/patch-lint.js', () => ({
     return null;
   }),
   detectNewFilesInDiff: vi.fn(() => new Set<string>()),
+  // Mimics the real predicate's project-header branch against the mocked
+  // getLicenseHeader below; the full acceptance policy (upstream MPL
+  // block form, branding carve-out) is covered by patch-lint.test.ts.
+  isAcceptableNewFileHeader: vi.fn((_file: string, content: string) =>
+    content.startsWith('// LICENSE HEADER')
+  ),
   resolvePatchSizeTier: vi.fn(() => ({ tier: 'general' })),
 }));
 
@@ -48,7 +54,11 @@ import * as clack from '@clack/prompts';
 
 import { addLicenseHeaderToFile } from '../../core/license-headers.js';
 import { findAllPatchesForFiles } from '../../core/patch-export.js';
-import { detectNewFilesInDiff, lintExportedPatch } from '../../core/patch-lint.js';
+import {
+  detectNewFilesInDiff,
+  isAcceptableNewFileHeader,
+  lintExportedPatch,
+} from '../../core/patch-lint.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { FireForgeConfig } from '../../types/config.js';
@@ -357,6 +367,21 @@ describe('autoFixLicenseHeaders', () => {
     const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true);
 
     expect(result).toBe(false);
+  });
+
+  it('never offers to stack a header onto a file the lint already accepts', async () => {
+    // The fixer and the missing-license-header rule share
+    // isAcceptableNewFileHeader: a file the rule accepts (e.g. a derived
+    // JS/CSS file carrying the verbatim upstream MPL block header on a
+    // non-MPL project) must not be offered a second, stacked header.
+    vi.mocked(detectNewFilesInDiff).mockReturnValueOnce(new Set(['upstream-derived.css']));
+    vi.mocked(isAcceptableNewFileHeader).mockReturnValueOnce(true);
+
+    const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true);
+
+    expect(result).toBe(false);
+    expect(clack.confirm).not.toHaveBeenCalled();
+    expect(addLicenseHeaderToFile).not.toHaveBeenCalled();
   });
 
   it('never prompts or writes under dry-run — reports the missing headers instead', async () => {

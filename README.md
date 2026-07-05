@@ -88,14 +88,16 @@ Queue maintenance lives under `fireforge patch`: `patch compact` closes ordinal 
 new one as a single transaction — including staged-dependency owner rewrites — with
 `--dry-run` support.
 
-`fireforge test <directory>` runs exactly that directory: the argument is normalized with a
-trailing `/` so mach's prefix-based path matching cannot silently sweep in sibling
-directories sharing the name prefix (excluded siblings are echoed with their test-file
-counts). Multiple test paths run as sequential per-file shards by default — announced with
-a notice, since isolated instances do not exercise cross-file state (`--no-shard` restores
-one combined invocation). Recognized harness crashes retry up to `--harness-retries <n>`
-times (default 2), and `--perf-samples <path>` publishes a perf-sample artifact path to the
-harness (exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
+`fireforge test <directory>` runs exactly that directory: FireForge enumerates the
+directory's test files and passes the explicit file list to mach in one invocation, so
+mach's prefix-based path matching cannot silently sweep in sibling directories sharing the
+name prefix (excluded siblings are echoed with their test-file counts). Multiple path
+arguments run as sequential shards by default — one browser instance per argument, with a
+directory argument keeping its files together — announced with a notice, since isolated
+instances do not exercise cross-argument state (`--no-shard` restores one combined
+invocation). Recognized harness crashes retry up to `--harness-retries <n>` times (default
+2), and `--perf-samples <path>` publishes a perf-sample artifact path to the harness
+(exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
 Design tokens are managed with `fireforge token add`; pass `--create-category` to declare a
 new category banner and insert the token in one step.
 

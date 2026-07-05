@@ -112,10 +112,19 @@ describe('formatMajorVersionHopNotice', () => {
 
 describe('toolchain preflight', () => {
   let engineDir: string;
+  let stateDir: string;
+  let stateDirCbindgen: string;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     engineDir = await mkdtemp(join(tmpdir(), 'ff-toolchain-'));
+    // Deterministic mach state dir: the probe consults
+    // $MOZBUILD_STATE_PATH/cbindgen/cbindgen before PATH, exactly like
+    // mach's configure. The execFile mock keys on the binary path, so no
+    // real file needs to exist here.
+    stateDir = join(engineDir, '.mozbuild-state');
+    stateDirCbindgen = join(stateDir, 'cbindgen', 'cbindgen');
+    vi.stubEnv('MOZBUILD_STATE_PATH', stateDir);
   });
 
   afterEach(async () => {
@@ -153,9 +162,10 @@ describe('toolchain preflight', () => {
   });
 
   describe('runToolchainPreflight', () => {
-    it('reports a definitive mismatch when the host binary is older than the tree minimum', async () => {
-      // The drill's exact configuration: cbindgen 0.29.1 on the host,
-      // 0.29.4 declared by the freshly-hopped tree.
+    it('reports a definitive mismatch when every resolvable candidate is older than the tree minimum', async () => {
+      // The drill's exact configuration: cbindgen 0.29.1 on the host
+      // PATH (and no state-dir copy), 0.29.4 declared by the
+      // freshly-hopped tree.
       await writeMinimumFixtures(engineDir, {
         cbindgen: BINDGEN_CONFIGURE_FIXTURE,
         rust: MOZBOOT_UTIL_FIXTURE,
@@ -169,10 +179,39 @@ describe('toolchain preflight', () => {
       expect(mismatches).toEqual([
         {
           tool: 'cbindgen',
-          hostVersion: '0.29.1',
           minimumVersion: '0.29.4',
           declaredIn: 'build/moz.configure/bindgen.configure',
+          candidates: [{ binary: 'cbindgen', version: '0.29.1' }],
         },
+      ]);
+    });
+
+    it('passes when the mozbuild state-dir copy meets the minimum even though the PATH copy is older (0.35.0 false positive)', async () => {
+      // Field configuration: fireforge bootstrap installed 0.29.4 into
+      // ~/.mozbuild/cbindgen/cbindgen (which configure tries FIRST), while
+      // an old 0.29.1 from ~/.cargo/bin shadowed it on PATH. 0.35.0
+      // probed only the PATH copy and blocked a build that succeeds.
+      await writeMinimumFixtures(engineDir, { cbindgen: BINDGEN_CONFIGURE_FIXTURE });
+      mockHostVersions({
+        [stateDirCbindgen]: 'cbindgen 0.29.4\n',
+        cbindgen: 'cbindgen 0.29.1\n',
+      });
+
+      await expect(runToolchainPreflight(engineDir)).resolves.toEqual([]);
+    });
+
+    it('lists every probed candidate when all of them are too old', async () => {
+      await writeMinimumFixtures(engineDir, { cbindgen: BINDGEN_CONFIGURE_FIXTURE });
+      mockHostVersions({
+        [stateDirCbindgen]: 'cbindgen 0.29.0\n',
+        cbindgen: 'cbindgen 0.29.1\n',
+      });
+
+      const mismatches = await runToolchainPreflight(engineDir);
+      expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]?.candidates).toEqual([
+        { binary: stateDirCbindgen, version: '0.29.0' },
+        { binary: 'cbindgen', version: '0.29.1' },
       ]);
     });
 
@@ -212,15 +251,30 @@ describe('toolchain preflight', () => {
       expect(mockExecFile).not.toHaveBeenCalled();
     });
 
-    it('honours the CBINDGEN env override like mach configure does', async () => {
+    it('honours the CBINDGEN env override like mach configure does — the override wins even over a newer state-dir copy', async () => {
       await writeMinimumFixtures(engineDir, { cbindgen: BINDGEN_CONFIGURE_FIXTURE });
       vi.stubEnv('CBINDGEN', '/opt/tools/cbindgen-custom');
-      mockHostVersions({ '/opt/tools/cbindgen-custom': 'cbindgen 0.29.1\n' });
+      // A satisfying state-dir copy exists, but configure would use the
+      // env override anyway — so the preflight must fail on it.
+      mockHostVersions({
+        '/opt/tools/cbindgen-custom': 'cbindgen 0.29.1\n',
+        [stateDirCbindgen]: 'cbindgen 0.29.4\n',
+      });
 
       const mismatches = await runToolchainPreflight(engineDir);
       expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]?.candidates).toEqual([
+        { binary: '/opt/tools/cbindgen-custom', version: '0.29.1' },
+      ]);
       expect(mockExecFile).toHaveBeenCalledWith(
         '/opt/tools/cbindgen-custom',
+        ['--version'],
+        expect.anything(),
+        expect.any(Function)
+      );
+      // With the override set, no other candidate is probed.
+      expect(mockExecFile).not.toHaveBeenCalledWith(
+        stateDirCbindgen,
         ['--version'],
         expect.anything(),
         expect.any(Function)
@@ -238,17 +292,21 @@ describe('toolchain preflight', () => {
   });
 
   describe('formatToolchainMismatchMessage', () => {
-    it('names the tool, both versions, the declaring file, and fireforge bootstrap', () => {
+    it('names the tool, every probed candidate, the declaring file, and fireforge bootstrap', () => {
       const message = formatToolchainMismatchMessage([
         {
           tool: 'cbindgen',
-          hostVersion: '0.29.1',
           minimumVersion: '0.29.4',
           declaredIn: 'build/moz.configure/bindgen.configure',
+          candidates: [
+            { binary: '/home/u/.mozbuild/cbindgen/cbindgen', version: '0.29.0' },
+            { binary: 'cbindgen', version: '0.29.1' },
+          ],
         },
       ]);
-      expect(message).toContain('cbindgen 0.29.1');
       expect(message).toContain('0.29.4');
+      expect(message).toContain('0.29.0 (/home/u/.mozbuild/cbindgen/cbindgen)');
+      expect(message).toContain('0.29.1 (cbindgen)');
       expect(message).toContain('engine/build/moz.configure/bindgen.configure');
       expect(message).toContain('"fireforge bootstrap"');
     });

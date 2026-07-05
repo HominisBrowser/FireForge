@@ -26,7 +26,11 @@ import {
 } from '../core/marionette-preflight.js';
 import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
 import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
-import { analyzeTestPathScopes, formatScopeNotice } from '../core/test-path-scope.js';
+import {
+  analyzeTestPathScopes,
+  formatScopeNotice,
+  type TestPathScope,
+} from '../core/test-path-scope.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
@@ -42,6 +46,7 @@ import {
   DEFAULT_HARNESS_RETRIES,
   runShardedTests,
   runTestsWithRetries,
+  type ShardGroup,
   type TestRunContext,
   type TestRunOutcome,
   type TestSuite,
@@ -202,9 +207,14 @@ async function runPreTestBuild(
   });
 }
 
-function logTestSelection(normalizedPaths: readonly string[]): void {
-  if (normalizedPaths.length > 0) {
-    info(`Running tests: ${normalizedPaths.join(', ')}`);
+function logTestSelection(scopes: readonly TestPathScope[]): void {
+  if (scopes.length > 0) {
+    const labels = scopes.map((scope) =>
+      scope.isDirectory && scope.testFileCount > 0
+        ? `${scope.requestedPath} (${scope.testFileCount} test file${scope.testFileCount === 1 ? '' : 's'}, passed explicitly)`
+        : scope.requestedPath
+    );
+    info(`Running tests: ${labels.join(', ')}`);
   } else {
     info('Running all tests...');
   }
@@ -482,13 +492,19 @@ export async function testCommand(
   // resolver matches paths by string prefix, so a bare directory arg
   // silently swept in prefix-named siblings (152.0b7 → 153.0b8 drill:
   // `…/test/hominis` also ran `…/test/hominis-tiles`, 1224 tests instead
-  // of ~200, with no indication the scope widened). The dispatch form
-  // gains a trailing `/` (making the prefix match exact) and any
-  // excluded prefix-siblings are echoed so the narrowed scope is
-  // visible. Classification above intentionally used the un-slashed
-  // forms; only the mach dispatch needs the exact-match shape.
+  // of ~200, with no indication the scope widened). Each directory
+  // argument dispatches as its enumerated explicit test-file list — a
+  // file list cannot prefix-match a sibling (0.35.0's trailing-`/`
+  // normalization turned out to be cosmetic on Firefox 153's mach; field
+  // verification showed the sibling still ran while the echo claimed it
+  // was excluded). Any prefix-siblings are echoed so the narrowed scope
+  // is visible. Classification above intentionally used the raw
+  // argument forms; only the mach dispatch needs the exact-match shape.
   const scopes = await analyzeTestPathScopes(paths.engine, normalizedPaths);
-  const dispatchPaths = scopes.map((scope) => scope.dispatchPath);
+  const dispatchGroups: ShardGroup[] = scopes.map((scope) => ({
+    label: scope.requestedPath,
+    paths: scope.dispatchPaths,
+  }));
   for (const scope of scopes) {
     const notice = formatScopeNotice(scope);
     if (notice) info(notice);
@@ -498,7 +514,7 @@ export async function testCommand(
   // `runTestsWithRetries` (src/commands/test-run.ts) so sharded runs probe
   // the manifest for each file individually. See src/core/xpcshell-appdir.ts
   // for the full motivation.
-  logTestSelection(dispatchPaths);
+  logTestSelection(scopes);
 
   const perfSampleEnv = buildPerfSampleEnv(
     projectRoot,
@@ -519,30 +535,33 @@ export async function testCommand(
     ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)
     : undefined;
 
-  // Multi-file requests shard into sequential single-file harness runs by
-  // default (field report C3): one shared mochitest profile across files
-  // bleeds pref/media-query state into later files. --no-shard restores
-  // the combined invocation. The default must not be SILENT (drill
-  // finding: a two-file cross-file pollution repro "passed" because the
-  // headed comparison run was sharded without saying so, briefly
-  // misattributing a suite-context bug to an upstream headless
-  // regression), so a one-line notice states what sharding does and
-  // does not exercise.
-  if (dispatchPaths.length > 1 && options.shard !== false) {
+  // Multi-argument requests shard into sequential harness runs by default
+  // (field report C3): one shared mochitest profile across files bleeds
+  // pref/media-query state into later files. Sharding is per path
+  // ARGUMENT — a directory argument keeps its enumerated files together
+  // in one invocation, preserving the one-browser-instance semantics of
+  // a directory run. --no-shard restores the combined invocation. The
+  // default must not be SILENT (drill finding: a two-file cross-file
+  // pollution repro "passed" because the headed comparison run was
+  // sharded without saying so, briefly misattributing a suite-context
+  // bug to an upstream headless regression), so a one-line notice states
+  // what sharding does and does not exercise.
+  if (dispatchGroups.length > 1 && options.shard !== false) {
     info(
-      `Sharding: running ${dispatchPaths.length} test paths in isolated browser instances ` +
-        '(one mach invocation per path). Cross-file state is NOT exercised — pass --no-shard ' +
-        'for a combined single-instance run.'
+      `Sharding: running ${dispatchGroups.length} test path arguments in isolated browser instances ` +
+        '(one mach invocation per argument; a directory argument keeps its files in one instance). ' +
+        'Cross-argument state is NOT exercised — pass --no-shard for a combined single-instance run.'
     );
-    await runShardedTests(runCtx, dispatchPaths, (outcome, path) =>
-      diagnoseShardOutcome(outcome, path, projectConfig.binaryName, postRebuildContext)
+    await runShardedTests(runCtx, dispatchGroups, (outcome, label) =>
+      diagnoseShardOutcome(outcome, label, projectConfig.binaryName, postRebuildContext)
     );
     return;
   }
 
+  const combinedDispatchPaths = dispatchGroups.flatMap((group) => group.paths);
   let outcome: TestRunOutcome;
   try {
-    outcome = await runTestsWithRetries(runCtx, dispatchPaths);
+    outcome = await runTestsWithRetries(runCtx, combinedDispatchPaths);
   } catch (error: unknown) {
     throw new BuildError(
       'Test process failed to start',
@@ -633,17 +652,21 @@ export function registerTest(
       [
         '',
         '[paths...] semantics: a directory argument selects EXACTLY that',
-        'directory. FireForge normalizes it with a trailing "/" before',
-        'handing it to mach, because mach resolves test paths by string',
-        'prefix and a bare directory name would silently sweep in sibling',
-        'directories sharing the prefix (e.g. foo also running foo-extras).',
-        'When such siblings exist, the excluded directories are listed with',
-        'their test-file counts; pass them as separate paths to include them.',
+        'directory. FireForge enumerates the test files of exactly that',
+        'directory and passes the explicit file list to mach, because mach',
+        'resolves test paths by string prefix and a bare directory name',
+        'silently sweeps in sibling directories sharing the prefix (e.g.',
+        'foo also running foo-extras) — an explicit file list cannot',
+        'prefix-match anything. The directory still runs as ONE mach',
+        'invocation (one browser instance), so cross-file state carries',
+        'within it. When prefix-named siblings exist, the excluded',
+        'directories are listed with their test-file counts; pass them as',
+        'separate paths to include them.',
         '',
-        'Multiple paths shard into sequential isolated harness runs (one',
-        'browser instance per path) by default, which does not exercise',
-        'cross-file state; --no-shard restores the combined single-instance',
-        'invocation.',
+        'Multiple path arguments shard into sequential isolated harness',
+        'runs (one browser instance per argument) by default, which does',
+        'not exercise cross-argument state; --no-shard restores the',
+        'combined single-instance invocation.',
       ].join('\n')
     )
     .action(

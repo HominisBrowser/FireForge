@@ -3,11 +3,12 @@ import { join } from 'node:path';
 
 import { confirm, select, text } from '@clack/prompts';
 
-import { addLicenseHeaderToFile, getLicenseHeader } from '../core/license-headers.js';
+import { addLicenseHeaderToFile } from '../core/license-headers.js';
 import { findAllPatchesForFiles } from '../core/patch-export.js';
 import {
   commentStyleForFile,
   detectNewFilesInDiff,
+  isAcceptableNewFileHeader,
   lintExportedPatch,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
@@ -312,8 +313,11 @@ export async function autoFixLicenseHeaders(
     if (!(await pathExists(filePath))) continue;
 
     const content = await readText(filePath);
-    const expectedHeader = getLicenseHeader(license, style);
-    if (!content.startsWith(expectedHeader)) {
+    // Same acceptance policy as the missing-license-header rule: offering
+    // to "fix" a file the lint already accepts (e.g. a verbatim upstream
+    // MPL block header on a derived JS/CSS file) would stack a second
+    // header on top of a legitimate one.
+    if (!isAcceptableNewFileHeader(file, content, style, license)) {
       filesToFix.push(file);
     }
   }

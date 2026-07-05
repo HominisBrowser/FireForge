@@ -89,8 +89,8 @@ Workflow:
                                     (compact, delete, lint-ignore, move-files,
                                     rename, reorder, staged-dependency, tier)
   rebase [options]                  Semi-automated Firefox source version
-                                    upgrade — apply patches with fuzz and
-                                    re-export
+                                    upgrade — apply patches with drift tolerance
+                                    and re-export
   package [options]                 Create distribution package
   watch                             Watch for changes and auto-rebuild
   test [options] [paths...]         Run tests via mach test

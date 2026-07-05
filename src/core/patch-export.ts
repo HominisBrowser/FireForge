@@ -21,7 +21,7 @@ import {
 } from './patch-export-coverage.js';
 import {
   addPatchToManifest,
-  loadPatchesManifest,
+  loadPatchesManifestForWrite,
   PATCHES_MANIFEST,
   savePatchesManifest,
 } from './patch-manifest.js';
@@ -325,7 +325,7 @@ export async function updatePatch(patchPath: string, newContent: string): Promis
 export async function deletePatch(patchesDir: string, filename: string): Promise<void> {
   await withPatchDirectoryLock(patchesDir, async () => {
     const patchPath = join(patchesDir, filename);
-    const manifest = await loadPatchesManifest(patchesDir);
+    const manifest = await loadPatchesManifestForWrite(patchesDir);
     const updatedManifest = manifest
       ? {
           ...manifest,
@@ -439,7 +439,11 @@ interface ComputedExportPlan {
  * instead of by parallel implementations that can drift.
  */
 async function computeExportPlanUnderLock(input: PlanExportInput): Promise<ComputedExportPlan> {
-  const manifestBefore = await loadPatchesManifest(input.patchesDir);
+  // ForWrite: a corrupt manifest read as null here would produce a
+  // manifestAfter containing ONLY the new patch — committing that plan
+  // wipes the queue metadata, and the rollback path would then delete
+  // patches.json entirely because manifestBefore looked absent.
+  const manifestBefore = await loadPatchesManifestForWrite(input.patchesDir);
   const policyOrder =
     input.config !== undefined
       ? allocatePolicyOrder(input.config, manifestBefore?.patches ?? [], input.category)

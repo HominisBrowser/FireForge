@@ -14,7 +14,7 @@ function statusLabel(status: RebasePatchEntry['status'], fuzzFactor?: number): s
     case 'applied-clean':
       return 'applied cleanly';
     case 'applied-fuzz':
-      return `applied with fuzz=${fuzzFactor ?? '?'}`;
+      return `applied with context reduction (step ${fuzzFactor ?? '?'})`;
     case 'resolved':
       return 'RESOLVED manually';
     case 'failed':
@@ -53,6 +53,6 @@ export function printSummary(session: RebaseSession): void {
 
   info('');
   info(
-    `Results: ${total} total: ${clean} clean, ${fuzz} fuzz-applied, ${resolved} manually resolved, ${failed} failed`
+    `Results: ${total} total: ${clean} clean, ${fuzz} context-reduced, ${resolved} manually resolved, ${failed} failed`
   );
 }

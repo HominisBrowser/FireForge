@@ -12,6 +12,11 @@ import {
 import { isComponentSourceFile } from '../../core/furnace-constants.js';
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
+  getPersistableAppliedEntry,
+  persistSingleComponentState,
+  shouldPersistSingleComponentState,
+} from '../../core/furnace-state-persist.js';
+import {
   findOverrideBaseVersionDrift,
   formatOverrideBaseVersionDriftError,
   formatOverrideBaseVersionDriftWarning,
@@ -319,11 +324,31 @@ export async function furnaceApplyCommand(
   const result = await runFurnaceMutation(
     projectRoot,
     'apply-rollback',
-    (ctx) =>
-      applyAllComponents(projectRoot, dryRun, {
+    async (ctx) => {
+      // `persistState: false` for a NAMED apply is load-bearing: the batch
+      // persist path replaces `appliedChecksums` wholesale with only this
+      // run's entries, and the batch loops filter to the named component —
+      // so routing a named apply through it persisted a state file
+      // containing ONLY that component, wiping every other component's
+      // checksums. Orphan detection and deleted-file undeploy both key on
+      // that state, so the wiped components' stale engine files became
+      // invisible to apply AND to `furnace validate`. Named apply merges
+      // per-component state below, exactly like `furnace deploy <name>`.
+      const applyResult = await applyAllComponents(projectRoot, dryRun, {
         operationContext: ctx,
-        ...(name !== undefined ? { componentName: name } : {}),
-      }),
+        ...(name !== undefined ? { componentName: name, persistState: false } : {}),
+      });
+
+      if (name !== undefined && shouldPersistSingleComponentState(applyResult, dryRun)) {
+        await persistSingleComponentState(
+          projectRoot,
+          getPersistableAppliedEntry('Apply', name, applyResult.applied[0]),
+          getFurnacePaths(projectRoot)
+        );
+      }
+
+      return applyResult;
+    },
     { dryRun }
   );
 

@@ -12,6 +12,7 @@ vi.mock('../patch-apply.js', () => ({
 vi.mock('../patch-manifest.js', () => ({
   PATCHES_MANIFEST: 'patches.json',
   loadPatchesManifest: vi.fn(),
+  loadPatchesManifestForWrite: vi.fn(),
   mutatePatchRowsInManifest: vi.fn(),
   savePatchesManifest: vi.fn(),
   addPatchToManifest: vi.fn(),
@@ -60,6 +61,7 @@ import {
   addPatchToManifest,
   findPatchesAffectingFile,
   loadPatchesManifest,
+  loadPatchesManifestForWrite,
   mutatePatchRowsInManifest,
   savePatchesManifest,
 } from '../patch-manifest.js';
@@ -74,6 +76,11 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(removeFile).mockResolvedValue(undefined);
     vi.mocked(unlink).mockResolvedValue(undefined);
     vi.mocked(loadPatchesManifest).mockResolvedValue(null);
+    // The write paths use the ForWrite loader (corrupt-aborting); these
+    // unit fixtures never simulate corruption, so it mirrors the reader.
+    vi.mocked(loadPatchesManifestForWrite).mockImplementation((dir: string) =>
+      vi.mocked(loadPatchesManifest)(dir)
+    );
     vi.mocked(mutatePatchRowsInManifest).mockResolvedValue([]);
     vi.mocked(savePatchesManifest).mockResolvedValue(undefined);
     vi.mocked(addPatchToManifest).mockResolvedValue(undefined);

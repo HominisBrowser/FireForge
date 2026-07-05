@@ -10,6 +10,23 @@ import {
 } from '../../test-utils/index.js';
 import { configCommand, registerConfig } from '../config.js';
 
+/**
+ * Per-test override for withConfigFileLock. Undefined → real locking.
+ * Lets the error-classification test simulate a lock timeout without
+ * waiting out the real 30 s acquisition window.
+ */
+let lockOverride: (() => Promise<never>) | undefined;
+
+vi.mock('../../core/config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/config.js')>();
+  return {
+    ...actual,
+    withConfigFileLock: vi.fn((root: string, operation: () => Promise<unknown>) =>
+      lockOverride ? lockOverride() : actual.withConfigFileLock(root, operation)
+    ),
+  };
+});
+
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
@@ -55,6 +72,48 @@ describe('configCommand', () => {
     };
     expect(config.wire?.subscriptDir).toBe('browser/components/custom');
     expect(info).toHaveBeenCalledWith('wire.subscriptDir = browser/components/custom');
+  });
+
+  it('preserves --force-written keys when a known key is set afterwards', async () => {
+    // Finding H4 (2026-07-05 review): the ordinary set branch round-tripped
+    // through loadConfig → validateConfig, whose typed clone contains only
+    // known schema fields — so ANY normal `config <key> <value>` silently
+    // deleted every previously --force-written key. Both branches now
+    // mutate the raw document.
+    await configCommand(projectRoot, 'myext.flag', 'true', { force: true });
+    await configCommand(projectRoot, 'build.jobs', '8');
+
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
+      myext?: { flag?: boolean };
+      build?: { jobs?: number };
+    };
+    expect(config.build?.jobs).toBe(8);
+    expect(config.myext?.flag).toBe(true);
+  });
+
+  it('still rejects structurally invalid values for known keys after the raw-document change', async () => {
+    await expect(configCommand(projectRoot, 'firefox.version', '')).rejects.toThrow(
+      /Invalid value for "firefox\.version"/
+    );
+  });
+
+  it('does not mislabel non-validation failures as invalid values', async () => {
+    // A concurrent writer holding the config lock must surface as a lock
+    // timeout, not as `Invalid value for "<key>"` — the old catch wrapped
+    // EVERYTHING from the locked round-trip in InvalidArgumentError,
+    // pointing diagnosis at the value and returning the wrong exit-code
+    // class when the actual problem was lock contention.
+    lockOverride = () => Promise.reject(new Error('Timed out waiting to update fireforge.json.'));
+
+    try {
+      const rejection = expect(configCommand(projectRoot, 'build.jobs', '4')).rejects;
+      await rejection.toThrow(/Timed out waiting/);
+      await expect(configCommand(projectRoot, 'build.jobs', '4')).rejects.not.toThrow(
+        /Invalid value/
+      );
+    } finally {
+      lockOverride = undefined;
+    }
   });
 
   it('keeps string-typed Firefox versions as strings without requiring JSON quoting', async () => {

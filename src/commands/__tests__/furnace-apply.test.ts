@@ -43,8 +43,20 @@ vi.mock('../../core/furnace-operation.js', () => ({
   recordFurnaceRollbackFailure: vi.fn(),
 }));
 
+vi.mock('../../core/furnace-state-persist.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/furnace-state-persist.js')>();
+  return {
+    ...actual,
+    persistSingleComponentState: vi.fn(() => Promise.resolve()),
+  };
+});
+
 vi.mock('../../core/furnace-config.js', () => ({
   furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
+  getFurnacePaths: vi.fn(() => ({
+    overridesDir: '/project/furnace/overrides',
+    customDir: '/project/furnace/custom',
+  })),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
       version: 1,
@@ -327,5 +339,87 @@ describe('furnaceApplyCommand', () => {
       expect.stringContaining('Override "moz-card" was created against Firefox 145.0')
     );
     expect(applyAllComponents).toHaveBeenCalled();
+  });
+
+  it('named apply disables the batch state persist and merges per-component state', async () => {
+    // Finding F1 (2026-07-05 review): named apply used to run the batch
+    // persist path, whose wholesale appliedChecksums replace wiped every
+    // OTHER component's checksum state — after which orphan detection and
+    // deleted-file undeploy (both keyed on that state) went blind. Named
+    // apply must mirror `furnace deploy <name>`: persistState: false plus
+    // a per-component merge.
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '145.0', product: 'firefox' },
+    });
+    const { persistSingleComponentState } = await import('../../core/furnace-state-persist.js');
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [{ name: 'moz-card', type: 'override', filesAffected: [] }],
+      skipped: [],
+      errors: [],
+      actions: [],
+    });
+
+    await furnaceApplyCommand('/project', 'moz-card', {});
+
+    expect(applyAllComponents).toHaveBeenCalledWith(
+      '/project',
+      false,
+      expect.objectContaining({ componentName: 'moz-card', persistState: false })
+    );
+    expect(vi.mocked(persistSingleComponentState)).toHaveBeenCalledWith(
+      '/project',
+      { name: 'moz-card', type: 'override' },
+      expect.anything()
+    );
+  });
+
+  it('named apply does not persist state when the run reported errors', async () => {
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '145.0', product: 'firefox' },
+    });
+    const { persistSingleComponentState } = await import('../../core/furnace-state-persist.js');
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [],
+      skipped: [],
+      errors: [{ name: 'moz-card', error: 'boom' }],
+      actions: [],
+    });
+
+    await expect(furnaceApplyCommand('/project', 'moz-card', {})).rejects.toThrow(
+      /failed to apply cleanly/
+    );
+    expect(vi.mocked(persistSingleComponentState)).not.toHaveBeenCalled();
+  });
+
+  it('batch apply keeps the wholesale persist path and no per-component merge', async () => {
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '145.0', product: 'firefox' },
+    });
+    const { persistSingleComponentState } = await import('../../core/furnace-state-persist.js');
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [{ name: 'moz-card', type: 'override', filesAffected: [] }],
+      skipped: [],
+      errors: [],
+      actions: [],
+    });
+
+    await furnaceApplyCommand('/project', undefined, {});
+
+    const optionsArg = vi.mocked(applyAllComponents).mock.calls[0]?.[2];
+    expect(optionsArg).not.toHaveProperty('persistState');
+    expect(optionsArg).not.toHaveProperty('componentName');
+    expect(vi.mocked(persistSingleComponentState)).not.toHaveBeenCalled();
   });
 });

@@ -13,6 +13,7 @@ export {
 export {
   addPatchToManifest,
   loadPatchesManifest,
+  loadPatchesManifestForWrite,
   mutatePatchRowsInManifest,
   PATCHES_MANIFEST,
   type PatchManifestRowMutation,

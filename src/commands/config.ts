@@ -3,16 +3,16 @@ import { Command } from 'commander';
 
 import {
   configExists,
-  loadConfig,
   loadRawConfigDocument,
   mutateConfig,
   SUPPORTED_CONFIG_PATHS,
   SUPPORTED_CONFIG_ROOT_KEYS,
+  validateConfig,
   withConfigFileLock,
-  writeConfig,
   writeConfigDocument,
 } from '../core/config.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
+import { ConfigError } from '../errors/config.js';
 import type { CommandContext } from '../types/cli.js';
 import { toError } from '../utils/errors.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
@@ -190,22 +190,43 @@ export async function configCommand(
         // for a *known* key. Apply strict validation whenever the key is
         // listed in SUPPORTED_CONFIG_PATHS, regardless of --force, and only
         // skip validation for genuinely unknown key paths.
+        //
+        // BOTH branches seed the mutation from the raw on-disk document.
+        // The known-key branch used to round-trip through `loadConfig` →
+        // `validateConfig`, which builds a typed clone containing only the
+        // known schema fields — so any ordinary `fireforge config <key>
+        // <value>` silently dropped every previously --force-written key
+        // from fireforge.json (2026-07-05 review, finding H4; the --force
+        // branch's comment described this exact hazard for its own path).
         if (options.force && !keyIsKnown) {
-          // Seed mutation from the raw on-disk document so previously-forced
-          // keys (which `validateConfig` would strip) survive the round-trip.
-          // Without this, writing a second --force key would silently drop
-          // every earlier forced key from fireforge.json.
           const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
           await writeConfigDocument(projectRoot, updatedConfig);
         } else {
-          const config = await loadConfig(projectRoot);
-          const updatedConfig = mutateConfig(config, key, parsedValue);
-          await writeConfig(projectRoot, updatedConfig);
+          // Mutate the raw document (preserving unknown keys), then run
+          // strict validation on the RESULT — validateConfig checks the
+          // known schema fields and ignores unknown keys, so this keeps
+          // exactly the old validation strength while writing the
+          // unstripped document.
+          const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
+          validateConfig(updatedConfig);
+          await writeConfigDocument(projectRoot, updatedConfig);
         }
         return false;
       });
     } catch (error: unknown) {
-      throw new InvalidArgumentError(`Invalid value for "${key}": ${toError(error).message}`, key);
+      // Only value/validation problems are the user's "invalid value".
+      // Lock-acquisition timeouts and I/O failures must keep their own
+      // types/messages — re-labelling a lock timeout as `Invalid value for
+      // "<key>"` used to point diagnosis at the value (and return the
+      // wrong exit-code class) when the actual problem was a concurrent
+      // fireforge process holding the config lock.
+      if (error instanceof ConfigError) {
+        throw new InvalidArgumentError(
+          `Invalid value for "${key}": ${toError(error).message}`,
+          key
+        );
+      }
+      throw error;
     }
     if (unchanged) {
       info(`${key} = ${formatValue(parsedValue)} (unchanged)`);

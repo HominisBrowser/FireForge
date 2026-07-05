@@ -4,7 +4,7 @@
  *
  * Orchestrates the full patch-rebase workflow:
  *   1. Reset engine to baseline
- *   2. Apply each patch with escalating fuzz
+ *   2. Apply each patch with escalating context reduction (git apply -C<n>)
  *   3. Pause on failures for manual resolution
  *   4. Re-export successfully applied patches with the new version stamp
  *
@@ -103,10 +103,10 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
 
   info(`Rebasing patches: ${fromVersion} → ${currentVersion}`);
   info(`Found ${manifest.patches.length} patch(es)`);
-  info(`Max fuzz factor: ${maxFuzz}`);
+  info(`Max context-reduction steps (fuzz-like): ${maxFuzz}`);
 
   if (isDryRun) {
-    info('[dry-run] Would reset engine, apply patches with fuzz, and re-export.');
+    info('[dry-run] Would reset engine, apply patches with context reduction, and re-export.');
     outro('Dry run complete');
     return;
   }
@@ -194,13 +194,15 @@ export function registerRebase(
   program
     .command('rebase')
     .description(
-      'Semi-automated Firefox source version upgrade — apply patches with fuzz and re-export'
+      'Semi-automated Firefox source version upgrade — apply patches with drift tolerance and re-export'
     )
     .option('--continue', 'Resume after manually resolving a failed patch')
     .option('--abort', 'Cancel the rebase and restore engine to pre-rebase state')
     .option('--dry-run', 'Show what would happen without modifying anything')
-    .option('--max-fuzz <n>', 'Maximum fuzz factor for git apply (default: 3)', (v) =>
-      parsePositiveIntegerFlag('--max-fuzz', v)
+    .option(
+      '--max-fuzz <n>',
+      'Maximum context-reduction steps for git apply -C<n> (fuzz-like drift tolerance; default: 3)',
+      (v) => parsePositiveIntegerFlag('--max-fuzz', v)
     )
     .option('-y, --yes', 'Skip dirty-tree confirmation prompt')
     .action(

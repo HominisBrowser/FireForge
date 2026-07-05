@@ -90,7 +90,7 @@ export async function runPatchLoop(
       if (result.fuzzFactor === 0) {
         success(`  ${entry.filename} — applied cleanly`);
       } else {
-        warn(`  ${entry.filename} — applied with fuzz=${result.fuzzFactor}`);
+        warn(`  ${entry.filename} — applied with context reduction (step ${result.fuzzFactor})`);
       }
     } else {
       // Set pendingResolution in state for visibility. Kept outside the

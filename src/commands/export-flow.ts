@@ -26,6 +26,7 @@ import { withPatchDirectoryLock } from '../core/patch-lock.js';
 import {
   addPatchToManifest,
   loadPatchesManifest,
+  loadPatchesManifestForWrite,
   type PatchRenameEntry,
   renumberPatchesInManifest,
   resolvePatchIdentifier,
@@ -204,7 +205,9 @@ export async function resolvePlacementPlan(
   category: PatchCategory,
   name: string
 ): Promise<PlacementPlan> {
-  const manifest = await loadPatchesManifest(patchesDir);
+  // ForWrite: placement planning feeds a manifest rewrite; a corrupt
+  // manifest read as empty would allocate colliding orders.
+  const manifest = await loadPatchesManifestForWrite(patchesDir);
   const existingPatches = manifest?.patches ?? [];
 
   let targetOrder: number;
@@ -386,7 +389,7 @@ export async function commitPlacementExport(
       );
     }
 
-    const originalManifest = await loadPatchesManifest(input.patchesDir);
+    const originalManifest = await loadPatchesManifestForWrite(input.patchesDir);
     if (originalManifest !== null) {
       assertPlacementPreservesReservedRanges(
         currentPlan,

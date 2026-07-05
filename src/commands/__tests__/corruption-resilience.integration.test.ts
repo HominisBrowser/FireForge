@@ -81,6 +81,51 @@ describe('corruption resilience integration', () => {
     await expect(importCommand(projectRoot, {})).rejects.toThrow();
   });
 
+  it('export refuses to run over a corrupted patches.json and leaves it untouched', async () => {
+    // Finding H2 (2026-07-05 review): loadPatchesManifest collapsed
+    // "corrupt" into "absent", so an export over a hand-mangled
+    // patches.json rebuilt the manifest containing ONLY the new patch —
+    // silently destroying every other patch's metadata — and a failing
+    // export's rollback then deleted patches.json outright because the
+    // "before" state looked absent.
+    const engineDir = join(projectRoot, 'engine');
+    await initCommittedRepo(engineDir, {
+      'browser/base/content/browser.js': 'export const title = "baseline";\n',
+      'browser/base/content/other.js': 'export const other = 1;\n',
+    });
+
+    await writeFiles(engineDir, {
+      'browser/base/content/browser.js': 'export const title = "patched";\n',
+    });
+    await exportCommand(projectRoot, ['browser/base/content/browser.js'], {
+      name: 'title-patch',
+      category: 'ui',
+      description: 'Patch',
+    });
+
+    const corruptContent = '{ invalid json <<< hand-edit typo';
+    await writeFiles(projectRoot, {
+      'patches/patches.json': corruptContent,
+    });
+
+    // A second export must abort with the typed corruption error...
+    await writeFiles(engineDir, {
+      'browser/base/content/other.js': 'export const other = 2;\n',
+    });
+    await expect(
+      exportCommand(projectRoot, ['browser/base/content/other.js'], {
+        name: 'other-patch',
+        category: 'ui',
+        description: 'Second patch',
+      })
+    ).rejects.toThrow(/patches\.json exists but could not be parsed/);
+
+    // ...and the corrupt manifest must still be on disk, byte-identical —
+    // neither rebuilt-as-empty nor deleted by a rollback.
+    const manifestAfter = await readProjectText(projectRoot, 'patches/patches.json');
+    expect(manifestAfter).toBe(corruptContent);
+  });
+
   it('validatePatchesManifestConsistency detects invalid manifest JSON', async () => {
     const engineDir = join(projectRoot, 'engine');
     await initCommittedRepo(engineDir, {

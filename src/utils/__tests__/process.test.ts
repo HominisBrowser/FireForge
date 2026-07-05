@@ -354,6 +354,11 @@ describe('execSmokeRun', () => {
 
   it('sends SIGTERM to the process group when the deadline fires and reports timedOut=true', async () => {
     vi.useFakeTimers();
+    // execSmokeRun picks its kill strategy from process.platform — pin the
+    // POSIX branch so this test exercises the process-group kill even when
+    // the suite runs on Windows (the taskkill test below owns that branch).
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     try {
       const child = makeSmokeChild(98765);
       mockSpawn.mockReturnValue(child);
@@ -379,6 +384,7 @@ describe('execSmokeRun', () => {
 
       killSpy.mockRestore();
     } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
       vi.useRealTimers();
     }
   });

@@ -18,6 +18,8 @@ import { basename, dirname, join } from 'node:path';
 
 const RETRIABLE_REMOVE_ERRORS = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
 
+const RETRIABLE_RENAME_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -234,11 +236,37 @@ export async function writeFileAtomic(path: string, content: string | Buffer): P
     if (existingMode !== undefined) {
       await chmod(tempPath, existingMode);
     }
-    await rename(tempPath, path);
+    await renameWithRetries(tempPath, path);
     await syncParentDir(path);
   } catch (error: unknown) {
     await rm(tempPath, { force: true });
     throw error;
+  }
+}
+
+/**
+ * Renames the temp file over its destination, retrying transient sharing
+ * violations. On Windows, a rename onto a target that another writer is
+ * concurrently replacing — or that an antivirus/indexer briefly holds open —
+ * fails with EPERM/EACCES/EBUSY even though the same rename succeeds a moment
+ * later; POSIX renames never hit this. Non-retriable codes and exhausted
+ * budgets rethrow, so a genuine permission problem still surfaces.
+ */
+async function renameWithRetries(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error: unknown) {
+      const code =
+        error instanceof Error && 'code' in error && typeof error.code === 'string'
+          ? error.code
+          : undefined;
+      if (!code || !RETRIABLE_RENAME_ERRORS.has(code) || attempt === 4) {
+        throw error;
+      }
+      await sleep(25 * (attempt + 1));
+    }
   }
 }
 

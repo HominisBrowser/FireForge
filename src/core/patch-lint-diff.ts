@@ -7,29 +7,22 @@
  * cross-patch lint body (in `patch-lint-cross.ts`) can both depend on
  * the same diff walkers without inducing a circular import. Callers
  * should keep importing these through `patch-lint.ts` — this file is
- * an implementation detail.
+ * an implementation detail. The actual line-walking lives in
+ * `parseDiffSections` (patch-parse.ts), the codebase's single diff walker.
  */
+
+import { parseDiffSections } from './patch-parse.js';
 
 /**
  * Extracts new-file paths from a unified diff by scanning for `new file mode` markers.
  */
 export function detectNewFilesInDiff(diffContent: string): Set<string> {
   const newFiles = new Set<string>();
-  const lines = diffContent.split('\n');
-  let currentFile: string | null = null;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      const match = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-      currentFile = match?.[1] ?? null;
-      continue;
-    }
-
-    if (line.startsWith('new file mode') && currentFile) {
-      newFiles.add(currentFile);
+  for (const section of parseDiffSections(diffContent)) {
+    if (section.isNewFile) {
+      newFiles.add(section.targetPath);
     }
   }
-
   return newFiles;
 }
 
@@ -39,33 +32,19 @@ export function detectNewFilesInDiff(diffContent: string): Set<string> {
  */
 export function extractAddedLinesPerFile(diffContent: string): Map<string, string[]> {
   const result = new Map<string, string[]>();
-  const lines = diffContent.split('\n');
-  let currentFile: string | null = null;
-  let inHunk = false;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      const match = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-      currentFile = match?.[1] ?? null;
-      inHunk = false;
-      continue;
-    }
-
-    if (line.startsWith('@@')) {
-      inHunk = true;
-      continue;
-    }
-
-    if (inHunk && currentFile && line.startsWith('+') && !line.startsWith('+++')) {
-      let arr = result.get(currentFile);
-      if (!arr) {
-        arr = [];
-        result.set(currentFile, arr);
+  for (const section of parseDiffSections(diffContent)) {
+    for (const hunk of section.hunks) {
+      for (const line of hunk.lines) {
+        if (!line.startsWith('+')) continue;
+        let arr = result.get(section.targetPath);
+        if (!arr) {
+          arr = [];
+          result.set(section.targetPath, arr);
+        }
+        arr.push(line.slice(1));
       }
-      arr.push(line.slice(1));
     }
   }
-
   return result;
 }
 

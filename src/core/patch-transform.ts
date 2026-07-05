@@ -6,7 +6,7 @@
 
 import { PatchError } from '../errors/patch.js';
 import { readText } from '../utils/fs.js';
-import { isNewFileInPatch, parseHunksForFile } from './patch-parse.js';
+import { isNewFileInPatch, parseDiffSections, parseHunksForFile } from './patch-parse.js';
 
 /**
  * Extracts the complete file content from a "new file" patch given a raw
@@ -18,52 +18,46 @@ import { isNewFileInPatch, parseHunksForFile } from './patch-parse.js';
  * @param diff - Raw unified-diff content
  * @param targetFile - Optional target file to scope extraction to
  * @returns The file content that the patch would create
+ * @throws PatchError for binary sections — a `GIT binary patch` payload is
+ *   base85 (whose alphabet includes `+`), so "extract the + lines" would
+ *   silently write garbage text over a binary target. Callers must treat
+ *   binary new-file conflicts as unresolvable rather than auto-resolving.
  */
 export function extractNewFileContentFromDiff(diff: string, targetFile?: string): string {
-  const lines = diff.split('\n');
+  const sections = parseDiffSections(diff).filter(
+    (section) => !targetFile || section.targetPath === targetFile
+  );
+
+  const binary = sections.find((section) => section.isBinary);
+  if (binary) {
+    throw new PatchError(
+      `Cannot extract text content from binary patch section for ${binary.targetPath}`,
+      binary.targetPath
+    );
+  }
+
+  // An empty new file is a legitimate git diff: `new file mode` with no
+  // hunks at all. It must extract as '' — the historical line-walker
+  // returned '\n' for it, creating a one-byte file that failed checksum
+  // and drift comparisons against the truly empty file the patch creates.
+  const hunks = sections.flatMap((section) => section.hunks);
+  if (hunks.length === 0) {
+    return '';
+  }
 
   const contentLines: string[] = [];
-  let inHunk = false;
-  let inTargetFile = !targetFile; // If no targetFile, accept all sections
-  let hasNoNewlineMarker = false;
-
-  for (const line of lines) {
-    // Track which file section we're in
-    if (line.startsWith('diff --git')) {
-      if (targetFile) {
-        const match = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-        const wasInTarget = inTargetFile;
-        inTargetFile = match?.[1] === targetFile;
-        // If we were in the target file and hit a new diff header, we're done
-        if (wasInTarget && !inTargetFile) break;
-      }
-      inHunk = false;
-      continue;
-    }
-
-    if (!inTargetFile) continue;
-
-    // Start of hunk
-    if (line.startsWith('@@')) {
-      inHunk = true;
-      continue;
-    }
-
-    if (inHunk) {
-      // Check for "No newline at end of file" marker
-      if (line === '\\ No newline at end of file') {
-        hasNoNewlineMarker = true;
-        continue;
-      }
-
-      // Lines starting with + are added content (skip the + prefix)
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      // Lines starting with + are added content (skip the + prefix).
+      // `-`/context lines shouldn't exist in new-file patches.
       if (line.startsWith('+')) {
         contentLines.push(line.slice(1));
       }
-      // Lines starting with - are removed (shouldn't exist in new file patches)
-      // Context lines (no prefix) shouldn't exist in new file patches
     }
   }
+
+  const lastHunk = hunks[hunks.length - 1];
+  const hasNoNewlineMarker = lastHunk?.noNewlineAtEndNew ?? false;
 
   // Join lines and handle trailing newline
   const result = contentLines.join('\n');

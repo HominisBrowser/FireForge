@@ -28,6 +28,7 @@ import type { RebaseOptions } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, spinner } from '../../utils/logger.js';
 import { pickDefined } from '../../utils/options.js';
+import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { handleAbort } from './abort.js';
 import { confirmDirtyEngineReset } from './confirm.js';
 import { handleContinue } from './continue.js';
@@ -198,7 +199,9 @@ export function registerRebase(
     .option('--continue', 'Resume after manually resolving a failed patch')
     .option('--abort', 'Cancel the rebase and restore engine to pre-rebase state')
     .option('--dry-run', 'Show what would happen without modifying anything')
-    .option('--max-fuzz <n>', 'Maximum fuzz factor for git apply (default: 3)', parseInt)
+    .option('--max-fuzz <n>', 'Maximum fuzz factor for git apply (default: 3)', (v) =>
+      parsePositiveIntegerFlag('--max-fuzz', v)
+    )
     .option('-y, --yes', 'Skip dirty-tree confirmation prompt')
     .action(
       withErrorHandling(

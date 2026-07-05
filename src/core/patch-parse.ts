@@ -2,6 +2,15 @@
 /**
  * Pure parsing functions for extracting information from patch files.
  * All functions are synchronous and operate on string content.
+ *
+ * This module is the ONE unified-diff walker in the codebase. Before
+ * {@link parseDiffSections} existed, six hand-rolled `diff --git` walkers
+ * lived across patch-parse, patch-lint-diff, patch-registration-refs, and
+ * patch-transform — with divergent CRLF handling (a CRLF-saved patch file
+ * silently failed target-file matching and `\ No newline` detection on
+ * Windows), no quoted-path support, and greedy path captures that
+ * mis-split any path containing ` b/`. New diff-shaped parsing must build
+ * on {@link parseDiffSections} rather than re-walking lines.
  */
 
 /**
@@ -19,6 +28,248 @@ export function extractOrder(filename: string): number {
 }
 
 /**
+ * A parsed `diff --git` header: both sides' paths, unquoted and with any
+ * CRLF residue stripped.
+ */
+export interface DiffGitHeader {
+  /** Old-side (`a/`) path. */
+  sourcePath: string;
+  /** New-side (`b/`) path — the file the patch produces. */
+  targetPath: string;
+}
+
+/**
+ * Un-escapes a path from git's C-style quoted form (`"a/pfad m\303\244..."`).
+ * Handles the escapes git emits: `\\`, `\"`, `\t`, `\n`, `\r` and three-digit
+ * octal byte escapes. Octal bytes are decoded through a byte buffer so
+ * multibyte UTF-8 sequences (git's default `core.quotePath=true` encodes any
+ * non-ASCII path this way) come back as the real characters.
+ */
+function unquoteGitPath(quoted: string): string {
+  const bytes: number[] = [];
+  for (let i = 0; i < quoted.length; i++) {
+    const ch = quoted[i];
+    if (ch !== '\\') {
+      // Plain character — may itself be multi-byte when the diff already
+      // contains raw UTF-8; push its bytes.
+      const encoded = Buffer.from(quoted[i] ?? '', 'utf-8');
+      for (const b of encoded) bytes.push(b);
+      continue;
+    }
+    const next = quoted[i + 1];
+    if (next === undefined) break;
+    if (next >= '0' && next <= '7') {
+      const octal = quoted.slice(i + 1, i + 4);
+      bytes.push(parseInt(octal, 8));
+      i += 3;
+      continue;
+    }
+    const mapped =
+      next === 'n' ? 0x0a : next === 't' ? 0x09 : next === 'r' ? 0x0d : next.charCodeAt(0);
+    bytes.push(mapped);
+    i += 1;
+  }
+  return Buffer.from(bytes).toString('utf-8');
+}
+
+/**
+ * Parses a `diff --git` line into its two paths.
+ *
+ * Handles the quoted form git emits for paths with special characters
+ * (`diff --git "a/x y" "b/x y"`), and disambiguates the unquoted form for
+ * paths that themselves contain ` b/`: for the overwhelmingly common
+ * non-rename case the two paths are identical, so a symmetric split
+ * (`a/<p> b/<p>`) is tried first — the previous greedy regex
+ * (`a\/.+ b\/(.+)$`) split such lines at the LAST ` b/` and returned a
+ * truncated path. Falls back to a non-greedy split for renames.
+ *
+ * @returns null when the line is not a diff --git header.
+ */
+export function parseDiffGitHeader(line: string): DiffGitHeader | null {
+  const stripped = line.endsWith('\r') ? line.slice(0, -1) : line;
+  if (!stripped.startsWith('diff --git ')) return null;
+  const body = stripped.slice('diff --git '.length);
+
+  // Quoted form (either or both sides may be quoted).
+  const quoted = /^(?:"a\/((?:[^"\\]|\\.)*)"|a\/(\S+)) (?:"b\/((?:[^"\\]|\\.)*)"|b\/(.+))$/.exec(
+    body
+  );
+  if (quoted && (quoted[1] !== undefined || quoted[3] !== undefined)) {
+    const sourcePath = quoted[1] !== undefined ? unquoteGitPath(quoted[1]) : (quoted[2] ?? '');
+    const targetPath = quoted[3] !== undefined ? unquoteGitPath(quoted[3]) : (quoted[4] ?? '');
+    return { sourcePath, targetPath };
+  }
+
+  if (!body.startsWith('a/')) return null;
+  const rest = body.slice(2);
+
+  // Symmetric split: body === `a/<p> b/<p>`. Correct even when <p>
+  // contains ` b/`, which defeats any single-regex approach.
+  if ((rest.length - 3) % 2 === 0) {
+    const pathLength = (rest.length - 3) / 2;
+    const candidate = rest.slice(0, pathLength);
+    if (rest === `${candidate} b/${candidate}`) {
+      return { sourcePath: candidate, targetPath: candidate };
+    }
+  }
+
+  // Rename/copy (differing paths): non-greedy split at the first ` b/`.
+  const asymmetric = /^(.+?) b\/(.+)$/.exec(rest);
+  if (asymmetric?.[1] !== undefined && asymmetric[2] !== undefined) {
+    return { sourcePath: asymmetric[1], targetPath: asymmetric[2] };
+  }
+  return null;
+}
+
+/**
+ * One `diff --git` section of a unified diff, fully structured.
+ */
+export interface DiffSection {
+  /** New-side (`b/`) path — the file this section produces. */
+  targetPath: string;
+  /** Old-side (`a/`) path. */
+  sourcePath: string;
+  /** True when the section carries a `new file mode` marker. */
+  isNewFile: boolean;
+  /** True when the section carries a `deleted file mode` marker. */
+  isDeletedFile: boolean;
+  /**
+   * True for binary sections (`GIT binary patch` or `Binary files … differ`).
+   * Binary sections have no parseable hunks; text-oriented consumers must
+   * refuse them rather than treat base85 lines starting with `+` as content.
+   */
+  isBinary: boolean;
+  /** Parsed hunks, in file order. Empty for binary or metadata-only sections. */
+  hunks: ParsedHunk[];
+}
+
+/**
+ * Splits raw diff content into lines, tolerating CRLF-saved patch files.
+ *
+ * The distinction matters: a patch file saved with CRLF endings (Windows
+ * editor, `core.autocrlf` checkout) has `\r` on EVERY line including
+ * structural ones — strip it, or headers, `@@` lines and the
+ * `\ No newline at end of file` marker all fail to match. But an LF patch
+ * of a file whose CONTENT is CRLF has `\r` only on payload lines, where it
+ * is significant and must be preserved. Detect the former by checking the
+ * structural lines themselves for a trailing `\r`.
+ */
+function splitDiffLines(diffContent: string): string[] {
+  const lines = diffContent.split('\n');
+  const isCrlfPatchFile = lines.some(
+    (line) =>
+      (line.startsWith('diff --git') || line.startsWith('@@ ')) &&
+      line.endsWith('\r') &&
+      line.length > 1
+  );
+  if (!isCrlfPatchFile) return lines;
+  return lines.map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
+}
+
+/**
+ * Parses a unified diff into structured per-file sections — the single
+ * shared walker every diff consumer builds on.
+ */
+export function parseDiffSections(diffContent: string): DiffSection[] {
+  const sections: DiffSection[] = [];
+  const lines = splitDiffLines(diffContent);
+  let current: DiffSection | null = null;
+  let currentHunk: ParsedHunk | null = null;
+
+  const finishHunk = (): void => {
+    if (current && currentHunk) {
+      current.hunks.push(currentHunk);
+    }
+    currentHunk = null;
+  };
+
+  for (const line of lines) {
+    const header = parseDiffGitHeader(line);
+    if (header) {
+      finishHunk();
+      current = {
+        targetPath: header.targetPath,
+        sourcePath: header.sourcePath,
+        isNewFile: false,
+        isDeletedFile: false,
+        isBinary: false,
+        hunks: [],
+      };
+      sections.push(current);
+      continue;
+    }
+
+    if (!current) continue;
+
+    if (currentHunk === null) {
+      // File metadata zone (between the header and the first hunk).
+      if (line.startsWith('new file mode')) {
+        current.isNewFile = true;
+        continue;
+      }
+      if (line.startsWith('deleted file mode')) {
+        current.isDeletedFile = true;
+        continue;
+      }
+      if (line === 'GIT binary patch' || /^Binary files .* differ$/.test(line)) {
+        current.isBinary = true;
+        continue;
+      }
+    }
+
+    if (current.isBinary) continue;
+
+    const hunkMatch = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (hunkMatch) {
+      finishHunk();
+      currentHunk = {
+        oldStart: parseInt(hunkMatch[1] ?? '0', 10),
+        oldCount: parseInt(hunkMatch[2] ?? '1', 10),
+        newStart: parseInt(hunkMatch[3] ?? '0', 10),
+        newCount: parseInt(hunkMatch[4] ?? '1', 10),
+        lines: [],
+        noNewlineAtEndOld: false,
+        noNewlineAtEndNew: false,
+      };
+      continue;
+    }
+
+    if (!currentHunk) continue;
+
+    if (line === '\\ No newline at end of file') {
+      // The marker is an annotation on the immediately preceding body
+      // line. Peek the last collected line to decide which side(s) the
+      // annotation applies to — a single boolean cannot represent the
+      // asymmetric case where only one side lacks the trailing newline.
+      const previous = currentHunk.lines[currentHunk.lines.length - 1] ?? '';
+      if (previous.startsWith('-')) {
+        currentHunk.noNewlineAtEndOld = true;
+      } else if (previous.startsWith('+')) {
+        currentHunk.noNewlineAtEndNew = true;
+      } else if (previous.startsWith(' ')) {
+        // Context line: present in both sides, so the trailing-newline
+        // absence applies to both. This is rare (it only happens when
+        // the hunk ends on an unchanged line that itself is the last
+        // line of the file) but real — git emits it.
+        currentHunk.noNewlineAtEndOld = true;
+        currentHunk.noNewlineAtEndNew = true;
+      }
+      // If the marker appears with no preceding body line (malformed
+      // diff), leave both flags false — the downstream apply logic
+      // will still produce a defined result.
+      continue;
+    }
+
+    if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) {
+      currentHunk.lines.push(line);
+    }
+  }
+
+  finishHunk();
+  return sections;
+}
+
+/**
  * Checks whether a specific file is a new-file addition within a patch.
  * For multi-file patches, only inspects the section belonging to targetFile.
  * @param patchContent - The full patch content
@@ -26,27 +277,9 @@ export function extractOrder(filename: string): number {
  * @returns true if the patch creates targetFile as a new file
  */
 export function isNewFileInPatch(patchContent: string, targetFile: string): boolean {
-  const lines = patchContent.split('\n');
-  let inTargetFile = false;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      const match = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-      inTargetFile = match?.[1] === targetFile;
-      continue;
-    }
-
-    if (!inTargetFile) continue;
-
-    // Found hunk header — stop scanning metadata for this file section
-    if (line.startsWith('@@')) break;
-
-    if (line.startsWith('new file mode ')) {
-      return true;
-    }
-  }
-
-  return false;
+  return parseDiffSections(patchContent).some(
+    (section) => section.targetPath === targetFile && section.isNewFile
+  );
 }
 
 /**
@@ -56,20 +289,18 @@ export function isNewFileInPatch(patchContent: string, targetFile: string): bool
  */
 export function extractAffectedFiles(diffContent: string): string[] {
   const files = new Set<string>();
-  const lines = diffContent.split('\n');
+  for (const section of parseDiffSections(diffContent)) {
+    files.add(section.targetPath);
+  }
 
-  for (const line of lines) {
-    // Match "diff --git a/path/to/file b/path/to/file"
-    const diffMatch = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-    if (diffMatch?.[1]) {
-      files.add(diffMatch[1]);
-      continue;
-    }
-
-    // Match "+++ b/path/to/file" for new files
-    const addMatch = /^\+\+\+ b\/(.+)$/.exec(line);
-    if (addMatch?.[1] && addMatch[1] !== '/dev/null') {
-      files.add(addMatch[1]);
+  if (files.size === 0) {
+    // Header-less unified diff (no `diff --git` lines, e.g. hand-written
+    // or `diff -u` output): fall back to the `+++ b/<path>` markers.
+    for (const line of splitDiffLines(diffContent)) {
+      const addMatch = /^\+\+\+ b\/(.+)$/.exec(line);
+      if (addMatch?.[1] && addMatch[1] !== '/dev/null') {
+        files.add(addMatch[1]);
+      }
     }
   }
 
@@ -102,81 +333,9 @@ export interface ParsedHunk {
  * @returns Array of hunk objects with line info and changes
  */
 export function parseHunksForFile(patchContent: string, targetFile: string): ParsedHunk[] {
-  const hunks: ParsedHunk[] = [];
-
-  const lines = patchContent.split('\n');
-  let inTargetFile = false;
-  let currentHunk: ParsedHunk | null = null;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-
-    // Check for diff header
-    if (line.startsWith('diff --git')) {
-      // Check if this is for our target file
-      const match = /^diff --git a\/.+ b\/(.+)$/.exec(line);
-      if (currentHunk) {
-        hunks.push(currentHunk);
-      }
-      inTargetFile = match?.[1] === targetFile;
-      currentHunk = null;
-      continue;
-    }
-
-    if (!inTargetFile) continue;
-
-    // Check for hunk header
-    const hunkMatch = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (hunkMatch) {
-      if (currentHunk) {
-        hunks.push(currentHunk);
-      }
-      currentHunk = {
-        oldStart: parseInt(hunkMatch[1] ?? '0', 10),
-        oldCount: parseInt(hunkMatch[2] ?? '1', 10),
-        newStart: parseInt(hunkMatch[3] ?? '0', 10),
-        newCount: parseInt(hunkMatch[4] ?? '1', 10),
-        lines: [],
-        noNewlineAtEndOld: false,
-        noNewlineAtEndNew: false,
-      };
-      continue;
-    }
-
-    // Collect hunk lines
-    if (currentHunk) {
-      if (line === '\\ No newline at end of file') {
-        // The marker is an annotation on the immediately preceding body
-        // line. Peek the last collected line to decide which side(s) the
-        // annotation applies to — a single boolean cannot represent the
-        // asymmetric case where only one side lacks the trailing newline.
-        const previous = currentHunk.lines[currentHunk.lines.length - 1] ?? '';
-        if (previous.startsWith('-')) {
-          currentHunk.noNewlineAtEndOld = true;
-        } else if (previous.startsWith('+')) {
-          currentHunk.noNewlineAtEndNew = true;
-        } else if (previous.startsWith(' ')) {
-          // Context line: present in both sides, so the trailing-newline
-          // absence applies to both. This is rare (it only happens when
-          // the hunk ends on an unchanged line that itself is the last
-          // line of the file) but real — git emits it.
-          currentHunk.noNewlineAtEndOld = true;
-          currentHunk.noNewlineAtEndNew = true;
-        }
-        // If the marker appears with no preceding body line (malformed
-        // diff), leave both flags false — the downstream apply logic
-        // will still produce a defined result.
-      } else if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) {
-        currentHunk.lines.push(line);
-      }
-    }
-  }
-
-  if (currentHunk) {
-    hunks.push(currentHunk);
-  }
-
-  return hunks;
+  return parseDiffSections(patchContent)
+    .filter((section) => section.targetPath === targetFile)
+    .flatMap((section) => section.hunks);
 }
 
 /**

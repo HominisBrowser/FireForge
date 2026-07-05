@@ -6,6 +6,8 @@ import {
   extractConflictingFiles,
   extractOrder,
   isNewFileInPatch,
+  parseDiffGitHeader,
+  parseDiffSections,
   parseHunksForFile,
 } from '../patch-parse.js';
 
@@ -214,6 +216,88 @@ describe('patch parse helper coverage', () => {
         noNewlineAtEndNew: true,
       },
     ]);
+  });
+
+  it('parses a CRLF-saved patch file identically to its LF twin', () => {
+    // A patch file saved with CRLF endings (Windows editor, autocrlf
+    // checkout) has \r on EVERY line. The historical '\n'-only walkers
+    // failed target-file matching (captured path kept the trailing \r)
+    // and never saw the `\ No newline` marker.
+    const crlfPatch = MULTI_HUNK_PATCH.split('\n').join('\r\n');
+
+    expect(extractAffectedFiles(crlfPatch)).toEqual(['browser/a.js', 'browser/b.css']);
+    const hunks = parseHunksForFile(crlfPatch, 'browser/a.js');
+    expect(hunks).toHaveLength(2);
+    expect(hunks[0]?.lines).toEqual([' old-one', '-old-two', '+new-two']);
+    expect(hunks[1]?.noNewlineAtEndNew).toBe(true);
+  });
+
+  it('preserves payload \\r when only the content is CRLF (LF patch file)', () => {
+    // An LF-saved patch of a CRLF-content file has \r only on payload
+    // lines, where it is significant and must survive parsing.
+    const patch = [
+      'diff --git a/win/file.txt b/win/file.txt',
+      '--- a/win/file.txt',
+      '+++ b/win/file.txt',
+      '@@ -1,1 +1,1 @@',
+      '-old\r',
+      '+new\r',
+      '',
+    ].join('\n');
+
+    const hunks = parseHunksForFile(patch, 'win/file.txt');
+    expect(hunks[0]?.lines).toEqual(['-old\r', '+new\r']);
+  });
+
+  it('parses quoted diff --git headers (special characters in paths)', () => {
+    expect(parseDiffGitHeader('diff --git "a/dir/sp ace.js" "b/dir/sp ace.js"')).toEqual({
+      sourcePath: 'dir/sp ace.js',
+      targetPath: 'dir/sp ace.js',
+    });
+    // core.quotePath octal-escapes non-ASCII bytes: ü = \303\274.
+    expect(parseDiffGitHeader('diff --git "a/f\\303\\274r.js" "b/f\\303\\274r.js"')).toEqual({
+      sourcePath: 'für.js',
+      targetPath: 'für.js',
+    });
+  });
+
+  it('splits an unquoted header whose path itself contains " b/"', () => {
+    // The historical greedy regex split at the LAST ' b/', truncating the
+    // path to 'x.js'. The symmetric split recovers the real path.
+    expect(parseDiffGitHeader('diff --git a/lib b/x.js b/lib b/x.js')).toEqual({
+      sourcePath: 'lib b/x.js',
+      targetPath: 'lib b/x.js',
+    });
+  });
+
+  it('marks binary sections and never yields hunks for them', () => {
+    const patch = [
+      'diff --git a/icons/logo.png b/icons/logo.png',
+      'new file mode 100644',
+      'index 0000000..1111111',
+      'GIT binary patch',
+      'literal 5',
+      // base85 payload legitimately starts with '+' — must not parse as an added line.
+      '+K}0e#0ssI2',
+      '',
+      'diff --git a/readme.txt b/readme.txt',
+      '--- a/readme.txt',
+      '+++ b/readme.txt',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+
+    const sections = parseDiffSections(patch);
+    expect(sections).toHaveLength(2);
+    expect(sections[0]).toMatchObject({
+      targetPath: 'icons/logo.png',
+      isBinary: true,
+      isNewFile: true,
+      hunks: [],
+    });
+    expect(sections[1]?.hunks[0]?.lines).toEqual(['-old', '+new']);
   });
 
   it('extracts all conflicting files from git apply error output', () => {

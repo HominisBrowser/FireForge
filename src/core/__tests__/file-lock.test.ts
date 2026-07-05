@@ -219,6 +219,109 @@ describe('file-lock', () => {
     ).rejects.toThrow('lock still held');
   });
 
+  it('reaps a lock whose owner dies while waiters are already polling', async () => {
+    // The stale probe used to run exactly once per waiter: a holder that
+    // died AFTER that single probe left the waiter polling a permanently
+    // dead lock until timeoutMs (24 h for the build lock). The periodic
+    // re-probe bounds that to staleReprobeMs.
+    const { writeFile } = await import('node:fs/promises');
+    const { spawn } = await import('node:child_process');
+    const tempDir = await makeTempDir('fireforge-midwait-death-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+
+    // A genuinely live child owns the lock, so the waiter's first probe
+    // respects it; we kill the child mid-wait.
+    const holder = spawn('sleep', ['30']);
+    expect(holder.pid).toBeDefined();
+    await writeFile(join(lockPath, 'pid'), String(holder.pid), 'utf-8');
+
+    const waiter = withFileLock(lockPath, () => Promise.resolve('acquired-after-death'), {
+      timeoutMs: 5_000,
+      pollMs: 5,
+      staleMs: 60 * 60 * 1000,
+      staleReprobeMs: 20,
+    });
+
+    // Let the waiter run its first (respecting) probe, then kill the holder.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    holder.kill('SIGKILL');
+    await new Promise((resolve) => {
+      holder.once('exit', resolve);
+    });
+
+    await expect(waiter).resolves.toBe('acquired-after-death');
+    expect(await exists(lockPath)).toBe(false);
+  });
+
+  it('two waiters recovering the same stale lock still exclude each other', async () => {
+    // TOCTOU regression: with rm-by-path recovery, two waiters could both
+    // observe the dead owner, one re-acquires, and the other's rm deleted
+    // the fresh lock — two processes in the critical section at once. The
+    // rename-aside reap lets exactly one reaper win; the loser re-polls.
+    const { writeFile } = await import('node:fs/promises');
+    const { spawn } = await import('node:child_process');
+    const tempDir = await makeTempDir('fireforge-reap-race-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+    const child = spawn('true');
+    const deadPid: number = await new Promise((resolve) => {
+      child.once('exit', () => {
+        resolve(child.pid ?? -1);
+      });
+    });
+    await writeFile(join(lockPath, 'pid'), String(deadPid), 'utf-8');
+
+    let inside = 0;
+    let maxInside = 0;
+    const critical = async (): Promise<string> => {
+      inside += 1;
+      maxInside = Math.max(maxInside, inside);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      inside -= 1;
+      return 'done';
+    };
+
+    const opts = { timeoutMs: 5_000, pollMs: 5, staleMs: 60 * 60 * 1000, staleReprobeMs: 5 };
+    const results = await Promise.all([
+      withFileLock(lockPath, critical, opts),
+      withFileLock(lockPath, critical, opts),
+    ]);
+
+    expect(results).toEqual(['done', 'done']);
+    expect(maxInside).toBe(1);
+    expect(await exists(lockPath)).toBe(false);
+  });
+
+  it('does not remove a lock that no longer belongs to this process on release', async () => {
+    // If (pathologically) our lock is replaced by another owner while our
+    // operation runs, the release path must not delete the new owner's
+    // lock — the historical unconditional `finally { rm }` did exactly
+    // that, compounding a double-acquisition.
+    const { writeFile } = await import('node:fs/promises');
+    const { spawn } = await import('node:child_process');
+    const tempDir = await makeTempDir('fireforge-foreign-release-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+
+    // A live foreign process (a sleeping child) will "own" the imposter lock.
+    const foreign = spawn('sleep', ['30']);
+    expect(foreign.pid).toBeDefined();
+    try {
+      await withFileLock(lockPath, async () => {
+        // Simulate a reaper replacing our lock mid-operation.
+        await rm(lockPath, { recursive: true, force: true });
+        await mkdir(lockPath);
+        await writeFile(join(lockPath, 'pid'), `${String(foreign.pid)}\nimposter-token\n`, 'utf-8');
+      });
+    } finally {
+      foreign.kill('SIGKILL');
+    }
+
+    expect(await exists(lockPath)).toBe(true);
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(expect.stringContaining('Not removing lock'));
+    await rm(lockPath, { recursive: true, force: true });
+  });
+
   it('treats EPERM from PID liveness checks as alive or unknown', async () => {
     const { writeFile } = await import('node:fs/promises');
     const tempDir = await makeTempDir('fireforge-eperm-pid-lock-');

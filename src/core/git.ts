@@ -2,6 +2,7 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { ExecTimeoutError } from '../errors/base.js';
 import {
   GitError,
   GitIndexingTimeoutError,
@@ -71,6 +72,10 @@ interface SourceScanSummary {
  * detection here needs to recognise that shape too.
  */
 function isTimeoutError(error: unknown): boolean {
+  // `exec` now rejects with a typed ExecTimeoutError when its `timeout`
+  // option fires (the raw AbortError check below is kept for defence in
+  // depth against other abort paths).
+  if (error instanceof ExecTimeoutError) return true;
   if (error instanceof Error && error.name === 'AbortError') return true;
   if (!(error instanceof GitError)) return false;
   if (/SIGTERM|timed out|exit code 143/i.test(error.message)) return true;

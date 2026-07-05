@@ -188,9 +188,11 @@ vi.mock('@clack/prompts', () => ({
   confirm: confirmMock,
 }));
 
+import { Command } from 'commander';
+
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import { NoRebaseSessionError, RebaseSessionExistsError } from '../../errors/rebase.js';
-import { rebaseCommand } from '../rebase.js';
+import { rebaseCommand, registerRebase } from '../rebase.js';
 
 const defaultPaths = {
   root: '/project',
@@ -989,5 +991,56 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
 
     expect(stampPatchVersionsMock).not.toHaveBeenCalled();
     expect(clearRebaseSessionMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('fireforge rebase — CLI registration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupDefaults();
+  });
+
+  function createProgram(): Command {
+    const program = new Command();
+    program.exitOverride(); // Commander normally calls process.exit on parse error.
+    registerRebase(program, {
+      getProjectRoot: () => '/project',
+      withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
+    });
+    return program;
+  }
+
+  // parseInt would turn these into NaN / negative / truncated values, which
+  // make the fuzz loop in applyPatchWithFuzz skip every apply attempt
+  // (including exact match) and fall straight through to `git apply --reject`.
+  it.each(['foo', '--max-fuzz=-1', '0', '1.5', '01'])(
+    'rejects invalid --max-fuzz value %s at parse time before the action runs',
+    async (value) => {
+      const program = createProgram();
+
+      const argv = value.startsWith('--max-fuzz=')
+        ? ['node', 'fireforge', 'rebase', value]
+        : ['node', 'fireforge', 'rebase', '--max-fuzz', value];
+
+      await expect(program.parseAsync(argv)).rejects.toThrow(
+        /--max-fuzz must be a positive integer/
+      );
+      expect(hasActiveRebaseSessionMock).not.toHaveBeenCalled();
+      expect(loadRebaseSessionMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('accepts a valid --max-fuzz and forwards the parsed integer to the action', async () => {
+    const program = createProgram();
+    loadRebaseSessionMock.mockResolvedValue(null);
+
+    // --continue with no active session reaches the action and fails with the
+    // domain error — proving the flag survived parsing as a real number.
+    await expect(
+      program.parseAsync(['node', 'fireforge', 'rebase', '--continue', '--max-fuzz', '5'])
+    ).rejects.toBeInstanceOf(NoRebaseSessionError);
+
+    const cmd = program.commands.find((c) => c.name() === 'rebase');
+    expect(cmd?.opts()['maxFuzz']).toBe(5);
   });
 });

@@ -99,6 +99,45 @@ export class InvalidArgumentError extends FireForgeError {
 }
 
 /**
+ * Error thrown when a spawned command exceeds its `timeout` option.
+ *
+ * Every `exec*` helper in `src/utils/process.ts` rejects with this type
+ * (instead of Node's bare `AbortError: The operation was aborted`) when the
+ * caller-supplied timeout fires. The bare AbortError bit an operator during
+ * the 2026-04-24 eval (see {@link GitIndexingTimeoutError} in errors/git.ts):
+ * an 854 s git indexing pass died with no command name, no elapsed time, and
+ * no hint that a timeout — not git — was responsible. The git path gained a
+ * site-local typed error then; this class extends the same courtesy to every
+ * other `timeout` caller.
+ */
+export class ExecTimeoutError extends FireForgeError {
+  readonly code = ExitCode.GENERAL_ERROR;
+
+  constructor(
+    /** Executable that was spawned (argv[0]). */
+    public readonly command: string,
+    /** Arguments the executable was spawned with. */
+    public readonly args: readonly string[],
+    /** Timeout that elapsed, in milliseconds. */
+    public readonly timeoutMs: number,
+    cause?: unknown
+  ) {
+    super(
+      `Command timed out after ${Math.round(timeoutMs / 1000)}s: ${[command, ...args].join(' ')}`,
+      cause
+    );
+  }
+
+  override get userMessage(): string {
+    return (
+      `${this.message}\n\n` +
+      'The command was killed because it exceeded its time budget, not because it failed on its own. ' +
+      'If the host is just slow or loaded, re-running may succeed.'
+    );
+  }
+}
+
+/**
  * Error thrown when the user cancels an interactive prompt.
  */
 export class CancellationError extends FireForgeError {

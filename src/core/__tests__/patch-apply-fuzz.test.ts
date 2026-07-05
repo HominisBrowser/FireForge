@@ -89,4 +89,14 @@ describe('applyPatchWithFuzz', () => {
     // Only 2 calls: 1 check + 1 reject
     expect(execMock).toHaveBeenCalledTimes(2);
   });
+
+  it.each([Number.NaN, -1, 1.5])(
+    'rejects invalid maxFuzz %s before touching git — NaN/negative would skip every apply attempt',
+    async (maxFuzz) => {
+      await expect(applyPatchWithFuzz('/patch.patch', '/engine', maxFuzz)).rejects.toThrow(
+        /maxFuzz must be a non-negative integer/
+      );
+      expect(execMock).not.toHaveBeenCalled();
+    }
+  );
 });

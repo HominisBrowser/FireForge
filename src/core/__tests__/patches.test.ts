@@ -219,12 +219,15 @@ describe('extractNewFileContent', () => {
     expect(result).toBe('// Gamma\nexport const Gamma = "g";\n');
   });
 
-  it('returns empty content for a non-existent target file in a multi-file patch', async () => {
+  it('returns truly empty content for a non-existent target file in a multi-file patch', async () => {
     mockedReadText.mockResolvedValue(MULTI_FILE_PATCH);
 
     const result = await extractNewFileContent('/fake/patch.patch', 'modules/NotHere.sys.mjs');
 
-    expect(result).toBe('\n');
+    // Historical behavior returned '\n' here (and for genuinely empty new
+    // files), materialising a one-byte file where git would create a
+    // zero-byte one — which then failed checksum/drift comparisons.
+    expect(result).toBe('');
   });
 
   it('without targetFile, extracts all files concatenated (legacy behavior)', async () => {

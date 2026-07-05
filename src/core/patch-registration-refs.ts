@@ -15,6 +15,8 @@
  * or customElements.js edits pass through without spurious warnings.
  */
 
+import { parseDiffSections } from './patch-parse.js';
+
 /** Canonical file paths that registration-shaped diffs touch. */
 const REGISTRATION_FILE_PATHS = new Set<string>([
   'toolkit/content/customElements.js',
@@ -55,31 +57,21 @@ export function collectPatchRegistrationReferences(
   if (!patchBody) return [];
 
   const refs: PatchRegistrationReference[] = [];
-  let currentFile: string | undefined;
 
-  // Walk line-by-line. The canonical unified-diff header line is
-  // `diff --git a/<path> b/<path>` — we key the file state off the `b/`
-  // path because that names the target side and is stable against
-  // renames. Additional diff metadata lines (index/---/+++/@@) are
-  // ignored for the purposes of tracking the current file.
-  const lines = patchBody.split(/\r?\n/);
-  for (const line of lines) {
-    const diffHeader = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-    if (diffHeader?.[2]) {
-      currentFile = diffHeader[2];
-      continue;
-    }
-
-    if (!currentFile) continue;
-    if (!REGISTRATION_FILE_PATHS.has(currentFile)) continue;
-    if (!line.startsWith('+')) continue;
-    // Skip the `+++ b/<path>` header line — only real hunk adds count.
-    if (line.startsWith('+++')) continue;
-
-    const added = line.slice(1);
-    const extracted = extractTargetPathsFromRegistrationLine(currentFile, added);
-    for (const target of extracted) {
-      refs.push({ targetPath: target, source: currentFile, lineText: added });
+  // Key the file state off the `b/` path because that names the target
+  // side and is stable against renames. Only real hunk adds count —
+  // parseDiffSections has already filtered out header/metadata lines.
+  for (const section of parseDiffSections(patchBody)) {
+    if (!REGISTRATION_FILE_PATHS.has(section.targetPath)) continue;
+    for (const hunk of section.hunks) {
+      for (const line of hunk.lines) {
+        if (!line.startsWith('+')) continue;
+        const added = line.slice(1);
+        const extracted = extractTargetPathsFromRegistrationLine(section.targetPath, added);
+        for (const target of extracted) {
+          refs.push({ targetPath: target, source: section.targetPath, lineText: added });
+        }
+      }
     }
   }
 

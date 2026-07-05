@@ -232,7 +232,10 @@ describe('downloadCommand', () => {
 
     expect(withFileLock).toHaveBeenCalledWith(
       '/project/.fireforge/download.fireforge.lock',
-      expect.any(Function)
+      expect.any(Function),
+      // The download lock waits generously: a legitimate holder runs for
+      // 10+ minutes, and dead holders are reaped by the PID probe anyway.
+      expect.objectContaining({ timeoutMs: 30 * 60_000 })
     );
     expect(removeDir).not.toHaveBeenCalled();
     expect(initRepository).not.toHaveBeenCalled();

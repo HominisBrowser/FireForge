@@ -7,6 +7,7 @@
  * so the user gets `.rej` files for manual resolution.
  */
 
+import { InvalidArgumentError } from '../errors/base.js';
 import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
 import { ensureGit } from './git-base.js';
@@ -35,13 +36,23 @@ export interface FuzzyApplyResult {
  *
  * @param patchPath - Absolute path to the `.patch` file
  * @param engineDir - Working directory (engine/)
- * @param maxFuzz   - Maximum fuzz factor to try (default 3)
+ * @param maxFuzz   - Maximum fuzz factor to try (default 3, 0 = exact only)
+ * @throws InvalidArgumentError when `maxFuzz` is not a non-negative integer —
+ *   a NaN or negative value would silently skip every apply attempt
+ *   (including the exact-match one) and fall straight through to `--reject`
  */
 export async function applyPatchWithFuzz(
   patchPath: string,
   engineDir: string,
   maxFuzz: number = 3
 ): Promise<FuzzyApplyResult> {
+  if (!Number.isInteger(maxFuzz) || maxFuzz < 0) {
+    throw new InvalidArgumentError(
+      `maxFuzz must be a non-negative integer, got ${String(maxFuzz)}.`,
+      'maxFuzz'
+    );
+  }
+
   await ensureGit();
 
   // Try exact match first, then escalate

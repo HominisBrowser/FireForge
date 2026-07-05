@@ -23,7 +23,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 - Node.js 22.22.1+
 - Python 3
 - Git
-- The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows (never tested on Windows tbh)
+- The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows (never tested on Windows tbh — smoke-run process cleanup there uses `taskkill /T /F` and is best-effort)
 - Watchman, if you want `fireforge watch` (optional)
 
 ## Getting Started

@@ -22,6 +22,7 @@ import {
 } from '../utils/validation.js';
 import { SUPPORTED_CONFIG_ROOT_KEYS } from './config-paths.js';
 import { parsePatchPolicyBlock } from './config-validate-patch-policy.js';
+import { parseExternalToolchainsBlock, parseTestBlock } from './config-validate-test-toolchains.js';
 
 /**
  * Parses and validates the four required identity fields (`name`,
@@ -191,6 +192,8 @@ export function validateConfig(data: unknown): FireForgeConfig {
   const config: FireForgeConfig = { ...identity, firefox };
 
   parseBuildBlock(rec, config);
+  parseTestBlock(rec, config);
+  parseExternalToolchainsBlock(rec, config);
   parseWireBlock(rec, config);
   parseLicenseField(rec, config);
 

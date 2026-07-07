@@ -160,6 +160,49 @@ describe('main', () => {
     expect(parseAsyncSpy).not.toHaveBeenCalled();
   });
 
+  it('handles --version alongside other root flags (fireforge --verbose --version)', async () => {
+    // Regression: the original fast path only fired when --version was the
+    // SOLE argument, so `fireforge --verbose --version` failed with
+    // "unknown option '--version'" even though help advertised the flag.
+    // Any -V/--version among root flags with NO subcommand prints the
+    // version; a subcommand's own --version (e.g. `source set --version`)
+    // is untouched because a positional argument is present.
+    const previousArgv = process.argv;
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const parseAsyncSpy = vi.spyOn(Command.prototype, 'parseAsync');
+    process.argv = ['node', 'fireforge', '--verbose', '--version'];
+
+    try {
+      await main();
+    } finally {
+      process.argv = previousArgv;
+    }
+
+    expect(writeSpy).toHaveBeenCalledWith(`${getPackageVersion()}\n`);
+    expect(parseAsyncSpy).not.toHaveBeenCalled();
+  });
+
+  it('leaves --version for the subcommand parser when a subcommand is present', async () => {
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const parseAsyncSpy = vi
+      .spyOn(Command.prototype, 'parseAsync')
+      .mockImplementation(function mockParseAsync(this: Command) {
+        return Promise.resolve(this);
+      });
+
+    const previousArgv = process.argv;
+    process.argv = ['node', 'fireforge', 'source', 'set', '--version', '152.0b6'];
+
+    try {
+      await main();
+    } finally {
+      process.argv = previousArgv;
+    }
+
+    expect(writeSpy).not.toHaveBeenCalledWith(`${getPackageVersion()}\n`);
+    expect(parseAsyncSpy).toHaveBeenCalled();
+  });
+
   it('parses the current process arguments through the Commander program', async () => {
     const parseAsyncSpy = vi
       .spyOn(Command.prototype, 'parseAsync')

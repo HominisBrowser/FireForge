@@ -56,7 +56,32 @@ export interface ClassifiedFile extends StatusFile {
   claimedBy?: string[];
 }
 
-function getPrimaryStatusCode(status: string): string {
+/**
+ * Builds the file → owning-patch-filenames multimap from manifest rows.
+ * Single source of truth for cross-patch claim detection — status
+ * classification, verify's cross-claim check, and the ownership table all
+ * consume this builder (they used to each rebuild it, one drift away from
+ * disagreeing about what "claimed" means).
+ */
+export function buildPatchClaims(
+  manifestPatches: ReadonlyArray<{ filename: string; filesAffected: string[] }>
+): Map<string, string[]> {
+  const ownersByPath = new Map<string, string[]>();
+  for (const patch of manifestPatches) {
+    for (const file of patch.filesAffected) {
+      const existing = ownersByPath.get(file) ?? [];
+      existing.push(patch.filename);
+      ownersByPath.set(file, existing);
+    }
+  }
+  return ownersByPath;
+}
+
+/**
+ * Reduces a two-character porcelain XY status to its primary code.
+ * Single source of truth — status-output.ts renders from the same logic.
+ */
+export function getPrimaryStatusCode(status: string): string {
   if (status.includes('?')) return '?';
   if (status.includes('!')) return '!';
 
@@ -109,19 +134,7 @@ export async function classifyFiles(
   // branch where the expected-vs-actual content comparison then routed
   // them into `unmanaged` when the content didn't match either owner's
   // expectation.
-  const patchClaims = new Map<string, string[]>();
-  if (manifest) {
-    for (const patch of manifest.patches) {
-      for (const f of patch.filesAffected) {
-        const owners = patchClaims.get(f);
-        if (owners) {
-          owners.push(patch.filename);
-        } else {
-          patchClaims.set(f, [patch.filename]);
-        }
-      }
-    }
-  }
+  const patchClaims = manifest ? buildPatchClaims(manifest.patches) : new Map<string, string[]>();
 
   const results: ClassifiedFile[] = [];
 

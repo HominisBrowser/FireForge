@@ -12,6 +12,7 @@ vi.mock('../patch-apply.js', () => ({
 vi.mock('../patch-manifest.js', () => ({
   PATCHES_MANIFEST: 'patches.json',
   loadPatchesManifest: vi.fn(),
+  loadPatchesManifestForWrite: vi.fn(),
   mutatePatchRowsInManifest: vi.fn(),
   savePatchesManifest: vi.fn(),
   addPatchToManifest: vi.fn(),
@@ -44,7 +45,6 @@ import { warn } from '../../utils/logger.js';
 import { discoverPatches, isNewFilePatch } from '../patch-apply.js';
 import {
   commitExportedPatch,
-  deletePatch,
   findAllPatchesForFiles,
   findExistingPatchForFile,
   findSupersededPatches,
@@ -60,6 +60,7 @@ import {
   addPatchToManifest,
   findPatchesAffectingFile,
   loadPatchesManifest,
+  loadPatchesManifestForWrite,
   mutatePatchRowsInManifest,
   savePatchesManifest,
 } from '../patch-manifest.js';
@@ -74,6 +75,11 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(removeFile).mockResolvedValue(undefined);
     vi.mocked(unlink).mockResolvedValue(undefined);
     vi.mocked(loadPatchesManifest).mockResolvedValue(null);
+    // The write paths use the ForWrite loader (corrupt-aborting); these
+    // unit fixtures never simulate corruption, so it mirrors the reader.
+    vi.mocked(loadPatchesManifestForWrite).mockImplementation((dir: string) =>
+      vi.mocked(loadPatchesManifest)(dir)
+    );
     vi.mocked(mutatePatchRowsInManifest).mockResolvedValue([]);
     vi.mocked(savePatchesManifest).mockResolvedValue(undefined);
     vi.mocked(addPatchToManifest).mockResolvedValue(undefined);
@@ -314,14 +320,6 @@ describe('patch-export threshold coverage', () => {
     expect(plan.patchFilename).toBe('001-ui-dock.patch');
     expect(plan.manifestBefore).toBeNull();
     expect(plan.manifestAfter.patches[0]?.filename).toBe('001-ui-dock.patch');
-  });
-
-  it('returns early when deleting a patch whose file is already gone', async () => {
-    vi.mocked(loadPatchesManifest).mockResolvedValue({ version: 1, patches: [] } as never);
-    vi.mocked(pathExists).mockResolvedValue(false);
-
-    await expect(deletePatch('/patches', '001-ui-old.patch')).resolves.toBeUndefined();
-    expect(unlink).not.toHaveBeenCalled();
   });
 
   it('parses a filename with valid format but invalid category as legacy', () => {
@@ -626,90 +624,6 @@ describe('patch-export threshold coverage', () => {
 
     // Neither should be superseded: 001 is multi-file, 002 doesn't match
     await expect(findSupersededPatches('/patches', ['a.js'])).resolves.toEqual([]);
-  });
-
-  it('deletePatch successfully unlinks an existing file', async () => {
-    vi.mocked(loadPatchesManifest).mockResolvedValue({
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-old.patch',
-          order: 1,
-          category: 'ui',
-          name: 'old',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['a.js'],
-        },
-      ],
-    } as never);
-    vi.mocked(pathExists).mockResolvedValue(true);
-
-    await expect(deletePatch('/patches', '001-ui-old.patch')).resolves.toBeUndefined();
-    expect(savePatchesManifest).toHaveBeenCalled();
-    expect(unlink).toHaveBeenCalled();
-  });
-
-  it('deletePatch restores manifest when unlink fails', async () => {
-    const manifest = {
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-old.patch',
-          order: 1,
-          category: 'ui',
-          name: 'old',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['a.js'],
-        },
-      ],
-    };
-    vi.mocked(loadPatchesManifest).mockResolvedValue(manifest as never);
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(unlink).mockRejectedValueOnce(new Error('unlink fail'));
-
-    await expect(deletePatch('/patches', '001-ui-old.patch')).rejects.toThrow('unlink fail');
-    // Should restore the original manifest
-    expect(savePatchesManifest).toHaveBeenCalledTimes(2);
-  });
-
-  it('deletePatch warns when manifest restore fails after unlink failure', async () => {
-    const manifest = {
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-old.patch',
-          order: 1,
-          category: 'ui',
-          name: 'old',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['a.js'],
-        },
-      ],
-    };
-    vi.mocked(loadPatchesManifest).mockResolvedValue(manifest as never);
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(unlink).mockRejectedValueOnce(new Error('unlink fail'));
-    vi.mocked(savePatchesManifest)
-      .mockResolvedValueOnce(undefined) // first save (filter) OK
-      .mockRejectedValueOnce(new Error('restore fail')); // restore fails
-
-    await expect(deletePatch('/patches', '001-ui-old.patch')).rejects.toThrow('unlink fail');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Failed to restore manifest'));
-  });
-
-  it('deletePatch handles null manifest gracefully', async () => {
-    vi.mocked(loadPatchesManifest).mockResolvedValue(null);
-    vi.mocked(pathExists).mockResolvedValue(true);
-
-    await expect(deletePatch('/patches', '001-ui-old.patch')).resolves.toBeUndefined();
-    expect(savePatchesManifest).not.toHaveBeenCalled();
-    expect(unlink).toHaveBeenCalled();
   });
 
   it('findAllPatchesForFiles returns empty when manifest is null', async () => {

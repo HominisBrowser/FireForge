@@ -25,17 +25,33 @@ vi.mock('../../core/git.js', () => ({
 }));
 
 vi.mock('../../core/git-status.js', () => ({
+  resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
   getDirtyFiles: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../../core/patch-apply.js', () => ({
-  countPatches: vi.fn(),
-  discoverPatches: vi.fn().mockResolvedValue([]),
-  extractAffectedFiles: vi.fn().mockReturnValue([]),
-  applyPatchesWithContinue: vi.fn(),
-  computePatchedContent: vi.fn().mockResolvedValue(''),
-  PatchError: class PatchError extends Error {},
-}));
+const computePatchedContentMock = vi.hoisted(() =>
+  vi.fn<(p: string, e: string, f: string) => Promise<string | null>>()
+);
+
+vi.mock('../../core/patch-apply.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/patch-apply.js')>();
+  return {
+    countPatches: vi.fn(),
+    discoverPatches: vi.fn().mockResolvedValue([]),
+    extractAffectedFiles: vi.fn().mockReturnValue([]),
+    applyPatchesWithContinue: vi.fn(),
+    computePatchedContent: computePatchedContentMock,
+    // Batched computer delegates to the same mock so existing
+    // computePatchedContent.mockResolvedValue calls keep driving tests.
+    createPatchedContentComputer: vi.fn(() =>
+      Promise.resolve((file: string) => computePatchedContentMock('', '', file))
+    ),
+    // Real matcher: --until scope-set resolution must share the apply
+    // loop's identifier semantics (filenames AND bare ordinals).
+    matchesUntilFilename: actual.matchesUntilFilename,
+    PatchError: class PatchError extends Error {},
+  };
+});
 
 vi.mock('../../core/patch-manifest.js', () => ({
   loadPatchesManifest: vi.fn(),
@@ -89,16 +105,21 @@ import { error, info, outro, spinner, success, warn } from '../../utils/logger.j
 import { importCommand } from '../import.js';
 
 function setStdinIsTTY(value: boolean): () => void {
-  const descriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+  const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+  const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
 
-  Object.defineProperty(process.stdin, 'isTTY', {
-    configurable: true,
-    value,
-  });
+  // import's interactivity check requires BOTH streams to be TTYs (a piped
+  // stdout would render the confirm prompt into the pipe), matching
+  // discard/reset — stub both.
+  Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value });
+  Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value });
 
   return () => {
-    if (descriptor) {
-      Object.defineProperty(process.stdin, 'isTTY', descriptor);
+    if (stdinDescriptor) {
+      Object.defineProperty(process.stdin, 'isTTY', stdinDescriptor);
+    }
+    if (stdoutDescriptor) {
+      Object.defineProperty(process.stdout, 'isTTY', stdoutDescriptor);
     }
   };
 }
@@ -579,6 +600,53 @@ describe('importCommand drift handling', () => {
     ]);
 
     await expect(importCommand('/fake/root', { until: '001-foo.patch' })).rejects.toThrow(
+      /Refusing to import while 1 patch integrity issue/
+    );
+    expect(applyPatchesWithContinue).not.toHaveBeenCalled();
+  });
+
+  it('resolves a bare-ordinal --until so in-range integrity issues still block', async () => {
+    // Regression (2026-07-05 review, M5): `--until 5` only matched
+    // FILENAMES when building the scope set, so the set came back empty —
+    // integrity issues inside the range were silently dropped, dry-run
+    // previewed "0 patches", and the apply loop (whose matcher accepts
+    // ordinals) applied 1..5 anyway.
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+    vi.mocked(countPatches).mockResolvedValue(2);
+    vi.mocked(loadPatchesManifest).mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-foo.patch',
+          name: 'foo',
+          order: 1,
+          category: 'ui',
+          description: '',
+          filesAffected: ['a.js'],
+          createdAt: '2026-04-20T00:00:00Z',
+          sourceEsrVersion: '140.9.0esr',
+        },
+        {
+          filename: '002-bar.patch',
+          name: 'bar',
+          order: 2,
+          category: 'ui',
+          description: '',
+          filesAffected: ['b.js'],
+          createdAt: '2026-04-20T00:00:00Z',
+          sourceEsrVersion: '140.9.0esr',
+        },
+      ],
+    });
+    vi.mocked(validatePatchIntegrity).mockResolvedValue([
+      {
+        filename: '001-foo.patch',
+        message: 'references a missing file',
+        targetFile: null,
+      },
+    ]);
+
+    await expect(importCommand('/fake/root', { until: '1' })).rejects.toThrow(
       /Refusing to import while 1 patch integrity issue/
     );
     expect(applyPatchesWithContinue).not.toHaveBeenCalled();

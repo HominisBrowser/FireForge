@@ -3,11 +3,12 @@ import { join } from 'node:path';
 
 import { confirm, select, text } from '@clack/prompts';
 
-import { addLicenseHeaderToFile, getLicenseHeader } from '../core/license-headers.js';
+import { addLicenseHeaderToFile } from '../core/license-headers.js';
 import { findAllPatchesForFiles } from '../core/patch-export.js';
 import {
   commentStyleForFile,
   detectNewFilesInDiff,
+  isAcceptableNewFileHeader,
   lintExportedPatch,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
@@ -286,13 +287,18 @@ export async function confirmSupersedePatches(
  * @param diffContent - Current unified diff
  * @param config - Project configuration
  * @param isInteractive - Whether interactive prompts are available
+ * @param dryRun - When true, only REPORT missing headers, never prompt or
+ *   write. Dry-run must stay read-only: before this flag existed, an
+ *   interactive `export --dry-run` prompted (default Yes) and wrote license
+ *   headers into engine/ files, then closed with "no changes made".
  * @returns true if files were modified on disk (caller must regenerate diff)
  */
 export async function autoFixLicenseHeaders(
   engineDir: string,
   diffContent: string,
   config: FireForgeConfig,
-  isInteractive: boolean
+  isInteractive: boolean,
+  dryRun = false
 ): Promise<boolean> {
   const license = config.license ?? 'MPL-2.0';
   const newFiles = detectNewFilesInDiff(diffContent);
@@ -307,13 +313,26 @@ export async function autoFixLicenseHeaders(
     if (!(await pathExists(filePath))) continue;
 
     const content = await readText(filePath);
-    const expectedHeader = getLicenseHeader(license, style);
-    if (!content.startsWith(expectedHeader)) {
+    // Same acceptance policy as the missing-license-header rule: offering
+    // to "fix" a file the lint already accepts (e.g. a verbatim upstream
+    // MPL block header on a derived JS/CSS file) would stack a second
+    // header on top of a legitimate one.
+    if (!isAcceptableNewFileHeader(file, content, style, license)) {
       filesToFix.push(file);
     }
   }
 
   if (filesToFix.length === 0) return false;
+
+  if (dryRun) {
+    const fileList = filesToFix.map((f) => `  - ${f}`).join('\n');
+    info(
+      `[dry-run] ${filesToFix.length} new file(s) missing the ${license} license header ` +
+        `(a real export would offer to add them):\n${fileList}`
+    );
+    return false;
+  }
+
   if (!isInteractive) return false;
 
   const fileList = filesToFix.map((f) => `  - ${f}`).join('\n');

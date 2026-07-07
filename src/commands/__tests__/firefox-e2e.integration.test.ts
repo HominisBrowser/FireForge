@@ -61,25 +61,31 @@ vi.mock('../../utils/logger.js', () => ({
 describe('connected Firefox workflow integration', () => {
   let projectRoot: string;
   let restoreTTY: (() => void) | undefined;
-  let fetchMock: ReturnType<typeof vi.fn>;
+  let fetchMock: ReturnType<typeof vi.fn<(url: unknown) => Promise<Response>>>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     resetResolvedPython();
     restoreTTY = setInteractiveMode(false);
     projectRoot = await createTempProject('fireforge-firefox-e2e-');
-    fetchMock = vi.fn();
+    fetchMock = vi.fn<(url: unknown) => Promise<Response>>();
     vi.stubGlobal('fetch', fetchMock);
 
     await setupCommand(projectRoot, { ...FIREFOX_WORKFLOW_SETUP_OPTIONS, force: true });
 
     const archivePath = await makeSyntheticFirefoxArchive(projectRoot);
     const archiveBody = await readFile(archivePath);
-    fetchMock.mockResolvedValue(
-      new Response(archiveBody, {
-        status: 200,
-        headers: { 'content-length': String(archiveBody.length) },
-      })
+    // URL-aware: the archive download gets the tarball, the default
+    // integrity check's SHA256SUMS fetch gets a 404 (warn-and-continue).
+    fetchMock.mockImplementation((url: unknown) =>
+      Promise.resolve(
+        String(url).endsWith('/SHA256SUMS')
+          ? new Response('not found', { status: 404 })
+          : new Response(archiveBody, {
+              status: 200,
+              headers: { 'content-length': String(archiveBody.length) },
+            })
+      )
     );
   });
 
@@ -98,7 +104,10 @@ describe('connected Firefox workflow integration', () => {
 
       const initialState = await loadState(projectRoot);
       expect(initialState.baseCommit).toBeTruthy();
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const archiveFetches = fetchMock.mock.calls.filter(
+        (call) => !String(call[0]).endsWith('/SHA256SUMS')
+      );
+      expect(archiveFetches).toHaveLength(1);
 
       await bootstrapCommand(projectRoot);
       await buildCommand(projectRoot, {});

@@ -4,7 +4,7 @@ import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
-import { isGitRepository } from '../core/git.js';
+import { getHead, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { discardStatusEntry } from '../core/git-file-ops.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -142,6 +142,19 @@ export async function discardCommand(
     );
   }
 
+  // Unborn-HEAD guard (mirrors status): an interrupted download leaves a
+  // repo with no baseline commit, where the entire ~300k-file tree reads
+  // as untracked — a discard against that state is never what the operator
+  // wants, and the guidance names the actual fix.
+  try {
+    await getHead(paths.engine);
+  } catch (headError: unknown) {
+    if (!isMissingHeadError(headError)) throw headError;
+    throw new GeneralError(
+      'Engine repository has no baseline commit yet — a previous "fireforge download" was interrupted before git created the initial Firefox source commit. Re-run "fireforge download --force" to recreate the baseline repository cleanly.'
+    );
+  }
+
   // Check if the file has changes
   const statusEntries = await expandUntrackedDirectoryEntries(
     paths.engine,
@@ -196,10 +209,12 @@ export async function discardCommand(
   }
 
   if (options.dryRun) {
-    const target =
-      statusEntry.originalPath === file
-        ? `${statusEntry.originalPath} -> ${statusEntry.file}`
-        : statusEntry.file;
+    // Show the rename pair regardless of which side the operator passed —
+    // passing the NEW path of a rename used to hide that discarding also
+    // resurrects the old path, exactly when the full picture matters most.
+    const target = statusEntry.originalPath
+      ? `${statusEntry.originalPath} -> ${statusEntry.file}`
+      : statusEntry.file;
     info(`Would discard changes to: ${target}`);
     outro('Dry run complete — no changes made');
     return;

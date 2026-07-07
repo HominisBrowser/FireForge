@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import type { Stats } from 'node:fs';
+import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -318,7 +319,9 @@ describe('getDiffForFilesAgainstHead', () => {
     mockTrackedDiff({ 'a.txt': aSection, 'c.txt': cSection });
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('b-content\n');
-    mockHashObjectBatch.mockResolvedValue(new Map([['/repo/b.txt', 'bbbbbbbbbbbb']]));
+    // Key the batch result by the same join()-built path the source looks up,
+    // so the mock also matches the backslash form on Windows.
+    mockHashObjectBatch.mockResolvedValue(new Map([[join('/repo', 'b.txt'), 'bbbbbbbbbbbb']]));
 
     const result = await getDiffForFilesAgainstHead('/repo', ['c.txt', 'b.txt', 'a.txt']);
     const order = [result.indexOf('a/a.txt'), result.indexOf('a/b.txt'), result.indexOf('a/c.txt')];
@@ -330,7 +333,7 @@ describe('getDiffForFilesAgainstHead', () => {
     mockListTrackedInHead.mockResolvedValue(new Set());
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('content\n');
-    mockHashObjectBatch.mockResolvedValue(new Map([['/repo/new.txt', 'abc1234567890']]));
+    mockHashObjectBatch.mockResolvedValue(new Map([[join('/repo', 'new.txt'), 'abc1234567890']]));
 
     const result = await getDiffForFilesAgainstHead('/repo', ['new.txt']);
     expect(result).toContain('new file mode 100644');
@@ -528,9 +531,10 @@ describe('getDiffForFilesAgainstHead', () => {
     // expands it via the same helper.
     mockListTrackedInHead.mockResolvedValue(new Set());
     mockPathExists.mockResolvedValue(true);
-    mockStat.mockImplementation((path) =>
-      Promise.resolve(makeStat(typeof path === 'string' && path.endsWith('browser/modules/fork')))
-    );
+    // Compare against the join()-built path the source computes so the
+    // directory is still recognized under Windows backslash separators.
+    const dirFullPath = join('/repo', 'browser/modules/fork');
+    mockStat.mockImplementation((path) => Promise.resolve(makeStat(path === dirFullPath)));
     mockGetUntrackedFilesInDir.mockResolvedValue([
       'browser/modules/fork/Foo.sys.mjs',
       'browser/modules/fork/Bar.sys.mjs',

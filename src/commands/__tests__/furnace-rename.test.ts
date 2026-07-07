@@ -96,6 +96,7 @@ vi.mock('../../core/furnace-registration-validate.js', () => ({
 }));
 
 vi.mock('../../core/furnace-rollback.js', () => ({
+  recordCreatedDir: vi.fn(),
   createRollbackJournal: vi.fn(() => ({
     files: new Map(),
     createdDirs: new Set(),

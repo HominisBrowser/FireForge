@@ -18,6 +18,7 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  clearAppliedFurnaceState: vi.fn(() => Promise.resolve()),
   getFurnacePaths: vi.fn((root: string) => ({
     furnaceConfig: `${root}/furnace.json`,
     componentsDir: `${root}/components`,
@@ -32,9 +33,12 @@ vi.mock('../../core/git.js', () => ({
   hasChanges: vi.fn(() => Promise.resolve(true)),
   resetChanges: vi.fn(() => Promise.resolve()),
   isGitRepository: vi.fn(() => Promise.resolve(true)),
+  getHead: vi.fn(() => Promise.resolve('base-commit')),
+  isMissingHeadError: vi.fn(() => false),
 }));
 
 vi.mock('../../core/git-status.js', () => ({
+  resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
   getWorkingTreeStatus: vi.fn(() => Promise.resolve([])),
   expandUntrackedDirectoryEntries: vi.fn((_engine: string, entries: unknown[]) =>
     Promise.resolve(entries)
@@ -61,7 +65,7 @@ vi.mock('../../utils/logger.js', () => ({
 import * as prompts from '@clack/prompts';
 
 import { getProjectPaths } from '../../core/config.js';
-import { updateFurnaceState } from '../../core/furnace-config.js';
+import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { hasChanges, isGitRepository, resetChanges } from '../../core/git.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../../core/git-status.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
@@ -185,62 +189,16 @@ describe('resetCommand', () => {
     expect(resetChanges).toHaveBeenCalledWith('/project/engine');
   });
 
-  it('clears the furnace state file after a successful reset', async () => {
+  it('clears the furnace state after a successful reset', async () => {
     // Simulate: engine dir exists AND furnace state exists
     vi.mocked(pathExists).mockResolvedValue(true);
 
     await resetCommand('/project', { yes: true });
 
     expect(resetChanges).toHaveBeenCalled();
-    expect(updateFurnaceState).toHaveBeenCalledTimes(1);
-    // Verify the updater is a function that returns an empty object —
-    // otherwise stale checksums would leak into the next apply and the
-    // skip logic would report "up to date" against a reset engine.
-    const call = vi.mocked(updateFurnaceState).mock.calls[0];
-    expect(call).toBeDefined();
-    const updater = call?.[1];
-    expect(typeof updater).toBe('function');
-    if (typeof updater === 'function') {
-      expect(updater({ appliedChecksums: { 'x|y/z': 'abc' } })).toEqual({});
-    }
-  });
-
-  it('preserves pendingRepair while clearing applied furnace state after reset', async () => {
-    await resetCommand('/project', { yes: true });
-
-    const call = vi.mocked(updateFurnaceState).mock.calls[0];
-    expect(call).toBeDefined();
-    const updater = call?.[1];
-    expect(typeof updater).toBe('function');
-    if (typeof updater === 'function') {
-      expect(
-        updater({
-          lastApply: '2026-04-12T00:00:00.000Z',
-          appliedChecksums: { 'x|y/z': 'abc' },
-          pendingRepair: {
-            operation: 'create-rollback',
-            timestamp: '2026-04-12T01:02:03.000Z',
-            reason: 'authoring change incomplete',
-          },
-        })
-      ).toEqual({
-        pendingRepair: {
-          operation: 'create-rollback',
-          timestamp: '2026-04-12T01:02:03.000Z',
-          reason: 'authoring change incomplete',
-        },
-      });
-    }
-  });
-
-  it('does not touch the furnace state file when it does not exist', async () => {
-    // First pathExists call (engine) → true; second (furnace state) → false.
-    vi.mocked(pathExists).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-
-    await resetCommand('/project', { yes: true });
-
-    expect(resetChanges).toHaveBeenCalled();
-    expect(updateFurnaceState).not.toHaveBeenCalled();
+    // Preservation of pendingRepair (and clearing of everything else) is
+    // the shared helper's contract, pinned by furnace-config tests.
+    expect(clearAppliedFurnaceState).toHaveBeenCalledTimes(1);
   });
 
   it('does not clear furnace state during dry-run', async () => {
@@ -249,7 +207,7 @@ describe('resetCommand', () => {
     await resetCommand('/project', { dryRun: true });
 
     expect(resetChanges).not.toHaveBeenCalled();
-    expect(updateFurnaceState).not.toHaveBeenCalled();
+    expect(clearAppliedFurnaceState).not.toHaveBeenCalled();
   });
 
   it('surfaces reset failures after marking the spinner as failed', async () => {

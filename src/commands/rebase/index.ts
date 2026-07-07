@@ -4,7 +4,7 @@
  *
  * Orchestrates the full patch-rebase workflow:
  *   1. Reset engine to baseline
- *   2. Apply each patch with escalating fuzz
+ *   2. Apply each patch with escalating context reduction (git apply -C<n>)
  *   3. Pause on failures for manual resolution
  *   4. Re-export successfully applied patches with the new version stamp
  *
@@ -14,7 +14,7 @@
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import { getFurnacePaths, updateFurnaceState } from '../../core/furnace-config.js';
+import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { getHead, isGitRepository, isMissingHeadError, resetChanges } from '../../core/git.js';
 import { discoverPatches } from '../../core/patch-files.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
@@ -27,7 +27,8 @@ import type { CommandContext } from '../../types/cli.js';
 import type { RebaseOptions } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, spinner } from '../../utils/logger.js';
-import { pickDefined } from '../../utils/options.js';
+import { commanderArgParser, pickDefined } from '../../utils/options.js';
+import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { handleAbort } from './abort.js';
 import { confirmDirtyEngineReset } from './confirm.js';
 import { handleContinue } from './continue.js';
@@ -102,10 +103,10 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
 
   info(`Rebasing patches: ${fromVersion} → ${currentVersion}`);
   info(`Found ${manifest.patches.length} patch(es)`);
-  info(`Max fuzz factor: ${maxFuzz}`);
+  info(`Max context-reduction steps (fuzz-like): ${maxFuzz}`);
 
   if (isDryRun) {
-    info('[dry-run] Would reset engine, apply patches with fuzz, and re-export.');
+    info('[dry-run] Would reset engine, apply patches with context reduction, and re-export.');
     outro('Dry run complete');
     return;
   }
@@ -134,13 +135,7 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
   resetSpinner.stop('Engine reset to baseline');
 
   // Clear Furnace state — the engine no longer contains deployed components.
-  // Preserve pendingRepair since that tracks authoring-side rollback issues.
-  const furnacePaths = getFurnacePaths(projectRoot);
-  if (await pathExists(furnacePaths.furnaceState)) {
-    await updateFurnaceState(projectRoot, (current) => ({
-      ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
-    }));
-  }
+  await clearAppliedFurnaceState(projectRoot);
 
   // Create rebase session
   const allPatches = await discoverPatches(paths.patches);
@@ -193,12 +188,16 @@ export function registerRebase(
   program
     .command('rebase')
     .description(
-      'Semi-automated Firefox source version upgrade — apply patches with fuzz and re-export'
+      'Semi-automated Firefox source version upgrade — apply patches with drift tolerance and re-export'
     )
     .option('--continue', 'Resume after manually resolving a failed patch')
     .option('--abort', 'Cancel the rebase and restore engine to pre-rebase state')
     .option('--dry-run', 'Show what would happen without modifying anything')
-    .option('--max-fuzz <n>', 'Maximum fuzz factor for git apply (default: 3)', parseInt)
+    .option(
+      '--max-fuzz <n>',
+      'Maximum context-reduction steps for git apply -C<n> (fuzz-like drift tolerance; default: 3)',
+      commanderArgParser((v) => parsePositiveIntegerFlag('--max-fuzz', v))
+    )
     .option('-y, --yes', 'Skip dirty-tree confirmation prompt')
     .action(
       withErrorHandling(

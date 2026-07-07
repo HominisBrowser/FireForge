@@ -18,6 +18,8 @@ vi.mock('../../core/config.js', () => ({
 
 vi.mock('../../core/git.js', () => ({
   isGitRepository: vi.fn(() => Promise.resolve(true)),
+  getHead: vi.fn(() => Promise.resolve('base-commit')),
+  isMissingHeadError: vi.fn(() => false),
 }));
 
 vi.mock('../../core/git-file-ops.js', () => ({
@@ -25,6 +27,7 @@ vi.mock('../../core/git-file-ops.js', () => ({
 }));
 
 vi.mock('../../core/git-status.js', () => ({
+  resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
   getWorkingTreeStatus: vi.fn(() => Promise.resolve([])),
   expandUntrackedDirectoryEntries: vi.fn((_engine: string, entries: unknown[]) =>
     Promise.resolve(entries)

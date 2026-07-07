@@ -12,6 +12,7 @@ import {
 } from '../core/furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN, resolveFtlDir } from '../core/furnace-constants.js';
 import { getFurnaceLockPath, runFurnaceMutation } from '../core/furnace-operation.js';
+import { hasBlockingStepErrors } from '../core/furnace-step-errors.js';
 import { validateAllComponents } from '../core/furnace-validate.js';
 import type {
   ApplyResult,
@@ -46,8 +47,8 @@ async function runRepairApply(projectRoot: string): Promise<ApplyResult> {
 }
 
 function countApplyFailures(applyResult: ApplyResult): number {
-  const appliedWithStepErrors = applyResult.applied.filter(
-    (entry) => (entry.stepErrors?.length ?? 0) > 0
+  const appliedWithStepErrors = applyResult.applied.filter((entry) =>
+    hasBlockingStepErrors(entry)
   ).length;
   return applyResult.errors.length + appliedWithStepErrors;
 }

@@ -70,7 +70,7 @@ vi.mock('../../core/test-path-scope.js', async (importOriginal) => {
       Promise.resolve(
         paths.map((p) => ({
           requestedPath: p,
-          dispatchPath: p,
+          dispatchPaths: [p],
           isDirectory: false,
           testFileCount: 0,
           siblingPrefixMatches: [],
@@ -143,6 +143,7 @@ vi.mock('../../core/xpcshell-appdir.js', () => ({
 }));
 
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
+import { loadConfig } from '../../core/config.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
@@ -384,7 +385,9 @@ describe('testCommand', () => {
       objDirs: ['obj-debug', 'obj-opt'],
     });
 
-    await expect(testCommand('/project', [])).rejects.toBeInstanceOf(AmbiguousBuildArtifactsError);
+    await expect(testCommand('/project', [], { auto: true })).rejects.toBeInstanceOf(
+      AmbiguousBuildArtifactsError
+    );
 
     expect(testWithOutput).not.toHaveBeenCalled();
   });
@@ -392,7 +395,9 @@ describe('testCommand', () => {
   it('surfaces build artifact mismatch messages before invoking mach test', async () => {
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue('Build artifacts do not match Tests');
 
-    await expect(testCommand('/project', [])).rejects.toThrow('Build artifacts do not match Tests');
+    await expect(testCommand('/project', [], { auto: true })).rejects.toThrow(
+      'Build artifacts do not match Tests'
+    );
 
     expect(testWithOutput).not.toHaveBeenCalled();
   });
@@ -400,9 +405,89 @@ describe('testCommand', () => {
   it('requires a completed build when no objdir exists and --build was not requested', async () => {
     vi.mocked(hasBuildArtifacts).mockResolvedValueOnce({ exists: false });
 
-    await expect(testCommand('/project', [])).rejects.toThrow('Tests require a completed build');
+    await expect(testCommand('/project', [], { auto: true })).rejects.toThrow(
+      'Tests require a completed build'
+    );
 
     expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('rejects pathless test runs without an explicit pathless mode', async () => {
+    await expect(testCommand('/project', [])).rejects.toThrow(/requires an explicit test path/);
+    expect(hasBuildArtifacts).not.toHaveBeenCalled();
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('forwards --auto through generic mach test when no paths are provided', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | auto\nTEST-OK | auto',
+      stderr: '',
+    });
+
+    await expect(testCommand('/project', [], { auto: true })).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      [],
+      expect.arrayContaining(['--auto'])
+    );
+  });
+
+  it('rejects --auto with explicit paths', async () => {
+    await expect(
+      testCommand('/project', ['browser/base/content/test/foo/browser_foo.js'], { auto: true })
+    ).rejects.toThrow(/--auto.*only when no explicit paths/i);
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('fails --canary with setup guidance when no canary path is configured', async () => {
+    await expect(testCommand('/project', [], { canary: true })).rejects.toThrow(
+      /No test canary path is configured/
+    );
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('reports a green canary verdict for the configured canary path', async () => {
+    vi.mocked(loadConfig).mockResolvedValueOnce({
+      name: 'MyBrowser',
+      vendor: 'My Company',
+      appId: 'org.example.mybrowser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      test: {
+        canaryPath: 'browser/base/content/test/foo/browser_canary.js',
+        canaryTimeoutSeconds: 12,
+      },
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | browser_canary.js\nTEST-OK | browser_canary.js',
+      stderr: '',
+    });
+
+    await expect(testCommand('/project', [], { canary: true })).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/project/engine',
+      ['browser/base/content/test/foo/browser_canary.js'],
+      expect.arrayContaining(['--timeout=12'])
+    );
+    expect(success).toHaveBeenCalledWith('Canary: green');
+  });
+
+  it('classifies a canary no-output timeout as hang', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: 'TEST-INFO | timed out after 60 seconds with no output',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', [], {
+        canary: 'browser/base/content/test/foo/browser_canary.js',
+      })
+    ).rejects.toThrow(/Canary: hang/);
   });
 
   it('throws a BuildError when the incremental pre-test build fails', async () => {
@@ -544,7 +629,10 @@ describe('testCommand', () => {
       exitCode: 1,
       stdout: [
         'UserWarning: psutil failed to run: host_statistics64 syscall failed',
-        ' 0:00.60 TEST_START | test_one.js',
+        // The requested file must appear started AND ended: a green
+        // summary whose requested files never ran is precisely what the
+        // 0.35.0 crash green-wash fix now rejects.
+        ' 0:00.60 TEST_START | browser/components/tests/unit/test_distribution.js',
         ' 0:02.18 INFO | TEST_END: Test PASS',
         'Traceback (most recent call last):',
         '  File "mach/telemetry.py", line 661, in submit_telemetry',
@@ -595,9 +683,9 @@ describe('testCommand', () => {
     ]);
 
     expect(info).toHaveBeenCalledWith(
-      expect.stringContaining('Cross-file state is NOT exercised — pass --no-shard')
+      expect.stringContaining('Cross-argument state is NOT exercised — pass --no-shard')
     );
-    expect(info).toHaveBeenCalledWith(expect.stringContaining('running 2 test paths'));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('running 2 test path arguments'));
   });
 
   it('does not announce sharding for a single path or under --no-shard', async () => {
@@ -617,17 +705,25 @@ describe('testCommand', () => {
     expect(info).not.toHaveBeenCalledWith(expect.stringContaining('pass --no-shard'));
   });
 
-  it('dispatches directory arguments with a trailing slash and echoes excluded prefix siblings', async () => {
+  it('dispatches a directory argument as its explicit file list in ONE invocation and echoes excluded prefix siblings', async () => {
     // The drill's exact failure shape: `…/test/hominis` also ran the
-    // sibling `…/test/hominis-tiles` via mach's string-prefix match.
-    // The dispatch form must carry the trailing "/" (exact match) and
-    // the excluded sibling must be echoed with its test-file count.
+    // sibling `…/test/hominis-tiles` via mach's string-prefix match —
+    // and 0.35.0's trailing-slash form did NOT stop it (field
+    // verification: all 33 hominis-tiles files still ran while the echo
+    // claimed exclusion). The dispatch must be the enumerated explicit
+    // file list (which cannot prefix-match a sibling), in a single mach
+    // invocation so cross-file state still carries within the directory.
+    const hominisFiles = [
+      'browser/base/content/test/hominis/browser_one.js',
+      'browser/base/content/test/hominis/browser_two.js',
+      'browser/base/content/test/hominis/nested/browser_three.js',
+    ];
     vi.mocked(analyzeTestPathScopes).mockResolvedValueOnce([
       {
         requestedPath: 'browser/base/content/test/hominis',
-        dispatchPath: 'browser/base/content/test/hominis/',
+        dispatchPaths: hominisFiles,
         isDirectory: true,
-        testFileCount: 198,
+        testFileCount: 3,
         siblingPrefixMatches: [
           { path: 'browser/base/content/test/hominis-tiles', testFileCount: 1026 },
         ],
@@ -641,15 +737,59 @@ describe('testCommand', () => {
 
     await testCommand('/project', ['browser/base/content/test/hominis']);
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/base/content/test/hominis/'],
-      []
-    );
+    // One combined invocation carrying exactly the directory's own files:
+    // a prefix-named sibling cannot be swept in, and the one-browser-
+    // instance semantics of a directory run are preserved.
+    expect(testWithOutput).toHaveBeenCalledTimes(1);
+    expect(testWithOutput).toHaveBeenCalledWith('/project/engine', hominisFiles, []);
+    // No sharding notice for a single directory argument.
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('pass --no-shard'));
     expect(info).toHaveBeenCalledWith(
       expect.stringContaining('Selected exactly browser/base/content/test/hominis/')
     );
     expect(info).toHaveBeenCalledWith(expect.stringContaining('hominis-tiles/ (1026 test files)'));
+  });
+
+  it('shards a directory + file mix per argument, keeping the directory files in one invocation', async () => {
+    const dirFiles = [
+      'browser/base/content/test/hominis/browser_one.js',
+      'browser/base/content/test/hominis/browser_two.js',
+    ];
+    vi.mocked(analyzeTestPathScopes).mockResolvedValueOnce([
+      {
+        requestedPath: 'browser/base/content/test/hominis',
+        dispatchPaths: dirFiles,
+        isDirectory: true,
+        testFileCount: 2,
+        siblingPrefixMatches: [],
+      },
+      {
+        requestedPath: 'browser/components/tests/browser_other.js',
+        dispatchPaths: ['browser/components/tests/browser_other.js'],
+        isDirectory: false,
+        testFileCount: 0,
+        siblingPrefixMatches: [],
+      },
+    ]);
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
+      stderr: '',
+    });
+
+    await testCommand('/project', [
+      'browser/base/content/test/hominis',
+      'browser/components/tests/browser_other.js',
+    ]);
+
+    expect(testWithOutput).toHaveBeenCalledTimes(2);
+    expect(testWithOutput).toHaveBeenNthCalledWith(1, '/project/engine', dirFiles, []);
+    expect(testWithOutput).toHaveBeenNthCalledWith(
+      2,
+      '/project/engine',
+      ['browser/components/tests/browser_other.js'],
+      []
+    );
   });
 
   it('normalizes engine-prefixed test paths and passes headless through to mach test', async () => {
@@ -796,7 +936,7 @@ describe('testCommand', () => {
     expect(testWithOutput).not.toHaveBeenCalled();
   });
 
-  it('warns up-front when the stale-build preflight reports packageable engine changes', async () => {
+  it('fails up-front when the stale-build preflight reports packageable engine changes', async () => {
     vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce({
       stale: true,
       changedPaths: ['browser/base/content/mybrowser.xhtml', 'browser/base/content/mybrowser.js'],
@@ -815,14 +955,41 @@ describe('testCommand', () => {
 
     await expect(
       testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'])
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow(/--allow-stale-build/);
 
     // The warning must fire before mach test — the user's feedback was that
     // discovering stale artifacts AFTER xpcshell launches gives no actionable
     // signal in time.
     expect(checkStaleBuildForTest).toHaveBeenCalledWith('/project', '/project/engine');
     expect(formatStaleBuildWarning).toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith('stale warning');
+    expect(warn).not.toHaveBeenCalledWith('stale warning');
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('allows stale-build test runs with --allow-stale-build', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce({
+      stale: true,
+      changedPaths: ['browser/base/content/mybrowser.xhtml'],
+      truncated: 0,
+      baseline: {
+        engineHeadSha: 'abc123',
+        builtAt: new Date().toISOString(),
+        binaryName: 'mybrowser',
+      },
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/dummy/browser_dummy.js'], {
+        allowStaleBuild: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('stale warning'));
     expect(testWithOutput).toHaveBeenCalled();
   });
 

@@ -23,6 +23,7 @@ import { exec } from '../../utils/process.js';
 import {
   assertMarionettePortAvailable,
   DEFAULT_MARIONETTE_PORT,
+  ensureMarionettePortAvailable,
   extractForwardedMarionettePort,
   forwardedMachArgsIncludeMarionetteClient,
   hasExplicitXpcshellFlavor,
@@ -235,6 +236,68 @@ describe('assertMarionettePortAvailable', () => {
       });
 
     await expect(assertMarionettePortAvailable(2838)).rejects.toThrow(/port 2838/);
+  });
+
+  it('kills a recognized stale browser holder when requested', async () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    mockExec
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: lsofOutput(4242, 'firefox'),
+        stderr: '',
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: '/usr/bin/firefox -marionette\n',
+        stderr: '',
+      });
+
+    try {
+      await expect(
+        ensureMarionettePortAvailable(DEFAULT_MARIONETTE_PORT, {
+          killStaleBrowser: true,
+        })
+      ).resolves.toBeUndefined();
+      expect(killSpy).toHaveBeenCalledWith(4242, 'SIGTERM');
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it('refuses to kill an unrelated Marionette port holder', async () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    mockExec
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: lsofOutput(4243, 'node'),
+        stderr: '',
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: '/usr/bin/node server.js\n',
+        stderr: '',
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: lsofOutput(4243, 'node'),
+        stderr: '',
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: '/usr/bin/node server.js\n',
+        stderr: '',
+      });
+
+    try {
+      await expect(
+        ensureMarionettePortAvailable(DEFAULT_MARIONETTE_PORT, {
+          killStaleBrowser: true,
+        })
+      ).rejects.toThrow(/not a FireForge-launched browser/);
+      expect(killSpy).not.toHaveBeenCalled();
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 });
 

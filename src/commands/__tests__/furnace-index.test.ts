@@ -152,11 +152,28 @@ describe('registerFurnace', () => {
     expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', undefined, { dryRun: true });
   });
 
+  it('routes mutating apply through the engine session lock', async () => {
+    await runFurnaceCommand('apply', 'moz-button', '--force', '--watch');
+
+    expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', 'moz-button', {
+      force: true,
+      watch: true,
+    });
+  });
+
   it('routes deploy with an optional component name and options', async () => {
     await runFurnaceCommand('deploy', 'moz-button', '--dry-run');
 
     expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', 'moz-button', {
       dryRun: true,
+    });
+  });
+
+  it('routes mutating deploy through the engine session lock', async () => {
+    await runFurnaceCommand('deploy', 'moz-button', '--skip-validate');
+
+    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', 'moz-button', {
+      skipValidate: true,
     });
   });
 
@@ -352,6 +369,14 @@ describe('registerFurnace', () => {
     expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', {
       dryRun: true,
       strategy: 'theirs',
+    });
+  });
+
+  it('routes mutating sync through the engine session lock', async () => {
+    await runFurnaceCommand('sync', '--strategy', 'ours');
+
+    expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', {
+      strategy: 'ours',
     });
   });
 

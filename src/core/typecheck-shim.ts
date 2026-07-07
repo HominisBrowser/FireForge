@@ -64,6 +64,7 @@ interface ChromeUtilsShim {
   defineESModuleGetters(target: any, modules: Record<string, string>): void;
   importESModule(specifier: string): any;
   import(specifier: string): any;
+  registerWindowActor(name: string, options: Record<string, any>): void;
   defineModuleGetter(target: any, name: string, specifier: string): void;
   defineLazyGetter(target: any, name: string, getter: () => any): void;
   generateQI(interfaces: any[]): Function;
@@ -89,6 +90,18 @@ declare var gBrowser: any;
 declare var gURLBar: any;
 declare var gNavigatorBundle: any;
 declare var AppConstants: any;
+declare class JSWindowActorChild {
+  readonly browsingContext: any;
+  readonly contentWindow: any;
+  readonly document: any;
+  sendAsyncMessage(name: string, data?: any, transfers?: any[]): void;
+  sendQuery(name: string, data?: any, transfers?: any[]): Promise<any>;
+}
+declare class JSWindowActorParent {
+  readonly browsingContext: any;
+  sendAsyncMessage(name: string, data?: any, transfers?: any[]): void;
+  sendQuery(name: string, data?: any, transfers?: any[]): Promise<any>;
+}
 // Fluent localization — a stable chrome global. Members stay loose (any),
 // but the constructor shape is declared so "new Localization([...])" and
 // "new Localization([...], true)" typecheck without a local cast. Both

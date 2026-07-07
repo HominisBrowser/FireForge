@@ -476,9 +476,9 @@ describe('buildCommand', () => {
     vi.mocked(runToolchainPreflight).mockResolvedValueOnce([
       {
         tool: 'cbindgen',
-        hostVersion: '0.29.1',
         minimumVersion: '0.29.4',
         declaredIn: 'build/moz.configure/bindgen.configure',
+        candidates: [{ binary: 'cbindgen', version: '0.29.1' }],
       },
     ]);
 

@@ -6,12 +6,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../git-file-ops.js', () => ({
-  fileExistsInHead: vi.fn(),
+  listTrackedInHead: vi.fn(),
 }));
 
 import { writeFiles } from '../../test-utils/index.js';
 import type { PatchMetadata } from '../../types/commands/index.js';
-import { fileExistsInHead } from '../git-file-ops.js';
+import { listTrackedInHead } from '../git-file-ops.js';
 import {
   addPatchToManifest,
   checkVersionCompatibility,
@@ -129,14 +129,14 @@ describe('patch manifest helper coverage', () => {
       '002-ui-new-widget.patch': NEW_WIDGET_PATCH,
     });
 
-    vi.mocked(fileExistsInHead).mockImplementation((_engineDir, filePath) =>
-      Promise.resolve(filePath !== 'browser/toolbar.js')
+    // Batched HEAD lookup: one call for all modification targets.
+    vi.mocked(listTrackedInHead).mockImplementation((_engineDir, files) =>
+      Promise.resolve(new Set(files.filter((f) => f !== 'browser/toolbar.js')))
     );
 
     const issues = await validatePatchIntegrity(patchesDir, '/engine');
 
-    expect(fileExistsInHead).toHaveBeenCalledWith('/engine', 'browser/toolbar.js');
-    expect(fileExistsInHead).not.toHaveBeenCalledWith('/engine', 'browser/new-widget.js');
+    expect(listTrackedInHead).toHaveBeenCalledWith('/engine', ['browser/toolbar.js']);
     expect(issues).toEqual([
       {
         filename: '001-ui-toolbar.patch',

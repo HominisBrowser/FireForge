@@ -570,7 +570,13 @@ describe('lintNewFileHeaders', () => {
     expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
   });
 
-  it('does not extend the upstream-MPL carve-out to CSS files outside browser/branding/', async () => {
+  it('accepts the verbatim upstream MPL block header on a new CSS file regardless of project license', async () => {
+    // 0.35.0 residual (field verification, 2026-07-05): the upstream-MPL
+    // acceptance covered new JS files only, so a derived CSS file
+    // carrying the exact same three-line `/* … */` block header still
+    // errored on an EUPL project without a patch-level lintIgnore, while
+    // the derived JS on the same patch passed natively. The block form
+    // is valid CSS comment syntax, and the header text is identical.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
       `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
@@ -581,6 +587,67 @@ describe('lintNewFileHeaders', () => {
 
     const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
     const issues = await lintNewFileHeaders('/engine', ['browser/themes/new.css'], euplConfig);
+    expect(issues.filter((i) => i.check === 'missing-license-header')).toHaveLength(0);
+  });
+
+  it('accepts the upstream MPL block header on CSS behind a leading editor directive', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      `/* vim: set shiftwidth=2 tabstop=2 autoindent expandtab: */\n` +
+        `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
+        ` * License, v. 2.0. If a copy of the MPL was not distributed with this\n` +
+        ` * file, You can obtain one at http://mozilla.org/MPL/2.0/. */\n` +
+        `.x { color: red; }\n`
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders('/engine', ['browser/themes/copied.css'], euplConfig);
+    expect(issues.filter((i) => i.check === 'missing-license-header')).toHaveLength(0);
+  });
+
+  it('still flags a CSS file with no header on an EUPL project', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue('.x { color: red; }\n');
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders('/engine', ['browser/themes/new.css'], euplConfig);
+    expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
+  });
+
+  it('still flags the line-comment MPL form on CSS (block form only)', async () => {
+    // `// ` is not even a CSS comment; a file leading with the
+    // FireForge-generated line-comment MPL shape gets no carve-out.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      '// This Source Code Form is subject to the terms of the Mozilla Public\n' +
+        '// License, v. 2.0. If a copy of the MPL was not distributed with this\n' +
+        '// file, You can obtain one at http://mozilla.org/MPL/2.0/.\n' +
+        '.x { color: red; }\n'
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders('/engine', ['browser/themes/new.css'], euplConfig);
+    expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
+  });
+
+  it('does not extend the upstream-MPL carve-out to hash-style files (FTL)', async () => {
+    // `/* … */` is not a comment in Fluent files — the block header
+    // cannot legitimately lead an .ftl file, so hash style keeps
+    // requiring the project's own header.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
+        ` * License, v. 2.0. If a copy of the MPL was not distributed with this\n` +
+        ` * file, You can obtain one at http://mozilla.org/MPL/2.0/. */\n` +
+        `key = Value\n`
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders(
+      '/engine',
+      ['browser/locales/en-US/browser/new.ftl'],
+      euplConfig
+    );
     expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
   });
 });

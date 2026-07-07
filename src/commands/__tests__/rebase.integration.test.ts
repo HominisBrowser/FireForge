@@ -114,6 +114,72 @@ describe('rebase integration', () => {
     await expect(hasActiveRebaseSession(projectRoot)).resolves.toBe(false);
   });
 
+  it('absorbs upstream context drift via git apply -C (fuzz-like) instead of conflicting', async () => {
+    // End-to-end guard for the context-reduction path against REAL git.
+    // The original --fuzz=N implementation could never succeed here (git
+    // has no --fuzz flag), so every drifted patch surfaced as a manual
+    // conflict; only mocked unit tests kept the feature looking alive.
+    const { warn } = await import('../../utils/logger.js');
+    const engineDir = join(projectRoot, 'engine');
+    const contextFile = [
+      'line-a',
+      'line-b',
+      'line-c',
+      'export const title = "baseline";',
+      'line-d',
+      'line-e',
+      'line-f',
+      '',
+    ].join('\n');
+    await initCommittedRepo(engineDir, {
+      'browser/base/content/browser.js': contextFile,
+    });
+
+    await writeFiles(engineDir, {
+      'browser/base/content/browser.js': contextFile.replace('"baseline"', '"patched"'),
+    });
+    await exportCommand(projectRoot, ['browser/base/content/browser.js'], {
+      name: 'title-patch',
+      category: 'ui',
+      description: 'Change title',
+    });
+
+    // Simulate the upstream Firefox update: outermost context lines drift
+    // (line-a / line-f change), the patched line itself stays put. Commit
+    // as the new baseline the rebase will reset to.
+    await runGit(engineDir, ['checkout', '--', '.']);
+    await writeFiles(engineDir, {
+      'browser/base/content/browser.js': contextFile
+        .replace('line-a', 'line-a-drifted-upstream')
+        .replace('line-f', 'line-f-drifted-upstream'),
+    });
+    await runGit(engineDir, ['add', '-A']);
+    await runGit(engineDir, ['commit', '-m', 'upstream update']);
+
+    await writeFireForgeConfig(projectRoot, {
+      firefox: { version: '141.0esr', product: 'firefox-esr' },
+    });
+
+    await rebaseCommand(projectRoot, { yes: true });
+
+    // The patch landed despite the drift, via reduced context...
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(
+      expect.stringContaining('applied with context reduction')
+    );
+    // ...the engine contains the patched line...
+    const { readFile } = await import('node:fs/promises');
+    const rebasedContent = await readFile(
+      join(engineDir, 'browser/base/content/browser.js'),
+      'utf-8'
+    );
+    expect(rebasedContent).toContain('"patched"');
+    expect(rebasedContent).toContain('line-a-drifted-upstream');
+    // ...versions were stamped and the session cleared (full success path).
+    const manifestAfter = await loadPatchesManifest(join(projectRoot, 'patches'));
+    expect(manifestAfter?.patches[0]?.sourceEsrVersion).toBe('141.0esr');
+    await expect(hasActiveRebaseSession(projectRoot)).resolves.toBe(false);
+  });
+
   it('pauses on a conflicting patch and resumes with --continue', async () => {
     const engineDir = join(projectRoot, 'engine');
     await initCommittedRepo(engineDir, {

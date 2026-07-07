@@ -29,6 +29,37 @@ export interface BuildConfig {
   jobs?: number;
 }
 
+/** Test command defaults stored in fireforge.json. */
+export interface TestConfig {
+  /**
+   * Engine-relative browser-chrome canary file used by `fireforge test --canary`
+   * when the command does not receive an explicit canary path.
+   */
+  canaryPath?: string;
+  /** Short no-output ceiling for `fireforge test --canary`, in seconds. */
+  canaryTimeoutSeconds?: number;
+}
+
+/** A single external executable required by a project-specific toolchain. */
+export interface ExternalToolRequirement {
+  /** Tool name as shown in doctor output, and PATH/xcrun lookup key when no path is set. */
+  name: string;
+  /** Absolute or project-relative executable path. */
+  path?: string;
+  /** Resolve the tool with `xcrun -find <name>` instead of PATH. */
+  xcrun?: boolean;
+  /** Missing tool is an error by default; set false for advisory probes. */
+  required?: boolean;
+}
+
+/** Named group of project-specific external asset/build tools. */
+export interface ExternalToolchainConfig {
+  /** Human-readable toolchain name, e.g. "seasonal-branding". */
+  name: string;
+  /** Tools this toolchain needs. */
+  tools: ExternalToolRequirement[];
+}
+
 /** Enforcement mode for patch policy violations during mutating commands. */
 export type PatchPolicyMutationMode = 'error' | 'warn' | 'force';
 
@@ -99,6 +130,10 @@ export interface FireForgeConfig {
   firefox: FirefoxConfig;
   /** Build settings */
   build?: BuildConfig;
+  /** Test command defaults */
+  test?: TestConfig;
+  /** Optional project-specific external toolchains checked by doctor. */
+  externalToolchains?: ExternalToolchainConfig[];
   /** Project license SPDX identifier */
   license?: ProjectLicense;
   /** Wire command configuration */

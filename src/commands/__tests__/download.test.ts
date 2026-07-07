@@ -15,6 +15,7 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/firefox.js', () => ({
   downloadFirefoxSource: vi.fn().mockResolvedValue(undefined),
   formatBytes: vi.fn((value: number) => `${value} B`),
+  sweepOrphanedEngineWorkDirs: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../core/file-lock.js', () => ({
@@ -22,6 +23,7 @@ vi.mock('../../core/file-lock.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  clearAppliedFurnaceState: vi.fn(() => Promise.resolve()),
   getFurnacePaths: vi.fn((root: string) => ({
     furnaceConfig: `${root}/furnace.json`,
     componentsDir: `${root}/components`,
@@ -78,7 +80,7 @@ vi.mock('../../utils/logger.js', () => ({
 import { getProjectPaths } from '../../core/config.js';
 import { withFileLock } from '../../core/file-lock.js';
 import { downloadFirefoxSource } from '../../core/firefox.js';
-import { updateFurnaceState } from '../../core/furnace-config.js';
+import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { getHead, initRepository, resumeRepository } from '../../core/git.js';
 import { ChecksumMismatchError, EngineExistsError } from '../../errors/download.js';
 import { pathExists, pathExistsStrict, removeDir } from '../../utils/fs.js';
@@ -113,7 +115,6 @@ describe('downloadCommand', () => {
     vi.mocked(initRepository).mockResolvedValue(undefined);
     vi.mocked(getHead).mockResolvedValue('base-commit');
     vi.mocked(resumeRepository).mockResolvedValue(undefined);
-    vi.mocked(updateFurnaceState).mockResolvedValue(undefined);
     vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
     vi.mocked(withFileLock).mockImplementation((_lockPath, operation) => operation());
     vi.mocked(pathExists).mockImplementation((path: string) =>
@@ -232,7 +233,10 @@ describe('downloadCommand', () => {
 
     expect(withFileLock).toHaveBeenCalledWith(
       '/project/.fireforge/download.fireforge.lock',
-      expect.any(Function)
+      expect.any(Function),
+      // The download lock waits generously: a legitimate holder runs for
+      // 10+ minutes, and dead holders are reaped by the PID probe anyway.
+      expect.objectContaining({ timeoutMs: 30 * 60_000 })
     );
     expect(removeDir).not.toHaveBeenCalled();
     expect(initRepository).not.toHaveBeenCalled();
@@ -261,62 +265,9 @@ describe('downloadCommand', () => {
       expect.any(Function)
     );
     expect(removeDir).not.toHaveBeenCalledWith('/project/engine');
-    expect(updateFurnaceState).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(updateFurnaceState).mock.calls[0];
-    expect(call).toBeDefined();
-    const updater = call?.[1];
-    expect(typeof updater).toBe('function');
-    if (typeof updater === 'function') {
-      expect(updater({ appliedChecksums: { 'custom|foo/bar': 'hash' } })).toEqual({});
-    }
-  });
-
-  it('preserves pendingRepair when --force clears stale furnace apply state', async () => {
-    vi.mocked(pathExistsStrict).mockResolvedValue(true);
-    vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (path === '/project/.fireforge/furnace-state.json') return Promise.resolve(true);
-      return Promise.resolve(false);
-    });
-    vi.mocked(initRepository).mockResolvedValue(undefined);
-    vi.mocked(getHead).mockResolvedValue('base-commit');
-
-    await downloadCommand('/project', { force: true });
-
-    const call = vi.mocked(updateFurnaceState).mock.calls[0];
-    expect(call).toBeDefined();
-    const updater = call?.[1];
-    expect(typeof updater).toBe('function');
-    if (typeof updater === 'function') {
-      expect(
-        updater({
-          lastApply: '2026-04-12T00:00:00.000Z',
-          appliedChecksums: { 'custom|foo/bar': 'hash' },
-          pendingRepair: {
-            operation: 'override-rollback',
-            timestamp: '2026-04-12T01:02:03.000Z',
-            reason: 'workspace authoring incomplete',
-          },
-        })
-      ).toEqual({
-        pendingRepair: {
-          operation: 'override-rollback',
-          timestamp: '2026-04-12T01:02:03.000Z',
-          reason: 'workspace authoring incomplete',
-        },
-      });
-    }
-  });
-
-  it('does not try to clear furnace state when it does not exist', async () => {
-    vi.mocked(pathExistsStrict).mockResolvedValue(true);
-    vi.mocked(pathExists).mockResolvedValue(false);
-    vi.mocked(initRepository).mockResolvedValue(undefined);
-    vi.mocked(getHead).mockResolvedValue('base-commit');
-
-    await downloadCommand('/project', { force: true });
-
-    expect(removeDir).not.toHaveBeenCalledWith('/project/engine');
-    expect(updateFurnaceState).not.toHaveBeenCalled();
+    // pendingRepair preservation + wholesale clear is the shared helper's
+    // contract, pinned by furnace-config tests.
+    expect(clearAppliedFurnaceState).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the existing engine when forced download fails checksum validation before extraction', async () => {
@@ -335,7 +286,7 @@ describe('downloadCommand', () => {
     expect(removeDir).not.toHaveBeenCalledWith('/project/engine');
     expect(mockRename).not.toHaveBeenCalled();
     expect(initRepository).not.toHaveBeenCalled();
-    expect(updateFurnaceState).not.toHaveBeenCalled();
+    expect(clearAppliedFurnaceState).not.toHaveBeenCalled();
   });
 
   it('emits download progress only for new 5 percent boundaries', async () => {

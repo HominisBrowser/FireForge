@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { ExtractionError } from '../errors/download.js';
 import { elapsedSince } from '../utils/elapsed.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
-import { exec, executableExists } from '../utils/process.js';
+import { exec, execStream, executableExists } from '../utils/process.js';
 
 /**
  * Returns true when an archive member path could land outside the
@@ -88,44 +88,112 @@ export function findUnsafeArchiveLink(verboseLines: readonly string[]): string |
  * (~38%) to this one-time extraction step, versus ~44 s if run
  * sequentially.
  */
-async function preflightArchiveEntries(archivePath: string): Promise<void> {
+/**
+ * Incremental line splitter for streamed listings. Keeps only the current
+ * partial line in memory, so a 350k-entry Firefox listing costs O(longest
+ * line), not O(listing).
+ */
+function createLineScanner(onLine: (line: string) => void): {
+  push: (chunk: string) => void;
+  flush: () => void;
+} {
+  let buffer = '';
+  return {
+    push(chunk: string): void {
+      buffer += chunk;
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        onLine(buffer.slice(0, idx));
+        buffer = buffer.slice(idx + 1);
+      }
+    },
+    flush(): void {
+      if (buffer.length > 0) {
+        onLine(buffer);
+        buffer = '';
+      }
+    },
+  };
+}
+
+/**
+ * Runs one tar listing pass, streaming lines through `checkLine` and
+ * returning the first unsafe finding (or null) plus the exit code.
+ *
+ * Streaming matters for safety, not just memory: the buffered `exec`
+ * collector silently truncates at 50 MB, and a full Firefox `-tvf` listing
+ * already sits in the 40–50 MB range — so the buffered implementation could
+ * scan only the head of the listing while reporting the archive safe. A
+ * crafted archive could exploit exactly that by padding benign entries
+ * first and hiding a traversal name or absolute link target past the cap.
+ * With per-line streaming EVERY entry is scanned, with bounded memory.
+ */
+async function runListingScan(
+  archivePath: string,
+  tarFlag: '-tf' | '-tvf',
+  checkLine: (line: string) => string | null
+): Promise<{ unsafe: string | null; exitCode: number; stderrTail: string }> {
   // LC_ALL=C keeps the -tvf column format stable for the link parse.
   const listEnv = { LC_ALL: 'C', LANG: 'C' };
+  let unsafe: string | null = null;
+  let stderrTail = '';
 
-  const [nameListing, verboseListing] = await Promise.all([
-    exec('tar', ['-tf', archivePath], { env: listEnv }),
-    exec('tar', ['-tvf', archivePath], { env: listEnv }),
+  const scanner = createLineScanner((line) => {
+    if (unsafe === null) {
+      unsafe = checkLine(line);
+    }
+  });
+
+  const exitCode = await execStream('tar', [tarFlag, archivePath], {
+    env: listEnv,
+    onStdout: (chunk) => {
+      scanner.push(chunk);
+    },
+    onStderr: (chunk) => {
+      // Keep a small diagnostic tail; the listing itself is the big stream.
+      stderrTail = (stderrTail + chunk).slice(-4096);
+    },
+  });
+  scanner.flush();
+
+  return { unsafe, exitCode, stderrTail };
+}
+
+async function preflightArchiveEntries(archivePath: string): Promise<void> {
+  const [nameScan, linkScan] = await Promise.all([
+    runListingScan(archivePath, '-tf', (line) => {
+      const name = line.trim();
+      if (name.length === 0) return null;
+      return isUnsafeArchivePath(name) ? name : null;
+    }),
+    runListingScan(archivePath, '-tvf', (line) => findUnsafeArchiveLink([line])),
   ]);
 
-  if (nameListing.exitCode !== 0) {
+  if (nameScan.exitCode !== 0) {
+    throw new ExtractionError(
+      archivePath,
+      new Error(`tar -tf preflight exited with code ${nameScan.exitCode}:\n${nameScan.stderrTail}`)
+    );
+  }
+  if (nameScan.unsafe !== null) {
     throw new ExtractionError(
       archivePath,
       new Error(
-        `tar -tf preflight exited with code ${nameListing.exitCode}:\n${nameListing.stderr}`
+        `Archive rejected: member name could escape the extraction root: ${nameScan.unsafe}`
       )
-    );
-  }
-  const unsafeName = findUnsafeArchiveEntryName(nameListing.stdout.split('\n'));
-  if (unsafeName !== null) {
-    throw new ExtractionError(
-      archivePath,
-      new Error(`Archive rejected: member name could escape the extraction root: ${unsafeName}`)
     );
   }
 
-  if (verboseListing.exitCode !== 0) {
+  if (linkScan.exitCode !== 0) {
     throw new ExtractionError(
       archivePath,
-      new Error(
-        `tar -tvf preflight exited with code ${verboseListing.exitCode}:\n${verboseListing.stderr}`
-      )
+      new Error(`tar -tvf preflight exited with code ${linkScan.exitCode}:\n${linkScan.stderrTail}`)
     );
   }
-  const unsafeLink = findUnsafeArchiveLink(verboseListing.stdout.split('\n'));
-  if (unsafeLink !== null) {
+  if (linkScan.unsafe !== null) {
     throw new ExtractionError(
       archivePath,
-      new Error(`Archive rejected: link could escape the extraction root (${unsafeLink})`)
+      new Error(`Archive rejected: link could escape the extraction root (${linkScan.unsafe})`)
     );
   }
 }

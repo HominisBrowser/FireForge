@@ -14,9 +14,11 @@ import {
   stat,
   statfs,
 } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 const RETRIABLE_REMOVE_ERRORS = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
+
+const RETRIABLE_RENAME_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -234,11 +236,37 @@ export async function writeFileAtomic(path: string, content: string | Buffer): P
     if (existingMode !== undefined) {
       await chmod(tempPath, existingMode);
     }
-    await rename(tempPath, path);
+    await renameWithRetries(tempPath, path);
     await syncParentDir(path);
   } catch (error: unknown) {
     await rm(tempPath, { force: true });
     throw error;
+  }
+}
+
+/**
+ * Renames the temp file over its destination, retrying transient sharing
+ * violations. On Windows, a rename onto a target that another writer is
+ * concurrently replacing — or that an antivirus/indexer briefly holds open —
+ * fails with EPERM/EACCES/EBUSY even though the same rename succeeds a moment
+ * later; POSIX renames never hit this. Non-retriable codes and exhausted
+ * budgets rethrow, so a genuine permission problem still surfaces.
+ */
+async function renameWithRetries(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error: unknown) {
+      const code =
+        error instanceof Error && 'code' in error && typeof error.code === 'string'
+          ? error.code
+          : undefined;
+      if (!code || !RETRIABLE_RENAME_ERRORS.has(code) || attempt === 4) {
+        throw error;
+      }
+      await sleep(25 * (attempt + 1));
+    }
   }
 }
 
@@ -308,7 +336,10 @@ export const FIREFORGE_TMP_PATH_PATTERN = /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9
  */
 function createAtomicTempPath(path: string): string {
   const directory = dirname(path);
-  const filename = path.slice(directory.length + 1);
+  // basename, not slice(dirname.length + 1): when dirname ends with the
+  // separator (filesystem/drive roots, e.g. dirname('/foo') === '/'), the
+  // slice arithmetic chopped the first filename character ('/foo' → 'oo').
+  const filename = basename(path);
   return join(directory, `.${filename}.fireforge-tmp-${process.pid}-${randomUUID()}`);
 }
 
@@ -330,7 +361,11 @@ export async function checkDiskSpace(
 ): Promise<number | undefined> {
   try {
     const stats = await statfs(path);
-    const availableBytes = stats.bfree * stats.bsize;
+    // bavail = blocks available to UNPRIVILEGED users; bfree includes the
+    // root-reserved blocks (typically 5% on ext4), so it over-reported free
+    // space and silently suppressed the low-space warning exactly when it
+    // mattered.
+    const availableBytes = stats.bavail * stats.bsize;
     if (availableBytes < minBytes) {
       const availableGB = (availableBytes / (1024 * 1024 * 1024)).toFixed(1);
       const requiredGB = (minBytes / (1024 * 1024 * 1024)).toFixed(1);

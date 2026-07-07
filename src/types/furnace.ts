@@ -228,6 +228,16 @@ export interface FurnaceState {
 export interface StepError {
   step: string;
   error: string;
+  /**
+   * Advisory step errors are reported as warnings and never trigger
+   * rollback or a non-zero exit. Used by the `.ftl` helpers, whose module
+   * contract is graceful degradation: a missing locale jar.mn on a fork
+   * without a locale package must not block a working `.mjs`/`.css` from
+   * shipping. Before this flag existed the contract was contradicted in
+   * practice — any FTL step error rolled back the entire apply, so a
+   * localized component on such a fork could never be applied at all.
+   */
+  advisory?: boolean;
 }
 
 /**

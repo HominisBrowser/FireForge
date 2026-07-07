@@ -68,11 +68,15 @@ describe('resolveCommand', () => {
   const projectRoot = '/fake/root';
 
   const originalIsTTY = process.stdin.isTTY;
+  const originalStdoutIsTTY = process.stdout.isTTY;
 
   beforeEach(() => {
     vi.clearAllMocks();
     // Simulate interactive terminal for resolve command
+    // resolve requires BOTH streams to be TTYs (piped stdout would render
+    // the confirm prompt into the pipe) — stub both.
     process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
     vi.mocked(loadConfig).mockResolvedValue({
       name: 'Test',
       vendor: 'Test',
@@ -86,6 +90,7 @@ describe('resolveCommand', () => {
 
   afterEach(() => {
     process.stdin.isTTY = originalIsTTY;
+    process.stdout.isTTY = originalStdoutIsTTY;
   });
 
   it('should exit if no pending resolution', async () => {

@@ -44,6 +44,7 @@ vi.mock('../../core/git.js', async (importOriginal) => {
 });
 
 vi.mock('../../core/git-status.js', () => ({
+  resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
   getWorkingTreeStatus: vi.fn(() => Promise.resolve([])),
   expandUntrackedDirectoryEntries: vi.fn((_dir: string, entries: unknown[]) =>
     Promise.resolve(entries)
@@ -176,6 +177,7 @@ vi.mock('../../utils/process.js', () => ({
   // operator's interactive shell saw no watchman but doctor reported OK.
   findExecutable: vi.fn(() => Promise.resolve('/usr/local/bin/watchman')),
   executableExists: vi.fn(() => Promise.resolve(true)),
+  exec: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' })),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -564,6 +566,83 @@ describe('doctorCommand', () => {
     ).toBe(true);
     // Warning-only: the run still succeeds overall.
     expect(result.exitCode).toBe(0);
+  });
+
+  it('reports declared external toolchains as ok when PATH tools resolve', async () => {
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'MyBrowser',
+      vendor: 'My Company',
+      appId: 'org.example.mybrowser',
+      binaryName: 'mybrowser',
+      license: 'EUPL-1.2',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      externalToolchains: [
+        { name: 'seasonal-branding', tools: [{ name: 'sips' }, { name: 'iconutil' }] },
+      ],
+    });
+
+    const result = await doctorCommand('/project');
+
+    expect(
+      result.checks.some((check) => check.name === 'External toolchain: seasonal-branding/sips')
+    ).toBe(true);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('fails doctor when a required declared external tool is missing', async () => {
+    const { findExecutable } = await import('../../utils/process.js');
+    vi.mocked(findExecutable).mockImplementation((name: string) =>
+      Promise.resolve(name === 'missing-tool' ? undefined : '/usr/local/bin/' + name)
+    );
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'MyBrowser',
+      vendor: 'My Company',
+      appId: 'org.example.mybrowser',
+      binaryName: 'mybrowser',
+      license: 'EUPL-1.2',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      externalToolchains: [{ name: 'seasonal-branding', tools: [{ name: 'missing-tool' }] }],
+    });
+
+    const result = await doctorCommand('/project');
+
+    expect(result.exitCode).toBe(1);
+    expect(
+      result.checks.some(
+        (check) =>
+          check.name === 'External toolchain: seasonal-branding/missing-tool' &&
+          check.severity === 'error'
+      )
+    ).toBe(true);
+  });
+
+  it('warns doctor when an optional declared external tool is missing', async () => {
+    const { findExecutable } = await import('../../utils/process.js');
+    vi.mocked(findExecutable).mockImplementation((name: string) =>
+      Promise.resolve(name === 'optional-tool' ? undefined : '/usr/local/bin/' + name)
+    );
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'MyBrowser',
+      vendor: 'My Company',
+      appId: 'org.example.mybrowser',
+      binaryName: 'mybrowser',
+      license: 'EUPL-1.2',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      externalToolchains: [
+        { name: 'seasonal-branding', tools: [{ name: 'optional-tool', required: false }] },
+      ],
+    });
+
+    const result = await doctorCommand('/project');
+
+    expect(result.exitCode).toBe(0);
+    expect(
+      result.checks.some(
+        (check) =>
+          check.name === 'External toolchain: seasonal-branding/optional-tool' &&
+          check.severity === 'warning'
+      )
+    ).toBe(true);
   });
 
   it('surfaces an unborn HEAD as an incomplete download instead of a raw git error', async () => {
@@ -1755,6 +1834,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
       'Python supported by mach',
       'fireforge.json exists',
       'fireforge.json is valid',
+      'External toolchains',
       'Engine directory exists',
       'Pending Resolution',
       'Engine is git repository',

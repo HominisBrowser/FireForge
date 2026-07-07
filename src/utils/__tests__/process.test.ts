@@ -59,10 +59,12 @@ describe('exec', () => {
       stdout: 'hello\n',
       stderr: 'warning\n',
       exitCode: 3,
+      stdoutTruncated: false,
+      stderrTruncated: false,
     });
   });
 
-  it('truncates oversized stdout safely', async () => {
+  it('truncates oversized stdout safely and reports it via stdoutTruncated', async () => {
     const child = makeChild();
     mockSpawn.mockReturnValue(child);
 
@@ -73,6 +75,25 @@ describe('exec', () => {
     const result = await promise;
     expect(result.stdout).toContain('[truncated — output exceeded 50 MB]');
     expect(result.exitCode).toBe(0);
+    // Safety-critical consumers (archive-listing preflight) key on this flag:
+    // a silently truncated listing is indistinguishable from a complete one.
+    expect(result.stdoutTruncated).toBe(true);
+    expect(result.stderrTruncated).toBe(false);
+  });
+
+  it('reassembles multibyte UTF-8 characters split across chunk boundaries', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = exec('echo', ['hello']);
+    // 'ü' is 0xC3 0xBC — emit the two bytes in separate chunks, as a pipe
+    // boundary can do. Per-chunk Buffer.toString() produced two U+FFFD here.
+    child.stdout.emit('data', Buffer.from([0x66, 0xc3]));
+    child.stdout.emit('data', Buffer.from([0xbc, 0x72]));
+    child.emit('close', 0);
+
+    const result = await promise;
+    expect(result.stdout).toBe('für');
   });
 
   it('maps SIGINT termination to exit code 130', async () => {
@@ -86,6 +107,24 @@ describe('exec', () => {
       stdout: '',
       stderr: '',
       exitCode: 130,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    });
+  });
+
+  it('rejects with ExecTimeoutError when the timeout AbortSignal fires', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = exec('sleep', ['60'], { timeout: 5 });
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    child.emit('error', abortError);
+
+    await expect(promise).rejects.toMatchObject({
+      name: 'ExecTimeoutError',
+      command: 'sleep',
+      timeoutMs: 5,
     });
   });
 });
@@ -196,6 +235,8 @@ describe('execInheritCapture', () => {
       stdout: 'hello\n',
       stderr: 'warn\n',
       exitCode: 5,
+      stdoutTruncated: false,
+      stderrTruncated: false,
     });
     expect(stdoutWrite).toHaveBeenCalledWith('hello\n');
     expect(stderrWrite).toHaveBeenCalledWith('warn\n');
@@ -273,8 +314,51 @@ describe('execSmokeRun', () => {
     expect(stdoutLines).toEqual(['first', 'second']);
   });
 
+  it('treats lone \\r repaints as line terminators instead of accumulating them', async () => {
+    const child = makeSmokeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const stdoutLines: string[] = [];
+
+    const promise = execSmokeRun('fake-mach', ['run'], {
+      smokeTimeoutMs: 60_000,
+      onStdoutLine: (line) => stdoutLines.push(line),
+    });
+    // Progress-bar style output: repaint frames separated by bare \r and no
+    // \n ever. Pre-fix these grew the partial-line buffer without bound and
+    // never reached the line matchers.
+    child.stdout.emit('data', Buffer.from('progress 10%\rprogress 50%\rprogress 100%'));
+    child.emit('close', 0, null);
+
+    await promise;
+    expect(stdoutLines).toEqual(['progress 10%', 'progress 50%', 'progress 100%']);
+  });
+
+  it('holds back a trailing \\r that may be half of a chunk-split CRLF', async () => {
+    const child = makeSmokeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const stdoutLines: string[] = [];
+
+    const promise = execSmokeRun('fake-mach', ['run'], {
+      smokeTimeoutMs: 60_000,
+      onStdoutLine: (line) => stdoutLines.push(line),
+    });
+    child.stdout.emit('data', Buffer.from('split line\r'));
+    child.stdout.emit('data', Buffer.from('\nnext\n'));
+    child.emit('close', 0, null);
+
+    await promise;
+    expect(stdoutLines).toEqual(['split line', 'next']);
+  });
+
   it('sends SIGTERM to the process group when the deadline fires and reports timedOut=true', async () => {
     vi.useFakeTimers();
+    // execSmokeRun picks its kill strategy from process.platform — pin the
+    // POSIX branch so this test exercises the process-group kill even when
+    // the suite runs on Windows (the taskkill test below owns that branch).
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     try {
       const child = makeSmokeChild(98765);
       mockSpawn.mockReturnValue(child);
@@ -300,6 +384,45 @@ describe('execSmokeRun', () => {
 
       killSpy.mockRestore();
     } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      vi.useRealTimers();
+    }
+  });
+
+  it('kills the descendant tree via taskkill /T /F on Windows when the deadline fires', async () => {
+    vi.useFakeTimers();
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const child = makeSmokeChild(4242);
+      // First spawn call is the smoke child; subsequent calls are taskkill.
+      mockSpawn.mockImplementation((command: string) =>
+        command === 'taskkill' ? makeChild() : child
+      );
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+      const promise = execSmokeRun('fake-mach', ['run'], {
+        smokeTimeoutMs: 200,
+        killGraceMs: 50,
+      });
+
+      vi.advanceTimersByTime(250);
+      // No process group on Windows — the tree kill must go through taskkill,
+      // otherwise firefox descendants of the python wrapper survive.
+      expect(mockSpawn).toHaveBeenCalledWith('taskkill', ['/pid', '4242', '/T', '/F'], {
+        stdio: 'ignore',
+      });
+      expect(killSpy).not.toHaveBeenCalled();
+      // Direct-child kill still fires as the taskkill-unavailable fallback.
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+
+      child.emit('close', null, 'SIGTERM');
+      const result = await promise;
+      expect(result.timedOut).toBe(true);
+
+      killSpy.mockRestore();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
       vi.useRealTimers();
     }
   });

@@ -88,7 +88,7 @@ export interface MarionettePortProbeResult {
  * so a fork that ships under a custom name (e.g.
  * `mybrowser-nightly`) is still recognised as a browser.
  */
-function isBrowserHolder(holder: MarionettePortHolder, binaryName?: string): boolean {
+function isBrowserMarionettePortHolder(holder: MarionettePortHolder, binaryName?: string): boolean {
   if (/\s-marionette(?:\s|$)/.test(holder.commandLine)) {
     return true;
   }
@@ -226,7 +226,7 @@ export async function assertMarionettePortAvailable(
   if (!probe.inUse || !probe.holder) return;
 
   const holder = probe.holder;
-  if (isBrowserHolder(holder, options.binaryName)) {
+  if (isBrowserMarionettePortHolder(holder, options.binaryName)) {
     const killHint =
       process.platform === 'win32'
         ? `Stop-Process -Id ${holder.pid} -Force`
@@ -248,6 +248,43 @@ export async function assertMarionettePortAvailable(
     `Marionette port ${port} is already in use by ${holder.command} (PID ${holder.pid}). ` +
       `This is not a FireForge-launched browser; stop the holder process or free the port before rerunning.`
   );
+}
+
+/**
+ * Ensures the Marionette port is usable, optionally terminating a stale
+ * Firefox-family browser holder first. Unrelated listeners still fail.
+ */
+export async function ensureMarionettePortAvailable(
+  port: number = DEFAULT_MARIONETTE_PORT,
+  options: { binaryName?: string; killStaleBrowser?: boolean } = {}
+): Promise<void> {
+  const probe = await probeMarionettePort(port);
+  if (!probe.inUse || !probe.holder) return;
+
+  const holder = probe.holder;
+  const isBrowser = isBrowserMarionettePortHolder(holder, options.binaryName);
+  if (!options.killStaleBrowser || !isBrowser) {
+    await assertMarionettePortAvailable(port, options);
+    return;
+  }
+
+  try {
+    if (process.platform === 'win32') {
+      await exec('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Stop-Process -Id ${holder.pid} -Force`,
+      ]);
+    } else {
+      process.kill(holder.pid, 'SIGTERM');
+    }
+  } catch (error: unknown) {
+    throw new GeneralError(
+      `Marionette port ${port} is held by stale browser ${holder.command} (PID ${holder.pid}), ` +
+        `but FireForge could not terminate it: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 /**

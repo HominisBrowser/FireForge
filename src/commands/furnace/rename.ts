@@ -6,7 +6,6 @@ import { getProjectPaths, loadConfig } from '../../core/config.js';
 import {
   getFurnacePaths,
   loadFurnaceConfig,
-  updateFurnaceState,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import {
@@ -31,6 +30,7 @@ import {
 } from '../../core/furnace-registration-validate.js';
 import {
   createRollbackJournal,
+  recordCreatedDir,
   restoreRollbackJournalOrThrow,
   snapshotDir,
   snapshotFile,
@@ -50,18 +50,15 @@ import {
   writeText,
 } from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
+import { escapeRegex } from '../../utils/regex.js';
 import { updateBrowserChromeTestContent } from './rename-browser-test.js';
 import {
+  rekeyStateChecksums,
   renameComponentFileName,
   updateConfigForCustomRename,
   updateConfigForOverrideRename,
 } from './rename-helpers.js';
 import { renameXpcshellTestFiles } from './rename-xpcshell.js';
-
-/** Escapes regex metacharacters so a user-supplied name is literal inside a RegExp. */
-function escapeRegex(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /**
  * Derives the test file name for a component, matching the convention used by
@@ -108,6 +105,7 @@ async function renameTestFiles(
   if (await pathExists(oldTestPath)) {
     try {
       await snapshotFile(journal, oldTestPath);
+      await snapshotFile(journal, newTestPath);
       const content = await readText(oldTestPath);
       await writeText(
         newTestPath,
@@ -226,6 +224,7 @@ async function renameMochikitTestFiles(
           new RegExp(`"${escapeRegex(oldName)} custom element`, 'g'),
           `"${newName} custom element`
         );
+      await snapshotFile(journal, newTestPath);
       await writeText(newTestPath, updatedContent);
       await removeFile(oldTestPath);
       info(`Renamed mochikit test: ${oldTestFileName} → ${newTestFileName}`);
@@ -326,8 +325,15 @@ async function performRenameMutations(args: {
 
       await snapshotDir(journal, oldDir);
       await snapshotFile(journal, args.furnaceConfigPath);
+      // Journal the state file BEFORE step 4 re-keys its checksums, plus
+      // the new dir and every new-name destination below (a snapshot of a
+      // missing path records {existed: false} → rollback DELETES it).
+      // Without these, a failed or SIGINT'd rename stranded the new-name
+      // scaffold and kept re-keyed state for a nonexistent component.
+      await snapshotFile(journal, getFurnacePaths(projectRoot).furnaceState);
 
       // 1. Create new directory with renamed files and updated content
+      recordCreatedDir(journal, newDir);
       await ensureDir(newDir);
       const entries = await readdir(oldDir, { withFileTypes: true });
 
@@ -347,6 +353,7 @@ async function performRenameMutations(args: {
         const oldPath = join(oldDir, oldFileName);
         const newPath = join(newDir, newFileName);
 
+        await snapshotFile(journal, newPath);
         if (isComponentSourceFile(oldFileName)) {
           let content = await readText(oldPath);
           // Use word-boundary-aware patterns so substrings in other
@@ -458,39 +465,6 @@ async function performRenameMutations(args: {
   });
 }
 
-/**
- * Re-keys checksum entries in furnace-state.json from the old component name
- * to the new name so that `doctor` doesn't flag stale entries and the next
- * `apply` can correctly detect whether the renamed component has changed.
- */
-async function rekeyStateChecksums(
-  projectRoot: string,
-  componentType: string,
-  oldName: string,
-  newName: string
-): Promise<void> {
-  const oldPrefix = `${componentType}/${oldName}/`;
-  const newPrefix = `${componentType}/${newName}/`;
-
-  await updateFurnaceState(projectRoot, (state) => {
-    const result = { ...state };
-    for (const field of ['appliedChecksums', 'engineChecksums'] as const) {
-      const checksums = state[field];
-      if (!checksums) continue;
-      const updated: Record<string, string> = {};
-      for (const [key, value] of Object.entries(checksums)) {
-        if (key.startsWith(oldPrefix)) {
-          updated[newPrefix + key.slice(oldPrefix.length)] = value;
-        } else {
-          updated[key] = value;
-        }
-      }
-      result[field] = updated;
-    }
-    return result;
-  });
-}
-
 async function updateEngineRegistrations(
   engineDir: string,
   oldName: string,
@@ -530,6 +504,7 @@ async function updateEngineRegistrations(
   const newFtlPath = join(ftlDirPath, `${newName}.ftl`);
   if (await pathExists(oldFtlPath)) {
     await snapshotFile(journal, oldFtlPath);
+    await snapshotFile(journal, newFtlPath);
     const ftlContent = await readText(oldFtlPath);
     await writeText(newFtlPath, ftlContent);
     await removeFile(oldFtlPath);

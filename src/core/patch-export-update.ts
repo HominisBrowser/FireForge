@@ -8,7 +8,7 @@ import { pathExists, readText, writeText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { withPatchDirectoryLock } from './patch-apply.js';
 import { normalizePatchArtifact } from './patch-artifact-normalize.js';
-import { loadPatchesManifest, mutatePatchRowsInManifest } from './patch-manifest.js';
+import { loadPatchesManifestForWrite, mutatePatchRowsInManifest } from './patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from './patch-policy.js';
 
 /**
@@ -39,7 +39,7 @@ export async function updatePatchAndMetadata(
   policyGate?: UpdatePatchPolicyGate
 ): Promise<void> {
   await withPatchDirectoryLock(patchesDir, async () => {
-    const manifest = await loadPatchesManifest(patchesDir);
+    const manifest = await loadPatchesManifestForWrite(patchesDir);
     if (!manifest) {
       throw new Error('Cannot update patch metadata: patches.json is missing.');
     }

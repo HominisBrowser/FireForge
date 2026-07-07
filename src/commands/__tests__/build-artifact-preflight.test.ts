@@ -128,7 +128,7 @@ describe('build artifact preflight', () => {
   });
 
   it('testCommand fails instead of guessing when build artifacts are ambiguous', async () => {
-    await expect(testCommand('/project', [])).rejects.toThrow(
+    await expect(testCommand('/project', [], { auto: true })).rejects.toThrow(
       /Multiple build artifact directories/
     );
   });
@@ -146,7 +146,7 @@ describe('build artifact preflight', () => {
       'Tests cannot use copied or relocated build artifacts'
     );
 
-    await expect(testCommand('/project', [])).rejects.toThrow(
+    await expect(testCommand('/project', [], { auto: true })).rejects.toThrow(
       /copied or relocated build artifacts/i
     );
   });

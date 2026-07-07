@@ -77,6 +77,16 @@ vi.mock('../furnace-apply-helpers.js', () => ({
   undeployOverrideFiles: vi.fn(() => Promise.resolve({ restored: [], removed: [] })),
 }));
 
+vi.mock('../furnace-validate-registration.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../furnace-validate-registration.js')>();
+  return {
+    ...actual,
+    // Default: post-apply consistency checks find nothing. Tests that
+    // exercise the post-apply rollback path override per-call.
+    runPostApplyConsistencyChecks: vi.fn(() => Promise.resolve()),
+  };
+});
+
 import { FurnaceError } from '../../errors/furnace.js';
 import { pathExists } from '../../utils/fs.js';
 import { loadConfig } from '../config.js';
@@ -101,6 +111,7 @@ import {
   removeJarMnEntries,
 } from '../furnace-registration.js';
 import { restoreRollbackJournalOrThrow } from '../furnace-rollback.js';
+import { runPostApplyConsistencyChecks } from '../furnace-validate-registration.js';
 
 describe('applyAllComponents', () => {
   beforeEach(() => {
@@ -797,5 +808,57 @@ describe('applyAllComponents', () => {
         { markerComment: 'FRESHFORGE-CUSTOM' }
       );
     });
+  });
+
+  it('rolls back when a POST-APPLY consistency check flags a blocking step error', async () => {
+    // Ordering regression (2026-07-05 review, finding F3): hasStepErrors
+    // was snapshotted BEFORE runPostApplyConsistencyChecks mutated
+    // entry.stepErrors, so post-apply inconsistencies persisted state for
+    // a component known to be broken while the CLI reported failure.
+    vi.mocked(hasComponentChanged).mockResolvedValue(true);
+    vi.mocked(applyOverrideComponent).mockResolvedValue({ affectedPaths: ['moz-card.css'] });
+    vi.mocked(applyCustomComponent).mockResolvedValue({
+      affectedPaths: ['moz-panel.mjs'],
+      stepErrors: [],
+    });
+    vi.mocked(computeComponentChecksums).mockResolvedValue({ 'moz-card.css': 'hash' });
+    vi.mocked(prefixChecksums).mockReturnValue({ 'override/moz-card/moz-card.css': 'hash' });
+    vi.mocked(runPostApplyConsistencyChecks).mockImplementationOnce((_root, _config, result) => {
+      const entry = result.applied[0] as { stepErrors?: unknown[] };
+      entry.stepErrors = [{ step: 'jar.mn consistency', error: 'missing .mjs entry' }];
+      return Promise.resolve();
+    });
+
+    const result = await applyAllComponents('/project');
+
+    expect(result.rolledBack).toBe(true);
+    expect(updateFurnaceState).not.toHaveBeenCalled();
+    expect(restoreRollbackJournalOrThrow).toHaveBeenCalled();
+  });
+
+  it('does not roll back for advisory-only step errors (FTL graceful degradation)', async () => {
+    vi.mocked(hasComponentChanged).mockResolvedValue(true);
+    vi.mocked(applyOverrideComponent).mockResolvedValue({ affectedPaths: ['moz-card.css'] });
+    vi.mocked(applyCustomComponent).mockResolvedValue({
+      affectedPaths: ['moz-panel.mjs'],
+      stepErrors: [
+        {
+          step: 'locale jar.mn registration',
+          error: 'Locale jar.mn not found',
+          advisory: true,
+        },
+      ],
+    });
+    vi.mocked(computeComponentChecksums).mockResolvedValue({ 'moz-card.css': 'hash' });
+    vi.mocked(prefixChecksums).mockReturnValue({ 'override/moz-card/moz-card.css': 'hash' });
+
+    const result = await applyAllComponents('/project');
+
+    // Advisory degradation must not fail the run: no rollback, state
+    // persisted — a fork without a locale package can still ship the
+    // component's .mjs/.css.
+    expect(result.rolledBack).toBeUndefined();
+    expect(restoreRollbackJournalOrThrow).not.toHaveBeenCalled();
+    expect(updateFurnaceState).toHaveBeenCalled();
   });
 });

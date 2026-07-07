@@ -9,10 +9,11 @@ import { getHead } from '../core/git.js';
 import { getDirtyFiles } from '../core/git-status.js';
 import {
   applyPatchesWithContinue,
-  computePatchedContent,
   countPatches,
+  createPatchedContentComputer,
   discoverPatches,
   extractAffectedFiles,
+  matchesUntilFilename,
   PatchError,
 } from '../core/patch-apply.js';
 import {
@@ -55,16 +56,25 @@ function isSafeIoFallback(error: unknown): boolean {
   return typeof code === 'string' && SAFE_IO_FALLBACK_CODES.has(code);
 }
 
+/** Concurrency bound for per-file classification (each call spawns git). */
+const UNMANAGED_CLASSIFY_CONCURRENCY = 8;
+
 async function getUnmanagedDirtyFiles(
   engineDir: string,
   patchesDir: string,
   dirtyFiles: string[]
 ): Promise<string[]> {
-  const classifications = await Promise.all(
-    dirtyFiles.map(async (file) => {
+  // One manifest+patch-discovery load for the whole batch (the per-call
+  // computePatchedContent re-read everything for every file), and bounded
+  // concurrency instead of an unbounded Promise.all over git spawns.
+  const computeExpected = await createPatchedContentComputer(patchesDir, engineDir);
+  const classifications = await mapWithConcurrency(
+    dirtyFiles,
+    UNMANAGED_CLASSIFY_CONCURRENCY,
+    async (file) => {
       try {
         const [expected, exists] = await Promise.all([
-          computePatchedContent(patchesDir, engineDir, file),
+          computeExpected(file),
           pathExists(join(engineDir, file)),
         ]);
         const actual = exists ? await readText(join(engineDir, file)) : null;
@@ -87,10 +97,29 @@ async function getUnmanagedDirtyFiles(
         );
         return file;
       }
-    })
+    }
   );
 
   return classifications.filter((file): file is string => file !== null).sort();
+}
+
+/** Maps items with at most `limit` in-flight promises. Preserves order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index] as T);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function reportForcedOverwriteRisk(unmanagedDirtyFiles: string[]): void {
@@ -224,7 +253,7 @@ async function checkEngineDrift(
   const currentHead = await getHead(engineDir);
   if (currentHead === baseCommit) return true;
 
-  if (!process.stdin.isTTY) {
+  if (!(process.stdin.isTTY && process.stdout.isTTY)) {
     if (!forceImport) {
       throw new GeneralError(
         'Engine HEAD has drifted from base commit. Re-run with --force to bypass drift check.'
@@ -270,8 +299,13 @@ function buildUntilFilenameSet(
 ): Set<string> {
   const set = new Set<string>();
   if (until === undefined) return set;
-  const normalized = until.endsWith('.patch') ? until : `${until}.patch`;
-  const target = patches.find((p) => p.filename === until || p.filename === normalized);
+  // Resolve the identifier with the SAME matcher the apply loop uses
+  // (`matchesUntilFilename` accepts filenames, extension-less names, AND
+  // bare ordinals). The previous filename-only match meant
+  // `import --until 5` produced an EMPTY scope set — the UI previewed
+  // "0 patches", the integrity gates filtered every in-range issue away —
+  // and then the apply loop happily applied patches 1..5 anyway.
+  const target = patches.find((p) => matchesUntilFilename(p.filename, until));
   if (!target) return set;
   for (const patch of patches) {
     if (patch.order <= target.order) {
@@ -368,7 +402,7 @@ async function gateImportIntegrity(
 
     if (forceImport) {
       warn('Continuing because --force was provided. Integrity issues were not resolved.\n');
-    } else if (!process.stdin.isTTY) {
+    } else if (!(process.stdin.isTTY && process.stdout.isTTY)) {
       throw new GeneralError(
         `Refusing to import while ${integrityIssues.length} patch integrity issue(s) are unresolved. ` +
           `Fix the issues reported above (see "fireforge doctor") or re-run with --force to continue anyway.`

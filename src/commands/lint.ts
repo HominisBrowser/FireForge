@@ -644,7 +644,7 @@ export function registerLint(
     )
     .option(
       '--patches <names...>',
-      'With --per-patch, lint only the named patches (by filename or manifest name) instead of the whole queue. Queue-level findings are scoped to files those patches touch.'
+      'With --per-patch, lint only the named patches. Accepts repeated flags, comma lists, full filenames/stems, manifest names, category-prefixed slugs, or bare slugs.'
     )
     .option(
       '--max-warnings <n>',
@@ -692,9 +692,23 @@ export function registerLint(
       )
     );
 
-  lint
+  const lintCache = lint
     .command('cache')
     .description('Manage the per-patch lint result cache')
+    // Commander routes `fireforge lint cache` here even when the operator
+    // meant to lint an engine directory literally named `cache`. A bare
+    // `lint cache` (no subcommand) used to silently do nothing — make the
+    // ambiguity explicit instead of doing the wrong operation quietly.
+    .action(
+      withErrorHandling(() => {
+        info(
+          'Nothing to do: "lint cache" manages the lint result cache (try "lint cache clear"). ' +
+            'To lint a directory named cache/, disambiguate with a trailing slash: "fireforge lint cache/".'
+        );
+        return Promise.resolve();
+      })
+    );
+  lintCache
     .command('clear')
     .description('Clear cached per-patch lint results')
     .action(

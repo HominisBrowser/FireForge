@@ -190,6 +190,28 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
   // Validate that every composes reference points to a known component.
   validateComposesReferences(stock, overrides, custom);
 
+  // Warn when two custom components share a targetPath. Nothing technically
+  // prevents co-location, but per-component removal and orphan detection
+  // both reason about "files this component deployed into its directory" —
+  // shared directories make those judgements ambiguous, and historically a
+  // shared targetPath meant `furnace remove` of one component deleted the
+  // other's deployed files.
+  const targetPathOwners = new Map<string, string[]>();
+  for (const [name, custom_] of Object.entries(custom)) {
+    const owners = targetPathOwners.get(custom_.targetPath) ?? [];
+    owners.push(name);
+    targetPathOwners.set(custom_.targetPath, owners);
+  }
+  for (const [targetPath, owners] of targetPathOwners) {
+    if (owners.length > 1) {
+      warn(
+        `furnace.json: custom components ${owners.join(', ')} share targetPath "${targetPath}". ` +
+          'Give each component its own directory — shared directories make per-component ' +
+          'removal and drift detection ambiguous.'
+      );
+    }
+  }
+
   const config: FurnaceConfig = {
     version: CURRENT_CONFIG_VERSION,
     componentPrefix: migrated['componentPrefix'],
@@ -420,6 +442,24 @@ export async function loadFurnaceConfig(root: string): Promise<FurnaceConfig> {
       `Invalid furnace.json at ${paths.furnaceConfig}: ${toError(error).message}`
     );
   }
+}
+
+/**
+ * Clears applied furnace state while preserving `pendingRepair`.
+ *
+ * Used whenever the engine baseline is replaced or reset (download --force,
+ * reset, rebase, rebase --abort): every applied checksum describes content
+ * that no longer exists, but pendingRepair tracks authoring-side rollback
+ * issues in the component WORKSPACE and must survive an engine refresh.
+ * No-ops when the state file does not exist. Centralized because the same
+ * reset logic had drifted into four separate command files.
+ */
+export async function clearAppliedFurnaceState(root: string): Promise<void> {
+  const paths = getFurnacePaths(root);
+  if (!(await pathExists(paths.furnaceState))) return;
+  await updateFurnaceState(root, (current) => ({
+    ...(current.pendingRepair ? { pendingRepair: current.pendingRepair } : {}),
+  }));
 }
 
 /**

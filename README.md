@@ -23,7 +23,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 - Node.js 22.22.1+
 - Python 3
 - Git
-- The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows (never tested on Windows tbh)
+- The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows (never tested on Windows tbh — smoke-run process cleanup there uses `taskkill /T /F` and is best-effort)
 - Watchman, if you want `fireforge watch` (optional)
 
 ## Getting Started
@@ -88,14 +88,39 @@ Queue maintenance lives under `fireforge patch`: `patch compact` closes ordinal 
 new one as a single transaction — including staged-dependency owner rewrites — with
 `--dry-run` support.
 
-`fireforge test <directory>` runs exactly that directory: the argument is normalized with a
-trailing `/` so mach's prefix-based path matching cannot silently sweep in sibling
-directories sharing the name prefix (excluded siblings are echoed with their test-file
-counts). Multiple test paths run as sequential per-file shards by default — announced with
-a notice, since isolated instances do not exercise cross-file state (`--no-shard` restores
-one combined invocation). Recognized harness crashes retry up to `--harness-retries <n>`
-times (default 2), and `--perf-samples <path>` publishes a perf-sample artifact path to the
-harness (exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
+`fireforge test <directory>` runs exactly that directory: FireForge enumerates the
+directory's test files and passes the explicit file list to mach in one invocation, so
+mach's prefix-based path matching cannot silently sweep in sibling directories sharing the
+name prefix (excluded siblings are echoed with their test-file counts). Multiple path
+arguments run as sequential shards by default — one browser instance per argument, with a
+directory argument keeping its files together — announced with a notice, since isolated
+instances do not exercise cross-argument state (`--no-shard` restores one combined
+invocation). Recognized harness crashes retry up to `--harness-retries <n>` times (default
+2), and `--perf-samples <path>` publishes a perf-sample artifact path to the harness
+(exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
+Pathless test runs must choose a mode: `--auto` forwards mach's own auto-selection,
+`--doctor` runs the Marionette preflight only, and `--canary [path]` runs one short
+browser-chrome canary (`test.canaryPath` / `test.canaryTimeoutSeconds` in `fireforge.json`
+provide defaults). When packageable engine files changed since the last successful
+FireForge build, `test` fails before launching stale artifacts; use `--build` to refresh
+or `--allow-stale-build` only for intentional out-of-band rebuilds. If an interrupted
+browser holds the Marionette port, `--kill-stale-marionette` terminates recognized browser
+holders and still refuses unrelated listeners. In dev builds, files under `obj-*/dist/bin`
+may be symlinks back into the source tree (notably prefs), so edit source prefs directly
+and keep a backup before bisection experiments.
+
+Patch names are normalized on export/rename: `window-chrome-tests`,
+`ui-window-chrome-tests`, and `235-ui-window-chrome-tests` all resolve to the same
+`<order>-ui-window-chrome-tests.patch` shape. For focused queue checks,
+`lint --per-patch --patches` accepts repeated flags, comma lists, full filenames/stems,
+manifest names, category-prefixed slugs, and bare slugs.
+
+Projects with generated asset prerequisites can declare opt-in `externalToolchains` in
+`fireforge.json`; `fireforge doctor` reports missing required tools as errors and missing
+optional tools as warnings. Seasonal branding on macOS, for example, can declare Apple's
+Icon Composer tool at
+`/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool`,
+plus `actool` via `xcrun`, `sips`, and `iconutil`.
 Design tokens are managed with `fireforge token add`; pass `--create-category` to declare a
 new category banner and insert the token in one step.
 

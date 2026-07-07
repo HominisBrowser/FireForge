@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type {
@@ -21,7 +20,7 @@ import {
 } from './patch-export-coverage.js';
 import {
   addPatchToManifest,
-  loadPatchesManifest,
+  loadPatchesManifestForWrite,
   PATCHES_MANIFEST,
   savePatchesManifest,
 } from './patch-manifest.js';
@@ -81,6 +80,10 @@ export function sanitizeName(name: string): string {
     .slice(0, 50);
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Strips a leading `NNN-<category>-` prefix from a sanitized name slug.
  * Operators frequently pass the DESIRED FILENAME stem to `--name`
@@ -91,16 +94,26 @@ export function sanitizeName(name: string): string {
  * double-prefix incident) also collapses. Exported for direct testing.
  */
 export function stripRedundantCategoryPrefix(sanitizedName: string, category: string): string {
-  const prefix = new RegExp(`^\\d+-${category}-`);
+  const prefixes = [
+    new RegExp(`^\\d+-${escapeRegExp(category)}-`),
+    new RegExp(`^${escapeRegExp(category)}-`),
+  ];
   let stripped = sanitizedName;
-  while (prefix.test(stripped)) {
-    stripped = stripped.replace(prefix, '');
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const prefix of prefixes) {
+      if (prefix.test(stripped)) {
+        stripped = stripped.replace(prefix, '');
+        changed = true;
+      }
+    }
   }
   return stripped.length > 0 ? stripped : sanitizedName;
 }
 
-/** Sanitizes a patch name and drops a redundant `NNN-<category>-` prefix. */
-function patchNameSlug(name: string, category: string): string {
+/** Sanitizes a patch name and drops redundant category/full-stem prefixes. */
+export function patchNameSlug(name: string, category: string): string {
   return stripRedundantCategoryPrefix(sanitizeName(name), category);
 }
 
@@ -318,49 +331,6 @@ export async function updatePatch(patchPath: string, newContent: string): Promis
 }
 
 /**
- * Deletes a patch file and removes it from the manifest.
- * @param patchesDir - Path to the patches directory
- * @param filename - Patch filename to delete
- */
-export async function deletePatch(patchesDir: string, filename: string): Promise<void> {
-  await withPatchDirectoryLock(patchesDir, async () => {
-    const patchPath = join(patchesDir, filename);
-    const manifest = await loadPatchesManifest(patchesDir);
-    const updatedManifest = manifest
-      ? {
-          ...manifest,
-          patches: manifest.patches.filter((patch) => patch.filename !== filename),
-        }
-      : null;
-
-    // Update manifest first so interrupted deletions leave an explicit repairable
-    // extra patch file rather than silently dropping metadata for an absent file.
-    if (updatedManifest) {
-      await savePatchesManifest(patchesDir, updatedManifest);
-    }
-
-    if (!(await pathExists(patchPath))) {
-      return;
-    }
-
-    try {
-      await unlink(patchPath);
-    } catch (error: unknown) {
-      if (manifest) {
-        try {
-          await savePatchesManifest(patchesDir, manifest);
-        } catch (error: unknown) {
-          warn(
-            `Failed to restore manifest after patch deletion error for "${filename}": ${toError(error).message}`
-          );
-        }
-      }
-      throw error;
-    }
-  });
-}
-
-/**
  * Fully computed plan for a pending export. Returned from
  * {@link planExport} so that `--dry-run` previews can render the full
  * outcome of the hypothetical write without touching disk.
@@ -439,7 +409,11 @@ interface ComputedExportPlan {
  * instead of by parallel implementations that can drift.
  */
 async function computeExportPlanUnderLock(input: PlanExportInput): Promise<ComputedExportPlan> {
-  const manifestBefore = await loadPatchesManifest(input.patchesDir);
+  // ForWrite: a corrupt manifest read as null here would produce a
+  // manifestAfter containing ONLY the new patch — committing that plan
+  // wipes the queue metadata, and the rollback path would then delete
+  // patches.json entirely because manifestBefore looked absent.
+  const manifestBefore = await loadPatchesManifestForWrite(input.patchesDir);
   const policyOrder =
     input.config !== undefined
       ? allocatePolicyOrder(input.config, manifestBefore?.patches ?? [], input.category)

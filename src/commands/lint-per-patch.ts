@@ -356,15 +356,31 @@ function selectPatchSubset(
   manifest: NonNullable<Awaited<ReturnType<typeof loadPatchesManifest>>>,
   requested: readonly string[]
 ): PatchMetadata[] {
-  const matches = (p: PatchMetadata, name: string): boolean =>
-    p.filename === name ||
-    p.filename === `${name}.patch` ||
-    p.filename.replace(/\.patch$/, '') === name.replace(/\.patch$/, '') ||
-    p.name === name;
+  const normalizedRequests = requested
+    .flatMap((entry) => entry.split(','))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  const patchAliases = (p: PatchMetadata): Set<string> => {
+    const aliases = new Set<string>([p.filename, p.filename.replace(/\.patch$/, ''), p.name]);
+    const match = /^(\d+)-([a-z]+)-(.+)\.patch$/.exec(p.filename);
+    if (match?.[2] && match[3]) {
+      aliases.add(`${match[2]}-${match[3]}`);
+      aliases.add(match[3]);
+    }
+    return aliases;
+  };
+
+  const matches = (p: PatchMetadata, name: string): boolean => {
+    const stem = name.replace(/\.patch$/, '');
+    return (
+      patchAliases(p).has(name) || patchAliases(p).has(stem) || patchAliases(p).has(`${stem}.patch`)
+    );
+  };
 
   const selected: PatchMetadata[] = [];
   const seen = new Set<string>();
-  for (const name of requested) {
+  for (const name of normalizedRequests) {
     const found = manifest.patches.filter((p) => matches(p, name));
     if (found.length === 0) {
       const available = manifest.patches.map((p) => p.filename).join(', ');

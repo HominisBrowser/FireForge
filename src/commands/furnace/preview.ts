@@ -10,6 +10,7 @@ import {
 } from '../../core/furnace-config.js';
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { restoreRollbackJournal, type RollbackJournal } from '../../core/furnace-rollback.js';
+import { countEntriesWithBlockingStepErrors } from '../../core/furnace-step-errors.js';
 import { cleanStories, syncStories } from '../../core/furnace-stories.js';
 import { hasBuildArtifacts, runMach, runMachCapture } from '../../core/mach.js';
 import { FurnaceError } from '../../errors/furnace.js';
@@ -83,9 +84,7 @@ function reportPreviewStagingFailures(
       }
     }
   }
-  const appliedWithStepErrorsCount = stageResult.applied.filter(
-    (entry) => (entry.stepErrors?.length ?? 0) > 0
-  ).length;
+  const appliedWithStepErrorsCount = countEntriesWithBlockingStepErrors(stageResult.applied);
   const totalFailures = stageResult.errors.length + appliedWithStepErrorsCount;
   throw new FurnaceError(
     `${totalFailures} component${totalFailures === 1 ? '' : 's'} failed to stage for preview`
@@ -348,9 +347,7 @@ export async function furnacePreviewCommand(
           ctx.registerJournal(previewJournal);
         }
 
-        const appliedWithStepErrorsCount = stageResult.applied.filter(
-          (entry) => (entry.stepErrors?.length ?? 0) > 0
-        ).length;
+        const appliedWithStepErrorsCount = countEntriesWithBlockingStepErrors(stageResult.applied);
         const totalFailures = stageResult.errors.length + appliedWithStepErrorsCount;
         if (totalFailures > 0) {
           stageSpinner.error('Failed to stage components');

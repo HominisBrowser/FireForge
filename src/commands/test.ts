@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join, resolve } from 'node:path';
 
-import { Command } from 'commander';
-
 import { readBuildBaseline } from '../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import {
+  assertEngineGenerationUnchanged,
+  snapshotEngineGeneration,
+} from '../core/engine-session-lock.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
@@ -15,6 +17,7 @@ import {
 } from '../core/mach.js';
 import {
   assertMarionettePortAvailable,
+  ensureMarionettePortAvailable,
   extractForwardedMarionettePort,
   forwardedMachArgsIncludeMarionetteClient,
   shouldAutoForwardMarionettePortToMach,
@@ -26,22 +29,32 @@ import {
 } from '../core/marionette-preflight.js';
 import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
 import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
-import { analyzeTestPathScopes, formatScopeNotice } from '../core/test-path-scope.js';
+import {
+  analyzeTestPathScopes,
+  formatScopeNotice,
+  type TestPathScope,
+} from '../core/test-path-scope.js';
 import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
-import type { CommandContext } from '../types/cli.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, success, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
+import {
+  assertPathlessTestMode,
+  assertTestModeCombinations,
+  canaryTimeoutSeconds,
+  reportCanaryOutcome,
+  resolveCanaryPath,
+} from './test-modes.js';
 import {
   DEFAULT_HARNESS_RETRIES,
   runShardedTests,
   runTestsWithRetries,
+  type ShardGroup,
   type TestRunContext,
   type TestRunOutcome,
   type TestSuite,
@@ -202,9 +215,14 @@ async function runPreTestBuild(
   });
 }
 
-function logTestSelection(normalizedPaths: readonly string[]): void {
-  if (normalizedPaths.length > 0) {
-    info(`Running tests: ${normalizedPaths.join(', ')}`);
+function logTestSelection(scopes: readonly TestPathScope[]): void {
+  if (scopes.length > 0) {
+    const labels = scopes.map((scope) =>
+      scope.isDirectory && scope.testFileCount > 0
+        ? `${scope.requestedPath} (${scope.testFileCount} test file${scope.testFileCount === 1 ? '' : 's'}, passed explicitly)`
+        : scope.requestedPath
+    );
+    info(`Running tests: ${labels.join(', ')}`);
   } else {
     info('Running all tests...');
   }
@@ -350,6 +368,18 @@ function appendMarionetteForwardingArgs(
   }
 }
 
+async function ensureTestMarionettePortAvailable(
+  port: number | undefined,
+  binaryName: string,
+  killStaleBrowser: boolean
+): Promise<void> {
+  if (killStaleBrowser) {
+    await ensureMarionettePortAvailable(port, { binaryName, killStaleBrowser: true });
+    return;
+  }
+  await assertMarionettePortAvailable(port, { binaryName });
+}
+
 /**
  * Runs the test command to execute mach tests.
  * @param projectRoot - Root directory of the project
@@ -369,6 +399,7 @@ export async function testCommand(
   if (!(await pathExists(paths.engine))) {
     throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
   }
+  assertPathlessTestMode(testPaths, options);
 
   const buildCheck = await assertTestBuildArtifacts(paths.engine);
 
@@ -376,6 +407,8 @@ export async function testCommand(
   // probe have access to `binaryName` (the port probe uses it to
   // recognise a fork-branded browser holding the Marionette port).
   const projectConfig = await loadConfig(projectRoot);
+  const canaryPath = resolveCanaryPath(options, projectConfig);
+  assertTestModeCombinations(testPaths, options, canaryPath);
 
   // `hasBuildArtifacts` only confirms `obj-*/dist/` exists; a partial
   // build (linker failed, packaging step interrupted, etc.) can satisfy
@@ -400,15 +433,19 @@ export async function testCommand(
   } else {
     // Stale-build preflight — when --build was NOT requested, detect
     // packageable engine edits since the last successful `fireforge build`
-    // and warn UP-FRONT. Without this, edits to chrome / packaged resources
-    // surface only as a cryptic `NS_ERROR_FILE_NOT_FOUND` inside xpcshell
-    // after mach test has already launched (see motivating case in
-    // `core/test-stale-check.ts`). The check is warn-only so a fork that
-    // rebuilt out-of-band (no FireForge-recorded baseline update) is not
-    // blocked from running tests.
+    // and fail UP-FRONT unless the operator explicitly accepts the stale
+    // package risk.
     const stale = await checkStaleBuildForTest(projectRoot, paths.engine);
     if (stale.stale) {
-      warn(formatStaleBuildWarning(stale));
+      const message =
+        `${formatStaleBuildWarning(stale)}\n\n` +
+        'Run `fireforge test --build` to refresh the packaged runtime first, or pass ' +
+        '`--allow-stale-build` if you intentionally rebuilt out-of-band and accept the risk.';
+      if (options.allowStaleBuild === true) {
+        warn(message);
+      } else {
+        throw new GeneralError(message);
+      }
     }
   }
 
@@ -435,7 +472,11 @@ export async function testCommand(
   // generic bind failure. 2026-04-21 eval (Finding #20): a stale
   // `-marionette` process from `fresh/` poisoned a later test run in
   // the sibling `mybrowser/` workspace.
-  await assertMarionettePortAvailable(effectivePort, { binaryName: projectConfig.binaryName });
+  await ensureTestMarionettePortAvailable(
+    effectivePort,
+    projectConfig.binaryName,
+    options.killStaleMarionette === true
+  );
 
   if (options.doctor) {
     const doctorOutcome = await runDoctorPreflight({
@@ -449,7 +490,8 @@ export async function testCommand(
     if (doctorOutcome === 'stop') return;
   }
 
-  const normalizedPaths = testPaths.map((p) => stripEnginePrefix(p).trim());
+  const requestedPaths = canaryPath !== undefined ? [canaryPath] : testPaths;
+  const normalizedPaths = requestedPaths.map((p) => stripEnginePrefix(p).trim());
   await assertTestPathsExist(paths.engine, normalizedPaths);
   const classification = await classifyTestHarnesses(paths.engine, normalizedPaths);
   if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {
@@ -465,6 +507,12 @@ export async function testCommand(
 
   if (options.headless) {
     extraArgs.push('--headless');
+  }
+  if (options.auto === true) {
+    extraArgs.push('--auto');
+  }
+  if (canaryPath !== undefined) {
+    extraArgs.push(`--timeout=${String(canaryTimeoutSeconds(projectConfig))}`);
   }
 
   // --mach-arg is a verbatim passthrough for upstream mach/xpcshell/mochitest
@@ -482,13 +530,19 @@ export async function testCommand(
   // resolver matches paths by string prefix, so a bare directory arg
   // silently swept in prefix-named siblings (152.0b7 → 153.0b8 drill:
   // `…/test/hominis` also ran `…/test/hominis-tiles`, 1224 tests instead
-  // of ~200, with no indication the scope widened). The dispatch form
-  // gains a trailing `/` (making the prefix match exact) and any
-  // excluded prefix-siblings are echoed so the narrowed scope is
-  // visible. Classification above intentionally used the un-slashed
-  // forms; only the mach dispatch needs the exact-match shape.
+  // of ~200, with no indication the scope widened). Each directory
+  // argument dispatches as its enumerated explicit test-file list — a
+  // file list cannot prefix-match a sibling (0.35.0's trailing-`/`
+  // normalization turned out to be cosmetic on Firefox 153's mach; field
+  // verification showed the sibling still ran while the echo claimed it
+  // was excluded). Any prefix-siblings are echoed so the narrowed scope
+  // is visible. Classification above intentionally used the raw
+  // argument forms; only the mach dispatch needs the exact-match shape.
   const scopes = await analyzeTestPathScopes(paths.engine, normalizedPaths);
-  const dispatchPaths = scopes.map((scope) => scope.dispatchPath);
+  const dispatchGroups: ShardGroup[] = scopes.map((scope) => ({
+    label: scope.requestedPath,
+    paths: scope.dispatchPaths,
+  }));
   for (const scope of scopes) {
     const notice = formatScopeNotice(scope);
     if (notice) info(notice);
@@ -498,7 +552,7 @@ export async function testCommand(
   // `runTestsWithRetries` (src/commands/test-run.ts) so sharded runs probe
   // the manifest for each file individually. See src/core/xpcshell-appdir.ts
   // for the full motivation.
-  logTestSelection(dispatchPaths);
+  logTestSelection(scopes);
 
   const perfSampleEnv = buildPerfSampleEnv(
     projectRoot,
@@ -519,36 +573,52 @@ export async function testCommand(
     ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)
     : undefined;
 
-  // Multi-file requests shard into sequential single-file harness runs by
-  // default (field report C3): one shared mochitest profile across files
-  // bleeds pref/media-query state into later files. --no-shard restores
-  // the combined invocation. The default must not be SILENT (drill
-  // finding: a two-file cross-file pollution repro "passed" because the
-  // headed comparison run was sharded without saying so, briefly
-  // misattributing a suite-context bug to an upstream headless
-  // regression), so a one-line notice states what sharding does and
-  // does not exercise.
-  if (dispatchPaths.length > 1 && options.shard !== false) {
+  // Multi-argument requests shard into sequential harness runs by default
+  // (field report C3): one shared mochitest profile across files bleeds
+  // pref/media-query state into later files. Sharding is per path
+  // ARGUMENT — a directory argument keeps its enumerated files together
+  // in one invocation, preserving the one-browser-instance semantics of
+  // a directory run. --no-shard restores the combined invocation. The
+  // default must not be SILENT (drill finding: a two-file cross-file
+  // pollution repro "passed" because the headed comparison run was
+  // sharded without saying so, briefly misattributing a suite-context
+  // bug to an upstream headless regression), so a one-line notice states
+  // what sharding does and does not exercise.
+  if (canaryPath === undefined && dispatchGroups.length > 1 && options.shard !== false) {
     info(
-      `Sharding: running ${dispatchPaths.length} test paths in isolated browser instances ` +
-        '(one mach invocation per path). Cross-file state is NOT exercised — pass --no-shard ' +
-        'for a combined single-instance run.'
+      `Sharding: running ${dispatchGroups.length} test path arguments in isolated browser instances ` +
+        '(one mach invocation per argument; a directory argument keeps its files in one instance). ' +
+        'Cross-argument state is NOT exercised — pass --no-shard for a combined single-instance run.'
     );
-    await runShardedTests(runCtx, dispatchPaths, (outcome, path) =>
-      diagnoseShardOutcome(outcome, path, projectConfig.binaryName, postRebuildContext)
-    );
+    const generationBefore = await snapshotEngineGeneration(paths.engine);
+    try {
+      await runShardedTests(runCtx, dispatchGroups, (outcome, label) =>
+        diagnoseShardOutcome(outcome, label, projectConfig.binaryName, postRebuildContext)
+      );
+    } finally {
+      await assertEngineGenerationUnchanged(paths.engine, generationBefore);
+    }
     return;
   }
 
+  const combinedDispatchPaths = dispatchGroups.flatMap((group) => group.paths);
   let outcome: TestRunOutcome;
+  const generationBefore = await snapshotEngineGeneration(paths.engine);
   try {
-    outcome = await runTestsWithRetries(runCtx, dispatchPaths);
+    outcome = await runTestsWithRetries(runCtx, combinedDispatchPaths);
   } catch (error: unknown) {
     throw new BuildError(
       'Test process failed to start',
       'mach test',
       error instanceof Error ? error : undefined
     );
+  } finally {
+    await assertEngineGenerationUnchanged(paths.engine, generationBefore);
+  }
+
+  if (canaryPath !== undefined) {
+    reportCanaryOutcome(outcome);
+    return;
   }
 
   finalizeSingleRunOutcome(outcome, normalizedPaths, projectConfig.binaryName, postRebuildContext);
@@ -569,101 +639,4 @@ function buildPerfSampleEnv(
   const artifactPath = resolve(projectRoot, perfSamples);
   info(`Perf sample contract: ${envName}=${artifactPath}`);
   return { [envName]: artifactPath };
-}
-
-/** Registers the test command on the CLI program. */
-export function registerTest(
-  program: Command,
-  { getProjectRoot, withErrorHandling }: CommandContext
-): void {
-  program
-    .command('test [paths...]')
-    .description('Run tests via mach test')
-    .option('--headless', 'Run tests in headless mode')
-    .option('--build', 'Run incremental UI build before testing')
-    .option(
-      '--doctor',
-      'Run a marionette handshake preflight before tests (exit 1 on FAIL). With no paths, runs the preflight only.'
-    )
-    .option(
-      '--mach-arg <arg>',
-      'Forward this argument verbatim to `mach test` (repeatable). Escape valve for upstream xpcshell/mochitest flags FireForge does not model.',
-      (value: string, acc: string[]) => {
-        acc.push(value);
-        return acc;
-      },
-      [] as string[]
-    )
-    .option(
-      '--harness-retries <n>',
-      `Retry budget for recognized harness crashes (resource-monitor tracebacks, pre-test hangs, post-green shutdown re-entry). 0 disables retries. Default: ${String(DEFAULT_HARNESS_RETRIES)}.`,
-      (raw: string) => {
-        const n = Number.parseInt(raw, 10);
-        if (!Number.isFinite(n) || n < 0 || n > 10) {
-          throw new GeneralError(`--harness-retries must be an integer in 0..10 (got "${raw}")`);
-        }
-        return n;
-      }
-    )
-    .option(
-      '--generic-mach-test',
-      'Force dispatch through generic `mach test` instead of the suite-specific `mach xpcshell-test` / `mach mochitest` a single-suite run auto-selects (the suite-specific commands skip the mozlog resource monitor that crashes `mach test` on some hosts).'
-    )
-    .option(
-      '--no-shard',
-      'Run multiple test paths in one combined mach invocation instead of sequential per-file shards (isolated instances do not exercise cross-file state, so use this to reproduce cross-file pollution bugs)'
-    )
-    .option(
-      '--perf-samples <path>',
-      'Publish a perf-sample artifact path to the harness via <BINARYNAME>_PERF_SAMPLE_JSON (resolved against the project root)'
-    )
-    .option(
-      '--marionette-port <port>',
-      'Override the Marionette control port (default 2828) for the stale-browser probe, the --doctor preflight, and (unless --mach-arg includes --flavor=xpcshell) auto-forwarded mach args: --setpref=marionette.port=<n> (browser listener) and --marionette=127.0.0.1:<n> (mochitest client). Omits the client flag when --mach-arg already sets --marionette. Use when 2828 is busy or CI assigns another port.',
-      (raw: string) => {
-        const n = Number.parseInt(raw, 10);
-        if (!Number.isFinite(n) || n < 1 || n > 65535) {
-          throw new GeneralError(`--marionette-port must be an integer in 1..65535 (got "${raw}")`);
-        }
-        return n;
-      }
-    )
-    .addHelpText(
-      'after',
-      [
-        '',
-        '[paths...] semantics: a directory argument selects EXACTLY that',
-        'directory. FireForge normalizes it with a trailing "/" before',
-        'handing it to mach, because mach resolves test paths by string',
-        'prefix and a bare directory name would silently sweep in sibling',
-        'directories sharing the prefix (e.g. foo also running foo-extras).',
-        'When such siblings exist, the excluded directories are listed with',
-        'their test-file counts; pass them as separate paths to include them.',
-        '',
-        'Multiple paths shard into sequential isolated harness runs (one',
-        'browser instance per path) by default, which does not exercise',
-        'cross-file state; --no-shard restores the combined single-instance',
-        'invocation.',
-      ].join('\n')
-    )
-    .action(
-      withErrorHandling(
-        async (
-          paths: string[],
-          options: {
-            headless?: boolean;
-            build?: boolean;
-            doctor?: boolean;
-            machArg?: string[];
-            marionettePort?: number;
-            harnessRetries?: number;
-            genericMachTest?: boolean;
-            shard?: boolean;
-            perfSamples?: string;
-          }
-        ) => {
-          await testCommand(getProjectRoot(), paths, pickDefined(options));
-        }
-      )
-    );
 }

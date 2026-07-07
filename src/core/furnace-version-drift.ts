@@ -15,9 +15,12 @@
  * copied from `forgeConfig.firefox.version`. Any string mismatch is worth
  * surfacing — even "140.0" vs "140.9.0esr" is a real drift signal.
  *
- * The result is advisory: apply/deploy emit warnings but do not fail, and
- * status reports drift alongside the component overview. Nothing here
- * should be wired into a blocking code path without an operator prompt.
+ * The result GATES apply/deploy: both warn and then FAIL without --force
+ * (see furnaceApplyCommand / furnaceDeployCommand), and `furnace sync`
+ * re-checks it after refresh before applying. Status reports drift
+ * alongside the component overview. Keep this doc in sync with the gates —
+ * an earlier version claimed the result was advisory, which invited
+ * re-breaking the gate.
  */
 
 import type { FurnaceConfig } from '../types/furnace.js';

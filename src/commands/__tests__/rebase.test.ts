@@ -34,6 +34,7 @@ const {
   updatePatchAndMetadataMock,
   confirmMock,
   getFurnacePathsMock,
+  clearAppliedFurnaceStateMock,
   updateFurnaceStateMock,
 } = vi.hoisted(() => ({
   loadConfigMock: vi.fn(),
@@ -85,6 +86,7 @@ const {
       updater: (current: Record<string, unknown>) => Record<string, unknown>
     ) => Promise<void>
   >(() => Promise.resolve()),
+  clearAppliedFurnaceStateMock: vi.fn<(root: string) => Promise<void>>(() => Promise.resolve()),
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -98,6 +100,7 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/furnace-config.js', () => ({
   getFurnacePaths: getFurnacePathsMock,
   updateFurnaceState: updateFurnaceStateMock,
+  clearAppliedFurnaceState: clearAppliedFurnaceStateMock,
 }));
 
 vi.mock('../../core/git.js', () => ({
@@ -188,9 +191,11 @@ vi.mock('@clack/prompts', () => ({
   confirm: confirmMock,
 }));
 
+import { Command } from 'commander';
+
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import { NoRebaseSessionError, RebaseSessionExistsError } from '../../errors/rebase.js';
-import { rebaseCommand } from '../rebase.js';
+import { rebaseCommand, registerRebase } from '../rebase.js';
 
 const defaultPaths = {
   root: '/project',
@@ -387,78 +392,9 @@ describe('fireforge rebase', () => {
 
     await rebaseCommand('/project');
 
-    expect(updateFurnaceStateMock).toHaveBeenCalledTimes(1);
-    const call = updateFurnaceStateMock.mock.calls[0];
-    expect(call).toBeDefined();
-    const updater = call?.[1];
-    expect(typeof updater).toBe('function');
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
-    expect(updater!({ appliedChecksums: { 'override/x/x.css': 'abc' } })).toEqual({});
-  });
-
-  it('preserves pendingRepair when clearing furnace state after rebase', async () => {
-    hasActiveRebaseSessionMock.mockResolvedValue(false);
-    loadPatchesManifestMock.mockResolvedValue({
-      version: 1,
-      patches: [
-        {
-          filename: '001-branding.patch',
-          order: 1,
-          category: 'branding',
-          name: 'branding',
-          description: 'test',
-          createdAt: '2025-01-01',
-          sourceEsrVersion: '128.0esr',
-          filesAffected: ['file.txt'],
-        },
-      ],
-    });
-    discoverPatchesMock.mockResolvedValue([
-      { path: '/project/patches/001-branding.patch', filename: '001-branding.patch', order: 1 },
-    ] as never);
-    applyPatchWithFuzzMock.mockResolvedValue({ success: true, fuzzFactor: 0 });
-    getDiffForFilesAgainstHeadMock.mockResolvedValue('diff --git a/file.txt b/file.txt\n');
-
-    await rebaseCommand('/project');
-
-    const updater = updateFurnaceStateMock.mock.calls[0]?.[1];
-    const repair = { operation: 'apply-rollback' as const, reason: 'test', timestamp: 'now' };
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by preceding mock access
-    expect(updater!({ appliedChecksums: { x: 'a' }, pendingRepair: repair })).toEqual({
-      pendingRepair: repair,
-    });
-  });
-
-  it('does not clear furnace state when furnace-state.json is missing', async () => {
-    hasActiveRebaseSessionMock.mockResolvedValue(false);
-    pathExistsMock.mockImplementation((path: string) =>
-      Promise.resolve(!path.includes('furnace-state.json'))
-    );
-    loadPatchesManifestMock.mockResolvedValue({
-      version: 1,
-      patches: [
-        {
-          filename: '001-branding.patch',
-          order: 1,
-          category: 'branding',
-          name: 'branding',
-          description: 'test',
-          createdAt: '2025-01-01',
-          sourceEsrVersion: '128.0esr',
-          filesAffected: ['file.txt'],
-        },
-      ],
-    });
-    discoverPatchesMock.mockResolvedValue([
-      { path: '/project/patches/001-branding.patch', filename: '001-branding.patch', order: 1 },
-    ] as never);
-    applyPatchWithFuzzMock.mockResolvedValue({ success: true, fuzzFactor: 0 });
-    getDiffForFilesAgainstHeadMock.mockResolvedValue('diff --git a/file.txt b/file.txt\n');
-
-    await rebaseCommand('/project');
-
-    expect(resetChangesMock).toHaveBeenCalled();
-    expect(updateFurnaceStateMock).not.toHaveBeenCalled();
+    // pendingRepair preservation + wholesale clear is the shared helper's
+    // contract, pinned by furnace-config tests.
+    expect(clearAppliedFurnaceStateMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not clear furnace state during dry-run', async () => {
@@ -481,7 +417,7 @@ describe('fireforge rebase', () => {
 
     await rebaseCommand('/project', { dryRun: true });
 
-    expect(updateFurnaceStateMock).not.toHaveBeenCalled();
+    expect(clearAppliedFurnaceStateMock).not.toHaveBeenCalled();
   });
 });
 
@@ -594,11 +530,7 @@ describe('fireforge rebase --abort', () => {
     await rebaseCommand('/project', { abort: true });
 
     expect(resetChangesMock).toHaveBeenCalled();
-    expect(updateFurnaceStateMock).toHaveBeenCalledTimes(1);
-    const updater = updateFurnaceStateMock.mock.calls[0]?.[1];
-    expect(typeof updater).toBe('function');
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
-    expect(updater!({ appliedChecksums: { 'custom/x/x.mjs': 'abc' } })).toEqual({});
+    expect(clearAppliedFurnaceStateMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -989,5 +921,56 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
 
     expect(stampPatchVersionsMock).not.toHaveBeenCalled();
     expect(clearRebaseSessionMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('fireforge rebase — CLI registration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupDefaults();
+  });
+
+  function createProgram(): Command {
+    const program = new Command();
+    program.exitOverride(); // Commander normally calls process.exit on parse error.
+    registerRebase(program, {
+      getProjectRoot: () => '/project',
+      withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
+    });
+    return program;
+  }
+
+  // parseInt would turn these into NaN / negative / truncated values, which
+  // make the fuzz loop in applyPatchWithFuzz skip every apply attempt
+  // (including exact match) and fall straight through to `git apply --reject`.
+  it.each(['foo', '--max-fuzz=-1', '0', '1.5', '01'])(
+    'rejects invalid --max-fuzz value %s at parse time before the action runs',
+    async (value) => {
+      const program = createProgram();
+
+      const argv = value.startsWith('--max-fuzz=')
+        ? ['node', 'fireforge', 'rebase', value]
+        : ['node', 'fireforge', 'rebase', '--max-fuzz', value];
+
+      await expect(program.parseAsync(argv)).rejects.toThrow(
+        /--max-fuzz must be a positive integer/
+      );
+      expect(hasActiveRebaseSessionMock).not.toHaveBeenCalled();
+      expect(loadRebaseSessionMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('accepts a valid --max-fuzz and forwards the parsed integer to the action', async () => {
+    const program = createProgram();
+    loadRebaseSessionMock.mockResolvedValue(null);
+
+    // --continue with no active session reaches the action and fails with the
+    // domain error — proving the flag survived parsing as a real number.
+    await expect(
+      program.parseAsync(['node', 'fireforge', 'rebase', '--continue', '--max-fuzz', '5'])
+    ).rejects.toBeInstanceOf(NoRebaseSessionError);
+
+    const cmd = program.commands.find((c) => c.name() === 'rebase');
+    expect(cmd?.opts()['maxFuzz']).toBe(5);
   });
 });

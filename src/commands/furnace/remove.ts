@@ -41,7 +41,7 @@ import type { ComponentType, OverrideComponentConfig } from '../../types/furnace
 import { toError } from '../../utils/errors.js';
 import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, warn } from '../../utils/logger.js';
-import { dropChecksumsByPrefix } from './remove-state.js';
+import { dropChecksumsByPrefix, removeDeployedCustomFiles } from './remove-state.js';
 
 /**
  * Removes an entire TOML section (header + body lines) for a given test file.
@@ -601,14 +601,15 @@ export async function furnaceRemoveCommand(
           await removeDir(dir);
           info(`Deleted components/custom/${name}/`);
         }
-        // Clean up deployed files in engine
+        // Clean up deployed files in engine (per-file — see helper doc).
         if (customConfig?.targetPath) {
-          const engineDir = join(paths.engine, customConfig.targetPath);
-          if (await pathExists(engineDir)) {
-            await snapshotDir(journal, engineDir);
-            await removeDir(engineDir);
-            info(`Deleted deployed files from engine/${customConfig.targetPath}/`);
-          }
+          await removeDeployedCustomFiles(
+            projectRoot,
+            paths.engine,
+            name,
+            customConfig.targetPath,
+            journal
+          );
         }
 
         // Localized components deploy a .ftl outside targetPath into the

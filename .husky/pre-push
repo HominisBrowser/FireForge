@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Prepend common Homebrew locations only when they exist — the previous
+# unconditional export baked one developer machine's layout into shared hooks.
+[ -d /opt/homebrew/bin ] && PATH="/opt/homebrew/bin:$PATH"
+[ -d /usr/local/bin ] && PATH="/usr/local/bin:$PATH"
+export PATH
 
 npm run typecheck
 npm run deadcode:check

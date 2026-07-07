@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
-import { getUntrackedFilesInDir } from '../core/git-status.js';
+import { getUntrackedFilesInDir, resolveMaxUntrackedFilesPerDir } from '../core/git-status.js';
 import { buildOwnershipTable, renderOwnershipTable } from '../core/ownership-table.js';
 import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../core/patch-lint.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
@@ -18,7 +18,14 @@ import { ExitCode } from '../errors/codes.js';
 import type { CommandContext } from '../types/cli.js';
 import type { StatusOptions } from '../types/commands/index.js';
 import { FIREFORGE_TMP_PATH_PATTERN, pathExists } from '../utils/fs.js';
-import { info, intro, outro, warn } from '../utils/logger.js';
+import {
+  info,
+  intro,
+  isMachineOutputMode,
+  outro,
+  setMachineOutputMode,
+  warn,
+} from '../utils/logger.js';
 import {
   type ClassifiedBuckets,
   renderDefaultStatus,
@@ -35,29 +42,23 @@ function renderRawStatus(files: StatusFile[]): void {
   }
 }
 
-const DEFAULT_MAX_UNTRACKED_FILES_PER_DIR = 5000;
+// Resolved lazily at first use (shared with core/git-status): this module
+// is imported by the command manifest for EVERY command, so a
+// module-load-time parse printed the status-specific env warning during
+// `fireforge build` etc.
+let maxUntrackedFilesPerDir: number | undefined;
 
-function resolveMaxUntrackedFilesPerDir(): number {
-  const raw = process.env['FIREFORGE_MAX_UNTRACKED_FILES'];
-  if (raw === undefined || raw.length === 0) return DEFAULT_MAX_UNTRACKED_FILES_PER_DIR;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    warn(
-      `Ignoring FIREFORGE_MAX_UNTRACKED_FILES="${raw}" — expected a positive integer. Falling back to ${DEFAULT_MAX_UNTRACKED_FILES_PER_DIR}.`
-    );
-    return DEFAULT_MAX_UNTRACKED_FILES_PER_DIR;
-  }
-  return parsed;
+function getMaxUntrackedFilesPerDir(): number {
+  maxUntrackedFilesPerDir ??= resolveMaxUntrackedFilesPerDir();
+  return maxUntrackedFilesPerDir;
 }
-
-const MAX_UNTRACKED_FILES_PER_DIR = resolveMaxUntrackedFilesPerDir();
 
 /**
  * Expands collapsed untracked directory entries into individual file entries.
  * Git status may report an entire untracked directory as a single entry (e.g. "?? dir/").
  * This function expands those into individual file entries so each file can be classified.
  *
- * Per-directory expansion is capped at {@link MAX_UNTRACKED_FILES_PER_DIR}
+ * Per-directory expansion is capped at FIREFORGE_MAX_UNTRACKED_FILES (default 5000)
  * entries; any overflow is dropped with a warning. Git ls-files itself
  * does not infinite-recurse on symlink loops, but a directory full of
  * generated artefacts can still produce an arbitrarily large list, and
@@ -89,17 +90,17 @@ async function expandDirectoryEntries(
   for (const entry of files) {
     if (entry.file.endsWith('/') && entry.status.includes('?')) {
       const individualFiles = await getUntrackedFilesInDir(engineDir, entry.file);
-      if (individualFiles.length > MAX_UNTRACKED_FILES_PER_DIR) {
-        warn(
-          `Untracked directory ${entry.file} contains ${individualFiles.length} files — only the first ${MAX_UNTRACKED_FILES_PER_DIR} will be classified. Consider adding a .gitignore entry.`
-        );
+      const cap = getMaxUntrackedFilesPerDir();
+      if (individualFiles.length > cap) {
+        // Recorded once here, reported once by renderTruncationBanner —
+        // the previous per-directory warn duplicated the banner's content.
         truncations.push({
           dir: entry.file,
           total: individualFiles.length,
-          shown: MAX_UNTRACKED_FILES_PER_DIR,
+          shown: cap,
         });
       }
-      const limited = individualFiles.slice(0, MAX_UNTRACKED_FILES_PER_DIR);
+      const limited = individualFiles.slice(0, cap);
       for (const f of limited) {
         expanded.push({ status: '??', file: f });
       }
@@ -230,181 +231,200 @@ export async function statusCommand(
   projectRoot: string,
   options: StatusOptions = {}
 ): Promise<void> {
-  const modeCount = [options.raw, options.unmanaged, options.ownership, options.json].filter(
-    (v) => v === true
-  ).length;
-  if (modeCount > 1) {
-    throw new GeneralError(
-      'Cannot use --raw, --unmanaged, --ownership, and --json together. Pick at most one.'
-    );
+  const previousMachineOutputMode = isMachineOutputMode();
+  const shouldUseMachineOutput = options.json === true || options.raw === true;
+  // Machine modes own stdout exclusively: every diagnostic (clack warnings,
+  // withErrorHandling's styled errors, spinner steps) routes to stderr so
+  // `status --json | jq .` and `--raw` pipes always parse.
+  if (shouldUseMachineOutput) {
+    setMachineOutputMode(true);
   }
 
-  if (!options.raw && !options.json) {
-    intro('FireForge Status');
-  }
-
-  const paths = getProjectPaths(projectRoot);
-  const config = await loadConfig(projectRoot);
-
-  const emitJsonError = (code: string, message: string): never => {
-    process.stdout.write(JSON.stringify({ schemaVersion: 1, error: message, code }) + '\n');
-    throw new CommandError(ExitCode.GENERAL_ERROR);
-  };
-
-  // Ownership mode is a flat file→patch table; sources are the manifest's
-  // filesAffected, any worktree drift, and the cross-patch
-  // duplicate-new-file-creation map produced by walking each patch
-  // body. The latter is the alignment fix between `status --ownership`
-  // and `fireforge verify` — see buildOwnershipTable's header comment.
-  // Runs before the default classify path so we can short-circuit
-  // without computing patch-backed state.
-  if (options.ownership) {
-    if (!(await pathExists(paths.engine))) {
-      throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-    }
-    const manifest = await loadPatchesManifest(paths.patches);
-    const ownershipExpansion = (await isGitRepository(paths.engine))
-      ? await expandDirectoryEntries(await getStatusWithCodes(paths.engine), paths.engine)
-      : { entries: [], truncations: [] };
-    // Filter atomic-write temp files (Finding #18) so a mid-flight
-    // `.fireforge-tmp-<pid>-<uuid>` artefact never shows up in any
-    // status mode. The pattern is tight enough to let legitimately
-    // similar names through.
-    const rawFilesOwnership = filterFireForgeTempFiles(ownershipExpansion.entries);
-    renderTruncationBanner(ownershipExpansion.truncations);
-
-    // Only walk the patch bodies when the directory actually exists.
-    // Fresh projects with no patch queue yet pass through with an empty
-    // creators map, which degrades to the old filesAffected-only
-    // behavior for the empty case.
-    const newFileCreatorsByPath = (await pathExists(paths.patches))
-      ? collectNewFileCreatorsByPath(await buildPatchQueueContext(paths.patches))
-      : new Map<string, string[]>();
-
-    const rows = buildOwnershipTable(
-      manifest?.patches ?? [],
-      rawFilesOwnership,
-      newFileCreatorsByPath,
-      new Map(
-        (
-          await classifyFiles(
-            rawFilesOwnership,
-            paths.engine,
-            paths.patches,
-            config.binaryName,
-            await collectFurnaceManagedPrefixes(projectRoot)
-          )
-        ).map((entry) => [entry.file, entry.classification])
-      )
-    );
-    renderOwnershipTable(rows);
-
-    const conflictCount = rows.filter((r) => r.conflict).length;
-    const unmanagedCount = rows.filter((r) => r.unmanaged).length;
-    const managedCount = rows.filter((r) => !r.unmanaged).length;
-
-    const parts: string[] = [`${managedCount} managed`];
-    if (conflictCount > 0) parts.push(`${conflictCount} conflict${conflictCount === 1 ? '' : 's'}`);
-    if (unmanagedCount > 0) parts.push(`${unmanagedCount} unmanaged`);
-    outro(parts.join(', '));
-
-    if (conflictCount > 0) {
+  try {
+    const modeCount = [options.raw, options.unmanaged, options.ownership, options.json].filter(
+      (v) => v === true
+    ).length;
+    if (modeCount > 1) {
       throw new GeneralError(
-        `${conflictCount} path(s) are claimed by more than one patch. ` +
-          'Run "fireforge verify" for full details, then use "re-export --files" or ' +
-          '"patch delete" to resolve.'
+        'Cannot use --raw, --unmanaged, --ownership, and --json together. Pick at most one.'
       );
     }
-    return;
-  }
 
-  // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    if (options.json) {
-      emitJsonError('engine-missing', 'Firefox source not found. Run "fireforge download" first.');
+    if (!options.raw && !options.json) {
+      intro('FireForge Status');
     }
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
 
-  // Check if it's a git repository
-  if (!(await isGitRepository(paths.engine))) {
-    if (options.json) {
-      emitJsonError(
-        'engine-not-git',
+    const paths = getProjectPaths(projectRoot);
+    const config = await loadConfig(projectRoot);
+
+    const emitJsonError = (code: string, message: string): never => {
+      process.stdout.write(JSON.stringify({ schemaVersion: 1, error: message, code }) + '\n');
+      throw new CommandError(ExitCode.GENERAL_ERROR);
+    };
+
+    // Ownership mode is a flat file→patch table; sources are the manifest's
+    // filesAffected, any worktree drift, and the cross-patch
+    // duplicate-new-file-creation map produced by walking each patch
+    // body. The latter is the alignment fix between `status --ownership`
+    // and `fireforge verify` — see buildOwnershipTable's header comment.
+    // Runs before the default classify path so we can short-circuit
+    // without computing patch-backed state.
+    if (options.ownership) {
+      if (!(await pathExists(paths.engine))) {
+        throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
+      }
+      const manifest = await loadPatchesManifest(paths.patches);
+      const ownershipExpansion = (await isGitRepository(paths.engine))
+        ? await expandDirectoryEntries(await getStatusWithCodes(paths.engine), paths.engine)
+        : { entries: [], truncations: [] };
+      // Filter atomic-write temp files (Finding #18) so a mid-flight
+      // `.fireforge-tmp-<pid>-<uuid>` artefact never shows up in any
+      // status mode. The pattern is tight enough to let legitimately
+      // similar names through.
+      const rawFilesOwnership = filterFireForgeTempFiles(ownershipExpansion.entries);
+      renderTruncationBanner(ownershipExpansion.truncations);
+
+      // Only walk the patch bodies when the directory actually exists.
+      // Fresh projects with no patch queue yet pass through with an empty
+      // creators map, which degrades to the old filesAffected-only
+      // behavior for the empty case.
+      const newFileCreatorsByPath = (await pathExists(paths.patches))
+        ? collectNewFileCreatorsByPath(await buildPatchQueueContext(paths.patches))
+        : new Map<string, string[]>();
+
+      const rows = buildOwnershipTable(
+        manifest?.patches ?? [],
+        rawFilesOwnership,
+        newFileCreatorsByPath,
+        new Map(
+          (
+            await classifyFiles(
+              rawFilesOwnership,
+              paths.engine,
+              paths.patches,
+              config.binaryName,
+              await collectFurnaceManagedPrefixes(projectRoot)
+            )
+          ).map((entry) => [entry.file, entry.classification])
+        )
+      );
+      renderOwnershipTable(rows);
+
+      const conflictCount = rows.filter((r) => r.conflict).length;
+      const unmanagedCount = rows.filter((r) => r.unmanaged).length;
+      const managedCount = rows.filter((r) => !r.unmanaged).length;
+
+      const parts: string[] = [`${managedCount} managed`];
+      if (conflictCount > 0)
+        parts.push(`${conflictCount} conflict${conflictCount === 1 ? '' : 's'}`);
+      if (unmanagedCount > 0) parts.push(`${unmanagedCount} unmanaged`);
+      outro(parts.join(', '));
+
+      if (conflictCount > 0) {
+        throw new GeneralError(
+          `${conflictCount} path(s) are claimed by more than one patch. ` +
+            'Run "fireforge verify" for full details, then use "re-export --files" or ' +
+            '"patch delete" to resolve.'
+        );
+      }
+      return;
+    }
+
+    // Check if engine exists
+    if (!(await pathExists(paths.engine))) {
+      if (options.json) {
+        emitJsonError(
+          'engine-missing',
+          'Firefox source not found. Run "fireforge download" first.'
+        );
+      }
+      throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
+    }
+
+    // Check if it's a git repository
+    if (!(await isGitRepository(paths.engine))) {
+      if (options.json) {
+        emitJsonError(
+          'engine-not-git',
+          'Engine directory is not a git repository. Run "fireforge download" to initialize.'
+        );
+      }
+      throw new GeneralError(
         'Engine directory is not a git repository. Run "fireforge download" to initialize.'
       );
     }
-    throw new GeneralError(
-      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
+
+    await assertEngineHasBaselineCommit(paths.engine, options);
+
+    const rawFiles = await getStatusWithCodes(paths.engine);
+    const { entries: expanded, truncations } = await expandDirectoryEntries(rawFiles, paths.engine);
+    // Strip atomic-write temp files (Finding #18) before every mode
+    // branch so raw / unmanaged / default / json all agree.
+    const files = filterFireForgeTempFiles(expanded);
+    renderTruncationBanner(truncations);
+
+    // `--json` callers expect machine-parseable output on every invocation,
+    // including the clean-tree case. Before this ordering fix a clean tree
+    // printed "No modified files" / "Working tree clean" via the human
+    // branch below and `--json` was silently ignored, so scripts that piped
+    // the output through a JSON parser broke precisely when there was
+    // nothing to report. Emit `[]` here and return before the human fallback.
+    if (options.json) {
+      await renderJsonStatus(files, paths, projectRoot, config.binaryName);
+      return;
+    }
+
+    // `--raw` consumers parse the native `git status --porcelain` output
+    // directly. On a clean tree the raw mode should produce nothing on
+    // stdout — the human "Working tree clean" banner would contaminate the
+    // pipe. Short-circuit before the human clean-tree branch below.
+    if (options.raw && files.length === 0) {
+      return;
+    }
+
+    if (files.length === 0) {
+      info('No modified files');
+      outro('Working tree clean');
+      return;
+    }
+
+    // Raw mode: existing behavior
+    if (options.raw) {
+      renderRawStatus(files);
+      return;
+    }
+
+    // Patch-aware classification
+    const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
+    const classified = await classifyFiles(
+      files,
+      paths.engine,
+      paths.patches,
+      config.binaryName,
+      furnacePrefixes
     );
+
+    const buckets: ClassifiedBuckets = {
+      conflict: classified.filter((f) => f.classification === 'conflict'),
+      unmanaged: classified.filter((f) => f.classification === 'unmanaged'),
+      patchOwnedDrift: classified.filter((f) => f.classification === 'patch-owned-drift'),
+      patchBacked: classified.filter((f) => f.classification === 'patch-backed'),
+      branding: classified.filter((f) => f.classification === 'branding'),
+      furnace: classified.filter((f) => f.classification === 'furnace'),
+    };
+
+    // --unmanaged mode: only show unmanaged
+    if (options.unmanaged) {
+      await renderUnmanagedOnly(buckets.unmanaged, files.length, projectRoot, config.binaryName);
+      return;
+    }
+
+    await renderDefaultStatus(files.length, buckets, projectRoot, config.binaryName);
+  } finally {
+    if (isMachineOutputMode() !== previousMachineOutputMode) {
+      setMachineOutputMode(previousMachineOutputMode);
+    }
   }
-
-  await assertEngineHasBaselineCommit(paths.engine, options);
-
-  const rawFiles = await getStatusWithCodes(paths.engine);
-  const { entries: expanded, truncations } = await expandDirectoryEntries(rawFiles, paths.engine);
-  // Strip atomic-write temp files (Finding #18) before every mode
-  // branch so raw / unmanaged / default / json all agree.
-  const files = filterFireForgeTempFiles(expanded);
-  renderTruncationBanner(truncations);
-
-  // `--json` callers expect machine-parseable output on every invocation,
-  // including the clean-tree case. Before this ordering fix a clean tree
-  // printed "No modified files" / "Working tree clean" via the human
-  // branch below and `--json` was silently ignored, so scripts that piped
-  // the output through a JSON parser broke precisely when there was
-  // nothing to report. Emit `[]` here and return before the human fallback.
-  if (options.json) {
-    await renderJsonStatus(files, paths, projectRoot, config.binaryName);
-    return;
-  }
-
-  // `--raw` consumers parse the native `git status --porcelain` output
-  // directly. On a clean tree the raw mode should produce nothing on
-  // stdout — the human "Working tree clean" banner would contaminate the
-  // pipe. Short-circuit before the human clean-tree branch below.
-  if (options.raw && files.length === 0) {
-    return;
-  }
-
-  if (files.length === 0) {
-    info('No modified files');
-    outro('Working tree clean');
-    return;
-  }
-
-  // Raw mode: existing behavior
-  if (options.raw) {
-    renderRawStatus(files);
-    return;
-  }
-
-  // Patch-aware classification
-  const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
-  const classified = await classifyFiles(
-    files,
-    paths.engine,
-    paths.patches,
-    config.binaryName,
-    furnacePrefixes
-  );
-
-  const buckets: ClassifiedBuckets = {
-    conflict: classified.filter((f) => f.classification === 'conflict'),
-    unmanaged: classified.filter((f) => f.classification === 'unmanaged'),
-    patchOwnedDrift: classified.filter((f) => f.classification === 'patch-owned-drift'),
-    patchBacked: classified.filter((f) => f.classification === 'patch-backed'),
-    branding: classified.filter((f) => f.classification === 'branding'),
-    furnace: classified.filter((f) => f.classification === 'furnace'),
-  };
-
-  // --unmanaged mode: only show unmanaged
-  if (options.unmanaged) {
-    await renderUnmanagedOnly(buckets.unmanaged, files.length, projectRoot, config.binaryName);
-    return;
-  }
-
-  await renderDefaultStatus(files.length, buckets, projectRoot, config.binaryName);
 }
 
 /** Registers the status command on the CLI program. */

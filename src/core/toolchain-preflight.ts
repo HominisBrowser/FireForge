@@ -15,15 +15,21 @@
  *     the downloaded major differs from the previously downloaded one.
  *  2. {@link runToolchainPreflight} — a cheap pre-build probe comparing
  *     the minimums the tree itself declares against the host binaries
- *     `mach configure` will resolve. Deliberately FAIL-SOFT: it reports
- *     a mismatch only when a minimum was positively parsed AND the host
- *     binary was found AND its version is definitively lower. Any
- *     uncertainty (file moved upstream, unparseable output, binary not
- *     on PATH) skips silently — the mach-error-hints translator still
- *     catches the real configure failure downstream.
+ *     `mach configure` will resolve, probing configure's own candidate
+ *     order: env override first, then the `~/.mozbuild` state-directory
+ *     copy bootstrap installs, then PATH (0.35.0 probed env-or-PATH
+ *     only, blocking builds whose current tool lived in the state dir
+ *     behind a stale PATH copy). Deliberately FAIL-SOFT: it reports a
+ *     mismatch only when a minimum was positively parsed AND at least
+ *     one candidate resolved AND every resolved candidate is
+ *     definitively lower. Any uncertainty (file moved upstream,
+ *     unparseable output, no candidate found) skips silently — the
+ *     mach-error-hints translator still catches the real configure
+ *     failure downstream.
  */
 
 import { execFile } from 'node:child_process';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { pathExists, readText } from '../utils/fs.js';
@@ -31,6 +37,15 @@ import { verbose } from '../utils/logger.js';
 
 /** Tools the preflight knows how to probe. */
 export type ToolchainTool = 'cbindgen' | 'rustc';
+
+/**
+ * Resolves the mach state directory the same way mach itself does:
+ * `$MOZBUILD_STATE_PATH`, else `~/.mozbuild` (same resolution as
+ * `mach-resource-shim.ts`).
+ */
+function mozbuildStateDir(): string {
+  return process.env['MOZBUILD_STATE_PATH'] ?? join(homedir(), '.mozbuild');
+}
 
 /** Where each tool's minimum is declared inside the Firefox tree. */
 const MINIMUM_DECLARATIONS: Record<ToolchainTool, { relPath: string; pattern: RegExp }> = {
@@ -50,22 +65,54 @@ const MINIMUM_DECLARATIONS: Record<ToolchainTool, { relPath: string; pattern: Re
   },
 };
 
-/** How each tool's host binary is resolved and its version parsed. */
-const HOST_PROBES: Record<ToolchainTool, { envVar: string; versionPattern: RegExp }> = {
+/**
+ * How each tool's host binary is resolved and its version parsed.
+ *
+ * `stateDirRelPaths` are the mach-state-directory locations `fireforge
+ * bootstrap` (via mozboot) installs the tool to. mach's configure tries
+ * the state directory BEFORE the PATH candidates (bindgen.configure's
+ * toolchain search path lists `~/.mozbuild/cbindgen/cbindgen` first — a
+ * configure log shows `trying cbindgen: ~/.mozbuild/cbindgen/cbindgen`
+ * ahead of PATH), so the probe must too. 0.35.0 probed only env-or-PATH,
+ * which failed a build configure would have accepted whenever an old
+ * `~/.cargo/bin/cbindgen` shadowed a current bootstrap-installed copy
+ * (field report: PATH 0.29.1 vs mozbuild 0.29.4, minimum 0.29.4). Rust
+ * has no state-dir install — rustup owns it — so its list is empty.
+ */
+const HOST_PROBES: Record<
+  ToolchainTool,
+  { envVar: string; versionPattern: RegExp; stateDirRelPaths: readonly string[] }
+> = {
   // `mach configure` honours the CBINDGEN env option (bindgen.configure's
   // `option(env="CBINDGEN", ...)`), so the probe must too — otherwise the
   // preflight could veto a build configure would have accepted.
-  cbindgen: { envVar: 'CBINDGEN', versionPattern: /cbindgen\s+(\d+(?:\.\d+)*)/ },
-  rustc: { envVar: 'RUSTC', versionPattern: /rustc\s+(\d+(?:\.\d+)*)/ },
+  cbindgen: {
+    envVar: 'CBINDGEN',
+    versionPattern: /cbindgen\s+(\d+(?:\.\d+)*)/,
+    stateDirRelPaths: ['cbindgen/cbindgen'],
+  },
+  rustc: { envVar: 'RUSTC', versionPattern: /rustc\s+(\d+(?:\.\d+)*)/, stateDirRelPaths: [] },
 };
+
+/** One probed candidate binary for a tool. */
+export interface ToolchainCandidate {
+  /** Binary path (or bare name for the PATH candidate). */
+  binary: string;
+  /** Parsed version of the candidate. */
+  version: string;
+}
 
 /** One definitive host-vs-tree mismatch found by the preflight. */
 export interface ToolchainMismatch {
   tool: ToolchainTool;
-  hostVersion: string;
   minimumVersion: string;
   /** Engine-relative file the minimum was parsed from. */
   declaredIn: string;
+  /**
+   * Every candidate that resolved — all of them below the minimum
+   * (mach-resolution order: env override, mozbuild state dir, PATH).
+   */
+  candidates: ToolchainCandidate[];
 }
 
 /**
@@ -154,30 +201,58 @@ export async function readDeclaredToolchainMinimums(
 }
 
 /** Runs `<binary> --version` and parses the leading version number. */
-async function probeHostToolVersion(tool: ToolchainTool): Promise<string | undefined> {
-  const probe = HOST_PROBES[tool];
-  const binary = process.env[probe.envVar] ?? tool;
+async function probeBinaryVersion(
+  binary: string,
+  versionPattern: RegExp
+): Promise<string | undefined> {
   const output = await new Promise<string | undefined>((resolvePromise) => {
     execFile(binary, ['--version'], { timeout: 10_000 }, (err, stdout) => {
       resolvePromise(err ? undefined : stdout);
     });
   });
-  if (output === undefined) {
-    verbose(`Toolchain preflight: "${binary} --version" failed or not found; skipping ${tool}.`);
-    return undefined;
-  }
-  const match = probe.versionPattern.exec(output);
+  if (output === undefined) return undefined;
+  const match = versionPattern.exec(output);
   if (!match?.[1]) {
-    verbose(`Toolchain preflight: could not parse ${tool} version from "${output.trim()}".`);
+    verbose(`Toolchain preflight: could not parse a version from "${output.trim()}" (${binary}).`);
     return undefined;
   }
   return match[1];
 }
 
 /**
+ * Probes every candidate binary for a tool in mach's resolution order:
+ * the env override (which, when set, is the ONLY candidate — configure
+ * uses it even when a better binary exists elsewhere), then the mozbuild
+ * state-directory copy bootstrap installs, then PATH. Candidates that
+ * fail to run or to parse are dropped silently.
+ */
+async function probeHostToolCandidates(tool: ToolchainTool): Promise<ToolchainCandidate[]> {
+  const probe = HOST_PROBES[tool];
+  const envOverride = process.env[probe.envVar];
+  const binaries = envOverride
+    ? [envOverride]
+    : [...probe.stateDirRelPaths.map((rel) => join(mozbuildStateDir(), rel)), tool];
+
+  const candidates: ToolchainCandidate[] = [];
+  for (const binary of binaries) {
+    const version = await probeBinaryVersion(binary, probe.versionPattern);
+    if (version !== undefined) {
+      candidates.push({ binary, version });
+    } else {
+      verbose(`Toolchain preflight: "${binary} --version" failed or not found; skipping.`);
+    }
+  }
+  return candidates;
+}
+
+/**
  * Compares the tree-declared toolchain minimums against the host binaries
- * `mach configure` will resolve. Returns only DEFINITIVE mismatches; every
- * uncertain probe passes silently (see module header for the rationale).
+ * `mach configure` will resolve, in configure's own candidate order (env
+ * override, mozbuild state dir, PATH). A tool fails ONLY when at least
+ * one candidate resolved and none of them meets the minimum; any single
+ * passing candidate passes the tool (configure will find it), and a tool
+ * with no resolvable candidate skips silently (see module header for the
+ * fail-soft rationale).
  *
  * @param engineDir - Path to the engine directory
  */
@@ -188,20 +263,25 @@ export async function runToolchainPreflight(engineDir: string): Promise<Toolchai
   for (const [tool, minimumVersion] of Object.entries(minimums) as [ToolchainTool, string][]) {
     const minimum = parseVersionComponents(minimumVersion);
     if (!minimum) continue;
-    const hostVersion = await probeHostToolVersion(tool);
-    if (hostVersion === undefined) continue;
-    const host = parseVersionComponents(hostVersion);
-    if (!host) continue;
-    if (isVersionLower(host, minimum)) {
-      mismatches.push({
-        tool,
-        hostVersion,
-        minimumVersion,
-        declaredIn: MINIMUM_DECLARATIONS[tool].relPath,
-      });
-    } else {
-      verbose(`Toolchain preflight: ${tool} ${hostVersion} satisfies minimum ${minimumVersion}.`);
+    const candidates = await probeHostToolCandidates(tool);
+    const parsed = candidates.filter((c) => parseVersionComponents(c.version) !== undefined);
+    if (parsed.length === 0) continue;
+    const satisfying = parsed.find((c) => {
+      const components = parseVersionComponents(c.version);
+      return components !== undefined && !isVersionLower(components, minimum);
+    });
+    if (satisfying) {
+      verbose(
+        `Toolchain preflight: ${tool} ${satisfying.version} (${satisfying.binary}) satisfies minimum ${minimumVersion}.`
+      );
+      continue;
     }
+    mismatches.push({
+      tool,
+      minimumVersion,
+      declaredIn: MINIMUM_DECLARATIONS[tool].relPath,
+      candidates: parsed,
+    });
   }
 
   return mismatches;
@@ -209,15 +289,19 @@ export async function runToolchainPreflight(engineDir: string): Promise<Toolchai
 
 /**
  * Formats the fail-fast message for definitive preflight mismatches,
- * naming `fireforge bootstrap` as the remedy (mach's own configure error
+ * listing every candidate probed (in mach's resolution order) and naming
+ * `fireforge bootstrap` as the remedy (mach's own configure error
  * suggests `./mach bootstrap`, which is the wrong entry point for a
  * FireForge-managed repo).
  */
 export function formatToolchainMismatchMessage(mismatches: ToolchainMismatch[]): string {
-  const lines = mismatches.map(
-    (m) =>
-      `  - ${m.tool} ${m.hostVersion} is older than the minimum ${m.minimumVersion} declared by this Firefox source (engine/${m.declaredIn})`
-  );
+  const lines = mismatches.map((m) => {
+    const probed = m.candidates.map((c) => `${c.version} (${c.binary})`).join(', ');
+    return (
+      `  - ${m.tool}: no resolvable candidate meets the minimum ${m.minimumVersion} declared by ` +
+      `this Firefox source (engine/${m.declaredIn}); probed in mach's resolution order: ${probed}`
+    );
+  });
   return (
     'Toolchain preflight found host tools older than what this Firefox source requires:\n' +
     `${lines.join('\n')}\n\n` +

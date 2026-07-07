@@ -316,11 +316,6 @@ export interface PatchStagedDependencyOptions {
 }
 
 /**
- * Options for the preview-only `fireforge patch move-files` subcommand.
- * It validates an ownership transfer and prints the explicit
- * `re-export --files` commands needed to perform it.
- */
-/**
  * Options for the `patch split` command.
  */
 export interface PatchSplitOptions {
@@ -348,6 +343,11 @@ export interface PatchSplitOptions {
   skipLint?: boolean;
 }
 
+/**
+ * Options for the preview-only `fireforge patch move-files` subcommand.
+ * It validates an ownership transfer and prints the explicit
+ * `re-export --files` commands needed to perform it.
+ */
 export interface PatchMoveFilesOptions {
   /** File paths relative to engine/ to move from the source patch to the target patch. */
   file?: string[];
@@ -425,6 +425,8 @@ export interface TestOptions {
   headless?: boolean;
   /** Run incremental UI build before testing */
   build?: boolean;
+  /** Forward mach's pathless auto-selection mode. Valid only with no explicit paths. */
+  auto?: boolean;
   /**
    * Run a marionette preflight before tests. Reports PASS/FAIL in under a
    * minute. When test paths are supplied, a FAIL aborts before mach test is
@@ -448,6 +450,12 @@ export interface TestOptions {
    * stale process holds the default port or CI uses another port.
    */
   marionettePort?: number;
+  /** Kill a recognized stale browser process holding the Marionette port, then continue. */
+  killStaleMarionette?: boolean;
+  /** Permit tests against packageable engine edits newer than the last successful build. */
+  allowStaleBuild?: boolean;
+  /** Run the configured short harness canary. `true` means use `fireforge.json`'s test.canaryPath. */
+  canary?: string | boolean;
   /**
    * Retry budget for recognized harness crashes (resource-monitor
    * tracebacks, pre-test no-output hangs, post-green shutdown re-entry).

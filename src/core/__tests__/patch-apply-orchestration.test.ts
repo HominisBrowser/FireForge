@@ -249,6 +249,9 @@ describe('patch orchestration helpers', () => {
         patch: { filename: '001-alpha.patch', path: '/patches/001-alpha.patch', order: 1 },
         success: true,
         autoResolved: true,
+        // Originals survive the run so rollbackPatches can restore the
+        // pre-existing file if a later patch fails.
+        autoResolvedOriginals: new Map([['browser/new.js', 'existing file\n']]),
       },
     ]);
     expect(writeText).toHaveBeenCalledWith('/engine/browser/new.js', 'created\n');
@@ -306,6 +309,8 @@ describe('patch orchestration helpers', () => {
     expect(writeText).toHaveBeenNthCalledWith(2, '/engine/browser/new.js', 'existing file\n');
     expect(applyPatchIdempotent).toHaveBeenNthCalledWith(3, '/patches/001-alpha.patch', '/engine', {
       reject: true,
+      // First patch in the run — nothing applied yet, so nothing protected.
+      protectedFiles: new Set(),
     });
     expect(applyPatchIdempotent).toHaveBeenCalledTimes(3);
   });

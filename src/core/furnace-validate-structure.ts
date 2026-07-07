@@ -6,6 +6,17 @@ import type { ComponentType, CustomComponentConfig, ValidationIssue } from '../t
 import { pathExists, readText } from '../utils/fs.js';
 
 /**
+ * Returns true when file content carries unresolved three-way-merge
+ * conflict markers (as left behind by `furnace refresh`). Shared between
+ * the structure validator and `furnace sync`'s pre-apply gate — both must
+ * agree on what "conflicted" means so a file that validate flags can never
+ * slip through sync into the engine.
+ */
+export function containsMergeConflictMarkers(content: string): boolean {
+  return /^<{7}\s/m.test(content) || /^>{7}\s/m.test(content) || /^={7}$/m.test(content);
+}
+
+/**
  * Validates the file structure of a component directory.
  * Checks for required files and naming conventions.
  *
@@ -79,7 +90,7 @@ export async function validateStructure(
       continue;
 
     const content = await readText(join(componentDir, entry.name));
-    if (/^<{7}\s/m.test(content) || /^>{7}\s/m.test(content) || /^={7}$/m.test(content)) {
+    if (containsMergeConflictMarkers(content)) {
       issues.push({
         component: tagName,
         severity: 'error',

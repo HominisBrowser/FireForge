@@ -1,21 +1,35 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { spawn } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
+import { StringDecoder } from 'node:string_decoder';
+
+import { ExecTimeoutError } from '../errors/base.js';
 
 // 50 MB cap per stream to prevent OOM — large toolchain builds (e.g. Firefox, Chromium)
 // can easily blow past this, so we truncate rather than let the buffer grow unbounded.
+// Callers for whom truncation is unacceptable (e.g. the archive-safety preflight
+// scanning a full `tar -tvf` listing) must check `wasTruncated` and fail hard.
 const MAX_OUTPUT_SIZE = 50 * 1024 * 1024;
 
 function createStreamCollector(mirror?: NodeJS.WritableStream): {
   onData: (data: Buffer) => void;
   getText: () => string;
+  wasTruncated: () => boolean;
 } {
   const chunks: string[] = [];
   let totalLength = 0;
   let truncated = false;
+  // A per-stream StringDecoder keeps multibyte UTF-8 characters split across
+  // pipe chunk boundaries intact. Per-chunk `Buffer.toString()` turned a
+  // straddling character into two U+FFFD replacement chars, which silently
+  // broke regex matching over captured output (smoke-run allowlists, mach
+  // error hints) whenever a non-ASCII path or localized message landed on a
+  // 64 KB chunk boundary.
+  const decoder = new StringDecoder('utf8');
   return {
     onData: (data: Buffer) => {
-      const chunk = data.toString();
+      const chunk = decoder.write(data);
+      if (chunk.length === 0) return;
       mirror?.write(chunk);
       if (truncated) return;
       const remaining = MAX_OUTPUT_SIZE - totalLength;
@@ -30,6 +44,7 @@ function createStreamCollector(mirror?: NodeJS.WritableStream): {
       }
     },
     getText: () => chunks.join(''),
+    wasTruncated: () => truncated,
   };
 }
 
@@ -43,6 +58,16 @@ export interface ExecResult {
   stderr: string;
   /** Process exit code */
   exitCode: number;
+  /**
+   * True when `stdout` was cut off at the 50 MB collector cap. Optional so
+   * existing mocks stay valid; absent means "not truncated". Callers that
+   * feed the output into safety decisions (e.g. archive-listing scans) must
+   * treat `true` as a hard failure — a truncated listing looks exactly like
+   * a complete one otherwise.
+   */
+  stdoutTruncated?: boolean;
+  /** True when `stderr` was cut off at the 50 MB collector cap. See {@link ExecResult.stdoutTruncated}. */
+  stderrTruncated?: boolean;
 }
 
 /**
@@ -60,6 +85,25 @@ export interface ExecOptions {
 function buildSignalFromTimeout(timeout: number | undefined): AbortSignal | undefined {
   if (timeout === undefined) return undefined;
   return AbortSignal.timeout(timeout);
+}
+
+/**
+ * Maps a child-process `error` event to the rejection the caller sees.
+ * When the caller set a `timeout` and the error is the AbortError produced
+ * by `AbortSignal.timeout` firing, rejects with a typed
+ * {@link ExecTimeoutError} naming the command and budget instead of Node's
+ * opaque `AbortError: The operation was aborted`.
+ */
+function toExecRejection(
+  error: Error,
+  command: string,
+  args: readonly string[],
+  timeout: number | undefined
+): Error {
+  if (timeout !== undefined && error.name === 'AbortError') {
+    return new ExecTimeoutError(command, args, timeout, error);
+  }
+  return error;
 }
 
 function exitCodeFromClose(code: number | null, signal: NodeJS.Signals | null): number {
@@ -103,7 +147,7 @@ export async function exec(
     child.stderr.on('data', err.onData);
 
     child.on('error', (error) => {
-      reject(error);
+      reject(toExecRejection(error, command, args, options.timeout));
     });
 
     child.on('close', (code, signal) => {
@@ -111,6 +155,8 @@ export async function exec(
         stdout: out.getText(),
         stderr: err.getText(),
         exitCode: exitCodeFromClose(code, signal),
+        stdoutTruncated: out.wasTruncated(),
+        stderrTruncated: err.wasTruncated(),
       });
     });
   });
@@ -151,22 +197,69 @@ export async function execStream(
       signal: buildSignalFromTimeout(options.timeout),
     });
 
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+
     child.stdout.on('data', (data: Buffer) => {
-      options.onStdout?.(data.toString());
+      const chunk = stdoutDecoder.write(data);
+      if (chunk.length > 0) options.onStdout?.(chunk);
     });
 
     child.stderr.on('data', (data: Buffer) => {
-      options.onStderr?.(data.toString());
+      const chunk = stderrDecoder.write(data);
+      if (chunk.length > 0) options.onStderr?.(chunk);
     });
 
     child.on('error', (error) => {
-      reject(error);
+      reject(toExecRejection(error, command, args, options.timeout));
     });
 
     child.on('close', (code, signal) => {
       resolve(exitCodeFromClose(code, signal));
     });
   });
+}
+
+/**
+ * Close-promises of children whose shutdown the CLI must wait for when a
+ * termination signal arrives. The bin signal handler used to `process.exit`
+ * within a microtask of the first Ctrl+C, which made `execInherit`'s
+ * documented SIGTERM → grace → SIGKILL escalation unreachable: the parent
+ * was gone before the 1500 ms grace timer could fire, so a hung Firefox
+ * was orphaned forever instead of being SIGKILLed and a healthy one lost
+ * its AsyncShutdown flush window.
+ */
+const activeChildClosures = new Set<Promise<void>>();
+
+function trackChildClosure(): { settle: () => void } {
+  let resolveClosed: (() => void) | undefined;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  activeChildClosures.add(closed);
+  return {
+    settle: (): void => {
+      resolveClosed?.();
+      activeChildClosures.delete(closed);
+    },
+  };
+}
+
+/**
+ * Waits (bounded) for every tracked child process to close. Called by the
+ * bin signal handler after forwarding SIGINT/SIGTERM, so the parent stays
+ * alive long enough for the grace-then-SIGKILL escalation to actually run.
+ * Resolves immediately when no children are active.
+ */
+export async function waitForActiveChildShutdown(timeoutMs: number): Promise<void> {
+  if (activeChildClosures.size === 0) return;
+  await Promise.race([
+    Promise.allSettled([...activeChildClosures]),
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      timer.unref();
+    }),
+  ]);
 }
 
 /**
@@ -200,14 +293,17 @@ export async function execInherit(
 
     const graceMs = options.shutdownGraceMs ?? 1500;
     const { dispose } = installGracefulShutdownForwarder(child, graceMs);
+    const closure = trackChildClosure();
 
     child.on('error', (error) => {
       dispose();
-      reject(error);
+      closure.settle();
+      reject(toExecRejection(error, command, args, options.timeout));
     });
 
     child.on('close', (code, signal) => {
       dispose();
+      closure.settle();
       resolve(exitCodeFromClose(code, signal));
     });
   });
@@ -304,18 +400,23 @@ export async function execInheritCapture(
 
     const graceMs = options.shutdownGraceMs ?? 1500;
     const { dispose } = installGracefulShutdownForwarder(child, graceMs);
+    const closure = trackChildClosure();
 
     child.on('error', (error) => {
       dispose();
-      reject(error);
+      closure.settle();
+      reject(toExecRejection(error, command, args, options.timeout));
     });
 
     child.on('close', (code, signal) => {
       dispose();
+      closure.settle();
       resolve({
         stdout: out.getText(),
         stderr: err.getText(),
         exitCode: exitCodeFromClose(code, signal),
+        stdoutTruncated: out.wasTruncated(),
+        stderrTruncated: err.wasTruncated(),
       });
     });
   });
@@ -324,8 +425,16 @@ export async function execInheritCapture(
 /** Per-line callback for smoke-run stream dispatch. */
 export type SmokeLineCallback = (line: string) => void;
 
-/** Options for {@link execSmokeRun}. */
-export interface SmokeRunOptions extends ExecOptions {
+/**
+ * Options for {@link execSmokeRun}.
+ *
+ * Deliberately omits `ExecOptions.timeout`: the smoke run's only deadline is
+ * {@link SmokeRunOptions.smokeTimeoutMs}, which signals the whole process
+ * group. Inheriting `timeout` used to be a leaky trap — it was accepted by
+ * the type but silently ignored, so a caller setting it got no deadline at
+ * all.
+ */
+export interface SmokeRunOptions extends Omit<ExecOptions, 'timeout'> {
   /**
    * Hard deadline in milliseconds. When it elapses the child process
    * group is sent SIGTERM and, after `killGraceMs`, SIGKILL. The returned
@@ -380,8 +489,12 @@ export interface SmokeRunResult extends ExecResult {
  * that inherited the group.
  *
  * Windows fallback: `detached: true` does not create an equivalent group
- * there, so we degrade to `child.kill()` and log a best-effort warning
- * via the `onStderrLine` callback if the caller wired one.
+ * there, so we kill the descendant tree with `taskkill /pid <pid> /T /F`
+ * instead. taskkill has no graceful-signal equivalent — both the deadline
+ * and the grace re-invocation are forced kills, so Windows children get
+ * no shutdown window (best-effort; Windows is untested, see README).
+ * `child.kill()` is still sent as a direct-child fallback in case
+ * taskkill itself is unavailable.
  */
 export async function execSmokeRun(
   command: string,
@@ -398,30 +511,33 @@ export async function execSmokeRun(
       // A new process group on POSIX lets us signal the whole descendant
       // tree at once, which is essential for mach → python → firefox →
       // content-process chains. On Windows spawn ignores this for our
-      // purposes and we fall back to child.kill below.
+      // purposes and we fall back to a taskkill /T tree kill below.
       detached: usesProcessGroup,
     });
 
     const out = createStreamCollector(options.mirror?.stdout);
     const err = createStreamCollector(options.mirror?.stderr);
 
+    const stdoutLineDecoder = new StringDecoder('utf8');
+    const stderrLineDecoder = new StringDecoder('utf8');
     let stdoutBuffer = '';
     let stderrBuffer = '';
 
     child.stdout.on('data', (data: Buffer) => {
       out.onData(data);
-      stdoutBuffer += data.toString();
+      stdoutBuffer += stdoutLineDecoder.write(data);
       stdoutBuffer = dispatchCompleteLines(stdoutBuffer, options.onStdoutLine);
     });
 
     child.stderr.on('data', (data: Buffer) => {
       err.onData(data);
-      stderrBuffer += data.toString();
+      stderrBuffer += stderrLineDecoder.write(data);
       stderrBuffer = dispatchCompleteLines(stderrBuffer, options.onStderrLine);
     });
 
     let timedOut = false;
     let graceTimer: NodeJS.Timeout | undefined;
+    let signalGraceTimer: NodeJS.Timeout | undefined;
 
     const signalChildGroup = (signal: NodeJS.Signals): void => {
       if (child.exitCode !== null || child.signalCode !== null) return;
@@ -434,6 +550,15 @@ export async function execSmokeRun(
           // that inherited the group.
           process.kill(-targetPid, signal);
         } else {
+          // No process group on Windows — taskkill /T walks the descendant
+          // tree instead. Always forced (/F): there is no SIGTERM analogue,
+          // so the grace window only exists on POSIX.
+          spawn('taskkill', ['/pid', String(targetPid), '/T', '/F'], {
+            stdio: 'ignore',
+          }).on('error', () => {
+            // taskkill unavailable — nothing more we can do beyond the
+            // direct-child kill below.
+          });
           child.kill(signal);
         }
       } catch {
@@ -451,15 +576,52 @@ export async function execSmokeRun(
     }, options.smokeTimeoutMs);
     deadlineTimer.unref();
 
+    // Forward parent SIGINT/SIGTERM to the whole child process group. The
+    // smoke child is a group leader (detached), so it does NOT receive the
+    // terminal's Ctrl+C SIGINT — without this forwarder, the parent exits
+    // and the entire mach → firefox tree is orphaned. Second signal (or
+    // grace expiry) escalates to a group SIGKILL.
+    const forwardedSignals = new Set<NodeJS.Signals>();
+    const onParentSignal = (signal: NodeJS.Signals): void => {
+      if (forwardedSignals.has(signal)) {
+        signalChildGroup('SIGKILL');
+        return;
+      }
+      forwardedSignals.add(signal);
+      signalChildGroup('SIGTERM');
+      signalGraceTimer = setTimeout(() => {
+        signalChildGroup('SIGKILL');
+      }, options.killGraceMs ?? 10000);
+      signalGraceTimer.unref();
+    };
+    const onSigint = (): void => {
+      onParentSignal('SIGINT');
+    };
+    const onSigterm = (): void => {
+      onParentSignal('SIGTERM');
+    };
+    process.on('SIGINT', onSigint);
+    process.on('SIGTERM', onSigterm);
+
+    const closure = trackChildClosure();
+    const cleanupSignalForwarding = (): void => {
+      process.off('SIGINT', onSigint);
+      process.off('SIGTERM', onSigterm);
+      if (signalGraceTimer) clearTimeout(signalGraceTimer);
+      closure.settle();
+    };
+
     child.on('error', (error) => {
       clearTimeout(deadlineTimer);
       if (graceTimer) clearTimeout(graceTimer);
+      cleanupSignalForwarding();
       reject(error);
     });
 
     child.on('close', (code, signal) => {
       clearTimeout(deadlineTimer);
       if (graceTimer) clearTimeout(graceTimer);
+      cleanupSignalForwarding();
 
       // Flush any remaining partial line (child ended without a trailing newline).
       if (stdoutBuffer.length > 0) options.onStdoutLine?.(stdoutBuffer);
@@ -476,23 +638,45 @@ export async function execSmokeRun(
 }
 
 /**
- * Drains complete newline-terminated lines from `buffer`, dispatching each
- * trimmed-of-newline line to `cb`. Returns the remaining partial line that
- * has not yet been terminated — callers should keep accumulating into it.
+ * Cap on the partial-line tail kept between chunks. A child emitting one
+ * enormous line with no terminator (minified JS dumped to stderr, a raw
+ * binary blob) previously grew the buffer without bound — the 50 MB cap
+ * only guarded the collector, not these line buffers. When the tail
+ * exceeds the cap it is dispatched as a synthetic (oversized) line so the
+ * matchers still get to see its content, then the buffer resets.
+ */
+const MAX_PARTIAL_LINE_SIZE = 1024 * 1024;
+
+/**
+ * Drains complete lines from `buffer`, dispatching each to `cb`. Treats
+ * `\n`, `\r\n`, and lone `\r` as line terminators — the lone-`\r` case
+ * matters for progress-bar style output (mach, cargo) that repaints a line
+ * with carriage returns and never sends a newline; before `\r` counted as a
+ * terminator those updates accumulated indefinitely. A single trailing `\r`
+ * is held back since it may be the first half of a `\r\n` pair split across
+ * chunks. Returns the remaining partial line — callers keep accumulating
+ * into it.
  */
 function dispatchCompleteLines(buffer: string, cb: SmokeLineCallback | undefined): string {
-  if (!cb) {
-    // No listener — still need to collapse accumulated newlines so the
-    // buffer does not grow forever. Keep only the partial-line tail.
-    const lastNewline = buffer.lastIndexOf('\n');
-    if (lastNewline === -1) return buffer;
-    return buffer.slice(lastNewline + 1);
+  let searchFrom = 0;
+  for (;;) {
+    const nl = buffer.indexOf('\n', searchFrom);
+    const cr = buffer.indexOf('\r', searchFrom);
+    const idx = nl === -1 ? cr : cr === -1 ? nl : Math.min(nl, cr);
+    if (idx === -1) break;
+    if (buffer[idx] === '\r' && idx === buffer.length - 1) {
+      // Possible first half of a chunk-split \r\n — wait for the next chunk.
+      break;
+    }
+    const line = buffer.slice(0, idx);
+    const terminatorLength = buffer[idx] === '\r' && buffer[idx + 1] === '\n' ? 2 : 1;
+    buffer = buffer.slice(idx + terminatorLength);
+    searchFrom = 0;
+    cb?.(line);
   }
-  let idx: number;
-  while ((idx = buffer.indexOf('\n')) !== -1) {
-    const line = buffer.slice(0, idx).replace(/\r$/, '');
-    buffer = buffer.slice(idx + 1);
-    cb(line);
+  if (buffer.length > MAX_PARTIAL_LINE_SIZE) {
+    cb?.(buffer);
+    return '';
   }
   return buffer;
 }

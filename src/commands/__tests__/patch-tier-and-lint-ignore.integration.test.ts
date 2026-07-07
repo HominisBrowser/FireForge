@@ -81,7 +81,10 @@ describe('patch tier', () => {
       makeMetadata('001-branding-assets.patch', 1, ['browser/branding/custom/logo.png']),
     ]);
 
-    await patchTierCommand(projectRoot, '001-branding-assets.patch', { tier: 'branding' });
+    await patchTierCommand(projectRoot, '001-branding-assets.patch', {
+      tier: 'branding',
+      yes: true,
+    });
 
     const manifest = await loadManifest(patchesDir);
     expect(manifest.patches[0]?.tier).toBe('branding');
@@ -94,7 +97,7 @@ describe('patch tier', () => {
       }),
     ]);
 
-    await patchTierCommand(projectRoot, '001-branding-assets.patch', { clear: true });
+    await patchTierCommand(projectRoot, '001-branding-assets.patch', { clear: true, yes: true });
 
     const manifest = await loadManifest(patchesDir);
     // The on-disk JSON must omit the field — the validator preserves
@@ -133,7 +136,7 @@ describe('patch tier', () => {
       }),
     ]);
 
-    await patchTierCommand(projectRoot, 'branding-assets', { tier: 'branding' });
+    await patchTierCommand(projectRoot, 'branding-assets', { tier: 'branding', yes: true });
 
     const manifest = await loadManifest(patchesDir);
     expect(manifest.patches[0]?.tier).toBe('branding');
@@ -164,7 +167,10 @@ describe('patch tier', () => {
     const patchPath = join(patchesDir, '001-branding-assets.patch');
     const beforeMtime = (await stat(patchPath)).mtimeMs;
 
-    await patchTierCommand(projectRoot, '001-branding-assets.patch', { tier: 'branding' });
+    await patchTierCommand(projectRoot, '001-branding-assets.patch', {
+      tier: 'branding',
+      yes: true,
+    });
 
     const afterMtime = (await stat(patchPath)).mtimeMs;
     expect(afterMtime).toBe(beforeMtime);
@@ -177,7 +183,10 @@ describe('patch tier', () => {
       makeMetadata('001-branding-assets.patch', 1, ['browser/branding/custom/logo.png']),
     ]);
 
-    await patchTierCommand(projectRoot, '001-branding-assets.patch', { tier: 'branding' });
+    await patchTierCommand(projectRoot, '001-branding-assets.patch', {
+      tier: 'branding',
+      yes: true,
+    });
 
     const historyPath = join(patchesDir, HISTORY_LOG_FILENAME);
     const history = await readFile(historyPath, 'utf-8');
@@ -200,7 +209,10 @@ describe('patch tier', () => {
     const manifestPath = join(patchesDir, 'patches.json');
     const beforeMtime = (await stat(manifestPath)).mtimeMs;
 
-    await patchTierCommand(projectRoot, '001-branding-assets.patch', { tier: 'branding' });
+    await patchTierCommand(projectRoot, '001-branding-assets.patch', {
+      tier: 'branding',
+      yes: true,
+    });
 
     const afterMtime = (await stat(manifestPath)).mtimeMs;
     expect(afterMtime).toBe(beforeMtime);
@@ -225,6 +237,7 @@ describe('patch lint-ignore', () => {
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
       add: ['large-patch-files'],
+      yes: true,
     });
 
     const manifest = await loadManifest(patchesDir);
@@ -236,6 +249,7 @@ describe('patch lint-ignore', () => {
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
       add: ['large-patch-files', 'large-patch-lines'],
+      yes: true,
     });
 
     const manifest = await loadManifest(patchesDir);
@@ -252,6 +266,7 @@ describe('patch lint-ignore', () => {
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
       add: ['large-patch-files'],
+      yes: true,
     });
 
     const manifest = await loadManifest(patchesDir);
@@ -268,6 +283,7 @@ describe('patch lint-ignore', () => {
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
       add: ['large-patch-files'],
+      yes: true,
     });
 
     const manifest = await loadManifest(patchesDir);
@@ -283,6 +299,7 @@ describe('patch lint-ignore', () => {
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
       remove: ['large-patch-files'],
+      yes: true,
     });
 
     const manifest = await loadManifest(patchesDir);
@@ -296,6 +313,7 @@ describe('patch lint-ignore', () => {
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
       remove: ['large-patch-files'],
+      yes: true,
     });
 
     const manifest = await loadManifest(patchesDir);
@@ -312,6 +330,7 @@ describe('patch lint-ignore', () => {
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
       remove: ['large-patch-files'],
+      yes: true,
     });
 
     const manifest = await loadManifest(patchesDir);
@@ -325,7 +344,7 @@ describe('patch lint-ignore', () => {
       }),
     ]);
 
-    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', { clear: true });
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', { clear: true, yes: true });
 
     const manifest = await loadManifest(patchesDir);
     expect(manifest.patches[0]).not.toHaveProperty('lintIgnore');
@@ -384,6 +403,7 @@ describe('patch lint-ignore', () => {
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
       add: ['large-patch-files'],
+      yes: true,
     });
 
     const afterMtime = (await stat(patchPath)).mtimeMs;
@@ -397,6 +417,7 @@ describe('patch lint-ignore', () => {
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
       add: ['large-patch-files'],
+      yes: true,
     });
 
     const historyPath = join(patchesDir, HISTORY_LOG_FILENAME);
@@ -566,5 +587,47 @@ describe('patch lint-ignore — describeChange message format', () => {
     const message = describeChange(['existing-rule'], ['existing-rule'], 'remove', ['absent-id']);
     expect(message).toContain('current: [existing-rule]');
     expect(message).toContain('none of the requested IDs were present');
+  });
+});
+
+describe('destructive-operation contract (2026-07-05 review follow-up)', () => {
+  // Both commands mutate manifest metadata and append history; they must
+  // follow the same summary + dry-run + confirmation/--yes contract as
+  // patch delete/reorder/compact. They used to accept --yes without ever
+  // prompting, so the flag only appeared in the history record.
+  let projectRoot: string;
+  let patchesDir: string;
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-dc-');
+    await writeFireForgeConfig(projectRoot);
+    patchesDir = join(projectRoot, 'patches');
+  });
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it('patch tier refuses non-interactively without --yes and leaves the manifest untouched', async () => {
+    await seed(patchesDir, [makeMetadata('001-branding-assets.patch', 1, ['a.js'])]);
+
+    await expect(
+      patchTierCommand(projectRoot, '001-branding-assets.patch', { tier: 'branding' })
+    ).rejects.toThrow(/Use --yes to run non-interactively/);
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.tier).toBeUndefined();
+  });
+
+  it('patch lint-ignore refuses non-interactively without --yes and leaves the manifest untouched', async () => {
+    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
+
+    await expect(
+      patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+        add: ['large-patch-files'],
+      })
+    ).rejects.toThrow(/Use --yes to run non-interactively/);
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.lintIgnore).toBeUndefined();
   });
 });

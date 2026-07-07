@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { Command, Option } from 'commander';
 
+import { withEngineSessionLock } from '../../core/engine-session-lock.js';
 import type { CommandContext } from '../../types/cli.js';
 import { pickDefined } from '../../utils/options.js';
 import { furnaceApplyCommand } from './apply.js';
@@ -21,6 +22,102 @@ import { furnaceStatusCommand } from './status.js';
 import { furnaceSyncCommand } from './sync.js';
 import { furnaceValidateCommand } from './validate.js';
 
+async function runEngineLockedFurnaceCommand(
+  context: CommandContext,
+  command: string,
+  operation: (projectRoot: string) => Promise<void>
+): Promise<void> {
+  const projectRoot = context.getProjectRoot();
+  await withEngineSessionLock(projectRoot, command, () => operation(projectRoot));
+}
+
+function registerFurnaceApplyCommand(furnace: Command, context: CommandContext): void {
+  const { getProjectRoot, withErrorHandling } = context;
+  furnace
+    .command('apply [name]')
+    .description('Apply components to the engine (optionally a single component)')
+    .option(
+      '--dry-run',
+      'Show what would be changed without writing (reads may overlap concurrent mutations)'
+    )
+    .option('--force', 'Proceed despite baseVersion drift (stale overrides)')
+    .option('-w, --watch', 'Watch component directories and re-apply on changes')
+    .action(
+      withErrorHandling(
+        async (name?: string, options?: { dryRun?: boolean; force?: boolean; watch?: boolean }) => {
+          const parsed = pickDefined(options ?? {});
+          const run = (projectRoot: string): Promise<void> =>
+            furnaceApplyCommand(projectRoot, name, parsed);
+          if (parsed.dryRun === true) {
+            await run(getProjectRoot());
+            return;
+          }
+          await runEngineLockedFurnaceCommand(context, 'furnace apply', run);
+        }
+      )
+    );
+}
+
+function registerFurnaceDeployCommand(furnace: Command, context: CommandContext): void {
+  const { getProjectRoot, withErrorHandling } = context;
+  furnace
+    .command('deploy [name]')
+    .description('Apply components and validate in one step')
+    .option(
+      '--dry-run',
+      'Show what would be changed without writing (reads may overlap concurrent mutations)'
+    )
+    .option('--force', 'Proceed despite baseVersion drift (stale overrides)')
+    .option('--skip-validate', 'Skip the validation step (apply only)')
+    .action(
+      withErrorHandling(
+        async (
+          name?: string,
+          options?: { dryRun?: boolean; force?: boolean; skipValidate?: boolean }
+        ) => {
+          const parsed = pickDefined(options ?? {});
+          const run = (projectRoot: string): Promise<void> =>
+            furnaceDeployCommand(projectRoot, name, parsed);
+          if (parsed.dryRun === true) {
+            await run(getProjectRoot());
+            return;
+          }
+          await runEngineLockedFurnaceCommand(context, 'furnace deploy', run);
+        }
+      )
+    );
+}
+
+function registerFurnaceSyncCommand(furnace: Command, context: CommandContext): void {
+  const { getProjectRoot, withErrorHandling } = context;
+  furnace
+    .command('sync')
+    .description(
+      'Refresh drifted overrides and re-apply all components (recommended after fireforge download)'
+    )
+    .option(
+      '--dry-run',
+      'Show what would change without modifying files (reads may overlap concurrent mutations)'
+    )
+    .addOption(
+      new Option(
+        '-s, --strategy <strategy>',
+        'Auto-resolve merge conflicts (ours = keep local, theirs = accept upstream)'
+      ).choices(['ours', 'theirs'])
+    )
+    .action(
+      withErrorHandling(async (options: { dryRun?: boolean; strategy?: 'ours' | 'theirs' }) => {
+        const parsed = pickDefined(options);
+        const run = (projectRoot: string): Promise<void> => furnaceSyncCommand(projectRoot, parsed);
+        if (parsed.dryRun === true) {
+          await run(getProjectRoot());
+          return;
+        }
+        await runEngineLockedFurnaceCommand(context, 'furnace sync', run);
+      })
+    );
+}
+
 /**
  * Registers Furnace commands for querying component state: status, scan,
  * and action commands like apply, deploy, and create.
@@ -39,42 +136,8 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
       })
     );
 
-  furnace
-    .command('apply [name]')
-    .description('Apply components to the engine (optionally a single component)')
-    .option(
-      '--dry-run',
-      'Show what would be changed without writing (reads may overlap concurrent mutations)'
-    )
-    .option('--force', 'Proceed despite baseVersion drift (stale overrides)')
-    .option('-w, --watch', 'Watch component directories and re-apply on changes')
-    .action(
-      withErrorHandling(
-        async (name?: string, options?: { dryRun?: boolean; force?: boolean; watch?: boolean }) => {
-          await furnaceApplyCommand(getProjectRoot(), name, pickDefined(options ?? {}));
-        }
-      )
-    );
-
-  furnace
-    .command('deploy [name]')
-    .description('Apply components and validate in one step')
-    .option(
-      '--dry-run',
-      'Show what would be changed without writing (reads may overlap concurrent mutations)'
-    )
-    .option('--force', 'Proceed despite baseVersion drift (stale overrides)')
-    .option('--skip-validate', 'Skip the validation step (apply only)')
-    .action(
-      withErrorHandling(
-        async (
-          name?: string,
-          options?: { dryRun?: boolean; force?: boolean; skipValidate?: boolean }
-        ) => {
-          await furnaceDeployCommand(getProjectRoot(), name, pickDefined(options ?? {}));
-        }
-      )
-    );
+  registerFurnaceApplyCommand(furnace, context);
+  registerFurnaceDeployCommand(furnace, context);
 
   furnace
     .command('scan')
@@ -343,26 +406,7 @@ function registerFurnaceModifyCommands(furnace: Command, context: CommandContext
       })
     );
 
-  furnace
-    .command('sync')
-    .description(
-      'Refresh drifted overrides and re-apply all components (recommended after fireforge download)'
-    )
-    .option(
-      '--dry-run',
-      'Show what would change without modifying files (reads may overlap concurrent mutations)'
-    )
-    .addOption(
-      new Option(
-        '-s, --strategy <strategy>',
-        'Auto-resolve merge conflicts (ours = keep local, theirs = accept upstream)'
-      ).choices(['ours', 'theirs'])
-    )
-    .action(
-      withErrorHandling(async (options: { dryRun?: boolean; strategy?: 'ours' | 'theirs' }) => {
-        await furnaceSyncCommand(getProjectRoot(), pickDefined(options));
-      })
-    );
+  registerFurnaceSyncCommand(furnace, context);
 }
 
 /** Registers the furnace command on the CLI program. */

@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join } from 'node:path';
-
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import {
-  applyAllComponents,
-  computeComponentChecksums,
-  prefixChecksums,
-} from '../../core/furnace-apply.js';
+import { applyAllComponents } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
 import {
   furnaceConfigExists,
   getFurnacePaths,
   loadFurnaceConfig,
-  updateFurnaceState,
 } from '../../core/furnace-config.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import { type FurnaceOperationContext, runFurnaceMutation } from '../../core/furnace-operation.js';
+import {
+  getPersistableAppliedEntry,
+  getStepFailureCount,
+  persistSingleComponentState,
+  shouldPersistSingleComponentState,
+} from '../../core/furnace-state-persist.js';
+import { hasBlockingStepErrors } from '../../core/furnace-step-errors.js';
 import {
   findOverrideBaseVersionDrift,
   formatOverrideBaseVersionDriftError,
@@ -52,123 +52,18 @@ function buildDeployFailureMessage(
   return `${mode} completed with ${validationErrors} validation error(s).`;
 }
 
-function getStepFailureCount(result: Awaited<ReturnType<typeof applyAllComponents>>): number {
-  return result.applied.filter((entry) => (entry.stepErrors?.length ?? 0) > 0).length;
-}
-
 function getFailedComponentNames(
   result: Awaited<ReturnType<typeof applyAllComponents>>
 ): Set<string> {
   const failed = new Set(result.errors.map((entry) => entry.name));
 
   for (const applied of result.applied) {
-    if ((applied.stepErrors?.length ?? 0) > 0) {
+    if (hasBlockingStepErrors(applied)) {
       failed.add(applied.name);
     }
   }
 
   return failed;
-}
-
-function getPersistableAppliedEntry(
-  name: string | undefined,
-  appliedEntry: Awaited<ReturnType<typeof applyAllComponents>>['applied'][number] | undefined
-): { name: string; type: 'override' | 'custom' } {
-  if (!appliedEntry) {
-    throw new FurnaceError(
-      `Deploy for "${name}" finished without producing an applied component entry; ` +
-        `furnace state was not modified. Run "fireforge doctor --repair-furnace" to ` +
-        `reconcile state, then retry the deploy. If this persists, file a bug with the ` +
-        `output of "fireforge doctor".`
-    );
-  }
-
-  if (appliedEntry.type !== 'override' && appliedEntry.type !== 'custom') {
-    throw new FurnaceError(
-      `Deploy for "${name}" returned an unsupported component type "${appliedEntry.type}"; ` +
-        `furnace state was not modified. Run "fireforge doctor --repair-furnace" to reconcile, ` +
-        `then verify the component with "fireforge furnace validate" before retrying.`
-    );
-  }
-
-  // Guard against future refactors that might reorder or misroute the
-  // applied[] array: named deploy persists state under a single component
-  // name, so the first applied entry MUST be that component. Persisting a
-  // different component's checksums here would cause the next status/apply
-  // run to mis-report health for both components involved.
-  if (name !== undefined && appliedEntry.name !== name) {
-    throw new FurnaceError(
-      `Deploy for "${name}" returned an applied entry for a different component ` +
-        `("${appliedEntry.name}"); refusing to persist mismatched state. ` +
-        `Run "fireforge doctor --repair-furnace" to reconcile, then retry the deploy.`
-    );
-  }
-
-  return {
-    name: appliedEntry.name,
-    type: appliedEntry.type,
-  };
-}
-
-/**
- * Decides whether a single-component deploy completed cleanly enough to
- * persist its checksums into furnace-state.json.
- *
- * Named deploy is atomic: if any apply step fails, the rollback journal
- * restores the engine to its pre-deploy state and this helper returns
- * `false` so state is not touched. The conditions must stay in lock-step
- * with the rollback-trigger in `applyNamedComponent` — both now read from
- * this helper so a future refactor cannot drift them apart and accidentally
- * persist partial state.
- */
-function shouldPersistNamedDeployState(
-  result: Awaited<ReturnType<typeof applyAllComponents>>,
-  isDryRun: boolean
-): boolean {
-  if (isDryRun) return false;
-  if (result.errors.length > 0) return false;
-  if (getStepFailureCount(result) > 0) return false;
-  return result.applied.length > 0;
-}
-
-/**
- * Persists checksum state for a successfully applied named component.
- * @param projectRoot - Root directory of the project
- * @param appliedEntry - Applied component descriptor from deploy
- * @param furnacePaths - Resolved Furnace workspace paths
- */
-async function persistSingleComponentState(
-  projectRoot: string,
-  appliedEntry: { name: string; type: 'override' | 'custom' },
-  furnacePaths: ReturnType<typeof getFurnacePaths>
-): Promise<void> {
-  const componentDir =
-    appliedEntry.type === 'override'
-      ? join(furnacePaths.overridesDir, appliedEntry.name)
-      : join(furnacePaths.customDir, appliedEntry.name);
-  const checksums = await computeComponentChecksums(componentDir);
-  const prefixed = prefixChecksums(checksums, appliedEntry.type, appliedEntry.name);
-  const componentPrefix = `${appliedEntry.type}/${appliedEntry.name}/`;
-  await updateFurnaceState(projectRoot, (current) => ({
-    ...current,
-    appliedChecksums: {
-      ...Object.fromEntries(
-        Object.entries(current.appliedChecksums ?? {}).filter(
-          ([key]) => !key.startsWith(componentPrefix)
-        )
-      ),
-      ...prefixed,
-    },
-    engineChecksums: {
-      ...Object.fromEntries(
-        Object.entries(current.engineChecksums ?? {}).filter(
-          ([key]) => !key.startsWith(componentPrefix)
-        )
-      ),
-      ...prefixed,
-    },
-    lastApply: new Date().toISOString(),
-  }));
 }
 
 /**
@@ -369,10 +264,10 @@ export async function furnaceDeployCommand(
         // already restored the engine to its pre-deploy state, so persisting
         // partial checksums here would mis-report the next status/apply run
         // against a workspace that was never actually deployed.
-        if (shouldPersistNamedDeployState(namedApplyResult, isDryRun)) {
+        if (shouldPersistSingleComponentState(namedApplyResult, isDryRun)) {
           await persistSingleComponentState(
             projectRoot,
-            getPersistableAppliedEntry(name, namedApplyResult.applied[0]),
+            getPersistableAppliedEntry('Deploy', name, namedApplyResult.applied[0]),
             furnacePaths
           );
         }

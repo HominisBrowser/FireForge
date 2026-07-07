@@ -6,6 +6,7 @@ import { auditBuildArtifacts } from '../core/build-audit.js';
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import type { MachCommandResult, ProtectedMachBuildResult } from '../core/mach.js';
 import {
   attemptMozinfoRewrite,
@@ -457,7 +458,10 @@ export function registerBuild(
           brand?: string;
           rewriteMozinfo?: boolean;
         }) => {
-          await buildCommand(getProjectRoot(), pickDefined(options));
+          const projectRoot = getProjectRoot();
+          await withEngineSessionLock(projectRoot, 'build', () =>
+            buildCommand(projectRoot, pickDefined(options))
+          );
         }
       )
     );

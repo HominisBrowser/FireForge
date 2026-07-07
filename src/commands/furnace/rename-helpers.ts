@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { updateFurnaceState } from '../../core/furnace-config.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
 
 /**
@@ -55,4 +56,37 @@ export function updateConfigForOverrideRename(
   config.overrides[newName] = { ...oldConfig };
   // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- idiomatic key removal from config record
   delete config.overrides[oldName];
+}
+
+/**
+ * Re-keys checksum entries in furnace-state.json from the old component name
+ * to the new name so that `doctor` doesn't flag stale entries and the next
+ * `apply` can correctly detect whether the renamed component has changed.
+ */
+export async function rekeyStateChecksums(
+  projectRoot: string,
+  componentType: string,
+  oldName: string,
+  newName: string
+): Promise<void> {
+  const oldPrefix = `${componentType}/${oldName}/`;
+  const newPrefix = `${componentType}/${newName}/`;
+
+  await updateFurnaceState(projectRoot, (state) => {
+    const result = { ...state };
+    for (const field of ['appliedChecksums', 'engineChecksums'] as const) {
+      const checksums = state[field];
+      if (!checksums) continue;
+      const updated: Record<string, string> = {};
+      for (const [key, value] of Object.entries(checksums)) {
+        if (key.startsWith(oldPrefix)) {
+          updated[newPrefix + key.slice(oldPrefix.length)] = value;
+        } else {
+          updated[key] = value;
+        }
+      }
+      result[field] = updated;
+    }
+    return result;
+  });
 }

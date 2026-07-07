@@ -5,7 +5,7 @@
  */
 
 import { FurnaceError } from '../errors/furnace.js';
-import { stripJsComments } from '../utils/regex.js';
+import { escapeRegex, stripJsComments } from '../utils/regex.js';
 
 /**
  * Regex for valid custom element tag names. A valid name is lowercase, starts
@@ -119,8 +119,4 @@ function isTagInArrayConsumedInsideDOMContentLoaded(
     }
   }
   return false;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

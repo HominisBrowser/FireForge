@@ -53,8 +53,11 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   'export-placement-gate.ts',
   'export-placement-policy.ts',
   'export-shared.ts',
+  'doctor-external-toolchains.ts',
   'setup-support.ts',
   'status-output.ts',
+  'test.ts',
+  'test-modes.ts',
   'token-coverage.ts',
   // Post-bootstrap validation checks consumed by bootstrap.ts. Exports
   // check helpers, not a top-level registrar.

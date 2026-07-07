@@ -12,8 +12,19 @@ import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { GeneralError } from '../../errors/base.js';
 import { DEFAULT_CONFIG } from '../../test-utils/index.js';
 import { pathExists, readText } from '../../utils/fs.js';
-import { info, intro, outro, warn } from '../../utils/logger.js';
+import {
+  info,
+  intro,
+  isMachineOutputMode,
+  outro,
+  setMachineOutputMode,
+  warn,
+} from '../../utils/logger.js';
 import { statusCommand } from '../status.js';
+
+const { machineOutputModeState } = vi.hoisted(() => ({
+  machineOutputModeState: { enabled: false },
+}));
 
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn().mockReturnValue({
@@ -51,6 +62,7 @@ vi.mock('../../core/git.js', () => ({
 }));
 
 vi.mock('../../core/git-status.js', () => ({
+  resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
   getUntrackedFilesInDir: vi.fn(),
 }));
 
@@ -87,6 +99,10 @@ vi.mock('../../utils/logger.js', () => ({
   outro: vi.fn(),
   info: vi.fn(),
   warn: vi.fn(),
+  isMachineOutputMode: vi.fn(() => machineOutputModeState.enabled),
+  setMachineOutputMode: vi.fn((enabled: boolean) => {
+    machineOutputModeState.enabled = enabled;
+  }),
 }));
 
 describe('statusCommand', () => {
@@ -101,6 +117,7 @@ describe('statusCommand', () => {
   }
 
   beforeEach(() => {
+    vi.mocked(setMachineOutputMode)(false);
     vi.clearAllMocks();
     vi.mocked(getProjectPaths).mockReturnValue({
       root: '/fake/root',
@@ -124,6 +141,21 @@ describe('statusCommand', () => {
     vi.mocked(readText).mockResolvedValue('');
     vi.mocked(buildPatchQueueContext).mockResolvedValue({ entries: [] });
     vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(new Map());
+  });
+
+  it('restores logger machine-output mode after a JSON status run', async () => {
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+
+    try {
+      await statusCommand(projectRoot, { json: true });
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(setMachineOutputMode).toHaveBeenNthCalledWith(1, true);
+    expect(setMachineOutputMode).toHaveBeenNthCalledWith(2, false);
+    expect(isMachineOutputMode()).toBe(false);
   });
 
   describe('default mode (patch-aware)', () => {
@@ -249,10 +281,10 @@ describe('statusCommand', () => {
 
       await statusCommand(projectRoot);
 
-      // Warning message indicates truncation. The exact cap (5000) lives
-      // in MAX_UNTRACKED_FILES_PER_DIR; this test pins the contract that
-      // truncation surfaces, not the specific number.
-      expect(warnMessages().some((m) => m.includes('only the first'))).toBe(true);
+      // The truncation banner is the single report (the old per-directory
+      // warn duplicated its content). This pins the contract that
+      // truncation surfaces with the directory named, not the exact cap.
+      expect(warnMessages().some((m) => m.includes('Status output is truncated'))).toBe(true);
       expect(warnMessages().some((m) => m.includes('build-output/'))).toBe(true);
     });
 

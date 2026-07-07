@@ -18,10 +18,9 @@ Options:
                         Rescopes patch-size rules so they fire against
                         individual patches rather than the aggregate. Honours
                         each patch's \`lintIgnore\` entries.
-  --patches <names...>  With --per-patch, lint only the named patches (by
-                        filename or manifest name) instead of the whole queue.
-                        Queue-level findings are scoped to files those patches
-                        touch.
+  --patches <names...>  With --per-patch, lint only the named patches. Accepts
+                        repeated flags, comma lists, full filenames/stems,
+                        manifest names, category-prefixed slugs, or bare slugs.
   --max-warnings <n>    Fail when lint reports more than <n> warning(s); use 0
                         for warning-clean release gates.
   --no-cache            Bypass per-patch lint result cache reads and writes.
@@ -89,8 +88,8 @@ Workflow:
                                     (compact, delete, lint-ignore, move-files,
                                     rename, reorder, staged-dependency, tier)
   rebase [options]                  Semi-automated Firefox source version
-                                    upgrade — apply patches with fuzz and
-                                    re-export
+                                    upgrade — apply patches with drift tolerance
+                                    and re-export
   package [options]                 Create distribution package
   watch                             Watch for changes and auto-rebuild
   test [options] [paths...]         Run tests via mach test

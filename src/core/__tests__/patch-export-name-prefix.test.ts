@@ -21,6 +21,18 @@ describe('stripRedundantCategoryPrefix', () => {
     expect(stripRedundantCategoryPrefix('203-ui-203-ui-foo', 'ui')).toBe('foo');
   });
 
+  it('strips a bare category prefix matching the selected category', () => {
+    expect(stripRedundantCategoryPrefix('ui-window-chrome-tests', 'ui')).toBe(
+      'window-chrome-tests'
+    );
+  });
+
+  it('collapses mixed full-stem and category-only repeats', () => {
+    expect(stripRedundantCategoryPrefix('235-ui-ui-window-chrome-tests', 'ui')).toBe(
+      'window-chrome-tests'
+    );
+  });
+
   it('leaves names without a matching prefix untouched', () => {
     expect(stripRedundantCategoryPrefix('sidebar-foo', 'ui')).toBe('sidebar-foo');
     // Different category in the prefix is part of the intended name.
@@ -48,6 +60,12 @@ describe('getNextPatchFilename (double-prefix regression)', () => {
   it('produces a single prefix when --name already carries NNN-<category>-', async () => {
     await expect(getNextPatchFilename(patchesDir, 'ui', '203-ui-foo')).resolves.toBe(
       '001-ui-foo.patch'
+    );
+  });
+
+  it('produces a single prefix when --name starts with <category>-', async () => {
+    await expect(getNextPatchFilename(patchesDir, 'ui', 'ui-private-mode')).resolves.toBe(
+      '001-ui-private-mode.patch'
     );
   });
 

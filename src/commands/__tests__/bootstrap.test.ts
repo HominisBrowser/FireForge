@@ -46,9 +46,11 @@ vi.mock('../doctor.js', () => ({
 }));
 
 import { bootstrapWithOutput } from '../../core/mach.js';
+import { ExitCode } from '../../errors/codes.js';
 import { error, outro, warn } from '../../utils/logger.js';
 import { bootstrapCommand } from '../bootstrap.js';
 import { detectBootstrapIssues, runPostBootstrapChecks } from '../bootstrap-checks.js';
+import { reportDoctorResults } from '../doctor.js';
 
 describe('bootstrapCommand', () => {
   beforeEach(() => {
@@ -56,7 +58,7 @@ describe('bootstrapCommand', () => {
   });
 
   it('succeeds only when bootstrap exits cleanly without fatal output', async () => {
-    await expect(bootstrapCommand('/project')).resolves.toBeUndefined();
+    await expect(bootstrapCommand('/project')).resolves.toBe(ExitCode.SUCCESS);
     expect(outro).toHaveBeenCalledWith('Build dependencies installed successfully!');
   });
 
@@ -90,7 +92,7 @@ describe('bootstrapCommand', () => {
       { name: 'Git remote', passed: false, severity: 'error', message: 'missing origin' },
     ]);
 
-    await expect(bootstrapCommand('/project')).resolves.toBeUndefined();
+    await expect(bootstrapCommand('/project')).resolves.toBe(ExitCode.SUCCESS);
     expect(warn).toHaveBeenCalledWith('Bootstrap completed with issues:');
     expect(outro).toHaveBeenCalledWith('Build dependencies installed with errors');
   });
@@ -113,7 +115,7 @@ describe('bootstrapCommand', () => {
       },
     ]);
 
-    await expect(bootstrapCommand('/project')).resolves.toBeUndefined();
+    await expect(bootstrapCommand('/project')).resolves.toBe(ExitCode.SUCCESS);
     expect(warn).toHaveBeenCalledWith('Bootstrap completed with warnings:');
     expect(outro).toHaveBeenCalledWith('Build dependencies installed with warnings');
   });
@@ -140,5 +142,23 @@ describe('bootstrapCommand', () => {
 
     await expect(bootstrapCommand('/project')).rejects.toThrow(/Bootstrap failed/i);
     expect(error).toHaveBeenCalledWith('Bootstrap failed');
+  });
+
+  it('returns a non-success exit code when post-bootstrap checks report errors', async () => {
+    // Discarding reportDoctorResults' return used to make bootstrap exit 0
+    // with error-severity failures — CI gating on bootstrap then proceeded
+    // to a build that could not succeed.
+    vi.mocked(bootstrapWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'HTTP 403 while fetching artifact',
+      stderr: '',
+    });
+    vi.mocked(detectBootstrapIssues).mockReturnValue(['sdk-fetch-403']);
+    vi.mocked(runPostBootstrapChecks).mockResolvedValue([
+      { name: 'Artifact fetch', passed: false, severity: 'error', message: '403' },
+    ] as never);
+    vi.mocked(reportDoctorResults).mockReturnValue(ExitCode.GENERAL_ERROR);
+
+    await expect(bootstrapCommand('/project')).resolves.toBe(ExitCode.GENERAL_ERROR);
   });
 });

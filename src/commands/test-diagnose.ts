@@ -8,7 +8,11 @@
  * `test.ts` to keep both files within the per-file line budget.
  */
 
-import { buildHarnessCrashMessage, buildNoTestsRanMessage } from '../core/test-harness-crash.js';
+import {
+  buildGreenSummaryRejectedMessage,
+  buildHarnessCrashMessage,
+  buildNoTestsRanMessage,
+} from '../core/test-harness-crash.js';
 import {
   buildHarnessEarlyExitMessage,
   classifyHarnessEarlyExit,
@@ -262,6 +266,27 @@ export function finalizeSingleRunOutcome(
     // zero TEST-START lines must fail, not pass.
     throw new GeneralError(buildNoTestsRanMessage(0, normalizedPaths));
   }
+  // A green-LOOKING summary rejected on crash/truncation evidence gets its
+  // own explanation instead of the generic exit-code message — the operator
+  // must see WHY the green counts were not trusted (0.35.0 green-wash
+  // field report: SIGSEGV at file 2 of 8, `Passed: 2 / Failed: 0`).
+  if (outcome.verdict.greenSummaryRejected) {
+    throw new GeneralError(
+      buildGreenSummaryRejectedMessage(
+        outcome.verdict.greenSummaryRejected,
+        outcome.result.exitCode
+      )
+    );
+  }
+  if (outcome.verdict.realFailureLine !== undefined) {
+    info(`First real test failure: ${outcome.verdict.realFailureLine}`);
+    if (outcome.verdict.secondaryHarnessSignature !== undefined) {
+      info(
+        `Secondary harness noise also present: ${outcome.verdict.secondaryHarnessSignature.reason}; ` +
+          outcome.verdict.secondaryHarnessSignature.line
+      );
+    }
+  }
   handleNonZeroTestExit(
     outcome.result,
     normalizedPaths,
@@ -284,6 +309,12 @@ export function diagnoseShardOutcome(
 ): string | undefined {
   if (outcome.verdict.kind === 'no-tests' && outcome.result.exitCode === 0) {
     return buildNoTestsRanMessage(0, [path]);
+  }
+  if (outcome.verdict.greenSummaryRejected) {
+    return buildGreenSummaryRejectedMessage(
+      outcome.verdict.greenSummaryRejected,
+      outcome.result.exitCode
+    );
   }
   try {
     handleNonZeroTestExit(

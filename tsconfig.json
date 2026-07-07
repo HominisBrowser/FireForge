@@ -23,8 +23,10 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
     "types": ["node"]
   },
-  "include": ["src/**/*", "bin/**/*", "vitest.config.ts"],
+  "include": ["src/**/*", "bin/**/*", "vitest.config.ts", "vitest.pack.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

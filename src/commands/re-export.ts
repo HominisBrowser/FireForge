@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
+/* eslint-disable max-lines -- Re-export is at the guardrail; splitting register plumbing is unrelated to this fix. */
 import { dirname, join } from 'node:path';
 
 import { multiselect } from '@clack/prompts';
 import { Command, Option } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
@@ -609,13 +611,16 @@ export function registerReExport(
           }
         ) => {
           const { tier, lintIgnore, scanFile, scanFiles, ...rest } = options;
-          await reExportCommand(getProjectRoot(), patches, {
-            ...pickDefined(rest),
-            ...(scanFile !== undefined && scanFile.length > 0 ? { scanFiles: scanFile } : {}),
-            ...(scanFiles !== undefined ? { scanFilesManifest: scanFiles } : {}),
-            ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
-            ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
-          });
+          const projectRoot = getProjectRoot();
+          await withEngineSessionLock(projectRoot, 're-export', () =>
+            reExportCommand(projectRoot, patches, {
+              ...pickDefined(rest),
+              ...(scanFile !== undefined && scanFile.length > 0 ? { scanFiles: scanFile } : {}),
+              ...(scanFiles !== undefined ? { scanFilesManifest: scanFiles } : {}),
+              ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
+              ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
+            })
+          );
         }
       )
     );

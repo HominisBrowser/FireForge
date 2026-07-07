@@ -32,6 +32,7 @@ vi.mock('../../core/git-diff.js', () => ({
 }));
 
 vi.mock('../../core/git-status.js', () => ({
+  resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
   getModifiedFiles: vi.fn(() => Promise.resolve([])),
   getModifiedFilesInDir: vi.fn(() => Promise.resolve([])),
   getUntrackedFiles: vi.fn(() => Promise.resolve([])),
@@ -562,6 +563,24 @@ describe('lintCommand — branch coverage', () => {
       const ignore = secondCall?.[5];
       expect(ignore).toBeInstanceOf(Set);
       expect(ignore?.has('large-patch-lines')).toBe(true);
+    });
+
+    it('accepts comma lists, full filenames, category-prefixed slugs, and bare slugs in --patches', async () => {
+      const a = makePatch('001-ui-a.patch', ['a.ts']);
+      const b = makePatch('002-ui-b.patch', ['b.ts']);
+      const c = makePatch('003-infra-c.patch', ['c.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a, b, c]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+      await expect(
+        lintCommand('/project', [], {
+          perPatch: true,
+          patches: ['ui-a,002-ui-b.patch', 'c'],
+        })
+      ).resolves.toBeUndefined();
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(3);
     });
 
     it('forwards patch.tier to lintExportedPatch as the 7th arg', async () => {

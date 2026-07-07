@@ -13,12 +13,13 @@ import type {
 import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
-import { stripJsComments } from '../utils/regex.js';
+import { escapeRegex, stripJsComments } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, FTL_DIR, JAR_MN } from './furnace-constants.js';
 import { expandCssFragments, listFragmentIncludes } from './furnace-css-fragments.js';
 import { findStaleJarMnEntries } from './furnace-registration.js';
+import { isTagAlreadyRegistered } from './furnace-registration-ast.js';
 import { isTagInCorrectCustomElementsPlacement } from './furnace-registration-validate.js';
 import { getTokensCssPath } from './token-manager.js';
 
@@ -62,10 +63,6 @@ export async function validateRegistrationPatterns(
   }
 
   return issues;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -188,8 +185,11 @@ export async function checkRegistrationConsistency(
   const cePath = join(engineDir, CUSTOM_ELEMENTS_JS);
   if (await pathExists(cePath)) {
     const ceContent = await readText(cePath);
-    status.customElementsPresent =
-      ceContent.includes(`"${name}"`) || ceContent.includes(`'${name}'`);
+    // Structure-aware check shared with the ADD path — a bare substring
+    // test counted any mention of the tag (a leftover comment, an
+    // unrelated string) as "registered", masking genuinely missing
+    // registrations from both validate and the re-apply drift oracle.
+    status.customElementsPresent = isTagAlreadyRegistered(ceContent, name);
 
     if (status.customElementsPresent) {
       status.customElementsCorrectBlock = isTagInCorrectCustomElementsPlacement(

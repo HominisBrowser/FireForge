@@ -28,6 +28,7 @@ import { findExecutable } from '../utils/process.js';
 import { POST_REBASE_AUDIT_CHECK } from './doctor/post-rebase-audit.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, warning } from './doctor-check-core.js';
+import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { inspectEngineWorkingTree } from './doctor-working-tree.js';
 import { collectPatchQueueHealth } from './verify.js';
@@ -232,6 +233,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
     },
     fix: 'Check fireforge.json for syntax errors or missing fields',
   },
+  EXTERNAL_TOOLCHAIN_DOCTOR_CHECK,
   {
     name: 'Engine directory exists',
     run: (ctx) => {

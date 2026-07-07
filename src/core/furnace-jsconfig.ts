@@ -24,9 +24,11 @@
 import { readdir } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 
+import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser';
+
 import { FurnaceError } from '../errors/furnace.js';
 import type { FurnaceConfig } from '../types/furnace.js';
-import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { getFurnacePaths } from './furnace-config.js';
@@ -124,9 +126,8 @@ function isManagedEntry(
  * writing.
  *
  * The consumer owns the jsconfig file: a missing file is an error with
- * guidance rather than a silent scaffold, and JSONC (comments/trailing
- * commas) is unsupported for the managed file — `readJson` is a strict
- * JSON parser, so the error message says so explicitly.
+ * guidance rather than a silent scaffold. JSONC comments and trailing commas
+ * are preserved; Furnace edits only `compilerOptions.paths`.
  *
  * @param root - Project root directory
  * @param config - Loaded Furnace configuration (must carry `typecheckJsconfig`)
@@ -151,16 +152,30 @@ export async function syncFurnaceJsconfigPaths(
     );
   }
 
-  let jsconfig: JsconfigShape;
+  const jsconfigText = await readText(jsconfigAbs);
+  const parseErrors: ParseError[] = [];
+  let jsconfig: unknown;
   try {
-    jsconfig = await readJson<JsconfigShape>(jsconfigAbs);
+    jsconfig = parse(jsconfigText, parseErrors, {
+      allowTrailingComma: true,
+      disallowComments: false,
+    }) as JsconfigShape;
   } catch (error: unknown) {
     throw new FurnaceError(
-      `Could not parse ${jsconfigRel} as JSON: ${error instanceof Error ? error.message : String(error)}. ` +
-        'Furnace manages paths entries only in plain-JSON jsconfig files — JSONC comments ' +
-        'and trailing commas are not supported for the managed file.'
+      `Could not parse ${jsconfigRel} as JSONC: ${error instanceof Error ? error.message : String(error)}.`
     );
   }
+  if (
+    parseErrors.length > 0 ||
+    typeof jsconfig !== 'object' ||
+    jsconfig === null ||
+    Array.isArray(jsconfig)
+  ) {
+    throw new FurnaceError(
+      `Could not parse ${jsconfigRel} as JSONC: expected an object jsconfig file.`
+    );
+  }
+  const jsconfigObject = jsconfig as JsconfigShape;
 
   const furnacePaths = getFurnacePaths(root);
   const desired = await computeDesiredChromePathEntries(
@@ -170,7 +185,9 @@ export async function syncFurnaceJsconfigPaths(
   );
   const jsconfigDir = dirname(jsconfigAbs);
 
-  const currentPaths: Record<string, unknown> = { ...(jsconfig.compilerOptions?.paths ?? {}) };
+  const currentPaths: Record<string, unknown> = {
+    ...(jsconfigObject.compilerOptions?.paths ?? {}),
+  };
   const nextPaths: Record<string, unknown> = {};
 
   // Preserve every unmanaged entry verbatim; prune managed entries that are
@@ -206,14 +223,10 @@ export async function syncFurnaceJsconfigPaths(
   result.changed = result.added.length > 0 || result.updated.length > 0 || result.pruned.length > 0;
   if (!result.changed || options?.dryRun === true) return result;
 
-  const nextJsconfig: JsconfigShape = {
-    ...jsconfig,
-    compilerOptions: {
-      ...(jsconfig.compilerOptions ?? {}),
-      paths: nextPaths,
-    },
-  };
-  await writeJson(jsconfigAbs, nextJsconfig);
+  const edits = modify(jsconfigText, ['compilerOptions', 'paths'], nextPaths, {
+    formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' },
+  });
+  await writeTextIfChanged(jsconfigAbs, applyEdits(jsconfigText, edits));
   return result;
 }
 

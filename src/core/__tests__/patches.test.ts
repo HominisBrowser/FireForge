@@ -11,7 +11,7 @@ import {
   writeText,
 } from '../../utils/fs.js';
 import { applyPatchToContent, extractNewFileContent } from '../patch-apply.js';
-import { deletePatch, findAllPatchesForFiles, isPatchFullyCovered } from '../patch-export.js';
+import { findAllPatchesForFiles, isPatchFullyCovered } from '../patch-export.js';
 import { getClaimedFiles } from '../patch-manifest.js';
 
 vi.mock('../patch-apply.js', async (importOriginal) => {
@@ -42,8 +42,6 @@ vi.mock('../../utils/fs.js', () => {
 vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
-
-import { warn } from '../../utils/logger.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -219,12 +217,15 @@ describe('extractNewFileContent', () => {
     expect(result).toBe('// Gamma\nexport const Gamma = "g";\n');
   });
 
-  it('returns empty content for a non-existent target file in a multi-file patch', async () => {
+  it('returns truly empty content for a non-existent target file in a multi-file patch', async () => {
     mockedReadText.mockResolvedValue(MULTI_FILE_PATCH);
 
     const result = await extractNewFileContent('/fake/patch.patch', 'modules/NotHere.sys.mjs');
 
-    expect(result).toBe('\n');
+    // Historical behavior returned '\n' here (and for genuinely empty new
+    // files), materialising a one-byte file where git would create a
+    // zero-byte one — which then failed checksum/drift comparisons.
+    expect(result).toBe('');
   });
 
   it('without targetFile, extracts all files concatenated (legacy behavior)', async () => {
@@ -297,66 +298,6 @@ describe('findAllPatchesForFiles', () => {
     const superseded = await findAllPatchesForFiles('/fake/patches', ['a.js', 'c.js']);
 
     expect(superseded.map((patch) => patch.filename)).toEqual(['001-ui-a.patch', '003-ui-c.patch']);
-  });
-});
-
-describe('deletePatch', () => {
-  const manifest: PatchesManifest = {
-    version: 1,
-    patches: [makePatch('001-ui-a.patch', ['a.js']), makePatch('002-ui-b.patch', ['b.js'])],
-  };
-
-  it('updates the manifest before deleting the patch file', async () => {
-    mockedPathExists.mockResolvedValue(true);
-    mockedReadJson.mockResolvedValue(manifest);
-
-    await deletePatch('/fake/patches', '001-ui-a.patch');
-
-    expect(mockedWriteJson).toHaveBeenCalledWith('/fake/patches/patches.json', {
-      version: 1,
-      patches: [makePatch('002-ui-b.patch', ['b.js'])],
-    });
-    expect(mockedUnlink).toHaveBeenCalledWith('/fake/patches/001-ui-a.patch');
-  });
-
-  it('does not delete the patch file if manifest persistence fails', async () => {
-    mockedPathExists.mockResolvedValue(true);
-    mockedReadJson.mockResolvedValue(manifest);
-    mockedWriteJson.mockRejectedValue(new Error('manifest write failed'));
-
-    await expect(deletePatch('/fake/patches', '001-ui-a.patch')).rejects.toThrow(
-      'manifest write failed'
-    );
-    expect(mockedUnlink).not.toHaveBeenCalled();
-  });
-
-  it('restores the manifest if file deletion fails', async () => {
-    mockedPathExists.mockResolvedValue(true);
-    mockedReadJson.mockResolvedValue(manifest);
-    mockedUnlink.mockRejectedValue(new Error('unlink failed'));
-
-    await expect(deletePatch('/fake/patches', '001-ui-a.patch')).rejects.toThrow('unlink failed');
-
-    expect(mockedWriteJson).toHaveBeenNthCalledWith(1, '/fake/patches/patches.json', {
-      version: 1,
-      patches: [makePatch('002-ui-b.patch', ['b.js'])],
-    });
-    expect(mockedWriteJson).toHaveBeenNthCalledWith(2, '/fake/patches/patches.json', manifest);
-  });
-
-  it('warns and throws the original error when both unlink and manifest rollback fail', async () => {
-    mockedPathExists.mockResolvedValue(true);
-    mockedReadJson.mockResolvedValue(manifest);
-    mockedUnlink.mockRejectedValue(new Error('unlink failed'));
-    mockedWriteJson
-      .mockResolvedValueOnce(undefined) // initial manifest update succeeds
-      .mockRejectedValueOnce(new Error('rollback failed')); // rollback fails
-
-    await expect(deletePatch('/fake/patches', '001-ui-a.patch')).rejects.toThrow('unlink failed');
-
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Failed to restore manifest after patch deletion error')
-    );
   });
 });
 

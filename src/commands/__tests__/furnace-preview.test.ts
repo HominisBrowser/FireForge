@@ -48,6 +48,7 @@ vi.mock('../../core/furnace-apply.js', () => ({
 }));
 
 vi.mock('../../core/furnace-rollback.js', () => ({
+  recordCreatedDir: vi.fn(),
   restoreRollbackJournal: vi.fn(() => Promise.resolve()),
 }));
 

@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
-import { readJson } from '../../utils/fs.js';
+import { readJson, readText } from '../../utils/fs.js';
 import { findJsconfigPathsDrift, syncFurnaceJsconfigPaths } from '../furnace-jsconfig.js';
 
 interface JsconfigFixture {
@@ -244,10 +244,78 @@ describe('syncFurnaceJsconfigPaths', () => {
     );
   });
 
-  it('errors clearly on JSONC content (comments are not plain JSON)', async () => {
+  it('errors with guidance when the JSONC file cannot be parsed', async () => {
+    await writeFile(jsconfigPath, '{ "compilerOptions": ');
+
+    await expect(syncFurnaceJsconfigPaths(projectRoot, makeConfig({}))).rejects.toThrow(
+      /Could not parse tools\/jsconfig\.json as JSONC/
+    );
+  });
+
+  it('errors with guidance when the JSONC root is not an object', async () => {
+    await writeFile(jsconfigPath, '[]\n');
+
+    await expect(syncFurnaceJsconfigPaths(projectRoot, makeConfig({}))).rejects.toThrow(
+      /expected an object jsconfig file/
+    );
+  });
+
+  it('preserves JSONC comments while editing managed paths', async () => {
+    await seedComponent('moz-widget', ['moz-widget.mjs']);
     await writeFile(jsconfigPath, '{\n  // comment\n  "compilerOptions": {}\n}\n');
 
-    await expect(syncFurnaceJsconfigPaths(projectRoot, makeConfig({}))).rejects.toThrow(/JSONC/);
+    const result = await syncFurnaceJsconfigPaths(
+      projectRoot,
+      makeConfig({
+        'moz-widget': {
+          description: 'Widget',
+          targetPath: 'toolkit/content/widgets/moz-widget',
+          register: true,
+          localized: false,
+        },
+      })
+    );
+
+    expect(result.changed).toBe(true);
+    const written = await readText(jsconfigPath);
+    expect(written).toContain('// comment');
+    expect(written).toContain('chrome://global/content/elements/moz-widget.mjs');
+  });
+
+  it('updates a managed chrome-module entry when its target changed', async () => {
+    await seedComponent('moz-widget', ['moz-widget.mjs']);
+    await writeFile(
+      jsconfigPath,
+      JSON.stringify({
+        compilerOptions: {
+          paths: {
+            'chrome://global/content/elements/moz-widget.mjs': [
+              '../components/custom/moz-widget/old-location.mjs',
+            ],
+          },
+        },
+      }) + '\n'
+    );
+
+    const result = await syncFurnaceJsconfigPaths(
+      projectRoot,
+      makeConfig({
+        'moz-widget': {
+          description: 'Widget',
+          targetPath: 'toolkit/content/widgets/moz-widget',
+          register: true,
+          localized: false,
+        },
+      })
+    );
+
+    expect(result.updated).toEqual(['chrome://global/content/elements/moz-widget.mjs']);
+    const written = await readJson<JsconfigFixture>(jsconfigPath);
+    expect(written.compilerOptions?.paths).toMatchObject({
+      'chrome://global/content/elements/moz-widget.mjs': [
+        '../components/custom/moz-widget/moz-widget.mjs',
+      ],
+    });
   });
 });
 

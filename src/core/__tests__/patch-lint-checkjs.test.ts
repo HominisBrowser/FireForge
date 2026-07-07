@@ -667,6 +667,49 @@ describe('runCheckJs', () => {
     }
   });
 
+  it('accepts JSWindowActor globals in the built-in Firefox shim', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-actor-'));
+    const filePath = join(tmpDir, 'PageFactsChild.sys.mjs');
+    await writeFile(
+      filePath,
+      [
+        'ChromeUtils.registerWindowActor("PageFacts", {',
+        '  child: { moduleURI: "resource:///actors/PageFactsChild.sys.mjs" },',
+        '  parent: { moduleURI: "resource:///actors/PageFactsParent.sys.mjs" },',
+        '});',
+        'export class PageFactsChild extends JSWindowActorChild {',
+        '  handleEvent() {',
+        '    this.sendAsyncMessage("PageFacts:Ready", {',
+        '      title: this.document?.title,',
+        '      context: this.browsingContext,',
+        '    });',
+        '  }',
+        '}',
+        'export class PageFactsParent extends JSWindowActorParent {',
+        '  receiveMessage() {',
+        '    this.sendAsyncMessage("PageFacts:Ack", { context: this.browsingContext });',
+        '  }',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(tmpDir, new Set(['PageFactsChild.sys.mjs']));
+      expect(issues.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('returns a clear error when the extra shim file is missing', async () => {
     const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');

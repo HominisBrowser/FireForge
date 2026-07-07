@@ -35,7 +35,7 @@ import { registerRun } from './run.js';
 import { registerSetup } from './setup.js';
 import { registerSource } from './source.js';
 import { registerStatus } from './status.js';
-import { registerTest } from './test.js';
+import { registerTest } from './test-register.js';
 import { registerToken } from './token.js';
 import { registerTypecheck } from './typecheck.js';
 import { registerVerify } from './verify.js';

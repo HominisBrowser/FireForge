@@ -20,6 +20,7 @@ import { FurnaceError } from '../../errors/furnace.js';
 import { pathExists, readJson, writeJson } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 import {
+  clearAppliedFurnaceState,
   createDefaultFurnaceConfig,
   ensureFurnaceConfig,
   furnaceConfigExists,
@@ -975,5 +976,54 @@ describe('stampFurnaceOverrideBaseVersions (Finding #17)', () => {
     ];
     expect(writtenConfig.overrides['moz-card']?.baseVersion).toBe('140.9.1esr');
     expect(writtenConfig.overrides['moz-button']?.baseVersion).toBe('140.9.1esr');
+  });
+});
+
+describe('clearAppliedFurnaceState', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('clears everything except pendingRepair (shared contract for download/reset/rebase/abort)', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readJson).mockResolvedValue({
+      lastApply: '2026-04-12T00:00:00.000Z',
+      appliedChecksums: { 'custom/foo/foo.mjs': 'abc' },
+      engineChecksums: { 'custom/foo/foo.mjs': 'abc' },
+      pendingRepair: {
+        operation: 'create-rollback',
+        timestamp: '2026-04-12T01:02:03.000Z',
+        reason: 'authoring change incomplete',
+      },
+    });
+
+    await clearAppliedFurnaceState('/project');
+
+    expect(writeJson).toHaveBeenCalledWith(expect.stringContaining('furnace-state.json'), {
+      pendingRepair: {
+        operation: 'create-rollback',
+        timestamp: '2026-04-12T01:02:03.000Z',
+        reason: 'authoring change incomplete',
+      },
+    });
+  });
+
+  it('clears to an empty object when no pendingRepair exists', async () => {
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readJson).mockResolvedValue({
+      appliedChecksums: { 'override/x/x.css': 'abc' },
+    });
+
+    await clearAppliedFurnaceState('/project');
+
+    expect(writeJson).toHaveBeenCalledWith(expect.stringContaining('furnace-state.json'), {});
+  });
+
+  it('no-ops when the state file does not exist', async () => {
+    vi.mocked(pathExists).mockResolvedValue(false);
+
+    await clearAppliedFurnaceState('/project');
+
+    expect(writeJson).not.toHaveBeenCalled();
   });
 });

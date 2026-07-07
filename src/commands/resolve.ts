@@ -91,7 +91,7 @@ export async function resolveCommand(
   // pipe / CI shell could otherwise commit whatever the engine
   // currently contains. 2026-04-21 eval (Finding #18): a scripted
   // recovery flow was dead-ended by the unconditional TTY refusal.
-  if (!process.stdin.isTTY && !options.yes) {
+  if (!(process.stdin.isTTY && process.stdout.isTTY) && !options.yes) {
     throw new GeneralError(
       'Cannot run "fireforge resolve" in non-interactive mode. Use a terminal with TTY support, or pass "--yes" to skip the interactive confirmation once the manual merge is complete.'
     );

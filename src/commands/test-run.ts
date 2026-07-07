@@ -122,9 +122,24 @@ export async function runTestsWithRetries(
   return { result, verdict, attempts, appdirInjectionAttempted };
 }
 
+/**
+ * One sequential harness invocation of a sharded run: a requested path
+ * argument and the mach paths dispatched for it. A file argument is a
+ * group of one; a directory argument groups its enumerated test files so
+ * the whole directory still runs in ONE browser instance (cross-file
+ * state carries within a directory run exactly like the pre-enumeration
+ * behavior).
+ */
+export interface ShardGroup {
+  /** The path argument as the operator passed it (display label). */
+  label: string;
+  /** The mach dispatch paths for this argument. */
+  paths: string[];
+}
+
 /** Per-shard summary entry. */
 export interface ShardOutcome {
-  path: string;
+  label: string;
   outcome: TestRunOutcome;
 }
 
@@ -136,34 +151,36 @@ const SHARD_STATUS_LABEL: Record<HarnessRunVerdict['kind'], string> = {
 };
 
 /**
- * Runs each requested path as its own sequential harness invocation and
- * prints an aggregate report. Per-shard failures are diagnosed via
- * `diagnoseShardFailure` (which receives the throwing diagnosis chain from
- * the command layer) but downgraded to warnings so every shard runs; a
- * single aggregate error is thrown at the end when any shard did not pass.
+ * Runs each requested path argument as its own sequential harness
+ * invocation (a directory argument's enumerated files stay together in
+ * one invocation — see {@link ShardGroup}) and prints an aggregate
+ * report. Per-shard failures are diagnosed via `diagnoseShardFailure`
+ * (which receives the throwing diagnosis chain from the command layer)
+ * but downgraded to warnings so every shard runs; a single aggregate
+ * error is thrown at the end when any shard did not pass.
  */
 export async function runShardedTests(
   ctx: TestRunContext,
-  paths: string[],
-  diagnoseShardFailure: (outcome: TestRunOutcome, path: string) => string | undefined
+  groups: ShardGroup[],
+  diagnoseShardFailure: (outcome: TestRunOutcome, label: string) => string | undefined
 ): Promise<void> {
   const shards: ShardOutcome[] = [];
-  for (const [index, path] of paths.entries()) {
-    info(`— Shard ${index + 1}/${paths.length}: ${path}`);
-    const outcome = await runTestsWithRetries(ctx, [path]);
-    shards.push({ path, outcome });
+  for (const [index, group] of groups.entries()) {
+    info(`— Shard ${index + 1}/${groups.length}: ${group.label}`);
+    const outcome = await runTestsWithRetries(ctx, group.paths);
+    shards.push({ label: group.label, outcome });
 
     if (outcome.verdict.kind === 'harness-crash' && outcome.verdict.signature) {
       warn(buildHarnessCrashMessage(outcome.verdict.signature, outcome.attempts));
     } else if (outcome.verdict.kind !== 'tests-ran-ok') {
-      const diagnosis = diagnoseShardFailure(outcome, path);
+      const diagnosis = diagnoseShardFailure(outcome, group.label);
       if (diagnosis) warn(diagnosis);
     }
   }
 
   const lines = shards.map(
-    ({ path, outcome }) =>
-      `${SHARD_STATUS_LABEL[outcome.verdict.kind].padEnd(8)} ${path}` +
+    ({ label, outcome }) =>
+      `${SHARD_STATUS_LABEL[outcome.verdict.kind].padEnd(8)} ${label}` +
       (outcome.attempts > 1 ? `  (${outcome.attempts} attempts)` : '')
   );
   const failing = shards.filter(({ outcome }) => outcome.verdict.kind !== 'tests-ran-ok');
@@ -175,7 +192,7 @@ export async function runShardedTests(
   if (failing.length > 0) {
     throw new BuildError(
       `${failing.length} of ${shards.length} sharded test run(s) did not pass: ` +
-        `${failing.map(({ path }) => path).join(', ')}. ` +
+        `${failing.map(({ label }) => label).join(', ')}. ` +
         'See the per-shard diagnosis above. Use --no-shard to reproduce the combined single-invocation behaviour.',
       'mach test'
     );

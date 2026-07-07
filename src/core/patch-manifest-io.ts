@@ -14,6 +14,7 @@ import { join } from 'node:path';
 
 import { FireForgeError } from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
+import { PatchManifestCorruptError } from '../errors/patch.js';
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExistsStrict, readJson, removeFile, writeJson } from '../utils/fs.js';
@@ -75,11 +76,36 @@ export async function loadPatchesManifestState(patchesDir: string): Promise<Load
 
 /**
  * Loads the patches manifest if it exists.
+ *
+ * READ-ONLY callers only: this collapses "absent" and "corrupt" into null.
+ * Any code path that will WRITE the manifest (or delete patch files based
+ * on its content) must use {@link loadPatchesManifestForWrite} instead —
+ * treating a corrupt manifest as empty and then saving destroys every
+ * existing patch's metadata.
+ *
  * @param patchesDir - Path to the patches directory
  * @returns PatchesManifest or null if not found
  */
 export async function loadPatchesManifest(patchesDir: string): Promise<PatchesManifest | null> {
   const state = await loadPatchesManifestState(patchesDir);
+  return state.manifest;
+}
+
+/**
+ * Loads the patches manifest for a mutating operation.
+ *
+ * Returns null only when the manifest genuinely does not exist; a manifest
+ * that exists but fails to parse/validate throws
+ * {@link PatchManifestCorruptError} so the caller aborts instead of
+ * rebuilding an empty queue over the top of the corrupt file.
+ */
+export async function loadPatchesManifestForWrite(
+  patchesDir: string
+): Promise<PatchesManifest | null> {
+  const state = await loadPatchesManifestState(patchesDir);
+  if (state.exists && state.manifest === null) {
+    throw new PatchManifestCorruptError(join(patchesDir, PATCHES_MANIFEST), state.parseError);
+  }
   return state.manifest;
 }
 
@@ -175,7 +201,8 @@ export async function addPatchToManifest(
   metadata: PatchMetadata,
   removeFilenames?: string[]
 ): Promise<void> {
-  const manifest = (await loadPatchesManifest(patchesDir)) ?? {
+  // ForWrite: a corrupt manifest must abort here, not be rebuilt as empty.
+  const manifest = (await loadPatchesManifestForWrite(patchesDir)) ?? {
     version: 1 as const,
     patches: [],
   };
@@ -214,7 +241,7 @@ export async function removePatchFromManifest(
   patchesDir: string,
   filename: string
 ): Promise<boolean> {
-  const manifest = await loadPatchesManifest(patchesDir);
+  const manifest = await loadPatchesManifestForWrite(patchesDir);
   if (!manifest) return false;
 
   const originalLength = manifest.patches.length;
@@ -316,7 +343,7 @@ export async function renumberPatchesInManifest(
 ): Promise<void> {
   if (renameMap.size === 0) return;
 
-  const manifest = await loadPatchesManifest(patchesDir);
+  const manifest = await loadPatchesManifestForWrite(patchesDir);
   if (!manifest) {
     throw new Error('Cannot renumber patches: patches.json is missing.');
   }
@@ -527,7 +554,9 @@ export async function removePatchFileAndManifest(
   filename: string
 ): Promise<void> {
   const patchPath = join(patchesDir, filename);
-  const originalManifest = await loadPatchesManifest(patchesDir);
+  // ForWrite: deleting the patch FILE while a corrupt manifest still
+  // references it would strand the queue; abort on corruption instead.
+  const originalManifest = await loadPatchesManifestForWrite(patchesDir);
   const removedFromManifest = await removePatchFromManifest(patchesDir, filename);
 
   try {

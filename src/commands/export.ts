@@ -6,6 +6,7 @@ import { Command, Option } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { appendHistory } from '../core/destructive.js';
+import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getStatusWithCodes, isGitRepository } from '../core/git.js';
 import { generateBinaryFilePatch, generateFullFilePatch } from '../core/git-diff.js';
@@ -27,7 +28,7 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { commanderArgParser, pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { parsePositiveIntegerFlag } from '../utils/validation.js';
 import { commitPlacementExport, type PlacementPlan, renderDryRunPreview } from './export-flow.js';
@@ -288,14 +289,24 @@ async function prepareExport(
     throw new GeneralError('The specified paths have no diff content to export.');
   }
 
-  // Ensure patches directory exists
-  await ensureDir(paths.patches);
+  // Ensure patches directory exists. Skip during a dry-run so the command
+  // is purely read-only (matching export-all's dry-run contract).
+  if (!options.dryRun) {
+    await ensureDir(paths.patches);
+  }
 
   const config = await loadConfig(projectRoot);
   const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
 
-  // Auto-fix missing license headers on new files (interactive only)
-  const headersAdded = await autoFixLicenseHeaders(paths.engine, diff, config, isInteractive);
+  // Auto-fix missing license headers on new files (interactive only;
+  // report-only under --dry-run so the preview never mutates engine/)
+  const headersAdded = await autoFixLicenseHeaders(
+    paths.engine,
+    diff,
+    config,
+    isInteractive,
+    options.dryRun ?? false
+  );
   if (headersAdded) {
     diff = await generatePatchDiff(paths.engine, allFiles);
   }
@@ -512,7 +523,7 @@ export function registerExport(
       new Option(
         '--order <N>',
         'Place the new patch at this exact unused order without renumbering existing patches'
-      ).argParser((v) => parsePositiveIntegerFlag('--order', v))
+      ).argParser(commanderArgParser((v) => parsePositiveIntegerFlag('--order', v)))
     )
     .option('--before <anchor>', 'Place the new patch immediately before <anchor>')
     .option('--after <anchor>', 'Place the new patch immediately after <anchor>')
@@ -558,12 +569,15 @@ export function registerExport(
           }
         ) => {
           const { category, tier, lintIgnore, ...rest } = options;
-          await exportCommand(getProjectRoot(), paths, {
-            ...pickDefined(rest),
-            ...(category !== undefined ? { category } : {}),
-            ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
-            ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
-          });
+          const projectRoot = getProjectRoot();
+          await withEngineSessionLock(projectRoot, 'export', () =>
+            exportCommand(projectRoot, paths, {
+              ...pickDefined(rest),
+              ...(category !== undefined ? { category } : {}),
+              ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
+              ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
+            })
+          );
         }
       )
     );

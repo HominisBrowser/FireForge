@@ -29,6 +29,7 @@ vi.mock('../../utils/logger.js', () => ({
   outro: vi.fn(),
   info: vi.fn(),
   warn: vi.fn(),
+  verbose: vi.fn(),
   step: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
@@ -41,11 +42,11 @@ vi.mock('../../utils/logger.js', () => ({
 
 describe('downloadCommand integration', () => {
   let projectRoot: string;
-  let fetchMock: ReturnType<typeof vi.fn>;
+  let fetchMock: ReturnType<typeof vi.fn<(url: unknown) => Promise<Response>>>;
 
   beforeEach(async () => {
     projectRoot = await createTempProject();
-    fetchMock = vi.fn();
+    fetchMock = vi.fn<(url: unknown) => Promise<Response>>();
     vi.stubGlobal('fetch', fetchMock);
     spinnerMessageCalls.length = 0;
   });
@@ -54,6 +55,41 @@ describe('downloadCommand integration', () => {
     vi.unstubAllGlobals();
     await removeTempProject(projectRoot);
   });
+
+  /**
+   * Installs a URL-dispatching fetch: archive bodies are served per URL and
+   * SHA256SUMS requests get a 404 (exercising the warn-and-continue path of
+   * the default integrity check). Response objects are created per call —
+   * a Response body is single-use, so serving a shared instance would fail
+   * on the second read.
+   */
+  function installUrlFetch(bodies: Record<string, Buffer>, sha256sumsBody?: string): void {
+    fetchMock.mockImplementation((url: unknown) => {
+      const key = String(url);
+      if (key.endsWith('/SHA256SUMS')) {
+        return Promise.resolve(
+          sha256sumsBody !== undefined
+            ? new Response(sha256sumsBody, { status: 200 })
+            : new Response('not found', { status: 404 })
+        );
+      }
+      const body = bodies[key];
+      if (!body) {
+        return Promise.reject(new Error(`Unexpected fetch in test: ${key}`));
+      }
+      return Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { 'content-length': String(body.length) },
+        })
+      );
+    });
+  }
+
+  /** Counts fetch calls that requested actual archives (not SHA256SUMS). */
+  function archiveFetchCount(): number {
+    return fetchMock.mock.calls.filter((call) => !String(call[0]).endsWith('/SHA256SUMS')).length;
+  }
 
   it('keeps stable and ESR cache entries separate', async () => {
     const stableArchive = await makeTarXzArchive(projectRoot, 'stable.tar.xz', 'firefox-140.0', {
@@ -66,19 +102,10 @@ describe('downloadCommand integration', () => {
     const stableBody = await readFile(stableArchive);
     const esrBody = await readFile(esrArchive);
 
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(stableBody, {
-          status: 200,
-          headers: { 'content-length': String(stableBody.length) },
-        })
-      )
-      .mockResolvedValueOnce(
-        new Response(esrBody, {
-          status: 200,
-          headers: { 'content-length': String(esrBody.length) },
-        })
-      );
+    installUrlFetch({
+      [getDownloadUrl('140.0', 'firefox')]: stableBody,
+      [getDownloadUrl('140.9.0esr', 'firefox-esr')]: esrBody,
+    });
 
     await writeFireForgeConfig(projectRoot, {
       firefox: { version: '140.0', product: 'firefox' },
@@ -103,15 +130,13 @@ describe('downloadCommand integration', () => {
 
     await expect(readFile(stableCache)).resolves.toBeTruthy();
     await expect(readFile(esrCache)).resolves.toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
+    expect(archiveFetchCount()).toBe(2);
+    expect(fetchMock).toHaveBeenCalledWith(
       getDownloadUrl('140.0', 'firefox'),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matcher
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
+    expect(fetchMock).toHaveBeenCalledWith(
       getDownloadUrl('140.9.0esr', 'firefox-esr'),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matcher
       expect.objectContaining({ signal: expect.any(AbortSignal) })
@@ -162,12 +187,9 @@ describe('downloadCommand integration', () => {
       'browser/config/version.txt': '140.9.0esr\n',
     });
     const oldBody = await readFile(oldArchivePath);
-    fetchMock.mockResolvedValueOnce(
-      new Response(oldBody, {
-        status: 200,
-        headers: { 'content-length': String(oldBody.length) },
-      })
-    );
+    installUrlFetch({
+      [getDownloadUrl('140.9.0esr', 'firefox-esr')]: oldBody,
+    });
 
     await writeFireForgeConfig(projectRoot);
     await downloadCommand(projectRoot, {});
@@ -181,12 +203,10 @@ describe('downloadCommand integration', () => {
       }
     );
     const newBody = await readFile(newArchivePath);
-    fetchMock.mockResolvedValueOnce(
-      new Response(newBody, {
-        status: 200,
-        headers: { 'content-length': String(newBody.length) },
-      })
-    );
+    installUrlFetch({
+      'https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz':
+        newBody,
+    });
 
     await writeFireForgeConfig(projectRoot, {
       firefox: {
@@ -208,12 +228,9 @@ describe('downloadCommand integration', () => {
     });
     const archiveBody = await readFile(archivePath);
 
-    fetchMock.mockResolvedValue(
-      new Response(archiveBody, {
-        status: 200,
-        headers: { 'content-length': String(archiveBody.length) },
-      })
-    );
+    installUrlFetch({
+      [getDownloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody,
+    });
 
     await writeFireForgeConfig(projectRoot);
 
@@ -266,17 +283,55 @@ describe('downloadCommand integration', () => {
       'browser/config/version.txt': '140.9.0esr\n',
     });
     const archiveBody = await readFile(archivePath);
-    fetchMock.mockResolvedValue(
-      new Response(archiveBody, {
-        status: 200,
-        headers: { 'content-length': String(archiveBody.length) },
-      })
-    );
+    installUrlFetch({
+      [getDownloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody,
+    });
 
     await downloadCommand(projectRoot, {});
 
     const versionFile = await readProjectText(projectRoot, 'engine/browser/config/version.txt');
     expect(versionFile).toBe('140.9.0esr\n');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(archiveFetchCount()).toBe(1);
+  });
+
+  it('verifies downloads against the published SHA256SUMS by default', async () => {
+    const archivePath = await makeTarXzArchive(projectRoot, 'esr.tar.xz', 'firefox-140.9.0esr', {
+      'browser/config/version.txt': '140.9.0esr\n',
+    });
+    const archiveBody = await readFile(archivePath);
+    const digest = createHash('sha256').update(archiveBody).digest('hex');
+
+    installUrlFetch(
+      { [getDownloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody },
+      `${digest}  source/firefox-140.9.0esr.source.tar.xz\n`
+    );
+
+    await writeFireForgeConfig(projectRoot);
+    await downloadCommand(projectRoot, {});
+
+    await expect(readProjectText(projectRoot, 'engine/browser/config/version.txt')).resolves.toBe(
+      '140.9.0esr\n'
+    );
+  });
+
+  it('fails closed when the download does not match the published SHA256SUMS', async () => {
+    // The whole model is "trusted baseline + patches" — a CDN response that
+    // disagrees with Mozilla's published digest must never become the git
+    // baseline, and the artifact must not stay in the cache.
+    const archivePath = await makeTarXzArchive(projectRoot, 'esr.tar.xz', 'firefox-140.9.0esr', {
+      'browser/config/version.txt': '140.9.0esr\n',
+    });
+    const archiveBody = await readFile(archivePath);
+
+    installUrlFetch(
+      { [getDownloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody },
+      `${'0'.repeat(64)}  source/firefox-140.9.0esr.source.tar.xz\n`
+    );
+
+    await writeFireForgeConfig(projectRoot);
+    await expect(downloadCommand(projectRoot, {})).rejects.toThrow(/SHA-256 mismatch/);
+
+    const tarballName = getTarballFilename('140.9.0esr', 'firefox-esr');
+    await expect(readFile(join(projectRoot, '.fireforge/cache', tarballName))).rejects.toThrow();
   });
 });

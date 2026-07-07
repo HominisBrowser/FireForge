@@ -3,8 +3,6 @@ import { describe, expect, it } from 'vitest';
 
 import { InvalidArgumentError } from '../../errors/base.js';
 import {
-  assertObject,
-  assertString,
   inferProductFromVersion,
   isArray,
   isBoolean,
@@ -40,24 +38,6 @@ describe('type guards', () => {
     expect(isDefined('value')).toBe(true);
     expect(isDefined(null)).toBe(false);
     expect(isDefined(undefined)).toBe(false);
-  });
-});
-
-describe('assertions', () => {
-  it('asserts strings and objects with helpful error messages', () => {
-    expect(() => {
-      assertString(42, 'name');
-    }).toThrow('Expected name to be a string, got number');
-    expect(() => {
-      assertObject('oops', 'config');
-    }).toThrow('Expected config to be an object, got string');
-
-    expect(() => {
-      assertString('ok', 'name');
-    }).not.toThrow();
-    expect(() => {
-      assertObject({ ok: true }, 'config');
-    }).not.toThrow();
   });
 });
 

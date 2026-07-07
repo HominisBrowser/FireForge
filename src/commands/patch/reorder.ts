@@ -38,7 +38,7 @@ import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchReorderOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
-import { pickDefined } from '../../utils/options.js';
+import { commanderArgParser, pickDefined } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
@@ -503,8 +503,8 @@ export function registerPatchReorder(parent: Command, context: CommandContext): 
     .command('reorder <name>')
     .description('Move a patch to a different position in the queue (destructive)')
     .addOption(
-      new Option('--to <order>', 'Destination ordinal').argParser((v) =>
-        parsePositiveIntegerFlag('--to', v)
+      new Option('--to <order>', 'Destination ordinal').argParser(
+        commanderArgParser((v) => parsePositiveIntegerFlag('--to', v))
       )
     )
     .option('--before <anchor>', 'Place the patch immediately before <anchor>')

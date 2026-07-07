@@ -11,10 +11,11 @@
 import { join } from 'node:path';
 
 import { type ConflictReport } from '../core/destructive.js';
+import { normalizePatchArtifact } from '../core/patch-artifact-normalize.js';
 import {
   findAllPatchesForFilesWithDetails,
+  patchNameSlug,
   planExport,
-  sanitizeName,
 } from '../core/patch-export.js';
 import {
   buildModifiedFileAdditionsFromDiff,
@@ -26,6 +27,7 @@ import { withPatchDirectoryLock } from '../core/patch-lock.js';
 import {
   addPatchToManifest,
   loadPatchesManifest,
+  loadPatchesManifestForWrite,
   type PatchRenameEntry,
   renumberPatchesInManifest,
   resolvePatchIdentifier,
@@ -53,7 +55,7 @@ function buildFilenameForPlacement(
   width: number
 ): string {
   const padded = String(order).padStart(Math.max(3, width), '0');
-  return `${padded}-${category}-${sanitizeName(name)}.patch`;
+  return `${padded}-${category}-${patchNameSlug(name, category)}.patch`;
 }
 
 /**
@@ -204,7 +206,9 @@ export async function resolvePlacementPlan(
   category: PatchCategory,
   name: string
 ): Promise<PlacementPlan> {
-  const manifest = await loadPatchesManifest(patchesDir);
+  // ForWrite: placement planning feeds a manifest rewrite; a corrupt
+  // manifest read as empty would allocate colliding orders.
+  const manifest = await loadPatchesManifestForWrite(patchesDir);
   const existingPatches = manifest?.patches ?? [];
 
   let targetOrder: number;
@@ -386,7 +390,7 @@ export async function commitPlacementExport(
       );
     }
 
-    const originalManifest = await loadPatchesManifest(input.patchesDir);
+    const originalManifest = await loadPatchesManifestForWrite(input.patchesDir);
     if (originalManifest !== null) {
       assertPlacementPreservesReservedRanges(
         currentPlan,
@@ -431,7 +435,9 @@ export async function commitPlacementExport(
         await renumberPatchesInManifest(input.patchesDir, currentPlan.renameMap);
         renumberApplied = true;
       }
-      await writeText(patchPath, input.diff);
+      // Normalize identically to commitExportedPatch — the two export
+      // paths must produce one artifact contract for the same diff.
+      await writeText(patchPath, normalizePatchArtifact(input.diff));
       await addPatchToManifest(input.patchesDir, {
         ...input.metadata,
         filename: currentPlan.newFilename,

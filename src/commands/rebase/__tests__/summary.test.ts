@@ -36,7 +36,7 @@ describe('printSummary', () => {
       'Source Rebase Summary: firefox-esr 140.9.0esr → firefox-devedition 152.0b6'
     );
     expect(info).toHaveBeenCalledWith(
-      'Results: 74 total: 72 clean, 0 fuzz-applied, 2 manually resolved, 0 failed'
+      'Results: 74 total: 72 clean, 0 context-reduced, 2 manually resolved, 0 failed'
     );
   });
 });

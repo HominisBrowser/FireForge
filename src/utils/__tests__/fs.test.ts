@@ -98,16 +98,21 @@ describe('writeFileAtomic concurrency', () => {
     expect(content).toBe('hello world');
   });
 
-  it('preserves an existing file mode when replacing content', async () => {
-    const filePath = join(tempDir, 'executable-target.sh');
-    await writeFileAtomic(filePath, '#!/bin/sh\necho old\n');
-    await chmod(filePath, 0o755);
+  // Windows has no POSIX execute bit — chmod(0o755) is a no-op there (stat
+  // reports 0o666), so the mode-preservation contract is POSIX-only.
+  it.skipIf(process.platform === 'win32')(
+    'preserves an existing file mode when replacing content',
+    async () => {
+      const filePath = join(tempDir, 'executable-target.sh');
+      await writeFileAtomic(filePath, '#!/bin/sh\necho old\n');
+      await chmod(filePath, 0o755);
 
-    await writeFileAtomic(filePath, '#!/bin/sh\necho new\n');
+      await writeFileAtomic(filePath, '#!/bin/sh\necho new\n');
 
-    await expect(readFile(filePath, 'utf-8')).resolves.toBe('#!/bin/sh\necho new\n');
-    expect((await stat(filePath)).mode & 0o777).toBe(0o755);
-  });
+      await expect(readFile(filePath, 'utf-8')).resolves.toBe('#!/bin/sh\necho new\n');
+      expect((await stat(filePath)).mode & 0o777).toBe(0o755);
+    }
+  );
 });
 
 describe('writeTextIfChanged', () => {

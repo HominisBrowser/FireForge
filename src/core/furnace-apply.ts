@@ -47,6 +47,7 @@ import {
   type RollbackJournal,
   snapshotFile,
 } from './furnace-rollback.js';
+import { blockingStepErrors, hasBlockingStepErrors } from './furnace-step-errors.js';
 import { runPostApplyConsistencyChecks } from './furnace-validate-registration.js';
 
 export {
@@ -93,19 +94,9 @@ function buildOverrideUndeployActions(
   }));
 }
 
-async function applyOverrideBatch(
-  config: FurnaceConfigData,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
-  state: FurnaceStateData,
-  engineDir: string,
-  ftlDir: string,
-  dryRun: boolean,
-  result: ApplyAccumulator,
-  allActions: DryRunAction[],
-  newChecksums: Record<string, string>,
-  rollbackJournal?: RollbackJournal,
-  componentName?: string
-): Promise<void> {
+async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
+  const { config, furnacePaths, state, engineDir, ftlDir, dryRun } = ctx;
+  const { result, allActions, newChecksums, rollbackJournal, componentName } = ctx;
   const overrideEntries = Object.entries(config.overrides).filter(
     ([name]) => !componentName || name === componentName
   );
@@ -292,20 +283,12 @@ async function reconcileCustomRegistrationAfterUndeploy(
 }
 
 async function applyCustomBatch(
+  ctx: ApplyBatchContext,
   root: string,
-  config: FurnaceConfigData,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
-  state: FurnaceStateData,
-  engineDir: string,
-  ftlDir: string,
-  dryRun: boolean,
-  result: ApplyAccumulator,
-  allActions: DryRunAction[],
-  newChecksums: Record<string, string>,
-  rollbackJournal?: RollbackJournal,
-  componentName?: string,
   markerComment?: string
 ): Promise<void> {
+  const { config, furnacePaths, state, engineDir, ftlDir, dryRun } = ctx;
+  const { result, allActions, newChecksums, rollbackJournal, componentName } = ctx;
   const allKnown = new Set([
     ...config.stock,
     ...Object.keys(config.overrides),
@@ -429,7 +412,7 @@ async function applyCustomBatch(
         allActions.push(...actions);
       }
 
-      if (!dryRun && deletedFiles.length > 0 && stepErrors.length === 0) {
+      if (!dryRun && deletedFiles.length > 0 && blockingStepErrors(stepErrors).length === 0) {
         await reconcileCustomRegistrationAfterUndeploy(
           engineDir,
           name,
@@ -449,9 +432,11 @@ async function applyCustomBatch(
         ...(stepErrors.length > 0 ? { stepErrors } : {}),
       });
 
-      // Only store checksums when the component applied without step errors,
-      // so that partially failed components are re-applied on the next run.
-      if (!dryRun && stepErrors.length === 0) {
+      // Only store checksums when the component applied without BLOCKING
+      // step errors, so that partially failed components are re-applied on
+      // the next run. Advisory errors (FTL degradation) still persist —
+      // re-applying cannot fix a fork that has no locale jar.mn.
+      if (!dryRun && blockingStepErrors(stepErrors).length === 0) {
         Object.assign(newChecksums, prefixChecksums(currentChecksums, 'custom', name));
       }
     } catch (error: unknown) {
@@ -543,21 +528,7 @@ export async function applyAllComponents(
     }
   }
 
-  await applyOverrideBatch(
-    config,
-    furnacePaths,
-    state,
-    engineDir,
-    ftlDir,
-    dryRun,
-    result,
-    allActions,
-    newChecksums,
-    rollbackJournal,
-    componentName
-  );
-  await applyCustomBatch(
-    root,
+  const batchContext: ApplyBatchContext = {
     config,
     furnacePaths,
     state,
@@ -569,21 +540,30 @@ export async function applyAllComponents(
     newChecksums,
     rollbackJournal,
     componentName,
-    markerComment
-  );
+  };
+  await applyOverrideBatch(batchContext);
+  await applyCustomBatch(batchContext, root, markerComment);
 
-  // Check for any partial failures (step errors on applied components).
-  const hasStepErrors = result.applied.some(
-    (entry) => 'stepErrors' in entry && (entry.stepErrors as unknown[]).length > 0
-  );
+  // Check for any partial failures (blocking step errors on applied
+  // components). Advisory step errors (e.g. FTL degradation) are warnings
+  // and never gate rollback.
+  const hasApplyStepErrors = result.applied.some((entry) => hasBlockingStepErrors(entry));
 
   // Orphaned components are implicitly cleaned up: newChecksums only
   // contains entries for components that still exist in furnace.json,
   // and it fully replaces state.appliedChecksums below.
 
-  if (!dryRun && !hasStepErrors && result.errors.length === 0) {
+  if (!dryRun && !hasApplyStepErrors && result.errors.length === 0) {
     await runPostApplyConsistencyChecks(root, config, result, ftlDir);
   }
+
+  // Recompute AFTER the consistency checks: they MUTATE entry.stepErrors
+  // when the applied output is inconsistent (e.g. a jar.mn entry that
+  // silently mis-landed). Reading the pre-check snapshot meant those
+  // failures skipped rollback and persisted checksums for a component
+  // known to be inconsistent — while the CLI simultaneously reported
+  // "failed to apply cleanly".
+  const hasStepErrors = result.applied.some((entry) => hasBlockingStepErrors(entry));
 
   // --- Rollback on failure, persist on success (skip for dry-run) ---
   if (!dryRun) {
@@ -626,4 +606,24 @@ export async function applyAllComponents(
   }
 
   return result;
+} /**
+ * Shared context threaded through the batch apply loops. Bundles the state
+ * both loops mutate (result/actions/checksums) with the immutable run
+ * parameters — the previous 12–13 positional parameters let call sites
+ * drift (the named-apply state-wipe bug) and made every new parameter a
+ * two-signature change.
+ */
+interface ApplyBatchContext {
+  config: FurnaceConfigData;
+  furnacePaths: ReturnType<typeof getFurnacePaths>;
+  state: FurnaceStateData;
+  engineDir: string;
+  ftlDir: string;
+  dryRun: boolean;
+  /** Mutated by both loops: results, dry-run actions, run checksums. */
+  result: ApplyAccumulator;
+  allActions: DryRunAction[];
+  newChecksums: Record<string, string>;
+  rollbackJournal?: RollbackJournal | undefined;
+  componentName?: string | undefined;
 }

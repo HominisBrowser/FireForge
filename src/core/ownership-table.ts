@@ -2,6 +2,7 @@
 import type { PatchMetadata } from '../types/commands/index.js';
 import { info } from '../utils/logger.js';
 import type { FileClassification } from './status-classify.js';
+import { buildPatchClaims } from './status-classify.js';
 
 /**
  * A row in the flat path → owning-patch ownership table.
@@ -55,14 +56,7 @@ export function buildOwnershipTable(
   newFileCreatorsByPath: Map<string, string[]>,
   classifications: Map<string, FileClassification> = new Map()
 ): OwnershipRow[] {
-  const ownersByPath = new Map<string, string[]>();
-  for (const patch of manifestPatches) {
-    for (const file of patch.filesAffected) {
-      const existing = ownersByPath.get(file) ?? [];
-      existing.push(patch.filename);
-      ownersByPath.set(file, existing);
-    }
-  }
+  const ownersByPath = buildPatchClaims(manifestPatches);
 
   // Merge duplicate-new-file-creation findings. The structured helper
   // returns all new-file paths, so we filter to the ones with more

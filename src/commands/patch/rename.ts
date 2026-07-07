@@ -24,7 +24,7 @@ import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
 import { appendHistory, confirmDestructive } from '../../core/destructive.js';
-import { sanitizeName } from '../../core/patch-export.js';
+import { patchNameSlug } from '../../core/patch-export.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
   loadPatchesManifest,
@@ -243,7 +243,7 @@ export async function patchRenameCommand(
     );
   }
 
-  const newSlug = sanitizeName(options.to);
+  const newSlug = patchNameSlug(options.to, split.category);
   if (newSlug === '') {
     throw new InvalidArgumentError(
       '--to must contain at least one alphanumeric character after sanitisation.',
@@ -365,7 +365,10 @@ export function registerPatchRename(parent: Command, context: CommandContext): v
     .description(
       'Rename a patch: filename + manifest name (and optional description) update without rewriting the .patch body.'
     )
-    .requiredOption('--to <new-name>', 'New human-readable name (sanitised into the filename slug)')
+    .requiredOption(
+      '--to <new-name>',
+      'New human-readable name, category-prefixed slug, or full filename stem (normalised into the filename slug)'
+    )
     .option('--description <text>', 'Replacement description (omit to leave description unchanged)')
     .option('--dry-run', 'Show what would change without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')

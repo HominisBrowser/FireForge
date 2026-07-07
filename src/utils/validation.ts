@@ -20,7 +20,10 @@ export function isString(value: unknown): value is string {
  * @returns True if value is a finite number
  */
 export function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && !Number.isNaN(value);
+  // Number.isFinite matches the documented contract: NaN AND ±Infinity are
+  // excluded (a JSON config field of 1e999 parses to Infinity and used to
+  // validate as a legal number).
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 /**
@@ -84,31 +87,6 @@ export function isObject(value: unknown): value is Record<string, unknown> {
  */
 export function isArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
-}
-
-/**
- * Asserts that a value is a string or throws.
- * @param value - Value to check
- * @param name - Name of the field for error messages
- */
-export function assertString(value: unknown, name: string): asserts value is string {
-  if (!isString(value)) {
-    throw new InvalidArgumentError(`Expected ${name} to be a string, got ${typeof value}`, name);
-  }
-}
-
-/**
- * Asserts that a value is a non-null object or throws.
- * @param value - Value to check
- * @param name - Name of the field for error messages
- */
-export function assertObject(
-  value: unknown,
-  name: string
-): asserts value is Record<string, unknown> {
-  if (!isObject(value)) {
-    throw new InvalidArgumentError(`Expected ${name} to be an object, got ${typeof value}`, name);
-  }
 }
 
 /**
@@ -283,12 +261,17 @@ export function validateTokenName(name: string): string | undefined {
     return `Token name must not contain control characters: "${name}"`;
   }
 
-  if (ident.includes('*/')) {
-    return `Token name must not contain "*/" (would break CSS comments): "${name}"`;
+  if (ident.includes('*/') || ident.includes('/*')) {
+    // `/*` is the worse of the two by this function's own standard: an
+    // ident containing it opens an UNTERMINATED comment in tokens.css
+    // that swallows every following declaration.
+    return `Token name must not contain "/*" or "*/" (would break CSS comments): "${name}"`;
   }
 
-  // Reject characters that would break CSS declaration syntax
-  if (/[{}();!]/.test(ident)) {
+  // Reject characters that would break CSS declaration syntax. Quotes are
+  // included: a quote character in an ident opens a CSS string that eats
+  // the rest of the declaration block.
+  if (/[{}();!'"]/.test(ident)) {
     return `Token name contains characters that would corrupt CSS syntax: "${name}"`;
   }
 

@@ -280,6 +280,10 @@ export function finalizeSingleRunOutcome(
   }
   if (outcome.verdict.realFailureLine !== undefined) {
     info(`First real test failure: ${outcome.verdict.realFailureLine}`);
+    const blocks = formatFailureBlocks(outcome.verdict.realFailureBlocks);
+    if (blocks !== undefined) {
+      info(blocks);
+    }
     if (outcome.verdict.secondaryHarnessSignature !== undefined) {
       info(
         `Secondary harness noise also present: ${outcome.verdict.secondaryHarnessSignature.reason}; ` +
@@ -326,6 +330,21 @@ export function diagnoseShardOutcome(
     );
     return undefined;
   } catch (error: unknown) {
-    return error instanceof Error ? error.message : String(error);
+    const diagnosis = error instanceof Error ? error.message : String(error);
+    const blocks = formatFailureBlocks(outcome.verdict.realFailureBlocks);
+    return blocks !== undefined ? `${blocks}\n${diagnosis}` : diagnosis;
   }
+}
+
+/**
+ * Renders the verdict's TEST-UNEXPECTED blocks (verbatim failing lines +
+ * their assertion/diff context) for the failure summary. Returns undefined
+ * when the verdict carries none, so callers can skip the section entirely.
+ */
+function formatFailureBlocks(blocks: readonly string[] | undefined): string | undefined {
+  if (blocks === undefined || blocks.length === 0) return undefined;
+  // The collector appends a `…(+N more …)` note when it truncated; that
+  // note is not a failure block, so it does not count toward the header.
+  const shown = blocks.filter((block) => !block.startsWith('…(')).length;
+  return `Unexpected test failures (first ${shown}):\n${blocks.join('\n\n')}`;
 }

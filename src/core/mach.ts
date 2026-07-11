@@ -16,6 +16,10 @@ import {
 import { createSiblingLockPath, withFileLock } from './file-lock.js';
 import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
 import { explainMachError } from './mach-error-hints.js';
+import {
+  createKnownTeardownNoiseFilter,
+  createTeardownNoiseContext,
+} from './mach-known-noise-filter.js';
 import { getPython } from './mach-python.js';
 import { installMachResourceGuard } from './mach-resource-shim.js';
 import { detectHarnessCrashSignature, type HarnessCrashSignature } from './test-harness-crash.js';
@@ -51,6 +55,14 @@ export interface MachOptions {
   env?: Record<string, string>;
   /** Whether to inherit stdio (show output directly) */
   inherit?: boolean;
+  /**
+   * Collapse the KNOWN mozsystemmonitor teardown traceback to one labeled
+   * line in the terminal ECHO (capture-only option). The captured
+   * stdout/stderr stay raw — the harness classifier depends on the raw
+   * traceback. Unrecognized tracebacks always echo verbatim. Opted into by
+   * the test dispatchers only.
+   */
+  annotateKnownTeardownNoise?: boolean;
 }
 
 /**
@@ -86,7 +98,12 @@ export async function runMach(
   };
 
   if (options.inherit) {
-    return execInherit(python, [machPath, ...args], execOptions);
+    // Group-reap every long-lived inherited mach dispatch (bootstrap, run,
+    // watch): a mach dying at startup must not strand multiprocessing
+    // workers. Short-lived metadata queries below stay on plain exec() —
+    // adding groups there would touch every non-mach exec consumer's path
+    // for no reaping benefit.
+    return execInherit(python, [machPath, ...args], { ...execOptions, processGroup: true });
   }
 
   const result = await exec(python, [machPath, ...args], execOptions);
@@ -121,24 +138,48 @@ export async function runMachCapture(
   let stdout = '';
   let stderr = '';
 
+  // Echo-path filters only: the captured strings above accumulate RAW so the
+  // classifier still sees the full teardown traceback. When the option is
+  // off, the filters are absent and echo is a straight write (unchanged).
+  // One shutdown context per run, shared by both stream filters: the
+  // SUITE_END marker usually arrives on stdout while the teardown traceback
+  // lands on stderr, so the shutdown-seen flag must span the pair.
+  const noiseContext =
+    options.annotateKnownTeardownNoise === true ? createTeardownNoiseContext() : undefined;
+  const stdoutFilter = noiseContext && createKnownTeardownNoiseFilter(noiseContext);
+  const stderrFilter = noiseContext && createKnownTeardownNoiseFilter(noiseContext);
+
   const exitCode = await execStream(python, [machPath, ...args], {
     cwd: engineDir,
     ...(options.env ? { env: options.env } : {}),
+    // Every capture dispatch (test suites, protected builds, package,
+    // storybook) runs as a process-group leader and is group-reaped on
+    // exit/abort — see ExecOptions.processGroup (0.37.0 item 9a).
+    processGroup: true,
     onStdout: (data) => {
       stdout += data;
       if (stdout.length > CAPTURE_TAIL_LIMIT) {
         stdout = stdout.slice(-CAPTURE_TAIL_LIMIT);
       }
-      process.stdout.write(data);
+      process.stdout.write(stdoutFilter ? stdoutFilter.transform(data) : data);
     },
     onStderr: (data) => {
       stderr += data;
       if (stderr.length > CAPTURE_TAIL_LIMIT) {
         stderr = stderr.slice(-CAPTURE_TAIL_LIMIT);
       }
-      process.stderr.write(data);
+      process.stderr.write(stderrFilter ? stderrFilter.transform(data) : data);
     },
   });
+
+  if (stdoutFilter) {
+    const residue = stdoutFilter.flush();
+    if (residue.length > 0) process.stdout.write(residue);
+  }
+  if (stderrFilter) {
+    const residue = stderrFilter.flush();
+    if (residue.length > 0) process.stderr.write(residue);
+  }
 
   return { stdout, stderr, exitCode };
 }
@@ -161,6 +202,7 @@ export async function runMachInheritCapture(
   return execInheritCapture(python, [machPath, ...args], {
     cwd: engineDir,
     ...(options.env ? { env: options.env } : {}),
+    processGroup: true,
   });
 }
 
@@ -503,6 +545,7 @@ export async function testWithOutput(
   const guard = await installMachResourceGuard(engineDir);
   return runMachCapture(['test', ...testPaths, ...args], engineDir, {
     env: { ...guard.env, ...env },
+    annotateKnownTeardownNoise: true,
   });
 }
 
@@ -525,6 +568,7 @@ export async function xpcshellTestWithOutput(
   const guard = await installMachResourceGuard(engineDir);
   return runMachCapture(['xpcshell-test', ...testPaths, ...args], engineDir, {
     env: { ...guard.env, ...env },
+    annotateKnownTeardownNoise: true,
   });
 }
 
@@ -542,5 +586,6 @@ export async function mochitestWithOutput(
   const guard = await installMachResourceGuard(engineDir);
   return runMachCapture(['mochitest', ...testPaths, ...args], engineDir, {
     env: { ...guard.env, ...env },
+    annotateKnownTeardownNoise: true,
   });
 }

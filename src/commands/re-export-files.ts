@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { getProjectPaths } from '../core/config.js';
 import { appendHistory, confirmDestructive, type ConflictReport } from '../core/destructive.js';
+import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { computeProjectedLintRegressions } from '../core/lint-projection.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
@@ -215,6 +216,16 @@ export async function reExportFilesInPlace(
   }
 
   const requested = [...new Set(filesOption)].sort();
+
+  // Stale-furnace-source gate (0.37.0 item 4): same refusal as the generic
+  // re-export path — the projected diff would capture stale deployed copies.
+  await enforceFreshFurnaceSources(
+    paths.root,
+    requested,
+    options.allowStaleFurnace === true,
+    're-export'
+  );
+
   const removed = target.filesAffected.filter((f) => !requested.includes(f));
   const added = requested.filter((f) => !target.filesAffected.includes(f));
   const retained = target.filesAffected.filter((f) => requested.includes(f));

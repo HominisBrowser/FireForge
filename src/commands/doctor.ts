@@ -30,6 +30,7 @@ import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-c
 import { failure, ok, warning } from './doctor-check-core.js';
 import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
+import { ORPHANED_HARNESS_DOCTOR_CHECK } from './doctor-orphaned-harness.js';
 import { inspectEngineWorkingTree } from './doctor-working-tree.js';
 import { collectPatchQueueHealth } from './verify.js';
 
@@ -340,6 +341,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
       );
     },
   },
+  ORPHANED_HARNESS_DOCTOR_CHECK,
   {
     name: 'Patches directory exists',
     run: async (ctx) => {

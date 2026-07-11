@@ -634,6 +634,10 @@ describe('mach command execution', () => {
       expect.any(Object)
     );
 
+    // Every capture dispatch runs as a process-group leader (0.37.0 item 9a)
+    // so a mach dying at startup cannot strand multiprocessing workers.
+    expect(vi.mocked(execStream).mock.lastCall?.[2]).toMatchObject({ processGroup: true });
+
     // Env-present branch (the `env ? { env } : {}` ternary) for both wrappers.
     await xpcshellTestWithOutput('/engine', ['a_test.js'], [], { FF_X: '1' });
     expect(vi.mocked(execStream).mock.lastCall?.[2]).toMatchObject({ env: { FF_X: '1' } });
@@ -664,6 +668,111 @@ describe('mach command execution', () => {
       stderr: oversizedStderr.slice(-(2 * 1024 * 1024)),
       exitCode: 9,
     });
+
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('annotates the known teardown traceback in the echo while capturing it raw (0.37.0 item 8)', async () => {
+    const { execStream } = await import('../../utils/process.js');
+    const echoed: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((data) => {
+      echoed.push(String(data));
+      return true;
+    });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await primePythonResolution();
+
+    const teardownNoise = [
+      'TEST-OK | browser_x.js',
+      'Unexpected results: 0',
+      'SUITE_END',
+      'Traceback (most recent call last):',
+      '  File "mozsystemmonitor/resourcemonitor.py", line 321, in stop',
+      "AttributeError: 'SystemResourceMonitor' object has no attribute 'stop_time'",
+      'Error running mach',
+      '',
+    ].join('\n');
+    vi.mocked(execStream).mockImplementationOnce((_cmd, _args, options) => {
+      options?.onStdout?.(teardownNoise);
+      return Promise.resolve(0);
+    });
+
+    const result = await testWithOutput('/engine', ['browser_x.js']);
+
+    // Capture contract: the classifier still sees the RAW traceback.
+    expect(result.stdout).toContain("no attribute 'stop_time'");
+    expect(result.stdout).toContain('Traceback');
+    // Echo contract: the terminal shows the one-line annotation instead.
+    const echo = echoed.join('');
+    expect(echo).toContain('Known upstream mozsystemmonitor teardown noise');
+    expect(echo).toContain('not a test failure');
+    expect(echo).not.toContain('stop_time');
+    expect(echo).toContain('TEST-OK | browser_x.js');
+    expect(echo).toContain('Error running mach');
+
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('echoes an unrelated traceback in full even on the annotating dispatch', async () => {
+    const { execStream } = await import('../../utils/process.js');
+    const echoed: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((data) => {
+      echoed.push(String(data));
+      return true;
+    });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await primePythonResolution();
+
+    const unrelated = [
+      'Traceback (most recent call last):',
+      '  File "some/module.py", line 12, in main',
+      'ZeroDivisionError: division by zero',
+      '',
+    ].join('\n');
+    vi.mocked(execStream).mockImplementationOnce((_cmd, _args, options) => {
+      options?.onStdout?.(unrelated);
+      return Promise.resolve(1);
+    });
+
+    await testWithOutput('/engine', ['browser_x.js']);
+
+    const echo = echoed.join('');
+    expect(echo).toContain('ZeroDivisionError: division by zero');
+    expect(echo).toContain('Traceback (most recent call last):');
+    expect(echo).not.toContain('Known upstream mozsystemmonitor');
+
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('does not filter the echo for non-test capture consumers', async () => {
+    const { execStream } = await import('../../utils/process.js');
+    const echoed: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((data) => {
+      echoed.push(String(data));
+      return true;
+    });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await primePythonResolution();
+
+    const teardownNoise = [
+      'Traceback (most recent call last):',
+      "AttributeError: 'SystemResourceMonitor' object has no attribute 'stop_time'",
+      '',
+    ].join('\n');
+    vi.mocked(execStream).mockImplementationOnce((_cmd, _args, options) => {
+      options?.onStdout?.(teardownNoise);
+      return Promise.resolve(0);
+    });
+
+    // Plain runMachCapture (build/package/storybook path): no opt-in, raw echo.
+    await runMachCapture(['build'], '/engine');
+
+    const echo = echoed.join('');
+    expect(echo).toContain("no attribute 'stop_time'");
+    expect(echo).not.toContain('Known upstream mozsystemmonitor');
 
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();

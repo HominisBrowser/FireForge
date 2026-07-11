@@ -53,6 +53,7 @@ export type {
   PatchResult,
   PatchStagedDependencies,
   PatchStagedForwardImport,
+  PatchStagedRegistration,
 } from './patches.js';
 export type {
   DoctorCheck,

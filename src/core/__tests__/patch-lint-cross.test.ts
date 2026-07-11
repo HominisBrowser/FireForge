@@ -239,6 +239,266 @@ describe('lintPatchQueueForwardImports', () => {
     expect(issues[0]?.severity).toBe('warning');
   });
 
+  // ── 0.37.0 item 5: registration-kind staged dependencies — a jar.mn
+  //    packaging line (or customElements/actor registration) referencing a
+  //    later-created file has no import to match; the declaration is used
+  //    when the declared line appears in the patch's added content. ──
+
+  it('accepts a registration-kind entry whose jar.mn line the patch adds (item 5 acc 1)', () => {
+    const jarLine =
+      '        content/global/widgets/hominis-history-ui.js (widgets/hominis-history-ui.js)';
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '200-ui-history-jar.patch',
+          200,
+          CREATE_A_DIFF,
+          {},
+          { 'toolkit/content/jar.mn': `${jarLine}\n` },
+          {
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'toolkit/content/jar.mn',
+                  line: jarLine.trim(),
+                  creates: 'toolkit/content/widgets/hominis-history-ui.js',
+                  owner: '248-ui-history-impl.patch',
+                },
+              ],
+            },
+          }
+        ),
+        makeEntry('248-ui-history-impl.patch', 248, CREATE_A_DIFF, {
+          'toolkit/content/widgets/hominis-history-ui.js': 'export const ui = 1;\n',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('matches a registration line added in a newly-created file too', () => {
+    const registrationLine =
+      'registerCustomElement("moz-hominis-history", "chrome://global/content/widgets/moz-hominis-history.mjs");';
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '202-ui-widgets.patch',
+          202,
+          CREATE_A_DIFF,
+          { 'toolkit/content/hominisElements.js': `${registrationLine}\n` },
+          {},
+          {
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'toolkit/content/hominisElements.js',
+                  line: registrationLine,
+                  creates: 'toolkit/content/widgets/moz-hominis-history.mjs',
+                },
+              ],
+            },
+          }
+        ),
+        makeEntry('248-ui-history-widget.patch', 248, CREATE_A_DIFF, {
+          'toolkit/content/widgets/moz-hominis-history.mjs': 'export const el = 1;\n',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('still requires an import for import-kind entries — a registration entry does not stand in (item 5 acc 2)', () => {
+    const importerContent = `import { B } from "resource:///modules/B.sys.mjs";\n`;
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-a.patch',
+          1,
+          CREATE_A_DIFF,
+          { 'foo/A.sys.mjs': importerContent },
+          {},
+          {
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'foo/A.sys.mjs',
+                  line: 'import { B } from "resource:///modules/B.sys.mjs";',
+                  creates: 'foo/B.sys.mjs',
+                },
+              ],
+            },
+          }
+        ),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;\n',
+        }),
+      ],
+    };
+    // The forward import is NOT suppressed by a registration entry (they are
+    // different claims); the registration itself matches its line, so the
+    // only issue is the forward-import error.
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues.map((issue) => issue.check)).toEqual(['forward-import']);
+  });
+
+  it('warns unused when the declared registration line is absent from the patch (item 5 acc 3)', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '200-ui-history-jar.patch',
+          200,
+          CREATE_A_DIFF,
+          {},
+          { 'toolkit/content/jar.mn': '        content/global/other.js (other.js)\n' },
+          {
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'toolkit/content/jar.mn',
+                  line: 'content/global/widgets/hominis-history-ui.js (widgets/hominis-history-ui.js)',
+                  creates: 'toolkit/content/widgets/hominis-history-ui.js',
+                },
+              ],
+            },
+          }
+        ),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.check).toBe('staged-dependency-unused');
+    expect(issues[0]?.severity).toBe('warning');
+    expect(issues[0]?.message).toContain('staged registration');
+    expect(issues[0]?.message).toContain('--kind registration');
+  });
+
+  it('matches registration lines whitespace-trimmed (indentation differences are fine)', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '200-ui-history-jar.patch',
+          200,
+          CREATE_A_DIFF,
+          {},
+          { 'toolkit/content/jar.mn': '     content/global/a.js (a.js)\n' },
+          {
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'toolkit/content/jar.mn',
+                  line: 'content/global/a.js (a.js)',
+                  creates: 'toolkit/content/a.js',
+                },
+              ],
+            },
+          }
+        ),
+        makeEntry('201-ui-a-impl.patch', 201, CREATE_A_DIFF, {
+          'toolkit/content/a.js': 'export const a = 1;\n',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('warns when a registration declares a creates no later-ordered patch creates', () => {
+    const jarLine = 'content/global/a.js (a.js)';
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '200-ui-jar.patch',
+          200,
+          CREATE_A_DIFF,
+          {},
+          { 'toolkit/content/jar.mn': `${jarLine}\n` },
+          {
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'toolkit/content/jar.mn',
+                  line: jarLine,
+                  creates: 'toolkit/content/a.js',
+                },
+              ],
+            },
+          }
+        ),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.check).toBe('staged-dependency-unused');
+    expect(issues[0]?.message).toContain('no later-ordered patch creates that file');
+  });
+
+  it('warns when the creates target is only created by an EARLIER patch (stale declaration)', () => {
+    const jarLine = 'content/global/a.js (a.js)';
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('100-ui-a-impl.patch', 100, CREATE_A_DIFF, {
+          'toolkit/content/a.js': 'export const a = 1;\n',
+        }),
+        makeEntry(
+          '200-ui-jar.patch',
+          200,
+          CREATE_A_DIFF,
+          {},
+          { 'toolkit/content/jar.mn': `${jarLine}\n` },
+          {
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'toolkit/content/jar.mn',
+                  line: jarLine,
+                  creates: 'toolkit/content/a.js',
+                },
+              ],
+            },
+          }
+        ),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.check).toBe('staged-dependency-unused');
+    expect(issues[0]?.message).toContain('no later-ordered patch creates that file');
+  });
+
+  it('warns when the declared owner is not the patch that creates the file, naming the real creator', () => {
+    const jarLine = 'content/global/a.js (a.js)';
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '200-ui-jar.patch',
+          200,
+          CREATE_A_DIFF,
+          {},
+          { 'toolkit/content/jar.mn': `${jarLine}\n` },
+          {
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'toolkit/content/jar.mn',
+                  line: jarLine,
+                  creates: 'toolkit/content/a.js',
+                  owner: '999-ui-wrong.patch',
+                },
+              ],
+            },
+          }
+        ),
+        makeEntry('248-ui-a-impl.patch', 248, CREATE_A_DIFF, {
+          'toolkit/content/a.js': 'export const a = 1;\n',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.check).toBe('staged-dependency-unused');
+    expect(issues[0]?.message).toContain('248-ui-a-impl.patch');
+    expect(issues[0]?.message).toContain('not the declared owner');
+  });
+
   it('appends the closest legal ordinal to the refusal message', () => {
     const importerContent = `import { B } from "resource:///modules/B.sys.mjs";`;
     const ctx: PatchQueueContext = {

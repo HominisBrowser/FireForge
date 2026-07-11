@@ -9,6 +9,7 @@ import type {
   PatchMetadata,
   PatchStagedDependencies,
   PatchStagedForwardImport,
+  PatchStagedRegistration,
 } from '../types/commands/index.js';
 import type { FirefoxProduct } from '../types/config.js';
 import { parseObject } from '../utils/parse.js';
@@ -39,12 +40,35 @@ function parseForwardImports(data: unknown, label: string): PatchStagedForwardIm
   });
 }
 
+function parseRegistrations(data: unknown, label: string): PatchStagedRegistration[] {
+  if (!isArray(data)) {
+    throw new Error(`${label} must be an array`);
+  }
+  return data.map((entry, index) => {
+    const rec = parseObject(entry, `${label}[${index}]`);
+    const dependency: PatchStagedRegistration = {
+      file: rec.string('file'),
+      line: rec.string('line'),
+      creates: rec.string('creates'),
+    };
+    const owner = rec.optionalString('owner');
+    if (owner !== undefined) dependency.owner = owner;
+    const reason = rec.optionalString('reason');
+    if (reason !== undefined) dependency.reason = reason;
+    return dependency;
+  });
+}
+
 function parseStagedDependencies(data: unknown, label: string): PatchStagedDependencies {
   const rec = parseObject(data, label);
   const rawForwardImports = rec.raw('forwardImports');
+  const rawRegistrations = rec.raw('registrations');
   const staged: PatchStagedDependencies = {};
   if (rawForwardImports !== undefined) {
     staged.forwardImports = parseForwardImports(rawForwardImports, `${label}.forwardImports`);
+  }
+  if (rawRegistrations !== undefined) {
+    staged.registrations = parseRegistrations(rawRegistrations, `${label}.registrations`);
   }
   return staged;
 }

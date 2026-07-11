@@ -51,6 +51,19 @@ export interface CustomComponentConfig {
   targetPath: string;
   /** Whether to register in customElements.js */
   register: boolean;
+  /**
+   * What the component IS. `'element'` (the default when unset) is a custom
+   * element with its own tag. `'library'` is a base class + helpers module
+   * that defines no element of its own (e.g. a shared MozLitElement
+   * subclass other components extend): `furnace validate` skips the
+   * `no-custom-element-define` / `not-moz-lit-element` compatibility checks
+   * and the `missing-css` structural advisory for it, while headers, module
+   * shape, `relative-import`, and (when a `.css` exists) the CSS
+   * compatibility rules still apply. A library exports no element, so
+   * `kind: "library"` requires `register: false` — the combination with
+   * `register: true` is rejected at config parse time.
+   */
+  kind?: 'element' | 'library';
   /** Whether this component uses Fluent l10n */
   localized: boolean;
   /** Stock component tag names composed internally by this component */

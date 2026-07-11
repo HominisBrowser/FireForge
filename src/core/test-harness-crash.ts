@@ -39,6 +39,14 @@ export interface HarnessRunVerdict {
   signature?: HarnessCrashSignature;
   /** First concrete test-failure evidence line, when available. */
   realFailureLine?: string;
+  /**
+   * First N `TEST-UNEXPECTED-*` lines verbatim, each with its trailing
+   * assertion/diff context lines (`Got …` / `Expected …` / Assert diff /
+   * stack head). Lets the failure summary echo the actual assertion so a
+   * one-off failure that does not reproduce is still diagnosable after the
+   * fact. Only set on `test-failures` verdicts when such lines exist.
+   */
+  realFailureBlocks?: string[];
   /** Harness noise seen in the same output as a real test failure. */
   secondaryHarnessSignature?: HarnessCrashSignature;
   /**
@@ -364,6 +372,63 @@ function realUnexpectedFailureLines(output: string): string[] {
   );
 }
 
+/**
+ * Non-global copies of the unexpected/assertion patterns for per-line use —
+ * the `g`-flagged module patterns carry `lastIndex` state across `.test()`
+ * calls and must never be reused line-by-line.
+ */
+const UNEXPECTED_LINE_SINGLE = /\bTEST-UNEXPECTED-[A-Z-]+\b/;
+/**
+ * Context lines the chrome/xpcshell harnesses print directly under a
+ * TEST-UNEXPECTED line: `Got …` / `Expected …` / `Actual …`, Assert
+ * messages, diff markers, stack-trace heads, and indented continuation
+ * lines.
+ */
+const FAILURE_CONTEXT_LINE_PATTERN =
+  /^(?:\s*(?:Got\b|Expected\b|Actual\b|Assert\w*\b|Stack trace:|[-+]\s)|\s{2,}\S)/;
+
+/** Cap on context lines echoed under a single TEST-UNEXPECTED line. */
+const FAILURE_BLOCK_CONTEXT_LIMIT = 6;
+
+/**
+ * Collects the first `limit` TEST-UNEXPECTED-* lines with their trailing
+ * assertion/diff context, one string per block. The shutdown-reentry
+ * artifact is excluded (it is harness noise, not a test result). When more
+ * than `limit` blocks exist, a final `…(+N more …)` note is appended so the
+ * operator knows the echo was truncated. Pure; exported for unit tests.
+ */
+export function collectUnexpectedFailureBlocks(output: string, limit = 5): string[] {
+  const lines = output.split(/\r?\n/);
+  const blocks: string[] = [];
+  let skipped = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    if (!UNEXPECTED_LINE_SINGLE.test(line) || SHUTDOWN_REENTRY_PATTERN.test(line)) continue;
+
+    if (blocks.length >= limit) {
+      skipped++;
+      continue;
+    }
+
+    const block = [line.trim()];
+    let contextCount = 0;
+    for (let j = i + 1; j < lines.length && contextCount < FAILURE_BLOCK_CONTEXT_LIMIT; j++) {
+      const next = lines[j] ?? '';
+      if (UNEXPECTED_LINE_SINGLE.test(next)) break;
+      if (!FAILURE_CONTEXT_LINE_PATTERN.test(next)) break;
+      block.push(next.trimEnd());
+      contextCount++;
+    }
+    blocks.push(block.join('\n'));
+  }
+
+  if (skipped > 0) {
+    blocks.push(`…(+${skipped} more TEST-UNEXPECTED line${skipped === 1 ? '' : 's'} not shown)`);
+  }
+  return blocks;
+}
+
 function detectSecondaryHarnessNoise(output: string): HarnessCrashSignature | undefined {
   const evidence = stripNonSignalNoise(output);
   if (TRACEBACK_PATTERN.test(evidence)) {
@@ -478,6 +543,7 @@ export function classifyHarnessRun(
 ): HarnessRunVerdict {
   const realFailures = realUnexpectedFailureLines(output);
   const firstRealFailure = realFailures[0];
+  const failureBlocks = collectUnexpectedFailureBlocks(output);
   const secondaryHarnessSignature =
     firstRealFailure !== undefined ? detectSecondaryHarnessNoise(output) : undefined;
   const signature = detectHarnessCrashSignature(output);
@@ -517,6 +583,7 @@ export function classifyHarnessRun(
       return {
         kind: 'test-failures',
         ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
+        ...(failureBlocks.length > 0 ? { realFailureBlocks: failureBlocks } : {}),
         ...(secondaryHarnessSignature !== undefined ? { secondaryHarnessSignature } : {}),
         greenSummaryRejected: {
           ...(crashLine !== undefined ? { crashLine } : {}),
@@ -530,6 +597,7 @@ export function classifyHarnessRun(
   return {
     kind: 'test-failures',
     ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
+    ...(failureBlocks.length > 0 ? { realFailureBlocks: failureBlocks } : {}),
     ...(secondaryHarnessSignature !== undefined ? { secondaryHarnessSignature } : {}),
   };
 }

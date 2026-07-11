@@ -37,4 +37,29 @@ export interface BuildBaseline {
    * was recorded.
    */
   packageableFingerprints?: Record<string, string>;
+  /**
+   * What the packaged test runtime produced by the recorded build covers.
+   *
+   * - `'full'`: the build packaged the full test set — written by
+   *   `fireforge build` / `build --ui` and by a path-less
+   *   `fireforge test --build` (full-suite run).
+   * - `string[]`: engine-relative POSIX request paths of the file/directory-
+   *   scoped `fireforge test --build` invocation that produced the runtime.
+   *   A directory entry covers everything beneath it. Support fixtures for
+   *   manifests outside this list may be missing from `obj-*`/`_tests/`, so
+   *   an `--allow-stale-build` run over uncovered paths is refused rather
+   *   than dispatched into a hang.
+   *
+   * Missing on baselines written before 0.37.0 — only `fireforge build`
+   * wrote baselines then, so "full" is the honest historical value and the
+   * stale-check treats an absent field as full coverage.
+   *
+   * The record is project-scoped, which is also per-obj-dir: multi-objdir
+   * checkouts are refused up-front (`AmbiguousBuildArtifactsError`), so at
+   * most one obj dir exists per project.
+   */
+  testPackagingCoverage?: TestPackagingCoverage;
 }
+
+/** Coverage claim of the packaged test runtime. See {@link BuildBaseline.testPackagingCoverage}. */
+export type TestPackagingCoverage = 'full' | string[];

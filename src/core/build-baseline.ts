@@ -25,7 +25,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { isPackageablePath } from './build-audit.js';
-import type { BuildBaseline } from './build-baseline-types.js';
+import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { getHead, hasChanges, isMissingHeadError } from './git.js';
 import { git } from './git-base.js';
@@ -71,11 +71,15 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
  * @param projectRoot - Root directory of the project
  * @param engineDir - Path to the engine directory
  * @param binaryName - Current `binaryName` from fireforge.json
+ * @param testPackagingCoverage - Coverage claim of the packaged test
+ *   runtime this build produced (`'full'`, or the scoped request paths of
+ *   a `test --build` invocation). Omitted → field left off the marker.
  */
 export async function writeBuildBaseline(
   projectRoot: string,
   engineDir: string,
-  binaryName: string
+  binaryName: string,
+  testPackagingCoverage?: TestPackagingCoverage
 ): Promise<void> {
   let engineHeadSha = '';
   try {
@@ -97,6 +101,7 @@ export async function writeBuildBaseline(
     builtAt: new Date().toISOString(),
     binaryName,
     ...(packageableFingerprints !== undefined ? { packageableFingerprints } : {}),
+    ...(testPackagingCoverage !== undefined ? { testPackagingCoverage } : {}),
   };
   await writeJson(getBuildBaselinePath(projectRoot), baseline);
 }

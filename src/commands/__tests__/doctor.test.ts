@@ -348,7 +348,7 @@ describe('doctorCommand', () => {
   it('reports a clean workspace as fully passing', async () => {
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('All 15 checks passed!');
+    expect(outro).toHaveBeenCalledWith('All 16 checks passed!');
     expect(result.exitCode).toBe(0);
   });
 
@@ -367,7 +367,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('14 passed, 1 warning');
+    expect(outro).toHaveBeenCalledWith('15 passed, 1 warning');
     expect(result.exitCode).toBe(0);
   });
 
@@ -392,7 +392,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('All 15 checks passed!');
+    expect(outro).toHaveBeenCalledWith('All 16 checks passed!');
     expect(
       vi.mocked(success).mock.calls.some(([message]) => message.includes('126 tool-managed'))
     ).toBe(true);
@@ -421,7 +421,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('All 15 checks passed!');
+    expect(outro).toHaveBeenCalledWith('All 16 checks passed!');
     expect(
       vi.mocked(success).mock.calls.some(([message]) => message.includes('1 tool-managed change'))
     ).toBe(true);
@@ -480,7 +480,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('All 15 checks passed!');
+    expect(outro).toHaveBeenCalledWith('All 16 checks passed!');
     expect(
       vi.mocked(success).mock.calls.some(([message]) => message.includes('tool-managed change'))
     ).toBe(true);
@@ -514,7 +514,7 @@ describe('doctorCommand', () => {
     expect(
       vi.mocked(error).mock.calls.some(([message]) => message.includes('Engine state consistency'))
     ).toBe(true);
-    expect(outro).toHaveBeenCalledWith('14 passed, 1 warning, 1 failed');
+    expect(outro).toHaveBeenCalledWith('15 passed, 1 warning, 1 failed');
     expect(result.exitCode).toBe(1);
   });
 
@@ -532,7 +532,7 @@ describe('doctorCommand', () => {
           message.includes('Engine is detached at the recorded base commit')
         )
     ).toBe(true);
-    expect(outro).toHaveBeenCalledWith('15 passed, 1 warning');
+    expect(outro).toHaveBeenCalledWith('16 passed, 1 warning');
     expect(result.exitCode).toBe(0);
   });
 
@@ -1741,7 +1741,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('14 passed, 2 warnings');
+    expect(outro).toHaveBeenCalledWith('15 passed, 2 warnings');
     expect(result.exitCode).toBe(0);
   });
 });
@@ -1840,6 +1840,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
       'Engine is git repository',
       'mach available',
       'Watchman available',
+      'Orphaned harness workers',
       'Patches directory exists',
       'Patches found',
       'Patch manifest consistency',

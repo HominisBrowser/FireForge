@@ -365,4 +365,71 @@ describe('validatePatchesManifest', () => {
       })
     ).toThrow('patches[0].stagedDependencies.forwardImports[0].specifier must be a string');
   });
+
+  it('preserves registration-kind staged dependencies when present (0.37.0 item 5)', () => {
+    const result = validatePatchesManifest({
+      version: 1,
+      patches: [
+        {
+          filename: '200-ui-history-jar.patch',
+          order: 200,
+          category: 'ui',
+          name: 'history-jar',
+          description: 'jar.mn packaging line for a later-created widget',
+          createdAt: '2026-07-09T00:00:00.000Z',
+          sourceEsrVersion: '153.0',
+          filesAffected: ['toolkit/content/jar.mn'],
+          stagedDependencies: {
+            registrations: [
+              {
+                file: 'toolkit/content/jar.mn',
+                line: 'content/global/widgets/hominis-history-ui.js (widgets/hominis-history-ui.js)',
+                creates: 'toolkit/content/widgets/hominis-history-ui.js',
+                owner: '248-ui-history-impl.patch',
+                reason: 'mid-queue buildability during staged history migration',
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(result.patches[0]?.stagedDependencies?.registrations).toEqual([
+      {
+        file: 'toolkit/content/jar.mn',
+        line: 'content/global/widgets/hominis-history-ui.js (widgets/hominis-history-ui.js)',
+        creates: 'toolkit/content/widgets/hominis-history-ui.js',
+        owner: '248-ui-history-impl.patch',
+        reason: 'mid-queue buildability during staged history migration',
+      },
+    ]);
+  });
+
+  it('rejects registration entries missing the line field', () => {
+    expect(() =>
+      validatePatchesManifest({
+        version: 1,
+        patches: [
+          {
+            filename: '200-ui-history-jar.patch',
+            order: 200,
+            category: 'ui',
+            name: 'history-jar',
+            description: 'jar.mn packaging line',
+            createdAt: '2026-07-09T00:00:00.000Z',
+            sourceEsrVersion: '153.0',
+            filesAffected: ['toolkit/content/jar.mn'],
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'toolkit/content/jar.mn',
+                  creates: 'toolkit/content/widgets/hominis-history-ui.js',
+                },
+              ],
+            },
+          },
+        ],
+      })
+    ).toThrow('patches[0].stagedDependencies.registrations[0].line must be a string');
+  });
 });

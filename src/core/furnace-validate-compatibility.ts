@@ -17,7 +17,8 @@ import {
 
 async function validateMjsCompatibility(
   mjsPath: string,
-  tagName: string
+  tagName: string,
+  isLibrary: boolean
 ): Promise<ValidationIssue[]> {
   if (!(await pathExists(mjsPath))) return [];
   const mjsContent = await readText(mjsPath);
@@ -32,6 +33,13 @@ async function validateMjsCompatibility(
         'Imports must use chrome:// URIs, not relative paths.'
       )
     );
+  }
+
+  // A library component (kind: "library") deliberately defines no element:
+  // it exports a base class + helpers for other components to extend, so
+  // the define/extends requirements do not apply.
+  if (isLibrary) {
+    return issues;
   }
 
   if (!hasCustomElementDefineCall(mjsContent)) {
@@ -247,7 +255,8 @@ export async function validateCompatibility(
   const mjsPath = join(componentDir, `${tagName}.mjs`);
   const cssPath = join(componentDir, `${tagName}.css`);
 
-  const mjsIssues = await validateMjsCompatibility(mjsPath, tagName);
+  const isLibrary = type === 'custom' && config?.custom[tagName]?.kind === 'library';
+  const mjsIssues = await validateMjsCompatibility(mjsPath, tagName, isLibrary);
   issues.push(...mjsIssues);
 
   const cssIssues = await validateCssCompatibility(cssPath, tagName, type, config, root);

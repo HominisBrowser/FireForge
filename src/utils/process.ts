@@ -4,6 +4,7 @@ import { constants as osConstants } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 
 import { ExecTimeoutError } from '../errors/base.js';
+import { killProcessTree, sweepProcessGroup } from './process-group.js';
 
 // 50 MB cap per stream to prevent OOM — large toolchain builds (e.g. Firefox, Chromium)
 // can easily blow past this, so we truncate rather than let the buffer grow unbounded.
@@ -80,6 +81,21 @@ export interface ExecOptions {
   env?: Record<string, string>;
   /** Timeout in milliseconds */
   timeout?: number;
+  /**
+   * POSIX: spawn the child as a process-group leader and route every kill
+   * (parent-signal forwarding, abort, escalation) to the whole GROUP, then
+   * sweep the group for survivors after close — so a harness that dies at
+   * startup cannot strand spinning `multiprocessing` workers (field
+   * incident: an orphaned Python spawn worker reparented to launchd and
+   * busy-spun at 100% CPU for ~26 days). Win32: tree-kill via
+   * `taskkill /T /F` on abort/signals only, no post-run sweep
+   * (best-effort). Default false — non-mach consumers are unaffected.
+   *
+   * NOTE for callers: a detached group leader does NOT receive terminal
+   * Ctrl+C; the exec layer installs its own group-aware signal forwarder
+   * whenever this option is set.
+   */
+  processGroup?: boolean;
 }
 
 function buildSignalFromTimeout(timeout: number | undefined): AbortSignal | undefined {
@@ -190,12 +206,15 @@ export async function execStream(
   options: StreamOptions = {}
 ): Promise<number> {
   return new Promise((resolve, reject) => {
+    const usesProcessGroup = options.processGroup === true && process.platform !== 'win32';
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       signal: buildSignalFromTimeout(options.timeout),
+      detached: usesProcessGroup,
     });
+    const groupPid = usesProcessGroup ? child.pid : undefined;
 
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
@@ -210,12 +229,37 @@ export async function execStream(
       if (chunk.length > 0) options.onStderr?.(chunk);
     });
 
+    // A detached group leader no longer receives the terminal's Ctrl+C, so
+    // the forwarder is mandatory (not just graceful-UX) when processGroup
+    // is set. Group-aware: kills route to the whole tree.
+    const forwarder =
+      options.processGroup === true
+        ? installGracefulShutdownForwarder(child, 1500, (signal) => {
+            killProcessTree(child, signal, usesProcessGroup);
+          })
+        : undefined;
+
     child.on('error', (error) => {
+      // Abort/startup failure: make sure a partially-started tree does not
+      // outlive the dispatch (a mach dying at startup used to strand
+      // multiprocessing workers).
+      if (options.processGroup === true) {
+        killProcessTree(child, 'SIGKILL', usesProcessGroup);
+      }
+      forwarder?.dispose();
       reject(toExecRejection(error, command, args, options.timeout));
     });
 
     child.on('close', (code, signal) => {
-      resolve(exitCodeFromClose(code, signal));
+      forwarder?.dispose();
+      const finish = (): void => {
+        resolve(exitCodeFromClose(code, signal));
+      };
+      if (groupPid !== undefined) {
+        sweepProcessGroup(groupPid).then(finish, finish);
+      } else {
+        finish();
+      }
     });
   });
 }
@@ -284,18 +328,32 @@ export async function execInherit(
   options: ExecOptions & { shutdownGraceMs?: number } = {}
 ): Promise<number> {
   return new Promise((resolve, reject) => {
+    const usesProcessGroup = options.processGroup === true && process.platform !== 'win32';
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: 'inherit',
       signal: buildSignalFromTimeout(options.timeout),
+      detached: usesProcessGroup,
     });
+    const groupPid = usesProcessGroup ? child.pid : undefined;
 
     const graceMs = options.shutdownGraceMs ?? 1500;
-    const { dispose } = installGracefulShutdownForwarder(child, graceMs);
+    const { dispose } = installGracefulShutdownForwarder(
+      child,
+      graceMs,
+      options.processGroup === true
+        ? (signal) => {
+            killProcessTree(child, signal, usesProcessGroup);
+          }
+        : undefined
+    );
     const closure = trackChildClosure();
 
     child.on('error', (error) => {
+      if (options.processGroup === true) {
+        killProcessTree(child, 'SIGKILL', usesProcessGroup);
+      }
       dispose();
       closure.settle();
       reject(toExecRejection(error, command, args, options.timeout));
@@ -303,8 +361,15 @@ export async function execInherit(
 
     child.on('close', (code, signal) => {
       dispose();
-      closure.settle();
-      resolve(exitCodeFromClose(code, signal));
+      const finish = (): void => {
+        closure.settle();
+        resolve(exitCodeFromClose(code, signal));
+      };
+      if (groupPid !== undefined) {
+        sweepProcessGroup(groupPid).then(finish, finish);
+      } else {
+        finish();
+      }
     });
   });
 }
@@ -319,15 +384,23 @@ export async function execInherit(
  */
 function installGracefulShutdownForwarder(
   child: ReturnType<typeof spawn>,
-  graceMs: number
+  graceMs: number,
+  killTarget?: (signal: NodeJS.Signals) => void
 ): { dispose: () => void } {
   let graceTimer: NodeJS.Timeout | undefined;
   const forwarded = new Set<NodeJS.Signals>();
+  const sendKill = (signal: NodeJS.Signals): void => {
+    if (killTarget) {
+      killTarget(signal);
+      return;
+    }
+    child.kill(signal);
+  };
 
   const escalate = (): void => {
     if (child.exitCode !== null || child.signalCode !== null) return;
     try {
-      child.kill('SIGKILL');
+      sendKill('SIGKILL');
     } catch {
       // Child is already gone — nothing to do.
     }
@@ -341,7 +414,7 @@ function installGracefulShutdownForwarder(
     }
     forwarded.add(signal);
     try {
-      child.kill('SIGTERM');
+      sendKill('SIGTERM');
     } catch {
       // If the child can't accept SIGTERM (already dead), nothing to do.
       return;
@@ -386,12 +459,15 @@ export async function execInheritCapture(
   options: ExecOptions & { shutdownGraceMs?: number } = {}
 ): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
+    const usesProcessGroup = options.processGroup === true && process.platform !== 'win32';
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: ['inherit', 'pipe', 'pipe'],
       signal: buildSignalFromTimeout(options.timeout),
+      detached: usesProcessGroup,
     });
+    const groupPid = usesProcessGroup ? child.pid : undefined;
 
     const out = createStreamCollector(process.stdout);
     const err = createStreamCollector(process.stderr);
@@ -399,10 +475,21 @@ export async function execInheritCapture(
     child.stderr.on('data', err.onData);
 
     const graceMs = options.shutdownGraceMs ?? 1500;
-    const { dispose } = installGracefulShutdownForwarder(child, graceMs);
+    const { dispose } = installGracefulShutdownForwarder(
+      child,
+      graceMs,
+      options.processGroup === true
+        ? (signal) => {
+            killProcessTree(child, signal, usesProcessGroup);
+          }
+        : undefined
+    );
     const closure = trackChildClosure();
 
     child.on('error', (error) => {
+      if (options.processGroup === true) {
+        killProcessTree(child, 'SIGKILL', usesProcessGroup);
+      }
       dispose();
       closure.settle();
       reject(toExecRejection(error, command, args, options.timeout));
@@ -410,14 +497,21 @@ export async function execInheritCapture(
 
     child.on('close', (code, signal) => {
       dispose();
-      closure.settle();
-      resolve({
-        stdout: out.getText(),
-        stderr: err.getText(),
-        exitCode: exitCodeFromClose(code, signal),
-        stdoutTruncated: out.wasTruncated(),
-        stderrTruncated: err.wasTruncated(),
-      });
+      const finish = (): void => {
+        closure.settle();
+        resolve({
+          stdout: out.getText(),
+          stderr: err.getText(),
+          exitCode: exitCodeFromClose(code, signal),
+          stdoutTruncated: out.wasTruncated(),
+          stderrTruncated: err.wasTruncated(),
+        });
+      };
+      if (groupPid !== undefined) {
+        sweepProcessGroup(groupPid).then(finish, finish);
+      } else {
+        finish();
+      }
     });
   });
 }
@@ -540,30 +634,7 @@ export async function execSmokeRun(
     let signalGraceTimer: NodeJS.Timeout | undefined;
 
     const signalChildGroup = (signal: NodeJS.Signals): void => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      const targetPid = child.pid;
-      if (targetPid === undefined) return;
-      try {
-        if (usesProcessGroup) {
-          // Negative PID routes to the process group, killing the Python
-          // wrapper, the firefox it forked, and every content process
-          // that inherited the group.
-          process.kill(-targetPid, signal);
-        } else {
-          // No process group on Windows — taskkill /T walks the descendant
-          // tree instead. Always forced (/F): there is no SIGTERM analogue,
-          // so the grace window only exists on POSIX.
-          spawn('taskkill', ['/pid', String(targetPid), '/T', '/F'], {
-            stdio: 'ignore',
-          }).on('error', () => {
-            // taskkill unavailable — nothing more we can do beyond the
-            // direct-child kill below.
-          });
-          child.kill(signal);
-        }
-      } catch {
-        // Already gone. Nothing to do.
-      }
+      killProcessTree(child, signal, usesProcessGroup);
     };
 
     const deadlineTimer = setTimeout(() => {

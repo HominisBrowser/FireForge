@@ -107,6 +107,12 @@ export interface ExportOptions {
   /** Exclude furnace-managed file paths from the export. */
   excludeFurnace?: boolean;
   /**
+   * Export the deployed engine copy even when the `components/` source
+   * changed since the last furnace apply. Without this flag the export is
+   * refused so a stale deployed copy cannot silently land in the patch.
+   */
+  allowStaleFurnace?: boolean;
+  /**
    * Acknowledge that the export will create cross-patch ownership overlap
    * with existing non-superseded patches. Without this flag, `export`
    * refuses when one or more `filesAffected` are already claimed by
@@ -222,6 +228,12 @@ export interface ReExportOptions {
    * before the interactive/`--yes` confirmation path.
    */
   allowShrink?: boolean;
+  /**
+   * Export the deployed engine copy even when the `components/` source
+   * changed since the last furnace apply. Without this flag the re-export
+   * is refused so a stale deployed copy cannot silently land in the patch.
+   */
+  allowStaleFurnace?: boolean;
   /** Bypass cross-patch lint refusal on projected shrink state */
   forceUnsafe?: boolean;
   /**
@@ -293,16 +305,27 @@ export interface PatchLintIgnoreOptions {
  * declarations, or clear all staged dependencies from the patch.
  */
 export interface PatchStagedDependencyOptions {
-  /** Add a forward-import staged dependency. */
+  /** Add a staged dependency declaration. */
   add?: boolean;
-  /** Remove matching forward-import staged dependency declarations. */
+  /** Remove matching staged dependency declarations. */
   remove?: boolean;
   /** Drop the stagedDependencies field entirely. */
   clear?: boolean;
-  /** Importing file path relative to engine/. */
+  /**
+   * Declaration shape: `import` (forward import, the default when unset) or
+   * `registration` (jar.mn packaging line, customElements or actor
+   * registration). Registration entries use `line` instead of `specifier`.
+   */
+  kind?: string;
+  /** Declaring file path relative to engine/. */
   file?: string;
-  /** Exact import specifier as it appears in source. */
+  /** Exact import specifier as it appears in source (`kind: import`). */
   specifier?: string;
+  /**
+   * Registration/packaging line as the patch adds it, compared
+   * whitespace-trimmed (`kind: registration`).
+   */
+  line?: string;
   /** Later-created file path relative to engine/. */
   creates?: string;
   /** Optional exact patch filename expected to create `creates`. */

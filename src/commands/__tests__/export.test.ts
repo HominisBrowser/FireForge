@@ -80,10 +80,19 @@ vi.mock('../../utils/fs.js', () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The stale-furnace gate's detection logic is covered by
+// src/core/__tests__/furnace-stale-export.test.ts; here it is mocked to a
+// no-op so existing tests are unaffected, with dedicated wiring tests
+// asserting the call and the refusal propagation.
+vi.mock('../../core/furnace-stale-export.js', () => ({
+  enforceFreshFurnaceSources: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
+  verbose: vi.fn(),
   warn: vi.fn(),
   spinner: vi.fn().mockReturnValue({
     message: vi.fn(),
@@ -111,6 +120,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { stat } from 'node:fs/promises';
 
+import { enforceFreshFurnaceSources } from '../../core/furnace-stale-export.js';
 import { getStatusWithCodes, isGitRepository } from '../../core/git.js';
 import { generateBinaryFilePatch, generateFullFilePatch } from '../../core/git-diff.js';
 import { isBinaryFile } from '../../core/git-file-ops.js';
@@ -208,6 +218,61 @@ describe('exportCommand - directory support', () => {
     expect(generateFullFilePatch).toHaveBeenCalledTimes(2);
     expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/a.js');
     expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/b.js');
+  });
+
+  // ── 0.37.0 item 4: stale-furnace gate wiring ──
+
+  it('runs the stale-furnace gate over the export files before diffing', async () => {
+    mockStatForPaths(['dir']);
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue(['dir/a.js']);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(generateFullFilePatch).mockResolvedValue('diff --git a/dir/a.js b/dir/a.js\n+a\n');
+    vi.mocked(extractAffectedFiles).mockReturnValue(['dir/a.js']);
+
+    await exportCommand('/fake/root', ['dir'], {
+      name: 'test-dir',
+      category: 'ui',
+      description: 'test',
+    });
+
+    expect(enforceFreshFurnaceSources).toHaveBeenCalledWith(
+      '/fake/root',
+      ['dir/a.js'],
+      false,
+      'export'
+    );
+  });
+
+  it('forwards --allow-stale-furnace into the gate and refusals propagate', async () => {
+    mockStatForPaths(['dir']);
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue(['dir/a.js']);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+    vi.mocked(generateFullFilePatch).mockResolvedValue('diff --git a/dir/a.js b/dir/a.js\n+a\n');
+    vi.mocked(extractAffectedFiles).mockReturnValue(['dir/a.js']);
+
+    await exportCommand('/fake/root', ['dir'], {
+      name: 'test-dir',
+      category: 'ui',
+      description: 'test',
+      allowStaleFurnace: true,
+    });
+    expect(enforceFreshFurnaceSources).toHaveBeenCalledWith(
+      '/fake/root',
+      ['dir/a.js'],
+      true,
+      'export'
+    );
+
+    vi.mocked(enforceFreshFurnaceSources).mockRejectedValueOnce(
+      new Error('Component source for moz-tiles has changed since the last furnace apply')
+    );
+    await expect(
+      exportCommand('/fake/root', ['dir'], {
+        name: 'test-dir',
+        category: 'ui',
+        description: 'test',
+      })
+    ).rejects.toThrow(/moz-tiles/);
   });
 
   it('auto-excludes directory-derived files owned by other patches (0.34.0)', async () => {

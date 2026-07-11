@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join, resolve } from 'node:path';
 
-import { readBuildBaseline } from '../core/build-baseline.js';
+import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
+import type { TestPackagingCoverage } from '../core/build-baseline-types.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import {
@@ -34,13 +35,19 @@ import {
   formatScopeNotice,
   type TestPathScope,
 } from '../core/test-path-scope.js';
-import { checkStaleBuildForTest, formatStaleBuildWarning } from '../core/test-stale-check.js';
+import {
+  checkStaleBuildForTest,
+  findUncoveredRequestPaths,
+  formatStaleBuildWarning,
+  formatTestCoverageRefusal,
+} from '../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, outro, spinner, success, warn } from '../utils/logger.js';
+import { info, intro, outro, spinner, success, verbose, warn } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
 import {
@@ -175,7 +182,8 @@ async function runPreTestBuild(
   projectRoot: string,
   paths: ReturnType<typeof getProjectPaths>,
   projectConfig: Awaited<ReturnType<typeof loadConfig>>,
-  harnessRetries: number
+  harnessRetries: number,
+  testPackagingCoverage: TestPackagingCoverage
 ): Promise<void> {
   await withBuildLock(projectRoot, async () => {
     // Pass the previous baseline exactly like `fireforge build` does, so
@@ -203,6 +211,23 @@ async function runPreTestBuild(
     });
     if (result.exitCode === 0) {
       s.stop('Build complete');
+      // Same record, same failure tolerance as `fireforge build` /
+      // `build --ui` (build.ts): a green pre-test build refreshes the
+      // stale-build baseline so a later plain `fireforge test` over the
+      // same files — in any invocation shape — is not refused. A failed
+      // write never fails the run. The coverage claim is scoped to the
+      // requested test paths, since a file-scoped `test --build` only
+      // guarantees packaging for those manifests.
+      try {
+        await writeBuildBaseline(
+          projectRoot,
+          paths.engine,
+          projectConfig.binaryName,
+          testPackagingCoverage
+        );
+      } catch (baselineError: unknown) {
+        verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
+      }
       return;
     }
     s.error('Pre-test build failed');
@@ -213,6 +238,62 @@ async function runPreTestBuild(
       'mach build faster'
     );
   });
+}
+
+/**
+ * Stale-build preflight — when `--build` was NOT requested, detect
+ * packageable engine edits since the last successful build and fail
+ * UP-FRONT unless the operator explicitly accepts the stale package risk.
+ *
+ * Packaging COVERAGE is checked first, on EVERY non-`--build` run and
+ * regardless of staleness or `--allow-stale-build`: a runtime packaged by
+ * a file-scoped `test --build` can lack support fixtures for OTHER
+ * manifests even when nothing changed since — dispatching such a run
+ * hangs on missing fixtures rather than failing, so the flag (which only
+ * accepts stale CONTENT) must not be the trigger. Field incident: a
+ * three-file scoped rebuild left `file_tiles_audio.html` unpackaged and a
+ * later run over different files timed out twice at 45s waiting on
+ * `DOMAudioPlaybackStarted`.
+ *
+ * Exception: a path-less `test --doctor` stops at the Marionette health
+ * check (`runDoctorPreflight` returns 'stop' when no test paths were
+ * given) and never dispatches a test, so it needs no packaging coverage —
+ * treating it as a full-suite request would refuse a probe that touches
+ * no fixtures. The stale-content refusal still applies to it unchanged.
+ */
+async function enforceStaleBuildGate(
+  projectRoot: string,
+  engineDir: string,
+  options: TestOptions,
+  normalizedPaths: readonly string[]
+): Promise<void> {
+  const stale = await checkStaleBuildForTest(projectRoot, engineDir);
+  const dispatchesNoTests = options.doctor === true && normalizedPaths.length === 0;
+  if (!dispatchesNoTests) {
+    const recordedCoverage = stale.baseline?.testPackagingCoverage;
+    const uncovered = findUncoveredRequestPaths(recordedCoverage, normalizedPaths);
+    if (uncovered.length > 0) {
+      throw new GeneralError(
+        formatTestCoverageRefusal(
+          uncovered,
+          Array.isArray(recordedCoverage) ? recordedCoverage : []
+        )
+      );
+    }
+  }
+
+  const staleMessage = stale.stale
+    ? `${formatStaleBuildWarning(stale)}\n\n` +
+      'Run `fireforge test --build` to refresh the packaged runtime first, or pass ' +
+      '`--allow-stale-build` if you intentionally rebuilt out-of-band and accept the risk.'
+    : undefined;
+  if (staleMessage !== undefined) {
+    if (options.allowStaleBuild === true) {
+      warn(staleMessage);
+    } else {
+      throw new GeneralError(staleMessage);
+    }
+  }
 }
 
 function logTestSelection(scopes: readonly TestPathScope[]): void {
@@ -426,27 +507,23 @@ export async function testCommand(
 
   const harnessRetries = options.harnessRetries ?? DEFAULT_HARNESS_RETRIES;
 
+  // Normalized engine-relative request paths, hoisted above the build/stale
+  // gate: the pre-test build records them as the packaging-coverage claim,
+  // and the --allow-stale-build path checks the request against the
+  // recorded coverage. (Existence is still asserted later, after the gate —
+  // stale/coverage refusals keep precedence over missing-path errors.)
+  const requestedPaths = canaryPath !== undefined ? [canaryPath] : testPaths;
+  const normalizedPaths = requestedPaths.map((p) => stripEnginePrefix(p).trim());
+
   // Run incremental build if requested
   if (options.build) {
-    await runPreTestBuild(projectRoot, paths, projectConfig, harnessRetries);
+    // A path-less `test --build` runs (and packages for) the full suite;
+    // a scoped invocation only vouches for the requested paths.
+    const coverage: TestPackagingCoverage = normalizedPaths.length === 0 ? 'full' : normalizedPaths;
+    await runPreTestBuild(projectRoot, paths, projectConfig, harnessRetries, coverage);
     info('');
   } else {
-    // Stale-build preflight — when --build was NOT requested, detect
-    // packageable engine edits since the last successful `fireforge build`
-    // and fail UP-FRONT unless the operator explicitly accepts the stale
-    // package risk.
-    const stale = await checkStaleBuildForTest(projectRoot, paths.engine);
-    if (stale.stale) {
-      const message =
-        `${formatStaleBuildWarning(stale)}\n\n` +
-        'Run `fireforge test --build` to refresh the packaged runtime first, or pass ' +
-        '`--allow-stale-build` if you intentionally rebuilt out-of-band and accept the risk.';
-      if (options.allowStaleBuild === true) {
-        warn(message);
-      } else {
-        throw new GeneralError(message);
-      }
-    }
+    await enforceStaleBuildGate(projectRoot, paths.engine, options, normalizedPaths);
   }
 
   // Resolve the effective Marionette port. Operator precedence:
@@ -490,8 +567,6 @@ export async function testCommand(
     if (doctorOutcome === 'stop') return;
   }
 
-  const requestedPaths = canaryPath !== undefined ? [canaryPath] : testPaths;
-  const normalizedPaths = requestedPaths.map((p) => stripEnginePrefix(p).trim());
   await assertTestPathsExist(paths.engine, normalizedPaths);
   const classification = await classifyTestHarnesses(paths.engine, normalizedPaths);
   if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {

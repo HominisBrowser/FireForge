@@ -626,6 +626,84 @@ describe('furnace-config helpers', () => {
     ).toThrow('path traversal');
   });
 
+  it('accepts kind: "library" on a register: false custom component (0.37.0 item 6)', () => {
+    const config = validateFurnaceConfig({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-shared-base': {
+          description: 'Shared base class + helpers',
+          targetPath: 'toolkit/content/widgets/moz-shared-base',
+          register: false,
+          localized: false,
+          kind: 'library',
+        },
+      },
+    });
+    expect(config.custom['moz-shared-base']?.kind).toBe('library');
+  });
+
+  it('normalizes an explicit kind: "element" away (the default carries no field)', () => {
+    const config = validateFurnaceConfig({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-panel': {
+          description: 'a',
+          targetPath: 'toolkit/content/widgets/moz-panel',
+          register: true,
+          localized: false,
+          kind: 'element',
+        },
+      },
+    });
+    expect(config.custom['moz-panel']?.kind).toBeUndefined();
+  });
+
+  it('rejects an unknown kind value', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-panel': {
+            description: 'a',
+            targetPath: 'toolkit/content/widgets/moz-panel',
+            register: true,
+            localized: false,
+            kind: 'widget',
+          },
+        },
+      })
+    ).toThrow('must be "element" or "library"');
+  });
+
+  it('rejects kind: "library" combined with register: true', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-shared-base': {
+            description: 'Shared base class + helpers',
+            targetPath: 'toolkit/content/widgets/moz-shared-base',
+            register: true,
+            localized: false,
+            kind: 'library',
+          },
+        },
+      })
+    ).toThrow('set register: false');
+  });
+
   it('rejects non-string tokenPrefix', () => {
     expect(() =>
       validateFurnaceConfig({

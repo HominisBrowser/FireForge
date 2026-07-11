@@ -76,6 +76,31 @@ describe('finalizeSingleRunOutcome', () => {
     }).toThrow(/harness symlinks/);
   });
 
+  it('echoes the TEST-UNEXPECTED blocks with assertion text into the failure summary (0.37.0 item 7)', () => {
+    const outcome = makeOutcome({
+      exitCode: 1,
+      verdict: {
+        kind: 'test-failures',
+        realFailureLine: 'Unexpected results: 1',
+        realFailureBlocks: [
+          'TEST-UNEXPECTED-FAIL | browser_x.js | Assert.equal - got false, expected true\nGot false\nExpected true',
+        ],
+      },
+      stdout: 'TEST-UNEXPECTED-FAIL | browser_x.js | Assert.equal - got false, expected true',
+    });
+
+    expect(() => {
+      finalizeSingleRunOutcome(outcome, PATHS, 'mybrowser', undefined);
+    }).toThrow(/Tests failed with exit code 1/);
+    expect(info).toHaveBeenCalledWith('First real test failure: Unexpected results: 1');
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'TEST-UNEXPECTED-FAIL | browser_x.js | Assert.equal - got false, expected true'
+      )
+    );
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('Expected true'));
+  });
+
   it('prepends the post-rebuild context to the generic failure message', () => {
     const outcome = makeOutcome({
       exitCode: 1,
@@ -111,6 +136,22 @@ describe('diagnoseShardOutcome', () => {
     );
     expect(diagnosis).toContain('did NOT treat the run as passed');
     expect(diagnosis).toContain('browser_hominis_cui_telemetry.js');
+  });
+
+  it('prepends the TEST-UNEXPECTED blocks to the shard diagnosis string (0.37.0 item 7)', () => {
+    const outcome = makeOutcome({
+      exitCode: 1,
+      verdict: {
+        kind: 'test-failures',
+        realFailureBlocks: ['TEST-UNEXPECTED-FAIL | browser_x.js | boom\nGot 1\nExpected 2'],
+      },
+      stdout: 'TEST-UNEXPECTED-FAIL | browser_x.js | boom',
+    });
+
+    const diagnosis = diagnoseShardOutcome(outcome, 'a/browser_x.js', 'mybrowser', undefined);
+    expect(diagnosis).toContain('TEST-UNEXPECTED-FAIL | browser_x.js | boom');
+    expect(diagnosis).toContain('Expected 2');
+    expect(diagnosis).toContain('Tests failed with exit code 1');
   });
 
   it('returns the no-tests message for a silent exit-0 shard and undefined for a passing one', () => {

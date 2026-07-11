@@ -26,7 +26,13 @@ import { readBuildBaseline } from '../build-baseline.js';
 import { hasChanges } from '../git.js';
 import { git } from '../git-base.js';
 import { getUntrackedFiles } from '../git-status.js';
-import { checkStaleBuildForTest, formatStaleBuildWarning } from '../test-stale-check.js';
+import {
+  checkStaleBuildForTest,
+  findUncoveredRequestPaths,
+  formatStaleBuildWarning,
+  formatTestCoverageRefusal,
+  FULL_SUITE_REQUEST,
+} from '../test-stale-check.js';
 
 const mockReadBaseline = vi.mocked(readBuildBaseline);
 const mockGit = vi.mocked(git);
@@ -241,5 +247,96 @@ describe('formatStaleBuildWarning', () => {
       baseline: undefined,
     });
     expect(message).toContain('(+3 more)');
+  });
+});
+
+describe('findUncoveredRequestPaths', () => {
+  it('treats an absent coverage claim as full coverage (pre-0.37.0 baselines)', () => {
+    expect(findUncoveredRequestPaths(undefined, ['browser/foo/test/unit/test_a.js'])).toEqual([]);
+  });
+
+  it('treats a full claim as covering everything, including a full-suite request', () => {
+    expect(findUncoveredRequestPaths('full', ['browser/foo/test/unit/test_a.js'])).toEqual([]);
+    expect(findUncoveredRequestPaths('full', [])).toEqual([]);
+  });
+
+  it('covers an exact-path match', () => {
+    expect(
+      findUncoveredRequestPaths(
+        ['browser/foo/test/unit/test_a.js'],
+        ['browser/foo/test/unit/test_a.js']
+      )
+    ).toEqual([]);
+  });
+
+  it('covers files beneath a covered directory entry', () => {
+    expect(
+      findUncoveredRequestPaths(['browser/foo/test'], ['browser/foo/test/unit/test_a.js'])
+    ).toEqual([]);
+  });
+
+  it('does not cover a requested directory broader than a covered file', () => {
+    expect(
+      findUncoveredRequestPaths(['browser/foo/test/unit/test_a.js'], ['browser/foo/test'])
+    ).toEqual(['browser/foo/test']);
+  });
+
+  it('reports disjoint manifests as uncovered', () => {
+    // The item-3 field incident shape: a three-file scoped rebuild does not
+    // cover a run over a different manifest whose support fixtures were
+    // never packaged.
+    expect(
+      findUncoveredRequestPaths(
+        ['browser/components/tiles/test/browser/browser_a.js'],
+        ['browser/components/history/test/browser/browser_hist.js']
+      )
+    ).toEqual(['browser/components/history/test/browser/browser_hist.js']);
+  });
+
+  it('reports a full-suite request against scoped coverage as uncovered', () => {
+    expect(findUncoveredRequestPaths(['browser/foo/test/unit/test_a.js'], [])).toEqual([
+      FULL_SUITE_REQUEST,
+    ]);
+  });
+
+  it('is not a prefix-string match: sibling paths sharing a prefix are uncovered', () => {
+    expect(findUncoveredRequestPaths(['browser/foo/test'], ['browser/foo/tests/a.js'])).toEqual([
+      'browser/foo/tests/a.js',
+    ]);
+  });
+
+  it('normalizes backslash input and trailing slashes before comparing', () => {
+    expect(
+      findUncoveredRequestPaths(['browser/foo/test/'], ['browser\\foo\\test\\unit\\test_a.js'])
+    ).toEqual([]);
+  });
+});
+
+describe('formatTestCoverageRefusal', () => {
+  it('names the uncovered paths, the recorded coverage, and both remediations', () => {
+    const message = formatTestCoverageRefusal(
+      ['browser/components/history/test/browser/browser_hist.js'],
+      ['browser/components/tiles/test/browser/browser_a.js']
+    );
+    expect(message).toContain('browser/components/history/test/browser/browser_hist.js');
+    expect(message).toContain('browser/components/tiles/test/browser/browser_a.js');
+    expect(message).toContain(
+      'fireforge test --build browser/components/history/test/browser/browser_hist.js'
+    );
+    expect(message).toContain('fireforge build');
+    expect(message).toContain('not missing coverage');
+  });
+
+  it('suggests a full rebuild for a full-suite request instead of an empty --build list', () => {
+    const message = formatTestCoverageRefusal([FULL_SUITE_REQUEST], ['browser/foo/test']);
+    expect(message).toContain(FULL_SUITE_REQUEST);
+    expect(message).not.toContain('fireforge test --build "');
+    expect(message).toContain('full coverage');
+  });
+
+  it('caps long path lists with a (+N more) tail', () => {
+    const uncovered = Array.from({ length: 14 }, (_, i) => `browser/foo/test_${String(i)}.js`);
+    const message = formatTestCoverageRefusal(uncovered, ['browser/bar/test']);
+    expect(message).toContain('(+4 more)');
   });
 });

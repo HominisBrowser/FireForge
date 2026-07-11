@@ -32,7 +32,7 @@ import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { isPackageablePath } from './build-audit.js';
 import { readBuildBaseline } from './build-baseline.js';
-import type { BuildBaseline } from './build-baseline-types.js';
+import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
 import { collectChangedEnginePaths } from './engine-changes.js';
 
 /** Result of the stale-build preflight probe. */
@@ -152,5 +152,74 @@ export function formatStaleBuildWarning(result: StaleBuildResult): string {
     'The current obj-*/dist/ bundle may not reflect those edits. If your test reads ' +
     'packaged chrome / jar.mn resources, rerun with "fireforge test --build" (or ' +
     '"fireforge build --ui") first. Passing --build skips this check.'
+  );
+}
+
+/**
+ * Sentinel returned by {@link findUncoveredRequestPaths} when a full-suite
+ * request (no paths) is checked against a scoped coverage record.
+ */
+export const FULL_SUITE_REQUEST = '(entire suite)';
+
+/**
+ * Compares the requested test paths against the packaged runtime's coverage
+ * claim recorded in the baseline. Returns the requested paths the recorded
+ * packaging does NOT cover — the runs that would dispatch against missing
+ * `_tests/` support fixtures and hang rather than fail.
+ *
+ * Coverage semantics: `undefined` (pre-0.37.0 baseline) and `'full'` cover
+ * everything. A scoped list covers a request path when the request equals a
+ * covered entry or sits beneath a covered directory entry. Both sides are
+ * normalized to forward slashes so Windows-style CLI input cannot defeat
+ * the prefix rule (baseline paths are POSIX by convention). A request with
+ * no paths is a full-suite run and is never covered by a scoped list — the
+ * {@link FULL_SUITE_REQUEST} sentinel is returned so the refusal can name it.
+ */
+export function findUncoveredRequestPaths(
+  coverage: TestPackagingCoverage | undefined,
+  requestedPaths: readonly string[]
+): string[] {
+  if (coverage === undefined || coverage === 'full') {
+    return [];
+  }
+  const covered = coverage.map(normalizeCoveragePath).filter((p) => p.length > 0);
+  if (requestedPaths.length === 0) {
+    return [FULL_SUITE_REQUEST];
+  }
+  return requestedPaths.filter((requested) => {
+    const path = normalizeCoveragePath(requested);
+    return !covered.some((c) => path === c || path.startsWith(`${c}/`));
+  });
+}
+
+/** Normalizes a path for coverage comparison: forward slashes, no trailing slash. */
+function normalizeCoveragePath(path: string): string {
+  return path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/**
+ * Formats the refusal shown when a non-`--build` run requests paths the
+ * packaged runtime's scoped `test --build` coverage does not include —
+ * enforced on every such run, with or without `--allow-stale-build`. Kept
+ * separate from the matcher so tests can pin structure and copy
+ * independently (same split as {@link formatStaleBuildWarning}).
+ */
+export function formatTestCoverageRefusal(uncovered: string[], coverage: string[]): string {
+  const cap = (paths: string[]): string => {
+    const head = paths.slice(0, STALE_PATHS_LIMIT);
+    const truncated = paths.length - head.length;
+    return head.join(', ') + (truncated > 0 ? `, … (+${truncated} more)` : '');
+  };
+  const rebuildTargets = uncovered.filter((p) => p !== FULL_SUITE_REQUEST);
+  const rebuildHint =
+    rebuildTargets.length > 0
+      ? `Rerun "fireforge test --build ${rebuildTargets.slice(0, STALE_PATHS_LIMIT).join(' ')}" to package them, or run "fireforge build" for full coverage.`
+      : 'Run "fireforge build" (or a path-less "fireforge test --build") for full coverage first.';
+  return (
+    `The packaged test runtime was produced by a scoped "fireforge test --build" covering only: ${cap(coverage)}.\n` +
+    `The requested run needs ${cap(uncovered)}, which that packaging does not cover — support ` +
+    'fixtures for those manifests may be missing from obj-*/_tests/, and the run can hang ' +
+    `rather than fail. ${rebuildHint} ` +
+    '(--allow-stale-build does not bypass this check — it accepts stale content, not missing coverage.)'
   );
 }

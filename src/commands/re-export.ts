@@ -7,6 +7,7 @@ import { Command, Option } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
+import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
@@ -173,6 +174,18 @@ async function reExportSinglePatch(
     for (const f of added) info(`  + ${f}`);
     for (const f of removed) info(`  - ${f}`);
   }
+
+  // Stale-furnace-source gate (0.37.0 item 4): re-export captures deployed
+  // engine copies, so a component source edited after the last furnace
+  // apply would land in the patch as its OLD deployed content. Refuse (or
+  // warn under --allow-stale-furnace) before diffing. Runs in dry-run too
+  // so the failure surfaces early.
+  await enforceFreshFurnaceSources(
+    paths.root,
+    currentFilesAffected,
+    options.allowStaleFurnace === true,
+    're-export'
+  );
 
   const missingFiles = await findMissingFiles(paths.engine, currentFilesAffected);
 
@@ -569,6 +582,10 @@ export function registerReExport(
     .option('--dry-run', 'Show what would change without writing')
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
     .option(
+      '--allow-stale-furnace',
+      'Export the deployed engine copy even when the components/ source changed since the last furnace apply'
+    )
+    .option(
       '--allow-shrink',
       'Allow --files to remove paths currently owned by the patch. Required before --yes can bypass the shrink confirmation.'
     )
@@ -604,6 +621,7 @@ export function registerReExport(
             skipLint?: boolean;
             yes?: boolean;
             allowShrink?: boolean;
+            allowStaleFurnace?: boolean;
             forceUnsafe?: boolean;
             stamp?: boolean;
             tier?: string;

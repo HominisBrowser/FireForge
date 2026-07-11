@@ -134,6 +134,15 @@ export interface PatchMetadata {
 export interface PatchStagedDependencies {
   /** Exact forward-import declarations allowed for this patch. */
   forwardImports?: PatchStagedForwardImport[];
+  /**
+   * Registration-shaped forward dependencies: packaging or registration
+   * LINES (a jar.mn entry, a customElements registration, an actor
+   * registration) this patch adds that reference a file a later patch
+   * creates. Unlike `forwardImports`, these are validated by matching the
+   * declared line against the patch's added content, not by finding an
+   * import specifier — packaging lines have no import to match.
+   */
+  registrations?: PatchStagedRegistration[];
 }
 
 /** A single intentional forward import to a later-created file. */
@@ -142,6 +151,27 @@ export interface PatchStagedForwardImport {
   file: string;
   /** Exact import specifier as it appears in source. */
   specifier: string;
+  /** Later-created file path relative to engine/. */
+  creates: string;
+  /** Optional exact patch filename expected to create `creates`. */
+  owner?: string;
+  /** Optional human-readable rationale for the staged dependency. */
+  reason?: string;
+}
+
+/**
+ * A single intentional registration/packaging line referencing a
+ * later-created file.
+ */
+export interface PatchStagedRegistration {
+  /** Declaring file path relative to engine/ (e.g. `toolkit/content/jar.mn`). */
+  file: string;
+  /**
+   * The registration/packaging line exactly as the patch adds it. Compared
+   * whitespace-trimmed against the patch's added lines in `file`, so
+   * indentation differences do not break the match.
+   */
+  line: string;
   /** Later-created file path relative to engine/. */
   creates: string;
   /** Optional exact patch filename expected to create `creates`. */

@@ -1,0 +1,233 @@
+// SPDX-License-Identifier: EUPL-1.2
+/**
+ * Terminal-echo filter for the KNOWN upstream mozsystemmonitor teardown
+ * traceback (0.37.0 item 8).
+ *
+ * Every headless test run against the 153-beta engine ends with an
+ * `AttributeError: 'SystemResourceMonitor' object has no attribute
+ * 'stop_time'` traceback at harness teardown — upstream noise that sits
+ * exactly where a reader looks for the failure summary. 0.36.0 already made
+ * real failure lines beat this traceback in CLASSIFICATION; this filter
+ * closes the PRESENTATION gap by collapsing the echoed traceback to one
+ * labeled line.
+ *
+ * Scope is deliberately narrow:
+ *   - Only the terminal ECHO is filtered. The captured stdout/stderr strings
+ *     stay raw — the classifier (`test-harness-crash.ts`) depends on the
+ *     raw traceback for its green-summary override and secondary-noise
+ *     detection.
+ *   - Only the exact documented incident is collapsed, and every condition
+ *     must hold: an `AttributeError` on `SystemResourceMonitor` naming one
+ *     of the two known attributes (`stop_time`, `poll_interval` — the
+ *     0.34.0 guard family), AND a `mozsystemmonitor/resourcemonitor.py`
+ *     stack frame, AND a previously-seen SUITE_END shutdown marker (shared
+ *     across the run's stdout/stderr filter instances — the marker usually
+ *     lands on stdout while the traceback lands on stderr). A novel
+ *     attribute, a novel exception type in resourcemonitor.py, or a
+ *     pre-shutdown occurrence is echoed verbatim, always.
+ *   - The hold buffer is bounded; on overflow the block is flushed verbatim
+ *     and the filter returns to pass-through, so output is never lost.
+ */
+
+const TRACEBACK_HEADER_PATTERN = /^Traceback \(most recent call last\)/;
+const CHAINED_EXCEPTION_CONNECTOR_PATTERN =
+  /^(?:During handling of the above exception, another exception occurred:|The above exception was the direct cause of the following exception:)\s*$/;
+
+/**
+ * Closed allowlist of the documented teardown family's attributes:
+ * `stop_time` (the 0.37.0 item-8 incident) and `poll_interval` (the same
+ * mozsystemmonitor init failure the 0.34.0 resource-guard family covers —
+ * `test-harness-crash.ts` already classifies it as recognized noise). Any
+ * other missing attribute is a NEW upstream defect and must print verbatim.
+ */
+const KNOWN_TEARDOWN_ATTRIBUTE_ERROR_PATTERN =
+  /AttributeError: 'SystemResourceMonitor' object has no attribute '(?:stop_time|poll_interval)'/;
+const RESOURCEMONITOR_FRAME_PATTERN = /mozsystemmonitor[/\\]resourcemonitor\.py/;
+
+/**
+ * Shutdown marker: the harness's SUITE_END line. Matches the shape
+ * `test-harness-crash.ts` keys its summary parsing on (module-private
+ * there; duplicated here with this cross-reference rather than exported).
+ */
+const SHUTDOWN_MARKER_PATTERN = /\bSUITE_END\b/;
+
+/** Whole-block recognition — every signal must hold (see module doc). */
+function isRecognizedTeardownNoise(block: string): boolean {
+  return (
+    KNOWN_TEARDOWN_ATTRIBUTE_ERROR_PATTERN.test(block) && RESOURCEMONITOR_FRAME_PATTERN.test(block)
+  );
+}
+
+/**
+ * Shared across the stdout and stderr filter instances of ONE mach run:
+ * SUITE_END typically arrives on stdout while the teardown traceback lands
+ * on stderr, so the shutdown-seen flag must be visible to both. The two
+ * pipes are independent, so a traceback can theoretically beat the marker
+ * through — the block then prints verbatim, the correct failure direction.
+ */
+export interface TeardownNoiseContext {
+  shutdownSeen: boolean;
+}
+
+/** Fresh per-run context — hand the same instance to both stream filters. */
+export function createTeardownNoiseContext(): TeardownNoiseContext {
+  return { shutdownSeen: false };
+}
+
+/** One line replaces the whole recognized traceback block in the echo. */
+export const KNOWN_TEARDOWN_NOISE_ANNOTATION =
+  '[FireForge] Known upstream mozsystemmonitor teardown noise (SystemResourceMonitor ' +
+  'AttributeError at harness shutdown) — not a test failure. See FireForge docs.\n';
+
+/** Bounds on the held traceback block before flushing verbatim. */
+const HOLD_LINE_LIMIT = 100;
+const HOLD_BYTE_LIMIT = 16 * 1024;
+
+/** Chunk-safe, line-buffered echo filter. See module doc. */
+export interface KnownTeardownNoiseFilter {
+  /** Feed a raw chunk; returns the text to echo now (possibly empty). */
+  transform(chunk: string): string;
+  /** Flush any buffered residue verbatim (call after the stream closes). */
+  flush(): string;
+}
+
+/**
+ * Creates a stateful filter for one output stream. Complete lines outside a
+ * traceback pass straight through (only the trailing partial line is held
+ * back); a `Traceback (most recent call last)` header switches to hold mode
+ * until the block ends, then either the one-line annotation (recognized
+ * signature after a seen shutdown marker) or the verbatim block (anything
+ * else) is emitted. Pass the run's shared {@link TeardownNoiseContext} so
+ * both stream filters see the same shutdown flag.
+ */
+export function createKnownTeardownNoiseFilter(
+  context: TeardownNoiseContext = createTeardownNoiseContext()
+): KnownTeardownNoiseFilter {
+  /** Partial (no trailing newline yet) input line. */
+  let partial = '';
+  /** Held traceback lines (each WITH its newline) while in hold mode. */
+  let held: string[] = [];
+  let heldBytes = 0;
+  /**
+   * State machine:
+   *   'pass'    — outside any traceback; lines echo through.
+   *   'inside'  — between a Traceback header and its closing exception line.
+   *   'closed'  — saw the closing `SomeError: …` line; still holding in
+   *               case a chained-exception connector continues the block
+   *               (the real fixture chains two tracebacks — the whole
+   *               chain must be evaluated as ONE block or the second half
+   *               would print raw after the annotation).
+   */
+  let state: 'pass' | 'inside' | 'closed' = 'pass';
+
+  const resetHold = (): string => {
+    const block = held.join('');
+    held = [];
+    heldBytes = 0;
+    state = 'pass';
+    return block;
+  };
+
+  const releaseHeld = (): string => {
+    const block = resetHold();
+    if (block.length === 0) return '';
+    return context.shutdownSeen && isRecognizedTeardownNoise(block)
+      ? KNOWN_TEARDOWN_NOISE_ANNOTATION
+      : block;
+  };
+
+  const hold = (line: string): { out: string; overflowed: boolean } => {
+    held.push(line);
+    heldBytes += line.length;
+    if (held.length > HOLD_LINE_LIMIT || heldBytes > HOLD_BYTE_LIMIT) {
+      // Pathological block: flush verbatim rather than risk withholding
+      // output; do not attempt recognition on oversized blocks.
+      return { out: resetHold(), overflowed: true };
+    }
+    return { out: '', overflowed: false };
+  };
+
+  const processLine = (line: string): string => {
+    const content = line.replace(/\r?\n$/, '');
+
+    if (state === 'pass') {
+      if (TRACEBACK_HEADER_PATTERN.test(content)) {
+        state = 'inside';
+        return hold(line).out;
+      }
+      if (SHUTDOWN_MARKER_PATTERN.test(content)) context.shutdownSeen = true;
+      return line;
+    }
+
+    if (state === 'inside') {
+      const isContinuation =
+        content.trim().length === 0 ||
+        /^[ \t]/.test(content) ||
+        TRACEBACK_HEADER_PATTERN.test(content);
+      const { out, overflowed } = hold(line);
+      // The first unindented line is the closing `SomeError: …` line; keep
+      // holding in case a chained connector extends the block.
+      if (!overflowed && !isContinuation) {
+        state = 'closed';
+      }
+      return out;
+    }
+
+    // state === 'closed': only a blank line, a chained-exception connector,
+    // or another Traceback header continues the block.
+    if (content.trim().length === 0 || CHAINED_EXCEPTION_CONNECTOR_PATTERN.test(content)) {
+      return hold(line).out;
+    }
+    if (TRACEBACK_HEADER_PATTERN.test(content)) {
+      const { out, overflowed } = hold(line);
+      if (!overflowed) state = 'inside';
+      return out;
+    }
+    return releaseHeld() + processLineInPass(line);
+  };
+
+  // Re-dispatch a line through pass-mode handling after a block release —
+  // the line that ended the block may itself start a new traceback.
+  const processLineInPass = (line: string): string => {
+    const content = line.replace(/\r?\n$/, '');
+    if (TRACEBACK_HEADER_PATTERN.test(content)) {
+      state = 'inside';
+      return hold(line).out;
+    }
+    if (SHUTDOWN_MARKER_PATTERN.test(content)) context.shutdownSeen = true;
+    return line;
+  };
+
+  return {
+    transform(chunk: string): string {
+      let out = '';
+      let buffer = partial + chunk;
+      partial = '';
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex + 1);
+        buffer = buffer.slice(newlineIndex + 1);
+        out += processLine(line);
+        newlineIndex = buffer.indexOf('\n');
+      }
+      partial = buffer;
+      return out;
+    },
+    flush(): string {
+      let out = '';
+      if (state !== 'pass') {
+        // A stream that closes mid-block: fold the trailing partial line in
+        // and evaluate — the final exception line is often the last thing
+        // printed, without a trailing newline.
+        if (partial.length > 0) {
+          held.push(partial);
+          partial = '';
+        }
+        out += releaseHeld();
+      }
+      out += partial;
+      partial = '';
+      return out;
+    },
+  };
+}

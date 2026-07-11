@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { EventEmitter } from 'node:events';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../logger.js', () => ({
+  verbose: vi.fn(),
+  warn: vi.fn(),
+}));
+
+import { verbose, warn } from '../logger.js';
 import {
   exec,
   execInherit,
@@ -11,6 +17,7 @@ import {
   execStream,
   findExecutable,
 } from '../process.js';
+import { sweepProcessGroup } from '../process-group.js';
 
 class MockStream extends EventEmitter {}
 
@@ -455,5 +462,193 @@ describe('findExecutable', () => {
     child.emit('close', 0);
 
     await expect(promise).resolves.toBe('/usr/local/bin/tool');
+  });
+});
+
+describe('process-group reaping (0.37.0 item 9a)', () => {
+  const ORPHAN_LINE =
+    '4243 /usr/bin/python3 -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=12)';
+
+  let originalPlatform: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSpawn.mockReset();
+    originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+    vi.useRealTimers();
+  });
+
+  function makeGroupChild(pid = 4242): MockChildProcess & { pid: number } {
+    return Object.assign(makeChild(), { pid });
+  }
+
+  /**
+   * A LAZY fake pgrep child: the close emission is scheduled when spawn()
+   * actually runs (mockImplementationOnce), not when the test builds the
+   * queue — otherwise the event fires before exec attaches listeners.
+   */
+  function pgrepChild(lines: string | undefined): () => MockChildProcess {
+    return () => {
+      const child = makeChild();
+      queueMicrotask(() => {
+        if (lines !== undefined) child.stdout.emit('data', Buffer.from(lines));
+        child.emit('close', lines !== undefined ? 0 : 1, null);
+      });
+      return child;
+    };
+  }
+
+  describe('sweepProcessGroup', () => {
+    it('reaps a stranded multiprocessing worker with a group SIGTERM (simulated startup death)', async () => {
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      // First pgrep: the stranded spawn worker survives; after the group
+      // SIGTERM + grace, the re-list comes back empty.
+      mockSpawn
+        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`))
+        .mockImplementationOnce(pgrepChild(undefined));
+
+      const { survivors } = await sweepProcessGroup(4242, 10);
+
+      expect(survivors).toHaveLength(1);
+      expect(survivors[0]?.pid).toBe(4243);
+      expect(survivors[0]?.command).toContain('multiprocessing.spawn');
+      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
+      expect(killSpy).not.toHaveBeenCalledWith(-4242, 'SIGKILL');
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('multiprocessing worker — the known busy-spin orphan shape')
+      );
+      expect(verbose).toHaveBeenCalledWith(expect.stringContaining('reaped cleanly with SIGTERM'));
+      killSpy.mockRestore();
+    });
+
+    it('escalates to a group SIGKILL when survivors outlive the grace window', async () => {
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      mockSpawn
+        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`))
+        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`))
+        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`));
+
+      await sweepProcessGroup(4242, 10);
+
+      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
+      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('still has survivors after SIGKILL')
+      );
+      killSpy.mockRestore();
+    });
+
+    it("keeps the grace timer ref'd so the parent cannot exit mid-sweep", async () => {
+      // The sweep runs from a child 'close' handler after the signal
+      // forwarder is disposed — an unref'd grace timer let Node exit
+      // during the grace window and skip the SIGKILL escalation. Pin
+      // that the awaited delay holds a ref on the event loop.
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const captured: NodeJS.Timeout[] = [];
+      const realSetTimeout = globalThis.setTimeout;
+      const timeoutSpy = vi
+        .spyOn(globalThis, 'setTimeout')
+        .mockImplementation((fn: () => void, ms?: number) => {
+          const timer = realSetTimeout(fn, ms);
+          captured.push(timer);
+          return timer;
+        });
+      mockSpawn
+        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`))
+        .mockImplementationOnce(pgrepChild(undefined));
+
+      const sweep = sweepProcessGroup(4242, 25);
+      await vi.waitFor(() => {
+        expect(captured.length).toBeGreaterThan(0);
+      });
+      expect(captured[0]?.hasRef()).toBe(true);
+
+      await sweep;
+      timeoutSpy.mockRestore();
+      killSpy.mockRestore();
+    });
+
+    it('costs a single pgrep and sends no signals on a healthy run', async () => {
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      mockSpawn.mockImplementationOnce(pgrepChild(undefined));
+
+      const { survivors } = await sweepProcessGroup(4242);
+
+      expect(survivors).toEqual([]);
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+      killSpy.mockRestore();
+    });
+
+    it('is a no-op on win32', async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      const { survivors } = await sweepProcessGroup(4242);
+      expect(survivors).toEqual([]);
+      expect(mockSpawn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('execStream with processGroup', () => {
+    it('spawns detached on POSIX and sweeps the group after close', async () => {
+      const child = makeGroupChild();
+      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
+
+      const promise = execStream('fake-mach', ['test'], { processGroup: true });
+      child.emit('close', 0, null);
+
+      await expect(promise).resolves.toBe(0);
+      expect(mockSpawn).toHaveBeenNthCalledWith(
+        1,
+        'fake-mach',
+        ['test'],
+        expect.objectContaining({ detached: true })
+      );
+      // The post-run sweep ran (the pgrep spawn).
+      expect(mockSpawn).toHaveBeenCalledTimes(2);
+      expect(mockSpawn).toHaveBeenNthCalledWith(
+        2,
+        'pgrep',
+        ['-g', '4242', '-lf'],
+        expect.anything()
+      );
+    });
+
+    it('stays non-detached and never sweeps without the option (default unchanged)', async () => {
+      const child = makeGroupChild();
+      mockSpawn.mockReturnValueOnce(child);
+
+      const promise = execStream('fake-mach', ['test']);
+      child.emit('close', 0, null);
+
+      await expect(promise).resolves.toBe(0);
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'fake-mach',
+        ['test'],
+        expect.objectContaining({ detached: false })
+      );
+    });
+
+    it('forwards parent signals to the whole group, not just the direct child', async () => {
+      const child = makeGroupChild();
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
+
+      const promise = execStream('fake-mach', ['test'], { processGroup: true });
+      process.emit('SIGTERM');
+      // Group-targeted kill: negative PID, and NOT the bare child.kill path.
+      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
+      expect(child.kill).not.toHaveBeenCalled();
+
+      child.emit('close', null, 'SIGTERM');
+      await promise;
+      killSpy.mockRestore();
+    });
   });
 });

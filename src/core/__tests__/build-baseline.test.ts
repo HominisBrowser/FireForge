@@ -85,6 +85,30 @@ describe('build-baseline', () => {
     expect(raw).toContain('abc123');
   });
 
+  it('round-trips a full testPackagingCoverage claim', async () => {
+    vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
+    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser', 'full');
+    const stored = await readBuildBaseline(projectRoot);
+    expect(stored?.testPackagingCoverage).toBe('full');
+  });
+
+  it('round-trips a scoped testPackagingCoverage path list', async () => {
+    vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
+    const scoped = ['browser/components/tiles/test/browser', 'toolkit/content/tests/chrome/a.js'];
+    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser', scoped);
+    const stored = await readBuildBaseline(projectRoot);
+    expect(stored?.testPackagingCoverage).toEqual(scoped);
+  });
+
+  it('omits testPackagingCoverage from the marker when not provided', async () => {
+    // Legacy-shape preservation: callers that never pass a coverage claim
+    // must keep producing pre-0.37.0-shaped markers.
+    vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
+    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser');
+    const raw = await readFile(getBuildBaselinePath(projectRoot), 'utf8');
+    expect(raw).not.toContain('testPackagingCoverage');
+  });
+
   it('omits packageableFingerprints when the outer git probe fails', async () => {
     // Defensive case: a broken `hasChanges` / `git diff` probe must not
     // corrupt the on-disk baseline with `{}` — the fingerprint field is

@@ -11,6 +11,7 @@ import {
   buildHarnessCrashMessage,
   buildNoTestsRanMessage,
   classifyHarnessRun,
+  collectUnexpectedFailureBlocks,
   detectHarnessCrashSignature,
   findCrashMarkerLine,
   hasCompletedGreenSummary,
@@ -623,6 +624,77 @@ describe('green-summary rejection on crash/truncation evidence (0.35.0 field rep
     expect(startedOnly).toContain('mach exited 2');
     expect(startedOnly).toContain('never started: browser_b.js');
     expect(startedOnly).not.toContain('never finished');
+  });
+});
+
+describe('collectUnexpectedFailureBlocks (0.37.0 item 7)', () => {
+  // Chrome-suite shape: the TEST-UNEXPECTED line is followed by the Assert
+  // diff the operator needs to diagnose a non-reproducing one-off.
+  const CHROME_FAILURE_RUN = [
+    ' 0:05.12 INFO TEST-START | browser/components/foo/test/browser_x.js',
+    ' 0:09.44 INFO TEST-UNEXPECTED-FAIL | browser/components/foo/test/browser_x.js | Assert.equal - got false, expected true',
+    'Got false',
+    'Expected true',
+    'Stack trace:',
+    '    chrome://mochikit/content/browser-test.js:test_ok:1370',
+    ' 0:09.50 INFO TEST-UNEXPECTED-FAIL | browser/components/foo/test/browser_x.js | Tile order mismatch',
+    'Got ["b","a"]',
+    'Expected ["a","b"]',
+    ' 0:10.01 INFO Failed: 1',
+    ' 0:10.01 INFO Unexpected results: 1',
+    ' 0:10.02 INFO SUITE_END',
+  ].join('\n');
+
+  it('returns each TEST-UNEXPECTED line verbatim with its assertion context', () => {
+    const blocks = collectUnexpectedFailureBlocks(CHROME_FAILURE_RUN);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toContain(
+      'TEST-UNEXPECTED-FAIL | browser/components/foo/test/browser_x.js | Assert.equal - got false, expected true'
+    );
+    expect(blocks[0]).toContain('Got false');
+    expect(blocks[0]).toContain('Expected true');
+    expect(blocks[0]).toContain('Stack trace:');
+    expect(blocks[1]).toContain('Tile order mismatch');
+    expect(blocks[1]).toContain('Expected ["a","b"]');
+  });
+
+  it('caps at the limit and appends a truncation note', () => {
+    const many = Array.from(
+      { length: 7 },
+      (_, i) => ` 0:09.${String(i)} INFO TEST-UNEXPECTED-FAIL | browser_x.js | failure ${String(i)}`
+    ).join('\n');
+    const blocks = collectUnexpectedFailureBlocks(many, 5);
+    expect(blocks).toHaveLength(6);
+    expect(blocks[5]).toBe('…(+2 more TEST-UNEXPECTED lines not shown)');
+  });
+
+  it('excludes the shutdown-reentry artifact line', () => {
+    const blocks = collectUnexpectedFailureBlocks(POST_GREEN_SHUTDOWN_REENTRY);
+    expect(blocks).toHaveLength(0);
+  });
+
+  it('stops context collection at the next non-context line', () => {
+    const run = [
+      'TEST-UNEXPECTED-FAIL | browser_x.js | boom',
+      'Got 1',
+      ' 0:10.01 INFO TEST-OK | browser_y.js',
+    ].join('\n');
+    const blocks = collectUnexpectedFailureBlocks(run);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).not.toContain('TEST-OK');
+  });
+
+  it('classifyHarnessRun carries the blocks on test-failure verdicts', () => {
+    const verdict = classifyHarnessRun(1, CHROME_FAILURE_RUN, PATHS);
+    expect(verdict.kind).toBe('test-failures');
+    expect(verdict.realFailureBlocks).toBeDefined();
+    expect(verdict.realFailureBlocks?.[0]).toContain('Assert.equal - got false, expected true');
+    expect(verdict.realFailureBlocks?.[0]).toContain('Got false');
+  });
+
+  it('classifyHarnessRun omits the field on green runs', () => {
+    const verdict = classifyHarnessRun(0, GREEN_RUN, PATHS);
+    expect(verdict.realFailureBlocks).toBeUndefined();
   });
 });
 

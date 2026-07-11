@@ -552,6 +552,107 @@ describe('validateCompatibility', () => {
     expect(issues.some((issue) => issue.check === 'not-moz-lit-element')).toBe(true);
   });
 
+  it('accepts a define-less library-kind component while keeping relative-import checks (0.37.0 item 6)', async () => {
+    // A kind: "library" component is a base class + helpers with no element
+    // of its own — requiring customElements.define() forced authors to ship
+    // a deliberately inert element purely to satisfy the check.
+    const libraryConfig: FurnaceConfig = {
+      ...baseConfig,
+      custom: {
+        'moz-shared-base': {
+          description: 'Shared base class + helpers',
+          targetPath: 'toolkit/content/widgets/moz-shared-base',
+          register: false,
+          localized: false,
+          kind: 'library',
+        },
+      },
+    };
+    mockPathExists.mockImplementation((path: string) => Promise.resolve(path.endsWith('.mjs')));
+    mockReadText.mockResolvedValue(
+      `import { MozLitElement } from "chrome://global/content/lit.all.mjs";\n` +
+        `export class MozSharedBase extends MozLitElement {}\n` +
+        `export function sharedHelper() {}\n`
+    );
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-shared-base',
+      'moz-shared-base',
+      'custom',
+      libraryConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'no-custom-element-define')).toBe(false);
+    expect(issues.some((issue) => issue.check === 'not-moz-lit-element')).toBe(false);
+    expect(issues).toHaveLength(0);
+  });
+
+  it('keeps flagging relative imports in a library module while waiving define/extends', async () => {
+    const libraryConfig: FurnaceConfig = {
+      ...baseConfig,
+      custom: {
+        'moz-shared-base': {
+          description: 'Shared base class + helpers',
+          targetPath: 'toolkit/content/widgets/moz-shared-base',
+          register: false,
+          localized: false,
+          kind: 'library',
+        },
+      },
+    };
+    mockPathExists.mockImplementation((path: string) => Promise.resolve(path.endsWith('.mjs')));
+    mockReadText.mockResolvedValue(`import './helpers.js';\nexport class MozSharedBase {}\n`);
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-shared-base',
+      'moz-shared-base',
+      'custom',
+      libraryConfig,
+      '/project'
+    );
+
+    // Module-shape rules stay active for libraries; only the element-shaped
+    // define/extends requirements are waived.
+    expect(issues.some((issue) => issue.check === 'relative-import')).toBe(true);
+    expect(issues.some((issue) => issue.check === 'no-custom-element-define')).toBe(false);
+    expect(issues.some((issue) => issue.check === 'not-moz-lit-element')).toBe(false);
+  });
+
+  it('keeps CSS compatibility rules active for a library that ships a stylesheet', async () => {
+    const libraryConfig: FurnaceConfig = {
+      ...baseConfig,
+      custom: {
+        'moz-shared-base': {
+          description: 'Shared base class + helpers',
+          targetPath: 'toolkit/content/widgets/moz-shared-base',
+          register: false,
+          localized: false,
+          kind: 'library',
+        },
+      },
+    };
+    mockPathExists.mockImplementation((path: string) =>
+      Promise.resolve(path.endsWith('.mjs') || path.endsWith('.css'))
+    );
+    mockReadText.mockImplementation((path: string) => {
+      if (path.endsWith('.mjs')) {
+        return Promise.resolve(`export class MozSharedBase {}\n`);
+      }
+      return Promise.resolve(':host { color: #ff0000; }');
+    });
+
+    const issues = await validateCompatibility(
+      '/components/custom/moz-shared-base',
+      'moz-shared-base',
+      'custom',
+      libraryConfig,
+      '/project'
+    );
+
+    expect(issues.some((issue) => issue.check === 'raw-color-value')).toBe(true);
+  });
+
   it('accepts customized built-in components that extend HTMLAnchorElement', async () => {
     // Eval regression: `furnace override moz-support-link` wrote the
     // upstream source verbatim (class MozSupportLink extends

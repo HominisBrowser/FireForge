@@ -45,6 +45,17 @@ export function parseCustomConfig(
   if (!isBoolean(data['localized'])) {
     throw new FurnaceError(`Furnace config: custom "${name}.localized" must be a boolean`);
   }
+  if (data['kind'] !== undefined && data['kind'] !== 'element' && data['kind'] !== 'library') {
+    throw new FurnaceError(
+      `Furnace config: custom "${name}.kind" must be "element" or "library" when set`
+    );
+  }
+  if (data['kind'] === 'library' && data['register']) {
+    throw new FurnaceError(
+      `Furnace config: custom "${name}" has kind "library" but register: true — ` +
+        'a library exports no custom element; set register: false'
+    );
+  }
   if (data['composes'] !== undefined) {
     parseStringArray(data['composes'], `${name}.composes`);
   }
@@ -71,6 +82,9 @@ export function parseCustomConfig(
       ? { composes: parseStringArray(data['composes'], `${name}.composes`) }
       : {}),
     ...(data['keyboardCovered'] === true ? { keyboardCovered: true } : {}),
+    // Explicit `kind: "element"` is the default; normalize it away so the
+    // stored config carries the field only when it changes behavior.
+    ...(data['kind'] === 'library' ? { kind: 'library' as const } : {}),
     ...(sharedFtl !== undefined ? { sharedFtl } : {}),
   };
 }

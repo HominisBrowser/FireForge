@@ -48,8 +48,9 @@ export async function validateStructure(
     });
   }
 
-  // .css should exist
-  if (!(await pathExists(cssPath))) {
+  // .css should exist — except for library components (base class + helpers,
+  // no element of their own), which render nothing and need no stylesheet.
+  if (!(await pathExists(cssPath)) && customConfig?.kind !== 'library') {
     issues.push({
       component: tagName,
       severity: 'warning',

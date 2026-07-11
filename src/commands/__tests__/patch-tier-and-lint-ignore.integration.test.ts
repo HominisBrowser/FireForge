@@ -561,6 +561,124 @@ describe('patch staged-dependency', () => {
       patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', { add: true })
     ).rejects.toBeInstanceOf(InvalidArgumentError);
   });
+
+  // ── 0.37.0 item 5: registration-kind entries ──
+
+  it('--add --kind registration writes a registrations declaration', async () => {
+    await seed(patchesDir, [makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'])]);
+
+    await patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+      add: true,
+      kind: 'registration',
+      file: 'toolkit/content/jar.mn',
+      line: 'content/global/widgets/hominis-history-ui.js (widgets/hominis-history-ui.js)',
+      creates: 'toolkit/content/widgets/hominis-history-ui.js',
+      owner: '248-ui-history.patch',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies?.registrations).toEqual([
+      {
+        file: 'toolkit/content/jar.mn',
+        line: 'content/global/widgets/hominis-history-ui.js (widgets/hominis-history-ui.js)',
+        creates: 'toolkit/content/widgets/hominis-history-ui.js',
+        owner: '248-ui-history.patch',
+      },
+    ]);
+    expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toBeUndefined();
+  });
+
+  it('--remove --kind registration deletes the entry and clears the field when empty', async () => {
+    await seed(patchesDir, [
+      makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'], {
+        stagedDependencies: {
+          registrations: [
+            {
+              file: 'toolkit/content/jar.mn',
+              line: 'content/global/a.js (a.js)',
+              creates: 'toolkit/content/a.js',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+      remove: true,
+      kind: 'registration',
+      file: 'toolkit/content/jar.mn',
+      line: 'content/global/a.js (a.js)',
+      creates: 'toolkit/content/a.js',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
+  });
+
+  it('registration operations leave forwardImports of the same patch untouched', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
+        stagedDependencies: {
+          forwardImports: [
+            {
+              file: 'foo/A.sys.mjs',
+              specifier: 'resource:///modules/B.sys.mjs',
+              creates: 'foo/B.sys.mjs',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      add: true,
+      kind: 'registration',
+      file: 'toolkit/content/jar.mn',
+      line: 'content/global/a.js (a.js)',
+      creates: 'toolkit/content/a.js',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(1);
+    expect(manifest.patches[0]?.stagedDependencies?.registrations).toHaveLength(1);
+  });
+
+  it('rejects --kind registration without --line', async () => {
+    await seed(patchesDir, [makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'])]);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+        add: true,
+        kind: 'registration',
+        file: 'toolkit/content/jar.mn',
+        creates: 'toolkit/content/a.js',
+      })
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+  });
+
+  it('rejects mixing --specifier with --kind registration and --line with --kind import', async () => {
+    await seed(patchesDir, [makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'])]);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+        add: true,
+        kind: 'registration',
+        file: 'toolkit/content/jar.mn',
+        specifier: 'resource:///modules/B.sys.mjs',
+        line: 'content/global/a.js (a.js)',
+        creates: 'toolkit/content/a.js',
+      })
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+        add: true,
+        file: 'toolkit/content/jar.mn',
+        line: 'content/global/a.js (a.js)',
+        creates: 'toolkit/content/a.js',
+      })
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+  });
 });
 
 describe('patch lint-ignore — describeChange message format', () => {

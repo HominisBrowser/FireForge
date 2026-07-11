@@ -73,6 +73,7 @@ vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
+  verbose: vi.fn(),
   warn: vi.fn(),
   success: vi.fn(),
   spinner: vi.fn().mockReturnValue({
@@ -90,9 +91,18 @@ vi.mock('@clack/prompts', () => ({
   isCancel: vi.fn().mockReturnValue(false),
 }));
 
+// The stale-furnace gate's detection logic is covered by
+// src/core/__tests__/furnace-stale-export.test.ts; here it is mocked to a
+// no-op so existing command tests are unaffected, with dedicated wiring
+// tests asserting the call and the refusal propagation.
+vi.mock('../../core/furnace-stale-export.js', () => ({
+  enforceFreshFurnaceSources: vi.fn(() => Promise.resolve()),
+}));
+
 import { confirm, multiselect } from '@clack/prompts';
 
 import { withFileLock } from '../../core/file-lock.js';
+import { enforceFreshFurnaceSources } from '../../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-status.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
@@ -197,6 +207,56 @@ describe('reExportCommand - --scan flag', () => {
     await expect(reExportCommand('/fake/root', ['999'], {})).rejects.toThrow(
       'Patch "999" not found in manifest.'
     );
+  });
+
+  // ── 0.37.0 item 4: stale-furnace gate wiring ──
+
+  it('runs the stale-furnace gate over the patch files before diffing', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValue(
+      makeManifest([makePatch('001-ui-test.patch', ['toolkit/content/widgets/moz-tiles/a.mjs'])])
+    );
+
+    await expect(reExportCommand('/fake/root', ['001'], {})).resolves.toBeUndefined();
+
+    expect(enforceFreshFurnaceSources).toHaveBeenCalledWith(
+      '/fake/root',
+      ['toolkit/content/widgets/moz-tiles/a.mjs'],
+      false,
+      're-export'
+    );
+  });
+
+  it('forwards --allow-stale-furnace into the gate', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValue(
+      makeManifest([makePatch('001-ui-test.patch', ['a.js'])])
+    );
+
+    await expect(
+      reExportCommand('/fake/root', ['001'], { allowStaleFurnace: true })
+    ).resolves.toBeUndefined();
+
+    expect(enforceFreshFurnaceSources).toHaveBeenCalledWith(
+      '/fake/root',
+      ['a.js'],
+      true,
+      're-export'
+    );
+  });
+
+  it('fails the re-export when the stale-furnace gate refuses', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValue(
+      makeManifest([makePatch('001-ui-test.patch', ['a.js'])])
+    );
+    vi.mocked(enforceFreshFurnaceSources).mockRejectedValueOnce(
+      new Error('Component source for moz-tiles has changed since the last furnace apply')
+    );
+
+    await expect(reExportCommand('/fake/root', ['001'], {})).rejects.toThrow(
+      'All selected patches failed to re-export'
+    );
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-tiles'));
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
   });
 
   it('reports partial success when one selected patch is skipped and another is re-exported', async () => {

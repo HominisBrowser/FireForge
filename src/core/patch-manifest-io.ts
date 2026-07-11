@@ -266,8 +266,9 @@ export interface PatchRenameEntry {
 }
 
 /**
- * Rewrites `stagedDependencies.forwardImports[].owner` references on one
- * patch through a rename lookup. Owners embed exact patch filenames, so any
+ * Rewrites `stagedDependencies.forwardImports[].owner` and
+ * `stagedDependencies.registrations[].owner` references on one patch
+ * through a rename lookup. Owners embed exact patch filenames, so any
  * renumber (compact, reorder, placement export, rename) that does not remap
  * them leaves dangling references that surface as false forward-import
  * errors on the next lint.
@@ -284,23 +285,34 @@ export function rewriteStagedDependencyOwners(
   patch: PatchMetadata,
   renameLookup: (oldFilename: string) => string | undefined
 ): PatchMetadata {
-  const forwardImports = patch.stagedDependencies?.forwardImports;
-  if (!forwardImports || forwardImports.length === 0) return patch;
+  const staged = patch.stagedDependencies;
+  if (!staged) return patch;
 
-  const rewritten = forwardImports.map((fi) => {
-    if (!fi.owner) return fi;
-    const newOwner = renameLookup(fi.owner);
-    if (newOwner === undefined || newOwner === fi.owner) return fi;
-    return { ...fi, owner: newOwner };
-  });
+  const rewriteOwners = <T extends { owner?: string }>(
+    entries: T[] | undefined
+  ): { entries: T[] | undefined; changed: boolean } => {
+    if (!entries || entries.length === 0) return { entries, changed: false };
+    const rewritten = entries.map((entry) => {
+      if (!entry.owner) return entry;
+      const newOwner = renameLookup(entry.owner);
+      if (newOwner === undefined || newOwner === entry.owner) return entry;
+      return { ...entry, owner: newOwner };
+    });
+    return {
+      entries: rewritten,
+      changed: rewritten.some((entry, index) => entry !== entries[index]),
+    };
+  };
 
-  const changed = rewritten.some((fi, index) => fi !== forwardImports[index]);
-  if (!changed) return patch;
+  const forwardImports = rewriteOwners(staged.forwardImports);
+  const registrations = rewriteOwners(staged.registrations);
+  if (!forwardImports.changed && !registrations.changed) return patch;
   return {
     ...patch,
     stagedDependencies: {
-      ...patch.stagedDependencies,
-      forwardImports: rewritten,
+      ...staged,
+      ...(forwardImports.entries !== undefined ? { forwardImports: forwardImports.entries } : {}),
+      ...(registrations.entries !== undefined ? { registrations: registrations.entries } : {}),
     },
   };
 }

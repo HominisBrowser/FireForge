@@ -406,7 +406,7 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   // against this build's HEAD. A failed build keeps the prior baseline so
   // the next attempt still catches long-standing packaging drops.
   try {
-    await writeBuildBaseline(projectRoot, paths.engine, config.binaryName);
+    await writeBuildBaseline(projectRoot, paths.engine, config.binaryName, 'full');
   } catch (baselineError: unknown) {
     verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
   }

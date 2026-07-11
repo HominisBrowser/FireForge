@@ -17,6 +17,7 @@ import type {
   PatchLintIssue,
   PatchMetadata,
   PatchStagedForwardImport,
+  PatchStagedRegistration,
 } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
@@ -450,6 +451,17 @@ interface NewFileOwner {
 }
 
 /**
+ * Later-in-apply-order predicate shared by the forward-import scan and the
+ * registration validation: strictly higher ordinal, or same ordinal with a
+ * lexicographically later filename (the apply loop's tiebreak).
+ */
+function isLaterOwner(owner: NewFileOwner, entry: PatchQueueEntry): boolean {
+  return (
+    owner.order > entry.order || (owner.order === entry.order && owner.filename > entry.filename)
+  );
+}
+
+/**
  * Cross-patch lint rule: a patch imports a module that a later patch is
  * responsible for creating.
  *
@@ -534,11 +546,7 @@ function eachForwardImportSite(
       const owners = newFileIndex.get(leaf);
       if (!owners) continue;
 
-      const laterOwners = owners.filter(
-        (owner) =>
-          owner.order > entry.order ||
-          (owner.order === entry.order && owner.filename > entry.filename)
-      );
+      const laterOwners = owners.filter((owner) => isLaterOwner(owner, entry));
       if (laterOwners.length === 0) continue;
       visit(entry, sitePath, specifier, cleaned, laterOwners);
     }
@@ -637,9 +645,103 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
         severity: 'warning',
       });
     }
+
+    // Registration-kind declarations (0.37.0 item 5): a jar.mn packaging
+    // line, customElements registration, or actor registration referencing
+    // a later-created file. There is no import specifier to match — the
+    // declaration is "used" when the declared line (whitespace-trimmed)
+    // appears among the lines this patch adds to the declaring file AND
+    // its `creates` resolves to a file a later-ordered patch actually
+    // creates (with `owner`, when set, naming that patch) — mirroring
+    // findMatchingStagedDependency for the import kind.
+    for (const registration of entry.metadata?.stagedDependencies?.registrations ?? []) {
+      const failure = findStagedRegistrationFailure(entry, registration, newFileIndex);
+      if (failure === undefined) continue;
+      issues.push({
+        file: registration.file,
+        check: 'staged-dependency-unused',
+        fingerprint: `staged-dependency-unused|${entry.filename}|${registration.file}|reg:${registration.line}|${registration.creates}|${registration.owner ?? ''}`,
+        message:
+          `${entry.filename} declares a staged registration in ${registration.file} ` +
+          `("${registration.line}") for ${registration.creates}, but ${describeRegistrationFailure(failure)} ` +
+          'Remove the stale declaration with "fireforge patch staged-dependency --remove --kind registration" or update it to match the patch and queue.',
+        severity: 'warning',
+      });
+    }
   }
 
   return issues;
+}
+
+/** Why a staged registration declaration failed validation. */
+type StagedRegistrationFailure =
+  | { kind: 'line-absent' }
+  | { kind: 'creates-unresolved' }
+  | { kind: 'owner-mismatch'; creators: readonly NewFileOwner[] };
+
+/**
+ * Validates one registration-kind declaration against the patch content
+ * and the queue, mirroring {@link findMatchingStagedDependency}: the
+ * declared line must be added by this patch, `creates` must exactly match
+ * a file a LATER-ordered patch creates (an earlier-only creator means the
+ * dependency is already satisfied and the declaration is stale), and
+ * `owner`, when set, must name one of those creating patches. Returns
+ * undefined when valid.
+ */
+function findStagedRegistrationFailure(
+  entry: PatchQueueEntry,
+  registration: PatchStagedRegistration,
+  newFileIndex: Map<string, NewFileOwner[]>
+): StagedRegistrationFailure | undefined {
+  if (!isRegistrationLinePresent(entry, registration)) return { kind: 'line-absent' };
+  const creators = (newFileIndex.get(basename(registration.creates)) ?? []).filter(
+    (owner) => owner.fullPath === registration.creates && isLaterOwner(owner, entry)
+  );
+  if (creators.length === 0) return { kind: 'creates-unresolved' };
+  if (
+    registration.owner !== undefined &&
+    !creators.some((owner) => owner.filename === registration.owner)
+  ) {
+    return { kind: 'owner-mismatch', creators };
+  }
+  return undefined;
+}
+
+/** Message tail for each {@link StagedRegistrationFailure} shape. */
+function describeRegistrationFailure(failure: StagedRegistrationFailure): string {
+  switch (failure.kind) {
+    case 'line-absent':
+      return 'the patch does not add that line.';
+    case 'creates-unresolved':
+      return (
+        'no later-ordered patch creates that file — the declaration is stale, ' +
+        'or the queue order no longer stages it.'
+      );
+    case 'owner-mismatch':
+      return `that file is created by ${failure.creators.map((o) => o.filename).join(', ')}, not the declared owner.`;
+  }
+}
+
+/**
+ * True when the declared registration/packaging line appears (trimmed)
+ * among the lines the patch introduces in the declaring file — either as a
+ * newly-created file's content or as added lines to an existing file
+ * (where jar.mn / customElements.js / actor-registration edits land).
+ */
+function isRegistrationLinePresent(
+  entry: PatchQueueEntry,
+  registration: PatchStagedRegistration
+): boolean {
+  const declared = registration.line.trim();
+  if (declared.length === 0) return false;
+  const introduced = [
+    entry.newFiles.get(registration.file),
+    entry.modifiedFileAdditions.get(registration.file),
+  ];
+  return introduced.some(
+    (content) =>
+      content !== undefined && content.split('\n').some((line) => line.trim() === declared)
+  );
 }
 
 /**

@@ -75,6 +75,7 @@ vi.mock('../../core/toolchain-preflight.js', async (importOriginal) => {
 });
 
 import { validateBrandOverride } from '../../core/brand-validation.js';
+import { writeBuildBaseline } from '../../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import {
@@ -227,6 +228,28 @@ describe('buildCommand', () => {
     expect(verbose).toHaveBeenCalledWith('Building with brand: beta');
     expect(info).toHaveBeenCalledWith('Brand: beta');
     expect(outro).toHaveBeenCalledWith(expect.stringContaining('Build completed in'));
+  });
+
+  it('records a full-coverage baseline after a successful build (full and --ui alike)', async () => {
+    // 0.37.0 item 3: `fireforge build` packages the full test set, so the
+    // baseline claims full packaging coverage for the --allow-stale-build
+    // coverage gate.
+    await expect(buildCommand('/project', {})).resolves.toBeUndefined();
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      '/project',
+      '/project/engine',
+      'mybrowser',
+      'full'
+    );
+
+    vi.mocked(writeBuildBaseline).mockClear();
+    await expect(buildCommand('/project', { ui: true })).resolves.toBeUndefined();
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      '/project',
+      '/project/engine',
+      'mybrowser',
+      'full'
+    );
   });
 
   it('refuses UI-only builds when the launchable bundle is missing', async () => {

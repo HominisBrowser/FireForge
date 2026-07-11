@@ -8,6 +8,7 @@ import { getProjectPaths, loadConfig } from '../core/config.js';
 import { appendHistory } from '../core/destructive.js';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
+import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { getStatusWithCodes, isGitRepository } from '../core/git.js';
 import { generateBinaryFilePatch, generateFullFilePatch } from '../core/git-diff.js';
 import { isBinaryFile } from '../core/git-file-ops.js';
@@ -276,6 +277,17 @@ async function prepareExport(
     );
   }
 
+  // Stale-furnace-source gate (0.37.0 item 4): the export captures deployed
+  // engine copies; refuse (or warn under --allow-stale-furnace) when a
+  // covered component's source changed since the last furnace apply. Runs
+  // after --exclude-furnace so excluded furnace files never trigger it.
+  await enforceFreshFurnaceSources(
+    projectRoot,
+    allFiles,
+    options.allowStaleFurnace === true,
+    'export'
+  );
+
   let diff = await generatePatchDiff(paths.engine, allFiles);
 
   if (!diff.trim()) {
@@ -531,6 +543,10 @@ export function registerExport(
     .option('--force-unsafe', 'Bypass cross-patch lint refusal on projected placement')
     .option('--exclude-furnace', 'Exclude furnace-managed file paths from the export')
     .option(
+      '--allow-stale-furnace',
+      'Export the deployed engine copy even when the components/ source changed since the last furnace apply'
+    )
+    .option(
       '--allow-overlap',
       'Acknowledge cross-patch ownership overlap (default mode only; the resulting queue fails verify)'
     )
@@ -563,6 +579,7 @@ export function registerExport(
             yes?: boolean;
             forceUnsafe?: boolean;
             excludeFurnace?: boolean;
+            allowStaleFurnace?: boolean;
             allowOverlap?: boolean;
             tier?: string;
             lintIgnore?: string[];

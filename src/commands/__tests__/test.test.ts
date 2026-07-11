@@ -55,6 +55,7 @@ vi.mock('../../core/build-prepare.js', () => ({
 
 vi.mock('../../core/build-baseline.js', () => ({
   readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
+  writeBuildBaseline: vi.fn(() => Promise.resolve()),
 }));
 
 // Default to the pass-through analysis (file args, no siblings) so every
@@ -92,6 +93,7 @@ vi.mock('../../utils/logger.js', () => ({
   note: vi.fn(),
   outro: vi.fn(),
   success: vi.fn(),
+  verbose: vi.fn(),
   warn: vi.fn(),
   spinner: vi.fn(() => ({
     message: vi.fn(),
@@ -129,12 +131,20 @@ vi.mock('../../core/marionette-port.js', async () => {
   };
 });
 
-vi.mock('../../core/test-stale-check.js', () => ({
-  checkStaleBuildForTest: vi.fn(() =>
-    Promise.resolve({ stale: false, changedPaths: [], truncated: 0, baseline: undefined })
-  ),
-  formatStaleBuildWarning: vi.fn(() => 'stale warning'),
-}));
+// Partial mock: the probe and warning copy stay stubbed, but the pure
+// coverage helpers (`findUncoveredRequestPaths`, `formatTestCoverageRefusal`)
+// run real so the coverage-refusal tests pin the actual matcher semantics
+// and message wording through the command.
+vi.mock('../../core/test-stale-check.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/test-stale-check.js')>();
+  return {
+    ...actual,
+    checkStaleBuildForTest: vi.fn(() =>
+      Promise.resolve({ stale: false, changedPaths: [], truncated: 0, baseline: undefined })
+    ),
+    formatStaleBuildWarning: vi.fn(() => 'stale warning'),
+  };
+});
 
 vi.mock('../../core/xpcshell-appdir.js', () => ({
   findNearestXpcshellManifest: vi.fn(() => Promise.resolve(null)),
@@ -142,6 +152,7 @@ vi.mock('../../core/xpcshell-appdir.js', () => ({
   operatorAlreadySetAppPath: vi.fn(() => false),
 }));
 
+import { writeBuildBaseline } from '../../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { loadConfig } from '../../core/config.js';
 import {
@@ -1028,6 +1039,261 @@ describe('testCommand', () => {
     expect(formatStaleBuildWarning).not.toHaveBeenCalled();
   });
 
+  // ── 0.37.0 items 1+2: a green pre-test build refreshes the stale-build
+  //    baseline exactly like `fireforge build` does, so any later plain
+  //    `fireforge test` invocation shape over the same files passes the gate ──
+
+  it('writes the build baseline after a green pre-test --build, scoped to the requested paths', async () => {
+    vi.mocked(runProtectedMachBuild).mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      attempts: 1,
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nTEST-OK | t',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        build: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(writeBuildBaseline).toHaveBeenCalledWith('/project', '/project/engine', 'mybrowser', [
+      'browser/components/tests/unit/test_distribution.js',
+    ]);
+    // Same ordering contract as `fireforge build`: the baseline records a
+    // build that actually completed.
+    const buildOrder = vi.mocked(runProtectedMachBuild).mock.invocationCallOrder[0];
+    const baselineOrder = vi.mocked(writeBuildBaseline).mock.invocationCallOrder[0];
+    expect(baselineOrder).toBeGreaterThan(buildOrder ?? Infinity);
+  });
+
+  it('writes a directory-scoped coverage claim for a directory --build invocation', async () => {
+    vi.mocked(runProtectedMachBuild).mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      attempts: 1,
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nTEST-OK | t',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit'], { build: true })
+    ).resolves.toBeUndefined();
+
+    expect(writeBuildBaseline).toHaveBeenCalledWith('/project', '/project/engine', 'mybrowser', [
+      'browser/components/tests/unit',
+    ]);
+  });
+
+  it('records full coverage for a path-less --build --auto run', async () => {
+    vi.mocked(runProtectedMachBuild).mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      attempts: 1,
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nTEST-OK | t',
+      stderr: '',
+    });
+
+    await expect(testCommand('/project', [], { build: true, auto: true })).resolves.toBeUndefined();
+
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      '/project',
+      '/project/engine',
+      'mybrowser',
+      'full'
+    );
+  });
+
+  it('does not write a baseline when the pre-test build fails', async () => {
+    vi.mocked(runProtectedMachBuild).mockResolvedValueOnce({
+      exitCode: 1,
+      stdout: '',
+      stderr: '',
+      attempts: 1,
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        build: true,
+      })
+    ).rejects.toThrow();
+
+    expect(writeBuildBaseline).not.toHaveBeenCalled();
+  });
+
+  // ── 0.37.0 item 3: every non---build run is refused when the packaged
+  //    runtime does not cover it, instead of dispatching into a fixture
+  //    hang; --allow-stale-build only accepts stale content ──
+
+  const scopedCoverageBaseline = (
+    stale: boolean
+  ): Awaited<ReturnType<typeof checkStaleBuildForTest>> => ({
+    stale,
+    changedPaths: stale ? ['browser/components/tiles/content/tiles.mjs'] : [],
+    truncated: 0,
+    baseline: {
+      engineHeadSha: 'abc123',
+      builtAt: new Date().toISOString(),
+      binaryName: 'mybrowser',
+      testPackagingCoverage: ['browser/components/tiles/test/browser/browser_tiles.js'],
+    },
+  });
+
+  it('refuses --allow-stale-build over paths outside the recorded packaging coverage (stale tree)', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(true));
+
+    await expect(
+      testCommand('/project', ['browser/components/history/test/browser/browser_hist.js'], {
+        allowStaleBuild: true,
+      })
+    ).rejects.toThrow(/browser\/components\/history\/test\/browser\/browser_hist\.js/);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('refuses uncovered --allow-stale-build even when nothing changed since the scoped rebuild', async () => {
+    // The field-incident shape: the tree is NOT stale relative to the scoped
+    // rebuild, but the packaged runtime never contained the other manifest's
+    // support fixtures — dispatching would hang, not fail.
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(false));
+
+    await expect(
+      testCommand('/project', ['browser/components/history/test/browser/browser_hist.js'], {
+        allowStaleBuild: true,
+      })
+    ).rejects.toThrow(/does not cover/);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('lets a covered --allow-stale-build re-run proceed with the stale warning', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(true));
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/tiles/test/browser/browser_tiles.js'], {
+        allowStaleBuild: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('stale warning'));
+    expect(testWithOutput).toHaveBeenCalled();
+  });
+
+  it('enforces coverage on plain runs too — the coverage refusal beats the stale refusal', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(true));
+
+    await expect(
+      testCommand('/project', ['browser/components/history/test/browser/browser_hist.js'])
+    ).rejects.toThrow(/does not cover/);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('refuses an uncovered plain run even when nothing changed since the scoped rebuild', async () => {
+    // The field-incident shape without the flag: unchanged tree, so the
+    // stale gate stays silent — only the coverage check stands between
+    // the dispatch and a missing-fixture hang.
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(false));
+
+    await expect(
+      testCommand('/project', ['browser/components/history/test/browser/browser_hist.js'])
+    ).rejects.toThrow(/does not cover/);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('refuses a full-suite plain run against scoped coverage, naming the entire suite', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(false));
+
+    await expect(testCommand('/project', [], { auto: true })).rejects.toThrow(/\(entire suite\)/);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('exempts a path-less --doctor run from the coverage gate (no test is dispatched)', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(false));
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: true,
+      durationMs: 200,
+      detail: 'handshake',
+    });
+
+    await expect(testCommand('/project', [], { doctor: true })).resolves.toBeUndefined();
+
+    expect(runMarionettePreflight).toHaveBeenCalled();
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('still refuses a stale-tree path-less --doctor run (only the coverage gate is exempt)', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(true));
+
+    await expect(testCommand('/project', [], { doctor: true })).rejects.toThrow(
+      /--allow-stale-build/
+    );
+
+    expect(runMarionettePreflight).not.toHaveBeenCalled();
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('does not exempt a --doctor run WITH test paths from the coverage gate', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(false));
+
+    await expect(
+      testCommand('/project', ['browser/components/history/test/browser/browser_hist.js'], {
+        doctor: true,
+      })
+    ).rejects.toThrow(/does not cover/);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('still refuses a covered-but-stale plain run with the ordinary stale message', async () => {
+    // Coverage passing must not swallow the stale refusal — the flag's
+    // stale-content semantics are all it controls now.
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(true));
+
+    await expect(
+      testCommand('/project', ['browser/components/tiles/test/browser/browser_tiles.js'])
+    ).rejects.toThrow(/--allow-stale-build/);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('treats a baseline without testPackagingCoverage as full coverage (pre-0.37.0)', async () => {
+    const legacy = scopedCoverageBaseline(false);
+    delete (legacy.baseline as { testPackagingCoverage?: unknown }).testPackagingCoverage;
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(legacy);
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/history/test/browser/browser_hist.js'])
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalled();
+  });
+
   it('proceeds to mach test when the preflight passes and test paths are supplied', async () => {
     vi.mocked(runMarionettePreflight).mockResolvedValue({
       ok: true,
@@ -1718,6 +1984,31 @@ describe('testCommand harness resilience (C1-C4)', () => {
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(null);
     vi.mocked(isSymlink).mockResolvedValue(false);
+  });
+
+  it('echoes the verbatim TEST-UNEXPECTED line and assertion text in the failure summary (0.37.0 item 7)', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: [
+        'TEST-START | browser/components/foo/test/browser_x.js',
+        'TEST-UNEXPECTED-FAIL | browser/components/foo/test/browser_x.js | Assert.equal - got false, expected true',
+        'Got false',
+        'Expected true',
+        'Unexpected results: 1',
+      ].join('\n'),
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_x.js'])
+    ).rejects.toThrow(/Tests failed with exit code 1/);
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'TEST-UNEXPECTED-FAIL | browser/components/foo/test/browser_x.js | Assert.equal - got false, expected true'
+      )
+    );
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('Expected true'));
   });
 
   it('retries a recognized harness crash and succeeds on a green re-run', async () => {

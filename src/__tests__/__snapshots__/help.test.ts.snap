@@ -376,11 +376,17 @@ Edit PatchMetadata.stagedDependencies on a single patch (no .patch body
 rewrite).
 
 Options:
-  --add                    Add a staged forward-import declaration
-  --remove                 Remove matching staged forward-import declaration(s)
+  --add                    Add a staged dependency declaration
+  --remove                 Remove matching staged dependency declaration(s)
   --clear                  Drop the stagedDependencies field entirely
-  --file <path>            Importing file path relative to engine/
+  --kind <kind>            Declaration shape: "import" (forward import, the
+                           default) or "registration" (jar.mn packaging line,
+                           customElements or actor registration)
+  --file <path>            Declaring file path relative to engine/
   --specifier <specifier>  Exact import specifier as it appears in source
+                           (--kind import)
+  --line <text>            Registration/packaging line as the patch adds it,
+                           compared whitespace-trimmed (--kind registration)
   --creates <path>         Later-created file path relative to engine/
   --owner <patch>          Exact later patch filename expected to create
                            --creates

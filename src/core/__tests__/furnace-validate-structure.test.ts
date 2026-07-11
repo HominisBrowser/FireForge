@@ -48,6 +48,21 @@ describe('validateStructure', () => {
     expect(issues.some((i) => i.check === 'missing-css')).toBe(true);
   });
 
+  it('does not warn about a missing .css for library-kind components (0.37.0 item 6)', async () => {
+    // A kind: "library" component renders nothing and needs no stylesheet.
+    mockPathExists.mockImplementation((path: string) => Promise.resolve(path.endsWith('.mjs')));
+    mockReaddir.mockResolvedValue([] as never);
+
+    const issues = await validateStructure('/comp', 'moz-shared-base', 'custom', {
+      description: 'Shared base class + helpers',
+      targetPath: 'toolkit/content/widgets/moz-shared-base',
+      register: false,
+      localized: false,
+      kind: 'library',
+    });
+    expect(issues.some((i) => i.check === 'missing-css')).toBe(false);
+  });
+
   it('reports filename mismatch for non-matching files', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReaddir.mockResolvedValue([{ isFile: () => true, name: 'wrong-name.mjs' }] as never);

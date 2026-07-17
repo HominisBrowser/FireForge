@@ -12,7 +12,10 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
+import { exportCommand } from '../export.js';
 import { furnaceApplyCommand } from '../furnace/apply.js';
+import { furnaceDeployCommand } from '../furnace/deploy.js';
+import { statusCommand } from '../status.js';
 
 const logger = vi.hoisted(() => ({
   intro: vi.fn(),
@@ -22,6 +25,12 @@ const logger = vi.hoisted(() => ({
   error: vi.fn(),
   warn: vi.fn(),
   note: vi.fn(),
+  cancel: vi.fn(),
+  verbose: vi.fn(),
+  step: vi.fn(),
+  isCancel: vi.fn(() => false),
+  isMachineOutputMode: vi.fn(() => false),
+  setMachineOutputMode: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
     error: vi.fn(),
@@ -167,5 +176,44 @@ describe('Furnace drift detection (integration)', () => {
     );
     const checksumLineAfter = stateAfter.match(/"override:moz-button:moz-button\.css":\s*"[^"]+"/);
     expect(checksumLineAfter?.[0]).toBe(checksumLineBefore?.[0]);
+  });
+
+  it('reports patch-owned drift after deploying an edited component over its exported patch', async () => {
+    // Ground truth for 0.38.0 friction item 1: deploy the override, export
+    // a patch capturing the deployed copy, then edit the workspace source
+    // and deploy again. The engine copy now has content the owning patch's
+    // body lacks; pre-fix the furnace prefix short-circuit in the status
+    // classifier silently bucketed the path as `furnace` and the ownership
+    // table row read `owned`.
+    await furnaceDeployCommand(projectRoot, undefined, { skipValidate: true });
+    expect(await readFile(engineButtonCss, 'utf8')).toBe(OVERRIDE_BUTTON_CSS);
+
+    await exportCommand(projectRoot, ['toolkit/content/widgets/moz-button/moz-button.css'], {
+      name: 'moz-button-recolor',
+      category: 'ui',
+      description: 'Recolour moz-button',
+      skipLint: true,
+    });
+
+    const editedCss = `:host {
+  /* My Browser override, second pass */
+  background: rebeccapurple;
+}
+`;
+    await writeFile(workspaceButtonCss, editedCss);
+    await furnaceDeployCommand(projectRoot, undefined, { skipValidate: true });
+    expect(await readFile(engineButtonCss, 'utf8')).toBe(editedCss);
+
+    // Only the ownership table's rows matter below — drop the deploy and
+    // export chatter captured so far.
+    logger.info.mockClear();
+    await statusCommand(projectRoot, { ownership: true });
+
+    const rows = logger.info.mock.calls.map((call) => String(call[0]));
+    const buttonRow = rows.find((row) =>
+      row.includes('toolkit/content/widgets/moz-button/moz-button.css')
+    );
+    expect(buttonRow).toBeDefined();
+    expect(buttonRow).toContain('patch-owned drift');
   });
 });

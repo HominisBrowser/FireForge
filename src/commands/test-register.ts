@@ -4,7 +4,12 @@ import { Command } from 'commander';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
-import { commanderArgParser, pickDefined } from '../utils/options.js';
+import {
+  addWaitLockOption,
+  commanderArgParser,
+  pickDefined,
+  resolveWaitLockSeconds,
+} from '../utils/options.js';
 import { testCommand } from './test.js';
 import { DEFAULT_HARNESS_RETRIES } from './test-run.js';
 
@@ -13,7 +18,7 @@ export function registerTest(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const test = program
     .command('test [paths...]')
     .description('Run tests via mach test')
     .option('--headless', 'Run tests in headless mode')
@@ -22,6 +27,10 @@ export function registerTest(
     .option(
       '--allow-stale-build',
       'Allow tests to run even when packageable engine files changed since the last successful FireForge build'
+    )
+    .option(
+      '--allow-stale-components',
+      'Run tests despite components.conf changes that only a full "fireforge build" compiles in (the packaged child process will resolve the OLD StaticComponents table)'
     )
     .option(
       '--kill-stale-marionette',
@@ -99,32 +108,37 @@ export function registerTest(
         'not exercise cross-argument state; --no-shard restores the',
         'combined single-instance invocation.',
       ].join('\n')
-    )
-    .action(
-      withErrorHandling(
-        async (
-          paths: string[],
-          options: {
-            headless?: boolean;
-            build?: boolean;
-            auto?: boolean;
-            allowStaleBuild?: boolean;
-            killStaleMarionette?: boolean;
-            canary?: string | boolean;
-            doctor?: boolean;
-            machArg?: string[];
-            marionettePort?: number;
-            harnessRetries?: number;
-            genericMachTest?: boolean;
-            shard?: boolean;
-            perfSamples?: string;
-          }
-        ) => {
-          const projectRoot = getProjectRoot();
-          await withEngineSessionLock(projectRoot, 'test', () =>
-            testCommand(projectRoot, paths, pickDefined(options))
-          );
-        }
-      )
     );
+  addWaitLockOption(test).action(
+    withErrorHandling(
+      async (
+        paths: string[],
+        options: {
+          headless?: boolean;
+          build?: boolean;
+          auto?: boolean;
+          allowStaleBuild?: boolean;
+          allowStaleComponents?: boolean;
+          killStaleMarionette?: boolean;
+          canary?: string | boolean;
+          doctor?: boolean;
+          machArg?: string[];
+          marionettePort?: number;
+          harnessRetries?: number;
+          genericMachTest?: boolean;
+          shard?: boolean;
+          perfSamples?: string;
+          waitLock?: number | boolean;
+        }
+      ) => {
+        const projectRoot = getProjectRoot();
+        await withEngineSessionLock(
+          projectRoot,
+          'test',
+          () => testCommand(projectRoot, paths, pickDefined(options)),
+          { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
+        );
+      }
+    )
+  );
 }

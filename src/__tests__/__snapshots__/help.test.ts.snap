@@ -126,11 +126,14 @@ exports[`CLI help output > exposes stable help text for every furnace subcommand
 Apply components to the engine (optionally a single component)
 
 Options:
-  --dry-run    Show what would be changed without writing (reads may overlap
-               concurrent mutations)
-  --force      Proceed despite baseVersion drift (stale overrides)
-  -w, --watch  Watch component directories and re-apply on changes
-  -h, --help   display help for command
+  --dry-run              Show what would be changed without writing (reads may
+                         overlap concurrent mutations)
+  --force                Proceed despite baseVersion drift (stale overrides)
+  -w, --watch            Watch component directories and re-apply on changes
+  --wait-lock [seconds]  Wait up to this many seconds (default 60) for another
+                         FireForge engine-mutating command to release the engine
+                         lock, instead of failing immediately
+  -h, --help             display help for command
 "
 `;
 
@@ -199,11 +202,14 @@ exports[`CLI help output > exposes stable help text for every furnace subcommand
 Apply components and validate in one step
 
 Options:
-  --dry-run        Show what would be changed without writing (reads may overlap
-                   concurrent mutations)
-  --force          Proceed despite baseVersion drift (stale overrides)
-  --skip-validate  Skip the validation step (apply only)
-  -h, --help       display help for command
+  --dry-run              Show what would be changed without writing (reads may
+                         overlap concurrent mutations)
+  --force                Proceed despite baseVersion drift (stale overrides)
+  --skip-validate        Skip the validation step (apply only)
+  --wait-lock [seconds]  Wait up to this many seconds (default 60) for another
+                         FireForge engine-mutating command to release the engine
+                         lock, instead of failing immediately
+  -h, --help             display help for command
 "
 `;
 
@@ -341,6 +347,10 @@ Options:
   -s, --strategy <strategy>  Auto-resolve merge conflicts (ours = keep local,
                              theirs = accept upstream) (choices: "ours",
                              "theirs")
+  --wait-lock [seconds]      Wait up to this many seconds (default 60) for
+                             another FireForge engine-mutating command to
+                             release the engine lock, instead of failing
+                             immediately
   -h, --help                 display help for command
 "
 `;
@@ -360,12 +370,25 @@ Options:
 exports[`CLI help output > exposes stable help text for patch staged-dependency > patch move-files --help 1`] = `
 "Usage: fireforge patch move-files [options] <from> <to>
 
-Preview the re-export commands needed to move file ownership between patches.
+Preview the re-export commands needed to move file ownership between patches, or
+create the target patch and move the files in one transaction with --create
+--order <n>.
 
 Options:
-  --file <path>  File path relative to engine/ to move (repeatable) (default:
-                 [])
-  -h, --help     display help for command
+  --file <path>          File path relative to engine/ to move (repeatable)
+                         (default: [])
+  --create               Create <to> as a new patch and move the files into it
+                         (requires --order)
+  --order <n>            Exact sparse order for the created patch (only valid
+                         with --create)
+  --category <category>  Category for the created patch (default: the source
+                         patch's)
+  --description <desc>   Description for the created patch
+  --dry-run              Show what would happen without writing
+  -y, --yes              Skip confirmation prompt (required for non-TTY)
+  --force-unsafe         Bypass projected-lint refusals
+  --skip-lint            Skip per-patch lint of the projected bodies
+  -h, --help             display help for command
 "
 `;
 

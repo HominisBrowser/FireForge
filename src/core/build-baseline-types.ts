@@ -57,8 +57,43 @@ export interface BuildBaseline {
    * The record is project-scoped, which is also per-obj-dir: multi-objdir
    * checkouts are refused up-front (`AmbiguousBuildArtifactsError`), so at
    * most one obj dir exists per project.
+   *
+   * Union/"shared coverage" across successive scoped builds was evaluated
+   * and rejected as unsound — every baseline write refreshes
+   * `packageableFingerprints` for ALL dirty packageable paths, so a union
+   * would whitewash an earlier scope's edited fixtures while
+   * `obj-*`/`_tests/` still holds its stale staging; coverage therefore
+   * REPLACES.
    */
   testPackagingCoverage?: TestPackagingCoverage;
+  /**
+   * Anchor for the compiled StaticComponents table: the engine HEAD SHA of
+   * the last FULL-coverage build plus content fingerprints of the
+   * `components.conf` manifests that were dirty at that moment. Written
+   * fresh only on FULL-coverage baseline writes (`fireforge build`,
+   * `build --ui`, path-less `test --build`); a scoped `test --build`
+   * carries the previous record forward verbatim, because `mach build
+   * faster` does not rebake `components.conf` registrations into the
+   * compiled table. Missing on pre-0.38.0 baselines — the
+   * static-components stale check degrades to "fresh" in that case.
+   */
+  staticComponentsBaseline?: StaticComponentsBaseline;
+}
+
+/**
+ * State of the engine at the last FULL build, as far as compiled-in XPCOM
+ * component registration is concerned. See
+ * {@link BuildBaseline.staticComponentsBaseline}.
+ */
+export interface StaticComponentsBaseline {
+  /** Engine HEAD SHA at the time of the last full build. */
+  engineHeadSha: string;
+  /**
+   * Hex-encoded SHA-256 per `components.conf` path that was dirty
+   * (modified-against-HEAD or untracked) when the full build ran. Keys are
+   * engine-relative POSIX paths.
+   */
+  fingerprints: Record<string, string>;
 }
 
 /** Coverage claim of the packaged test runtime. See {@link BuildBaseline.testPackagingCoverage}. */

@@ -24,8 +24,12 @@ import { join } from 'node:path';
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
-import { isPackageablePath } from './build-audit.js';
-import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
+import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
+import type {
+  BuildBaseline,
+  StaticComponentsBaseline,
+  TestPackagingCoverage,
+} from './build-baseline-types.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { getHead, hasChanges, isMissingHeadError } from './git.js';
 import { git } from './git-base.js';
@@ -74,12 +78,18 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
  * @param testPackagingCoverage - Coverage claim of the packaged test
  *   runtime this build produced (`'full'`, or the scoped request paths of
  *   a `test --build` invocation). Omitted → field left off the marker.
+ * @param previousBaseline - The baseline this write replaces, when the
+ *   caller has it. A scoped (non-`'full'`) write carries its
+ *   `staticComponentsBaseline` forward verbatim — `mach build faster`
+ *   does not rebake `components.conf` registrations, so the last FULL
+ *   build stays the honest anchor for the compiled StaticComponents table.
  */
 export async function writeBuildBaseline(
   projectRoot: string,
   engineDir: string,
   binaryName: string,
-  testPackagingCoverage?: TestPackagingCoverage
+  testPackagingCoverage?: TestPackagingCoverage,
+  previousBaseline?: BuildBaseline
 ): Promise<void> {
   let engineHeadSha = '';
   try {
@@ -96,12 +106,22 @@ export async function writeBuildBaseline(
 
   const packageableFingerprints = await collectPackageableFingerprints(engineDir);
 
+  // A full-coverage write (and the legacy no-claim `fireforge build` shape)
+  // just recompiled the StaticComponents table, so it anchors the table to
+  // the current engine state. A scoped write did not — carry the previous
+  // anchor forward verbatim.
+  const staticComponentsBaseline =
+    testPackagingCoverage === undefined || testPackagingCoverage === 'full'
+      ? await collectStaticComponentsBaseline(engineDir, engineHeadSha)
+      : previousBaseline?.staticComponentsBaseline;
+
   const baseline: BuildBaseline = {
     engineHeadSha,
     builtAt: new Date().toISOString(),
     binaryName,
     ...(packageableFingerprints !== undefined ? { packageableFingerprints } : {}),
     ...(testPackagingCoverage !== undefined ? { testPackagingCoverage } : {}),
+    ...(staticComponentsBaseline !== undefined ? { staticComponentsBaseline } : {}),
   };
   await writeJson(getBuildBaselinePath(projectRoot), baseline);
 }
@@ -122,6 +142,46 @@ export async function writeBuildBaseline(
 async function collectPackageableFingerprints(
   engineDir: string
 ): Promise<Record<string, string> | undefined> {
+  return collectDirtyFingerprints(engineDir, isPackageablePath, 'packageable fingerprint');
+}
+
+/**
+ * Anchor for the compiled StaticComponents table: the engine HEAD SHA of
+ * this (full) build plus content fingerprints of the `components.conf`
+ * manifests dirty right now — the same dirty-path probe family as
+ * {@link collectPackageableFingerprints}, filtered to XPCOM manifests.
+ * Returns `undefined` on probe failure so a broken probe omits the field
+ * (the static-components stale check then degrades to "fresh") rather than
+ * anchoring to a garbage record.
+ */
+async function collectStaticComponentsBaseline(
+  engineDir: string,
+  engineHeadSha: string
+): Promise<StaticComponentsBaseline | undefined> {
+  const fingerprints = await collectDirtyFingerprints(
+    engineDir,
+    isXpcomManifestPath,
+    'static-components fingerprint'
+  );
+  if (fingerprints === undefined) {
+    return undefined;
+  }
+  return { engineHeadSha, fingerprints };
+}
+
+/**
+ * Shared dirty-path fingerprint probe backing
+ * {@link collectPackageableFingerprints} and
+ * {@link collectStaticComponentsBaseline}: enumerates engine workdir
+ * modifications (tracked and untracked), keeps the paths `includePath`
+ * accepts, and hashes each. Returns `undefined` on any git failure so a
+ * broken probe never corrupts the on-disk baseline with `{}`.
+ */
+async function collectDirtyFingerprints(
+  engineDir: string,
+  includePath: (path: string) => boolean,
+  contextLabel: string
+): Promise<Record<string, string> | undefined> {
   try {
     const dirtyPaths = new Set<string>();
     if (await hasChanges(engineDir)) {
@@ -135,13 +195,13 @@ async function collectPackageableFingerprints(
       }
     }
 
-    const packageable = [...dirtyPaths].filter(isPackageablePath);
-    if (packageable.length === 0) {
+    const included = [...dirtyPaths].filter(includePath);
+    if (included.length === 0) {
       return {};
     }
 
     const fingerprints: Record<string, string> = {};
-    for (const relPath of packageable) {
+    for (const relPath of included) {
       try {
         const buffer = await readFile(join(engineDir, relPath));
         fingerprints[relPath] = createHash('sha256').update(buffer).digest('hex');
@@ -150,13 +210,13 @@ async function collectPackageableFingerprints(
         // expected in concurrent scenarios; skip it without failing the
         // whole baseline write.
         verbose(
-          `Build baseline: skipping fingerprint for ${relPath} — ${toError(fileError).message}`
+          `Build baseline: skipping ${contextLabel} for ${relPath} — ${toError(fileError).message}`
         );
       }
     }
     return fingerprints;
   } catch (error: unknown) {
-    verbose(`Build baseline: packageable fingerprint probe failed — ${toError(error).message}`);
+    verbose(`Build baseline: ${contextLabel} probe failed — ${toError(error).message}`);
     return undefined;
   }
 }

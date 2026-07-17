@@ -131,16 +131,19 @@ vi.mock('../../core/marionette-port.js', async () => {
   };
 });
 
-// Partial mock: the probe and warning copy stay stubbed, but the pure
-// coverage helpers (`findUncoveredRequestPaths`, `formatTestCoverageRefusal`)
-// run real so the coverage-refusal tests pin the actual matcher semantics
-// and message wording through the command.
+// Partial mock: the probes and warning copy stay stubbed, but the pure
+// coverage helpers (`findUncoveredRequestPaths`, `formatTestCoverageRefusal`,
+// `formatStaticComponentsRefusal`) run real so the refusal tests pin the
+// actual matcher semantics and message wording through the command.
 vi.mock('../../core/test-stale-check.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../core/test-stale-check.js')>();
   return {
     ...actual,
     checkStaleBuildForTest: vi.fn(() =>
       Promise.resolve({ stale: false, changedPaths: [], truncated: 0, baseline: undefined })
+    ),
+    checkStaticComponentsStale: vi.fn(() =>
+      Promise.resolve({ stale: false, changedManifests: [] })
     ),
     formatStaleBuildWarning: vi.fn(() => 'stale warning'),
   };
@@ -168,7 +171,11 @@ import {
   runMarionettePreflight,
 } from '../../core/marionette-preflight.js';
 import { analyzeTestPathScopes } from '../../core/test-path-scope.js';
-import { checkStaleBuildForTest, formatStaleBuildWarning } from '../../core/test-stale-check.js';
+import {
+  checkStaleBuildForTest,
+  checkStaticComponentsStale,
+  formatStaleBuildWarning,
+} from '../../core/test-stale-check.js';
 import {
   findNearestXpcshellManifest,
   operatorAlreadySetAppPath,
@@ -1062,9 +1069,13 @@ describe('testCommand', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(writeBuildBaseline).toHaveBeenCalledWith('/project', '/project/engine', 'mybrowser', [
-      'browser/components/tests/unit/test_distribution.js',
-    ]);
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      '/project',
+      '/project/engine',
+      'mybrowser',
+      ['browser/components/tests/unit/test_distribution.js'],
+      undefined
+    );
     // Same ordering contract as `fireforge build`: the baseline records a
     // build that actually completed.
     const buildOrder = vi.mocked(runProtectedMachBuild).mock.invocationCallOrder[0];
@@ -1089,9 +1100,13 @@ describe('testCommand', () => {
       testCommand('/project', ['browser/components/tests/unit'], { build: true })
     ).resolves.toBeUndefined();
 
-    expect(writeBuildBaseline).toHaveBeenCalledWith('/project', '/project/engine', 'mybrowser', [
-      'browser/components/tests/unit',
-    ]);
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      '/project',
+      '/project/engine',
+      'mybrowser',
+      ['browser/components/tests/unit'],
+      undefined
+    );
   });
 
   it('records full coverage for a path-less --build --auto run', async () => {
@@ -1113,7 +1128,8 @@ describe('testCommand', () => {
       '/project',
       '/project/engine',
       'mybrowser',
-      'full'
+      'full',
+      undefined
     );
   });
 
@@ -1291,6 +1307,91 @@ describe('testCommand', () => {
       testCommand('/project', ['browser/components/history/test/browser/browser_hist.js'])
     ).resolves.toBeUndefined();
 
+    expect(testWithOutput).toHaveBeenCalled();
+  });
+
+  // ── 0.38.0 item 5: coverage is manifest-granular — a scoped rebuild
+  //    staged the whole manifest directory, so a same-manifest sibling of a
+  //    covered file must pass the coverage gate ──
+
+  it('lets a same-manifest sibling of the covered file pass the coverage gate', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(false));
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
+
+    // Coverage records …/browser_tiles.js; the sibling lives in the same
+    // manifest directory and was staged by the same scoped rebuild.
+    await expect(
+      testCommand('/project', ['browser/components/tiles/test/browser/browser_other.js'])
+    ).resolves.toBeUndefined();
+
+    expect(testWithOutput).toHaveBeenCalled();
+  });
+
+  // ── 0.38.0 item 2: components.conf registrations bake into the compiled
+  //    StaticComponents table that only a FULL build regenerates — refuse
+  //    runs that would resolve the old table ──
+
+  it('refuses a scoped test --build when components.conf changed since the last full build', async () => {
+    vi.mocked(checkStaticComponentsStale).mockResolvedValueOnce({
+      stale: true,
+      changedManifests: ['browser/components/mybrowser/components.conf'],
+    });
+
+    let error: unknown;
+    try {
+      await testCommand('/project', ['browser/components/mybrowser/test/unit/test_reg.js'], {
+        build: true,
+      });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(GeneralError);
+    const message = error instanceof Error ? error.message : '';
+    expect(message).toMatch(/NS_ERROR_MALFORMED_URI/);
+    expect(message).toMatch(/fireforge build/);
+    // The gate runs BEFORE the pre-test build — a scoped `mach build
+    // faster` cannot fix the compiled table, so building first would
+    // only waste the operator's time.
+    expect(runProtectedMachBuild).not.toHaveBeenCalled();
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('refuses a build-less run over a stale StaticComponents table, naming the manifest', async () => {
+    vi.mocked(checkStaticComponentsStale).mockResolvedValueOnce({
+      stale: true,
+      changedManifests: ['browser/components/mybrowser/components.conf'],
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/mybrowser/test/unit/test_reg.js'])
+    ).rejects.toThrow(/browser\/components\/mybrowser\/components\.conf/);
+
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('downgrades the StaticComponents refusal to a warning with --allow-stale-components', async () => {
+    vi.mocked(checkStaticComponentsStale).mockResolvedValueOnce({
+      stale: true,
+      changedManifests: ['browser/components/mybrowser/components.conf'],
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/mybrowser/test/unit/test_reg.js'], {
+        allowStaleComponents: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('NS_ERROR_MALFORMED_URI'));
     expect(testWithOutput).toHaveBeenCalled();
   });
 

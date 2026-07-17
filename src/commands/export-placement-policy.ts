@@ -4,7 +4,7 @@
  */
 
 import { InvalidArgumentError } from '../errors/base.js';
-import type { PatchCategory, PatchMetadata } from '../types/commands/index.js';
+import type { PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig, PatchPolicyReservedRange } from '../types/config.js';
 
 export interface PlacementPolicyPlan {
@@ -26,58 +26,60 @@ function findReservedRange(
   );
 }
 
-function suggestSparseOrder(
-  config: FireForgeConfig,
+/**
+ * Scans downward from just below the reserved block for the first order
+ * not occupied by an existing patch. Returns null when every positive
+ * order below the block is taken.
+ */
+function firstFreeOrderBelowReservedRange(
   patches: readonly PatchMetadata[],
-  category: PatchCategory,
-  insertionOrder: number
+  range: PatchPolicyReservedRange
 ): number | null {
-  const ranges = (config.patchPolicy?.ranges ?? [])
-    .filter((range) => range.category === category)
-    .sort((a, b) => a.from - b.from || a.to - b.to);
   const occupied = new Set(patches.map((patch) => patch.order));
-
-  for (const range of ranges) {
-    for (let order = Math.max(insertionOrder, range.from); order <= range.to; order++) {
-      if (!occupied.has(order) && findReservedRange(config, order) === null) return order;
-    }
+  for (let order = range.from - 1; order >= 1; order--) {
+    if (!occupied.has(order)) return order;
   }
-
-  for (const range of ranges) {
-    for (let order = range.from; order <= range.to; order++) {
-      if (!occupied.has(order) && findReservedRange(config, order) === null) return order;
-    }
-  }
-
   return null;
 }
 
-/** Refuses positional export plans that would renumber exact reserved patches. */
-export function assertPlacementPreservesReservedRanges(
+/**
+ * Refuses positional placement plans whose renumber would touch a
+ * `patchPolicy.reservedRanges` block — either by moving a patch INTO a
+ * reserved range or by moving a patch that currently sits inside one.
+ * Throws a single up-front error for the first reserved range hit (the
+ * per-patch alternative surfaced one confusing finding per shifted
+ * patch), suggesting the first free `--order` below the block when one
+ * exists. Exact `--order` plans have an empty rename map and pass.
+ */
+export function assertPlacementAvoidsReservedRanges(
   plan: PlacementPolicyPlan,
   manifestPatches: readonly PatchMetadata[],
-  config: FireForgeConfig | undefined,
-  category: PatchCategory
+  config: FireForgeConfig | undefined
 ): void {
   if (config?.patchPolicy === undefined || plan.renameMap.size === 0) return;
 
   const byFilename = new Map(manifestPatches.map((patch) => [patch.filename, patch] as const));
   for (const [filename, rename] of plan.renameMap) {
-    const patch = byFilename.get(filename);
-    if (!patch) continue;
-    const reserved = findReservedRange(config, patch.order);
+    const oldOrder = byFilename.get(filename)?.order;
+    const reserved =
+      findReservedRange(config, rename.newOrder) ??
+      (oldOrder !== undefined ? findReservedRange(config, oldOrder) : null);
     if (reserved === null) continue;
 
-    const suggestion = suggestSparseOrder(config, manifestPatches, category, plan.insertionOrder);
-    const suggestionText =
-      suggestion !== null
-        ? ` Use --order ${String(suggestion).padStart(3, '0')} to create the new patch in an unused ${category} slot without renumbering reserved patches.`
-        : ` Choose an unused order in the ${category} policy range or adjust patchPolicy.`;
+    const label = reservedRangeLabel(reserved);
+    const freeOrder = firstFreeOrderBelowReservedRange(manifestPatches, reserved);
+    if (freeOrder !== null) {
+      throw new InvalidArgumentError(
+        `Positional insert would renumber the reserved range ${label}; ` +
+          `pass --order ${String(freeOrder).padStart(3, '0')} (first free order below the ` +
+          'reserved block) to place the new patch without renumbering reserved patches.',
+        'export placement'
+      );
+    }
     throw new InvalidArgumentError(
-      `Positional export would renumber reserved patch ${patch.filename} ` +
-        `from ${String(patch.order).padStart(3, '0')} to ${rename.newFilename} ` +
-        `(reserved range ${reservedRangeLabel(reserved)}).` +
-        suggestionText,
+      `Positional insert would renumber the reserved range ${label}; ` +
+        'no free order exists below the reserved block. Choose an unused --order outside ' +
+        'the reserved range or adjust patchPolicy.reservedRanges.',
       'export placement'
     );
   }

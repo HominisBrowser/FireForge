@@ -45,7 +45,7 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
-import { assertPlacementPreservesReservedRanges } from './export-placement-policy.js';
+import { assertPlacementAvoidsReservedRanges } from './export-placement-policy.js';
 import { findPartialOwnershipOverlap } from './export-shared.js';
 
 function buildFilenameForPlacement(
@@ -199,12 +199,17 @@ export function computeExactPlacementPlan(
 
 /**
  * Resolves a placement plan from CLI flags against the current manifest.
+ * When `config` is provided, positional plans (`--before`/`--after`) are
+ * refused up front if their renumber would touch a reserved range — one
+ * error for the whole shift instead of per-patch policy findings. The
+ * exact `--order` branch never renames, so it bypasses that gate.
  */
 export async function resolvePlacementPlan(
   patchesDir: string,
   options: ExportOptions,
   category: PatchCategory,
-  name: string
+  name: string,
+  config?: FireForgeConfig
 ): Promise<PlacementPlan> {
   // ForWrite: placement planning feeds a manifest rewrite; a corrupt
   // manifest read as empty would allocate colliding orders.
@@ -244,7 +249,9 @@ export async function resolvePlacementPlan(
     targetOrder = anchor.order + 1;
   }
 
-  return computePlacementPlan(existingPatches, category, name, targetOrder);
+  const plan = computePlacementPlan(existingPatches, category, name, targetOrder);
+  assertPlacementAvoidsReservedRanges(plan, existingPatches, config);
+  return plan;
 }
 
 /**
@@ -370,7 +377,8 @@ export async function commitPlacementExport(
       input.patchesDir,
       input.options,
       input.category,
-      input.name
+      input.name,
+      input.config
     );
     if (!placementPlansEqual(currentPlan, input.expectedPlan)) {
       throw new InvalidArgumentError(
@@ -391,14 +399,6 @@ export async function commitPlacementExport(
     }
 
     const originalManifest = await loadPatchesManifestForWrite(input.patchesDir);
-    if (originalManifest !== null) {
-      assertPlacementPreservesReservedRanges(
-        currentPlan,
-        originalManifest.patches,
-        input.config,
-        input.category
-      );
-    }
     if (input.config !== undefined) {
       const renamed =
         originalManifest !== null

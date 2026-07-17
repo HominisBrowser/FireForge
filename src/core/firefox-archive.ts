@@ -6,7 +6,7 @@
 import { ConfigError } from '../errors/config.js';
 import type { FirefoxProduct } from '../types/config.js';
 import { parseObject } from '../utils/parse.js';
-import { isValidFirefoxProduct } from '../utils/validation.js';
+import { isValidFirefoxCandidate, isValidFirefoxProduct } from '../utils/validation.js';
 
 /**
  * Resolved archive descriptor for URL generation and cache storage.
@@ -40,11 +40,27 @@ export interface ArchiveMetadata {
 /**
  * Base URLs for Firefox source archives on archive.mozilla.org.
  */
-const FIREFOX_ARCHIVE_BASE_URL = 'https://archive.mozilla.org/pub/firefox/releases';
-const DEVEDITION_ARCHIVE_BASE_URL = 'https://archive.mozilla.org/pub/devedition/releases';
+const FIREFOX_ARCHIVE_BASE_URL = 'https://archive.mozilla.org/pub/firefox';
+const DEVEDITION_ARCHIVE_BASE_URL = 'https://archive.mozilla.org/pub/devedition';
 
 function getArchiveBaseUrl(product: FirefoxProduct): string {
   return product === 'firefox-devedition' ? DEVEDITION_ARCHIVE_BASE_URL : FIREFOX_ARCHIVE_BASE_URL;
+}
+
+/**
+ * Directory holding the release's artifacts: `releases/<version>/` for
+ * final releases, `candidates/<version>-candidates/<buildN>/` when a
+ * release-candidate build is requested for pre-release verification.
+ */
+function getArchiveDirUrl(
+  product: FirefoxProduct,
+  archiveVersion: string,
+  candidate?: string
+): string {
+  const base = getArchiveBaseUrl(product);
+  return candidate === undefined
+    ? `${base}/releases/${archiveVersion}`
+    : `${base}/candidates/${archiveVersion}-candidates/${candidate}`;
 }
 
 /**
@@ -81,17 +97,28 @@ export function validateArchiveMetadata(data: unknown): ArchiveMetadata {
  * Resolves archive identity for URL generation and cache storage.
  * @param version - Requested Firefox version
  * @param product - Firefox product type
+ * @param candidate - Optional release-candidate build directory (e.g. "build2")
  * @returns Resolved archive descriptor
  */
 export function resolveArchive(
   version: string,
-  product: FirefoxProduct = 'firefox'
+  product: FirefoxProduct = 'firefox',
+  candidate?: string
 ): ResolvedArchive {
   // Reject versions containing path traversal characters
   if (version.includes('/') || version.includes('..') || version.includes('\\')) {
     throw new ConfigError(
       `Invalid Firefox version "${version}": contains disallowed characters`,
       'firefox.version'
+    );
+  }
+  // Defense-in-depth: config validation enforces this shape already, but a
+  // caller-supplied candidate becomes both a URL path segment and part of
+  // the cache filename, so re-validate here like the version check above.
+  if (candidate !== undefined && !isValidFirefoxCandidate(candidate)) {
+    throw new ConfigError(
+      `Invalid Firefox candidate "${candidate}": must look like "buildN" (e.g. "build2")`,
+      'firefox.candidate'
     );
   }
   // ESR status is determined solely by the product field. Config validation
@@ -101,19 +128,25 @@ export function resolveArchive(
   const isEsr = product === 'firefox-esr';
   const archiveVersion = isEsr ? `${cleanVersion}esr` : cleanVersion;
   const safeProduct = product.replace(/[^a-z0-9-]/gi, '-');
+  const dirUrl = getArchiveDirUrl(product, archiveVersion, candidate);
+  // Candidate artifacts get a `-<candidate>` filename suffix so a build2
+  // archive can never collide with the final release artifact (same
+  // archiveVersion, potentially different bytes) in .fireforge/cache.
+  const candidateSuffix = candidate === undefined ? '' : `-${candidate}`;
+  const filename = `firefox-${safeProduct}-${archiveVersion}${candidateSuffix}.source.tar.xz`;
 
   return {
     requestedVersion: version,
     product,
     archiveVersion,
-    url: `${getArchiveBaseUrl(product)}/${archiveVersion}/source/firefox-${archiveVersion}.source.tar.xz`,
-    filename: `firefox-${safeProduct}-${archiveVersion}.source.tar.xz`,
-    metadataFilename: `firefox-${safeProduct}-${archiveVersion}.source.tar.xz.json`,
+    url: `${dirUrl}/source/firefox-${archiveVersion}.source.tar.xz`,
+    filename,
+    metadataFilename: `${filename}.json`,
     // Mozilla publishes one SHA256SUMS per release directory listing every
     // artifact by its release-relative path. Downloads verify against it by
     // default (fail closed on mismatch), so a compromised CDN response
     // cannot silently become the trusted git baseline.
-    checksumsUrl: `${getArchiveBaseUrl(product)}/${archiveVersion}/SHA256SUMS`,
+    checksumsUrl: `${dirUrl}/SHA256SUMS`,
     pathInChecksums: `source/firefox-${archiveVersion}.source.tar.xz`,
   };
 }

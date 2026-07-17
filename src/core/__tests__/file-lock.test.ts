@@ -322,6 +322,115 @@ describe('file-lock', () => {
     await rm(lockPath, { recursive: true, force: true });
   });
 
+  it('reports wait progress with the holder PID and owner-metadata lines', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    const tempDir = await makeTempDir('fireforge-wait-progress-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+    // Line 1 pid, line 2 token, lines 3+ diagnostic metadata.
+    await writeFile(
+      join(lockPath, 'pid'),
+      `${String(process.pid)}\nsome-token\ncommand=build\nstarted=2026-07-18T09:12:03.000Z\n`,
+      'utf-8'
+    );
+
+    const progress: {
+      waitedMs: number;
+      timeoutMs: number;
+      holder: { pid: number; alive: boolean; metadata: string[] } | undefined;
+    }[] = [];
+
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+        timeoutMs: 150,
+        pollMs: 5,
+        staleMs: 60 * 60 * 1000,
+        waitProgressMs: 20,
+        onWaitProgress: (p) => progress.push(p),
+        onTimeoutMessage: 'lock still held',
+      })
+    ).rejects.toThrow('lock still held');
+
+    expect(progress.length).toBeGreaterThan(0);
+    const first = progress[0];
+    expect(first?.timeoutMs).toBe(150);
+    expect(first?.waitedMs).toBeGreaterThanOrEqual(20);
+    expect(first?.holder).toEqual({
+      pid: process.pid,
+      alive: true,
+      metadata: ['command=build', 'started=2026-07-18T09:12:03.000Z'],
+    });
+  });
+
+  it('reports an undefined holder when the PID file is unreadable', async () => {
+    const tempDir = await makeTempDir('fireforge-wait-progress-anon-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath); // No pid file at all.
+
+    const holders: unknown[] = [];
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+        timeoutMs: 120,
+        pollMs: 5,
+        staleMs: 60 * 60 * 1000,
+        waitProgressMs: 20,
+        onWaitProgress: ({ holder }) => holders.push(holder),
+        onTimeoutMessage: 'lock still held',
+      })
+    ).rejects.toThrow('lock still held');
+
+    expect(holders.length).toBeGreaterThan(0);
+    expect(holders.every((holder) => holder === undefined)).toBe(true);
+  });
+
+  it('backs off the poll interval exponentially up to pollMaxMs', async () => {
+    const tempDir = await makeTempDir('fireforge-poll-backoff-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      await expect(
+        withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+          timeoutMs: 200,
+          pollMs: 5,
+          pollMaxMs: 20,
+          staleMs: 60 * 60 * 1000,
+          onTimeoutMessage: 'lock still held',
+        })
+      ).rejects.toThrow('lock still held');
+
+      // Only the lock's own sleep uses these small delays in this test.
+      const delays = timeoutSpy.mock.calls
+        .map((call) => call[1])
+        .filter((ms): ms is number => ms === 5 || ms === 10 || ms === 20);
+      expect(delays.slice(0, 3)).toEqual([5, 10, 20]);
+      // Once capped, every subsequent poll stays at pollMaxMs.
+      expect(delays.slice(2).every((ms) => ms === 20)).toBe(true);
+      expect(delays.length).toBeGreaterThan(3);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it('does not report progress when the new wait options are absent', async () => {
+    const tempDir = await makeTempDir('fireforge-no-progress-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+
+    const onWaitProgress = vi.fn();
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+        timeoutMs: 60,
+        pollMs: 5,
+        staleMs: 60 * 60 * 1000,
+        onWaitProgress, // No waitProgressMs — progress reporting stays off.
+        onTimeoutMessage: 'lock still held',
+      })
+    ).rejects.toThrow('lock still held');
+    expect(onWaitProgress).not.toHaveBeenCalled();
+  });
+
   it('treats EPERM from PID liveness checks as alive or unknown', async () => {
     const { writeFile } = await import('node:fs/promises');
     const tempDir = await makeTempDir('fireforge-eperm-pid-lock-');

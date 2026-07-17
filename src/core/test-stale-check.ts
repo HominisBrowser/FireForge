@@ -30,10 +30,12 @@ import { join } from 'node:path';
 
 import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
-import { isPackageablePath } from './build-audit.js';
+import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
 import { readBuildBaseline } from './build-baseline.js';
 import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
 import { collectChangedEnginePaths } from './engine-changes.js';
+
+export { isXpcomManifestPath };
 
 /** Result of the stale-build preflight probe. */
 export interface StaleBuildResult {
@@ -169,7 +171,10 @@ export const FULL_SUITE_REQUEST = '(entire suite)';
  *
  * Coverage semantics: `undefined` (pre-0.37.0 baseline) and `'full'` cover
  * everything. A scoped list covers a request path when the request equals a
- * covered entry or sits beneath a covered directory entry. Both sides are
+ * covered entry, sits beneath a covered directory entry, or shares a
+ * manifest granule with a covered entry ({@link toManifestGranule} — a
+ * scoped `test --build` packages the whole manifest directory, so a
+ * same-manifest sibling of a covered file is packaged too). Both sides are
  * normalized to forward slashes so Windows-style CLI input cannot defeat
  * the prefix rule (baseline paths are POSIX by convention). A request with
  * no paths is a full-suite run and is never covered by a scoped list — the
@@ -188,8 +193,31 @@ export function findUncoveredRequestPaths(
   }
   return requestedPaths.filter((requested) => {
     const path = normalizeCoveragePath(requested);
-    return !covered.some((c) => path === c || path.startsWith(`${c}/`));
+    const granule = toManifestGranule(path);
+    return !covered.some(
+      (c) => path === c || path.startsWith(`${c}/`) || granule === toManifestGranule(c)
+    );
   });
+}
+
+/**
+ * Maps a normalized request/coverage path to the "manifest granule" the
+ * packaged runtime actually staged: an extension-bearing basename (a test
+ * FILE) maps to its containing directory, a directory (no dot in the
+ * basename) maps to itself. Purely lexical — the directory-as-manifest
+ * approximation holds because xpcshell/mochitest manifests live next to
+ * their test files and a scoped `test --build` stages the whole manifest
+ * directory into `obj-*`/`_tests/`, not single files. Caveat: a DIRECTORY
+ * whose basename contains a dot is misread as a file and mapped to its
+ * parent, which widens (never narrows) the covered granule.
+ */
+function toManifestGranule(path: string): string {
+  const slash = path.lastIndexOf('/');
+  const base = slash === -1 ? path : path.slice(slash + 1);
+  if (!base.includes('.')) {
+    return path;
+  }
+  return slash === -1 ? '' : path.slice(0, slash);
 }
 
 /** Normalizes a path for coverage comparison: forward slashes, no trailing slash. */
@@ -221,5 +249,79 @@ export function formatTestCoverageRefusal(uncovered: string[], coverage: string[
     'fixtures for those manifests may be missing from obj-*/_tests/, and the run can hang ' +
     `rather than fail. ${rebuildHint} ` +
     '(--allow-stale-build does not bypass this check — it accepts stale content, not missing coverage.)'
+  );
+}
+
+/** Result of the compiled-StaticComponents staleness probe. */
+export interface StaticComponentsStaleResult {
+  /** True when at least one `components.conf` genuinely diverged from the anchor. */
+  stale: boolean;
+  /**
+   * Engine-relative `components.conf` paths changed since the last FULL
+   * build. Sorted; NOT capped — {@link formatStaticComponentsRefusal}
+   * applies the render cap.
+   */
+  changedManifests: string[];
+}
+
+/**
+ * Probes whether any `components.conf` changed since the last FULL
+ * `fireforge build` — i.e. since the compiled StaticComponents table was
+ * last regenerated. `components.conf` entries bake into compiled code; a
+ * scoped `test --build` packages the file but the child process resolves
+ * the OLD table and fails with `NS_ERROR_MALFORMED_URI` that reads as a
+ * test bug.
+ *
+ * The diff anchors to the baseline's `staticComponentsBaseline` (the last
+ * full build's engine HEAD SHA), NOT the baseline's own `engineHeadSha`
+ * which a scoped `test --build` advances. Dirty candidates are hash-checked
+ * against the anchor's fingerprints so only genuine content divergence
+ * counts. No baseline / no anchor (pre-0.38.0 marker) → fresh. Never
+ * throws — the probes it composes degrade to verbose lines and empty
+ * results on git failure, matching {@link checkStaleBuildForTest}.
+ */
+export async function checkStaticComponentsStale(
+  engineDir: string,
+  baseline: BuildBaseline | undefined
+): Promise<StaticComponentsStaleResult> {
+  const anchor = baseline?.staticComponentsBaseline;
+  if (baseline === undefined || anchor === undefined) {
+    return { stale: false, changedManifests: [] };
+  }
+
+  const changed = await collectChangedEnginePaths(
+    engineDir,
+    { ...baseline, engineHeadSha: anchor.engineHeadSha },
+    'Static-components preflight'
+  );
+  const changedManifests: string[] = [];
+  for (const path of changed.filter((p) => isXpcomManifestPath(p))) {
+    const recorded = anchor.fingerprints[path];
+    const live = await hashEngineFile(engineDir, path);
+    if (recorded === undefined || live === undefined || recorded !== live) {
+      changedManifests.push(path);
+    }
+  }
+  return { stale: changedManifests.length > 0, changedManifests };
+}
+
+/**
+ * Formats the refusal shown when a run would dispatch against a stale
+ * compiled StaticComponents table. Same probe/copy split as
+ * {@link formatStaleBuildWarning} so tests can pin structure and wording
+ * independently.
+ */
+export function formatStaticComponentsRefusal(changedManifests: string[]): string {
+  const head = changedManifests.slice(0, STALE_PATHS_LIMIT);
+  const truncated = changedManifests.length - head.length;
+  const list = head.join(', ') + (truncated > 0 ? `, … (+${truncated} more)` : '');
+  return (
+    `The compiled StaticComponents table is stale: ${list} changed since the last full "fireforge build".\n` +
+    'components.conf registrations are baked into compiled code that only a FULL build ' +
+    'regenerates — a scoped "fireforge test --build" repackages files but the child process ' +
+    'resolves the old component table and fails with NS_ERROR_MALFORMED_URI that reads as a ' +
+    'test bug. Run "fireforge build" first. (--allow-stale-build does not bypass this check — ' +
+    'it accepts stale packaged content, not a stale compiled registration. Pass ' +
+    '--allow-stale-components only if you rebuilt out-of-band and accept the risk.)'
   );
 }

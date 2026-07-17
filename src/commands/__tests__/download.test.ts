@@ -262,7 +262,8 @@ describe('downloadCommand', () => {
       expect.any(Function),
       expect.any(Function),
       undefined,
-      expect.any(Function)
+      expect.any(Function),
+      undefined
     );
     expect(removeDir).not.toHaveBeenCalledWith('/project/engine');
     // pendingRepair preservation + wholesale clear is the shared helper's
@@ -460,7 +461,41 @@ describe('downloadCommand', () => {
       expect.any(Function),
       expect.any(Function),
       'a'.repeat(64),
-      expect.any(Function)
+      expect.any(Function),
+      undefined
+    );
+  });
+
+  it('passes a configured firefox.candidate through to the archive downloader', async () => {
+    const configMod = await import('../../core/config.js');
+    vi.mocked(configMod.loadConfig).mockResolvedValueOnce({
+      firefox: {
+        version: '141.0',
+        product: 'firefox',
+        candidate: 'build2',
+      },
+      name: 'Fire',
+      vendor: 'Forge',
+      appId: 'org.example.fireforge',
+      binaryName: 'fireforge',
+    });
+    vi.mocked(pathExistsStrict).mockResolvedValue(false);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', {});
+
+    expect(downloadFirefoxSource).toHaveBeenCalledWith(
+      '141.0',
+      'firefox',
+      '/project/engine',
+      '/project/.fireforge/cache',
+      expect.any(Function),
+      expect.any(Function),
+      undefined,
+      expect.any(Function),
+      'build2'
     );
   });
 

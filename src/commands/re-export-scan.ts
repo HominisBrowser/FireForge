@@ -3,9 +3,18 @@ import { dirname, join } from 'node:path';
 
 import { confirm } from '@clack/prompts';
 
+import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
+import { computeProjectedLintRegressions } from '../core/lint-projection.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
+import {
+  buildModifiedFileAdditionsFromDiff,
+  buildPatchQueueContext,
+  detectNewFilesInDiff,
+  lintPatchQueue,
+} from '../core/patch-lint.js';
 import { getClaimedFiles } from '../core/patch-manifest.js';
+import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { PatchesManifest } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
@@ -206,6 +215,66 @@ function scanAdditionsNeedConfirmation(added: readonly string[]): boolean {
   if (added.length === 0) return false;
   if (added.length > SCAN_ADD_COUNT_THRESHOLD) return true;
   return new Set(added.map((f) => dirname(f))).size >= SCAN_DIR_COUNT_THRESHOLD;
+}
+
+/**
+ * Refuses scan adoptions whose candidate files import modules created by
+ * LATER patches. Modeled on the `re-export --files` cross-patch
+ * projection: the candidates' diffs are projected into the adopting
+ * patch's queue entry, the queue lint runs baseline vs projection, and
+ * only forward-import regressions attributable to the candidates block.
+ * Staged-dependency declarations and inline lint-ignore markers are
+ * honored automatically because the real lint rule evaluates them.
+ * Covers broad `--scan`, `--scan-file`, and the `--scan-files` bulk flow
+ * (all adopt through the same scan result), including dry-run.
+ */
+export async function assertScanAdoptionsHaveNoForwardImports(args: {
+  patchesDir: string;
+  engineDir: string;
+  patchFilename: string;
+  added: readonly string[];
+}): Promise<void> {
+  const { patchesDir, engineDir, patchFilename, added } = args;
+  if (added.length === 0) return;
+
+  const candidateDiff = await getDiffForFilesAgainstHead(engineDir, [...added]);
+  if (!candidateDiff.trim()) return;
+
+  const candidateNewFiles = new Map<string, string>();
+  for (const path of detectNewFilesInDiff(candidateDiff)) {
+    candidateNewFiles.set(path, extractNewFileContentFromDiff(candidateDiff, path));
+  }
+  const candidateAdditions = buildModifiedFileAdditionsFromDiff(candidateDiff);
+
+  const baseCtx = await buildPatchQueueContext(patchesDir);
+  const projectedEntries = baseCtx.entries.map((entry) => {
+    if (entry.filename !== patchFilename) return entry;
+    return {
+      ...entry,
+      diff: `${entry.diff}\n${candidateDiff}`,
+      newFiles: new Map([...entry.newFiles, ...candidateNewFiles]),
+      modifiedFileAdditions: new Map([...entry.modifiedFileAdditions, ...candidateAdditions]),
+    };
+  });
+
+  const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
+  const projectedIssues = lintPatchQueue({ entries: projectedEntries }).filter(
+    (i) => i.severity === 'error'
+  );
+  const addedSet = new Set(added);
+  const offending = computeProjectedLintRegressions(baselineIssues, projectedIssues).filter(
+    (issue) => issue.check === 'forward-import' && addedSet.has(issue.file)
+  );
+  if (offending.length === 0) return;
+
+  const details = offending.map((issue) => `  - ${issue.file}: ${issue.message}`).join('\n');
+  throw new GeneralError(
+    `Refusing to adopt ${offending.length} scanned file${offending.length === 1 ? '' : 's'} into ${patchFilename} ` +
+      `because they import modules created by later patches:\n${details}\n` +
+      'Export those files as their own later patch ("fireforge export --order <n>" / ' +
+      '"fireforge patch split --order <n>") or declare the intentional dependency with ' +
+      '"fireforge patch staged-dependency --add" before re-running the scan.'
+  );
 }
 
 /** Refuses explicit `--scan-file` additions that did not produce patch hunks. */

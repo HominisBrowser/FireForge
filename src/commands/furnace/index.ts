@@ -3,7 +3,7 @@ import { Command, Option } from 'commander';
 
 import { withEngineSessionLock } from '../../core/engine-session-lock.js';
 import type { CommandContext } from '../../types/cli.js';
-import { pickDefined } from '../../utils/options.js';
+import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
 import { furnaceApplyCommand } from './apply.js';
 import { furnaceChromeDocCreateCommand } from './chrome-doc.js';
 import { furnaceChromeDocRemoveCommand } from './chrome-doc-remove.js';
@@ -25,15 +25,18 @@ import { furnaceValidateCommand } from './validate.js';
 async function runEngineLockedFurnaceCommand(
   context: CommandContext,
   command: string,
-  operation: (projectRoot: string) => Promise<void>
+  operation: (projectRoot: string) => Promise<void>,
+  waitLockSeconds?: number
 ): Promise<void> {
   const projectRoot = context.getProjectRoot();
-  await withEngineSessionLock(projectRoot, command, () => operation(projectRoot));
+  await withEngineSessionLock(projectRoot, command, () => operation(projectRoot), {
+    waitLockSeconds,
+  });
 }
 
 function registerFurnaceApplyCommand(furnace: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  furnace
+  const apply = furnace
     .command('apply [name]')
     .description('Apply components to the engine (optionally a single component)')
     .option(
@@ -41,26 +44,40 @@ function registerFurnaceApplyCommand(furnace: Command, context: CommandContext):
       'Show what would be changed without writing (reads may overlap concurrent mutations)'
     )
     .option('--force', 'Proceed despite baseVersion drift (stale overrides)')
-    .option('-w, --watch', 'Watch component directories and re-apply on changes')
-    .action(
-      withErrorHandling(
-        async (name?: string, options?: { dryRun?: boolean; force?: boolean; watch?: boolean }) => {
-          const parsed = pickDefined(options ?? {});
-          const run = (projectRoot: string): Promise<void> =>
-            furnaceApplyCommand(projectRoot, name, parsed);
-          if (parsed.dryRun === true) {
-            await run(getProjectRoot());
-            return;
-          }
-          await runEngineLockedFurnaceCommand(context, 'furnace apply', run);
+    .option('-w, --watch', 'Watch component directories and re-apply on changes');
+  addWaitLockOption(apply).action(
+    withErrorHandling(
+      async (
+        name?: string,
+        options?: {
+          dryRun?: boolean;
+          force?: boolean;
+          watch?: boolean;
+          waitLock?: number | boolean;
         }
-      )
-    );
+      ) => {
+        const { waitLock, ...rest } = options ?? {};
+        const parsed = pickDefined(rest);
+        const run = (projectRoot: string): Promise<void> =>
+          furnaceApplyCommand(projectRoot, name, parsed);
+        if (parsed.dryRun === true) {
+          await run(getProjectRoot());
+          return;
+        }
+        await runEngineLockedFurnaceCommand(
+          context,
+          'furnace apply',
+          run,
+          resolveWaitLockSeconds(waitLock)
+        );
+      }
+    )
+  );
 }
 
 function registerFurnaceDeployCommand(furnace: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  furnace
+  const deploy = furnace
     .command('deploy [name]')
     .description('Apply components and validate in one step')
     .option(
@@ -68,29 +85,40 @@ function registerFurnaceDeployCommand(furnace: Command, context: CommandContext)
       'Show what would be changed without writing (reads may overlap concurrent mutations)'
     )
     .option('--force', 'Proceed despite baseVersion drift (stale overrides)')
-    .option('--skip-validate', 'Skip the validation step (apply only)')
-    .action(
-      withErrorHandling(
-        async (
-          name?: string,
-          options?: { dryRun?: boolean; force?: boolean; skipValidate?: boolean }
-        ) => {
-          const parsed = pickDefined(options ?? {});
-          const run = (projectRoot: string): Promise<void> =>
-            furnaceDeployCommand(projectRoot, name, parsed);
-          if (parsed.dryRun === true) {
-            await run(getProjectRoot());
-            return;
-          }
-          await runEngineLockedFurnaceCommand(context, 'furnace deploy', run);
+    .option('--skip-validate', 'Skip the validation step (apply only)');
+  addWaitLockOption(deploy).action(
+    withErrorHandling(
+      async (
+        name?: string,
+        options?: {
+          dryRun?: boolean;
+          force?: boolean;
+          skipValidate?: boolean;
+          waitLock?: number | boolean;
         }
-      )
-    );
+      ) => {
+        const { waitLock, ...rest } = options ?? {};
+        const parsed = pickDefined(rest);
+        const run = (projectRoot: string): Promise<void> =>
+          furnaceDeployCommand(projectRoot, name, parsed);
+        if (parsed.dryRun === true) {
+          await run(getProjectRoot());
+          return;
+        }
+        await runEngineLockedFurnaceCommand(
+          context,
+          'furnace deploy',
+          run,
+          resolveWaitLockSeconds(waitLock)
+        );
+      }
+    )
+  );
 }
 
 function registerFurnaceSyncCommand(furnace: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  furnace
+  const sync = furnace
     .command('sync')
     .description(
       'Refresh drifted overrides and re-apply all components (recommended after fireforge download)'
@@ -104,18 +132,30 @@ function registerFurnaceSyncCommand(furnace: Command, context: CommandContext): 
         '-s, --strategy <strategy>',
         'Auto-resolve merge conflicts (ours = keep local, theirs = accept upstream)'
       ).choices(['ours', 'theirs'])
-    )
-    .action(
-      withErrorHandling(async (options: { dryRun?: boolean; strategy?: 'ours' | 'theirs' }) => {
-        const parsed = pickDefined(options);
+    );
+  addWaitLockOption(sync).action(
+    withErrorHandling(
+      async (options: {
+        dryRun?: boolean;
+        strategy?: 'ours' | 'theirs';
+        waitLock?: number | boolean;
+      }) => {
+        const { waitLock, ...rest } = options;
+        const parsed = pickDefined(rest);
         const run = (projectRoot: string): Promise<void> => furnaceSyncCommand(projectRoot, parsed);
         if (parsed.dryRun === true) {
           await run(getProjectRoot());
           return;
         }
-        await runEngineLockedFurnaceCommand(context, 'furnace sync', run);
-      })
-    );
+        await runEngineLockedFurnaceCommand(
+          context,
+          'furnace sync',
+          run,
+          resolveWaitLockSeconds(waitLock)
+        );
+      }
+    )
+  );
 }
 
 /**

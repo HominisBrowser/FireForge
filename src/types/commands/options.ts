@@ -48,6 +48,10 @@ export interface SourceSetOptions {
   sha256?: string;
   /** Clear any existing pinned SHA-256 */
   clearSha256?: boolean;
+  /** Optional release-candidate build directory (e.g. "build2") */
+  candidate?: string;
+  /** Clear any existing release-candidate build directory */
+  clearCandidate?: boolean;
 }
 
 /**
@@ -68,6 +72,12 @@ export interface BuildOptions {
    * for any mismatch the rewriter cannot prove safe.
    */
   rewriteMozinfo?: boolean;
+  /**
+   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
+   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
+   * the command implementation ignores it.
+   */
+  waitLock?: number | boolean;
 }
 
 /**
@@ -119,6 +129,12 @@ export interface ExportOptions {
    * another patch, because the resulting queue fails `verify` immediately.
    */
   allowOverlap?: boolean;
+  /**
+   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
+   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
+   * the command implementation ignores it.
+   */
+  waitLock?: number | boolean;
   /**
    * Force a tier override on the new patch's `PatchMetadata.tier`. Only
    * `"branding"` is currently recognised — Commander rejects other values
@@ -263,6 +279,12 @@ export interface ReExportOptions {
    * patch to also suppress X").
    */
   lintIgnore?: string[];
+  /**
+   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
+   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
+   * the command implementation ignores it.
+   */
+  waitLock?: number | boolean;
 }
 
 /**
@@ -367,13 +389,31 @@ export interface PatchSplitOptions {
 }
 
 /**
- * Options for the preview-only `fireforge patch move-files` subcommand.
- * It validates an ownership transfer and prints the explicit
- * `re-export --files` commands needed to perform it.
+ * Options for the `fireforge patch move-files` subcommand. Without
+ * `--create` it is preview-only: it validates an ownership transfer and
+ * prints the explicit `re-export --files` commands needed to perform it.
+ * With `--create --order <n>` the target patch is created at that order
+ * and the files move into it as one split-style transaction.
  */
 export interface PatchMoveFilesOptions {
   /** File paths relative to engine/ to move from the source patch to the target patch. */
   file?: string[];
+  /** Create the target patch (transactional bootstrap of a split). Requires `order`. */
+  create?: boolean;
+  /** Exact sparse order for the created patch. Only valid with `create`. */
+  order?: number;
+  /** Category for the created patch; defaults to the source patch's. */
+  category?: string;
+  /** Description for the created patch. */
+  description?: string;
+  /** Preview the create+move without writing. */
+  dryRun?: boolean;
+  /** Skip interactive confirmation (required for non-TTY). */
+  yes?: boolean;
+  /** Bypass projected-lint refusals. */
+  forceUnsafe?: boolean;
+  /** Skip per-patch lint of the projected bodies. */
+  skipLint?: boolean;
 }
 
 /**
@@ -477,6 +517,14 @@ export interface TestOptions {
   killStaleMarionette?: boolean;
   /** Permit tests against packageable engine edits newer than the last successful build. */
   allowStaleBuild?: boolean;
+  /**
+   * Permit tests despite `components.conf` changes that only a full
+   * `fireforge build` compiles into the StaticComponents table — the
+   * packaged child process will resolve the OLD table. For operators who
+   * rebuilt out-of-band and accept the risk; distinct from
+   * `allowStaleBuild`, which only accepts stale packaged content.
+   */
+  allowStaleComponents?: boolean;
   /** Run the configured short harness canary. `true` means use `fireforge.json`'s test.canaryPath. */
   canary?: string | boolean;
   /**
@@ -507,6 +555,12 @@ export interface TestOptions {
    * checkers that consume a sample artifact after the run.
    */
   perfSamples?: string;
+  /**
+   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
+   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
+   * the command implementation ignores it.
+   */
+  waitLock?: number | boolean;
 }
 
 /**

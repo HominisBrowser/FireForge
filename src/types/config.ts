@@ -14,6 +14,13 @@ export interface FirefoxConfig {
   product: FirefoxProduct;
   /** Optional pinned SHA-256 for the resolved source archive */
   sha256?: string;
+  /**
+   * Optional release-candidate build directory (e.g. "build2"). When set,
+   * the source archive resolves under
+   * `pub/<product>/candidates/<version>-candidates/<candidate>/` instead of
+   * `pub/<product>/releases/<version>/`, for pre-release verification.
+   */
+  candidate?: string;
 }
 
 /**

@@ -38,6 +38,7 @@ import { enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchSplitOptions } from '../../types/commands/index.js';
+import type { FireForgeConfig } from '../../types/config.js';
 import { toError } from '../../utils/errors.js';
 import { readText, removeFile, writeText } from '../../utils/fs.js';
 import { info, intro, outro, success, warn } from '../../utils/logger.js';
@@ -61,13 +62,15 @@ import {
  * Commits a confirmed split under the patch directory lock: renumber →
  * write new patch body → write shrunken source body → single manifest
  * rewrite (new row + shrunken source row + owner rewrites). On any
- * failure the steps are rolled back in reverse order.
+ * failure the steps are rolled back in reverse order. Exported for
+ * `patch move-files --create`, which commits the same transaction shape.
  */
-async function commitPatchSplit(
+export async function commitPatchSplit(
   patchesDir: string,
   plan: SplitPlan,
   newMetadata: PatchMetadata,
-  options: PatchSplitOptions
+  options: Pick<PatchSplitOptions, 'yes' | 'forceUnsafe'>,
+  config: FireForgeConfig
 ): Promise<void> {
   await withPatchDirectoryLock(patchesDir, async () => {
     const manifest = await loadPatchesManifest(patchesDir);
@@ -83,7 +86,8 @@ async function commitPatchSplit(
       patchesDir,
       plan.placementOptions,
       plan.category,
-      plan.name
+      plan.name,
+      config
     );
     if (!placementPlansEqual(currentPlacement, plan.placement)) {
       throw new InvalidArgumentError(
@@ -266,7 +270,8 @@ export async function patchSplitCommand(
     paths.patches,
     placementOptions,
     category,
-    options.name
+    options.name,
+    config
   );
 
   const plan: SplitPlan = {
@@ -337,7 +342,7 @@ export async function patchSplitCommand(
     return;
   }
 
-  await commitPatchSplit(paths.patches, plan, newMetadata, options);
+  await commitPatchSplit(paths.patches, plan, newMetadata, options, config);
 
   success(
     `Split ${source.filename}: ${placement.newFilename} now owns ${plan.movedFiles.length} file(s)`

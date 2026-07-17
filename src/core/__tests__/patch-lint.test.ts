@@ -535,6 +535,28 @@ describe('lintNewFileHeaders', () => {
     expect(issues.filter((i) => i.check === 'missing-license-header')).toHaveLength(0);
   });
 
+  it('accepts the older upstream MPL wrap (break after "file,") on a new JS file', async () => {
+    // Field verification 2026-07: upstream files like ext-browser.js carry
+    // the older Mozilla wrap that breaks after "file," instead of "with
+    // this". Same wording, different line-break position — must not fire
+    // "missing EUPL-1.2 license header".
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
+        ` * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n` +
+        ` * You can obtain one at http://mozilla.org/MPL/2.0/. */\n` +
+        `export const UPSTREAM = true;\n`
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders(
+      '/engine',
+      ['browser/components/extensions/parent/ext-browser.js'],
+      euplConfig
+    );
+    expect(issues.filter((i) => i.check === 'missing-license-header')).toHaveLength(0);
+  });
+
   it('accepts the upstream MPL block header behind a leading editor directive', async () => {
     // Mozilla's canonical layout puts `/* -*- Mode: … -*- */` on line 1
     // with the MPL header on lines 2+ — the copied-from-upstream shape
@@ -588,6 +610,37 @@ describe('lintNewFileHeaders', () => {
     const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
     const issues = await lintNewFileHeaders('/engine', ['browser/themes/new.css'], euplConfig);
     expect(issues.filter((i) => i.check === 'missing-license-header')).toHaveLength(0);
+  });
+
+  it('accepts the older upstream MPL wrap (break after "file,") on a new CSS file', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
+        ` * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n` +
+        ` * You can obtain one at http://mozilla.org/MPL/2.0/. */\n` +
+        `.x { color: red; }\n`
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders('/engine', ['browser/themes/copied.css'], euplConfig);
+    expect(issues.filter((i) => i.check === 'missing-license-header')).toHaveLength(0);
+  });
+
+  it('still flags near-MPL garbage with altered wording on an EUPL project', async () => {
+    // The wrap-agnostic fallback matches on normalized whitespace only —
+    // any change to the wording (not just the line breaks) keeps the
+    // missing-license-header error.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(
+      `/* This Source Code Form is subject to some of the terms of the Mozilla Public\n` +
+        ` * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n` +
+        ` * You can obtain one at http://mozilla.org/MPL/2.0/. */\n` +
+        `export const X = 1;\n`
+    );
+
+    const euplConfig = { ...mockConfig, license: 'EUPL-1.2' as const };
+    const issues = await lintNewFileHeaders('/engine', ['browser/base/nearmpl.js'], euplConfig);
+    expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
   });
 
   it('accepts the upstream MPL block header on CSS behind a leading editor directive', async () => {
@@ -762,7 +815,7 @@ describe('lintPatchedJs', () => {
     expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
   });
 
-  it('emits notice for new files in the notice tier (500–749 lines)', async () => {
+  it('emits notice for new files in the notice tier (501–750 lines)', async () => {
     mockPathExists.mockResolvedValue(true);
     const file = Array.from({ length: 550 }, (_, i) => `const x${i} = ${i};`).join('\n');
     mockReadText.mockResolvedValue(file);
@@ -774,7 +827,7 @@ describe('lintPatchedJs', () => {
     expect(sizeIssue?.severity).toBe('notice');
   });
 
-  it('emits warning for new files in the warning tier (750–899 lines)', async () => {
+  it('emits warning for new files in the warning tier (751–900 lines)', async () => {
     mockPathExists.mockResolvedValue(true);
     const file = Array.from({ length: 800 }, (_, i) => `const x${i} = ${i};`).join('\n');
     mockReadText.mockResolvedValue(file);
@@ -786,7 +839,7 @@ describe('lintPatchedJs', () => {
     expect(sizeIssue?.severity).toBe('warning');
   });
 
-  it('emits error for new files at or above the error tier (900+ lines)', async () => {
+  it('emits error for new files above the error tier (901+ lines)', async () => {
     mockPathExists.mockResolvedValue(true);
     const file = Array.from({ length: 950 }, (_, i) => `const x${i} = ${i};`).join('\n');
     mockReadText.mockResolvedValue(file);
@@ -816,7 +869,7 @@ describe('lintPatchedJs', () => {
     expect(sizeIssue?.message).toContain('Test file');
   });
 
-  it('emits warning for test files in the warning tier (1400–1599 lines)', async () => {
+  it('emits warning for test files in the warning tier (1401–1600 lines)', async () => {
     mockPathExists.mockResolvedValue(true);
     const file = Array.from({ length: 1500 }, (_, i) => `const x${i} = ${i};`).join('\n');
     mockReadText.mockResolvedValue(file);
@@ -834,7 +887,7 @@ describe('lintPatchedJs', () => {
     expect(sizeIssue?.message).toContain('splitting');
   });
 
-  it('emits error for test files at or above 1600 lines', async () => {
+  it('emits error for test files above 1600 lines', async () => {
     mockPathExists.mockResolvedValue(true);
     const file = Array.from({ length: 1700 }, (_, i) => `const x${i} = ${i};`).join('\n');
     mockReadText.mockResolvedValue(file);
@@ -862,6 +915,67 @@ describe('lintPatchedJs', () => {
       new Set(['browser/base/content/test/general/browser_baz.js']),
       mockConfig
     );
+
+    expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
+  });
+
+  // ── file-too-large boundary triads (limits are inclusive: strict >) ────
+
+  const makeJsFile = (lines: number): string =>
+    Array.from({ length: lines }, (_, i) => `const x${i} = ${i};`).join('\n');
+
+  const fileSizeSeverityAt = async (lines: number, file = 'boundary.js'): Promise<string> => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(makeJsFile(lines));
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), mockConfig);
+    return issues.find((i) => i.check === 'file-too-large')?.severity ?? 'none';
+  };
+
+  it('notice boundary: 499/500 pass, 501 is the first notice', async () => {
+    expect(await fileSizeSeverityAt(499)).toBe('none');
+    expect(await fileSizeSeverityAt(500)).toBe('none');
+    expect(await fileSizeSeverityAt(501)).toBe('notice');
+  });
+
+  it('warning boundary: 749/750 stay notice, 751 is the first warning', async () => {
+    expect(await fileSizeSeverityAt(749)).toBe('notice');
+    expect(await fileSizeSeverityAt(750)).toBe('notice');
+    expect(await fileSizeSeverityAt(751)).toBe('warning');
+  });
+
+  it('error boundary: 899/900 stay warning, 901 is the first error', async () => {
+    expect(await fileSizeSeverityAt(899)).toBe('warning');
+    expect(await fileSizeSeverityAt(900)).toBe('warning');
+    expect(await fileSizeSeverityAt(901)).toBe('error');
+  });
+
+  it('test-tier notice boundary: 1199/1200 pass, 1201 is the first notice', async () => {
+    const file = 'browser/base/content/test/general/browser_boundary.js';
+    expect(await fileSizeSeverityAt(1199, file)).toBe('none');
+    expect(await fileSizeSeverityAt(1200, file)).toBe('none');
+    expect(await fileSizeSeverityAt(1201, file)).toBe('notice');
+  });
+
+  it('counts lines like wc -l — a trailing newline adds no phantom line', async () => {
+    // Exactly 750 content lines WITH a trailing '\n'. The old
+    // `split('\n').length` accounting saw 751 and (with the old `>=`)
+    // reported "750 lines (soft limit: 750)" on a wc-749 file; the
+    // fixed rule must stay silent above the notice band only.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(makeJsFile(750) + '\n');
+
+    const issues = await lintPatchedJs('/engine', ['exact.js'], new Set(['exact.js']), mockConfig);
+
+    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
+    expect(sizeIssue?.severity).toBe('notice');
+    expect(sizeIssue?.message).toContain('750 lines');
+  });
+
+  it('produces no finding for a 500-line new file with trailing newline', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(makeJsFile(500) + '\n');
+
+    const issues = await lintPatchedJs('/engine', ['exact.js'], new Set(['exact.js']), mockConfig);
 
     expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
   });
@@ -1442,6 +1556,11 @@ describe('countNonBinaryDiffLines', () => {
     // 3 binary lines: "GIT binary patch", "literal 500", empty line
     expect(result.textLines).toBe(result.total - 3);
   });
+
+  it('agrees with wc -l: a trailing newline does not add a phantom line', () => {
+    expect(countNonBinaryDiffLines('a\nb\n').total).toBe(2);
+    expect(countNonBinaryDiffLines('a\nb').total).toBe(2);
+  });
 });
 
 describe('lintPatchSize', () => {
@@ -1538,28 +1657,70 @@ describe('lintPatchSize', () => {
     expect(lintPatchSize(testFiles, 100).some((i) => i.check === 'large-patch-files')).toBe(true);
   });
 
-  it('returns notice when patch reaches 800 lines', () => {
-    const issues = lintPatchSize(['a.js'], 800);
+  it('returns notice when patch exceeds 800 lines', () => {
+    const issues = lintPatchSize(['a.js'], 801);
 
     expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('notice');
   });
 
-  it('returns warning when patch reaches 1500 lines', () => {
-    const issues = lintPatchSize(['a.js'], 1500);
+  it('returns warning when patch exceeds 1500 lines', () => {
+    const issues = lintPatchSize(['a.js'], 1501);
 
     expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('warning');
   });
 
-  it('returns error when patch reaches 3000 lines', () => {
-    const issues = lintPatchSize(['a.js'], 3000);
+  it('returns error when patch exceeds 3000 lines', () => {
+    const issues = lintPatchSize(['a.js'], 3001);
 
     expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('error');
   });
 
-  it('returns no line-count issue below 800 lines', () => {
-    const issues = lintPatchSize(['a.js'], 799);
+  it('returns no line-count issue at or below 800 lines', () => {
+    expect(lintPatchSize(['a.js'], 799).some((i) => i.check === 'large-patch-lines')).toBe(false);
+    expect(lintPatchSize(['a.js'], 800).some((i) => i.check === 'large-patch-lines')).toBe(false);
+  });
 
-    expect(issues.some((i) => i.check === 'large-patch-lines')).toBe(false);
+  it('notice boundary triad: 799/800 pass, 801 is the first notice', () => {
+    const severityAt = (n: number): string =>
+      lintPatchSize(['a.js'], n).find((i) => i.check === 'large-patch-lines')?.severity ?? 'none';
+    expect(severityAt(799)).toBe('none');
+    expect(severityAt(800)).toBe('none');
+    expect(severityAt(801)).toBe('notice');
+  });
+
+  it('warning boundary triad: 1499/1500 stay notice, 1501 is the first warning', () => {
+    const severityAt = (n: number): string =>
+      lintPatchSize(['a.js'], n).find((i) => i.check === 'large-patch-lines')?.severity ?? 'none';
+    expect(severityAt(1499)).toBe('notice');
+    expect(severityAt(1500)).toBe('notice');
+    expect(severityAt(1501)).toBe('warning');
+  });
+
+  it('error boundary triad: 2999/3000 stay warning, 3001 is the first error', () => {
+    const severityAt = (n: number): string =>
+      lintPatchSize(['a.js'], n).find((i) => i.check === 'large-patch-lines')?.severity ?? 'none';
+    expect(severityAt(2999)).toBe('warning');
+    expect(severityAt(3000)).toBe('warning');
+    expect(severityAt(3001)).toBe('error');
+  });
+
+  it('test-tier notice boundary triad: 1499/1500 pass, 1501 is the first notice', () => {
+    const testFiles = ['test/test_foo.js', 'test/test_bar.js'];
+    const severityAt = (n: number): string =>
+      lintPatchSize(testFiles, n).find((i) => i.check === 'large-patch-lines')?.severity ?? 'none';
+    expect(severityAt(1499)).toBe('none');
+    expect(severityAt(1500)).toBe('none');
+    expect(severityAt(1501)).toBe('notice');
+  });
+
+  it('branding-tier notice boundary triad: 7999/8000 pass, 8001 is the first notice', () => {
+    const brandingFiles = ['browser/branding/mybrowser/content/aboutDialog.css'];
+    const severityAt = (n: number): string =>
+      lintPatchSize(brandingFiles, n).find((i) => i.check === 'large-patch-lines')?.severity ??
+      'none';
+    expect(severityAt(7999)).toBe('none');
+    expect(severityAt(8000)).toBe('none');
+    expect(severityAt(8001)).toBe('notice');
   });
 
   it('returns empty for small patches', () => {
@@ -1573,13 +1734,13 @@ describe('lintPatchSize', () => {
 
     expect(lintPatchSize(testFiles, 800).some((i) => i.check === 'large-patch-lines')).toBe(false);
     expect(
-      lintPatchSize(testFiles, 1500).find((i) => i.check === 'large-patch-lines')?.severity
+      lintPatchSize(testFiles, 1501).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('notice');
     expect(
-      lintPatchSize(testFiles, 3000).find((i) => i.check === 'large-patch-lines')?.severity
+      lintPatchSize(testFiles, 3001).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('warning');
     expect(
-      lintPatchSize(testFiles, 6000).find((i) => i.check === 'large-patch-lines')?.severity
+      lintPatchSize(testFiles, 6001).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('error');
   });
 
@@ -1587,7 +1748,7 @@ describe('lintPatchSize', () => {
     const mixedFiles = ['a.js', 'test/test_foo.js'];
 
     expect(
-      lintPatchSize(mixedFiles, 800).find((i) => i.check === 'large-patch-lines')?.severity
+      lintPatchSize(mixedFiles, 801).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('notice');
   });
 
@@ -1604,11 +1765,11 @@ describe('lintPatchSize', () => {
       'browser/branding/mybrowser/locales/en-US/brand.ftl',
       'browser/branding/mybrowser/pref/firefox-branding.js',
     ];
-    expect(lintPatchSize(brandingFiles, 7999).some((i) => i.check === 'large-patch-lines')).toBe(
+    expect(lintPatchSize(brandingFiles, 8000).some((i) => i.check === 'large-patch-lines')).toBe(
       false
     );
     expect(
-      lintPatchSize(brandingFiles, 8000).find((i) => i.check === 'large-patch-lines')?.severity
+      lintPatchSize(brandingFiles, 8001).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('notice');
     // 15904 was the exact eval data point — must surface as `notice`, not
     // `warning`, after the 2026-04-25 recalibration.
@@ -1616,10 +1777,10 @@ describe('lintPatchSize', () => {
       lintPatchSize(brandingFiles, 15904).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('notice');
     expect(
-      lintPatchSize(brandingFiles, 18000).find((i) => i.check === 'large-patch-lines')?.severity
+      lintPatchSize(brandingFiles, 18001).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('warning');
     expect(
-      lintPatchSize(brandingFiles, 30000).find((i) => i.check === 'large-patch-lines')?.severity
+      lintPatchSize(brandingFiles, 30001).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('error');
   });
 
@@ -1705,10 +1866,11 @@ describe('lintPatchSize', () => {
     // permissive and an all-tests-and-branding-shaped patch is
     // vanishingly rare.
     const testFiles = ['test/test_foo.js', 'test/test_bar.js'];
-    // 6000 is the test-tier error boundary. If branding had won we'd
-    // have only reached the branding notice (3000 < 6000 < 8000).
+    // 6001 crosses the test-tier error boundary (limits are inclusive).
+    // If branding had won we'd have only reached the branding notice
+    // (3000 < 6001 < 8000).
     expect(
-      lintPatchSize(testFiles, 6000, 'branding').find((i) => i.check === 'large-patch-lines')
+      lintPatchSize(testFiles, 6001, 'branding').find((i) => i.check === 'large-patch-lines')
         ?.severity
     ).toBe('error');
   });

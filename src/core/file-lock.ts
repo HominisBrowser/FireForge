@@ -21,9 +21,27 @@ const DEFAULT_STALE_LOCK_MS = 5 * 60_000;
  */
 const STALE_REPROBE_INTERVAL_MS = 5_000;
 
+/**
+ * Snapshot of the current lock holder handed to {@link FileLockOptions.onWaitProgress}.
+ * `metadata` carries the pid file's human-diagnostic lines (line 3 onward,
+ * e.g. `command=build`, `started=…`) written via
+ * {@link FileLockOptions.ownerMetadata}.
+ */
+export interface LockHolder {
+  pid: number;
+  alive: boolean;
+  metadata: string[];
+}
+
 export interface FileLockOptions {
   timeoutMs?: number;
   pollMs?: number;
+  /**
+   * When set, the poll interval doubles after every contended poll (starting
+   * from `pollMs`) up to this cap. When absent, polling stays at the fixed
+   * `pollMs` interval — zero behavior change for existing callers.
+   */
+  pollMaxMs?: number;
   staleMs?: number;
   /**
    * Interval between stale-lock probes while waiting (defaults to
@@ -31,6 +49,22 @@ export interface FileLockOptions {
    * the mid-wait reaping path without multi-second sleeps.
    */
   staleReprobeMs?: number;
+  /**
+   * Interval between {@link onWaitProgress} callbacks while the lock is
+   * contended. Progress reporting is off unless both this and
+   * `onWaitProgress` are set.
+   */
+  waitProgressMs?: number;
+  /**
+   * Invoked roughly every `waitProgressMs` while waiting for a contended
+   * lock. `holder` is `undefined` when the owner PID file is missing or
+   * unreadable.
+   */
+  onWaitProgress?: (progress: {
+    waitedMs: number;
+    timeoutMs: number;
+    holder: LockHolder | undefined;
+  }) => void;
   onTimeoutMessage?: string;
   onStaleLockMessage?: (ageMs: number) => string | undefined;
   /** Extra owner-file lines for human diagnostics; ignored by lock mechanics. */
@@ -84,10 +118,12 @@ function isProcessAlive(pid: number): boolean {
  * locks whose owner-file write failed) have `token: undefined`; readers must
  * treat that as "unknown owner instance", not as a mismatch.
  */
-type LockOwner = { present: false } | { present: true; pid: number; token?: string };
+type LockOwner =
+  { present: false } | { present: true; pid: number; token?: string; metadata: string[] };
 
 /**
- * Reads the owner PID (line 1) and acquisition token (line 2) from a lock
+ * Reads the owner PID (line 1), acquisition token (line 2), and diagnostic
+ * metadata (lines 3+, see {@link FileLockOptions.ownerMetadata}) from a lock
  * directory's PID file. Returns `{ present: false }` when the PID file is
  * missing or the PID does not parse as a finite integer (caller falls back
  * to the age-only staleness heuristic).
@@ -99,19 +135,38 @@ type LockOwner = { present: false } | { present: true; pid: number; token?: stri
 async function readLockOwner(lockPath: string): Promise<LockOwner> {
   try {
     const pidContent = await readFile(join(lockPath, LOCK_PID_FILE), 'utf-8');
-    const [pidLine, tokenLine] = pidContent.split('\n');
+    const [pidLine, tokenLine, ...metadataLines] = pidContent.split('\n');
     const pid = parseInt((pidLine ?? '').trim(), 10);
     if (Number.isFinite(pid)) {
+      const metadata = metadataLines.map((line) => line.trim()).filter((line) => line.length > 0);
       const token = tokenLine?.trim();
       if (token !== undefined && token.length > 0) {
-        return { present: true, pid, token };
+        return { present: true, pid, token, metadata };
       }
-      return { present: true, pid };
+      return { present: true, pid, metadata };
     }
   } catch {
     // PID file missing or unreadable — treat as absent.
   }
   return { present: false };
+}
+
+/**
+ * Reads the contended lock's owner and reports wait progress to the caller's
+ * `onWaitProgress` callback. Failure to read the owner degrades to
+ * `holder: undefined` — progress reporting must never break the wait loop.
+ */
+async function reportWaitProgress(
+  lockPath: string,
+  waitedMs: number,
+  timeoutMs: number,
+  onWaitProgress: NonNullable<FileLockOptions['onWaitProgress']>
+): Promise<void> {
+  const owner = await readLockOwner(lockPath);
+  const holder: LockHolder | undefined = owner.present
+    ? { pid: owner.pid, alive: isProcessAlive(owner.pid), metadata: owner.metadata }
+    : undefined;
+  onWaitProgress({ waitedMs, timeoutMs, holder });
 }
 
 /**
@@ -284,8 +339,11 @@ export async function withFileLock<T>(
   const pollMs = options.pollMs ?? DEFAULT_LOCK_POLL_MS;
   const staleMs = options.staleMs ?? DEFAULT_STALE_LOCK_MS;
   const staleReprobeMs = options.staleReprobeMs ?? STALE_REPROBE_INTERVAL_MS;
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
   let lastStaleProbeAt: number | undefined;
+  let currentPollMs = pollMs;
+  let lastProgressAt = startedAt;
 
   await ensureDir(dirname(lockPath));
 
@@ -324,7 +382,24 @@ export async function withFileLock<T>(
         );
       }
 
-      await sleep(pollMs);
+      if (
+        options.onWaitProgress !== undefined &&
+        options.waitProgressMs !== undefined &&
+        Date.now() - lastProgressAt >= options.waitProgressMs
+      ) {
+        lastProgressAt = Date.now();
+        await reportWaitProgress(
+          lockPath,
+          Date.now() - startedAt,
+          timeoutMs,
+          options.onWaitProgress
+        );
+      }
+
+      await sleep(currentPollMs);
+      if (options.pollMaxMs !== undefined) {
+        currentPollMs = Math.min(currentPollMs * 2, options.pollMaxMs);
+      }
     }
   }
 

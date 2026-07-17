@@ -196,7 +196,7 @@ describe('lint integration', () => {
     expect(markerIssues).toHaveLength(0);
   });
 
-  it('lint emits notice on new file in the notice tier (500–749 lines)', async () => {
+  it('lint emits notice on new file in the notice tier (501–750 lines)', async () => {
     await initCommittedRepo(join(projectRoot, 'engine'), {
       'browser/modules/mybrowser/.gitkeep': '',
     });

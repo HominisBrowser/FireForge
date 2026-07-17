@@ -109,6 +109,10 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // test.ts; no top-level registrar.
   'test-run.ts',
   'test-diagnose.ts',
+  // Stale-build and stale-StaticComponents gate enforcement split out of
+  // test.ts so it stays under the max-lines threshold. Consumed by
+  // test.ts; no top-level registrar.
+  'test-stale-gate.ts',
 ]);
 
 const ALLOWED_GROUPS = new Set(['project', 'workflow', 'engine', 'diagnostics', 'components']);

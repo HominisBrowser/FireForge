@@ -83,6 +83,83 @@ describe('sourceSetCommand', () => {
     await expect(readProjectText(projectRoot, 'fireforge.json')).resolves.toBe(before);
   });
 
+  it('persists a release candidate and echoes the candidates URL', async () => {
+    await sourceSetCommand(projectRoot, {
+      version: '152.0b6',
+      product: 'firefox-devedition',
+      candidate: 'build2',
+    });
+
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
+      firefox: { version: string; product: string; candidate?: string };
+    };
+    expect(config.firefox.candidate).toBe('build2');
+    expect(success).toHaveBeenCalledWith('Set firefox.candidate = build2');
+    expect(success).toHaveBeenCalledWith(
+      'Resolved source URL: https://archive.mozilla.org/pub/devedition/candidates/152.0b6-candidates/build2/source/firefox-152.0b6.source.tar.xz'
+    );
+  });
+
+  it('clears the candidate when requested', async () => {
+    await sourceSetCommand(projectRoot, {
+      version: '152.0b6',
+      product: 'firefox-devedition',
+      candidate: 'build2',
+    });
+
+    await sourceSetCommand(projectRoot, {
+      version: '152.0b6',
+      product: 'firefox-devedition',
+      clearCandidate: true,
+    });
+
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
+      firefox: { candidate?: string };
+    };
+    expect(config.firefox.candidate).toBeUndefined();
+    expect(success).toHaveBeenCalledWith(
+      'Resolved source URL: https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
+    );
+  });
+
+  it('rejects --candidate combined with --clear-candidate', async () => {
+    await expect(
+      sourceSetCommand(projectRoot, {
+        version: '152.0b6',
+        product: 'firefox-devedition',
+        candidate: 'build2',
+        clearCandidate: true,
+      })
+    ).rejects.toThrow('--candidate cannot be combined with --clear-candidate');
+  });
+
+  it('rejects a malformed --candidate value at the CLI boundary', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(projectRoot);
+    const program = createProgram();
+    program.exitOverride();
+    program.configureOutput({ writeErr: () => undefined });
+
+    try {
+      await expect(
+        program.parseAsync(
+          [
+            'source',
+            'set',
+            '--version',
+            '152.0b6',
+            '--product',
+            'firefox-devedition',
+            '--candidate',
+            'buildx',
+          ],
+          { from: 'user' }
+        )
+      ).rejects.toThrow('--candidate must look like "buildN" (e.g. "build2"), got "buildx"');
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
   it('parses source set --version in space form without invoking the root CLI version', async () => {
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(projectRoot);
     const program = createProgram();

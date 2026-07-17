@@ -173,6 +173,62 @@ describe('resolveArchive', () => {
     expect(result.archiveVersion).toBe('128.0.1esr');
     expect(result.url).toContain('/128.0.1esr/source/');
   });
+
+  it('resolves a release-candidate build under candidates/ with a suffixed cache filename', () => {
+    const result = resolveArchive('141.0', 'firefox', 'build2');
+    expect(result.url).toBe(
+      'https://archive.mozilla.org/pub/firefox/candidates/141.0-candidates/build2/source/firefox-141.0.source.tar.xz'
+    );
+    expect(result.checksumsUrl).toBe(
+      'https://archive.mozilla.org/pub/firefox/candidates/141.0-candidates/build2/SHA256SUMS'
+    );
+    // The path inside SHA256SUMS stays candidate-dir-relative, unchanged
+    // from the release layout.
+    expect(result.pathInChecksums).toBe('source/firefox-141.0.source.tar.xz');
+    // Cache artifacts carry the candidate suffix so build2 can never
+    // collide with the final release artifact in .fireforge/cache.
+    expect(result.filename).toBe('firefox-firefox-141.0-build2.source.tar.xz');
+    expect(result.metadataFilename).toBe('firefox-firefox-141.0-build2.source.tar.xz.json');
+  });
+
+  it('resolves a Developer Edition release candidate under pub/devedition/candidates/', () => {
+    const result = resolveArchive('152.0b6', 'firefox-devedition', 'build1');
+    expect(result.url).toBe(
+      'https://archive.mozilla.org/pub/devedition/candidates/152.0b6-candidates/build1/source/firefox-152.0b6.source.tar.xz'
+    );
+    expect(result.filename).toBe('firefox-firefox-devedition-152.0b6-build1.source.tar.xz');
+  });
+
+  it('resolves an ESR release candidate with the esr-suffixed candidates directory', () => {
+    const result = resolveArchive('140.0esr', 'firefox-esr', 'build3');
+    expect(result.url).toBe(
+      'https://archive.mozilla.org/pub/firefox/candidates/140.0esr-candidates/build3/source/firefox-140.0esr.source.tar.xz'
+    );
+    expect(result.checksumsUrl).toBe(
+      'https://archive.mozilla.org/pub/firefox/candidates/140.0esr-candidates/build3/SHA256SUMS'
+    );
+    expect(result.filename).toBe('firefox-firefox-esr-140.0esr-build3.source.tar.xz');
+  });
+
+  it('rejects malformed candidate values', () => {
+    for (const bad of ['2', 'buildx', 'build0', 'build', '../build2', 'build2/..', 'BUILD2']) {
+      expect(() => resolveArchive('141.0', 'firefox', bad)).toThrow(
+        `Invalid Firefox candidate "${bad}"`
+      );
+    }
+  });
+
+  it('keeps release resolution unchanged when no candidate is supplied (regression pin)', () => {
+    const result = resolveArchive('140.9.0', 'firefox');
+    expect(result.url).toBe(
+      'https://archive.mozilla.org/pub/firefox/releases/140.9.0/source/firefox-140.9.0.source.tar.xz'
+    );
+    expect(result.checksumsUrl).toBe(
+      'https://archive.mozilla.org/pub/firefox/releases/140.9.0/SHA256SUMS'
+    );
+    expect(result.filename).toBe('firefox-firefox-140.9.0.source.tar.xz');
+    expect(result.metadataFilename).toBe('firefox-firefox-140.9.0.source.tar.xz.json');
+  });
 });
 
 describe('getDownloadUrl', () => {

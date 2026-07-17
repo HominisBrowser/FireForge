@@ -152,6 +152,21 @@ export function isPackageablePath(sourcePath: string): boolean {
   return false;
 }
 
+/**
+ * Decides whether a source path is an XPCOM static-component manifest —
+ * i.e. a file whose registrations are baked into the compiled
+ * StaticComponents table at FULL-build time rather than packaged into
+ * `dist/`. This basename check is the single extension point for that
+ * classification; parsing `moz.build` `XPCOM_MANIFESTS` entries to follow
+ * renamed manifests is out of scope.
+ *
+ * @param sourcePath Engine-relative POSIX path.
+ * @returns True when the path is a `components.conf` manifest.
+ */
+export function isXpcomManifestPath(sourcePath: string): boolean {
+  return basename(sourcePath.replace(/\\/g, '/')) === 'components.conf';
+}
+
 /*
  * Finds the unique obj-star directory with a dist subtree, or undefined
  * when zero or multiple match. The ambiguous case is already rejected

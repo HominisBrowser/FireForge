@@ -30,7 +30,7 @@ import type { BuildOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { checkDiskSpace, pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../utils/options.js';
 import { isPositiveInteger } from '../utils/validation.js';
 
 function parseJobCount(value: string): number {
@@ -419,7 +419,7 @@ export function registerBuild(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const build = program
     .command('build')
     .description('Build the browser (auto-applies Furnace components first)')
     .option('--ui', 'Fast UI-only rebuild')
@@ -449,20 +449,24 @@ export function registerBuild(
         'a relocation. The rewriter refuses any change that is not a pure prefix',
         'move, in which case a clean rebuild is still required.',
       ].join('\n')
-    )
-    .action(
-      withErrorHandling(
-        async (options: {
-          ui?: boolean;
-          jobs?: number;
-          brand?: string;
-          rewriteMozinfo?: boolean;
-        }) => {
-          const projectRoot = getProjectRoot();
-          await withEngineSessionLock(projectRoot, 'build', () =>
-            buildCommand(projectRoot, pickDefined(options))
-          );
-        }
-      )
     );
+  addWaitLockOption(build).action(
+    withErrorHandling(
+      async (options: {
+        ui?: boolean;
+        jobs?: number;
+        brand?: string;
+        rewriteMozinfo?: boolean;
+        waitLock?: number | boolean;
+      }) => {
+        const projectRoot = getProjectRoot();
+        await withEngineSessionLock(
+          projectRoot,
+          'build',
+          () => buildCommand(projectRoot, pickDefined(options)),
+          { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
+        );
+      }
+    )
+  );
 }

@@ -222,8 +222,9 @@ async function downloadAndExtractFirefox(args: {
   engineDir: string;
   cacheDir: string;
   sha256?: string;
+  candidate?: string;
 }): Promise<void> {
-  const { version, product, engineDir, cacheDir, sha256 } = args;
+  const { version, product, engineDir, cacheDir, sha256, candidate } = args;
   let s = spinner(`Downloading Firefox ${version}...`);
   let lastPercent = 0;
   const phaseState: { value: 'download' | 'extract' } = { value: 'download' };
@@ -256,7 +257,8 @@ async function downloadAndExtractFirefox(args: {
       sha256,
       (message) => {
         s.message(message);
-      }
+      },
+      candidate
     );
 
     s.stop(
@@ -537,6 +539,9 @@ export async function downloadCommand(
           engineDir: installEngineDir,
           cacheDir,
           ...(config.firefox.sha256 !== undefined ? { sha256: config.firefox.sha256 } : {}),
+          ...(config.firefox.candidate !== undefined
+            ? { candidate: config.firefox.candidate }
+            : {}),
         });
 
         if (replacementEngineDir && backupEngineDir) {

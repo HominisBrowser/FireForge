@@ -23,15 +23,19 @@ vi.mock('../../utils/logger.js', () => ({
 }));
 
 import { readBuildBaseline } from '../build-baseline.js';
+import type { BuildBaseline } from '../build-baseline-types.js';
 import { hasChanges } from '../git.js';
 import { git } from '../git-base.js';
 import { getUntrackedFiles } from '../git-status.js';
 import {
   checkStaleBuildForTest,
+  checkStaticComponentsStale,
   findUncoveredRequestPaths,
   formatStaleBuildWarning,
+  formatStaticComponentsRefusal,
   formatTestCoverageRefusal,
   FULL_SUITE_REQUEST,
+  isXpcomManifestPath,
 } from '../test-stale-check.js';
 
 const mockReadBaseline = vi.mocked(readBuildBaseline);
@@ -299,6 +303,24 @@ describe('findUncoveredRequestPaths', () => {
     ]);
   });
 
+  it('covers a same-manifest sibling of a covered file (item 5: manifest granularity)', () => {
+    // The field-incident shape: a run scoped to file_A refuses file_B of
+    // the SAME manifest, even though the scoped build staged the whole
+    // manifest directory into obj-*/_tests/.
+    expect(
+      findUncoveredRequestPaths(
+        ['browser/components/tiles/test/browser/browser_a.js'],
+        ['browser/components/tiles/test/browser/browser_b.js']
+      )
+    ).toEqual([]);
+  });
+
+  it('covers a directory request equal to the covered file manifest directory', () => {
+    expect(
+      findUncoveredRequestPaths(['browser/foo/test/unit/test_a.js'], ['browser/foo/test/unit'])
+    ).toEqual([]);
+  });
+
   it('is not a prefix-string match: sibling paths sharing a prefix are uncovered', () => {
     expect(findUncoveredRequestPaths(['browser/foo/test'], ['browser/foo/tests/a.js'])).toEqual([
       'browser/foo/tests/a.js',
@@ -338,5 +360,152 @@ describe('formatTestCoverageRefusal', () => {
     const uncovered = Array.from({ length: 14 }, (_, i) => `browser/foo/test_${String(i)}.js`);
     const message = formatTestCoverageRefusal(uncovered, ['browser/bar/test']);
     expect(message).toContain('(+4 more)');
+  });
+});
+
+describe('isXpcomManifestPath', () => {
+  it('recognizes components.conf at any depth', () => {
+    expect(isXpcomManifestPath('components.conf')).toBe(true);
+    expect(isXpcomManifestPath('browser/components/mybrowser/components.conf')).toBe(true);
+    expect(isXpcomManifestPath('browser\\components\\mybrowser\\components.conf')).toBe(true);
+  });
+
+  it('rejects everything else, including near-misses', () => {
+    expect(isXpcomManifestPath('browser/components/mybrowser/components.conf.bak')).toBe(false);
+    expect(isXpcomManifestPath('browser/components/mybrowser/jar.mn')).toBe(false);
+    expect(isXpcomManifestPath('browser/components.conf/moz.build')).toBe(false);
+  });
+});
+
+describe('checkStaticComponentsStale', () => {
+  const anchoredBaseline = (fingerprints: Record<string, string> = {}): BuildBaseline => ({
+    // A scoped `test --build` advanced the top-level SHA; the anchor keeps
+    // the last FULL build's SHA. The check must diff against the anchor.
+    engineHeadSha: 'scoped-sha',
+    builtAt: new Date().toISOString(),
+    binaryName: 'mybrowser',
+    testPackagingCoverage: ['browser/components/mybrowser/test/unit/test_reg.js'],
+    staticComponentsBaseline: { engineHeadSha: 'full-sha', fingerprints },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGit.mockResolvedValue('');
+    mockHasChanges.mockResolvedValue(false);
+    mockGetUntracked.mockResolvedValue([]);
+  });
+
+  it('returns fresh when there is no baseline at all', async () => {
+    const result = await checkStaticComponentsStale('/project/engine', undefined);
+    expect(result).toEqual({ stale: false, changedManifests: [] });
+    expect(mockGit).not.toHaveBeenCalled();
+  });
+
+  it('returns fresh on a pre-0.38.0 baseline without an anchor', async () => {
+    const legacy = anchoredBaseline();
+    delete (legacy as { staticComponentsBaseline?: unknown }).staticComponentsBaseline;
+    const result = await checkStaticComponentsStale('/project/engine', legacy);
+    expect(result).toEqual({ stale: false, changedManifests: [] });
+    expect(mockGit).not.toHaveBeenCalled();
+  });
+
+  it('flags a components.conf changed since the last full build, ignoring other paths', async () => {
+    mockGit.mockResolvedValueOnce(
+      'browser/components/mybrowser/components.conf\nbrowser/base/content/mybrowser.js\n'
+    );
+
+    const result = await checkStaticComponentsStale('/project/engine', anchoredBaseline());
+    expect(result.stale).toBe(true);
+    expect(result.changedManifests).toEqual(['browser/components/mybrowser/components.conf']);
+  });
+
+  it('anchors the diff to the full-build SHA, not the scoped baseline SHA', async () => {
+    await checkStaticComponentsStale('/project/engine', anchoredBaseline());
+    expect(mockGit).toHaveBeenCalledWith(
+      ['diff', '--name-only', 'full-sha..HEAD'],
+      '/project/engine'
+    );
+  });
+
+  it('treats a dirty manifest whose content still matches the anchor fingerprint as fresh', async () => {
+    const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join: joinPath } = await import('node:path');
+    const { createHash } = await import('node:crypto');
+
+    const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-static-comp-'));
+    try {
+      const relPath = 'browser/components/mybrowser/components.conf';
+      const { ensureDir } = await import('../../utils/fs.js');
+      await ensureDir(joinPath(engineDir, 'browser/components/mybrowser'));
+      const content = "Classes = [{'cid': '{deadbeef}'}]\n";
+      await fsWriteFile(joinPath(engineDir, relPath), content);
+      const hash = createHash('sha256').update(content).digest('hex');
+
+      mockGit.mockResolvedValueOnce(`${relPath}\n`);
+
+      const result = await checkStaticComponentsStale(
+        engineDir,
+        anchoredBaseline({ [relPath]: hash })
+      );
+      expect(result).toEqual({ stale: false, changedManifests: [] });
+    } finally {
+      await rm(engineDir, { recursive: true, force: true });
+    }
+  });
+
+  it('still flags a manifest whose live content diverges from the anchor fingerprint', async () => {
+    const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join: joinPath } = await import('node:path');
+    const { createHash } = await import('node:crypto');
+
+    const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-static-comp-'));
+    try {
+      const relPath = 'browser/components/mybrowser/components.conf';
+      const { ensureDir } = await import('../../utils/fs.js');
+      await ensureDir(joinPath(engineDir, 'browser/components/mybrowser'));
+      await fsWriteFile(joinPath(engineDir, relPath), 'edited registration\n');
+      const oldHash = createHash('sha256').update('old registration\n').digest('hex');
+
+      mockGit.mockResolvedValueOnce(`${relPath}\n`);
+
+      const result = await checkStaticComponentsStale(
+        engineDir,
+        anchoredBaseline({ [relPath]: oldHash })
+      );
+      expect(result.stale).toBe(true);
+      expect(result.changedManifests).toEqual([relPath]);
+    } finally {
+      await rm(engineDir, { recursive: true, force: true });
+    }
+  });
+
+  it('degrades to fresh when the git probes fail (broken probe must not block tests)', async () => {
+    mockGit.mockRejectedValue(new Error('git unavailable'));
+    mockHasChanges.mockRejectedValue(new Error('git unavailable'));
+
+    const result = await checkStaticComponentsStale('/project/engine', anchoredBaseline());
+    expect(result).toEqual({ stale: false, changedManifests: [] });
+  });
+});
+
+describe('formatStaticComponentsRefusal', () => {
+  it('names the manifest, the NS_ERROR_MALFORMED_URI symptom, and advises fireforge build', () => {
+    const message = formatStaticComponentsRefusal(['browser/components/mybrowser/components.conf']);
+    expect(message).toContain('browser/components/mybrowser/components.conf');
+    expect(message).toContain('NS_ERROR_MALFORMED_URI');
+    expect(message).toContain('Run "fireforge build" first.');
+    expect(message).toContain('--allow-stale-components');
+    expect(message).toContain('--allow-stale-build does not bypass this check');
+  });
+
+  it('caps long manifest lists with a (+N more) tail', () => {
+    const manifests = Array.from(
+      { length: 13 },
+      (_, i) => `browser/components/c${String(i)}/components.conf`
+    );
+    const message = formatStaticComponentsRefusal(manifests);
+    expect(message).toContain('(+3 more)');
   });
 });

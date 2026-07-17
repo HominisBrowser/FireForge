@@ -2,6 +2,12 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../core/engine-session-lock.js', () => ({
+  withEngineSessionLock: vi.fn(
+    (_projectRoot: string, _command: string, operation: () => Promise<unknown>) => operation()
+  ),
+}));
+
 vi.mock('../furnace/apply.js', () => ({
   furnaceApplyCommand: vi.fn(() => Promise.resolve()),
 }));
@@ -71,6 +77,7 @@ vi.mock('../furnace/validate.js', () => ({
   furnaceValidateCommand: vi.fn(() => Promise.resolve()),
 }));
 
+import { withEngineSessionLock } from '../../core/engine-session-lock.js';
 import { furnaceApplyCommand } from '../furnace/apply.js';
 import { furnaceChromeDocCreateCommand } from '../furnace/chrome-doc.js';
 import { furnaceChromeDocRemoveCommand } from '../furnace/chrome-doc-remove.js';
@@ -378,6 +385,47 @@ describe('registerFurnace', () => {
     expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', {
       strategy: 'ours',
     });
+  });
+
+  it('threads --wait-lock <seconds> into the engine session lock wait budget', async () => {
+    await runFurnaceCommand('apply', 'moz-button', '--wait-lock', '30');
+
+    expect(withEngineSessionLock).toHaveBeenCalledWith(
+      '/project',
+      'furnace apply',
+      expect.any(Function),
+      { waitLockSeconds: 30 }
+    );
+    // The flag is a CLI-layer concern and must not leak into command options.
+    expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', 'moz-button', {});
+  });
+
+  it('maps a bare --wait-lock to the 60-second default budget', async () => {
+    await runFurnaceCommand('sync', '--wait-lock');
+
+    expect(withEngineSessionLock).toHaveBeenCalledWith(
+      '/project',
+      'furnace sync',
+      expect.any(Function),
+      { waitLockSeconds: 60 }
+    );
+    expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', {});
+  });
+
+  it('rejects out-of-range --wait-lock values', async () => {
+    const program = createProgram();
+    // registerFurnace built the subcommands before exitOverride could be
+    // inherited, so apply it to the nested commands explicitly.
+    program.exitOverride();
+    const furnace = program.commands.find((command) => command.name() === 'furnace');
+    furnace?.exitOverride();
+    for (const subcommand of furnace?.commands ?? []) {
+      subcommand.exitOverride();
+    }
+    await expect(
+      program.parseAsync(['node', 'fireforge', 'furnace', 'deploy', '--wait-lock', '0'])
+    ).rejects.toThrow('--wait-lock must be an integer in 1..3600 (got "0")');
+    expect(furnaceDeployCommand).not.toHaveBeenCalled();
   });
 
   it('routes diff without a name (all components)', async () => {

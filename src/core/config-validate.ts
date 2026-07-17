@@ -15,6 +15,7 @@ import { parseObject } from '../utils/parse.js';
 import { isContainedRelativePath, isExplicitAbsolutePath } from '../utils/paths.js';
 import {
   isValidAppId,
+  isValidFirefoxCandidate,
   isValidFirefoxVersion,
   isValidProjectLicense,
   PROJECT_LICENSES,
@@ -119,10 +120,18 @@ function parseFirefoxBlock(rec: ReturnType<typeof parseObject>): FireForgeConfig
     );
   }
 
+  const firefoxCandidate = optionalConfigString(firefoxRec, 'candidate', 'firefox.candidate');
+  if (firefoxCandidate !== undefined && !isValidFirefoxCandidate(firefoxCandidate)) {
+    throw new ConfigError(
+      'Config field "firefox.candidate" must look like "buildN" (e.g. "build2")'
+    );
+  }
+
   return {
     version: firefoxVersion,
     product: firefoxProduct as FireForgeConfig['firefox']['product'],
     ...(firefoxSha256 !== undefined ? { sha256: firefoxSha256.toLowerCase() } : {}),
+    ...(firefoxCandidate !== undefined ? { candidate: firefoxCandidate } : {}),
   };
 }
 

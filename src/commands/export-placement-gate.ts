@@ -25,7 +25,6 @@ import {
   projectPlacementForLint,
   resolvePlacementPlan,
 } from './export-flow.js';
-import { assertPlacementPreservesReservedRanges } from './export-placement-policy.js';
 
 /**
  * Spreadable optional metadata (`tier`, `lintIgnore`) derived from the
@@ -83,22 +82,17 @@ export async function gatePlacementPlan(args: {
       'export placement'
     );
   }
+  // resolvePlacementPlan runs the reserved-range gate itself when config
+  // is passed — one up-front error per run instead of per-patch findings.
   const placementPlan = await resolvePlacementPlan(
     patchesDir,
     options,
     selectedCategory,
-    patchName
+    patchName,
+    config
   );
 
   const currentManifest = await loadPatchesManifest(patchesDir);
-  if (currentManifest !== null) {
-    assertPlacementPreservesReservedRanges(
-      placementPlan,
-      currentManifest.patches,
-      config,
-      selectedCategory
-    );
-  }
   const conflicts = await projectPlacementForLint(patchesDir, placementPlan, diff);
   const renamed =
     currentManifest !== null

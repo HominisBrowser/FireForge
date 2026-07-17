@@ -61,6 +61,8 @@ vi.mock('../../core/patch-lint.js', () => ({
   detectNewFilesInDiff: vi.fn().mockReturnValue(new Set()),
   commentStyleForFile: vi.fn().mockReturnValue(null),
   buildPatchQueueContext: vi.fn().mockResolvedValue({ entries: [] }),
+  buildModifiedFileAdditionsFromDiff: vi.fn().mockReturnValue(new Map()),
+  lintPatchQueue: vi.fn().mockReturnValue([]),
   resolvePatchSizeTier: vi.fn().mockReturnValue({ tier: 'general' }),
 }));
 
@@ -333,16 +335,29 @@ describe('reExportCommand - --scan flag', () => {
     ]);
     vi.mocked(getUntrackedFilesInDir).mockResolvedValue(['browser/modules/foo/unmanaged.js']);
     vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValueOnce(
-      [
-        'diff --git a/browser/modules/foo/intended.js b/browser/modules/foo/intended.js',
-        '--- /dev/null',
-        '+++ b/browser/modules/foo/intended.js',
-        '@@ -0,0 +1 @@',
-        '+content',
-        '',
-      ].join('\n')
-    );
+    // Queued twice per patch: the scan adoption forward-import gate diffs
+    // the candidate files first, then the main re-export diff runs.
+    vi.mocked(getDiffForFilesAgainstHead)
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/modules/foo/intended.js b/browser/modules/foo/intended.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/intended.js',
+          '@@ -0,0 +1 @@',
+          '+content',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/modules/foo/intended.js b/browser/modules/foo/intended.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/intended.js',
+          '@@ -0,0 +1 @@',
+          '+content',
+          '',
+        ].join('\n')
+      );
 
     await reExportCommand('/fake/root', ['001'], {
       scan: true,
@@ -413,16 +428,29 @@ describe('reExportCommand - --scan flag', () => {
     const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
     vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValueOnce(
-      [
-        'diff --git a/browser/modules/foo/intended.js b/browser/modules/foo/intended.js',
-        '--- /dev/null',
-        '+++ b/browser/modules/foo/intended.js',
-        '@@ -0,0 +1 @@',
-        '+content',
-        '',
-      ].join('\n')
-    );
+    // Queued twice per patch: the scan adoption forward-import gate diffs
+    // the candidate files first, then the main re-export diff runs.
+    vi.mocked(getDiffForFilesAgainstHead)
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/modules/foo/intended.js b/browser/modules/foo/intended.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/intended.js',
+          '@@ -0,0 +1 @@',
+          '+content',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/modules/foo/intended.js b/browser/modules/foo/intended.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/intended.js',
+          '@@ -0,0 +1 @@',
+          '+content',
+          '',
+        ].join('\n')
+      );
 
     await reExportCommand('/fake/root', ['001'], {
       scan: true,
@@ -499,31 +527,59 @@ describe('reExportCommand - --scan flag', () => {
     const patch = makePatch('001-ui-test.patch', ['browser/modules/foo/a.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
     vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValueOnce(
-      [
-        'diff --git a/browser/modules/foo/b.js b/browser/modules/foo/b.js',
-        '--- /dev/null',
-        '+++ b/browser/modules/foo/b.js',
-        '@@ -0,0 +1 @@',
-        '+b',
-        'diff --git a/browser/modules/foo/c.js b/browser/modules/foo/c.js',
-        '--- /dev/null',
-        '+++ b/browser/modules/foo/c.js',
-        '@@ -0,0 +1 @@',
-        '+c',
-        'diff --git a/browser/modules/foo/d.js b/browser/modules/foo/d.js',
-        '--- /dev/null',
-        '+++ b/browser/modules/foo/d.js',
-        '@@ -0,0 +1 @@',
-        '+d',
-        'diff --git a/browser/modules/foo/e.js b/browser/modules/foo/e.js',
-        '--- /dev/null',
-        '+++ b/browser/modules/foo/e.js',
-        '@@ -0,0 +1 @@',
-        '+e',
-        '',
-      ].join('\n')
-    );
+    // Queued twice per patch: the scan adoption forward-import gate diffs
+    // the candidate files first, then the main re-export diff runs.
+    vi.mocked(getDiffForFilesAgainstHead)
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/modules/foo/b.js b/browser/modules/foo/b.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/b.js',
+          '@@ -0,0 +1 @@',
+          '+b',
+          'diff --git a/browser/modules/foo/c.js b/browser/modules/foo/c.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/c.js',
+          '@@ -0,0 +1 @@',
+          '+c',
+          'diff --git a/browser/modules/foo/d.js b/browser/modules/foo/d.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/d.js',
+          '@@ -0,0 +1 @@',
+          '+d',
+          'diff --git a/browser/modules/foo/e.js b/browser/modules/foo/e.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/e.js',
+          '@@ -0,0 +1 @@',
+          '+e',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/modules/foo/b.js b/browser/modules/foo/b.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/b.js',
+          '@@ -0,0 +1 @@',
+          '+b',
+          'diff --git a/browser/modules/foo/c.js b/browser/modules/foo/c.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/c.js',
+          '@@ -0,0 +1 @@',
+          '+c',
+          'diff --git a/browser/modules/foo/d.js b/browser/modules/foo/d.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/d.js',
+          '@@ -0,0 +1 @@',
+          '+d',
+          'diff --git a/browser/modules/foo/e.js b/browser/modules/foo/e.js',
+          '--- /dev/null',
+          '+++ b/browser/modules/foo/e.js',
+          '@@ -0,0 +1 @@',
+          '+e',
+          '',
+        ].join('\n')
+      );
 
     await reExportCommand('/fake/root', ['001'], {
       scan: true,
@@ -578,6 +634,8 @@ describe('reExportCommand - --scan flag', () => {
       })
     );
     vi.mocked(pathExists).mockResolvedValue(true);
+    // Queued twice per patch: the scan adoption forward-import gate diffs
+    // the candidate files first, then the main re-export diff runs.
     vi.mocked(getDiffForFilesAgainstHead)
       .mockResolvedValueOnce(
         [
@@ -586,6 +644,26 @@ describe('reExportCommand - --scan flag', () => {
           '+++ b/browser/branding/hominis/icon.svg',
           '@@ -0,0 +1 @@',
           '+icon',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/branding/hominis/icon.svg b/browser/branding/hominis/icon.svg',
+          '--- /dev/null',
+          '+++ b/browser/branding/hominis/icon.svg',
+          '@@ -0,0 +1 @@',
+          '+icon',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/branding/hominis/runtime.ico b/browser/branding/hominis/runtime.ico',
+          '--- /dev/null',
+          '+++ b/browser/branding/hominis/runtime.ico',
+          '@@ -0,0 +1 @@',
+          '+runtime',
           '',
         ].join('\n')
       )
@@ -633,6 +711,8 @@ describe('reExportCommand - --scan flag', () => {
       })
     );
     vi.mocked(pathExists).mockResolvedValue(true);
+    // Queued twice per patch: the scan adoption forward-import gate diffs
+    // the candidate files first, then the main re-export diff runs.
     vi.mocked(getDiffForFilesAgainstHead)
       .mockResolvedValueOnce(
         [
@@ -641,6 +721,26 @@ describe('reExportCommand - --scan flag', () => {
           '+++ b/browser/branding/hominis/icon.svg',
           '@@ -0,0 +1 @@',
           '+icon',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/branding/hominis/icon.svg b/browser/branding/hominis/icon.svg',
+          '--- /dev/null',
+          '+++ b/browser/branding/hominis/icon.svg',
+          '@@ -0,0 +1 @@',
+          '+icon',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/branding/hominis/runtime.ico b/browser/branding/hominis/runtime.ico',
+          '--- /dev/null',
+          '+++ b/browser/branding/hominis/runtime.ico',
+          '@@ -0,0 +1 @@',
+          '+runtime',
           '',
         ].join('\n')
       )

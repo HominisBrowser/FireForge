@@ -873,6 +873,32 @@ describe('furnaceCreateCommand validation', () => {
     );
   });
 
+  it('rejects --shared-ftl combined with --no-localized', async () => {
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+
+    try {
+      await expect(
+        furnaceCreateCommand('/project', 'moz-test-widget', {
+          description: 'Shared-ftl widget',
+          localized: false,
+          sharedFtl: 'browser/mybrowser-dock.ftl',
+        })
+      ).rejects.toThrow(
+        '--shared-ftl requires localization. Remove --no-localized or drop --shared-ftl.'
+      );
+      await expect(
+        furnaceCreateCommand('/project', 'moz-test-widget', {
+          description: 'Shared-ftl widget',
+          localized: false,
+          sharedFtl: 'browser/mybrowser-dock.ftl',
+        })
+      ).rejects.toThrow(InvalidArgumentError);
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+  });
+
   it('rejects compose targets not registered as stock, override, or custom', async () => {
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;

@@ -47,10 +47,34 @@ export function hasPositiveTabindex(content: string): boolean {
   });
 }
 
+/**
+ * Collects `[start, end)` spans of `<label>…</label>` elements whose content
+ * includes actual label text. Labels cannot nest per HTML, so the non-greedy
+ * inner match is sound. A span qualifies only when the inner content minus
+ * tags still contains non-whitespace — an empty or tag-only wrapper provides
+ * no accessible name. A `${…}` Lit binding counts as label text: dynamic
+ * (usually localized) text is a legitimate accessible name.
+ */
+function collectLabelledSpans(content: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  const labelPattern = /<label\b[^>]*>([\s\S]*?)<\/label>/gi;
+  let labelMatch: RegExpExecArray | null;
+  while ((labelMatch = labelPattern.exec(content)) !== null) {
+    const inner = labelMatch[1] ?? '';
+    if (/\S/.test(inner.replace(/<[^>]*>/g, ' '))) {
+      spans.push({ start: labelMatch.index, end: labelMatch.index + labelMatch[0].length });
+    }
+  }
+  return spans;
+}
+
 /** Detects form inputs without associated labels. */
 export function hasUnlabelledFormInput(content: string): boolean {
   // Look for <input> or <select> or <textarea> without aria-label, aria-labelledby, or id
-  // (id implies an external <label for="..."> could exist)
+  // (id implies an external <label for="..."> could exist). A control wrapped
+  // in a <label> that carries actual text is implicitly associated and is
+  // exempt as well.
+  const labelledSpans = collectLabelledSpans(content);
   const inputPattern = /<(input|select|textarea)\b([^>]*)>/gi;
   let inputMatch: RegExpExecArray | null;
   while ((inputMatch = inputPattern.exec(content)) !== null) {
@@ -61,6 +85,10 @@ export function hasUnlabelledFormInput(content: string): boolean {
       /\bid\s*=/.test(attrs) ||
       /type\s*=\s*["']hidden["']/i.test(attrs)
     ) {
+      continue;
+    }
+    const index = inputMatch.index;
+    if (labelledSpans.some((span) => index >= span.start && index < span.end)) {
       continue;
     }
     return true;

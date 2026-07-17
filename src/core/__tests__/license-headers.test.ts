@@ -7,6 +7,7 @@ import {
   getLicenseHeader,
   hasAnyLicenseHeader,
   hasAnyLicenseHeaderAnyStyle,
+  hasUpstreamMplBlockHeader,
 } from '../license-headers.js';
 
 vi.mock('../../utils/fs.js', () => ({
@@ -86,6 +87,99 @@ describe('hasAnyLicenseHeader', () => {
       '/* vim: set ts=8 sts=2 et sw=2 tw=80: */\n' +
       'const x = 1;\n';
     expect(hasAnyLicenseHeader(content, 'js')).toBe(false);
+  });
+
+  it('accepts the older upstream MPL wrap (break after "file,") on js and css styles', () => {
+    // Upstream files like ext-browser.js ship the older Mozilla wrap that
+    // breaks after "file," instead of "with this" — same wording, only
+    // the line-break position differs. Must match on normalized
+    // whitespace, not exact wrap.
+    const olderWrap =
+      '/* This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      ' * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      ' * You can obtain one at http://mozilla.org/MPL/2.0/. */\n';
+    expect(hasAnyLicenseHeader(olderWrap + '"use strict";\n', 'js')).toBe(true);
+    expect(hasAnyLicenseHeader(olderWrap + '.x { color: red; }\n', 'css')).toBe(true);
+  });
+
+  it('accepts the older MPL wrap in js line-comment form', () => {
+    const content =
+      '// This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      '// License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      '// You can obtain one at http://mozilla.org/MPL/2.0/.\n' +
+      'const x = 1;\n';
+    expect(hasAnyLicenseHeader(content, 'js')).toBe(true);
+  });
+
+  it('accepts the older MPL wrap behind leading editor directives', () => {
+    const content =
+      '/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; js-indent-level: 2 -*- */\n' +
+      '/* vim: set ts=8 sts=2 et sw=2 tw=80: */\n' +
+      '/* This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      ' * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      ' * You can obtain one at http://mozilla.org/MPL/2.0/. */\n' +
+      '"use strict";\n';
+    expect(hasAnyLicenseHeader(content, 'js')).toBe(true);
+  });
+
+  it('still rejects near-MPL garbage with altered wording', () => {
+    const content =
+      '/* This Source Code Form is subject to the terms of the Mozilla Private\n' +
+      ' * License, v. 3.0. If a copy of the MPL was not distributed with this file,\n' +
+      ' * You can obtain one at http://mozilla.org/MPL/2.0/. */\n' +
+      'const x = 1;\n';
+    expect(hasAnyLicenseHeader(content, 'js')).toBe(false);
+    expect(hasAnyLicenseHeader(content, 'css')).toBe(false);
+  });
+
+  it('does not match MPL text that only appears after non-comment code', () => {
+    const content =
+      'const x = 1;\n' +
+      '/* This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      ' * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      ' * You can obtain one at http://mozilla.org/MPL/2.0/. */\n';
+    expect(hasAnyLicenseHeader(content, 'js')).toBe(false);
+  });
+});
+
+describe('hasUpstreamMplBlockHeader', () => {
+  const canonicalWrap =
+    '/* This Source Code Form is subject to the terms of the Mozilla Public\n' +
+    ' * License, v. 2.0. If a copy of the MPL was not distributed with this\n' +
+    ' * file, You can obtain one at http://mozilla.org/MPL/2.0/. */\n';
+  const olderWrap =
+    '/* This Source Code Form is subject to the terms of the Mozilla Public\n' +
+    ' * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+    ' * You can obtain one at http://mozilla.org/MPL/2.0/. */\n';
+
+  it('accepts the canonical block wrap (exact fast path)', () => {
+    expect(hasUpstreamMplBlockHeader(canonicalWrap + 'export {};\n')).toBe(true);
+  });
+
+  it('accepts the older upstream wrap (break after "file,")', () => {
+    expect(hasUpstreamMplBlockHeader(olderWrap + '"use strict";\n')).toBe(true);
+  });
+
+  it('accepts both wraps behind a leading editor directive', () => {
+    const directive = '/* -*- Mode: javascript; tab-width: 2 -*- */\n';
+    expect(hasUpstreamMplBlockHeader(directive + canonicalWrap + 'export {};\n')).toBe(true);
+    expect(hasUpstreamMplBlockHeader(directive + olderWrap + 'export {};\n')).toBe(true);
+  });
+
+  it('rejects near-MPL garbage with altered wording', () => {
+    const garbage =
+      '/* This Source Code Form is subject to some of the terms of the Mozilla Public\n' +
+      ' * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      ' * You can obtain one at http://mozilla.org/MPL/2.0/. */\n';
+    expect(hasUpstreamMplBlockHeader(garbage + 'export {};\n')).toBe(false);
+  });
+
+  it('rejects the line-comment MPL form (block form only)', () => {
+    const lineForm =
+      '// This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      '// License, v. 2.0. If a copy of the MPL was not distributed with this\n' +
+      '// file, You can obtain one at http://mozilla.org/MPL/2.0/.\n';
+    expect(hasUpstreamMplBlockHeader(lineForm + 'const x = 1;\n')).toBe(false);
   });
 });
 

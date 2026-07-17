@@ -115,6 +115,25 @@ describe('validateConfig', () => {
     ).toBe(digest.toLowerCase());
   });
 
+  it('accepts an optional firefox release-candidate build directory', () => {
+    const base = makeValidConfig();
+
+    expect(
+      validateConfig({ ...base, firefox: { ...base.firefox, candidate: 'build2' } }).firefox
+        .candidate
+    ).toBe('build2');
+  });
+
+  it('rejects malformed firefox candidate values', () => {
+    const base = makeValidConfig();
+
+    for (const bad of ['2', 'buildx', 'build0', '../build2', 'build2/..', 'build2\\evil']) {
+      expect(() =>
+        validateConfig({ ...base, firefox: { ...base.firefox, candidate: bad } })
+      ).toThrow('Config field "firefox.candidate" must look like "buildN" (e.g. "build2")');
+    }
+  });
+
   it('accepts Developer Edition beta versions', () => {
     expect(
       validateConfig(

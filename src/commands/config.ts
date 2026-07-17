@@ -50,6 +50,7 @@ const STRING_TYPED_KEYS = new Set([
   'firefox.version',
   'firefox.product',
   'firefox.sha256',
+  'firefox.candidate',
   'license',
   'wire.subscriptDir',
 ]);

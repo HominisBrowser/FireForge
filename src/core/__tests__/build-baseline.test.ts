@@ -157,6 +157,96 @@ describe('build-baseline', () => {
     }
   });
 
+  it('records a staticComponentsBaseline anchor on a full-coverage write', async () => {
+    // A full build just recompiled the StaticComponents table, so the
+    // write anchors the table to the current engine HEAD plus the content
+    // of every dirty components.conf.
+    const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
+    try {
+      vi.spyOn(git, 'getHead').mockResolvedValue('full-sha');
+      const gitModule = await import('../git.js');
+      const gitBase = await import('../git-base.js');
+      const gitStatus = await import('../git-status.js');
+      vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
+      vi.spyOn(gitBase, 'git').mockResolvedValue(
+        'browser/components/mybrowser/components.conf\nbrowser/base/content/browser-main.js\n'
+      );
+      vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
+
+      const { writeText, ensureDir: ensureDirLocal } = await import('../../utils/fs.js');
+      await ensureDirLocal(join(engineDir, 'browser/components/mybrowser'));
+      await writeText(
+        join(engineDir, 'browser/components/mybrowser/components.conf'),
+        "Classes = [{'cid': '{deadbeef}'}]\n"
+      );
+      await ensureDirLocal(join(engineDir, 'browser/base/content'));
+      await writeText(join(engineDir, 'browser/base/content/browser-main.js'), '// js\n');
+
+      await writeBuildBaseline(projectRoot, engineDir, 'mybrowser', 'full');
+      const stored = await readBuildBaseline(projectRoot);
+
+      expect(stored?.staticComponentsBaseline).toBeDefined();
+      expect(stored?.staticComponentsBaseline?.engineHeadSha).toBe('full-sha');
+      const fingerprints = stored?.staticComponentsBaseline?.fingerprints ?? {};
+      // Only the XPCOM manifest is anchored — the packageable .js path
+      // belongs to packageableFingerprints, not the components anchor.
+      expect(Object.keys(fingerprints)).toEqual(['browser/components/mybrowser/components.conf']);
+      expect(fingerprints['browser/components/mybrowser/components.conf']).toMatch(
+        /^[0-9a-f]{64}$/
+      );
+    } finally {
+      await rm(engineDir, { recursive: true, force: true });
+    }
+  });
+
+  it('carries the previous staticComponentsBaseline forward verbatim on a scoped write', async () => {
+    // A scoped `test --build` runs `mach build faster`, which does not
+    // rebake components.conf — the last FULL build stays the honest anchor.
+    vi.spyOn(git, 'getHead').mockResolvedValue('scoped-sha');
+    const gitModule = await import('../git.js');
+    vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(false);
+
+    const anchor = {
+      engineHeadSha: 'full-sha',
+      fingerprints: { 'browser/components/mybrowser/components.conf': 'ab'.repeat(32) },
+    };
+    const previous = {
+      engineHeadSha: 'full-sha',
+      builtAt: '2026-07-01T00:00:00.000Z',
+      binaryName: 'mybrowser',
+      staticComponentsBaseline: anchor,
+    };
+
+    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser', ['browser/foo/test'], previous);
+    const stored = await readBuildBaseline(projectRoot);
+    expect(stored?.engineHeadSha).toBe('scoped-sha');
+    expect(stored?.staticComponentsBaseline).toEqual(anchor);
+  });
+
+  it('omits the staticComponentsBaseline on a scoped write with no previous baseline', async () => {
+    vi.spyOn(git, 'getHead').mockResolvedValue('scoped-sha');
+    const gitModule = await import('../git.js');
+    vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(false);
+
+    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser', ['browser/foo/test']);
+    const raw = await readFile(getBuildBaselinePath(projectRoot), 'utf8');
+    expect(raw).not.toContain('staticComponentsBaseline');
+  });
+
+  it('omits the staticComponentsBaseline when the dirty-path probe fails on a full write', async () => {
+    // Same defensive contract as packageableFingerprints: a broken probe
+    // omits the field so the static-components check degrades to fresh
+    // instead of anchoring to a garbage record.
+    vi.spyOn(git, 'getHead').mockResolvedValue('full-sha');
+    const gitModule = await import('../git.js');
+    vi.spyOn(gitModule, 'hasChanges').mockRejectedValue(new Error('git unavailable'));
+
+    await writeBuildBaseline(projectRoot, '/engine-does-not-exist', 'mybrowser', 'full');
+    const stored = await readBuildBaseline(projectRoot);
+    expect(stored?.staticComponentsBaseline).toBeUndefined();
+    expect(stored?.packageableFingerprints).toBeUndefined();
+  });
+
   it('records packageableFingerprints when the engine workdir has dirty packageable paths', async () => {
     // Finding #18: without per-file fingerprints, a project with
     // persistently-applied patches + furnace-applied components always

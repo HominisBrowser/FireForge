@@ -29,7 +29,12 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
-import { commanderArgParser, pickDefined } from '../utils/options.js';
+import {
+  addWaitLockOption,
+  commanderArgParser,
+  pickDefined,
+  resolveWaitLockSeconds,
+} from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { parsePositiveIntegerFlag } from '../utils/validation.js';
 import { commitPlacementExport, type PlacementPlan, renderDryRunPreview } from './export-flow.js';
@@ -522,7 +527,7 @@ export function registerExport(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const exportCmd = program
     .command('export <paths...>')
     .description('Export new changes as a patch (use re-export to update existing patches)')
     .option('-n, --name <name>', 'Name for the patch')
@@ -561,41 +566,46 @@ export function registerExport(
       'Suppress a lint check on this patch (writes to PatchMetadata.lintIgnore; repeatable)',
       (value: string, prev: string[]) => [...prev, value],
       [] as string[]
-    )
-    .action(
-      withErrorHandling(
-        async (
-          paths: string[],
-          options: {
-            name?: string;
-            category?: string;
-            description?: string;
-            supersede?: boolean;
-            skipLint?: boolean;
-            dryRun?: boolean;
-            order?: number;
-            before?: string;
-            after?: string;
-            yes?: boolean;
-            forceUnsafe?: boolean;
-            excludeFurnace?: boolean;
-            allowStaleFurnace?: boolean;
-            allowOverlap?: boolean;
-            tier?: string;
-            lintIgnore?: string[];
-          }
-        ) => {
-          const { category, tier, lintIgnore, ...rest } = options;
-          const projectRoot = getProjectRoot();
-          await withEngineSessionLock(projectRoot, 'export', () =>
+    );
+  addWaitLockOption(exportCmd).action(
+    withErrorHandling(
+      async (
+        paths: string[],
+        options: {
+          name?: string;
+          category?: string;
+          description?: string;
+          supersede?: boolean;
+          skipLint?: boolean;
+          dryRun?: boolean;
+          order?: number;
+          before?: string;
+          after?: string;
+          yes?: boolean;
+          forceUnsafe?: boolean;
+          excludeFurnace?: boolean;
+          allowStaleFurnace?: boolean;
+          allowOverlap?: boolean;
+          tier?: string;
+          lintIgnore?: string[];
+          waitLock?: number | boolean;
+        }
+      ) => {
+        const { category, tier, lintIgnore, ...rest } = options;
+        const projectRoot = getProjectRoot();
+        await withEngineSessionLock(
+          projectRoot,
+          'export',
+          () =>
             exportCommand(projectRoot, paths, {
               ...pickDefined(rest),
               ...(category !== undefined ? { category } : {}),
               ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
               ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
-            })
-          );
-        }
-      )
-    );
+            }),
+          { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
+        );
+      }
+    )
+  );
 }

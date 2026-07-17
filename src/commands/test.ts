@@ -35,19 +35,13 @@ import {
   formatScopeNotice,
   type TestPathScope,
 } from '../core/test-path-scope.js';
-import {
-  checkStaleBuildForTest,
-  findUncoveredRequestPaths,
-  formatStaleBuildWarning,
-  formatTestCoverageRefusal,
-} from '../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, outro, spinner, success, verbose, warn } from '../utils/logger.js';
+import { info, intro, outro, spinner, success, verbose } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
 import {
@@ -66,6 +60,7 @@ import {
   type TestRunOutcome,
   type TestSuite,
 } from './test-run.js';
+import { enforceStaleBuildGate, enforceStaticComponentsGate } from './test-stale-gate.js';
 
 async function assertTestPathsExist(engineDir: string, testPaths: string[]): Promise<void> {
   const missingPaths: string[] = [];
@@ -217,13 +212,17 @@ async function runPreTestBuild(
       // same files — in any invocation shape — is not refused. A failed
       // write never fails the run. The coverage claim is scoped to the
       // requested test paths, since a file-scoped `test --build` only
-      // guarantees packaging for those manifests.
+      // guarantees packaging for those manifests. The previous baseline is
+      // passed through so a scoped write carries the static-components
+      // anchor forward (a `mach build faster` does not rebake
+      // components.conf into the compiled table).
       try {
         await writeBuildBaseline(
           projectRoot,
           paths.engine,
           projectConfig.binaryName,
-          testPackagingCoverage
+          testPackagingCoverage,
+          previousBaseline
         );
       } catch (baselineError: unknown) {
         verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
@@ -238,62 +237,6 @@ async function runPreTestBuild(
       'mach build faster'
     );
   });
-}
-
-/**
- * Stale-build preflight — when `--build` was NOT requested, detect
- * packageable engine edits since the last successful build and fail
- * UP-FRONT unless the operator explicitly accepts the stale package risk.
- *
- * Packaging COVERAGE is checked first, on EVERY non-`--build` run and
- * regardless of staleness or `--allow-stale-build`: a runtime packaged by
- * a file-scoped `test --build` can lack support fixtures for OTHER
- * manifests even when nothing changed since — dispatching such a run
- * hangs on missing fixtures rather than failing, so the flag (which only
- * accepts stale CONTENT) must not be the trigger. Field incident: a
- * three-file scoped rebuild left `file_tiles_audio.html` unpackaged and a
- * later run over different files timed out twice at 45s waiting on
- * `DOMAudioPlaybackStarted`.
- *
- * Exception: a path-less `test --doctor` stops at the Marionette health
- * check (`runDoctorPreflight` returns 'stop' when no test paths were
- * given) and never dispatches a test, so it needs no packaging coverage —
- * treating it as a full-suite request would refuse a probe that touches
- * no fixtures. The stale-content refusal still applies to it unchanged.
- */
-async function enforceStaleBuildGate(
-  projectRoot: string,
-  engineDir: string,
-  options: TestOptions,
-  normalizedPaths: readonly string[]
-): Promise<void> {
-  const stale = await checkStaleBuildForTest(projectRoot, engineDir);
-  const dispatchesNoTests = options.doctor === true && normalizedPaths.length === 0;
-  if (!dispatchesNoTests) {
-    const recordedCoverage = stale.baseline?.testPackagingCoverage;
-    const uncovered = findUncoveredRequestPaths(recordedCoverage, normalizedPaths);
-    if (uncovered.length > 0) {
-      throw new GeneralError(
-        formatTestCoverageRefusal(
-          uncovered,
-          Array.isArray(recordedCoverage) ? recordedCoverage : []
-        )
-      );
-    }
-  }
-
-  const staleMessage = stale.stale
-    ? `${formatStaleBuildWarning(stale)}\n\n` +
-      'Run `fireforge test --build` to refresh the packaged runtime first, or pass ' +
-      '`--allow-stale-build` if you intentionally rebuilt out-of-band and accept the risk.'
-    : undefined;
-  if (staleMessage !== undefined) {
-    if (options.allowStaleBuild === true) {
-      warn(staleMessage);
-    } else {
-      throw new GeneralError(staleMessage);
-    }
-  }
 }
 
 function logTestSelection(scopes: readonly TestPathScope[]): void {
@@ -518,8 +461,15 @@ export async function testCommand(
   // Run incremental build if requested
   if (options.build) {
     // A path-less `test --build` runs (and packages for) the full suite;
-    // a scoped invocation only vouches for the requested paths.
+    // a scoped invocation only vouches for the requested paths. A SCOPED
+    // rebuild also cannot regenerate the compiled StaticComponents table,
+    // so it runs the components.conf gate up-front (the path-less shape
+    // refreshes the anchor itself and skips it).
     const coverage: TestPackagingCoverage = normalizedPaths.length === 0 ? 'full' : normalizedPaths;
+    if (normalizedPaths.length > 0) {
+      const previousBaseline = await readBuildBaseline(projectRoot);
+      await enforceStaticComponentsGate(paths.engine, previousBaseline, options);
+    }
     await runPreTestBuild(projectRoot, paths, projectConfig, harnessRetries, coverage);
     info('');
   } else {

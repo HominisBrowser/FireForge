@@ -446,6 +446,100 @@ describe('validateAccessibility', () => {
     expect(issues.some((issue) => issue.check === 'unlabelled-form-input')).toBe(false);
   });
 
+  it('does not warn for an input wrapped in a <label> with text', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<label><input type="radio" name="mode" /> Compact mode</label>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'unlabelled-form-input')).toBe(false);
+  });
+
+  it('does not warn for a select wrapped in a <label> with text', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`
+            <label>
+              Sort order
+              <select>
+                <option value="asc">Ascending</option>
+              </select>
+            </label>
+          \`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'unlabelled-form-input')).toBe(false);
+  });
+
+  it('warns for an input wrapped in an empty <label>', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<label><input type="checkbox" /></label>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'unlabelled-form-input')).toBe(true);
+  });
+
+  it('warns for an input wrapped in a <label> whose only content is tags', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<label><span></span><input type="checkbox" /></label>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'unlabelled-form-input')).toBe(true);
+  });
+
+  it('accepts a ${...} binding as wrapping-label text', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<label><input type="radio" /> \${this.optionLabel}</label>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'unlabelled-form-input')).toBe(false);
+  });
+
+  it('still warns for a bare input outside any <label> even when a labelled one exists', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`
+            <label><input type="radio" /> Choice</label>
+            <input type="text" />
+          \`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'unlabelled-form-input')).toBe(true);
+  });
+
   it('ignores symbol-only text nodes when checking for hardcoded text', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`

@@ -575,6 +575,78 @@ describe('statusCommand', () => {
       expect(outro).toHaveBeenCalledWith('1 unmanaged, 1 furnace');
     });
 
+    it('classifies a furnace-deployed file as patch-owned drift when it diverges from its owning patch', async () => {
+      // 0.38.0 friction item 1: exporting a deployed component and then
+      // re-deploying an edited workspace source leaves the engine copy
+      // with content the owning patch's body lacks. The furnace prefix
+      // short-circuit used to run before the single-owner content
+      // comparison and silently bucketed the drift as `furnace`.
+      vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValueOnce(
+        new Set(['toolkit/content/widgets/moz-button/'])
+      );
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-moz-button-recolor.patch',
+            order: 1,
+            category: 'ui',
+            name: 'moz-button-recolor',
+            description: 'Recolour moz-button',
+            createdAt: '2026-07-01T00:00:00Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['toolkit/content/widgets/moz-button/moz-button.css'],
+          },
+        ],
+      });
+      vi.mocked(computePatchedContent).mockResolvedValue('exported override content');
+      vi.mocked(readText).mockResolvedValue('freshly re-deployed content');
+
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: 'M', file: 'toolkit/content/widgets/moz-button/moz-button.css' },
+      ]);
+
+      await statusCommand(projectRoot);
+
+      expect(warnMessages()).toContain('Patch-owned drift:');
+      expect(warnMessages()).not.toContain('Furnace-managed component changes:');
+      expect(infoMessages()).toContain('  toolkit/content/widgets/moz-button/moz-button.css');
+      expect(outro).toHaveBeenCalledWith('1 patch-owned drift');
+    });
+
+    it('keeps a furnace file whose content matches its owning patch in the furnace bucket', async () => {
+      vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValueOnce(
+        new Set(['toolkit/content/widgets/moz-button/'])
+      );
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-moz-button-recolor.patch',
+            order: 1,
+            category: 'ui',
+            name: 'moz-button-recolor',
+            description: 'Recolour moz-button',
+            createdAt: '2026-07-01T00:00:00Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['toolkit/content/widgets/moz-button/moz-button.css'],
+          },
+        ],
+      });
+      vi.mocked(computePatchedContent).mockResolvedValue('deployed override content');
+      vi.mocked(readText).mockResolvedValue('deployed override content');
+
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: 'M', file: 'toolkit/content/widgets/moz-button/moz-button.css' },
+      ]);
+
+      await statusCommand(projectRoot);
+
+      expect(warnMessages()).toContain('Furnace-managed component changes:');
+      expect(warnMessages()).not.toContain('Patch-owned drift:');
+      expect(outro).toHaveBeenCalledWith('1 furnace');
+    });
+
     it('does not classify files as furnace-managed when no furnace config exists', async () => {
       vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(new Set());
       vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -921,6 +993,44 @@ describe('statusCommand', () => {
         expect(rendered).toContain(file);
       }
       expect(outro).toHaveBeenCalledWith('5 managed');
+    });
+
+    it('shows patch-owned drift for a furnace-deployed widget that diverged from its patch', async () => {
+      // Rendering counterpart of the classifier fix: a stale widget
+      // patch must show as drift in the ownership table instead of the
+      // row silently reading `owned` because the furnace prefix
+      // short-circuit swallowed the content comparison.
+      vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValueOnce(
+        new Set(['toolkit/content/widgets/moz-button/'])
+      );
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-moz-button-recolor.patch',
+            order: 1,
+            category: 'ui',
+            name: 'moz-button-recolor',
+            description: 'Recolour moz-button',
+            createdAt: '2026-07-01T00:00:00Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['toolkit/content/widgets/moz-button/moz-button.css'],
+          },
+        ],
+      });
+      vi.mocked(computePatchedContent).mockResolvedValue('exported override content');
+      vi.mocked(readText).mockResolvedValue('freshly re-deployed content');
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: 'M', file: 'toolkit/content/widgets/moz-button/moz-button.css' },
+      ]);
+
+      await statusCommand(projectRoot, { ownership: true });
+
+      const rendered = infoMessages().join('\n');
+      expect(rendered).toContain('toolkit/content/widgets/moz-button/moz-button.css');
+      expect(rendered).toContain('001-ui-moz-button-recolor.patch');
+      expect(rendered).toContain('patch-owned drift');
+      expect(outro).toHaveBeenCalledWith('1 managed');
     });
   });
 

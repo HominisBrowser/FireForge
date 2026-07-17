@@ -53,8 +53,24 @@ const FILE_SIZE_THRESHOLDS = {
 } as const;
 
 /**
+ * Counts the lines of `content` the way `wc -l` reports them: a trailing
+ * newline terminates the last line rather than starting an empty extra
+ * one. A naive `split('\n').length` over-counts by one for any content
+ * ending in `\n` (the common case), which made the size rules fire one
+ * line early against the operator's own `wc -l` measurement.
+ */
+function countContentLines(content: string): number {
+  const lines = content.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines.length;
+}
+
+/**
  * Counts the total lines in a unified diff and the number of non-binary
  * text lines, so binary hunks do not inflate patch size checks.
+ *
+ * Line counting agrees with `wc -l`: a trailing newline does not add a
+ * phantom empty line to either `total` or the binary-hunk accounting.
  *
  * @param diffContent - Raw unified diff string
  * @returns Object with `total` line count and `textLines` (total minus binary hunk lines)
@@ -64,6 +80,7 @@ export function countNonBinaryDiffLines(diffContent: string): {
   textLines: number;
 } {
   const lines = diffContent.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
   const total = lines.length;
   let binaryLines = 0;
   let inBinaryHunk = false;
@@ -372,27 +389,27 @@ export async function lintPatchedJs(
 
     // 2. File size check (new files only)
     if (isNew) {
-      const lineCount = content.split('\n').length;
+      const lineCount = countContentLines(content);
       const isTest = isTestFile(file);
       const thresholds = isTest ? FILE_SIZE_THRESHOLDS.test : FILE_SIZE_THRESHOLDS.general;
       const label = isTest ? 'Test file' : 'New file';
       const verb = isTest ? 'splitting' : 'decomposing';
 
-      if (lineCount >= thresholds.error) {
+      if (lineCount > thresholds.error) {
         issues.push({
           file,
           check: 'file-too-large',
           message: `${label} has ${lineCount} lines (hard limit: ${thresholds.error}). Consider ${verb}.`,
           severity: 'error',
         });
-      } else if (lineCount >= thresholds.warning) {
+      } else if (lineCount > thresholds.warning) {
         issues.push({
           file,
           check: 'file-too-large',
           message: `${label} has ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider ${verb}.`,
           severity: 'warning',
         });
-      } else if (lineCount >= thresholds.notice) {
+      } else if (lineCount > thresholds.notice) {
         issues.push({
           file,
           check: 'file-too-large',
@@ -590,21 +607,21 @@ export function lintPatchSize(
     });
   }
 
-  if (lineCount >= lineThresholds.error) {
+  if (lineCount > lineThresholds.error) {
     issues.push({
       file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',
       message: `Patch is ${lineCount} lines (hard limit: ${lineThresholds.error}). Consider splitting into smaller, focused patches.`,
       severity: 'error',
     });
-  } else if (lineCount >= lineThresholds.warning) {
+  } else if (lineCount > lineThresholds.warning) {
     issues.push({
       file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',
       message: `Patch is ${lineCount} lines (soft limit: ${lineThresholds.warning}, hard limit: ${lineThresholds.error}). Consider splitting into smaller, focused patches.`,
       severity: 'warning',
     });
-  } else if (lineCount >= lineThresholds.notice) {
+  } else if (lineCount > lineThresholds.notice) {
     issues.push({
       file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',

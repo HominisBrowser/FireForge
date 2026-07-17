@@ -100,6 +100,14 @@ export function isValidFirefoxVersion(version: string): boolean {
 }
 
 /**
+ * Validates a release-candidate build directory name.
+ * Accepts formats like "build1", "build2", "build12" (no leading zero).
+ */
+export function isValidFirefoxCandidate(candidate: string): boolean {
+  return /^build[1-9]\d{0,3}$/.test(candidate);
+}
+
+/**
  * Validates a Firefox product string.
  * Accepts: firefox, firefox-esr, firefox-beta, firefox-devedition
  */

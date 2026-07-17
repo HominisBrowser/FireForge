@@ -353,6 +353,34 @@ describe('patch split integration', () => {
     );
   });
 
+  it('refuses --before placements that would renumber through a reserved range with one up-front error', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        ranges: [{ from: 1, to: 99, category: 'infra' }],
+        reservedRanges: [{ from: 4, to: 6, allowed: [] }],
+      },
+    });
+    await seedManifest(patchesDir, [
+      { metadata: makeMetadata('001-infra-feature.patch', 1, [FILE_A, FILE_B]), body: '(stale)' },
+      { metadata: makeMetadata('004-infra-reserved.patch', 4, ['unrelated.txt']), body: '(stale)' },
+    ]);
+
+    // --before the reserved patch would shift it 004 → 005 inside the
+    // reserved block; the refusal is one message keyed on the range, with
+    // the first free order below the block (003) as the suggested fix.
+    await expect(
+      patchSplitCommand(projectRoot, '001-infra-feature.patch', {
+        files: [FILE_B],
+        name: 'styles',
+        before: '004-infra-reserved.patch',
+        yes: true,
+        skipLint: true,
+      })
+    ).rejects.toThrow(
+      /Positional insert would renumber the reserved range 004-006; pass --order 003/
+    );
+  });
+
   it('refuses placements that violate patchPolicy without --force-unsafe', async () => {
     await writeFireForgeConfig(projectRoot, {
       patchPolicy: {

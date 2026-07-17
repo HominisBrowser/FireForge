@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * `fireforge patch move-files <from> <to>` previews the explicit
- * re-export choreography needed to move file ownership between two patches.
+ * re-export choreography needed to move file ownership between two
+ * patches. With `--create --order <n>` the target patch is created and
+ * the files move into it as one transaction (see move-files-create.ts).
  */
 
 import { relative } from 'node:path';
@@ -16,6 +18,8 @@ import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchMoveFilesOptions } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
+import { commanderArgParser, pickDefined } from '../../utils/options.js';
+import { patchMoveFilesCreateCommand } from './move-files-create.js';
 
 function collectOption(value: string, previous: string[]): string[] {
   previous.push(value);
@@ -103,6 +107,23 @@ export async function patchMoveFilesCommand(
   toIdentifier: string,
   options: PatchMoveFilesOptions = {}
 ): Promise<void> {
+  if (options.create === true && options.order === undefined) {
+    throw new InvalidArgumentError(
+      '--create requires --order <n> to place the new patch.',
+      '--create'
+    );
+  }
+  if (options.create !== true && options.order !== undefined) {
+    throw new InvalidArgumentError('--order is only valid together with --create.', '--order');
+  }
+  if (options.create === true && options.order !== undefined) {
+    await patchMoveFilesCreateCommand(projectRoot, fromIdentifier, toIdentifier, {
+      ...options,
+      order: options.order,
+    });
+    return;
+  }
+
   intro('FireForge patch move-files');
 
   if (fromIdentifier === toIdentifier) {
@@ -185,7 +206,8 @@ export async function patchMoveFilesCommand(
 
   info(
     'Tip: to move files into a brand-new patch in one transaction (including ' +
-      'staged-dependency owner rewrites), use "fireforge patch split" instead.'
+      'staged-dependency owner rewrites), re-run with --create --order <n> to create ' +
+      'the target patch and move the files in one step, or use "fireforge patch split".'
   );
 
   outro('Move plan complete - no changes made');
@@ -201,13 +223,37 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
   const { getProjectRoot, withErrorHandling } = context;
   parent
     .command('move-files <from> <to>')
-    .description('Preview the re-export commands needed to move file ownership between patches.')
+    .description(
+      'Preview the re-export commands needed to move file ownership between patches, ' +
+        'or create the target patch and move the files in one transaction with --create --order <n>.'
+    )
     .option(
       '--file <path>',
       'File path relative to engine/ to move (repeatable)',
       collectOption,
       []
     )
+    .option('--create', 'Create <to> as a new patch and move the files into it (requires --order)')
+    .option(
+      '--order <n>',
+      'Exact sparse order for the created patch (only valid with --create)',
+      commanderArgParser((raw: string) => {
+        const n = Number.parseInt(raw, 10);
+        if (!Number.isInteger(n) || n <= 0) {
+          throw new InvalidArgumentError(
+            `--order must be a positive integer, got "${raw}".`,
+            '--order'
+          );
+        }
+        return n;
+      })
+    )
+    .option('--category <category>', "Category for the created patch (default: the source patch's)")
+    .option('--description <desc>', 'Description for the created patch')
+    .option('--dry-run', 'Show what would happen without writing')
+    .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
+    .option('--force-unsafe', 'Bypass projected-lint refusals')
+    .option('--skip-lint', 'Skip per-patch lint of the projected bodies')
     .action(
       withErrorHandling(
         async (
@@ -215,9 +261,29 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
           to: string,
           options: {
             file?: string[];
+            create?: boolean;
+            order?: number;
+            category?: string;
+            description?: string;
+            dryRun?: boolean;
+            yes?: boolean;
+            forceUnsafe?: boolean;
+            skipLint?: boolean;
           }
         ) => {
-          await patchMoveFilesCommand(getProjectRoot(), from, to, options);
+          await patchMoveFilesCommand(getProjectRoot(), from, to, {
+            ...pickDefined({
+              file: options.file,
+              create: options.create,
+              order: options.order,
+              category: options.category,
+              description: options.description,
+              dryRun: options.dryRun,
+              yes: options.yes,
+              forceUnsafe: options.forceUnsafe,
+              skipLint: options.skipLint,
+            }),
+          });
         }
       )
     );

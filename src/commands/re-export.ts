@@ -28,7 +28,7 @@ import { elapsedSince } from '../utils/elapsed.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../utils/options.js';
 import { runPatchLint } from './export-shared.js';
 import { loadScanFilesAssignments, withDryRunReExportLock } from './re-export-bulk-scan.js';
 import { reExportFilesInPlace } from './re-export-files.js';
@@ -37,6 +37,7 @@ import {
   validateReExportOptionCombinations,
 } from './re-export-options.js';
 import {
+  assertScanAdoptionsHaveNoForwardImports,
   assertScanFileAdditionsHaveDiffHunks,
   confirmBroadScanAdditions,
   normalizeScanFiles,
@@ -131,6 +132,18 @@ async function reExportSinglePatch(
       patchFilename: patch.filename,
       isDryRun,
       ...(options.scanFiles !== undefined ? { scanFiles: options.scanFiles } : {}),
+    });
+
+    // Forward-import gate at adoption time (runs in dry-run too): refuse
+    // to adopt unmanaged files that import modules created by LATER
+    // patches — the after-the-fact lint failure this leaves behind is the
+    // field-reported footgun. Applies to broad --scan, --scan-file, and
+    // the --scan-files bulk assignments alike.
+    await assertScanAdoptionsHaveNoForwardImports({
+      patchesDir: paths.patches,
+      engineDir: paths.engine,
+      patchFilename: patch.filename,
+      added: scanResult.added,
     });
 
     if (options.scanFiles === undefined) {
@@ -551,7 +564,7 @@ export function registerReExport(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const reExport = program
     .command('re-export [patches...]')
     .description(
       'Refresh existing patch bodies (and filesAffected with --scan) from the current engine ' +
@@ -606,40 +619,45 @@ export function registerReExport(
       'Append a lint check ID to the patch\'s PatchMetadata.lintIgnore (union, de-duped, repeatable). Mutually exclusive with --all. Use "fireforge patch lint-ignore" for --remove / --clear.',
       (value: string, prev: string[]) => [...prev, value],
       [] as string[]
-    )
-    .action(
-      withErrorHandling(
-        async (
-          patches: string[],
-          options: {
-            all?: boolean;
-            scan?: boolean;
-            scanFile?: string[];
-            scanFiles?: string;
-            files?: string[];
-            dryRun?: boolean;
-            skipLint?: boolean;
-            yes?: boolean;
-            allowShrink?: boolean;
-            allowStaleFurnace?: boolean;
-            forceUnsafe?: boolean;
-            stamp?: boolean;
-            tier?: string;
-            lintIgnore?: string[];
-          }
-        ) => {
-          const { tier, lintIgnore, scanFile, scanFiles, ...rest } = options;
-          const projectRoot = getProjectRoot();
-          await withEngineSessionLock(projectRoot, 're-export', () =>
+    );
+  addWaitLockOption(reExport).action(
+    withErrorHandling(
+      async (
+        patches: string[],
+        options: {
+          all?: boolean;
+          scan?: boolean;
+          scanFile?: string[];
+          scanFiles?: string;
+          files?: string[];
+          dryRun?: boolean;
+          skipLint?: boolean;
+          yes?: boolean;
+          allowShrink?: boolean;
+          allowStaleFurnace?: boolean;
+          forceUnsafe?: boolean;
+          stamp?: boolean;
+          tier?: string;
+          lintIgnore?: string[];
+          waitLock?: number | boolean;
+        }
+      ) => {
+        const { tier, lintIgnore, scanFile, scanFiles, ...rest } = options;
+        const projectRoot = getProjectRoot();
+        await withEngineSessionLock(
+          projectRoot,
+          're-export',
+          () =>
             reExportCommand(projectRoot, patches, {
               ...pickDefined(rest),
               ...(scanFile !== undefined && scanFile.length > 0 ? { scanFiles: scanFile } : {}),
               ...(scanFiles !== undefined ? { scanFilesManifest: scanFiles } : {}),
               ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
               ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
-            })
-          );
-        }
-      )
-    );
+            }),
+          { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
+        );
+      }
+    )
+  );
 }

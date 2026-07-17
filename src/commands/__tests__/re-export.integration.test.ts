@@ -96,6 +96,65 @@ function makeLegacyThreePatchManifest(): string {
   )}\n`;
 }
 
+function makeTwoPatchForwardImportManifest(adopterDeclared: boolean): string {
+  return `${JSON.stringify(
+    {
+      version: 1,
+      patches: [
+        {
+          filename: '001-ui-test.patch',
+          order: 1,
+          category: 'ui',
+          name: 'test',
+          description: '',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['tracked.txt'],
+          ...(adopterDeclared
+            ? {
+                stagedDependencies: {
+                  forwardImports: [
+                    {
+                      file: 'adopter.sys.mjs',
+                      specifier: 'resource:///modules/Helper.sys.mjs',
+                      creates: 'modules/Helper.sys.mjs',
+                      owner: '002-ui-helper.patch',
+                    },
+                  ],
+                },
+              }
+            : {}),
+        },
+        {
+          filename: '002-ui-helper.patch',
+          order: 2,
+          category: 'ui',
+          name: 'helper',
+          description: '',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['modules/Helper.sys.mjs'],
+        },
+      ],
+    },
+    null,
+    2
+  )}\n`;
+}
+
+function makeNewFileDiff(path: string, content: string): string {
+  const lines = content.split('\n').filter((l) => l.length > 0);
+  const hunk = `@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join('\n')}\n`;
+  return [
+    `diff --git a/${path} b/${path}`,
+    'new file mode 100644',
+    'index 0000000..1111111',
+    '--- /dev/null',
+    `+++ b/${path}`,
+    hunk,
+  ].join('\n');
+}
+
 const blankContextBase = 'context\n\nmore context\n';
 const blankContextModified = 'context\n\nmore context\nnew line\n';
 
@@ -214,6 +273,92 @@ describe('reExportCommand integration', () => {
     expect(patchBody).toContain('rootnew.txt');
     expect(patchBody).not.toContain('features/deep/module-a.txt');
     expect(patchBody).not.toContain('features/deep/module-b.txt');
+  });
+
+  it('refuses broad --scan adoption of a file that forward-imports a later patch, naming that patch', async () => {
+    await writeFiles(projectRoot, {
+      'patches/patches.json': makeTwoPatchForwardImportManifest(false),
+      'patches/002-ui-helper.patch': makeNewFileDiff(
+        'modules/Helper.sys.mjs',
+        'export const H = 1;\n'
+      ),
+    });
+    const manifestBefore = await readProjectText(projectRoot, 'patches/patches.json');
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': 'changed\n',
+      'adopter.sys.mjs':
+        'import { H } from "resource:///modules/Helper.sys.mjs";\nexport const A = H;\n',
+    });
+
+    await expect(reExportCommand(projectRoot, ['001'], { scan: true, yes: true })).rejects.toThrow(
+      /All selected patches failed/
+    );
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('import modules created by later patches')
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('002-ui-helper.patch'));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('fireforge patch staged-dependency --add')
+    );
+    // Nothing adopted: the refusal fires before any write.
+    await expect(readProjectText(projectRoot, 'patches/patches.json')).resolves.toBe(
+      manifestBefore
+    );
+  });
+
+  it('refuses --scan-file adoption of a forward-importing file with the same message', async () => {
+    await writeFiles(projectRoot, {
+      'patches/patches.json': makeTwoPatchForwardImportManifest(false),
+      'patches/002-ui-helper.patch': makeNewFileDiff(
+        'modules/Helper.sys.mjs',
+        'export const H = 1;\n'
+      ),
+    });
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': 'changed\n',
+      'adopter.sys.mjs':
+        'import { H } from "resource:///modules/Helper.sys.mjs";\nexport const A = H;\n',
+    });
+
+    await expect(
+      reExportCommand(projectRoot, ['001'], { scan: true, scanFiles: ['adopter.sys.mjs'] })
+    ).rejects.toThrow(/All selected patches failed/);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('import modules created by later patches')
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('002-ui-helper.patch'));
+  });
+
+  it('allows scan adoption of a forward import covered by a staged-dependency declaration', async () => {
+    await writeFiles(projectRoot, {
+      'patches/patches.json': makeTwoPatchForwardImportManifest(true),
+      'patches/002-ui-helper.patch': makeNewFileDiff(
+        'modules/Helper.sys.mjs',
+        'export const H = 1;\n'
+      ),
+    });
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': 'changed\n',
+      'adopter.sys.mjs':
+        '/* SPDX-License-Identifier: EUPL-1.2 */\n' +
+        'import { H } from "resource:///modules/Helper.sys.mjs";\n' +
+        '/** Adopted helper re-export. */\n' +
+        'export const A = H;\n',
+    });
+
+    await reExportCommand(projectRoot, ['001'], {
+      scan: true,
+      scanFiles: ['adopter.sys.mjs'],
+    });
+
+    const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: Array<{ filesAffected: string[] }>;
+    };
+    expect(manifest.patches[0]?.filesAffected).toEqual(['adopter.sys.mjs', 'tracked.txt']);
+    const patchBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expect(patchBody).toContain('adopter.sys.mjs');
   });
 
   it('preserves blank context markers and verifies cleanly after targeted re-export', async () => {

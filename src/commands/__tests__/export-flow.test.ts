@@ -28,7 +28,7 @@ import {
   renderDryRunPreview,
   resolvePlacementPlan,
 } from '../export-flow.js';
-import { assertPlacementPreservesReservedRanges } from '../export-placement-policy.js';
+import { assertPlacementAvoidsReservedRanges } from '../export-placement-policy.js';
 
 // Mock ../../utils/fs.js and ../../core/patch-manifest.js so the rollback
 // tests below can override specific functions (writeText,
@@ -279,11 +279,23 @@ describe('sparse export placement with patchPolicy reserved ranges', () => {
       newOrder: 901,
     });
     expect(() => {
-      assertPlacementPreservesReservedRanges(plan, patches, sparsePolicyConfig(), 'ui');
-    }).toThrow(/Use --order 241/);
+      assertPlacementAvoidsReservedRanges(plan, patches, sparsePolicyConfig());
+    }).toThrow(/Positional insert would renumber the reserved range 900-999/);
     expect(() => {
-      assertPlacementPreservesReservedRanges(plan, patches, sparsePolicyConfig(), 'ui');
-    }).toThrow(/900-infra-bindgen-basic-string-workaround\.patch/);
+      assertPlacementAvoidsReservedRanges(plan, patches, sparsePolicyConfig());
+    }).toThrow(/pass --order 899/);
+
+    // The same refusal fires up front from resolvePlacementPlan when the
+    // config is threaded through — one error for the whole shift.
+    await expect(
+      resolvePlacementPlan(
+        patchesDir,
+        { after: '240-ui-something.patch' },
+        'ui',
+        'new-feature',
+        sparsePolicyConfig()
+      )
+    ).rejects.toThrow(/Positional insert would renumber the reserved range 900-999/);
   });
 
   it('rejects exact --order when the requested order is occupied', async () => {

@@ -26,20 +26,30 @@ export { formatBytes, getFirefoxVersion } from './firefox-extract.js';
  * Gets the download URL for a Firefox source tarball.
  * @param version - Firefox version (e.g., "140.9.0esr")
  * @param product - Firefox product type
+ * @param candidate - Optional release-candidate build directory (e.g. "build2")
  * @returns Full URL to the source tarball
  */
-export function getDownloadUrl(version: string, product: FirefoxProduct = 'firefox'): string {
-  return resolveArchive(version, product).url;
+export function getDownloadUrl(
+  version: string,
+  product: FirefoxProduct = 'firefox',
+  candidate?: string
+): string {
+  return resolveArchive(version, product, candidate).url;
 }
 
 /**
  * Gets the filename for a Firefox source tarball.
  * @param version - Firefox version
  * @param product - Firefox product type
+ * @param candidate - Optional release-candidate build directory (e.g. "build2")
  * @returns Tarball filename
  */
-export function getTarballFilename(version: string, product: FirefoxProduct = 'firefox'): string {
-  return resolveArchive(version, product).filename;
+export function getTarballFilename(
+  version: string,
+  product: FirefoxProduct = 'firefox',
+  candidate?: string
+): string {
+  return resolveArchive(version, product, candidate).filename;
 }
 
 /**
@@ -126,6 +136,9 @@ export async function sweepOrphanedEngineWorkDirs(destDir: string): Promise<stri
  * @param onPhase - Optional callback fired when the function transitions
  *   between phases (`'download'` → `'extract'`). Fires exactly once per
  *   phase even if the cached archive path skips the wire entirely.
+ * @param candidate - Optional release-candidate build directory (e.g.
+ *   "build2") resolving the archive under `candidates/` instead of
+ *   `releases/`.
  */
 export async function downloadFirefoxSource(
   version: string,
@@ -135,9 +148,10 @@ export async function downloadFirefoxSource(
   onProgress?: ProgressCallback,
   onPhase?: FirefoxSourcePhaseCallback,
   expectedSha256?: string,
-  onPhaseProgress?: FirefoxSourceProgressCallback
+  onPhaseProgress?: FirefoxSourceProgressCallback,
+  candidate?: string
 ): Promise<void> {
-  const archive = resolveArchive(version, product);
+  const archive = resolveArchive(version, product, candidate);
   const tarballPath = join(cacheDir, archive.filename);
 
   // Ensure cache directory exists

@@ -14,7 +14,7 @@ import type { CommandContext } from '../types/cli.js';
 import type { SourceSetOptions } from '../types/commands/index.js';
 import type { FirefoxProduct } from '../types/config.js';
 import { info, intro, outro, success } from '../utils/logger.js';
-import { isValidFirefoxProduct } from '../utils/validation.js';
+import { isValidFirefoxCandidate, isValidFirefoxProduct } from '../utils/validation.js';
 
 const SOURCE_PRODUCTS = [
   'firefox',
@@ -45,6 +45,16 @@ function parseSourceProduct(product: string): FirefoxProduct {
   );
 }
 
+function parseSourceCandidate(candidate: string): string {
+  if (isValidFirefoxCandidate(candidate)) {
+    return candidate;
+  }
+  throw new InvalidArgumentError(
+    `--candidate must look like "buildN" (e.g. "build2"), got "${candidate}"`,
+    '--candidate'
+  );
+}
+
 /**
  * Atomically updates the Firefox source tuple in fireforge.json.
  */
@@ -60,6 +70,12 @@ export async function sourceSetCommand(
   if (options.sha256 !== undefined && options.clearSha256 === true) {
     throw new InvalidArgumentError('--sha256 cannot be combined with --clear-sha256', '--sha256');
   }
+  if (options.candidate !== undefined && options.clearCandidate === true) {
+    throw new InvalidArgumentError(
+      '--candidate cannot be combined with --clear-candidate',
+      '--candidate'
+    );
+  }
 
   const written = await withConfigFileLock(projectRoot, async () => {
     const raw = await loadRawConfigDocument(projectRoot);
@@ -73,6 +89,11 @@ export async function sourceSetCommand(
     } else if (options.sha256 !== undefined) {
       firefox['sha256'] = options.sha256;
     }
+    if (options.clearCandidate === true) {
+      delete firefox['candidate'];
+    } else if (options.candidate !== undefined) {
+      firefox['candidate'] = options.candidate;
+    }
     updated['firefox'] = firefox;
 
     const validated = validateConfig(updated);
@@ -84,7 +105,7 @@ export async function sourceSetCommand(
     return validated.firefox;
   });
 
-  const archive = resolveArchive(written.version, written.product);
+  const archive = resolveArchive(written.version, written.product, written.candidate);
 
   success(`Set firefox.version = ${written.version}`);
   success(`Set firefox.product = ${written.product}`);
@@ -93,6 +114,11 @@ export async function sourceSetCommand(
     success(`Set firefox.sha256 = ${written.sha256}`);
   } else if (options.clearSha256 === true) {
     info('Cleared firefox.sha256');
+  }
+  if (written.candidate !== undefined) {
+    success(`Set firefox.candidate = ${written.candidate}`);
+  } else if (options.clearCandidate === true) {
+    info('Cleared firefox.candidate');
   }
   outro('');
 }
@@ -115,6 +141,12 @@ export function registerSource(
     )
     .option('--sha256 <hash>', 'Pinned SHA-256 for the resolved source archive')
     .option('--clear-sha256', 'Clear any existing pinned SHA-256')
+    .option(
+      '--candidate <buildN>',
+      'Release-candidate build directory (e.g. "build2")',
+      parseSourceCandidate
+    )
+    .option('--clear-candidate', 'Clear any existing release-candidate build directory')
     .action(
       withErrorHandling(
         async (options: {
@@ -122,13 +154,17 @@ export function registerSource(
           product: string;
           sha256?: string;
           clearSha256?: boolean;
+          candidate?: string;
+          clearCandidate?: boolean;
         }) => {
-          const { product, version, sha256, clearSha256 } = options;
+          const { product, version, sha256, clearSha256, candidate, clearCandidate } = options;
           await sourceSetCommand(getProjectRoot(), {
             version,
             product: parseSourceProduct(product),
             ...(sha256 !== undefined ? { sha256 } : {}),
             ...(clearSha256 !== undefined ? { clearSha256 } : {}),
+            ...(candidate !== undefined ? { candidate } : {}),
+            ...(clearCandidate !== undefined ? { clearCandidate } : {}),
           });
         }
       )

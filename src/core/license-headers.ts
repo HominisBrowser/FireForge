@@ -107,6 +107,62 @@ function stripLeadingEditorDirectives(content: string): string {
 }
 
 /**
+ * Collapses all whitespace runs to single spaces and trims, so header
+ * comparisons ignore the exact line-break/wrap positions.
+ */
+function normalizeText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The canonical upstream MPL-2.0 notice as a single normalized sentence
+ * (including the `http://mozilla.org/MPL/2.0/.` URL). Wrap-agnostic
+ * header checks match against this instead of an exact rendering.
+ */
+const MPL_HEADER_NORMALIZED = normalizeText(HEADER_LINES['MPL-2.0'].join(' '));
+
+/**
+ * Extracts ONLY the leading comment span of `content` for the given
+ * comment style and returns it whitespace-normalized:
+ *
+ * - `js`:   a leading run of `//` lines (markers stripped), or — when the
+ *           file opens with a block comment instead — the first
+ *           `/* … *\/` block;
+ * - `css`:  the first `/* … *\/` block, with the ` * ` continuation-line
+ *           prefixes stripped (same collapsing
+ *           {@link normalizeLicenseHeadForScan} does);
+ * - `hash`: a leading run of `#` lines (markers stripped).
+ *
+ * A non-comment first line yields `''`. This lets callers accept a known
+ * header text regardless of where upstream wrapped its lines (e.g. the
+ * older Mozilla wrap that breaks after "file,"), without ever matching
+ * text beyond the leading comment.
+ */
+function normalizeCommentHead(content: string, style: CommentStyle): string {
+  const src = content.replace(/\r\n?/g, '\n');
+
+  const collectLineRun = (marker: RegExp): string => {
+    const parts: string[] = [];
+    for (const line of src.split('\n')) {
+      const m = marker.exec(line);
+      if (!m) break;
+      parts.push(m[1] ?? '');
+    }
+    return normalizeText(parts.join(' '));
+  };
+
+  if (style === 'hash') {
+    return collectLineRun(/^[ \t]*#[ \t]?(.*)$/);
+  }
+  if (style === 'js' && /^[ \t]*\/\//.test(src)) {
+    return collectLineRun(/^[ \t]*\/\/[ \t]?(.*)$/);
+  }
+  const block = /^[ \t]*\/\*([\s\S]*?)\*\//.exec(src);
+  if (!block) return '';
+  return normalizeText((block[1] ?? '').replace(/\n[ \t]*\*[ \t]*/g, ' '));
+}
+
+/**
  * Returns true if `content` starts with any known license header for the
  * given comment style.
  *
@@ -123,6 +179,11 @@ function stripLeadingEditorDirectives(content: string): string {
  * on lines 1–2 with the MPL header on lines 3+, which the raw
  * `startsWith` check would otherwise miss.
  *
+ * The MPL-2.0 header is additionally matched on normalized whitespace
+ * (see {@link normalizeCommentHead}) so upstream files using the older
+ * Mozilla wrap — breaking after "file," instead of "with this" — are
+ * accepted too; only the wrap position differs, never the wording.
+ *
  * @param content - File content to check
  * @param style   - Comment syntax of the file
  */
@@ -134,6 +195,9 @@ export function hasAnyLicenseHeader(content: string, style: CommentStyle): boole
       return true;
     }
     if (style === 'js' && candidate.startsWith(getLicenseHeader('MPL-2.0', 'css'))) {
+      return true;
+    }
+    if (normalizeCommentHead(candidate, style).startsWith(MPL_HEADER_NORMALIZED)) {
       return true;
     }
   }
@@ -153,13 +217,23 @@ export function hasAnyLicenseHeader(content: string, style: CommentStyle): boole
  * patch-lint, making it dead code for every other project license and
  * forcing repo-side audit workarounds.
  *
+ * Matching is wrap-agnostic: after the exact `startsWith` fast path, the
+ * leading block comment is compared on normalized whitespace (see
+ * {@link normalizeCommentHead}) so the older upstream wrap — breaking
+ * after "file," instead of "with this", as `ext-browser.js` ships —
+ * passes too. Only the line-break position may differ; altered wording
+ * still rejects.
+ *
  * @param content - File content to check
  */
 export function hasUpstreamMplBlockHeader(content: string): boolean {
   const blockHeader = getLicenseHeader('MPL-2.0', 'css');
-  return (
-    content.startsWith(blockHeader) || stripLeadingEditorDirectives(content).startsWith(blockHeader)
-  );
+  const candidates = [content, stripLeadingEditorDirectives(content)];
+  for (const candidate of candidates) {
+    if (candidate.startsWith(blockHeader)) return true;
+    if (normalizeCommentHead(candidate, 'css').startsWith(MPL_HEADER_NORMALIZED)) return true;
+  }
+  return false;
 }
 
 /**

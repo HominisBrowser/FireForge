@@ -561,7 +561,7 @@ export async function lintCommand(
   // per-patch ownership resolver and the cross-patch rules.
   let ctx: import('../core/patch-lint.js').PatchQueueContext | undefined;
   if (await pathExists(paths.patches)) {
-    ctx = await buildPatchQueueContext(paths.patches);
+    ctx = await buildPatchQueueContext(paths.patches, config);
   }
 
   // Ad-hoc explicit-file-list mode evaluates the patch-size rules per

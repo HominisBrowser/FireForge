@@ -3,9 +3,18 @@ import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
+import {
+  applyDiscardBaseline,
+  describeConflictWarning,
+  describeDiscardBaseline,
+  describeDiscardOutcome,
+  type DiscardBaselinePlan,
+  planDiscardBaselines,
+  planUpstreamDiscards,
+  summarizeDiscardBaselines,
+} from '../core/discard-baseline.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, isGitRepository, isMissingHeadError } from '../core/git.js';
-import { discardStatusEntry } from '../core/git-file-ops.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { GitError } from '../errors/git.js';
@@ -15,6 +24,56 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, isCancel, outro, spinner, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
+
+/**
+ * Shared interactive confirmation for the single-file and directory paths.
+ * Returns false when the operator cancelled (the caller printed the outro).
+ */
+async function confirmDiscard(
+  message: string,
+  hint: string,
+  options: DiscardOptions
+): Promise<boolean> {
+  if (options.yes || options.dryRun) return true;
+  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  if (!isInteractive) {
+    throw new InvalidArgumentError(
+      'Interactive confirmation not available. Use --yes flag to discard without confirmation.',
+      hint
+    );
+  }
+  const confirmed = await confirm({ message, initialValue: false });
+  if (isCancel(confirmed) || !confirmed) {
+    outro('Discard cancelled');
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Plans the restore baseline for `entries`: the patch-applied baseline for
+ * patch-claimed paths (FORGE F1), or pristine HEAD when `--to-upstream`
+ * explicitly requests the legacy semantics.
+ */
+async function planDiscards(
+  patchesDir: string,
+  engineDir: string,
+  entries: ReadonlyArray<DiscardBaselinePlan['entry']>,
+  options: DiscardOptions
+): Promise<DiscardBaselinePlan[]> {
+  if (options.toUpstream) return planUpstreamDiscards(entries);
+  return planDiscardBaselines(patchesDir, engineDir, entries);
+}
+
+/** Dry-run label including the rename pair and the restore-baseline suffix. */
+function dryRunLabel(plan: DiscardBaselinePlan): string {
+  const { entry } = plan;
+  const target =
+    entry.originalPath && entry.originalPath !== entry.file
+      ? `${entry.originalPath} -> ${entry.file}`
+      : entry.file;
+  return `${target} (${describeDiscardBaseline(plan)})`;
+}
 
 /**
  * Discards every status entry whose path lives under `dirPath`. Used by
@@ -30,36 +89,24 @@ import { pickDefined } from '../utils/options.js';
 async function discardDirectoryEntries(
   projectRoot: string,
   engineDir: string,
+  patchesDir: string,
   dirPath: string,
   entries: ReadonlyArray<Awaited<ReturnType<typeof expandUntrackedDirectoryEntries>>[number]>,
   options: DiscardOptions
 ): Promise<void> {
-  if (!options.yes && !options.dryRun) {
-    const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
-    if (!isInteractive) {
-      throw new InvalidArgumentError(
-        'Interactive confirmation not available. Use --yes flag to discard without confirmation.',
-        'Use: fireforge discard <directory> --yes'
-      );
-    }
-    const confirmed = await confirm({
-      message: `Discard changes to ${entries.length} file${entries.length === 1 ? '' : 's'} under ${dirPath}/?`,
-      initialValue: false,
-    });
-    if (isCancel(confirmed) || !confirmed) {
-      outro('Discard cancelled');
-      return;
-    }
-  }
+  const proceed = await confirmDiscard(
+    `Discard changes to ${entries.length} file${entries.length === 1 ? '' : 's'} under ${dirPath}/?`,
+    'Use: fireforge discard <directory> --yes',
+    options
+  );
+  if (!proceed) return;
+
+  const plans = await planDiscards(patchesDir, engineDir, entries, options);
 
   if (options.dryRun) {
     info(`Would discard changes to ${entries.length} file(s) under ${dirPath}/:`);
-    for (const entry of entries) {
-      const target =
-        entry.originalPath && entry.originalPath !== entry.file
-          ? `${entry.originalPath} -> ${entry.file}`
-          : entry.file;
-      info(`  ${target}`);
+    for (const plan of plans) {
+      info(`  ${dryRunLabel(plan)}`);
     }
     outro('Dry run complete — no changes made');
     return;
@@ -68,13 +115,15 @@ async function discardDirectoryEntries(
   const s = spinner(`Discarding ${entries.length} file(s) under ${dirPath}/...`);
   let succeeded = 0;
   const failures: string[] = [];
+  const appliedPlans: DiscardBaselinePlan[] = [];
   try {
-    for (const entry of entries) {
+    for (const plan of plans) {
       try {
-        await discardStatusEntry(engineDir, entry);
+        await applyDiscardBaseline(engineDir, plan);
+        appliedPlans.push(plan);
         succeeded += 1;
       } catch (error: unknown) {
-        failures.push(`${entry.file}: ${toError(error).message}`);
+        failures.push(`${plan.entry.file}: ${toError(error).message}`);
       }
     }
     s.stop(
@@ -84,6 +133,9 @@ async function discardDirectoryEntries(
     );
     for (const failure of failures) {
       warn(`  ${failure}`);
+    }
+    for (const plan of appliedPlans) {
+      if (plan.conflicted) warn(describeConflictWarning(plan));
     }
 
     try {
@@ -106,7 +158,7 @@ async function discardDirectoryEntries(
       );
     }
 
-    outro(`${succeeded} file(s) restored to original state`);
+    outro(summarizeDiscardBaselines(appliedPlans, succeeded));
   } catch (error: unknown) {
     if (!(error instanceof GeneralError)) {
       s.error('Discard failed');
@@ -184,38 +236,36 @@ export async function discardCommand(
       (entry) => entry.file.startsWith(dirPrefix) || entry.originalPath?.startsWith(dirPrefix)
     );
     if (dirEntries.length > 0) {
-      await discardDirectoryEntries(projectRoot, paths.engine, dirPath, dirEntries, options);
+      await discardDirectoryEntries(
+        projectRoot,
+        paths.engine,
+        paths.patches,
+        dirPath,
+        dirEntries,
+        options
+      );
       return;
     }
     throw new GeneralError(`File "${file}" has no changes to discard.`);
   }
 
-  if (!options.yes && !options.dryRun) {
-    const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
-    if (!isInteractive) {
-      throw new InvalidArgumentError(
-        'Interactive confirmation not available. Use --yes flag to discard without confirmation.',
-        'Use: fireforge discard <file> --yes'
-      );
-    }
-    const confirmed = await confirm({
-      message: `Discard all changes to ${statusEntry.file}?`,
-      initialValue: false,
-    });
-    if (isCancel(confirmed) || !confirmed) {
-      outro('Discard cancelled');
-      return;
-    }
+  const proceed = await confirmDiscard(
+    `Discard all changes to ${statusEntry.file}?`,
+    'Use: fireforge discard <file> --yes',
+    options
+  );
+  if (!proceed) return;
+
+  const [plan] = await planDiscards(paths.patches, paths.engine, [statusEntry], options);
+  if (!plan) {
+    throw new GeneralError(`File "${file}" has no changes to discard.`);
   }
 
   if (options.dryRun) {
     // Show the rename pair regardless of which side the operator passed —
     // passing the NEW path of a rename used to hide that discarding also
     // resurrects the old path, exactly when the full picture matters most.
-    const target = statusEntry.originalPath
-      ? `${statusEntry.originalPath} -> ${statusEntry.file}`
-      : statusEntry.file;
-    info(`Would discard changes to: ${target}`);
+    info(`Would discard changes to: ${dryRunLabel(plan)}`);
     outro('Dry run complete — no changes made');
     return;
   }
@@ -223,8 +273,12 @@ export async function discardCommand(
   const s = spinner(`Discarding changes to ${file}...`);
 
   try {
-    await discardStatusEntry(paths.engine, statusEntry);
+    await applyDiscardBaseline(paths.engine, plan);
     s.stop(`Discarded changes to ${file}`);
+
+    if (plan.conflicted) {
+      warn(describeConflictWarning(plan));
+    }
 
     // Warn when the discarded file is managed by Furnace so the user knows
     // to re-apply if they want the component's deployed state back.
@@ -237,17 +291,19 @@ export async function discardCommand(
       // Furnace config may not exist — skip silently
     }
 
-    outro('File restored to original state');
+    outro(describeDiscardOutcome(plan, options.toUpstream === true));
   } catch (error: unknown) {
     s.error('Discard failed');
-    if (error instanceof GitError) {
+    if (error instanceof GitError || error instanceof GeneralError) {
       throw error;
     }
     throw new GitError(
       `Failed to discard ${file}`,
-      statusEntry.isUntracked
-        ? `rm ${statusEntry.file}`
-        : `restore --source HEAD --staged --worktree -- ${statusEntry.file}`,
+      plan.kind === 'unmanaged'
+        ? statusEntry.isUntracked
+          ? `rm ${statusEntry.file}`
+          : `restore --source HEAD --staged --worktree -- ${statusEntry.file}`
+        : `write patch baseline for ${statusEntry.file}`,
       // Always attach the cause via toError so thrown primitives (strings,
       // numbers) produced by poorly-behaved utilities still propagate as
       // an Error, preserving stack traces for verbose-mode triage.
@@ -264,13 +320,22 @@ export function registerDiscard(
   program
     .command('discard <file>')
     .description(
-      'Discard changes to a specific file (deletes untracked files). Pass a directory path to discard every modified or untracked file beneath it; the operation walks the status output and reverts each match individually.'
+      'Discard changes to a specific file, restoring patch-claimed paths to their patch-applied baseline (unmanaged untracked files are deleted). Pass a directory path to discard every modified or untracked file beneath it; the operation walks the status output and reverts each match individually.'
     )
     .option('--dry-run', 'Show what would be discarded without doing it')
+    .option(
+      '--to-upstream',
+      'Restore to pristine upstream (HEAD) instead of the patch-applied baseline; deletes patch-created files'
+    )
     .option('-y, --yes', 'Skip confirmation prompt')
     .action(
-      withErrorHandling(async (file: string, options: { dryRun?: boolean; yes?: boolean }) => {
-        await discardCommand(getProjectRoot(), file, pickDefined(options));
-      })
+      withErrorHandling(
+        async (
+          file: string,
+          options: { dryRun?: boolean; toUpstream?: boolean; yes?: boolean }
+        ) => {
+          await discardCommand(getProjectRoot(), file, pickDefined(options));
+        }
+      )
     );
 }

@@ -10,7 +10,38 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { getNextPatchFilename, stripRedundantCategoryPrefix } from '../patch-export.js';
+import {
+  getNextPatchFilename,
+  patchNameSlug,
+  stripRedundantCategoryPrefix,
+} from '../patch-export.js';
+
+describe('patchNameSlug (trailing .patch normalization)', () => {
+  it('strips a trailing .patch instead of slugging it into -patch', () => {
+    expect(patchNameSlug('foo.patch', 'ui')).toBe('foo');
+  });
+
+  it('collapses a full filename argument to its bare slug', () => {
+    expect(patchNameSlug('348-ui-editor-panels.patch', 'ui')).toBe('editor-panels');
+  });
+
+  it('strips the extension case-insensitively', () => {
+    expect(patchNameSlug('foo.PATCH', 'ui')).toBe('foo');
+  });
+
+  it('strips only one trailing extension', () => {
+    expect(patchNameSlug('foo.patch.patch', 'ui')).toBe('foo-patch');
+  });
+
+  it('applies the length cap to the stem, not the raw filename', () => {
+    const stem = 'a'.repeat(55);
+    expect(patchNameSlug(`${stem}.patch`, 'ui')).toBe('a'.repeat(50));
+  });
+
+  it('leaves names without the extension untouched', () => {
+    expect(patchNameSlug('sidebar-foo', 'ui')).toBe('sidebar-foo');
+  });
+});
 
 describe('stripRedundantCategoryPrefix', () => {
   it('strips a leading NNN-<category>- prefix matching the selected category', () => {

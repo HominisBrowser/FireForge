@@ -34,6 +34,18 @@ import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 type LintIgnoreMode = 'add' | 'remove' | 'clear';
 
 /**
+ * Printed whenever `--add` lands a new check id. The waiver this command
+ * writes turns per-patch lint green immediately, but consumer projects
+ * commonly audit lintIgnore lists against a reviewed allow-map — the
+ * discovery that the map also needs updating otherwise costs a full
+ * downstream gate run (FORGE F6).
+ */
+const LINT_IGNORE_REVIEW_WARNING =
+  "This lint waiver is subject to the project's patch-policy review process. " +
+  'Downstream policy audits that mirror lintIgnore lists in a reviewed allow-map ' +
+  'will refuse this patch until the map is updated to include the new ID(s).';
+
+/**
  * Computes the post-mutation `lintIgnore` list for a given mode.
  * Returns `undefined` when the result should drop the field from the
  * manifest entirely (matching the validator's "preserve only when
@@ -148,12 +160,10 @@ export async function patchLintIgnoreCommand(
   // the flag only appeared in the history record — and suppressing lint
   // findings is precisely the mutation an operator should consciously
   // approve.
-  const projectedSummary = describeChange(
-    target.lintIgnore ?? [],
-    applyMode(target.lintIgnore ?? [], mode, values) ?? [],
-    mode,
-    values
-  );
+  const currentList = target.lintIgnore ?? [];
+  const projectedList = applyMode(currentList, mode, values) ?? [];
+  const addsNewIds = mode === 'add' && projectedList.length > currentList.length;
+  const projectedSummary = describeChange(currentList, projectedList, mode, values);
   const decision = await confirmDestructive({
     operation: 'patch-lint-ignore',
     title: `Patch lint-ignore: ${target.filename}`,
@@ -162,6 +172,9 @@ export async function patchLintIgnoreCommand(
     dryRun: isDryRun,
   });
   if (decision === 'dry-run') {
+    if (addsNewIds) {
+      warn(LINT_IGNORE_REVIEW_WARNING);
+    }
     outro('Dry run complete — no changes made');
     return;
   }
@@ -192,6 +205,9 @@ export async function patchLintIgnoreCommand(
   const existing = result.before.lintIgnore ?? [];
   const projected = result.after.lintIgnore ?? [];
   info(`${target.filename}: ${describeChange(existing, projected, mode, values)}.`);
+  if (mode === 'add' && projected.length > existing.length) {
+    warn(LINT_IGNORE_REVIEW_WARNING);
+  }
 
   try {
     await appendHistory(paths.patches, {

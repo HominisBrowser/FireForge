@@ -89,7 +89,8 @@ export async function writeBuildBaseline(
   engineDir: string,
   binaryName: string,
   testPackagingCoverage?: TestPackagingCoverage,
-  previousBaseline?: BuildBaseline
+  previousBaseline?: BuildBaseline,
+  recordedBy?: string
 ): Promise<void> {
   let engineHeadSha = '';
   try {
@@ -122,6 +123,7 @@ export async function writeBuildBaseline(
     ...(packageableFingerprints !== undefined ? { packageableFingerprints } : {}),
     ...(testPackagingCoverage !== undefined ? { testPackagingCoverage } : {}),
     ...(staticComponentsBaseline !== undefined ? { staticComponentsBaseline } : {}),
+    ...(recordedBy !== undefined ? { recordedBy } : {}),
   };
   await writeJson(getBuildBaselinePath(projectRoot), baseline);
 }

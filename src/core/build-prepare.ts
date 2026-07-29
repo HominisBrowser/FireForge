@@ -4,6 +4,8 @@
  * story cleanup, branding setup, Furnace component application, and mozconfig generation.
  */
 
+import { constants as osConstants } from 'node:os';
+
 import { BuildError } from '../errors/build.js';
 import { FurnaceError } from '../errors/furnace.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
@@ -66,6 +68,29 @@ function extractMachConfigureError(result: MachCommandResult): string {
 }
 
 /**
+ * Describes an exit code in the shell's 128+N signal convention. Truncated
+ * configure/build logs with a signal-shaped exit (e.g. 144 = 128+16, SIGURG
+ * on macOS) are environmental interruptions, not compiler failures — naming
+ * that in the failure text saves the operator a fruitless log hunt
+ * (FORGE F16). Returns undefined for codes <= 128 (regular failures) and
+ * for codes past the conventional signal range, so callers append nothing.
+ */
+export function describeSignalShapedExit(exitCode: number): string | undefined {
+  if (exitCode <= 128 || exitCode > 192) return undefined;
+  const signalNumber = exitCode - 128;
+  const names = Object.entries(osConstants.signals)
+    .filter(([, value]) => value === signalNumber)
+    .map(([name]) => name);
+  const label = names.length > 0 ? names.join('/') : `signal ${signalNumber}`;
+  return (
+    `Exit ${exitCode} is signal-shaped (${exitCode} - 128 = ${signalNumber}, ${label} on this host): ` +
+    'the process was likely interrupted externally (OOM-killer, terminal disconnect, ' +
+    'display/session teardown) rather than failing on its own, and the log may be ' +
+    'truncated mid-step.'
+  );
+}
+
+/**
  * Builds the `BuildError` for a non-zero auto-configure exit: the output
  * tail (so the underlying mozbuild failure survives), any matched
  * mach-error hints (so e.g. a toolchain minimum that moved with a source
@@ -75,9 +100,11 @@ function extractMachConfigureError(result: MachCommandResult): string {
 function buildConfigureFailureError(captured: MachCommandResult): BuildError {
   const detail = extractMachConfigureError(captured);
   const hints = explainMachError(`${captured.stderr}\n${captured.stdout}`);
+  const signalNote = describeSignalShapedExit(captured.exitCode);
   return new BuildError(
     `Backend regeneration failed: mach configure exited with code ${captured.exitCode}.` +
       (detail ? `\n\nmach configure output (tail):\n${detail}` : '') +
+      (signalNote ? `\n\n${signalNote}` : '') +
       (hints.length > 0 ? `\n\n${hints.map((hint) => `Hint: ${hint}`).join('\n')}` : '') +
       '\n\nBuild stopped because continuing would hide the real configure failure.',
     'mach configure'

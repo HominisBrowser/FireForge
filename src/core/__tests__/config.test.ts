@@ -522,6 +522,23 @@ describe('validateConfig', () => {
         typecheck: { projects: ['ok/jsconfig.json'], extraShim: '../escape.d.ts' },
       })
     ).toThrow('Config field "typecheck.extraShim" must be a project-relative path');
+
+    // FORGE F12: the undefinedIdentifiers gate validates like the other
+    // severity gates in both blocks.
+    const withGates = validateConfig({
+      ...makeValidConfig(),
+      typecheck: { projects: ['ok/jsconfig.json'], undefinedIdentifiers: 'error' },
+      patchLint: { checkJs: true, undefinedIdentifiers: 'off' },
+    });
+    expect(withGates.typecheck?.undefinedIdentifiers).toBe('error');
+    expect(withGates.patchLint?.undefinedIdentifiers).toBe('off');
+
+    expect(() =>
+      validateConfig({
+        ...makeValidConfig(),
+        typecheck: { projects: ['ok/jsconfig.json'], undefinedIdentifiers: 'loud' },
+      })
+    ).toThrow('typecheck.undefinedIdentifiers');
   });
 
   it('parses typecheck.projectOverrides (per-project shim override / opt-out)', () => {

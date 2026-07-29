@@ -279,6 +279,35 @@ export function containsUpstreamLicenseText(content: string, maxLines = 10): boo
 }
 
 /**
+ * Returns true when the head of `content` carries a recognized THIRD-PARTY
+ * permissive license banner (MIT / ISC / BSD-2 / BSD-3 / Apache-2.0), in any
+ * comment style. Used by `export` to treat such files as vendored: offering
+ * to prepend the project's own license header onto a byte-identity-pinned
+ * upstream bundle would mislicense third-party code (FORGE F15).
+ *
+ * @param content  - File content to check
+ * @param maxLines - Number of leading lines to inspect (default 30 — full
+ *   MIT/BSD license texts run longer than the 10-line project-header scan)
+ */
+export function hasThirdPartyPermissiveBanner(content: string, maxLines = 30): boolean {
+  const head = content.split('\n').slice(0, maxLines).join('\n');
+  const scanText = normalizeLicenseHeadForScan(head).toLowerCase();
+  const markers = [
+    'mit license',
+    'permission is hereby granted, free of charge',
+    'isc license',
+    'permission to use, copy, modify',
+    'redistribution and use in source and binary forms',
+    'apache license',
+    'licensed under the apache license',
+  ];
+  if (markers.some((marker) => scanText.includes(marker))) return true;
+  return /spdx-license-identifier:\s*(mit|isc|bsd-2-clause|bsd-3-clause|apache-2\.0)\b/.test(
+    scanText
+  );
+}
+
+/**
  * Prepends the license header to a file on disk if it is not already present.
  *
  * @param filePath - Absolute path to the file

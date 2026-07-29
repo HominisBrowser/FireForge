@@ -459,6 +459,14 @@ function parsePatchLintBlock(
     out.chromeScriptJsDoc = chromeScriptJsDoc;
   }
 
+  const undefinedIdentifiers = parseSeverityGate(
+    rec.raw('undefinedIdentifiers'),
+    'patchLint.undefinedIdentifiers'
+  );
+  if (undefinedIdentifiers !== undefined) {
+    out.undefinedIdentifiers = undefinedIdentifiers;
+  }
+
   if (out.checkJsStrict === true && out.checkJs !== true) {
     throw new ConfigError(
       'Config field "patchLint.checkJsStrict" requires "patchLint.checkJs": true'
@@ -537,6 +545,14 @@ function parseTypecheckBlock(rec: ReturnType<typeof parseObject>): TypecheckConf
   const overrides = parseTypecheckProjectOverrides(rec.raw('projectOverrides'), projects);
   if (overrides) {
     out.projectOverrides = overrides;
+  }
+
+  const undefinedIdentifiers = parseSeverityGate(
+    rec.raw('undefinedIdentifiers'),
+    'typecheck.undefinedIdentifiers'
+  );
+  if (undefinedIdentifiers !== undefined) {
+    out.undefinedIdentifiers = undefinedIdentifiers;
   }
 
   return out;

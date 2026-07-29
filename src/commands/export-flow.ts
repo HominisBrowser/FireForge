@@ -279,9 +279,10 @@ function buildNewFilesFromDiff(diff: string): Map<string, string> {
 export async function projectPlacementForLint(
   patchesDir: string,
   plan: PlacementPlan,
-  diff: string
+  diff: string,
+  config?: FireForgeConfig
 ): Promise<ConflictReport | null> {
-  const baseCtx = await buildPatchQueueContext(patchesDir);
+  const baseCtx = await buildPatchQueueContext(patchesDir, config);
   const projectedEntries = baseCtx.entries.map((entry) => {
     const rename = plan.renameMap.get(entry.filename);
     if (!rename) return entry;
@@ -302,9 +303,10 @@ export async function projectPlacementForLint(
     modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff),
   });
   projectedEntries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
-  const projectedIssues = lintPatchQueue({ entries: projectedEntries }).filter(
-    (i) => i.severity === 'error'
-  );
+  const projectedIssues = lintPatchQueue({
+    entries: projectedEntries,
+    ...(baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {}),
+  }).filter((i) => i.severity === 'error');
   if (projectedIssues.length === 0) return null;
   return {
     reason: `placement would introduce ${projectedIssues.length} cross-patch lint error(s)`,
@@ -387,7 +389,12 @@ export async function commitPlacementExport(
       );
     }
 
-    const conflicts = await projectPlacementForLint(input.patchesDir, currentPlan, input.diff);
+    const conflicts = await projectPlacementForLint(
+      input.patchesDir,
+      currentPlan,
+      input.diff,
+      input.config
+    );
     if (conflicts && input.unsafeOverride !== true) {
       throw new InvalidArgumentError(
         `Refusing to run export: ${conflicts.reason}. ` +

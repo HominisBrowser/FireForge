@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { loadConfig } from '../core/config.js';
+import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { success } from '../utils/logger.js';
@@ -89,4 +90,61 @@ function buildPathlessTestMessage(): string {
     '  - `fireforge test --doctor` to run the Marionette preflight only\n' +
     '  - `fireforge test --canary` to run the configured short harness canary'
   );
+}
+
+/** Per-harness bucketing of the requested test paths. */
+export interface HarnessClassification {
+  xpcshell: string[];
+  nonXpcshell: string[];
+}
+
+async function classifyTestHarnesses(
+  engineDir: string,
+  normalizedPaths: readonly string[]
+): Promise<HarnessClassification> {
+  const result: HarnessClassification = { xpcshell: [], nonXpcshell: [] };
+  for (const testPath of normalizedPaths) {
+    const manifest = await findNearestXpcshellManifest(engineDir, testPath);
+    if (manifest) {
+      result.xpcshell.push(testPath);
+    } else {
+      result.nonXpcshell.push(testPath);
+    }
+  }
+  return result;
+}
+
+function buildMixedHarnessMessage(classification: HarnessClassification): string {
+  return (
+    'FireForge cannot run xpcshell and browser/mochitest paths in the same mach invocation.\n\n' +
+    'Split this into separate `fireforge test` commands so each manifest selects its own harness:\n' +
+    `  - xpcshell: ${classification.xpcshell.join(', ')}\n` +
+    `  - browser/mochitest: ${classification.nonXpcshell.join(', ')}`
+  );
+}
+
+/**
+ * Harness classification is a pure path→manifest lookup and must precede
+ * the build dispatch: a mixed xpcshell+mochitest request can never
+ * dispatch, so refusing it before spending minutes in a pre-test build
+ * is strictly better (FORGE F7). A nonexistent path classifies as
+ * nonXpcshell (findNearestXpcshellManifest returns null), so classifying
+ * before assertTestPathsExist is harmless — existence is still asserted
+ * after the stale/coverage gates, preserving their precedence over
+ * missing-path errors. `xpcshellOnly` (non-empty request, zero
+ * nonXpcshell paths) gates the Marionette preflight and the mochitest
+ * client flags (FORGE F10); pathless runs keep the full-suite behavior.
+ */
+export async function classifyBeforeDispatch(
+  engineDir: string,
+  normalizedPaths: string[]
+): Promise<{ classification: HarnessClassification; xpcshellOnly: boolean }> {
+  const classification = await classifyTestHarnesses(engineDir, normalizedPaths);
+  if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {
+    throw new GeneralError(buildMixedHarnessMessage(classification));
+  }
+  return {
+    classification,
+    xpcshellOnly: normalizedPaths.length > 0 && classification.nonXpcshell.length === 0,
+  };
 }

@@ -21,11 +21,17 @@
 
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
-import type { TypecheckConfig } from '../types/config.js';
+import type { PatchLintSeverityGate, TypecheckConfig } from '../types/config.js';
 import type { TypecheckIssue, TypecheckProjectResult } from '../types/typecheck.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
-import { composeShimSource, SHIM_FILENAME, SUPPRESSED_DIAGNOSTIC_CODES } from './typecheck-shim.js';
+import {
+  composeShimSource,
+  SHIM_FILENAME,
+  SUPPRESSED_DIAGNOSTIC_CODES,
+  UNDEFINED_IDENTIFIER_CODES,
+  UNDEFINED_IDENTIFIER_HINT,
+} from './typecheck-shim.js';
 
 /**
  * Sentinel string surfaced as a `TypecheckIssue.message` when the
@@ -141,7 +147,15 @@ export async function runTypecheck(
       });
       continue;
     }
-    results.push(await runTypecheckForProject(ts, projectRoot, projectPath, shimSource));
+    results.push(
+      await runTypecheckForProject(
+        ts,
+        projectRoot,
+        projectPath,
+        shimSource,
+        cfg.undefinedIdentifiers ?? 'warning'
+      )
+    );
   }
   return results;
 }
@@ -165,7 +179,8 @@ async function runTypecheckForProject(
   ts: typeof import('typescript'),
   projectRoot: string,
   projectPath: string,
-  shimSource: string
+  shimSource: string,
+  undefinedIdentifiers: PatchLintSeverityGate = 'warning'
 ): Promise<TypecheckProjectResult> {
   const absConfig = resolve(projectRoot, projectPath);
   if (!(await pathExists(absConfig))) {
@@ -294,6 +309,16 @@ async function runTypecheckForProject(
     // Drop diagnostics that originate in the synthetic shim — operators
     // can't act on them and they would clutter CI logs.
     if (diag.file?.fileName === shimPath) continue;
+    if (UNDEFINED_IDENTIFIER_CODES.has(diag.code)) {
+      if (undefinedIdentifiers === 'off') continue;
+      const issue = diagnosticToIssue(ts, diag, absConfig, projectPath);
+      issues.push({
+        ...issue,
+        category: undefinedIdentifiers,
+        message: `${issue.message} ${UNDEFINED_IDENTIFIER_HINT}`,
+      });
+      continue;
+    }
     issues.push(diagnosticToIssue(ts, diag, absConfig, projectPath));
   }
 

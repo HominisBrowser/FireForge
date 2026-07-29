@@ -35,7 +35,6 @@ import {
   formatScopeNotice,
   type TestPathScope,
 } from '../core/test-path-scope.js';
-import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
@@ -48,6 +47,8 @@ import {
   assertPathlessTestMode,
   assertTestModeCombinations,
   canaryTimeoutSeconds,
+  classifyBeforeDispatch,
+  type HarnessClassification,
   reportCanaryOutcome,
   resolveCanaryPath,
 } from './test-modes.js';
@@ -81,27 +82,6 @@ async function assertTestPathsExist(engineDir: string, testPaths: string[]): Pro
   );
 }
 
-interface HarnessClassification {
-  xpcshell: string[];
-  nonXpcshell: string[];
-}
-
-async function classifyTestHarnesses(
-  engineDir: string,
-  normalizedPaths: readonly string[]
-): Promise<HarnessClassification> {
-  const result: HarnessClassification = { xpcshell: [], nonXpcshell: [] };
-  for (const testPath of normalizedPaths) {
-    const manifest = await findNearestXpcshellManifest(engineDir, testPath);
-    if (manifest) {
-      result.xpcshell.push(testPath);
-    } else {
-      result.nonXpcshell.push(testPath);
-    }
-  }
-  return result;
-}
-
 /**
  * Picks the mach dispatch target for a (non-mixed) run. A single-suite run
  * auto-routes to the suite-specific command (`mach xpcshell-test` /
@@ -119,15 +99,6 @@ function resolveTestSuite(classification: HarnessClassification, forceGeneric: b
     return 'mochitest';
   }
   return 'generic';
-}
-
-function buildMixedHarnessMessage(classification: HarnessClassification): string {
-  return (
-    'FireForge cannot run xpcshell and browser/mochitest paths in the same mach invocation.\n\n' +
-    'Split this into separate `fireforge test` commands so each manifest selects its own harness:\n' +
-    `  - xpcshell: ${classification.xpcshell.join(', ')}\n` +
-    `  - browser/mochitest: ${classification.nonXpcshell.join(', ')}`
-  );
 }
 
 function filterRedundantXpcshellFlavorArgs(
@@ -222,7 +193,10 @@ async function runPreTestBuild(
           paths.engine,
           projectConfig.binaryName,
           testPackagingCoverage,
-          previousBaseline
+          previousBaseline,
+          testPackagingCoverage === 'full'
+            ? 'fireforge test --build'
+            : `fireforge test --build ${testPackagingCoverage.join(' ')}`
         );
       } catch (baselineError: unknown) {
         verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
@@ -349,7 +323,8 @@ async function runDoctorPreflight(args: {
 function appendMarionetteForwardingArgs(
   extraArgs: string[],
   options: TestOptions,
-  forwardedPort: number | undefined
+  forwardedPort: number | undefined,
+  xpcshellOnly = false
 ): void {
   // Auto-forward the Marionette port to mach when `--marionette-port` is
   // set. `--setpref=marionette.port=<n>` configures where the browser
@@ -368,6 +343,16 @@ function appendMarionetteForwardingArgs(
   // Skip auto `--marionette=...` when `--mach-arg` already includes a client
   // `--marionette=...` (or two-token `--marionette host:port`).
   if (options.marionettePort === undefined) return;
+  if (xpcshellOnly) {
+    // Manifest classification says every requested path is xpcshell —
+    // xpcshell ignores the browser Marionette path entirely, and the
+    // mochitest client flags previously forwarded here made mach reject
+    // the dispatch (FORGE F10).
+    info(
+      `--marionette-port=${options.marionettePort} applied to the preflight probe only: the requested paths are xpcshell-only, and xpcshell ignores the browser Marionette port. Not forwarding --setpref=marionette.port or --marionette to mach.`
+    );
+    return;
+  }
   {
     const operatorAlreadyForwarded = forwardedPort !== undefined;
     const machArgs = options.machArg ?? [];
@@ -395,9 +380,25 @@ function appendMarionetteForwardingArgs(
 async function ensureTestMarionettePortAvailable(
   port: number | undefined,
   binaryName: string,
-  killStaleBrowser: boolean
+  options: TestOptions,
+  skip: { xpcshellOnly: boolean; doctor: boolean }
 ): Promise<void> {
-  if (killStaleBrowser) {
+  if (skip.xpcshellOnly && !skip.doctor) {
+    // xpcshell does not bind the browser Marionette port, so a developer's
+    // interactive browser holding 2828 must not kill an xpcshell run
+    // (FORGE F10). --doctor keeps the preflight: its probe launches a
+    // Marionette browser regardless of the requested harness.
+    const message =
+      'Skipping the Marionette stale-port preflight: all requested paths are xpcshell ' +
+      '(xpcshell does not bind the browser Marionette port).';
+    if (options.marionettePort !== undefined || options.killStaleMarionette === true) {
+      info(message);
+    } else {
+      verbose(message);
+    }
+    return;
+  }
+  if (options.killStaleMarionette === true) {
     await ensureMarionettePortAvailable(port, { binaryName, killStaleBrowser: true });
     return;
   }
@@ -458,6 +459,11 @@ export async function testCommand(
   const requestedPaths = canaryPath !== undefined ? [canaryPath] : testPaths;
   const normalizedPaths = requestedPaths.map((p) => stripEnginePrefix(p).trim());
 
+  const { classification, xpcshellOnly } = await classifyBeforeDispatch(
+    paths.engine,
+    normalizedPaths
+  );
+
   // Run incremental build if requested
   if (options.build) {
     // A path-less `test --build` runs (and packages for) the full suite;
@@ -499,11 +505,10 @@ export async function testCommand(
   // generic bind failure. 2026-04-21 eval (Finding #20): a stale
   // `-marionette` process from `fresh/` poisoned a later test run in
   // the sibling `mybrowser/` workspace.
-  await ensureTestMarionettePortAvailable(
-    effectivePort,
-    projectConfig.binaryName,
-    options.killStaleMarionette === true
-  );
+  await ensureTestMarionettePortAvailable(effectivePort, projectConfig.binaryName, options, {
+    xpcshellOnly,
+    doctor: options.doctor === true,
+  });
 
   if (options.doctor) {
     const doctorOutcome = await runDoctorPreflight({
@@ -518,10 +523,6 @@ export async function testCommand(
   }
 
   await assertTestPathsExist(paths.engine, normalizedPaths);
-  const classification = await classifyTestHarnesses(paths.engine, normalizedPaths);
-  if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {
-    throw new GeneralError(buildMixedHarnessMessage(classification));
-  }
   const suite = resolveTestSuite(classification, options.genericMachTest === true);
   const forwardedMachArgs =
     options.machArg && options.machArg.length > 0
@@ -549,7 +550,7 @@ export async function testCommand(
     extraArgs.push(...forwardedMachArgs);
   }
 
-  appendMarionetteForwardingArgs(extraArgs, options, forwardedPort);
+  appendMarionetteForwardingArgs(extraArgs, options, forwardedPort, xpcshellOnly);
 
   // Directory arguments mean EXACTLY that directory: mozbuild's test
   // resolver matches paths by string prefix, so a bare directory arg
@@ -592,6 +593,7 @@ export async function testCommand(
     suite,
     baseExtraArgs: extraArgs,
     harnessRetries,
+    headless: options.headless === true,
     ...(perfSampleEnv ? { env: perfSampleEnv } : {}),
   };
   const postRebuildContext = options.build
@@ -646,7 +648,13 @@ export async function testCommand(
     return;
   }
 
-  finalizeSingleRunOutcome(outcome, normalizedPaths, projectConfig.binaryName, postRebuildContext);
+  finalizeSingleRunOutcome(
+    outcome,
+    normalizedPaths,
+    projectConfig.binaryName,
+    postRebuildContext,
+    options.headless === true
+  );
 }
 
 /**

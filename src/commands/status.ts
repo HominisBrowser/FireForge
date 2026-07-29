@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { Command } from 'commander';
 
+import { readBuildBaseline } from '../core/build-baseline.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
@@ -29,6 +30,7 @@ import {
 import {
   type ClassifiedBuckets,
   renderDefaultStatus,
+  renderTestCoverageStatus,
   renderUnmanagedOnly,
 } from './status-output.js';
 
@@ -241,17 +243,28 @@ export async function statusCommand(
   }
 
   try {
-    const modeCount = [options.raw, options.unmanaged, options.ownership, options.json].filter(
-      (v) => v === true
-    ).length;
+    const modeCount = [
+      options.raw,
+      options.unmanaged,
+      options.ownership,
+      options.testCoverage,
+      options.json,
+    ].filter((v) => v === true).length;
     if (modeCount > 1) {
       throw new GeneralError(
-        'Cannot use --raw, --unmanaged, --ownership, and --json together. Pick at most one.'
+        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together. Pick at most one.'
       );
     }
 
     if (!options.raw && !options.json) {
       intro('FireForge Status');
+    }
+
+    // Test-coverage mode needs only the project root (the baseline lives
+    // in .fireforge/), so it short-circuits before any engine/git guards.
+    if (options.testCoverage) {
+      renderTestCoverageStatus(await readBuildBaseline(projectRoot));
+      return;
     }
 
     const paths = getProjectPaths(projectRoot);
@@ -441,6 +454,10 @@ export function registerStatus(
       '--ownership',
       'Show a flat path → owning patch table (flags files claimed by multiple patches)'
     )
+    .option(
+      '--test-coverage',
+      'Show what the last recorded build covers for test packaging (full or scoped paths)'
+    )
     .option('--json', 'Output classified file status as JSON')
     .action(
       withErrorHandling(
@@ -448,6 +465,7 @@ export function registerStatus(
           raw?: boolean;
           unmanaged?: boolean;
           ownership?: boolean;
+          testCoverage?: boolean;
           json?: boolean;
         }) => {
           await statusCommand(getProjectRoot(), options);

@@ -102,6 +102,13 @@ vi.mock('../../utils/logger.js', () => ({
   })),
 }));
 
+vi.mock('../../utils/platform.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/platform.js')>()),
+  // Pin the platform so the headed no-output-timeout hint (darwin-only,
+  // FORGE F17) is deterministic regardless of the CI host.
+  getPlatform: vi.fn(() => 'darwin'),
+}));
+
 vi.mock('../../core/marionette-preflight.js', () => ({
   runMarionettePreflight: vi.fn(),
   reportMarionettePreflight: vi.fn(),
@@ -127,6 +134,7 @@ vi.mock('../../core/marionette-port.js', async () => {
   return {
     ...actual,
     assertMarionettePortAvailable: vi.fn(() => Promise.resolve()),
+    ensureMarionettePortAvailable: vi.fn(() => Promise.resolve()),
     probeMarionettePort: vi.fn(() => Promise.resolve({ inUse: false })),
   };
 });
@@ -164,8 +172,12 @@ import {
   runProtectedMachBuild,
   testWithOutput,
   withBuildLock,
+  xpcshellTestWithOutput,
 } from '../../core/mach.js';
-import { assertMarionettePortAvailable } from '../../core/marionette-port.js';
+import {
+  assertMarionettePortAvailable,
+  ensureMarionettePortAvailable,
+} from '../../core/marionette-port.js';
 import {
   reportMarionettePreflight,
   runMarionettePreflight,
@@ -1074,7 +1086,8 @@ describe('testCommand', () => {
       '/project/engine',
       'mybrowser',
       ['browser/components/tests/unit/test_distribution.js'],
-      undefined
+      undefined,
+      'fireforge test --build browser/components/tests/unit/test_distribution.js'
     );
     // Same ordering contract as `fireforge build`: the baseline records a
     // build that actually completed.
@@ -1105,7 +1118,8 @@ describe('testCommand', () => {
       '/project/engine',
       'mybrowser',
       ['browser/components/tests/unit'],
-      undefined
+      undefined,
+      'fireforge test --build browser/components/tests/unit'
     );
   });
 
@@ -1129,7 +1143,8 @@ describe('testCommand', () => {
       '/project/engine',
       'mybrowser',
       'full',
-      undefined
+      undefined,
+      'fireforge test --build'
     );
   });
 
@@ -1680,6 +1695,95 @@ describe('testCommand', () => {
     expect(testWithOutput).not.toHaveBeenCalled();
   });
 
+  it('refuses a mixed request before dispatching the pre-test build (FORGE F7)', async () => {
+    vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
+      Promise.resolve(path.includes('/xpcshell/') ? '/project/engine/foo/xpcshell.toml' : null)
+    );
+
+    await expect(
+      testCommand(
+        '/project',
+        [
+          'browser/base/content/test/xpcshell/test_tile.js',
+          'browser/base/content/test/browser/browser_tile.js',
+        ],
+        { build: true }
+      )
+    ).rejects.toThrow(/cannot run xpcshell and browser\/mochitest paths/i);
+
+    expect(runProtectedMachBuild).not.toHaveBeenCalled();
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('skips the Marionette preflight and client flags for xpcshell-only runs (FORGE F10)', async () => {
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
+      '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
+    );
+    vi.mocked(xpcshellTestWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/xpcshell/test_tile.js'], {
+        marionettePort: 2838,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(assertMarionettePortAvailable).not.toHaveBeenCalled();
+    const [, , extraArgs] = vi.mocked(xpcshellTestWithOutput).mock.calls[0] ?? [];
+    expect(extraArgs).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('--setpref=marionette.port')])
+    );
+    expect(extraArgs).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('--marionette=')])
+    );
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('preflight probe only'));
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Skipping the Marionette stale-port preflight')
+    );
+  });
+
+  it('xpcshell-only + --kill-stale-marionette does not touch the port (FORGE F10)', async () => {
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
+      '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
+    );
+    vi.mocked(xpcshellTestWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/xpcshell/test_tile.js'], {
+        killStaleMarionette: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(ensureMarionettePortAvailable).not.toHaveBeenCalled();
+    expect(assertMarionettePortAvailable).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Marionette preflight for xpcshell-only --doctor runs (FORGE F10)', async () => {
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
+      '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
+    );
+    vi.mocked(xpcshellTestWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/base/content/test/xpcshell/test_tile.js'], {
+        doctor: true,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(assertMarionettePortAvailable).toHaveBeenCalled();
+  });
+
   it('ignores an empty --mach-arg array without appending anything', async () => {
     vi.mocked(testWithOutput).mockResolvedValue({
       exitCode: 0,
@@ -2146,6 +2250,37 @@ describe('testCommand harness resilience (C1-C4)', () => {
     expect(testWithOutput).toHaveBeenCalledTimes(1);
   });
 
+  it('appends the caffeinate hint to a headed no-output timeout on macOS (FORGE F17)', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: 'Timed out after 370 seconds with no output',
+      stderr: '',
+    });
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'], {
+        harnessRetries: 0,
+      })
+    ).rejects.toThrow(/caffeinate -dimsu/);
+  });
+
+  it('omits the caffeinate hint when the run was headless (FORGE F17)', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 1,
+      stdout: 'Timed out after 370 seconds with no output',
+      stderr: '',
+    });
+
+    const failure = await testCommand('/project', ['browser/components/foo/test/browser_foo.js'], {
+      harnessRetries: 0,
+      headless: true,
+    }).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/crashed in the harness itself/);
+    expect((failure as Error).message).not.toMatch(/caffeinate/);
+  });
+
   it('treats a post-green shutdown re-entry as a harness crash, not a test failure', async () => {
     const shutdownReentry = {
       exitCode: 1,
@@ -2247,6 +2382,25 @@ describe('testCommand harness resilience (C1-C4)', () => {
     expect(envArg).toEqual({
       MYBROWSER_PERF_SAMPLE_JSON: '/project/artifacts/perf-samples.json',
     });
+  });
+
+  it('appends the caffeinate hint to a headed sharded no-output timeout (FORGE F17)', async () => {
+    const TIMEOUT_CRASH = {
+      exitCode: 1,
+      stdout: 'Timed out after 370 seconds with no output',
+      stderr: '',
+    };
+    vi.mocked(testWithOutput).mockResolvedValue(TIMEOUT_CRASH);
+
+    await expect(
+      testCommand(
+        '/project',
+        ['browser/components/a/test/browser_a.js', 'browser/components/b/test/browser_b.js'],
+        { harnessRetries: 0 }
+      )
+    ).rejects.toThrow(/sharded test run\(s\) did not pass/);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('caffeinate -dimsu'));
   });
 
   it('retries shards independently and reports attempts in the summary', async () => {

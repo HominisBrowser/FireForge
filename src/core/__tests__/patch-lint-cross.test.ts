@@ -145,6 +145,215 @@ describe('lintPatchQueueForwardImports', () => {
     expect(issue?.severity).toBe('error');
   });
 
+  it('flags a bare getter-property line added to an existing defineESModuleGetters map (FORGE F3)', () => {
+    // The patch adds ONE line inside a pre-existing defineESModuleGetters
+    // object literal, so the added-lines-only content never contains the
+    // `defineESModuleGetters(` opener the balanced walk keys on.
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-a.patch',
+          1,
+          CREATE_A_DIFF,
+          {},
+          { 'browser/base/content/browser.js': '  Foo: "resource://gre/modules/Foo.sys.mjs",' }
+        ),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/Foo.sys.mjs': 'export const Foo = 1;\n',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.check).toBe('forward-import');
+    expect(issues[0]?.file).toBe('browser/base/content/browser.js');
+    expect(issues[0]?.message).toContain('002-infra-b.patch');
+  });
+
+  it('flags a quoted-key getter-property line and lazy-style additions (FORGE F3)', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-a.patch',
+          1,
+          CREATE_A_DIFF,
+          {},
+          { 'browser/base/content/browser.js': '  "Foo": \'resource://gre/modules/Foo.sys.mjs\',' }
+        ),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/Foo.sys.mjs': 'export const Foo = 1;\n',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(1);
+  });
+
+  it('does not flag ordinary object-literal string properties (FORGE F3)', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-a.patch',
+          1,
+          CREATE_A_DIFF,
+          {},
+          {
+            'browser/base/content/browser.js':
+              '  label: "Foo.sys.mjs",\n  url: "https://example.com/Foo.sys.mjs",',
+          }
+        ),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/Foo.sys.mjs': 'export const Foo = 1;\n',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('does not double-report when the patch adds the whole getter call (FORGE F3)', () => {
+    const added = [
+      'ChromeUtils.defineESModuleGetters(lazy, {',
+      '  Foo: "resource://gre/modules/Foo.sys.mjs",',
+      '});',
+    ].join('\n');
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-a.patch',
+          1,
+          CREATE_A_DIFF,
+          {},
+          { 'browser/base/content/browser.js': added }
+        ),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/Foo.sys.mjs': 'export const Foo = 1;\n',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(1);
+  });
+
+  it('honours the ignore marker on a bare getter-property line (FORGE F3)', () => {
+    const added = [
+      `  // ${FORWARD_IMPORT_IGNORE_MARKER}`,
+      '  Foo: "resource://gre/modules/Foo.sys.mjs",',
+    ].join('\n');
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-a.patch',
+          1,
+          CREATE_A_DIFF,
+          {},
+          { 'browser/base/content/browser.js': added }
+        ),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/Foo.sys.mjs': 'export const Foo = 1;\n',
+        }),
+      ],
+    };
+    expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  it('enumerates every forward-import site in one pass, not just the first (FORGE F3)', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
+          'foo/A.sys.mjs': 'import { B } from "resource:///modules/B.sys.mjs";\n',
+          'foo/A2.sys.mjs': 'ChromeUtils.importESModule("resource:///modules/B.sys.mjs");\n',
+        }),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;\n',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues.filter((i) => i.check === 'forward-import')).toHaveLength(2);
+  });
+
+  it('names the exact staged-dependency invocation per later owner (FORGE F3)', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
+          'foo/A.sys.mjs': 'import { B } from "resource:///modules/B.sys.mjs";\n',
+        }),
+        makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+          'foo/B.sys.mjs': 'export const B = 1;\n',
+        }),
+      ],
+    };
+    const issues = lintPatchQueueForwardImports(ctx);
+    expect(issues[0]?.message).toContain(
+      'fireforge patch staged-dependency 001-infra-a.patch --add ' +
+        '--file foo/A.sys.mjs --specifier "resource:///modules/B.sys.mjs" ' +
+        '--creates foo/B.sys.mjs --owner 002-infra-b.patch'
+    );
+  });
+
+  it('keeps the ordinal hint without patchPolicy, and when a legal ordinal exists (FORGE F14)', () => {
+    const entries = [
+      makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
+        'foo/A.sys.mjs': 'import { B } from "resource:///modules/B.sys.mjs";\n',
+      }),
+      makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+        'foo/B.sys.mjs': 'export const B = 1;\n',
+      }),
+    ];
+
+    const noPolicy = lintPatchQueueForwardImports({ entries });
+    expect(noPolicy[0]?.message).toContain(
+      'Closest legal ordinal that satisfies this dependency: 3.'
+    );
+
+    const roomyPolicy = lintPatchQueueForwardImports({
+      entries,
+      patchPolicy: { ranges: [{ category: 'ui', from: 1, to: 99 }] },
+    });
+    expect(roomyPolicy[0]?.message).toContain(
+      'Closest legal ordinal that satisfies this dependency: 3.'
+    );
+  });
+
+  it('suppresses an impossible ordinal hint and recommends the staged dependency (FORGE F14)', () => {
+    const entries = [
+      makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
+        'foo/A.sys.mjs': 'import { B } from "resource:///modules/B.sys.mjs";\n',
+      }),
+      makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+        'foo/B.sys.mjs': 'export const B = 1;\n',
+      }),
+    ];
+
+    // The importing patch's category range ends at 2 — order 3 is illegal.
+    const issues = lintPatchQueueForwardImports({
+      entries,
+      patchPolicy: { ranges: [{ category: 'ui', from: 1, to: 2 }] },
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).not.toContain('Closest legal ordinal');
+    expect(issues[0]?.message).toContain(
+      'No legal ordinal in the ui category range (001-002) lands after the creating patch(es); ' +
+        'declaring the staged dependency is the recommended remedy.'
+    );
+  });
+
+  it('keeps the fingerprint stable across ordinal-hint variants (FORGE F14)', () => {
+    const entries = [
+      makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
+        'foo/A.sys.mjs': 'import { B } from "resource:///modules/B.sys.mjs";\n',
+      }),
+      makeEntry('002-infra-b.patch', 2, CREATE_A_DIFF, {
+        'foo/B.sys.mjs': 'export const B = 1;\n',
+      }),
+    ];
+    const withHint = lintPatchQueueForwardImports({ entries });
+    const withoutHint = lintPatchQueueForwardImports({
+      entries,
+      patchPolicy: { ranges: [{ category: 'ui', from: 1, to: 2 }] },
+    });
+    expect(withHint[0]?.fingerprint).toBeDefined();
+    expect(withHint[0]?.fingerprint).toBe(withoutHint[0]?.fingerprint);
+  });
+
   it('suppresses an exact declared staged forward import', () => {
     const importerContent = `import { B } from "resource:///modules/B.sys.mjs";\nexport const A = B;\n`;
     const ctx: PatchQueueContext = {

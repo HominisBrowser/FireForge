@@ -22,10 +22,12 @@ import {
   buildHarnessCrashMessage,
   classifyHarnessRun,
   type HarnessRunVerdict,
+  headedNoOutputTimeoutHint,
 } from '../core/test-harness-crash.js';
 import { retryAfterXpcshellSymlinkRepair, type TestDispatch } from '../core/test-xpcshell-retry.js';
 import { BuildError } from '../errors/build.js';
 import { info, note, warn } from '../utils/logger.js';
+import { getPlatform } from '../utils/platform.js';
 import { maybeInjectAppdirArg } from './test-appdir.js';
 
 /** Default bounded retry budget for recognized harness crashes. */
@@ -58,6 +60,8 @@ export interface TestRunContext {
   baseExtraArgs: readonly string[];
   /** Bounded harness-crash retry budget (0 disables retries). */
   harnessRetries: number;
+  /** Whether --headless was requested (crash-hint copy only). */
+  headless: boolean;
   /** Extra environment variables for the mach process. */
   env?: Record<string, string>;
 }
@@ -171,7 +175,12 @@ export async function runShardedTests(
     shards.push({ label: group.label, outcome });
 
     if (outcome.verdict.kind === 'harness-crash' && outcome.verdict.signature) {
-      warn(buildHarnessCrashMessage(outcome.verdict.signature, outcome.attempts));
+      const base = buildHarnessCrashMessage(outcome.verdict.signature, outcome.attempts);
+      const hint = headedNoOutputTimeoutHint(outcome.verdict.signature, {
+        headless: ctx.headless,
+        platform: getPlatform(),
+      });
+      warn(hint ? `${base}\n\n${hint}` : base);
     } else if (outcome.verdict.kind !== 'tests-ran-ok') {
       const diagnosis = diagnoseShardFailure(outcome, group.label);
       if (diagnosis) warn(diagnosis);

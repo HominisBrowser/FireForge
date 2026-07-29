@@ -10,16 +10,17 @@ import { relative } from 'node:path';
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../../core/config.js';
+import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import { loadPatchesManifest, resolvePatchIdentifier } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchMoveFilesOptions } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
-import { info, intro, note, outro, warn } from '../../utils/logger.js';
+import { info, intro, note, warn } from '../../utils/logger.js';
 import { commanderArgParser, pickDefined } from '../../utils/options.js';
 import { patchMoveFilesCreateCommand } from './move-files-create.js';
+import { runMoveFilesInto } from './move-files-into.js';
 
 function collectOption(value: string, previous: string[]): string[] {
   previous.push(value);
@@ -189,28 +190,39 @@ export async function patchMoveFilesCommand(
   }
 
   const relativePatchesDir = relative(projectRoot, paths.patches) || 'patches';
-  info(`Planning ownership move in ${relativePatchesDir}/patches.json.`);
+  info(`Moving ownership in ${relativePatchesDir}/patches.json.`);
   info(`Move ${files.length} file(s) from ${source.filename} to ${target.filename}:`);
   note(formatFiles(files), 'Files');
-
   note(formatFiles(sourceAfter), `${source.filename} files after move`);
   note(formatFiles(targetAfter), `${target.filename} files after move`);
 
-  const dryRunSource = formatReExportCommand(source.filename, sourceAfter, ['--dry-run']);
-  const dryRunTarget = formatReExportCommand(target.filename, targetAfter, ['--dry-run']);
-  const applySource = formatReExportCommand(source.filename, sourceAfter, ['--yes']);
-  const applyTarget = formatReExportCommand(target.filename, targetAfter, []);
-
-  note(`${dryRunSource}\n${dryRunTarget}`, 'Preview commands');
-  note(`${applySource}\n${applyTarget}`, 'Apply commands');
-
-  info(
-    'Tip: to move files into a brand-new patch in one transaction (including ' +
-      'staged-dependency owner rewrites), re-run with --create --order <n> to create ' +
-      'the target patch and move the files in one step, or use "fireforge patch split".'
+  // Manual fallback (e.g. when the worktree cannot carry both patches'
+  // content right now): the equivalent re-export choreography, in
+  // EXECUTABLE order — the shrink must land before the grow, or the
+  // projected cross-patch lint refuses the pair with
+  // duplicate-new-file-creation (FORGE F4).
+  const applySource = formatReExportCommand(source.filename, sourceAfter, [
+    '--allow-shrink',
+    '--yes',
+  ]);
+  const applyTarget = formatReExportCommand(target.filename, targetAfter, ['--yes']);
+  note(
+    `1. ${applySource}\n2. ${applyTarget}\n(the shrink must land first)`,
+    'Equivalent manual commands'
   );
 
-  outro('Move plan complete - no changes made');
+  const config = await loadConfig(projectRoot);
+  await runMoveFilesInto({
+    enginePath: paths.engine,
+    patchesDir: paths.patches,
+    source,
+    target,
+    files,
+    sourceAfter,
+    targetAfter,
+    options,
+    config,
+  });
 }
 
 /**

@@ -5,7 +5,7 @@ import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { FurnaceError } from '../errors/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
-import { warn } from '../utils/logger.js';
+import { info, warn } from '../utils/logger.js';
 import { escapeRegex } from '../utils/regex.js';
 import { validateTokenName } from '../utils/validation.js';
 import { getProjectPaths, loadConfig } from './config.js';
@@ -15,6 +15,7 @@ import { addTokenToDocs } from './token-docs.js';
 import {
   insertVariantDeclaration,
   validateVariantSelector,
+  variantBlockExists,
   variantBlockHasToken,
 } from './token-variant.js';
 
@@ -542,6 +543,39 @@ function findCategorySection(
   return { categoryLine, sectionEnd };
 }
 
+/**
+ * Explicit theme-attribute selectors the override path keeps in sync with
+ * the `@media (prefers-color-scheme: dark)` block. Consumer scaffolds that
+ * pair the media query with `:root[data-theme="dark"]` /
+ * `:root[data-theme="light"]` blocks (viewer-toggle theming) require every
+ * themed list to declare identical token sets, so an override add that only
+ * wrote the media block was a guaranteed half-finished edit (FORGE F8).
+ */
+const THEME_ATTRIBUTE_VARIANTS = [
+  { variant: '[data-theme="dark"]', pick: 'dark' },
+  { variant: '[data-theme="light"]', pick: 'light' },
+] as const;
+
+/**
+ * Mirrors an override's light/dark values into existing top-level
+ * `:root[data-theme="dark"]` / `:root[data-theme="light"]` blocks. Blocks
+ * that do not exist are left alone (scaffolded files have none; behavior is
+ * unchanged there). Idempotent per block. Returns the selectors written.
+ */
+function insertThemeAttributeOverrides(lines: string[], options: AddTokenOptions): string[] {
+  if (options.mode !== 'override' || !options.darkValue) return [];
+
+  const written: string[] = [];
+  for (const { variant, pick } of THEME_ATTRIBUTE_VARIANTS) {
+    if (!variantBlockExists(lines, variant)) continue;
+    if (variantBlockHasToken(lines, variant, options.tokenName)) continue;
+    const value = pick === 'dark' ? options.darkValue : options.value;
+    insertVariantDeclaration(lines, variant, `  ${options.tokenName}: ${value};`);
+    written.push(`:root${variant}`);
+  }
+  return written;
+}
+
 function insertDarkModeOverride(lines: string[], options: AddTokenOptions): void {
   if (options.mode !== 'override' || !options.darkValue) return;
 
@@ -626,6 +660,11 @@ async function addTokenToCSS(
   lines.splice(insertIndex, 0, ...insertLines);
 
   insertDarkModeOverride(lines, options);
+
+  const themeBlocksWritten = insertThemeAttributeOverrides(lines, options);
+  if (themeBlocksWritten.length > 0) {
+    info(`Override also written to ${themeBlocksWritten.join(' and ')}.`);
+  }
 
   content = lines.join('\n');
   await writeText(filePath, content);

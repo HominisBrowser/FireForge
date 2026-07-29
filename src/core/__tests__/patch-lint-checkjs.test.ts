@@ -65,6 +65,46 @@ describe('runCheckJs', () => {
     }
   });
 
+  it('reports undefined free identifiers as warnings by default (FORGE F12)', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-undef-'));
+    await writeFile(
+      join(tmpDir, 'Undef.sys.mjs'),
+      // EditorState is undefined; Services is a shim-covered global.
+      'export const state = EditorState.create({});\nexport const prefs = Services.prefs;\n'
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(tmpDir, new Set(['Undef.sys.mjs']));
+      const undefIssues = issues.filter((i) => i.message.includes('EditorState'));
+      expect(undefIssues).toHaveLength(1);
+      expect(undefIssues[0]?.severity).toBe('warning');
+      expect(undefIssues[0]?.message).toContain('undefined identifier');
+      expect(issues.some((i) => i.message.includes("'Services'"))).toBe(false);
+
+      const asError = await runCheckJs(tmpDir, new Set(['Undef.sys.mjs']), undefined, undefined, {
+        strict: false,
+        undefinedIdentifiers: 'error',
+      });
+      expect(asError.find((i) => i.message.includes('EditorState'))?.severity).toBe('error');
+
+      const asOff = await runCheckJs(tmpDir, new Set(['Undef.sys.mjs']), undefined, undefined, {
+        strict: false,
+        undefinedIdentifiers: 'off',
+      });
+      expect(asOff.some((i) => i.message.includes('EditorState'))).toBe(false);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('does not flag implicit-any parameters when strict mode is off', async () => {
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');

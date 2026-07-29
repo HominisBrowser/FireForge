@@ -33,7 +33,10 @@ vi.mock('../../core/patch-manifest.js', () => ({
   loadPatchesManifest: vi.fn(() => Promise.resolve(null)),
 }));
 
-vi.mock('../../core/license-headers.js', () => ({
+vi.mock('../../core/license-headers.js', async (importOriginal) => ({
+  // Keep the real (pure) hasThirdPartyPermissiveBanner so the vendored
+  // partition behaves authentically; stub the header writer/reader.
+  ...(await importOriginal<typeof import('../../core/license-headers.js')>()),
   getLicenseHeader: vi.fn(() => '// LICENSE HEADER'),
   addLicenseHeaderToFile: vi.fn(() => Promise.resolve(true)),
 }));
@@ -382,6 +385,58 @@ describe('autoFixLicenseHeaders', () => {
     expect(result).toBe(false);
     expect(clack.confirm).not.toHaveBeenCalled();
     expect(addLicenseHeaderToFile).not.toHaveBeenCalled();
+  });
+
+  it('never offers a project header on a vendored MIT-bannered file (FORGE F15)', async () => {
+    const mitBundle =
+      '/**\n' +
+      ' * Copyright (c) 2019 The xterm.js authors. All rights reserved.\n' +
+      ' * @license MIT License\n' +
+      ' *\n' +
+      ' * Permission is hereby granted, free of charge, to any person obtaining a copy\n' +
+      ' */\n' +
+      'export const term = 1;\n';
+    vi.mocked(detectNewFilesInDiff).mockReturnValueOnce(new Set(['vendored/xterm.js']));
+    vi.mocked(readText).mockResolvedValue(mitBundle);
+
+    const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true);
+
+    expect(result).toBe(false);
+    expect(clack.confirm).not.toHaveBeenCalled();
+    expect(addLicenseHeaderToFile).not.toHaveBeenCalled();
+    expect(vi.mocked(info)).toHaveBeenCalledWith(
+      expect.stringContaining('third-party permissive license banner')
+    );
+    expect(vi.mocked(info)).toHaveBeenCalledWith(
+      expect.stringContaining('--lint-ignore missing-license-header')
+    );
+  });
+
+  it('reports vendored files separately from fixable ones under dry-run (FORGE F15)', async () => {
+    vi.mocked(detectNewFilesInDiff).mockReturnValueOnce(new Set(['vendored/d3.js', 'new.js']));
+    vi.mocked(readText).mockImplementation((path: string) =>
+      Promise.resolve(
+        path.includes('d3')
+          ? '// SPDX-License-Identifier: ISC\nexport const d3 = 1;\n'
+          : 'const x = 1;\n'
+      )
+    );
+
+    const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true, true);
+
+    expect(result).toBe(false);
+    expect(addLicenseHeaderToFile).not.toHaveBeenCalled();
+    expect(vi.mocked(info)).toHaveBeenCalledWith(
+      expect.stringContaining('third-party permissive license banner')
+    );
+    // The genuinely fixable file still gets the dry-run report — vendored
+    // files must not appear in that list.
+    const dryRunLine = vi
+      .mocked(info)
+      .mock.calls.map((c) => c[0])
+      .find((m) => m.includes('[dry-run]'));
+    expect(dryRunLine).toContain('new.js');
+    expect(dryRunLine).not.toContain('d3.js');
   });
 
   it('never prompts or writes under dry-run — reports the missing headers instead', async () => {

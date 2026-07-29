@@ -86,6 +86,13 @@ const MODULE_THRESHOLDS = {
   'src/core/mach-build-artifacts.ts': { lines: 90, branches: 80 },
   // Build baseline marker — tiny file, easy to hit high coverage.
   'src/core/build-baseline.ts': { lines: 95, branches: 85 },
+  // Patch-aware discard planner (FORGE F1, P0 data loss): the restore-target
+  // decision must stay exhaustively covered — a misclassified plan reverts a
+  // patch-backed file past its owning patch.
+  'src/core/discard-baseline.ts': { lines: 90, branches: 80, functions: 90 },
+  // Per-patch moz.build sorted-list check (FORGE F2) — pure parser. The
+  // uncovered branches are defensive nullish fallbacks on regex captures.
+  'src/core/patch-lint-mozbuild.ts': { lines: 95, branches: 78 },
   // Stale-build preflight for `fireforge test`. Pure git + path-filter
   // wrapper; broken probes must never fail-open-as-stale so the defensive
   // branches are exhaustively exercised.

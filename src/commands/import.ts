@@ -23,6 +23,7 @@ import {
   validatePatchIntegrity,
 } from '../core/patch-manifest.js';
 import { getPatchSourceVersion } from '../core/patch-source-metadata.js';
+import { warnIfStaticComponentsStale } from '../core/test-stale-check.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ImportOptions, PatchesManifest } from '../types/commands/index.js';
@@ -570,6 +571,11 @@ export async function importCommand(
       const suffix = result.autoResolved ? ' (auto-resolved)' : '';
       success(`  ${result.patch.filename}${suffix}`);
     }
+
+    // The re-applied queue may have moved components.conf away from what
+    // the last full build compiled in — surface that now instead of at the
+    // next test refusal (FORGE F13).
+    await warnIfStaticComponentsStale(projectRoot, paths.engine);
 
     outro('All patches applied successfully!');
   } catch (error: unknown) {

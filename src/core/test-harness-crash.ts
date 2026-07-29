@@ -655,6 +655,26 @@ export function buildHarnessCrashMessage(
 }
 
 /**
+ * Optional hint appended to the harness-crash message when a HEADED run on
+ * macOS died at the no-output timeout: the display may have slept and frozen
+ * the headed browser before any test started (FORGE F17). Pure — the
+ * platform is injected so unit tests need no mocking.
+ */
+export function headedNoOutputTimeoutHint(
+  signature: HarnessCrashSignature,
+  context: { headless: boolean; platform: string }
+): string | undefined {
+  if (context.platform !== 'darwin' || context.headless) return undefined;
+  if (!signature.reason.includes('no-output timeout')) return undefined;
+  return (
+    'Hint: this was a HEADED run on macOS that died at the no-output timeout. ' +
+    'A common cause is the display going to sleep mid-run, which freezes the headed browser ' +
+    'before any test starts. Wrap headed runs in `caffeinate -dimsu <command>` to keep the ' +
+    'display awake, or pass --headless.'
+  );
+}
+
+/**
  * Builds the message for a run that produced no `TEST-START` despite
  * requesting paths — including exit-code-zero runs whose `Passed: 0`
  * summary would otherwise read as a silent false green.

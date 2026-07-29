@@ -70,8 +70,10 @@ Workflow:
   run [options]                     Launch the built browser
   status [options]                  Show modified files in engine/
   reset [options]                   Reset engine/ to clean state
-  discard [options] <file>          Discard changes to a specific file (deletes
-                                    untracked files). Pass a directory path to
+  discard [options] <file>          Discard changes to a specific file,
+                                    restoring patch-claimed paths to their
+                                    patch-applied baseline (unmanaged untracked
+                                    files are deleted). Pass a directory path to
                                     discard every modified or untracked file
                                     beneath it; the operation walks the status
                                     output and reverts each match individually.

@@ -10,7 +10,7 @@
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HISTORY_LOG_FILENAME } from '../../core/destructive.js';
 import { InvalidArgumentError } from '../../errors/base.js';
@@ -21,7 +21,18 @@ import {
 } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { ensureDir } from '../../utils/fs.js';
+import { warn } from '../../utils/logger.js';
 import { describeChange, patchLintIgnoreCommand } from '../patch/lint-ignore.js';
+
+vi.mock('../../utils/logger.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/logger.js')>()),
+  warn: vi.fn(),
+}));
+
+/** True when any `warn()` call so far mentions the lintIgnore review gate. */
+function sawReviewWarning(): boolean {
+  return vi.mocked(warn).mock.calls.some((call) => call[0].includes('reviewed allow-map'));
+}
 import { patchStagedDependencyCommand } from '../patch/staged-dependency.js';
 import { patchTierCommand } from '../patch/tier.js';
 
@@ -224,12 +235,58 @@ describe('patch lint-ignore', () => {
   let patchesDir: string;
 
   beforeEach(async () => {
+    vi.clearAllMocks();
     projectRoot = await createTempProject('ff-pli-');
     await writeFireForgeConfig(projectRoot);
     patchesDir = join(projectRoot, 'patches');
   });
   afterEach(async () => {
     await removeTempProject(projectRoot);
+  });
+
+  it('--add warns that the waiver is subject to the review gate (FORGE F6)', async () => {
+    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      add: ['large-patch-lines'],
+      yes: true,
+    });
+
+    expect(sawReviewWarning()).toBe(true);
+  });
+
+  it('--add --dry-run also surfaces the review-gate warning (FORGE F6)', async () => {
+    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      add: ['large-patch-lines'],
+      dryRun: true,
+    });
+
+    expect(sawReviewWarning()).toBe(true);
+  });
+
+  it('no review-gate warning on --remove, --clear, or a no-op --add (FORGE F6)', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-branding-a.patch', 1, ['a.js'], {
+        lintIgnore: ['large-patch-lines', 'large-patch-files'],
+      }),
+    ]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      add: ['large-patch-lines'],
+      yes: true,
+    });
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      remove: ['large-patch-files'],
+      yes: true,
+    });
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      clear: true,
+      yes: true,
+    });
+
+    expect(sawReviewWarning()).toBe(false);
   });
 
   it('--add adds an entry to an empty list', async () => {

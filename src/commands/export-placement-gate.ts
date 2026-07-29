@@ -93,7 +93,7 @@ export async function gatePlacementPlan(args: {
   );
 
   const currentManifest = await loadPatchesManifest(patchesDir);
-  const conflicts = await projectPlacementForLint(patchesDir, placementPlan, diff);
+  const conflicts = await projectPlacementForLint(patchesDir, placementPlan, diff, config);
   const renamed =
     currentManifest !== null
       ? applyRenameMapToManifest(currentManifest, placementPlan.renameMap)

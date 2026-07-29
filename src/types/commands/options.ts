@@ -169,6 +169,12 @@ export interface ResetOptions {
  * Options for the discard command.
  */
 export interface DiscardOptions {
+  /**
+   * Restore to pristine upstream (HEAD) instead of the patch-applied
+   * baseline; deletes patch-created files (the pre-0.39.0 semantics —
+   * FORGE F1).
+   */
+  toUpstream?: boolean;
   /** Show what would be discarded without doing it */
   dryRun?: boolean;
   /** Skip confirmation prompt */
@@ -831,6 +837,12 @@ export interface StatusOptions {
    * patch as an ownership conflict.
    */
   ownership?: boolean;
+  /**
+   * Print the recorded test-packaging coverage of the last build baseline
+   * (scope, timestamp, recording invocation) and exit. Read-only — the
+   * counterpart to the out-of-coverage test refusal (FORGE F11).
+   */
+  testCoverage?: boolean;
   /** Output machine-readable JSON instead of human-readable text. */
   json?: boolean;
 }

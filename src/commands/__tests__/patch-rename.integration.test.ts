@@ -11,7 +11,7 @@
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HISTORY_LOG_FILENAME } from '../../core/destructive.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
@@ -22,7 +22,13 @@ import {
 } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { ensureDir } from '../../utils/fs.js';
+import { info } from '../../utils/logger.js';
 import { patchRenameCommand } from '../patch/rename.js';
+
+vi.mock('../../utils/logger.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/logger.js')>()),
+  info: vi.fn(),
+}));
 
 function makeMetadata(
   filename: string,
@@ -270,6 +276,35 @@ describe('patch rename', () => {
     ).resolves.toBeUndefined();
 
     expect(await fileExists(join(patchesDir, '0044-ui-foo.patch'))).toBe(true);
+  });
+
+  it('repairs a double-suffixed filename when --to carries a .patch extension (FORGE F9)', async () => {
+    await seed(patchesDir, [
+      makeMetadata('0348-ui-editor-panels-patch.patch', 348, ['a.js'], {
+        name: 'editor-panels-patch',
+      }),
+    ]);
+
+    await patchRenameCommand(projectRoot, '0348-ui-editor-panels-patch.patch', {
+      to: '348-ui-editor-panels.patch',
+      yes: true,
+    });
+
+    expect(await fileExists(join(patchesDir, '0348-ui-editor-panels-patch.patch'))).toBe(false);
+    expect(await fileExists(join(patchesDir, '0348-ui-editor-panels.patch'))).toBe(true);
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.filename).toBe('0348-ui-editor-panels.patch');
+  });
+
+  it('explains why a rename is a no-op instead of a bare "(no-op)" (FORGE F9)', async () => {
+    await seed(patchesDir, [makeMetadata('0044-ui-foo.patch', 44, ['a.js'], { name: 'foo' })]);
+
+    await patchRenameCommand(projectRoot, '0044-ui-foo.patch', { to: 'foo', yes: true });
+
+    const messages = vi.mocked(info).mock.calls.map((call) => call[0]);
+    expect(messages.some((m) => m.includes('nothing to change'))).toBe(true);
+    expect(messages.some((m) => m.includes('slug of "foo" is "foo"'))).toBe(true);
   });
 
   it('appends a history entry on success', async () => {

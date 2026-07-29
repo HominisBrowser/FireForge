@@ -151,11 +151,29 @@ export const SUPPRESSED_DIAGNOSTIC_CODES: ReadonlySet<number> = new Set([
   2306, // File '{0}' is not a module.
   2305, // Module '{0}' has no exported member '{1}'.
   2792, // Cannot find module '{0}'. Did you mean to set the 'moduleResolution' option...
-  2304, // Cannot find name '{0}'. (for globals we missed in the shim)
-  2552, // Cannot find name '{0}'. Did you mean '{1}'?
   2580, // Cannot find name '{0}'. Do you need to install type definitions...
   7016, // Could not find a declaration file for module '{0}'.
 ]);
+
+/**
+ * Undefined-free-identifier codes, split out of
+ * {@link SUPPRESSED_DIAGNOSTIC_CODES} (FORGE F12). Unconditional
+ * suppression let a module reference a name with no import or declaration
+ * anywhere and still typecheck with 0 errors — the failure then surfaced
+ * as a runtime `ReferenceError`. Both flows now report these at a
+ * configurable severity (default `'warning'`: visible without breaking
+ * gates; genuine shim gaps are silenced by adding the global to
+ * `extraShim`, or per-run via the `'off'` setting).
+ */
+export const UNDEFINED_IDENTIFIER_CODES: ReadonlySet<number> = new Set([
+  2304, // Cannot find name '{0}'.
+  2552, // Cannot find name '{0}'. Did you mean '{1}'?
+]);
+
+/** Hint appended to reported undefined-identifier diagnostics. */
+export const UNDEFINED_IDENTIFIER_HINT =
+  '(undefined identifier — import or declare it, add the global to the extra shim, ' +
+  'or tune the "undefinedIdentifiers" setting)';
 
 /**
  * Result of {@link composeShimSource}: the source body to feed into

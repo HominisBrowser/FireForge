@@ -140,4 +140,32 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
     // The queue-wide program is built once for the whole run, not per patch.
     expect(groupedSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('a warm (all-cache-hit) run still surfaces run-level checkJs errors (FORGE F5)', async () => {
+    // A broken extra shim produces a GLOBAL checkJs error (no owning file).
+    // Global findings are never cached, so before the fix an all-cache-hit
+    // run dropped them entirely and reported fewer errors than a cold run.
+    const { writeFireForgeConfig: rewriteConfig } = await import('../../test-utils/index.js');
+    await rewriteConfig(projectRoot, {
+      patchLint: { checkJs: true, checkJsExtraShim: 'does-not-exist.d.ts' },
+    });
+
+    const globalErrorLines = (): string[] =>
+      vi
+        .mocked(warn)
+        .mock.calls.map((c) => c[0])
+        .filter((l) => l.includes('does-not-exist.d.ts'));
+
+    // Cold run (populates the cache).
+    await lintCommand(projectRoot, [], { perPatch: true }).catch(() => undefined);
+    const coldLines = globalErrorLines();
+    expect(coldLines.length).toBeGreaterThan(0);
+
+    vi.mocked(warn).mockClear();
+
+    // Warm run — every patch is a cache hit, the global error must persist.
+    await lintCommand(projectRoot, [], { perPatch: true }).catch(() => undefined);
+    const warmLines = globalErrorLines();
+    expect(warmLines.length).toBe(coldLines.length);
+  });
 });

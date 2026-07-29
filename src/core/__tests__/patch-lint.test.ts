@@ -2038,6 +2038,41 @@ describe('lintExportedPatch', () => {
     expect(issues.some((i) => i.check === 'raw-color-value')).toBe(true);
   });
 
+  it('surfaces mozbuild-unsorted-list and honours its lintIgnore (FORGE F2)', async () => {
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockImplementation((path: string) => {
+      if (path.endsWith('moz.build')) {
+        return Promise.resolve(
+          'EXTRA_JS_MODULES += [\n    "Beta.sys.mjs",\n    "Alpha.sys.mjs",\n]\n'
+        );
+      }
+      return Promise.resolve('const x = 1;\n');
+    });
+
+    const diff =
+      'diff --git a/browser/modules/moz.build b/browser/modules/moz.build\n--- a/browser/modules/moz.build\n+++ b/browser/modules/moz.build\n@@ -1 +1 @@\n-old\n+new\n';
+
+    const issues = await lintExportedPatch(
+      '/engine',
+      ['browser/modules/moz.build'],
+      diff,
+      mockConfig
+    );
+    const unsorted = issues.filter((i) => i.check === 'mozbuild-unsorted-list');
+    expect(unsorted).toHaveLength(1);
+    expect(unsorted[0]?.message).toContain('expected "Alpha.sys.mjs" but got "Beta.sys.mjs"');
+
+    const suppressed = await lintExportedPatch(
+      '/engine',
+      ['browser/modules/moz.build'],
+      diff,
+      mockConfig,
+      undefined,
+      new Set(['mozbuild-unsorted-list'])
+    );
+    expect(suppressed.some((i) => i.check === 'mozbuild-unsorted-list')).toBe(false);
+  });
+
   it('filters out issues whose check is in ignoreChecks', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockImplementation((path: string) => {

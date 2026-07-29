@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import type { BuildBaseline } from '../core/build-baseline-types.js';
 import { isFileRegistered, matchesRegistrablePattern } from '../core/manifest-rules.js';
 import type { ClassifiedFile, StatusFile } from '../core/status-classify.js';
 import { getPrimaryStatusCode } from '../core/status-classify.js';
@@ -224,4 +225,46 @@ export async function renderDefaultStatus(
     .filter((section) => section.files.length > 0)
     .map((section) => `${section.files.length} ${section.label}`);
   outro(parts.join(', '));
+}
+
+/**
+ * Renders `fireforge status --test-coverage` (FORGE F11): a READ-ONLY view
+ * of the last build baseline's test-packaging coverage. Before this
+ * existed, the only way to learn the recorded coverage scope — which
+ * concurrent sessions sharing one engine tree overwrite constantly — was
+ * to trip the out-of-coverage refusal on a real test run.
+ */
+export function renderTestCoverageStatus(baseline: BuildBaseline | undefined): void {
+  if (baseline === undefined) {
+    info(
+      'No build baseline recorded (.fireforge/last-build.json missing or unreadable).\n' +
+        'Run "fireforge build" to record one.'
+    );
+    outro('No test-packaging coverage recorded');
+    return;
+  }
+
+  info(
+    `Last build: ${baseline.builtAt}  (binary: ${baseline.binaryName}, ` +
+      `engine HEAD: ${baseline.engineHeadSha || '(unborn)'})`
+  );
+  info(`Recorded by: ${baseline.recordedBy ?? 'unknown'}`);
+
+  const coverage = baseline.testPackagingCoverage;
+  if (coverage === undefined) {
+    info('Test packaging coverage: full (implicit — baseline predates coverage recording)');
+    outro('Coverage: full');
+    return;
+  }
+  if (coverage === 'full') {
+    info('Test packaging coverage: full');
+    outro('Coverage: full');
+    return;
+  }
+  const list = coverage.map((path) => `  - ${path}`).join('\n');
+  info(
+    `Test packaging coverage: scoped to ${String(coverage.length)} path(s):\n${list}\n` +
+      'A "fireforge test" over paths outside this list will be refused as uncovered.'
+  );
+  outro(`Coverage: scoped (${String(coverage.length)} paths)`);
 }

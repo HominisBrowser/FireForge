@@ -49,6 +49,7 @@ function makeCtx(suite: TestSuite, harnessRetries = 0): TestRunContext {
     suite,
     baseExtraArgs: [],
     harnessRetries,
+    headless: false,
   };
 }
 

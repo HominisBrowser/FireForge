@@ -24,7 +24,26 @@ vi.mock('../../core/git.js', () => ({
 
 vi.mock('../../core/git-file-ops.js', () => ({
   discardStatusEntry: vi.fn(() => Promise.resolve()),
+  fileExistsInHead: vi.fn(() => Promise.resolve(true)),
+  listTrackedInHead: vi.fn(() => Promise.resolve(new Set<string>())),
+  restoreTrackedPath: vi.fn(() => Promise.resolve()),
+  unstageFiles: vi.fn(() => Promise.resolve()),
 }));
+
+// Keep the pure describe/summarize/apply helpers real; stub only the
+// planner so unit tests drive the legacy (unmanaged) restore path without
+// a patches directory on disk. The patch-aware planning itself is covered
+// by src/core/__tests__/discard-baseline.test.ts and the
+// discard-patch-baseline integration suite (FORGE F1).
+vi.mock('../../core/discard-baseline.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/discard-baseline.js')>();
+  return {
+    ...actual,
+    planDiscardBaselines: vi.fn((_patchesDir: string, _engineDir: string, entries: never[]) =>
+      Promise.resolve(actual.planUpstreamDiscards(entries))
+    ),
+  };
+});
 
 vi.mock('../../core/git-status.js', () => ({
   resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
@@ -137,7 +156,9 @@ describe('discardCommand', () => {
       discardCommand('/project', 'rename-me.txt', { dryRun: true })
     ).resolves.toBeUndefined();
 
-    expect(info).toHaveBeenCalledWith('Would discard changes to: rename-me.txt -> renamed.txt');
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Would discard changes to: rename-me.txt -> renamed.txt')
+    );
     expect(outro).toHaveBeenCalledWith('Dry run complete — no changes made');
     expect(discardStatusEntry).not.toHaveBeenCalled();
   });
@@ -255,7 +276,7 @@ describe('discardCommand', () => {
       expect(loggerState.spinnerStop).toHaveBeenCalledWith(
         'Discarded 2 of 2 file(s) under stories/furnace/'
       );
-      expect(outro).toHaveBeenCalledWith('2 file(s) restored to original state');
+      expect(outro).toHaveBeenCalledWith('2 file(s) restored to upstream state');
     });
 
     it('accepts a trailing slash on the directory path without doubling slashes in messages', async () => {
@@ -302,7 +323,7 @@ describe('discardCommand', () => {
       expect(info).toHaveBeenCalledWith(
         'Would discard changes to 2 file(s) under stories/furnace/:'
       );
-      expect(info).toHaveBeenCalledWith('  stories/furnace/a.css');
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('  stories/furnace/a.css'));
       expect(outro).toHaveBeenCalledWith('Dry run complete — no changes made');
       expect(discardStatusEntry).not.toHaveBeenCalled();
     });

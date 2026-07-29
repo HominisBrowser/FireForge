@@ -4,7 +4,7 @@ import { Command, InvalidArgumentError as CommanderInvalidArgumentError } from '
 import { validateBrandOverride } from '../core/brand-validation.js';
 import { auditBuildArtifacts } from '../core/build-audit.js';
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
-import { prepareBuildEnvironment } from '../core/build-prepare.js';
+import { describeSignalShapedExit, prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import type { MachCommandResult, ProtectedMachBuildResult } from '../core/mach.js';
@@ -195,6 +195,7 @@ function buildFailureDiagnostics(
 
   return [
     `Build failed with exit code ${result.exitCode}.`,
+    describeSignalShapedExit(result.exitCode),
     `Mach phase: ${machCommand}`,
     makeError ? `Last make error: ${makeError}` : undefined,
     makeContext ? `Recent make context:\n${makeContext}` : undefined,
@@ -405,13 +406,30 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   // Record a fresh baseline only on clean success so the next run audits
   // against this build's HEAD. A failed build keeps the prior baseline so
   // the next attempt still catches long-standing packaging drops.
+  await recordFullBuildBaseline(projectRoot, paths.engine, config.binaryName, options.ui === true);
+
+  outro(`Build completed in ${timeStr}!`);
+}
+
+/** Persists the full-coverage baseline; a failed write never fails the build. */
+async function recordFullBuildBaseline(
+  projectRoot: string,
+  engineDir: string,
+  binaryName: string,
+  ui: boolean
+): Promise<void> {
   try {
-    await writeBuildBaseline(projectRoot, paths.engine, config.binaryName, 'full');
+    await writeBuildBaseline(
+      projectRoot,
+      engineDir,
+      binaryName,
+      'full',
+      undefined,
+      ui ? 'fireforge build --ui' : 'fireforge build'
+    );
   } catch (baselineError: unknown) {
     verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
   }
-
-  outro(`Build completed in ${timeStr}!`);
 }
 
 /** Registers the build command on the CLI program. */

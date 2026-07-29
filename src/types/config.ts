@@ -195,6 +195,14 @@ export interface TypecheckConfig {
    * mismatch). A narrowed project sets `null` here to stay clean.
    */
   projectOverrides?: Record<string, string | null>;
+  /**
+   * How to report undefined free identifiers (TS2304/TS2552). These were
+   * historically suppressed as shim-gap noise, which also hid genuine
+   * missing imports until they crashed at runtime (FORGE F12). Default
+   * `'warning'`: visible without failing the gate. `'error'` makes them
+   * blocking; `'off'` restores the historical suppression.
+   */
+  undefinedIdentifiers?: PatchLintSeverityGate;
 }
 
 /**
@@ -280,6 +288,13 @@ export interface PatchLintConfig {
    * 'off'.
    */
   chromeScriptJsDoc?: PatchLintSeverityGate;
+  /**
+   * How the checkJs pass reports undefined free identifiers
+   * (TS2304/TS2552). Same semantics as `typecheck.undefinedIdentifiers`
+   * (FORGE F12); the two flows share the suppression policy so a patch
+   * cannot pass one and fail the other. Default: 'warning'.
+   */
+  undefinedIdentifiers?: PatchLintSeverityGate;
 }
 
 /**

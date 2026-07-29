@@ -71,7 +71,12 @@ describe('patch move-files', () => {
     await removeTempProject(projectRoot);
   });
 
-  it('validates a file ownership move without modifying patches.json or patch bodies', async () => {
+  it('--dry-run plans the move without modifying patches.json or patch bodies (FORGE F4)', async () => {
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      'browser/a.js': 'a\n',
+      'browser/shared.sys.mjs': 'shared\n',
+      'browser/b.js': 'b\n',
+    });
     await seed(
       patchesDir,
       [
@@ -83,10 +88,11 @@ describe('patch move-files', () => {
         '002-ui-target.patch': '# target body marker\n',
       }
     );
+    // Worktree carries both patches' content (modified against HEAD).
     await writeFiles(projectRoot, {
-      'engine/browser/a.js': '',
-      'engine/browser/shared.sys.mjs': '',
-      'engine/browser/b.js': '',
+      'engine/browser/a.js': 'a patched\n',
+      'engine/browser/shared.sys.mjs': 'shared patched\n',
+      'engine/browser/b.js': 'b patched\n',
     });
     const manifestPath = join(patchesDir, 'patches.json');
     const sourcePatchPath = join(patchesDir, '001-ui-source.patch');
@@ -95,6 +101,8 @@ describe('patch move-files', () => {
 
     await patchMoveFilesCommand(projectRoot, '001-ui-source.patch', '002-ui-target.patch', {
       file: ['browser/shared.sys.mjs'],
+      dryRun: true,
+      skipLint: true,
     });
 
     expect((await stat(manifestPath)).mtimeMs).toBe(beforeManifestMtime);
@@ -102,6 +110,83 @@ describe('patch move-files', () => {
     const manifest = await readManifest(patchesDir);
     expect(manifest.patches[0]?.filesAffected).toEqual(['browser/a.js', 'browser/shared.sys.mjs']);
     expect(manifest.patches[1]?.filesAffected).toEqual(['browser/b.js']);
+  });
+
+  it('moves files into an existing patch as one transaction (FORGE F4)', async () => {
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      'browser/a.js': 'a\n',
+      'browser/shared.sys.mjs': 'shared\n',
+      'browser/b.js': 'b\n',
+    });
+    await seed(patchesDir, [
+      makeMetadata('001-ui-source.patch', 1, ['browser/a.js', 'browser/shared.sys.mjs']),
+      makeMetadata('002-ui-target.patch', 2, ['browser/b.js']),
+    ]);
+    await writeFiles(projectRoot, {
+      'engine/browser/a.js': 'a patched\n',
+      'engine/browser/shared.sys.mjs': 'shared patched\n',
+      'engine/browser/b.js': 'b patched\n',
+    });
+
+    await patchMoveFilesCommand(projectRoot, '001-ui-source.patch', '002-ui-target.patch', {
+      file: ['browser/shared.sys.mjs'],
+      yes: true,
+      skipLint: true,
+    });
+
+    const manifest = await readManifest(patchesDir);
+    expect(manifest.patches[0]?.filesAffected).toEqual(['browser/a.js']);
+    expect(manifest.patches[1]?.filesAffected).toEqual(['browser/b.js', 'browser/shared.sys.mjs']);
+
+    const sourceBody = await readFile(join(patchesDir, '001-ui-source.patch'), 'utf-8');
+    const targetBody = await readFile(join(patchesDir, '002-ui-target.patch'), 'utf-8');
+    expect(sourceBody).toContain('browser/a.js');
+    expect(sourceBody).not.toContain('shared.sys.mjs');
+    expect(targetBody).toContain('browser/b.js');
+    expect(targetBody).toContain('shared.sys.mjs');
+    expect(targetBody).toContain('shared patched');
+  });
+
+  it('re-points staged-dependency owners at the target patch (FORGE F4)', async () => {
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      'browser/a.js': 'a\n',
+      'browser/b.js': 'b\n',
+    });
+    const importerMetadata: PatchMetadata = {
+      ...makeMetadata('000-ui-importer.patch', 0, ['browser/importer.sys.mjs']),
+      stagedDependencies: {
+        forwardImports: [
+          {
+            file: 'browser/importer.sys.mjs',
+            specifier: 'resource:///modules/Helper.sys.mjs',
+            creates: 'browser/Helper.sys.mjs',
+            owner: '001-ui-source.patch',
+          },
+        ],
+      },
+    };
+    await seed(patchesDir, [
+      importerMetadata,
+      makeMetadata('001-ui-source.patch', 1, ['browser/a.js', 'browser/Helper.sys.mjs']),
+      makeMetadata('002-ui-target.patch', 2, ['browser/b.js']),
+    ]);
+    await writeFiles(projectRoot, {
+      'engine/browser/importer.sys.mjs':
+        'import { H } from "resource:///modules/Helper.sys.mjs";\n',
+      'engine/browser/a.js': 'a patched\n',
+      'engine/browser/Helper.sys.mjs': 'export const H = 1;\n',
+      'engine/browser/b.js': 'b patched\n',
+    });
+
+    await patchMoveFilesCommand(projectRoot, '001-ui-source.patch', '002-ui-target.patch', {
+      file: ['browser/Helper.sys.mjs'],
+      yes: true,
+      skipLint: true,
+    });
+
+    const manifest = await readManifest(patchesDir);
+    const importer = manifest.patches.find((p) => p.filename === '000-ui-importer.patch');
+    expect(importer?.stagedDependencies?.forwardImports?.[0]?.owner).toBe('002-ui-target.patch');
   });
 
   it('rejects files not currently owned by the source patch', async () => {
@@ -222,6 +307,28 @@ describe('patch move-files --create', () => {
     const sourceBody = await readFile(join(patchesDir, '001-ui-feature.patch'), 'utf-8');
     expect(sourceBody).toContain(FILE_A);
     expect(sourceBody).not.toContain(FILE_B);
+  });
+
+  it('does not double-suffix when the --create target name carries .patch (FORGE F9)', async () => {
+    await seed(patchesDir, [makeMetadata('001-ui-feature.patch', 1, [FILE_A, FILE_B])]);
+
+    await patchMoveFilesCommand(
+      projectRoot,
+      '001-ui-feature.patch',
+      '005-ui-feature-styles.patch',
+      {
+        file: [FILE_B],
+        create: true,
+        order: 5,
+        yes: true,
+        skipLint: true,
+      }
+    );
+
+    const manifest = await readManifest(patchesDir);
+    const filenames = manifest.patches.map((p) => p.filename);
+    expect(filenames).toContain('005-ui-feature-styles.patch');
+    expect(filenames).not.toContain('005-ui-feature-styles-patch.patch');
   });
 
   it('re-points staged-dependency owners at the created patch', async () => {

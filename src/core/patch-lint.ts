@@ -20,6 +20,7 @@ import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-dif
 import { AGGREGATE_PATCH_FILE } from './patch-lint-diff-tag.js';
 import { hasRelativeImport } from './patch-lint-imports.js';
 import { validateExportJsDoc } from './patch-lint-jsdoc.js';
+import { lintMozBuildSortedLists } from './patch-lint-mozbuild.js';
 import { lintObserverTopics } from './patch-lint-observer.js';
 import { resolvePatchOwnedChromeScripts, resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
 
@@ -751,19 +752,21 @@ export async function lintExportedPatch(
   const patchOwnedFiles = resolvePatchOwnedSysMjs(newFiles, patchQueueCtx);
   const patchOwnedChromeScripts = resolvePatchOwnedChromeScripts(newFiles, patchQueueCtx);
 
-  const [cssIssues, headerIssues, jsIssues, modifiedHeaderIssues] = await Promise.all([
-    lintPatchedCss(repoDir, affectedFiles, diffContent, config),
-    lintNewFileHeaders(repoDir, [...newFiles], config),
-    lintPatchedJs(
-      repoDir,
-      affectedFiles,
-      newFiles,
-      config,
-      patchOwnedFiles,
-      patchOwnedChromeScripts
-    ),
-    lintModifiedFileHeaders(repoDir, affectedFiles, newFiles),
-  ]);
+  const [cssIssues, headerIssues, jsIssues, modifiedHeaderIssues, mozBuildIssues] =
+    await Promise.all([
+      lintPatchedCss(repoDir, affectedFiles, diffContent, config),
+      lintNewFileHeaders(repoDir, [...newFiles], config),
+      lintPatchedJs(
+        repoDir,
+        affectedFiles,
+        newFiles,
+        config,
+        patchOwnedFiles,
+        patchOwnedChromeScripts
+      ),
+      lintModifiedFileHeaders(repoDir, affectedFiles, newFiles),
+      lintMozBuildSortedLists(repoDir, affectedFiles),
+    ]);
 
   const modCommentIssues = lintModificationComments(diffContent, config);
   const sizeIssues = options?.skipPatchSize
@@ -777,6 +780,7 @@ export async function lintExportedPatch(
     ...modifiedHeaderIssues,
     ...jsIssues,
     ...modCommentIssues,
+    ...mozBuildIssues,
   ];
 
   if (options?.precomputedCheckJs) {

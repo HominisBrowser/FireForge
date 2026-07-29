@@ -65,8 +65,9 @@ interface PerRunCheckJs {
    *  Promise-memoised so the bounded per-patch pool builds the program exactly
    *  once even when several patches reach it concurrently. */
   getGrouped: () => Promise<GroupedCheckJsResult>;
-  /** Run-level checkJs errors (e.g. TypeScript missing). Resolves to the built
-   *  program's `global`, or `[]` when no patch ever triggered a build. */
+  /** Run-level checkJs errors (e.g. TypeScript missing). Builds the grouped
+   *  run if nothing else has yet — an all-cache-hit run must still surface
+   *  global findings, which are never cached (FORGE F5 hardening). */
   getGlobal: () => Promise<PatchLintIssue[]>;
 }
 
@@ -138,6 +139,11 @@ async function lintQueuedPatch(
     });
     const cached = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey);
     if (cached) {
+      // Returning before the empty-diff probe below is safe: the cache key
+      // hashes every affected engine file's content plus engineHeadSha, so
+      // an engine-side revert that would empty the diff always changes the
+      // key and misses the cache (pinned by the "engine-side content
+      // revert invalidates the per-patch cache" test — FORGE F5).
       return { status: 'cached', existingFiles: existing, rawIssues: cached, usedCheckJs: false };
     }
   }
@@ -224,9 +230,14 @@ async function applyPerPatchResults(
 
     emitTierNotice(patch.filename, result.existingFiles, patch.tier);
 
-    // Run-level checkJs errors are emitted once, before the first freshly
-    // linted patch's own issues — matching the serial emit point.
-    if (result.usedCheckJs && checkJs && !globalCheckJsEmitted) {
+    // Run-level checkJs errors are emitted once, before the first
+    // non-skipped patch's own issues — matching the serial emit point.
+    // Deliberately NOT gated on `result.usedCheckJs`: global findings are
+    // run-level, never cached, and an all-cache-hit run previously dropped
+    // them entirely, letting a warm run report fewer errors than a cold
+    // one (FORGE F5 hardening). PerRunCheckJs builds its program lazily,
+    // so the cost only materialises when checkJs is configured.
+    if (checkJs && !globalCheckJsEmitted) {
       globalCheckJsEmitted = true;
       issues.push(...(await checkJs.getGlobal()));
     }
@@ -435,7 +446,15 @@ function buildPerRunCheckJs(
         patchLint,
         projectRoot
       )),
-    getGlobal: async () => (groupedPromise ? (await groupedPromise).global : []),
+    getGlobal: async () =>
+      (
+        await (groupedPromise ??= invokePatchLintCheckJsGrouped(
+          paths.engine,
+          resolvePatchOwnedSysMjs(new Set(), ctx),
+          patchLint,
+          projectRoot
+        ))
+      ).global,
   };
 }
 
@@ -466,7 +485,7 @@ export async function lintPerPatch(
   const isSubset = subset.length !== manifest.patches.length;
 
   const config = await loadConfig(projectRoot);
-  const ctx = await buildPatchQueueContext(paths.patches);
+  const ctx = await buildPatchQueueContext(paths.patches, config);
 
   // Queue-level findings (policy, cross-patch) are scoped to the requested
   // subset: a 5-patch slice should not fail on a policy or forward-import

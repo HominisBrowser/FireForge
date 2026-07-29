@@ -78,6 +78,13 @@ export interface BuildBaseline {
    * static-components stale check degrades to "fresh" in that case.
    */
   staticComponentsBaseline?: StaticComponentsBaseline;
+  /**
+   * Invocation shape that recorded this baseline (`'fireforge build'`,
+   * `'fireforge build --ui'`, `'fireforge test --build [paths]'`).
+   * Informational — surfaced by `fireforge status --test-coverage`.
+   * Missing on pre-0.39.0 baselines; render as "unknown".
+   */
+  recordedBy?: string;
 }
 
 /**

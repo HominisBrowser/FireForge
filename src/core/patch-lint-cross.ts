@@ -19,6 +19,7 @@ import type {
   PatchStagedForwardImport,
   PatchStagedRegistration,
 } from '../types/commands/index.js';
+import type { FireForgeConfig, PatchPolicyConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
@@ -26,6 +27,7 @@ import { stripJsComments } from '../utils/regex.js';
 import { discoverPatches } from './patch-files.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
 import { loadPatchesManifest } from './patch-manifest-io.js';
+import { categoryRangeForOrder, categoryRangeLabel } from './patch-policy.js';
 import { extractNewFileContent } from './patch-transform.js';
 
 /**
@@ -76,6 +78,13 @@ export interface PatchQueueEntry {
 export interface PatchQueueContext {
   /** Entries in application order (lowest `order` first). */
   entries: PatchQueueEntry[];
+  /**
+   * Optional patchPolicy config. When present, the forward-import rule
+   * validates its "Closest legal ordinal" suggestion against the importing
+   * patch's category range and suppresses it when no legal ordinal exists
+   * (FORGE F14). Absent = current behavior (hint always printed).
+   */
+  patchPolicy?: PatchPolicyConfig;
 }
 
 /**
@@ -90,7 +99,10 @@ export interface PatchQueueContext {
  *
  * @param patchesDir - Path to the patches directory
  */
-export async function buildPatchQueueContext(patchesDir: string): Promise<PatchQueueContext> {
+export async function buildPatchQueueContext(
+  patchesDir: string,
+  config?: FireForgeConfig
+): Promise<PatchQueueContext> {
   const patches = await discoverPatches(patchesDir);
   const manifest = await loadPatchesManifest(patchesDir);
   const metadataByFilename = new Map<string, PatchMetadata>();
@@ -142,7 +154,7 @@ export async function buildPatchQueueContext(patchesDir: string): Promise<PatchQ
   // Sort by order so rules can rely on entries being in apply order.
   entries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
 
-  return { entries };
+  return { entries, ...(config?.patchPolicy ? { patchPolicy: config.patchPolicy } : {}) };
 }
 
 /**
@@ -379,6 +391,36 @@ export function extractImportSpecifiersWithLines(source: string): ExtractedSpeci
 }
 
 /**
+ * Bare `Name: "url"` property lines added inside a PRE-EXISTING
+ * `defineESModuleGetters` (or `XPCOMUtils` lazy-getter) map. Applied ONLY to
+ * `modifiedFileAdditions`: a patch that inserts one property into an
+ * existing getter object never carries the `defineESModuleGetters(` opener
+ * in its added lines, so the balanced-brace walk in
+ * {@link extractImportSpecifiersWithLines} cannot see it (FORGE F3). The
+ * URL-scheme restriction keeps ordinary object literals
+ * (`label: "Foo.sys.mjs"`) out; the leaf-extension filter downstream does
+ * the rest.
+ */
+const BARE_GETTER_PROPERTY_LINE =
+  /^\s*(?:["'])?[A-Za-z_$][\w$]*(?:["'])?\s*:\s*["']((?:resource|chrome|moz-src):\/\/[^"']+)["']\s*,?\s*$/;
+
+/**
+ * Extracts specifiers from bare getter-property lines in added-lines-only
+ * content. Comment stripping preserves line alignment, so the reported line
+ * numbers match what {@link findForwardImportIgnoreLines} walks.
+ */
+function extractBareGetterSpecifiers(source: string): ExtractedSpecifier[] {
+  const stripped = stripJsComments(source);
+  const results: ExtractedSpecifier[] = [];
+  const lines = stripped.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const match = BARE_GETTER_PROPERTY_LINE.exec(lines[i] ?? '');
+    if (match?.[1]) results.push({ specifier: match[1], line: i });
+  }
+  return results;
+}
+
+/**
  * Marker comment operators can use to suppress the forward-import rule
  * for imports that resolve to a basename false positive (two unrelated
  * files with the same leaf name) or for any other situation where the
@@ -533,11 +575,27 @@ function eachForwardImportSite(
     laterOwners: NewFileOwner[]
   ) => void
 ): void {
-  const checkSite = (entry: PatchQueueEntry, sitePath: string, content: string): void => {
+  const checkSite = (
+    entry: PatchQueueEntry,
+    sitePath: string,
+    content: string,
+    includeBareGetterLines = false
+  ): void => {
     if (!isForwardImportableFile(sitePath)) return;
 
+    const sites = extractImportSpecifiersWithLines(content);
+    if (includeBareGetterLines) {
+      // Dedupe by (specifier, line): a patch that adds the whole getter
+      // call carries both the opener (found by the balanced walk) and the
+      // property line (found here) — report each site once.
+      const seen = new Set(sites.map((site) => `${site.specifier}|${String(site.line)}`));
+      for (const extra of extractBareGetterSpecifiers(content)) {
+        if (!seen.has(`${extra.specifier}|${String(extra.line)}`)) sites.push(extra);
+      }
+    }
+
     const ignoreLines = findForwardImportIgnoreLines(content);
-    for (const { specifier, line } of extractImportSpecifiersWithLines(content)) {
+    for (const { specifier, line } of sites) {
       if (ignoreLines.has(line)) continue;
       const cleaned = specifier.split(/[?#]/)[0] ?? specifier;
       const leaf = basename(cleaned);
@@ -554,7 +612,7 @@ function eachForwardImportSite(
 
   for (const entry of ctx.entries) {
     for (const [path, content] of entry.newFiles) checkSite(entry, path, content);
-    for (const [path, added] of entry.modifiedFileAdditions) checkSite(entry, path, added);
+    for (const [path, added] of entry.modifiedFileAdditions) checkSite(entry, path, added, true);
   }
 }
 
@@ -612,8 +670,34 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
       .join(',');
     // Lowest ordinal that lands AFTER every later-ordered creator —
     // turns the operator's "guess and re-run" loop into a single shot
-    // when the only fix is reordering.
+    // when the only fix is reordering. When patchPolicy is available and
+    // that ordinal falls outside the importing patch's category range,
+    // `patch reorder` would refuse it — suppress the hint and point at
+    // the staged-dependency remedy instead (FORGE F14).
     const suggestedOrder = Math.max(...laterOwners.map((o) => o.order)) + 1;
+    const category = entry.metadata?.category ?? /^\d+-([a-z]+)-/.exec(entry.filename)?.[1];
+    let ordinalHint = `Closest legal ordinal that satisfies this dependency: ${suggestedOrder}.`;
+    if (
+      ctx.patchPolicy &&
+      category !== undefined &&
+      categoryRangeForOrder(ctx.patchPolicy, category, suggestedOrder) === null
+    ) {
+      const label = categoryRangeLabel(ctx.patchPolicy.ranges, category);
+      ordinalHint =
+        `No legal ordinal in the ${category} category range (${label}) lands after the ` +
+        'creating patch(es); declaring the staged dependency is the recommended remedy.';
+    }
+
+    // The exact per-owner invocation turns the refusal into a paste-and-run
+    // remedy instead of a flag-discovery exercise (FORGE F3).
+    const stagedCommands = laterOwners
+      .map(
+        (o) =>
+          `fireforge patch staged-dependency ${entry.filename} --add ` +
+          `--file ${sitePath} --specifier "${specifier}" ` +
+          `--creates ${o.fullPath} --owner ${o.filename}`
+      )
+      .join('; ');
 
     issues.push({
       file: sitePath,
@@ -623,10 +707,10 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
         `${sitePath} in ${entry.filename} imports "${specifier}", ` +
         `but the matching new file is created by a later patch: ${ownersSummary}. ` +
         'Reorder the patches so the dependency is created first, move the import ' +
-        'into the later patch, declare the intentional staged dependency with ' +
-        '"fireforge patch staged-dependency --add", or mark the import with ' +
+        'into the later patch, declare the intentional staged dependency with: ' +
+        `${stagedCommands}; or mark the import with ` +
         `"// ${FORWARD_IMPORT_IGNORE_MARKER}" if the basename collision is a false positive. ` +
-        `Closest legal ordinal that satisfies this dependency: ${suggestedOrder}.`,
+        ordinalHint,
       severity: 'error',
     });
   });

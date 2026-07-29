@@ -29,7 +29,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { toError } from '../utils/errors.js';
-import { verbose } from '../utils/logger.js';
+import { verbose, warn } from '../utils/logger.js';
 import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
 import { readBuildBaseline } from './build-baseline.js';
 import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
@@ -324,4 +324,44 @@ export function formatStaticComponentsRefusal(changedManifests: string[]): strin
     'it accepts stale packaged content, not a stale compiled registration. Pass ' +
     '--allow-stale-components only if you rebuilt out-of-band and accept the risk.)'
   );
+}
+
+/**
+ * Formats the post-mutation advisory printed by `fireforge reset` /
+ * `fireforge import` when `components.conf` diverged from the last full
+ * build (FORGE F13). Same probe as {@link formatStaticComponentsRefusal},
+ * different moment: this fires at mutation time so the operator learns a
+ * full build is needed BEFORE the next gate run refuses.
+ */
+export function formatPostMutationStaticComponentsWarning(changedManifests: string[]): string {
+  const head = changedManifests.slice(0, STALE_PATHS_LIMIT);
+  const truncated = changedManifests.length - head.length;
+  const list = head.join(', ') + (truncated > 0 ? `, … (+${truncated} more)` : '');
+  return (
+    `components.conf changed relative to the last full "fireforge build": ${list}.\n` +
+    'The compiled StaticComponents table in obj-* no longer matches the tree, so the next ' +
+    '"fireforge test" will require a full "fireforge build" first — a scoped ' +
+    '"fireforge test --build" cannot regenerate the compiled table.'
+  );
+}
+
+/**
+ * Post-mutation advisory used by `fireforge reset` / `fireforge import`:
+ * warns (never throws, never blocks) when `components.conf` now differs
+ * from the last full-build anchor. Silently skipped when no baseline or
+ * anchor exists, or when any probe fails.
+ */
+export async function warnIfStaticComponentsStale(
+  projectRoot: string,
+  engineDir: string
+): Promise<void> {
+  try {
+    const baseline = await readBuildBaseline(projectRoot);
+    if (baseline === undefined) return;
+    const result = await checkStaticComponentsStale(engineDir, baseline);
+    if (!result.stale) return;
+    warn(formatPostMutationStaticComponentsWarning(result.changedManifests));
+  } catch (error: unknown) {
+    verbose(`Static-components post-mutation check skipped: ${toError(error).message}`);
+  }
 }

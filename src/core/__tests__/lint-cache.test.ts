@@ -135,6 +135,17 @@ describe('per-patch lint cache', () => {
     await expect(key()).resolves.not.toBe(before);
   });
 
+  it('engine-side content revert invalidates the per-patch cache (FORGE F5)', async () => {
+    // The cache-hit path in lint-per-patch returns BEFORE the empty-diff
+    // probe. That is safe only because reverting an affected file (which
+    // would empty the diff) always changes the file-content hash in the
+    // key — this test pins that invariant.
+    const dirty = await key();
+    await writeFiles(engineDir, { 'browser/a.js': 'reverted to head content\n' });
+
+    await expect(key()).resolves.not.toBe(dirty);
+  });
+
   it('invalidates when the engine HEAD baseline changes', async () => {
     const before = await key();
     const after = await buildPerPatchLintCacheKey({

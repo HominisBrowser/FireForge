@@ -83,6 +83,10 @@ vi.mock('@clack/prompts', () => ({
   confirm: vi.fn(),
 }));
 
+vi.mock('../../core/test-stale-check.js', () => ({
+  warnIfStaticComponentsStale: vi.fn(() => Promise.resolve()),
+}));
+
 import { confirm } from '@clack/prompts';
 
 import { loadState, updateState } from '../../core/config.js';
@@ -100,6 +104,7 @@ import {
   validatePatchesManifestConsistency,
   validatePatchIntegrity,
 } from '../../core/patch-manifest.js';
+import { warnIfStaticComponentsStale } from '../../core/test-stale-check.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { error, info, outro, spinner, success, warn } from '../../utils/logger.js';
 import { importCommand } from '../import.js';
@@ -275,6 +280,24 @@ describe('importCommand drift handling', () => {
     expect(info).toHaveBeenCalledWith(
       'Patch-touched files already match the stored patch stack — no engine resync needed before re-applying.'
     );
+  });
+
+  it('runs the components.conf staleness advisory after a successful import (FORGE F13)', async () => {
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await importCommand('/fake/root');
+
+    expect(applyPatchesWithContinue).toHaveBeenCalled();
+    expect(warnIfStaticComponentsStale).toHaveBeenCalledWith('/fake/root', '/fake/engine');
+  });
+
+  it('skips the staleness advisory on --dry-run (FORGE F13)', async () => {
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await importCommand('/fake/root', { dryRun: true });
+
+    expect(applyPatchesWithContinue).not.toHaveBeenCalled();
+    expect(warnIfStaticComponentsStale).not.toHaveBeenCalled();
   });
 
   it('still blocks unmanaged dirty files without --force', async () => {

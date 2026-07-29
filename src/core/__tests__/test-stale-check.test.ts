@@ -20,8 +20,10 @@ vi.mock('../git-status.js', () => ({
 
 vi.mock('../../utils/logger.js', () => ({
   verbose: vi.fn(),
+  warn: vi.fn(),
 }));
 
+import { warn } from '../../utils/logger.js';
 import { readBuildBaseline } from '../build-baseline.js';
 import type { BuildBaseline } from '../build-baseline-types.js';
 import { hasChanges } from '../git.js';
@@ -31,11 +33,13 @@ import {
   checkStaleBuildForTest,
   checkStaticComponentsStale,
   findUncoveredRequestPaths,
+  formatPostMutationStaticComponentsWarning,
   formatStaleBuildWarning,
   formatStaticComponentsRefusal,
   formatTestCoverageRefusal,
   FULL_SUITE_REQUEST,
   isXpcomManifestPath,
+  warnIfStaticComponentsStale,
 } from '../test-stale-check.js';
 
 const mockReadBaseline = vi.mocked(readBuildBaseline);
@@ -487,6 +491,81 @@ describe('checkStaticComponentsStale', () => {
 
     const result = await checkStaticComponentsStale('/project/engine', anchoredBaseline());
     expect(result).toEqual({ stale: false, changedManifests: [] });
+  });
+});
+
+describe('warnIfStaticComponentsStale (FORGE F13)', () => {
+  const staleBaseline = (): BuildBaseline => ({
+    engineHeadSha: 'scoped-sha',
+    builtAt: new Date().toISOString(),
+    binaryName: 'mybrowser',
+    staticComponentsBaseline: { engineHeadSha: 'full-sha', fingerprints: {} },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGit.mockResolvedValue('');
+    mockHasChanges.mockResolvedValue(false);
+    mockGetUntracked.mockResolvedValue([]);
+  });
+
+  it('warns with the post-mutation copy when components.conf diverged', async () => {
+    mockReadBaseline.mockResolvedValue(staleBaseline());
+    mockGit.mockResolvedValueOnce('browser/components/mybrowser/components.conf\n');
+
+    await warnIfStaticComponentsStale('/project', '/project/engine');
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('components.conf changed relative to the last full "fireforge build"')
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('will require a full "fireforge build" first')
+    );
+  });
+
+  it('stays silent when there is no baseline', async () => {
+    mockReadBaseline.mockResolvedValue(undefined);
+
+    await warnIfStaticComponentsStale('/project', '/project/engine');
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when the manifests still match the anchor', async () => {
+    mockReadBaseline.mockResolvedValue(staleBaseline());
+    mockGit.mockResolvedValueOnce('browser/base/content/mybrowser.js\n');
+
+    await warnIfStaticComponentsStale('/project', '/project/engine');
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('never throws when the probe fails', async () => {
+    mockReadBaseline.mockRejectedValue(new Error('disk gone'));
+
+    await expect(
+      warnIfStaticComponentsStale('/project', '/project/engine')
+    ).resolves.toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('formatPostMutationStaticComponentsWarning (FORGE F13)', () => {
+  it('names the manifests and the full-build requirement', () => {
+    const message = formatPostMutationStaticComponentsWarning([
+      'browser/components/mybrowser/components.conf',
+    ]);
+    expect(message).toContain('browser/components/mybrowser/components.conf');
+    expect(message).toContain('the next "fireforge test" will require a full "fireforge build"');
+    expect(message).toContain('cannot regenerate the compiled table');
+  });
+
+  it('caps long manifest lists with a (+N more) tail', () => {
+    const manifests = Array.from(
+      { length: 13 },
+      (_, i) => `browser/components/c${String(i)}/components.conf`
+    );
+    expect(formatPostMutationStaticComponentsWarning(manifests)).toContain('(+3 more)');
   });
 });
 

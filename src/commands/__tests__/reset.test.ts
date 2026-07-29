@@ -49,6 +49,10 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
 
+vi.mock('../../core/test-stale-check.js', () => ({
+  warnIfStaticComponentsStale: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
@@ -68,6 +72,7 @@ import { getProjectPaths } from '../../core/config.js';
 import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { hasChanges, isGitRepository, resetChanges } from '../../core/git.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../../core/git-status.js';
+import { warnIfStaticComponentsStale } from '../../core/test-stale-check.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { cancel, info, isCancel, outro, spinner, warn } from '../../utils/logger.js';
@@ -187,6 +192,23 @@ describe('resetCommand', () => {
     expect(loggerState.spinnerStop).toHaveBeenCalledWith('Changes reset');
     expect(outro).toHaveBeenCalledWith('Working tree restored to clean state');
     expect(resetChanges).toHaveBeenCalledWith('/project/engine');
+  });
+
+  it('runs the components.conf staleness advisory after a successful reset (FORGE F13)', async () => {
+    await expect(resetCommand('/project', { yes: true })).resolves.toBeUndefined();
+
+    expect(warnIfStaticComponentsStale).toHaveBeenCalledWith('/project', '/project/engine');
+  });
+
+  it('skips the staleness advisory on dry-run and clean-tree paths (FORGE F13)', async () => {
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([makeGitStatusEntry({ file: 'foo.txt' })]);
+    await resetCommand('/project', { dryRun: true });
+
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([]);
+    await resetCommand('/project', {});
+
+    expect(warnIfStaticComponentsStale).not.toHaveBeenCalled();
   });
 
   it('clears the furnace state after a successful reset', async () => {

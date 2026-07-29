@@ -7,6 +7,7 @@ import {
   getLicenseHeader,
   hasAnyLicenseHeader,
   hasAnyLicenseHeaderAnyStyle,
+  hasThirdPartyPermissiveBanner,
   hasUpstreamMplBlockHeader,
 } from '../license-headers.js';
 
@@ -247,6 +248,60 @@ describe('containsUpstreamLicenseText', () => {
 
   it('returns false for content with no license text at all', () => {
     expect(containsUpstreamLicenseText('const x = 1;\nconst y = 2;\n')).toBe(false);
+  });
+});
+
+describe('hasThirdPartyPermissiveBanner (FORGE F15)', () => {
+  it('recognizes an MIT banner in a JS block comment', () => {
+    const content =
+      '/**\n' +
+      ' * Copyright (c) 2019 The xterm.js authors.\n' +
+      ' * Permission is hereby granted, free of charge, to any person obtaining a copy\n' +
+      ' */\n';
+    expect(hasThirdPartyPermissiveBanner(content)).toBe(true);
+  });
+
+  it('recognizes an ISC banner in line comments', () => {
+    const content =
+      '// ISC License\n// Permission to use, copy, modify, and/or distribute\nconst x = 1;\n';
+    expect(hasThirdPartyPermissiveBanner(content)).toBe(true);
+  });
+
+  it('recognizes a BSD redistribution clause in hash comments', () => {
+    const content =
+      '# Redistribution and use in source and binary forms, with or without\n# modification, are permitted\nx = 1\n';
+    expect(hasThirdPartyPermissiveBanner(content)).toBe(true);
+  });
+
+  it('recognizes an Apache-2.0 banner', () => {
+    const content = '// Licensed under the Apache License, Version 2.0\nconst x = 1;\n';
+    expect(hasThirdPartyPermissiveBanner(content)).toBe(true);
+  });
+
+  it('recognizes bare SPDX identifiers for the permissive set', () => {
+    for (const id of ['MIT', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Apache-2.0']) {
+      expect(hasThirdPartyPermissiveBanner(`// SPDX-License-Identifier: ${id}\n`)).toBe(true);
+    }
+  });
+
+  it('rejects project headers, MPL headers, and bare code', () => {
+    expect(hasThirdPartyPermissiveBanner(getLicenseHeader('EUPL-1.2', 'js') + '\nx;\n')).toBe(
+      false
+    );
+    expect(
+      hasThirdPartyPermissiveBanner(
+        '/* This Source Code Form is subject to the terms of the Mozilla Public\n * License, v. 2.0. */\n'
+      )
+    ).toBe(false);
+    expect(hasThirdPartyPermissiveBanner('const x = 1;\n')).toBe(false);
+    expect(hasThirdPartyPermissiveBanner('// SPDX-License-Identifier: GPL-2.0-or-later\n')).toBe(
+      false
+    );
+  });
+
+  it('ignores markers past the scanned head', () => {
+    const filler = Array.from({ length: 31 }, (_, i) => `// line ${i}`).join('\n');
+    expect(hasThirdPartyPermissiveBanner(`${filler}\n// MIT License\n`)).toBe(false);
   });
 });
 

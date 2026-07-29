@@ -44,12 +44,50 @@ describe('runTypecheck', () => {
     expect(errors.length).toBeGreaterThanOrEqual(1);
     expect(errors.some((i) => i.code === 2322)).toBe(true);
 
-    // None of the suppressed module-resolution / global-name codes
-    // should leak into the output.
+    // None of the suppressed module-resolution codes should leak into
+    // the output. (2304/2552 are no longer in this set — FORGE F12 —
+    // but the basic fixture has no undefined identifiers.)
     const suppressed = [2304, 2305, 2306, 2307, 2552, 2580, 2792, 7016];
     for (const code of suppressed) {
       expect(result.issues.some((i) => i.code === code)).toBe(false);
     }
+  });
+
+  it('reports undefined free identifiers as warnings by default (FORGE F12)', async () => {
+    const results = await runTypecheck(FIXTURES, {
+      projects: ['undefined-identifier/jsconfig.json'],
+    });
+    const result: TypecheckProjectResult = expectSingle(results);
+
+    const undefinedIssues = result.issues.filter((i) => i.code === 2304 || i.code === 2552);
+    expect(undefinedIssues).toHaveLength(1);
+    expect(undefinedIssues[0]?.category).toBe('warning');
+    expect(undefinedIssues[0]?.message).toContain('EditorState');
+    expect(undefinedIssues[0]?.message).toContain('undefined identifier');
+    // Shim-covered globals stay clean.
+    expect(result.issues.some((i) => i.message.includes("'Services'"))).toBe(false);
+    // No error-category issues — the default must not break gates.
+    expect(result.issues.filter((i) => i.category === 'error')).toHaveLength(0);
+  });
+
+  it('escalates undefined identifiers to errors when configured (FORGE F12)', async () => {
+    const results = await runTypecheck(FIXTURES, {
+      projects: ['undefined-identifier/jsconfig.json'],
+      undefinedIdentifiers: 'error',
+    });
+    const result: TypecheckProjectResult = expectSingle(results);
+    const undefinedIssues = result.issues.filter((i) => i.code === 2304 || i.code === 2552);
+    expect(undefinedIssues).toHaveLength(1);
+    expect(undefinedIssues[0]?.category).toBe('error');
+  });
+
+  it("restores the historical suppression with 'off' (FORGE F12)", async () => {
+    const results = await runTypecheck(FIXTURES, {
+      projects: ['undefined-identifier/jsconfig.json'],
+      undefinedIdentifiers: 'off',
+    });
+    const result: TypecheckProjectResult = expectSingle(results);
+    expect(result.issues.filter((i) => i.code === 2304 || i.code === 2552)).toHaveLength(0);
   });
 
   it('skips projects that explicitly opt out via checkJs: false', async () => {

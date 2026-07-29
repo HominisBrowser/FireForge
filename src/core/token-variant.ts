@@ -127,6 +127,16 @@ function findVariantBlockInsertionPoint(lines: string[]): number {
   return lines.length;
 }
 
+/**
+ * True when a top-level `:root<variant>` block exists in `lines`. Used by
+ * the override path to write theme-attribute blocks only when the scaffold
+ * already declares them — `insertVariantDeclaration` would otherwise create
+ * the block, which is only wanted for the explicit `--variant` flow.
+ */
+export function variantBlockExists(lines: string[], variant: string): boolean {
+  return findVariantBlock(lines, variant) !== null;
+}
+
 /** True when the `:root<variant>` block already declares `tokenName`. */
 export function variantBlockHasToken(lines: string[], variant: string, tokenName: string): boolean {
   const block = findVariantBlock(lines, variant);

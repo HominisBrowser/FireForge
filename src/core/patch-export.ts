@@ -112,9 +112,19 @@ export function stripRedundantCategoryPrefix(sanitizedName: string, category: st
   return stripped.length > 0 ? stripped : sanitizedName;
 }
 
-/** Sanitizes a patch name and drops redundant category/full-stem prefixes. */
+/**
+ * Sanitizes a patch name and drops redundant category/full-stem prefixes.
+ *
+ * A single trailing `.patch` extension is stripped before sanitisation:
+ * operators frequently pass a full patch FILENAME where a name is expected
+ * (`move-files <from> 348-ui-foo.patch --create`, `rename --to foo.patch`),
+ * and 0.38.0 slugged the extension into `-patch`, producing double-suffixed
+ * `...-patch.patch` files. A name that deliberately ends in a literal
+ * `-patch` slug segment must now be written without the dot form.
+ */
 export function patchNameSlug(name: string, category: string): string {
-  return stripRedundantCategoryPrefix(sanitizeName(name), category);
+  const stem = name.replace(/\.patch$/i, '');
+  return stripRedundantCategoryPrefix(sanitizeName(stem), category);
 }
 
 /**

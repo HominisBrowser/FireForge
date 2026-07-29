@@ -15,6 +15,7 @@ import {
   detectHarnessCrashSignature,
   findCrashMarkerLine,
   hasCompletedGreenSummary,
+  headedNoOutputTimeoutHint,
   stripNonSignalNoise,
 } from '../test-harness-crash.js';
 
@@ -717,5 +718,42 @@ describe('messages', () => {
   it('builds a no-tests message naming the exit code on non-zero exits', () => {
     const message = buildNoTestsRanMessage(1, PATHS);
     expect(message).toContain('exited 1 before any TEST-START');
+  });
+});
+
+describe('headedNoOutputTimeoutHint (FORGE F17)', () => {
+  const timeoutSignature = {
+    reason: 'no-output timeout before any test started',
+    line: 'Timed out after 370 seconds with no output',
+  };
+
+  it('suggests caffeinate for a headed no-output timeout on darwin', () => {
+    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
+      headless: false,
+      platform: 'darwin',
+    });
+    expect(hint).toContain('caffeinate -dimsu');
+    expect(hint).toContain('display going to sleep');
+  });
+
+  it('returns undefined for headless runs', () => {
+    expect(
+      headedNoOutputTimeoutHint(timeoutSignature, { headless: true, platform: 'darwin' })
+    ).toBeUndefined();
+  });
+
+  it('returns undefined off macOS', () => {
+    expect(
+      headedNoOutputTimeoutHint(timeoutSignature, { headless: false, platform: 'linux' })
+    ).toBeUndefined();
+  });
+
+  it('returns undefined for non-timeout crash shapes', () => {
+    expect(
+      headedNoOutputTimeoutHint(
+        { reason: 'resource monitor traceback', line: 'Traceback' },
+        { headless: false, platform: 'darwin' }
+      )
+    ).toBeUndefined();
   });
 });

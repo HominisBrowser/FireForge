@@ -86,7 +86,12 @@ function rangeLabel(range: { from: number; to: number }): string {
   return `${String(range.from).padStart(3, '0')}-${String(range.to).padStart(3, '0')}`;
 }
 
-function categoryRangeLabel(ranges: readonly PatchPolicyRange[], category: string): string {
+/**
+ * Human-readable label for a category's configured ranges, e.g. `300-399`.
+ * Exported for the forward-import hint (FORGE F14), which must render the
+ * range it found no legal ordinal in.
+ */
+export function categoryRangeLabel(ranges: readonly PatchPolicyRange[], category: string): string {
   const matches = ranges.filter((range) => range.category === category);
   if (matches.length === 0) return '(no configured range)';
   return matches.map(rangeLabel).join(', ');
@@ -99,7 +104,13 @@ function reservedRangeForOrder(
   return cfg.reservedRanges?.find((range) => order >= range.from && order <= range.to) ?? null;
 }
 
-function categoryRangeForOrder(
+/**
+ * Returns the configured range that contains `order` for `category`, or
+ * null when no such range exists. Exported for the forward-import hint
+ * (FORGE F14), which suppresses ordinal suggestions the reorder policy
+ * would refuse.
+ */
+export function categoryRangeForOrder(
   cfg: PatchPolicyConfig,
   category: string,
   order: number

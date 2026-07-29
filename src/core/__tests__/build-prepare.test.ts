@@ -553,6 +553,28 @@ describe('prepareBuildEnvironment auto-configure', () => {
   });
 });
 
+describe('describeSignalShapedExit', () => {
+  it('describes exit 144 with the arithmetic and a host signal name', async () => {
+    const { describeSignalShapedExit } = await import('../build-prepare.js');
+    const note = describeSignalShapedExit(144);
+    expect(note).toContain('Exit 144 is signal-shaped (144 - 128 = 16');
+    expect(note).toContain('interrupted externally');
+    expect(note).toContain('truncated mid-step');
+  });
+
+  it('names SIGINT for exit 130', async () => {
+    const { describeSignalShapedExit } = await import('../build-prepare.js');
+    expect(describeSignalShapedExit(130)).toContain('SIGINT');
+  });
+
+  it('returns undefined for regular failures and out-of-range codes', async () => {
+    const { describeSignalShapedExit } = await import('../build-prepare.js');
+    expect(describeSignalShapedExit(1)).toBeUndefined();
+    expect(describeSignalShapedExit(128)).toBeUndefined();
+    expect(describeSignalShapedExit(255)).toBeUndefined();
+  });
+});
+
 describe('isBackendInvalidatingFile', () => {
   it('matches moz.build, moz.configure, and Makefile.in at any depth', async () => {
     const { isBackendInvalidatingFile } = await import('../build-prepare.js');

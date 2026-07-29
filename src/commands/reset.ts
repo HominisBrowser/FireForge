@@ -12,6 +12,7 @@ import {
   resetChanges,
 } from '../core/git.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
+import { warnIfStaticComponentsStale } from '../core/test-stale-check.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ResetOptions } from '../types/commands/index.js';
@@ -122,6 +123,12 @@ export async function resetCommand(projectRoot: string, options: ResetOptions): 
     await clearAppliedFurnaceState(projectRoot);
 
     s.stop('Changes reset');
+
+    // The reset may have moved components.conf away from what the last full
+    // build compiled in — surface that now instead of at the next test
+    // refusal (FORGE F13).
+    await warnIfStaticComponentsStale(projectRoot, paths.engine);
+
     outro('Working tree restored to clean state');
   } catch (error: unknown) {
     s.error('Reset failed');

@@ -10,6 +10,7 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  info: vi.fn(),
   warn: vi.fn(),
 }));
 
@@ -358,6 +359,68 @@ describe('addToken', () => {
       darkMediaIdx
     );
     expect(darkValueIdx).toBeGreaterThan(darkMediaIdx);
+  });
+
+  it('mirrors an override into existing :root[data-theme] blocks (FORGE F8)', async () => {
+    const cssWithThemeBlocks = `${MOCK_TOKENS_CSS}
+:root[data-theme="dark"] {
+  --testbrowser-dark-override: #222;
+}
+
+:root[data-theme="light"] {
+  --testbrowser-dark-override: #eee;
+}
+`;
+    mockReadText.mockImplementation(makeReadTextImpl(cssWithThemeBlocks, MOCK_TOKENS_DOC));
+
+    await addToken('/project', {
+      tokenName: '--testbrowser-canvas-theme-test',
+      value: '#fff',
+      category: 'Colors — Canvas',
+      mode: 'override',
+      darkValue: '#000',
+    });
+
+    const cssCall = mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'));
+    const cssContent = cssCall?.[1] ?? '';
+
+    const darkBlockIdx = cssContent.indexOf(':root[data-theme="dark"]');
+    const lightBlockIdx = cssContent.indexOf(':root[data-theme="light"]');
+    expect(darkBlockIdx).toBeGreaterThan(-1);
+    expect(lightBlockIdx).toBeGreaterThan(darkBlockIdx);
+
+    // Dark value lands in the data-theme dark block, base value in light.
+    const darkEntryIdx = cssContent.indexOf('--testbrowser-canvas-theme-test: #000', darkBlockIdx);
+    expect(darkEntryIdx).toBeGreaterThan(darkBlockIdx);
+    expect(darkEntryIdx).toBeLessThan(lightBlockIdx);
+    const lightEntryIdx = cssContent.indexOf(
+      '--testbrowser-canvas-theme-test: #fff',
+      lightBlockIdx
+    );
+    expect(lightEntryIdx).toBeGreaterThan(lightBlockIdx);
+
+    // Media-query dark override still written too — all four themed lists
+    // now carry the token.
+    const mediaIdx = cssContent.indexOf('prefers-color-scheme: dark');
+    expect(cssContent.indexOf('--testbrowser-canvas-theme-test: #000', mediaIdx)).toBeGreaterThan(
+      mediaIdx
+    );
+  });
+
+  it('leaves files without data-theme blocks unchanged in shape (FORGE F8)', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await addToken('/project', {
+      tokenName: '--testbrowser-canvas-no-theme-blocks',
+      value: '#fff',
+      category: 'Colors — Canvas',
+      mode: 'override',
+      darkValue: '#000',
+    });
+
+    const cssCall = mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'));
+    const cssContent = cssCall?.[1] ?? '';
+    expect(cssContent).not.toContain('data-theme');
   });
 
   it('inserts dark value inside the nested :root { } of the dark @media block', async () => {

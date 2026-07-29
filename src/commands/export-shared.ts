@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { confirm, select, text } from '@clack/prompts';
 
-import { addLicenseHeaderToFile } from '../core/license-headers.js';
+import { addLicenseHeaderToFile, hasThirdPartyPermissiveBanner } from '../core/license-headers.js';
 import { findAllPatchesForFiles } from '../core/patch-export.js';
 import {
   commentStyleForFile,
@@ -305,6 +305,7 @@ export async function autoFixLicenseHeaders(
   if (newFiles.size === 0) return false;
 
   const filesToFix: string[] = [];
+  const vendoredFiles: string[] = [];
   for (const file of newFiles) {
     const style = commentStyleForFile(file);
     if (!style) continue;
@@ -318,8 +319,24 @@ export async function autoFixLicenseHeaders(
     // MPL block header on a derived JS/CSS file) would stack a second
     // header on top of a legitimate one.
     if (!isAcceptableNewFileHeader(file, content, style, license)) {
-      filesToFix.push(file);
+      // A recognized third-party permissive banner marks the file as
+      // vendored: prepending the project's own license header would break
+      // byte-identity pins and mislicense upstream code (FORGE F15).
+      if (hasThirdPartyPermissiveBanner(content)) {
+        vendoredFiles.push(file);
+      } else {
+        filesToFix.push(file);
+      }
     }
+  }
+
+  if (vendoredFiles.length > 0) {
+    const vendoredList = vendoredFiles.map((f) => `  - ${f}`).join('\n');
+    info(
+      `${vendoredFiles.length} new file(s) carry a third-party permissive license banner and ` +
+        'were left untouched (vendored); if the missing-license-header lint check flags them, ' +
+        `waive it with --lint-ignore missing-license-header:\n${vendoredList}`
+    );
   }
 
   if (filesToFix.length === 0) return false;

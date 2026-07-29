@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { readBuildBaseline } from '../../core/build-baseline.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository } from '../../core/git.js';
@@ -103,6 +104,10 @@ vi.mock('../../utils/logger.js', () => ({
   setMachineOutputMode: vi.fn((enabled: boolean) => {
     machineOutputModeState.enabled = enabled;
   }),
+}));
+
+vi.mock('../../core/build-baseline.js', () => ({
+  readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
 }));
 
 describe('statusCommand', () => {
@@ -826,20 +831,92 @@ describe('statusCommand', () => {
   describe('flag validation', () => {
     it('throws when both --raw and --unmanaged are provided', async () => {
       await expect(statusCommand(projectRoot, { raw: true, unmanaged: true })).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, and --json together'
+        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together'
       );
     });
 
     it('throws when --raw and --ownership are combined', async () => {
       await expect(statusCommand(projectRoot, { raw: true, ownership: true })).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, and --json together'
+        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together'
       );
     });
 
     it('throws when --unmanaged and --ownership are combined', async () => {
       await expect(
         statusCommand(projectRoot, { unmanaged: true, ownership: true })
-      ).rejects.toThrow('Cannot use --raw, --unmanaged, --ownership, and --json together');
+      ).rejects.toThrow(
+        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together'
+      );
+    });
+  });
+
+  describe('--test-coverage mode (FORGE F11)', () => {
+    it('reports when no baseline is recorded, without touching the engine', async () => {
+      vi.mocked(readBuildBaseline).mockResolvedValue(undefined);
+      vi.mocked(pathExists).mockResolvedValue(false);
+
+      await expect(statusCommand(projectRoot, { testCoverage: true })).resolves.toBeUndefined();
+
+      expect(infoMessages().some((m) => m.includes('No build baseline recorded'))).toBe(true);
+      expect(outro).toHaveBeenCalledWith('No test-packaging coverage recorded');
+      expect(isGitRepository).not.toHaveBeenCalled();
+    });
+
+    it('prints a full-coverage baseline with its recording invocation', async () => {
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        engineHeadSha: 'abc123',
+        builtAt: '2026-07-29T10:00:00.000Z',
+        binaryName: 'mybrowser',
+        testPackagingCoverage: 'full',
+        recordedBy: 'fireforge build',
+      });
+
+      await expect(statusCommand(projectRoot, { testCoverage: true })).resolves.toBeUndefined();
+
+      const messages = infoMessages();
+      expect(messages.some((m) => m.includes('2026-07-29T10:00:00.000Z'))).toBe(true);
+      expect(messages.some((m) => m.includes('Recorded by: fireforge build'))).toBe(true);
+      expect(messages.some((m) => m.includes('Test packaging coverage: full'))).toBe(true);
+      expect(outro).toHaveBeenCalledWith('Coverage: full');
+    });
+
+    it('lists scoped coverage paths and the refusal implication', async () => {
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        engineHeadSha: 'abc123',
+        builtAt: '2026-07-29T10:00:00.000Z',
+        binaryName: 'mybrowser',
+        testPackagingCoverage: ['browser/components/tests/unit/test_reg.js'],
+        recordedBy: 'fireforge test --build browser/components/tests/unit/test_reg.js',
+      });
+
+      await expect(statusCommand(projectRoot, { testCoverage: true })).resolves.toBeUndefined();
+
+      const messages = infoMessages();
+      expect(messages.some((m) => m.includes('scoped to 1 path(s)'))).toBe(true);
+      expect(messages.some((m) => m.includes('test_reg.js'))).toBe(true);
+      expect(messages.some((m) => m.includes('refused as uncovered'))).toBe(true);
+      expect(outro).toHaveBeenCalledWith('Coverage: scoped (1 paths)');
+    });
+
+    it('renders legacy baselines without coverage or recordedBy fields', async () => {
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        engineHeadSha: '',
+        builtAt: '2026-01-01T00:00:00.000Z',
+        binaryName: 'mybrowser',
+      });
+
+      await expect(statusCommand(projectRoot, { testCoverage: true })).resolves.toBeUndefined();
+
+      const messages = infoMessages();
+      expect(messages.some((m) => m.includes('Recorded by: unknown'))).toBe(true);
+      expect(messages.some((m) => m.includes('full (implicit'))).toBe(true);
+      expect(messages.some((m) => m.includes('(unborn)'))).toBe(true);
+    });
+
+    it('is mutually exclusive with --json', async () => {
+      await expect(statusCommand(projectRoot, { testCoverage: true, json: true })).rejects.toThrow(
+        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together'
+      );
     });
   });
 

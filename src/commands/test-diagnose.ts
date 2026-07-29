@@ -12,6 +12,7 @@ import {
   buildGreenSummaryRejectedMessage,
   buildHarnessCrashMessage,
   buildNoTestsRanMessage,
+  headedNoOutputTimeoutHint,
 } from '../core/test-harness-crash.js';
 import {
   buildHarnessEarlyExitMessage,
@@ -23,6 +24,7 @@ import {
 import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import { info } from '../utils/logger.js';
+import { getPlatform } from '../utils/platform.js';
 import type { TestRunOutcome } from './test-run.js';
 
 function buildUnknownTestMessage(testPaths: string[]): string {
@@ -242,10 +244,16 @@ export function finalizeSingleRunOutcome(
   outcome: TestRunOutcome,
   normalizedPaths: string[],
   binaryName: string,
-  postRebuildContext: PostRebuildFailureContext | undefined
+  postRebuildContext: PostRebuildFailureContext | undefined,
+  headless = false
 ): void {
   if (outcome.verdict.kind === 'harness-crash' && outcome.verdict.signature) {
-    throw new GeneralError(buildHarnessCrashMessage(outcome.verdict.signature, outcome.attempts));
+    const base = buildHarnessCrashMessage(outcome.verdict.signature, outcome.attempts);
+    const hint = headedNoOutputTimeoutHint(outcome.verdict.signature, {
+      headless,
+      platform: getPlatform(),
+    });
+    throw new GeneralError(hint ? `${base}\n\n${hint}` : base);
   }
   if (outcome.verdict.kind === 'tests-ran-ok') {
     // The verdict is authoritative over the raw exit code: a completed

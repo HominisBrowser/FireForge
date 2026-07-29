@@ -47,7 +47,10 @@ vi.mock('../../core/brand-validation.js', () => ({
   validateBrandOverride: vi.fn(),
 }));
 
-vi.mock('../../core/build-prepare.js', () => ({
+vi.mock('../../core/build-prepare.js', async (importOriginal) => ({
+  // Keep the real describeSignalShapedExit so exit-code diagnostics stay
+  // authentic; only the environment mutation is stubbed.
+  ...(await importOriginal<typeof import('../../core/build-prepare.js')>()),
   prepareBuildEnvironment: vi.fn(),
 }));
 
@@ -239,7 +242,9 @@ describe('buildCommand', () => {
       '/project',
       '/project/engine',
       'mybrowser',
-      'full'
+      'full',
+      undefined,
+      'fireforge build'
     );
 
     vi.mocked(writeBuildBaseline).mockClear();
@@ -248,7 +253,9 @@ describe('buildCommand', () => {
       '/project',
       '/project/engine',
       'mybrowser',
-      'full'
+      'full',
+      undefined,
+      'fireforge build --ui'
     );
   });
 
@@ -328,6 +335,36 @@ describe('buildCommand', () => {
 
     expect(build).toHaveBeenCalledWith('/project/engine', 8);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Build failed after'));
+  });
+
+  it('labels signal-shaped exit codes as external interruptions (FORGE F16)', async () => {
+    vi.mocked(build).mockResolvedValue({
+      exitCode: 144,
+      attempts: 1,
+      stdout: 'checking for the target C compiler...',
+      stderr: '',
+    });
+
+    const failure = await buildCommand('/project', {}).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('Build failed with exit code 144');
+    expect((failure as Error).message).toContain('Exit 144 is signal-shaped (144 - 128 = 16');
+    expect((failure as Error).message).toContain('interrupted externally');
+  });
+
+  it('does not add the signal-shaped note to regular failures (FORGE F16)', async () => {
+    vi.mocked(build).mockResolvedValue({
+      exitCode: 2,
+      attempts: 1,
+      stdout: '',
+      stderr: 'error: something normal\n',
+    });
+
+    const failure = await buildCommand('/project', {}).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).not.toContain('signal-shaped');
   });
 
   it('prioritizes real make failures over trailing Python warning noise', async () => {

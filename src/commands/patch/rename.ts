@@ -258,7 +258,12 @@ export async function patchRenameCommand(
     options.description !== undefined && options.description !== target.description;
 
   if (!filenameChanging && !nameChanging && !descriptionChanging) {
-    info(`${target.filename}: name and description already match — nothing to change.`);
+    info(
+      `${target.filename}: nothing to change — filename already "${target.filename}" ` +
+        `(slug of "${options.to}" is "${newSlug}"), name already "${target.name}"` +
+        (options.description !== undefined ? ', description already matches' : '') +
+        '.'
+    );
     outro(isDryRun ? 'Dry run complete — no changes made' : 'Patch rename (no-op)');
     return;
   }

@@ -29,10 +29,20 @@
 import { basename, resolve } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
-import type { PatchLintCheckJsCompilerOptions, PatchLintConfig } from '../types/config.js';
+import type {
+  PatchLintCheckJsCompilerOptions,
+  PatchLintConfig,
+  PatchLintSeverityGate,
+} from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
-import { composeShimSource, SHIM_FILENAME, SUPPRESSED_DIAGNOSTIC_CODES } from './typecheck-shim.js';
+import {
+  composeShimSource,
+  SHIM_FILENAME,
+  SUPPRESSED_DIAGNOSTIC_CODES,
+  UNDEFINED_IDENTIFIER_CODES,
+  UNDEFINED_IDENTIFIER_HINT,
+} from './typecheck-shim.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -143,6 +153,11 @@ function createPathsResolver(
 export interface CheckJsMode {
   strict: boolean;
   compilerOptions?: PatchLintCheckJsCompilerOptions;
+  /**
+   * How to report undefined free identifiers (TS2304/TS2552). Default
+   * 'warning' — see `patchLint.undefinedIdentifiers` (FORGE F12).
+   */
+  undefinedIdentifiers?: PatchLintSeverityGate;
 }
 
 /**
@@ -354,7 +369,8 @@ export async function runCheckJsGrouped(
   const byFile = groupOwnedDiagnostics(
     ts,
     [...program.getSemanticDiagnostics(), ...program.getSyntacticDiagnostics()],
-    relByAbsolute
+    relByAbsolute,
+    mode?.undefinedIdentifiers ?? 'warning'
   );
 
   verbose(`checkJs: analyzed ${rootFiles.length - 1} file(s) across ${byFile.size} owning file(s)`);
@@ -371,11 +387,14 @@ export async function runCheckJsGrouped(
 function groupOwnedDiagnostics(
   ts: typeof import('typescript'),
   diagnostics: readonly import('typescript').Diagnostic[],
-  relByAbsolute: ReadonlyMap<string, string>
+  relByAbsolute: ReadonlyMap<string, string>,
+  undefinedIdentifiers: PatchLintSeverityGate = 'warning'
 ): Map<string, PatchLintIssue[]> {
   const byFile = new Map<string, PatchLintIssue[]>();
   for (const diag of diagnostics) {
     if (SUPPRESSED_DIAGNOSTIC_CODES.has(diag.code)) continue;
+    const isUndefinedIdentifier = UNDEFINED_IDENTIFIER_CODES.has(diag.code);
+    if (isUndefinedIdentifier && undefinedIdentifiers === 'off') continue;
     const sourceFile = diag.file;
     if (!sourceFile) continue;
     const relPath = relByAbsolute.get(sourceFile.fileName);
@@ -387,13 +406,21 @@ function groupOwnedDiagnostics(
       typeof diag.messageText === 'string'
         ? diag.messageText
         : ts.flattenDiagnosticMessageText(diag.messageText, '\n');
-    const severity = diag.category === ts.DiagnosticCategory.Error ? 'error' : ('warning' as const);
+    const severity = isUndefinedIdentifier
+      ? undefinedIdentifiers === 'error'
+        ? ('error' as const)
+        : ('warning' as const)
+      : diag.category === ts.DiagnosticCategory.Error
+        ? ('error' as const)
+        : ('warning' as const);
 
     const bucket = byFile.get(relPath) ?? [];
     bucket.push({
       file: relPath,
       check: 'checkjs-type-error',
-      message: `Line ${line}: ${messageText}`,
+      message: isUndefinedIdentifier
+        ? `Line ${line}: ${messageText} ${UNDEFINED_IDENTIFIER_HINT}`
+        : `Line ${line}: ${messageText}`,
       severity,
     });
     byFile.set(relPath, bucket);
@@ -458,19 +485,28 @@ export async function invokePatchLintCheckJs(
   projectRoot: string,
   reportScope?: ReadonlySet<string>
 ): Promise<PatchLintIssue[]> {
-  const strict = patchLint.checkJsStrict === true;
-  const mode: CheckJsMode =
-    strict && patchLint.checkJsCompilerOptions
-      ? { strict, compilerOptions: patchLint.checkJsCompilerOptions }
-      : { strict };
   return runCheckJs(
     repoDir,
     patchOwnedFiles,
     patchLint.checkJsExtraShim,
     projectRoot,
-    mode,
+    modeFromPatchLintConfig(patchLint),
     reportScope
   );
+}
+
+/** Derives the {@link CheckJsMode} from a `patchLint` config block. */
+function modeFromPatchLintConfig(patchLint: PatchLintConfig): CheckJsMode {
+  const strict = patchLint.checkJsStrict === true;
+  return {
+    strict,
+    ...(strict && patchLint.checkJsCompilerOptions
+      ? { compilerOptions: patchLint.checkJsCompilerOptions }
+      : {}),
+    ...(patchLint.undefinedIdentifiers !== undefined
+      ? { undefinedIdentifiers: patchLint.undefinedIdentifiers }
+      : {}),
+  };
 }
 
 /**
@@ -491,10 +527,11 @@ export async function invokePatchLintCheckJsGrouped(
   patchLint: PatchLintConfig,
   projectRoot: string
 ): Promise<GroupedCheckJsResult> {
-  const strict = patchLint.checkJsStrict === true;
-  const mode: CheckJsMode =
-    strict && patchLint.checkJsCompilerOptions
-      ? { strict, compilerOptions: patchLint.checkJsCompilerOptions }
-      : { strict };
-  return runCheckJsGrouped(repoDir, patchOwnedFiles, patchLint.checkJsExtraShim, projectRoot, mode);
+  return runCheckJsGrouped(
+    repoDir,
+    patchOwnedFiles,
+    patchLint.checkJsExtraShim,
+    projectRoot,
+    modeFromPatchLintConfig(patchLint)
+  );
 }

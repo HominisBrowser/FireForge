@@ -752,6 +752,128 @@ describe('addToken --variant', () => {
   });
 });
 
+describe('addToken missing-category bypasses (FORGE G3)', () => {
+  it('a TOC comment merely mentioning the category no longer satisfies the banner lookup', async () => {
+    // Bypass 1 of the 2026-07-30 silent-no-op incident: a `/* ====`-opened
+    // comment containing "Colors — Terminal" as a substring satisfied the
+    // loose lookup even though no such section exists.
+    const cssWithToc =
+      ':root {\n' +
+      '  /* ================================================================\n' +
+      '   * Planned: Colors — Terminal (not yet sectioned)\n' +
+      '   * ================================================================ */\n' +
+      '  --testbrowser-space-small: 4px; /* static, fork-specific */\n' +
+      '}\n';
+    mockReadText.mockImplementation(makeReadTextImpl(cssWithToc, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-terminal-bg',
+        value: 'var(--background-color-box)',
+        category: 'Colors — Terminal',
+        mode: 'auto',
+      })
+    ).rejects.toThrow(/Category "Colors — Terminal" not found/);
+
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('a category name no longer matches a longer banner by substring', async () => {
+    // Bypass 1b: `--category "Colors"` used to match the "Colors — Canvas"
+    // banner and write the token into the wrong section.
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-colors-x',
+        value: '#123',
+        category: 'Colors',
+        mode: 'static',
+      })
+    ).rejects.toThrow(/Category "Colors" not found/);
+
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('--variant validates --category instead of silently discarding it', async () => {
+    // Bypass 2: variant mode skipped the category system entirely, so the
+    // required --category flag was accepted and ignored.
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-canvas-bg',
+        value: '#101010',
+        category: 'Colors — Terminal',
+        mode: 'static',
+        variant: '[data-skin=precision]',
+      })
+    ).rejects.toThrow(/Category "Colors — Terminal" not found/);
+  });
+
+  it('rejects combining --variant with --create-category', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-canvas-bg',
+        value: '#101010',
+        category: 'Colors — Terminal',
+        mode: 'static',
+        variant: '[data-skin=precision]',
+        createCategory: true,
+      })
+    ).rejects.toThrow(/--create-category cannot be combined with --variant/);
+  });
+
+  it('a token already declared in a DIFFERENT category refuses instead of skipping', async () => {
+    // Bypass 3: the whole-file idempotency check returned skipped:true
+    // (exit 0) and silently discarded --create-category when the token
+    // name existed anywhere — including another category's section.
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-space-small',
+        value: '8px',
+        category: 'Colors — Canvas',
+        mode: 'static',
+      })
+    ).rejects.toThrow(/already declared outside category "Colors — Canvas"/);
+
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('a token already in the requested category still skips, naming its location', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-canvas-bg',
+      value: 'var(--background-color-box)',
+      category: 'Colors — Canvas',
+      mode: 'auto',
+    });
+
+    expect(result.skipped).toBe(true);
+    expect(result.skippedExisting).toMatchObject({ category: 'Colors — Canvas' });
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('dry-run agrees with the real run on the elsewhere-declared refusal', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-space-small',
+        value: '8px',
+        category: 'Colors — Canvas',
+        mode: 'static',
+        dryRun: true,
+      })
+    ).rejects.toThrow(/already declared outside category "Colors — Canvas"/);
+  });
+});
+
 describe('addToken --create-category', () => {
   it('rejects a missing category without the flag and advertises --create-category', async () => {
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));

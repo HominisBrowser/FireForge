@@ -11,7 +11,11 @@ import { getFurnacePaths } from './furnace-config.js';
 import { git } from './git-base.js';
 import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-lint.js';
 
-export const LINT_CACHE_SCHEMA_VERSION = 1;
+// Schema 2 (FORGE G10): entries additionally carry the lintIgnore-suppressed
+// issues and the measured non-binary line count, so a warm run can report
+// waived size measurements identically to a cold one (the F5-class hazard:
+// a cache hit must never surface LESS than a fresh lint).
+export const LINT_CACHE_SCHEMA_VERSION = 2;
 const LINT_IMPLEMENTATION_VERSION = 1;
 
 const LINT_CACHE_DIRNAME = 'lint-cache';
@@ -21,6 +25,10 @@ export interface PerPatchLintCacheEntry {
   key: string;
   patchFilename: string;
   issues: PatchLintIssue[];
+  /** Issues dropped by the patch's lintIgnore waivers (FORGE G10). */
+  suppressed: PatchLintIssue[];
+  /** Non-binary diff line count measured by the cached lint run. */
+  lineCount: number;
   updatedAt: string;
 }
 
@@ -169,6 +177,8 @@ function isCacheEntry(value: unknown): value is PerPatchLintCacheEntry {
     typeof entry.key === 'string' &&
     typeof entry.patchFilename === 'string' &&
     Array.isArray(entry.issues) &&
+    Array.isArray(entry.suppressed) &&
+    typeof entry.lineCount === 'number' &&
     typeof entry.updatedAt === 'string'
   );
 }
@@ -216,28 +226,43 @@ export async function clearPerPatchLintCache(projectRoot: string): Promise<void>
   await writeJson(getPerPatchLintCachePath(projectRoot), createEmptyPerPatchLintCache());
 }
 
-/** Returns cached issues for a patch when the stored key still matches. */
+/** Cached per-patch lint payload returned on a key match. */
+export interface CachedPerPatchLint {
+  issues: PatchLintIssue[];
+  suppressed: PatchLintIssue[];
+  lineCount: number;
+}
+
+/** Returns the cached lint payload for a patch when the stored key still matches. */
 export function getCachedPerPatchLintIssues(
   cache: PerPatchLintCacheFile,
   patchFilename: string,
   key: string
-): PatchLintIssue[] | undefined {
+): CachedPerPatchLint | undefined {
   const entry = cache.entries[patchFilename];
   if (!entry || entry.key !== key) return undefined;
-  return entry.issues.map((issue) => ({ ...issue }));
+  return {
+    issues: entry.issues.map((issue) => ({ ...issue })),
+    suppressed: entry.suppressed.map((issue) => ({ ...issue })),
+    lineCount: entry.lineCount,
+  };
 }
 
-/** Stores per-patch lint issues after a successful lint calculation. */
+/** Stores the per-patch lint payload after a successful lint calculation. */
 export function setCachedPerPatchLintIssues(
   cache: PerPatchLintCacheFile,
   patchFilename: string,
   key: string,
-  issues: PatchLintIssue[]
+  issues: PatchLintIssue[],
+  suppressed: PatchLintIssue[],
+  lineCount: number
 ): void {
   cache.entries[patchFilename] = {
     key,
     patchFilename,
     issues: issues.map((issue) => ({ ...issue })),
+    suppressed: suppressed.map((issue) => ({ ...issue })),
+    lineCount,
     updatedAt: new Date().toISOString(),
   };
 }

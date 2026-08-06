@@ -108,6 +108,126 @@ describe('lintPatchedCss', () => {
     expect(issues).toEqual([]);
   });
 
+  describe('comments spanning the context/added boundary (FORGE G4)', () => {
+    it('does not flag a hex inside a comment whose opener sits on a context line', async () => {
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue(
+        ':root {\n' +
+          '  /* palette reference:\n' +
+          '     #ff0000 is the legacy accent */\n' +
+          '  --x-accent: var(--tok);\n' +
+          '}\n'
+      );
+
+      const diff =
+        'diff --git a/style.css b/style.css\n' +
+        '--- a/style.css\n' +
+        '+++ b/style.css\n' +
+        '@@ -1,4 +1,5 @@\n' +
+        ' :root {\n' +
+        '   /* palette reference:\n' +
+        '+     #ff0000 is the legacy accent */\n' +
+        '   --x-accent: var(--tok);\n' +
+        ' }\n';
+
+      const issues = await lintPatchedCss('/engine', ['style.css'], diff);
+
+      expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(0);
+    });
+
+    it('does not flag a hex inside a comment opened on an added line and closed on a context line', async () => {
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue(
+        ':root {\n' +
+          '  /* new note\n' +
+          '     #00ff00 legacy paint\n' +
+          '     end of note */\n' +
+          '  --x-a: var(--tok);\n' +
+          '}\n'
+      );
+
+      const diff =
+        'diff --git a/style.css b/style.css\n' +
+        '--- a/style.css\n' +
+        '+++ b/style.css\n' +
+        '@@ -1,4 +1,6 @@\n' +
+        ' :root {\n' +
+        '+  /* new note\n' +
+        '+     #00ff00 legacy paint\n' +
+        '     end of note */\n' +
+        '   --x-a: var(--tok);\n' +
+        ' }\n';
+
+      const issues = await lintPatchedCss('/engine', ['style.css'], diff);
+
+      expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(0);
+    });
+
+    it('still flags a hex declaration added beside a boundary-spanning comment', async () => {
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue(
+        ':root {\n' +
+          '  /* palette reference:\n' +
+          '     #ff0000 is the legacy accent */\n' +
+          '  --x-accent: #ff0000;\n' +
+          '}\n'
+      );
+
+      const diff =
+        'diff --git a/style.css b/style.css\n' +
+        '--- a/style.css\n' +
+        '+++ b/style.css\n' +
+        '@@ -1,4 +1,5 @@\n' +
+        ' :root {\n' +
+        '   /* palette reference:\n' +
+        '+     #ff0000 is the legacy accent */\n' +
+        '+  --x-accent: #ff0000;\n' +
+        ' }\n';
+
+      const issues = await lintPatchedCss('/engine', ['style.css'], diff);
+
+      expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(1);
+    });
+
+    it('keeps honoring the inline fireforge-ignore waiver on added declaration lines', async () => {
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue(
+        '.a { color: #123456; /* fireforge-ignore: raw-color-value */ }\n'
+      );
+
+      const diff =
+        'diff --git a/style.css b/style.css\n' +
+        '--- a/style.css\n' +
+        '+++ b/style.css\n' +
+        '@@ -0,0 +1 @@\n' +
+        '+.a { color: #123456; /* fireforge-ignore: raw-color-value */ }\n';
+
+      const issues = await lintPatchedCss('/engine', ['style.css'], diff);
+
+      expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(0);
+    });
+
+    it('falls back to the joined-added-lines scan when the diff and on-disk file disagree', async () => {
+      // Added line numbers point past EOF (patch drifted from the applied
+      // file) — the scan must not crash and must still catch the hex on
+      // the added lines themselves.
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue('.a { color: var(--tok); }\n');
+
+      const diff =
+        'diff --git a/style.css b/style.css\n' +
+        '--- a/style.css\n' +
+        '+++ b/style.css\n' +
+        '@@ -40,0 +41,2 @@\n' +
+        '+.b { color: #abcdef; }\n' +
+        '+.c { color: var(--tok); }\n';
+
+      const issues = await lintPatchedCss('/engine', ['style.css'], diff);
+
+      expect(issues.filter((i) => i.check === 'raw-color-value')).toHaveLength(1);
+    });
+  });
+
   it('strips block comments before scanning', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('/* color: #ff0000; */ body { display: block; }');

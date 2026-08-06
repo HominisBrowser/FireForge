@@ -89,3 +89,36 @@ export function resolvePatchOwnedChromeScripts(
     (file) => file.endsWith('.js') && !file.endsWith('.sys.mjs')
   );
 }
+
+/**
+ * Test-script predicate for the `checkJsTestFiles` pass (FORGE G5):
+ * plain `.js` files (not `.sys.mjs` modules) that live under a `/test/`
+ * path or carry a `browser_` / `test_` / `xpcshell_` basename. Duplicates
+ * `patch-lint.ts`'s `isTestFile` shape rather than importing it —
+ * patch-lint.ts imports this module, so the reverse edge would create an
+ * import cycle (dpdm gate). The agreement is pinned by
+ * `patch-lint-ownership.test.ts`.
+ */
+export function isTestScriptFile(file: string): boolean {
+  if (!file.endsWith('.js') || file.endsWith('.sys.mjs')) return false;
+  if (file.includes('/test/')) return true;
+  const basename = file.split('/').pop() ?? '';
+  return /^(?:browser_|test_|xpcshell_).*\.js$/.test(basename);
+}
+
+/**
+ * Returns the set of patch-owned test `.js` files (FORGE G5). Same
+ * ownership semantics as {@link resolvePatchOwnedSysMjs}; consumed by the
+ * `patchLint.checkJsTestFiles` pass, which checks each as its own small
+ * script-scope program.
+ *
+ * @param currentNewFiles - Files newly created in the current diff
+ * @param patchQueueCtx - Optional cross-patch context for queue-wide ownership
+ * @returns Set of patch-owned test-script file paths
+ */
+export function resolvePatchOwnedTestScripts(
+  currentNewFiles: Set<string>,
+  patchQueueCtx?: PatchQueueContext
+): Set<string> {
+  return resolveOwned(currentNewFiles, patchQueueCtx, isTestScriptFile);
+}

@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { PatchQueueContext } from '../patch-lint-cross.js';
 import {
+  isTestScriptFile,
   resolvePatchOwnedChromeScripts,
   resolvePatchOwnedSysMjs,
+  resolvePatchOwnedTestScripts,
 } from '../patch-lint-ownership.js';
 
 describe('resolvePatchOwnedSysMjs', () => {
@@ -169,5 +171,41 @@ describe('resolvePatchOwnedChromeScripts', () => {
 
     const result = resolvePatchOwnedChromeScripts(newFiles, ctx);
     expect(result.size).toBe(0);
+  });
+});
+
+describe('isTestScriptFile / resolvePatchOwnedTestScripts (FORGE G5)', () => {
+  it('matches test-shaped .js files and rejects modules and non-tests', () => {
+    expect(isTestScriptFile('browser/components/x/test/browser/browser_a.js')).toBe(true);
+    // /tests/ (plural) is not the /test/ path marker, but the test_ basename matches.
+    expect(isTestScriptFile('browser/components/x/tests/xpcshell/test_b.js')).toBe(true);
+    expect(isTestScriptFile('toolkit/xpcshell_c.js')).toBe(true);
+    expect(isTestScriptFile('browser/components/x/test/browser/head.js')).toBe(true);
+    expect(isTestScriptFile('browser/modules/Mod.sys.mjs')).toBe(false);
+    expect(isTestScriptFile('browser/base/content/browser-init.js')).toBe(false);
+    expect(isTestScriptFile('browser/components/x/test/browser/browser.toml')).toBe(false);
+  });
+
+  it('agrees with patch-lint isTestFile for .js inputs (duplicated to avoid an import cycle)', async () => {
+    const { isTestFile } = await import('../patch-lint.js');
+    const fixtures = [
+      'browser/components/x/test/browser/browser_a.js',
+      'browser/components/x/test/browser/head.js',
+      'toolkit/tests/test_b.js',
+      'browser/base/content/browser-init.js',
+      'a/b/browser_c.js',
+      'a/b/xpcshell_d.js',
+      'a/b/regular.js',
+    ];
+    for (const file of fixtures) {
+      expect(isTestScriptFile(file), file).toBe(isTestFile(file));
+    }
+  });
+
+  it('resolves patch-owned test scripts from current diff and queue', () => {
+    const owned = resolvePatchOwnedTestScripts(
+      new Set(['browser/x/test/browser/browser_new.js', 'browser/x/Mod.sys.mjs'])
+    );
+    expect(owned).toEqual(new Set(['browser/x/test/browser/browser_new.js']));
   });
 });

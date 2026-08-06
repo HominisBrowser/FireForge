@@ -135,6 +135,45 @@ declare module 'chrome:*';
 `;
 
 /**
+ * Loose declarations for Firefox test-harness globals (mochitest
+ * browser-chrome and xpcshell), appended AFTER the composed
+ * Firefox-globals + consumer shim when `patchLint.checkJsTestFiles`
+ * extends the checkJs pass to patch-adopted test scripts (FORGE G5).
+ * Deliberately `any`-typed — the pragmatic posture matches the main
+ * shim. A consumer that wants TYPED harness members (so e.g. a call to
+ * a method the harness does not declare fails at the patch boundary)
+ * declares them in `patchLint.checkJsTestShim`; because that shim
+ * composes BEFORE this baseline and TypeScript resolves conflicting
+ * `declare var` redeclarations to the FIRST declaration, the typed
+ * consumer declaration wins over the loose fallback here.
+ */
+export const TEST_HARNESS_SHIM = `
+// ── FireForge test-harness shim (loose baseline) ──
+declare var TestUtils: any;
+declare var BrowserTestUtils: any;
+declare var SpecialPowers: any;
+declare var EventUtils: any;
+declare var SimpleTest: any;
+declare var Assert: any;
+declare var gTestPath: string;
+declare var content: any;
+declare function add_task(task: (...args: any[]) => any): any;
+declare function add_setup(task: (...args: any[]) => any): any;
+declare function ok(condition: any, message?: string): void;
+declare function is(actual: any, expected: any, message?: string): void;
+declare function isnot(actual: any, expected: any, message?: string): void;
+declare function todo(condition: any, message?: string): void;
+declare function todo_is(actual: any, expected: any, message?: string): void;
+declare function info(message: string): void;
+declare function registerCleanupFunction(callback: (...args: any[]) => any): void;
+declare function waitForExplicitFinish(): void;
+declare function finish(): void;
+declare function do_get_profile(): any;
+declare function run_test(): any;
+
+`;
+
+/**
  * TS diagnostic codes suppressed by both the patch-lint checkJs pass
  * and the whole-project typecheck command. Each is a known false
  * positive that arises from checking Firefox JS outside Mozilla's own
@@ -253,8 +292,9 @@ export async function composeShimSource(
   projectRoot: string,
   extraShimPath: string | undefined
 ): Promise<ComposedShim> {
+  const base = FIREFOX_GLOBALS_SHIM;
   if (!extraShimPath) {
-    return { source: FIREFOX_GLOBALS_SHIM, extraShimAppended: false };
+    return { source: base, extraShimAppended: false };
   }
   const absoluteShim = resolve(projectRoot, extraShimPath);
   if (!(await pathExists(absoluteShim))) {
@@ -270,7 +310,7 @@ export async function composeShimSource(
     new Set([absoluteShim])
   );
   return {
-    source: `${FIREFOX_GLOBALS_SHIM}\n// ── extraShim: ${extraShimPath} ──\n${inlinedExtra}`,
+    source: `${base}\n// ── extraShim: ${extraShimPath} ──\n${inlinedExtra}`,
     extraShimAppended: true,
   };
 }

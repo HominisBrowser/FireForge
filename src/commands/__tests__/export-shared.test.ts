@@ -160,6 +160,33 @@ describe('promptExportPatchMetadata', () => {
     });
   });
 
+  it('normalizes a category-prefixed name to the bare slug in one step (FORGE G13)', async () => {
+    await expect(
+      promptExportPatchMetadata({ name: 'ui-foo', category: 'ui' }, false, 'export')
+    ).resolves.toMatchObject({ patchName: 'foo' });
+    await expect(
+      promptExportPatchMetadata({ name: '203-ui-foo', category: 'ui' }, false, 'export')
+    ).resolves.toMatchObject({ patchName: 'foo' });
+    await expect(
+      promptExportPatchMetadata({ name: 'UI-Foo', category: 'ui' }, false, 'export')
+    ).resolves.toMatchObject({ patchName: 'Foo' });
+  });
+
+  it('accepts a filename-shaped --name by stripping the .patch extension (FORGE G13)', async () => {
+    await expect(
+      promptExportPatchMetadata({ name: 'ui-foo.patch', category: 'ui' }, false, 'export')
+    ).resolves.toMatchObject({ patchName: 'foo' });
+  });
+
+  it('never strips a bare leading number or a non-category prefix (FORGE G13)', async () => {
+    await expect(
+      promptExportPatchMetadata({ name: '2-step-verification', category: 'ui' }, false, 'export')
+    ).resolves.toMatchObject({ patchName: '2-step-verification' });
+    await expect(
+      promptExportPatchMetadata({ name: 'core-foo', category: 'ui' }, false, 'export')
+    ).resolves.toMatchObject({ patchName: 'core-foo' });
+  });
+
   it('throws when name is missing in non-interactive mode', async () => {
     await expect(promptExportPatchMetadata({ category: 'ui' }, false, 'export')).rejects.toThrow(
       InvalidArgumentError

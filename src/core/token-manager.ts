@@ -6,10 +6,17 @@ import { FurnaceError } from '../errors/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
-import { escapeRegex } from '../utils/regex.js';
 import { validateTokenName } from '../utils/validation.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { loadFurnaceConfig } from './furnace-config.js';
+import {
+  assertTokenCategoryExists,
+  categoryHeaderExists,
+  declareCategoryBanner,
+  findCategorySection,
+  findTokenDeclarationInRoot,
+  type TokenDeclarationLocation,
+} from './token-category.js';
 import { findDarkMediaCloseIndex, findDarkRootInsertionIndex } from './token-dark-mode.js';
 import { addTokenToDocs } from './token-docs.js';
 import {
@@ -70,6 +77,12 @@ export interface AddTokenResult {
   skipped: boolean;
   /** Whether a new category banner was declared by this add. */
   categoryCreated?: boolean;
+  /**
+   * When the add skipped because the token already lives in the TARGET
+   * category, names where the existing base-`:root` declaration sits so
+   * the skip message can point at it (FORGE G3).
+   */
+  skippedExisting?: TokenDeclarationLocation;
 }
 
 interface TokenAddContext {
@@ -158,6 +171,13 @@ function normalizeVariantOption(options: AddTokenOptions): string | undefined {
       'variant'
     );
   }
+  if (options.createCategory === true) {
+    throw new InvalidArgumentError(
+      '--create-category cannot be combined with --variant; variant declarations are routed ' +
+        'into a :root<selector> block, not a category section.',
+      'variant'
+    );
+  }
   const result = validateVariantSelector(options.variant);
   if (!result.ok) {
     throw new InvalidArgumentError(`--variant ${result.reason}.`, 'variant');
@@ -200,108 +220,32 @@ async function addVariantTokenToCSS(
 }
 
 /**
- * True when `lines` contain a category header (single-line or multi-line
- * banner shape) naming `category`. Shared by the pre-add assertion and the
- * in-memory banner creation path so both agree on what "exists" means.
+ * Evaluates base-`:root` idempotency for one add (FORGE G3): a token
+ * already declared in the TARGET category skips; a token declared
+ * anywhere else in the base block refuses loud — the pre-0.40.0
+ * whole-file substring check silently skipped (and discarded
+ * `--create-category`) in that case, exit 0.
  */
-function categoryHeaderExists(lines: string[], category: string): boolean {
-  const escapedCategory = escapeRegex(category);
-  const singleLinePattern = new RegExp(`\\/\\*\\s*=.*${escapedCategory}.*=\\s*\\*\\/`);
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-
-    if (singleLinePattern.test(line)) {
-      return true;
-    }
-
-    if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
-      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-        const blockLine = lines[j] ?? '';
-        if (new RegExp(escapedCategory).test(blockLine)) {
-          return true;
-        }
-        if (/\*\//.test(blockLine)) break;
-      }
-    }
+function evaluateBaseTokenIdempotency(
+  lines: string[],
+  options: AddTokenOptions,
+  tokensCssPath: string
+): { skipped: boolean; existing?: TokenDeclarationLocation } {
+  const existing = findTokenDeclarationInRoot(lines, options.tokenName);
+  if (!existing) return { skipped: false };
+  if (existing.category === options.category) {
+    return { skipped: true, existing };
   }
-  return false;
-}
-
-async function assertTokenCategoryExists(
-  engineDir: string,
-  tokensCssPath: string,
-  category: string,
-  createCategory = false
-): Promise<void> {
-  const filePath = join(engineDir, tokensCssPath);
-
-  if (!(await pathExists(filePath))) {
-    throw new GeneralError(`Token CSS file not found: ${tokensCssPath}`);
-  }
-
-  const content = await readText(filePath);
-  const lines = content.split('\n');
-  if (categoryHeaderExists(lines, category)) return;
-  // The write path declares the banner in the same edit as the token
-  // insertion, so a missing category is fine when creation was requested.
-  if (createCategory) return;
-
-  const discoveredCategories = discoverCategoryHeaders(lines);
-  const available =
-    discoveredCategories.length > 0
-      ? `Available categories in the file: ${discoveredCategories.map((name) => `"${name}"`).join(', ')}.`
-      : 'The file currently has no category headers.';
-
+  const sectionSuffix = existing.category === undefined ? '' : `, section "${existing.category}"`;
+  const remedy =
+    existing.category === undefined
+      ? 'remove the stray declaration first'
+      : `pass --category "${existing.category}" to target the existing declaration, or remove it first`;
   throw new GeneralError(
-    `Category "${category}" not found in ${tokensCssPath}.\n\n` +
-      `${available}\n\n` +
-      'Categories are declared by comment headers. Single-line shape: /* = My Category = */. ' +
-      'Multi-line shape: /* =============\\n * My Category\\n * ============= */.\n\n' +
-      'Re-run with --create-category to declare the banner and insert the token in one step.'
+    `Token "${options.tokenName}" is already declared outside category "${options.category}" ` +
+      `(${tokensCssPath}:${String(existing.line)}${sectionSuffix}). ` +
+      `A token belongs to exactly one category — ${remedy}.`
   );
-}
-
-/**
- * Scans a tokens CSS file for category header comments and returns the
- * category names in document order. Used to enrich the "category not
- * found" error body with concrete alternatives the operator can copy.
- *
- * Mirrors the shapes `findCategorySection` already recognises:
- * - Single-line: `/* = Foo = *\/`
- * - Multi-line: `/* =====` opening, `Foo` on any of the next ~5 lines,
- *   closing `*\/`.
- *
- * This helper exists as a pure inspector; it never throws on malformed
- * headers and silently skips shapes it cannot parse.
- */
-function discoverCategoryHeaders(lines: string[]): string[] {
-  const categories = new Set<string>();
-  const singleLinePattern = /\/\*\s*=+\s*(.+?)\s*=+\s*\*\//;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const singleMatch = singleLinePattern.exec(line);
-    if (singleMatch?.[1]) {
-      const extracted = singleMatch[1].trim();
-      if (extracted.length > 0) categories.add(extracted);
-      continue;
-    }
-
-    if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
-      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-        const blockLine = lines[j] ?? '';
-        if (/\*\//.test(blockLine)) break;
-        const trimmed = blockLine.replace(/^\s*\*\s*/, '').trim();
-        if (trimmed.length === 0) continue;
-        if (/^=+$/.test(trimmed)) continue;
-        categories.add(trimmed);
-        break;
-      }
-    }
-  }
-
-  return [...categories];
 }
 
 /**
@@ -315,10 +259,11 @@ export async function validateTokenAdd(root: string, options: AddTokenOptions): 
   validateTokenNameSyntax(options.tokenName);
   await validateTokenPrefix(root, options);
   validateDarkValue(options);
-  // Variant mode targets a `:root<attr>` block, not a category section, so it
-  // only needs the tokens CSS file to exist — category checks do not apply.
+  // Variant mode targets a `:root<attr>` block, not a category section —
+  // but the required --category must still name a REAL category rather
+  // than being silently discarded (FORGE G3 bypass 2).
   if (normalizeVariantOption(options) !== undefined) {
-    await assertTokensCssExists(engineDir, tokensCssPath);
+    await assertTokenCategoryExists(engineDir, tokensCssPath, options.category, false);
     return;
   }
   await assertTokenCategoryExists(
@@ -362,8 +307,11 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
         skipped,
       };
     }
-    const stripped = content.replace(/\/\*[\s\S]*?\*\//g, '');
-    const skipped = stripped.includes(options.tokenName + ':');
+    const { skipped, existing } = evaluateBaseTokenIdempotency(
+      content.split('\n'),
+      options,
+      tokensCssPath
+    );
 
     return {
       cssAdded: !skipped,
@@ -371,6 +319,7 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
       unmappedAdded: !skipped && !options.value.startsWith('var('),
       countUpdated: !skipped,
       skipped,
+      ...(existing !== undefined ? { skippedExisting: existing } : {}),
     };
   }
 
@@ -379,6 +328,9 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
   // docs row). Done before the base-CSS path so an override of an existing
   // base token is not short-circuited by the global idempotency check.
   if (normalizedVariant !== undefined) {
+    // The required --category must name a real category even though the
+    // declaration routes into the variant block (FORGE G3 bypass 2).
+    await assertTokenCategoryExists(engineDir, tokensCssPath, options.category, false);
     const { added } = await addVariantTokenToCSS(
       engineDir,
       options,
@@ -395,11 +347,11 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
   }
 
   // --- CSS file ---
-  const { added: cssAdded, categoryCreated } = await addTokenToCSS(
-    engineDir,
-    options,
-    tokensCssPath
-  );
+  const {
+    added: cssAdded,
+    categoryCreated,
+    existing,
+  } = await addTokenToCSS(engineDir, options, tokensCssPath);
 
   if (!cssAdded) {
     return {
@@ -408,6 +360,7 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
       unmappedAdded: false,
       countUpdated: false,
       skipped: true,
+      ...(existing !== undefined ? { skippedExisting: existing } : {}),
     };
   }
 
@@ -426,121 +379,6 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
     skipped: false,
     categoryCreated,
   };
-}
-
-/**
- * Splices a new single-line category banner ("= Name =" comment shape, the
- * same format `discoverCategoryHeaders` recognises) just before the closing
- * brace of the `:root` block, making the new category the last section.
- * Mutates `lines` in place.
- */
-function declareCategoryBanner(lines: string[], category: string, tokensCssPath: string): void {
-  let rootOpen = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/:root\s*\{/.test(lines[i] ?? '')) {
-      rootOpen = i;
-      break;
-    }
-  }
-  if (rootOpen === -1) {
-    throw new GeneralError(
-      `Cannot create category "${category}": no :root block found in ${tokensCssPath}. ` +
-        'Run "fireforge furnace init --force" to re-scaffold the tokens CSS file.'
-    );
-  }
-  let rootClose = -1;
-  for (let i = rootOpen + 1; i < lines.length; i++) {
-    if (/^\s*\}/.test(lines[i] ?? '')) {
-      rootClose = i;
-      break;
-    }
-  }
-  if (rootClose === -1) {
-    throw new GeneralError(
-      `Cannot create category "${category}": the :root block in ${tokensCssPath} never closes.`
-    );
-  }
-  lines.splice(rootClose, 0, '', `  /* = ${category} = */`);
-}
-
-function findCategorySection(
-  lines: string[],
-  category: string,
-  tokensCssPath: string
-): { categoryLine: number; sectionEnd: number } {
-  const escapedCategory = escapeRegex(category);
-  const singleLinePattern = new RegExp(`\\/\\*\\s*=.*${escapedCategory}.*=\\s*\\*\\/`);
-
-  let categoryLine = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-
-    // Check single-line format: /* = Category = */
-    if (singleLinePattern.test(line)) {
-      categoryLine = i;
-      break;
-    }
-
-    // Check multi-line format: line opens a block comment with === but does NOT close it
-    // e.g., "/* ================================================================"
-    // (NOT "/* ================================================= */" which closes on the same line)
-    if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
-      // Look ahead within the comment block (up to 5 lines) for the category text
-      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-        const blockLine = lines[j] ?? '';
-        if (new RegExp(escapedCategory).test(blockLine)) {
-          categoryLine = i;
-          break;
-        }
-        // Stop if we've exited the comment block
-        if (/\*\//.test(blockLine)) break;
-      }
-      if (categoryLine !== -1) break;
-    }
-  }
-
-  if (categoryLine === -1) {
-    const discoveredCategories = discoverCategoryHeaders(lines);
-    const available =
-      discoveredCategories.length > 0
-        ? `Available categories in the file: ${discoveredCategories.map((name) => `"${name}"`).join(', ')}.`
-        : 'The file currently has no category headers.';
-
-    throw new GeneralError(
-      `Category "${category}" not found in ${tokensCssPath}.\n\n` +
-        `${available}\n\n` +
-        'Add a header by hand inside the :root block (format: "/* = My Category = */") or re-run "fireforge furnace init --force" to re-seed the default categories.'
-    );
-  }
-
-  // Find the end of this category section (next section header or closing })
-  // Handles both single-line (/* =...= */) and multi-line (/* ===...) section delimiters
-  // Skip past the current header block first
-  let scanStart = categoryLine + 1;
-  for (let i = categoryLine + 1; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    // Skip lines that are part of the current header comment block
-    if (/^\s*\/\*\s*=/.test(line) || /^\s*\*\s*=/.test(line) || /^\s*\*\//.test(line)) {
-      scanStart = i + 1;
-      continue;
-    }
-    break;
-  }
-
-  let sectionEnd = lines.length;
-  for (let i = scanStart; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    if (
-      /\/\*\s*=.*=\s*\*\//.test(line) ||
-      (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) ||
-      /^\s*\}/.test(line)
-    ) {
-      sectionEnd = i;
-      break;
-    }
-  }
-
-  return { categoryLine, sectionEnd };
 }
 
 /**
@@ -609,7 +447,7 @@ async function addTokenToCSS(
   engineDir: string,
   options: AddTokenOptions,
   tokensCssPath: string
-): Promise<{ added: boolean; categoryCreated: boolean }> {
+): Promise<{ added: boolean; categoryCreated: boolean; existing?: TokenDeclarationLocation }> {
   const filePath = join(engineDir, tokensCssPath);
   await assertTokenCategoryExists(
     engineDir,
@@ -618,15 +456,21 @@ async function addTokenToCSS(
     options.createCategory === true
   );
 
-  let content = await readText(filePath);
-
-  // Idempotency check — strip CSS block comments so we don't match inside them
-  const stripped = content.replace(/\/\*[\s\S]*?\*\//g, '');
-  if (stripped.includes(options.tokenName + ':')) {
-    return { added: false, categoryCreated: false };
-  }
-
+  const content = await readText(filePath);
   const lines = content.split('\n');
+
+  // Per-category idempotency (FORGE G3): a declaration in the TARGET
+  // category skips; a declaration elsewhere in the base :root block
+  // throws instead of silently skipping (and silently discarding
+  // --create-category).
+  const idempotency = evaluateBaseTokenIdempotency(lines, options, tokensCssPath);
+  if (idempotency.skipped) {
+    return {
+      added: false,
+      categoryCreated: false,
+      ...(idempotency.existing !== undefined ? { existing: idempotency.existing } : {}),
+    };
+  }
   const annotation = getModeAnnotation(options.mode, options.value);
 
   // Declare a missing category banner in the same in-memory edit as the
@@ -666,7 +510,6 @@ async function addTokenToCSS(
     info(`Override also written to ${themeBlocksWritten.join(' and ')}.`);
   }
 
-  content = lines.join('\n');
-  await writeText(filePath, content);
+  await writeText(filePath, lines.join('\n'));
   return { added: true, categoryCreated };
 }

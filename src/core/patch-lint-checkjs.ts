@@ -40,6 +40,7 @@ import {
   composeShimSource,
   SHIM_FILENAME,
   SUPPRESSED_DIAGNOSTIC_CODES,
+  TEST_HARNESS_SHIM,
   UNDEFINED_IDENTIFIER_CODES,
   UNDEFINED_IDENTIFIER_HINT,
 } from './typecheck-shim.js';
@@ -193,7 +194,8 @@ export async function runCheckJsGrouped(
   resolutionOwned: Set<string>,
   extraShimPath?: string,
   projectRoot?: string,
-  mode?: CheckJsMode
+  mode?: CheckJsMode,
+  builtinShimSuffix?: string
 ): Promise<GroupedCheckJsResult> {
   const empty: GroupedCheckJsResult = { byFile: new Map(), global: [] };
   if (resolutionOwned.size === 0) return empty;
@@ -241,7 +243,11 @@ export async function runCheckJsGrouped(
   let shimSource: string;
   try {
     const composed = await composeShimSource(projectRoot ?? repoDir, extraShimPath);
-    shimSource = composed.source;
+    // The suffix (e.g. the loose test-harness baseline, FORGE G5) goes
+    // AFTER the consumer's extra shim: TypeScript resolves conflicting
+    // `declare var` redeclarations to the FIRST declaration, so a typed
+    // consumer declaration must precede the loose fallback to win.
+    shimSource = builtinShimSuffix ? `${composed.source}\n${builtinShimSuffix}` : composed.source;
     if (composed.extraShimAppended) {
       verbose(`checkJs: extra shim ${extraShimPath ?? ''} appended to Firefox globals shim`);
     }
@@ -493,6 +499,66 @@ export async function invokePatchLintCheckJs(
     modeFromPatchLintConfig(patchLint),
     reportScope
   );
+}
+
+/**
+ * Runs the checkJs pass over patch-owned test `.js` files (FORGE G5,
+ * `patchLint.checkJsTestFiles`). Each test file gets its OWN small
+ * program — mochitest scripts share top-level scope only with their
+ * directory's `head*.js` helpers, so one multi-script program would emit
+ * false cross-file redeclaration errors — with roots = the test file plus
+ * any same-directory patch-owned `head*.js`, checked against the built-in
+ * Firefox shim + {@link TEST_HARNESS_SHIM} + the optional consumer
+ * `checkJsTestShim`. Only the target file's diagnostics are reported per
+ * program (head helpers report from their own program), and run-level
+ * errors are de-duplicated across programs.
+ *
+ * @param repoDir - Absolute engine (repository) directory
+ * @param testFiles - Patch-owned test-script paths (repo-relative)
+ * @param patchLint - The resolved `patchLint` config block
+ * @param projectRoot - FireForge project root for shim resolution
+ */
+export async function runCheckJsTestFilesGrouped(
+  repoDir: string,
+  testFiles: Set<string>,
+  patchLint: PatchLintConfig,
+  projectRoot: string
+): Promise<GroupedCheckJsResult> {
+  const merged: GroupedCheckJsResult = { byFile: new Map(), global: [] };
+  if (testFiles.size === 0) return merged;
+
+  const mode = modeFromPatchLintConfig(patchLint);
+  const seenGlobal = new Set<string>();
+  const files = [...testFiles].sort((a, b) => a.localeCompare(b));
+  for (const file of files) {
+    const dir = file.slice(0, file.lastIndexOf('/') + 1);
+    const roots = new Set([file]);
+    for (const candidate of files) {
+      if (candidate === file) continue;
+      const base = candidate.split('/').pop() ?? '';
+      if (candidate.startsWith(dir) && /^head(?:_.*)?\.js$/.test(base)) {
+        roots.add(candidate);
+      }
+    }
+    const result = await runCheckJsGrouped(
+      repoDir,
+      roots,
+      patchLint.checkJsTestShim,
+      projectRoot,
+      mode,
+      TEST_HARNESS_SHIM
+    );
+    const own = result.byFile.get(file);
+    if (own && own.length > 0) {
+      merged.byFile.set(file, [...(merged.byFile.get(file) ?? []), ...own]);
+    }
+    for (const globalIssue of result.global) {
+      if (seenGlobal.has(globalIssue.message)) continue;
+      seenGlobal.add(globalIssue.message);
+      merged.global.push(globalIssue);
+    }
+  }
+  return merged;
 }
 
 /** Derives the {@link CheckJsMode} from a `patchLint` config block. */

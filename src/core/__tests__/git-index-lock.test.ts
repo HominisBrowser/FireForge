@@ -29,7 +29,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return { ...orig, readdir: vi.fn(() => Promise.resolve([])), stat: vi.fn() };
 });
 
-import { GitIndexLockError } from '../../errors/git.js';
+import { GitIndexLockError, isGitIndexLockConflict } from '../../errors/git.js';
 import { GitError } from '../../errors/git.js';
 import { initRepository } from '../git.js';
 
@@ -107,5 +107,48 @@ describe('initRepository index-lock wrapping', () => {
     await expect(initRepository('/project/engine', 'firefox')).rejects.not.toBeInstanceOf(
       GitIndexLockError
     );
+  });
+});
+
+describe('isGitIndexLockConflict', () => {
+  it('recognises a GitIndexLockError instance', () => {
+    expect(isGitIndexLockConflict(new GitIndexLockError('/x/.git/index.lock'))).toBe(true);
+  });
+
+  it('recognises the "Unable to create index.lock: File exists" message shape', () => {
+    expect(
+      isGitIndexLockConflict(
+        new GitError("fatal: Unable to create '/x/.git/index.lock': File exists.", 'diff')
+      )
+    ).toBe(true);
+  });
+
+  it('recognises the "another git process seems to be running" message shape', () => {
+    expect(
+      isGitIndexLockConflict(
+        new GitError(
+          'index.lock is held: Another git process seems to be running in this repository',
+          'add'
+        )
+      )
+    ).toBe(true);
+  });
+
+  it('rejects git errors that merely mention index.lock without lock phrasing', () => {
+    expect(isGitIndexLockConflict(new GitError('warning: index.lock cleaned up', 'gc'))).toBe(
+      false
+    );
+  });
+
+  it('rejects lock-phrased errors that do not mention index.lock', () => {
+    expect(isGitIndexLockConflict(new GitError('fatal: config file exists', 'config'))).toBe(false);
+  });
+
+  it('rejects non-GitError values', () => {
+    expect(isGitIndexLockConflict(new Error("Unable to create 'index.lock': File exists"))).toBe(
+      false
+    );
+    expect(isGitIndexLockConflict('index.lock file exists')).toBe(false);
+    expect(isGitIndexLockConflict(undefined)).toBe(false);
   });
 });

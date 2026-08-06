@@ -63,6 +63,14 @@ export interface ClassifiedFile extends StatusFile {
    * single claim is fully captured by the classification itself.
    */
   claimedBy?: string[];
+  /**
+   * Owning patch filename when exactly one patch claims this path
+   * (patch-backed, patch-owned-drift, and single-owner furnace entries).
+   * Unset for unowned, branding-generated, unowned-furnace, and conflict
+   * entries — conflicts carry `claimedBy` instead. Exposed through
+   * `status --json` as the `patch` field (FORGE G11).
+   */
+  owner?: string;
 }
 
 /**
@@ -103,7 +111,14 @@ export function getPrimaryStatusCode(status: string): string {
   return status;
 }
 
-function isGeneratedBrandingPath(file: string, binaryName: string): boolean {
+/**
+ * True for the branding paths whose content FireForge generates itself
+ * (configure.sh, brand.properties/ftl, browser/moz.configure). Unlike the
+ * broader branding-root test, a brand-new unowned file under the branding
+ * directory is NOT generated — it is a patch candidate and must stay
+ * visible as unmanaged (the Assets.car precedent).
+ */
+export function isGeneratedBrandingPath(file: string, binaryName: string): boolean {
   const normalized = file.replace(/\\/g, '/');
   const brandingRoot = `browser/branding/${binaryName}`;
   return (
@@ -127,7 +142,8 @@ async function classifySingleOwnerFile(
   entry: StatusFile,
   engineDir: string,
   patchesDir: string,
-  matchClassification: 'patch-backed' | 'furnace'
+  matchClassification: 'patch-backed' | 'furnace',
+  owner: string
 ): Promise<ClassifiedFile> {
   if (getPrimaryStatusCode(entry.status) === 'D') {
     // Deleted file: content matches only if the patch expects deletion
@@ -135,6 +151,7 @@ async function classifySingleOwnerFile(
     return {
       ...entry,
       classification: expected === null ? matchClassification : 'patch-owned-drift',
+      owner,
     };
   }
 
@@ -148,12 +165,13 @@ async function classifySingleOwnerFile(
     return {
       ...entry,
       classification: actual === expected ? matchClassification : 'patch-owned-drift',
+      owner,
     };
   } catch (error: unknown) {
     verbose(
       `Treating ${entry.file} as patch-owned drift because patch-backed classification failed: ${toError(error).message}`
     );
-    return { ...entry, classification: 'patch-owned-drift' };
+    return { ...entry, classification: 'patch-owned-drift', owner };
   }
 }
 
@@ -227,8 +245,10 @@ export async function classifyFiles(
         // `furnace`. Multi-owner and unowned furnace paths keep the
         // short-circuit — the ownership table independently flags
         // filesAffected conflicts.
-        if (owners && owners.length === 1) {
-          results.push(await classifySingleOwnerFile(entry, engineDir, patchesDir, 'furnace'));
+        if (owners && owners.length === 1 && owners[0] !== undefined) {
+          results.push(
+            await classifySingleOwnerFile(entry, engineDir, patchesDir, 'furnace', owners[0])
+          );
         } else {
           results.push({ ...entry, classification: 'furnace' });
         }
@@ -257,7 +277,14 @@ export async function classifyFiles(
     }
 
     // File is claimed by exactly one patch — compare content.
-    results.push(await classifySingleOwnerFile(entry, engineDir, patchesDir, 'patch-backed'));
+    const owner = owners[0];
+    if (owner === undefined) {
+      results.push({ ...entry, classification: 'unmanaged' });
+      continue;
+    }
+    results.push(
+      await classifySingleOwnerFile(entry, engineDir, patchesDir, 'patch-backed', owner)
+    );
   }
 
   return results;

@@ -1456,6 +1456,211 @@ describe('statusCommand', () => {
     });
   });
 
+  describe('--check enforcement mode (FORGE G1)', () => {
+    function seedSingleOwnerManifest(): void {
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-backed.patch',
+            order: 1,
+            category: 'ui',
+            name: 'backed',
+            description: '',
+            createdAt: '2026-04-21T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/backed.js'],
+          },
+        ],
+      });
+      vi.mocked(computePatchedContent).mockResolvedValue('ok');
+      vi.mocked(readText).mockResolvedValue('ok');
+    }
+
+    it('fails with exit-shaped error naming classification and files when unmanaged files exist', async () => {
+      seedSingleOwnerManifest();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: 'browser/base/new-a.js' },
+        { status: '??', file: 'browser/base/new-b.js' },
+      ]);
+
+      await expect(statusCommand(projectRoot, { check: true })).rejects.toThrow(
+        'status --check failed: 2 unmanaged (browser/base/new-a.js, browser/base/new-b.js)'
+      );
+    });
+
+    it('passes when every file is patch-backed, branding, or furnace', async () => {
+      seedSingleOwnerManifest();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: ' M', file: 'browser/base/backed.js' },
+      ]);
+
+      await expect(statusCommand(projectRoot, { check: true })).resolves.toBeUndefined();
+    });
+
+    it('passes on a clean tree', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+      vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+
+      await expect(statusCommand(projectRoot, { check: true })).resolves.toBeUndefined();
+    });
+
+    it('--fail-on replaces the default set and implies --check', async () => {
+      seedSingleOwnerManifest();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: 'browser/base/new-a.js' },
+      ]);
+
+      // unmanaged present but the policy only fails on drift → passes.
+      await expect(
+        statusCommand(projectRoot, { failOn: 'patch-owned-drift' })
+      ).resolves.toBeUndefined();
+
+      // Drift present and selected → fails.
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: ' M', file: 'browser/base/backed.js' },
+      ]);
+      vi.mocked(readText).mockResolvedValue('DRIFTED');
+      await expect(statusCommand(projectRoot, { failOn: 'patch-owned-drift' })).rejects.toThrow(
+        'status --check failed: 1 patch-owned-drift (browser/base/backed.js)'
+      );
+    });
+
+    it('refuses an unknown --fail-on classification naming the valid set', async () => {
+      await expect(statusCommand(projectRoot, { failOn: 'bogus' })).rejects.toThrow(
+        /Unknown --fail-on classification "bogus"/
+      );
+    });
+
+    it('composes with --json: stdout stays parseable JSON and the check still fails', async () => {
+      seedSingleOwnerManifest();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: 'browser/base/new-a.js' },
+      ]);
+      const writes: string[] = [];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+
+      try {
+        await expect(statusCommand(projectRoot, { json: true, check: true })).rejects.toThrow(
+          'status --check failed'
+        );
+      } finally {
+        stdoutSpy.mockRestore();
+      }
+
+      const payload = JSON.parse(writes.join('')) as { schemaVersion: number };
+      expect(payload.schemaVersion).toBe(1);
+    });
+
+    it('is refused alongside --raw', async () => {
+      await expect(statusCommand(projectRoot, { raw: true, check: true })).rejects.toThrow(
+        '--check cannot be combined with --raw, --unmanaged, --ownership, or --test-coverage'
+      );
+    });
+  });
+
+  describe('--json names the owning patch (FORGE G11)', () => {
+    function spyStdout(): { writes: string[]; restore: () => void } {
+      const writes: string[] = [];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+      return {
+        writes,
+        restore: () => {
+          stdoutSpy.mockRestore();
+        },
+      };
+    }
+
+    interface OwnerFilesPayload {
+      files: Array<{ file: string; classification: string; patch: string | null }>;
+    }
+
+    it('single-owner and drifted entries carry patch; unmanaged and conflict carry null', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: ' M', file: 'browser/base/backed.js' },
+        { status: ' M', file: 'browser/base/drifted.js' },
+        { status: '??', file: 'browser/base/unowned.js' },
+        { status: ' M', file: 'browser/base/jar.mn' },
+      ]);
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-backed.patch',
+            order: 1,
+            category: 'ui',
+            name: 'backed',
+            description: '',
+            createdAt: '2026-04-21T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/backed.js'],
+          },
+          {
+            filename: '002-ui-drifted.patch',
+            order: 2,
+            category: 'ui',
+            name: 'drifted',
+            description: '',
+            createdAt: '2026-04-21T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/drifted.js', 'browser/base/jar.mn'],
+          },
+          {
+            filename: '003-ui-other.patch',
+            order: 3,
+            category: 'ui',
+            name: 'other',
+            description: '',
+            createdAt: '2026-04-21T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/jar.mn'],
+          },
+        ],
+      });
+      vi.mocked(computePatchedContent).mockResolvedValue('ok');
+      vi.mocked(readText).mockImplementation((path: string) =>
+        Promise.resolve(path.endsWith('drifted.js') ? 'DRIFTED' : 'ok')
+      );
+
+      const { writes, restore } = spyStdout();
+      try {
+        await statusCommand(projectRoot, { json: true });
+      } finally {
+        restore();
+      }
+
+      const payload = JSON.parse(writes.join('')) as OwnerFilesPayload;
+      const byFile = new Map(payload.files.map((f) => [f.file, f]));
+      expect(byFile.get('browser/base/backed.js')).toMatchObject({
+        classification: 'patch-backed',
+        patch: '001-ui-backed.patch',
+      });
+      expect(byFile.get('browser/base/drifted.js')).toMatchObject({
+        classification: 'patch-owned-drift',
+        patch: '002-ui-drifted.patch',
+      });
+      expect(byFile.get('browser/base/unowned.js')).toMatchObject({
+        classification: 'unmanaged',
+        patch: null,
+      });
+      expect(byFile.get('browser/base/jar.mn')).toMatchObject({
+        classification: 'conflict',
+        patch: null,
+      });
+      expect(byFile.get('browser/base/jar.mn')).toHaveProperty('claimedBy');
+    });
+  });
+
   describe('--json error paths emit exactly one JSON line (Finding 1)', () => {
     it('engine-missing: stdout carries only the JSON object, never the human banner', async () => {
       // Pre-fix: emitJsonError wrote the JSON line and then threw a

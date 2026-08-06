@@ -23,6 +23,14 @@ import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 type StagedDependencyMode = 'add' | 'remove' | 'clear';
 type StagedDependencyKind = 'import' | 'registration';
 
+/** Joins the names of the missing flags for error attribution (FORGE G12). */
+function missingFlagList(pairs: readonly (readonly [string, unknown])[]): string {
+  return pairs
+    .filter(([, value]) => value === undefined || value === '')
+    .map(([flag]) => flag)
+    .join(', ');
+}
+
 function modeFromOptions(options: PatchStagedDependencyOptions): StagedDependencyMode {
   const adding = options.add === true;
   const removing = options.remove === true;
@@ -31,13 +39,13 @@ function modeFromOptions(options: PatchStagedDependencyOptions): StagedDependenc
   if (modeCount > 1) {
     throw new InvalidArgumentError(
       '--add, --remove, and --clear are mutually exclusive. Pick one mode per invocation.',
-      'patch staged-dependency'
+      '--add/--remove/--clear'
     );
   }
   if (modeCount === 0) {
     throw new InvalidArgumentError(
       'Specify --add, --remove, or --clear.',
-      'patch staged-dependency'
+      '--add/--remove/--clear'
     );
   }
   return adding ? 'add' : removing ? 'remove' : 'clear';
@@ -48,32 +56,35 @@ function kindFromOptions(options: PatchStagedDependencyOptions): StagedDependenc
   if (kind !== 'import' && kind !== 'registration') {
     throw new InvalidArgumentError(
       `--kind must be "import" or "registration" (got "${kind}").`,
-      'patch staged-dependency'
+      '--kind'
     );
   }
   if (kind === 'import' && options.line !== undefined) {
     throw new InvalidArgumentError(
       '--line only applies to --kind registration; import declarations use --specifier.',
-      'patch staged-dependency'
+      '--line'
     );
   }
   if (kind === 'registration' && options.specifier !== undefined) {
     throw new InvalidArgumentError(
       '--specifier only applies to --kind import; registration declarations use --line.',
-      'patch staged-dependency'
+      '--specifier'
     );
   }
   return kind;
 }
 
 function requireForwardImportOptions(
-  options: PatchStagedDependencyOptions,
-  mode: Exclude<StagedDependencyMode, 'clear'>
+  options: PatchStagedDependencyOptions
 ): PatchStagedForwardImport {
   if (!options.file || !options.specifier || !options.creates) {
     throw new InvalidArgumentError(
-      `--${mode} requires --file, --specifier, and --creates.`,
-      'patch staged-dependency'
+      '--add requires --file, --specifier, and --creates.',
+      missingFlagList([
+        ['--file', options.file],
+        ['--specifier', options.specifier],
+        ['--creates', options.creates],
+      ])
     );
   }
   const dependency: PatchStagedForwardImport = {
@@ -87,13 +98,16 @@ function requireForwardImportOptions(
 }
 
 function requireRegistrationOptions(
-  options: PatchStagedDependencyOptions,
-  mode: Exclude<StagedDependencyMode, 'clear'>
+  options: PatchStagedDependencyOptions
 ): PatchStagedRegistration {
   if (!options.file || !options.line || !options.creates) {
     throw new InvalidArgumentError(
-      `--${mode} --kind registration requires --file, --line, and --creates.`,
-      'patch staged-dependency'
+      '--add --kind registration requires --file, --line, and --creates.',
+      missingFlagList([
+        ['--file', options.file],
+        ['--line', options.line],
+        ['--creates', options.creates],
+      ])
     );
   }
   const dependency: PatchStagedRegistration = {
@@ -104,6 +118,94 @@ function requireRegistrationOptions(
   if (options.owner !== undefined) dependency.owner = options.owner;
   if (options.reason !== undefined) dependency.reason = options.reason;
   return dependency;
+}
+
+/**
+ * Resolves the `--remove` target for forward-imports (FORGE G12):
+ * `--file` + `--specifier` suffice when they identify at most one staged
+ * entry — `--creates` is inferred from a unique match, an ambiguous match
+ * refuses with the candidate list, and no match falls through to the
+ * honest "no staged forward-import matched" summary.
+ */
+function resolveImportRemovalTarget(
+  options: PatchStagedDependencyOptions,
+  staged: PatchStagedDependencies | undefined
+): PatchStagedForwardImport {
+  if (!options.file || !options.specifier) {
+    throw new InvalidArgumentError(
+      '--remove requires --file and --specifier; --creates is only needed to disambiguate when several staged entries share them.',
+      missingFlagList([
+        ['--file', options.file],
+        ['--specifier', options.specifier],
+      ])
+    );
+  }
+  if (options.creates) {
+    return requireForwardImportOptions(options);
+  }
+  const { file, specifier } = options;
+  const candidates = (staged?.forwardImports ?? []).filter(
+    (entry) =>
+      entry.file === file &&
+      entry.specifier === specifier &&
+      (options.owner === undefined || entry.owner === options.owner)
+  );
+  const single = candidates.length === 1 ? candidates[0] : undefined;
+  if (single !== undefined) {
+    info(`Inferred --creates ${single.creates} from the single matching staged entry.`);
+    return { ...single };
+  }
+  if (candidates.length > 1) {
+    const list = candidates
+      .map((entry) => `  - ${dependencyLabel('import', importView(entry))}`)
+      .join('\n');
+    throw new GeneralError(
+      `--remove matches ${String(candidates.length)} staged forward-imports on this patch; ` +
+        `pass --creates to pick one:\n${list}`
+    );
+  }
+  return { file, specifier, creates: '(no match)' };
+}
+
+/** Registration twin of {@link resolveImportRemovalTarget}, keyed on `--line`. */
+function resolveRegistrationRemovalTarget(
+  options: PatchStagedDependencyOptions,
+  staged: PatchStagedDependencies | undefined
+): PatchStagedRegistration {
+  if (!options.file || !options.line) {
+    throw new InvalidArgumentError(
+      '--remove --kind registration requires --file and --line; --creates is only needed to disambiguate when several staged entries share them.',
+      missingFlagList([
+        ['--file', options.file],
+        ['--line', options.line],
+      ])
+    );
+  }
+  if (options.creates) {
+    return requireRegistrationOptions(options);
+  }
+  const { file, line } = options;
+  const candidates = (staged?.registrations ?? []).filter(
+    (entry) =>
+      entry.file === file &&
+      entry.line === line &&
+      (options.owner === undefined || entry.owner === options.owner)
+  );
+  const single = candidates.length === 1 ? candidates[0] : undefined;
+  if (single !== undefined) {
+    info(`Inferred --creates ${single.creates} from the single matching staged entry.`);
+    return { ...single };
+  }
+  if (candidates.length > 1) {
+    const list = candidates
+      .map((entry) => `  - ${dependencyLabel('registration', registrationView(entry))}`)
+      .join('\n');
+    throw new GeneralError(
+      `--remove matches ${String(candidates.length)} staged registrations on this patch; ` +
+        `pass --creates to pick one:\n${list}`
+    );
+  }
+  return { file, line, creates: '(no match)' };
 }
 
 /**
@@ -216,21 +318,31 @@ export async function patchStagedDependencyCommand(
 
   const mode = modeFromOptions(options);
   const kind = kindFromOptions(options);
+
+  // The patch queue loads BEFORE the declaration fields resolve so
+  // `--remove` can infer `--creates` from the target patch's staged
+  // entries (FORGE G12).
+  const { paths, manifest } = await requirePatchQueue(projectRoot);
+  const targetPatch = requirePatchTarget(identifier, manifest.patches);
+
   const importDependency =
-    mode === 'clear' || kind !== 'import' ? undefined : requireForwardImportOptions(options, mode);
+    mode === 'clear' || kind !== 'import'
+      ? undefined
+      : mode === 'add'
+        ? requireForwardImportOptions(options)
+        : resolveImportRemovalTarget(options, targetPatch.stagedDependencies);
   const registrationDependency =
     mode === 'clear' || kind !== 'registration'
       ? undefined
-      : requireRegistrationOptions(options, mode);
+      : mode === 'add'
+        ? requireRegistrationOptions(options)
+        : resolveRegistrationRemovalTarget(options, targetPatch.stagedDependencies);
   const target =
     importDependency !== undefined
       ? importView(importDependency)
       : registrationDependency !== undefined
         ? registrationView(registrationDependency)
         : undefined;
-
-  const { paths, manifest } = await requirePatchQueue(projectRoot);
-  const targetPatch = requirePatchTarget(identifier, manifest.patches);
 
   const applyToStaged = (staged: PatchStagedDependencies | undefined): PatchStagedDependencies => {
     if (mode === 'clear') return {};
@@ -349,7 +461,10 @@ export function registerPatchStagedDependency(parent: Command, context: CommandC
     .option('--owner <patch>', 'Exact later patch filename expected to create --creates')
     .option('--reason <text>', 'Human-readable rationale stored with the declaration')
     .option('--dry-run', 'Show what would change without writing')
-    .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
+    .option(
+      '-y, --yes',
+      'Record scripted consent in the destructive-operation history log. This command never prompts; the flag exists for workflow uniformity with commands that do.'
+    )
     .action(
       withErrorHandling(
         async (

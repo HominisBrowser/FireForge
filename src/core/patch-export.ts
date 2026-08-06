@@ -31,16 +31,9 @@ export {
   findAllPatchesForFilesWithDetails,
   findSupersededPatches,
   isPatchFullyCovered,
-  type PatchCoverage,
   type SupersedeCoverageDetail,
 } from './patch-export-coverage.js';
-export {
-  type ClearablePatchMetadataField,
-  mutatePatchMetadata,
-  type PatchMetadataMutation,
-  type PatchMetadataMutationResult,
-  updatePatchMetadata,
-} from './patch-export-metadata.js';
+export { mutatePatchMetadata, updatePatchMetadata } from './patch-export-metadata.js';
 export { updatePatchAndMetadata } from './patch-export-update.js';
 
 /**

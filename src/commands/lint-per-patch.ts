@@ -13,6 +13,7 @@ import {
 } from '../core/lint-cache.js';
 import {
   buildPatchQueueContext,
+  countNonBinaryDiffLines,
   lintExportedPatch,
   type LintExportedPatchOptions,
   lintPatchQueue,
@@ -21,8 +22,13 @@ import {
 import {
   type GroupedCheckJsResult,
   invokePatchLintCheckJsGrouped,
+  runCheckJsTestFilesGrouped,
 } from '../core/patch-lint-checkjs.js';
-import { resolvePatchOwnedSysMjs } from '../core/patch-lint-ownership.js';
+import {
+  isTestScriptFile,
+  resolvePatchOwnedSysMjs,
+  resolvePatchOwnedTestScripts,
+} from '../core/patch-lint-ownership.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
@@ -30,6 +36,7 @@ import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { LintCommandOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, outro, success, warn } from '../utils/logger.js';
+import { writePerPatchLintReport } from './lint-report.js';
 
 function buildPerPatchMaxWarningsMessage(
   count: number,
@@ -96,8 +103,12 @@ interface QueuedPatchResult {
   existingFiles: string[];
   /** Unprefixed issues (from cache or a fresh lint); empty when skipped. */
   rawIssues: PatchLintIssue[];
+  /** Issues dropped by the patch's lintIgnore waivers (FORGE G10). */
+  suppressedIssues: PatchLintIssue[];
+  /** Non-binary diff line count; 0 when skipped. */
+  lineCount: number;
   /** Present only on a fresh lint with the cache enabled. */
-  cacheWrite?: { key: string; issues: PatchLintIssue[] };
+  cacheWrite?: { key: string };
   /** True when this patch was freshly linted with checkJs on (built/used the
    *  queue-wide program), so run-level checkJs errors are emitted once here. */
   usedCheckJs: boolean;
@@ -121,7 +132,14 @@ async function lintQueuedPatch(
     if (await pathExists(join(paths.engine, f))) existing.push(f);
   }
   if (existing.length === 0) {
-    return { status: 'skipped', existingFiles: [], rawIssues: [], usedCheckJs: false };
+    return {
+      status: 'skipped',
+      existingFiles: [],
+      rawIssues: [],
+      suppressedIssues: [],
+      lineCount: 0,
+      usedCheckJs: false,
+    };
   }
 
   const ignore = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
@@ -144,18 +162,35 @@ async function lintQueuedPatch(
       // an engine-side revert that would empty the diff always changes the
       // key and misses the cache (pinned by the "engine-side content
       // revert invalidates the per-patch cache" test — FORGE F5).
-      return { status: 'cached', existingFiles: existing, rawIssues: cached, usedCheckJs: false };
+      return {
+        status: 'cached',
+        existingFiles: existing,
+        rawIssues: cached.issues,
+        suppressedIssues: cached.suppressed,
+        lineCount: cached.lineCount,
+        usedCheckJs: false,
+      };
     }
   }
 
   const diff = await getDiffForFilesAgainstHead(paths.engine, existing);
   if (!diff.trim()) {
-    return { status: 'skipped', existingFiles: [], rawIssues: [], usedCheckJs: false };
+    return {
+      status: 'skipped',
+      existingFiles: [],
+      rawIssues: [],
+      suppressedIssues: [],
+      lineCount: 0,
+      usedCheckJs: false,
+    };
   }
 
   // checkJs: instead of rebuilding the program per patch, slice this patch's
   // findings out of the one queue-wide program (built lazily on first miss).
-  let lintOptions: LintExportedPatchOptions | undefined;
+  const suppressedIssues: PatchLintIssue[] = [];
+  const lintOptions: LintExportedPatchOptions = {
+    onSuppressed: (suppressed) => suppressedIssues.push(...suppressed),
+  };
   let usedCheckJs = false;
   if (lintCtx.checkJs) {
     const grouped = await lintCtx.checkJs.getGrouped();
@@ -165,7 +200,7 @@ async function lintQueuedPatch(
     if (owned) {
       for (const rel of owned) precomputedCheckJs.push(...(grouped.byFile.get(rel) ?? []));
     }
-    lintOptions = { precomputedCheckJs };
+    lintOptions.precomputedCheckJs = precomputedCheckJs;
   }
 
   const patchIssues = await lintExportedPatch(
@@ -182,10 +217,12 @@ async function lintQueuedPatch(
     status: 'linted',
     existingFiles: existing,
     rawIssues: patchIssues,
+    suppressedIssues,
+    lineCount: countNonBinaryDiffLines(diff).textLines,
     usedCheckJs,
   };
   if (cache && cacheKey) {
-    result.cacheWrite = { key: cacheKey, issues: patchIssues };
+    result.cacheWrite = { key: cacheKey };
   }
   return result;
 }
@@ -196,7 +233,15 @@ interface PerPatchTotals {
   skipped: number;
   cacheDirty: boolean;
   reusedCacheEntries: number;
+  suppressed: number;
 }
+
+/** Size-rule check IDs whose waived measurement is still reported (FORGE G10). */
+const SUPPRESSED_SIZE_CHECKS = new Set([
+  'large-patch-lines',
+  'large-patch-files',
+  'file-too-large',
+]);
 
 /**
  * Applies the per-patch results in patch order so the bounded concurrency
@@ -217,6 +262,7 @@ async function applyPerPatchResults(
     skipped: 0,
     cacheDirty: false,
     reusedCacheEntries: 0,
+    suppressed: 0,
   };
   let globalCheckJsEmitted = false;
   for (let i = 0; i < subset.length; i++) {
@@ -247,7 +293,9 @@ async function applyPerPatchResults(
         cache,
         patch.filename,
         result.cacheWrite.key,
-        result.cacheWrite.issues
+        result.rawIssues,
+        result.suppressedIssues,
+        result.lineCount
       );
       totals.cacheDirty = true;
     }
@@ -255,6 +303,18 @@ async function applyPerPatchResults(
     for (const issue of result.rawIssues) {
       issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
     }
+
+    // A waived size finding still reports its MEASUREMENT (FORGE G10):
+    // the finding stays suppressed (no exit-code / --max-warnings effect)
+    // but the current count is readable from the tool that enforces it,
+    // so a waiver's cited size can be calibrated without hand-measuring.
+    for (const suppressedIssue of result.suppressedIssues) {
+      if (!SUPPRESSED_SIZE_CHECKS.has(suppressedIssue.check)) continue;
+      info(
+        `NOTICE [${suppressedIssue.check}] ${patch.filename}: suppressed by lintIgnore — ${suppressedIssue.message}`
+      );
+    }
+    totals.suppressed += result.suppressedIssues.length;
 
     if (result.status === 'cached') totals.reusedCacheEntries++;
     totals.linted++;
@@ -396,7 +456,9 @@ function selectPatchSubset(
     if (found.length === 0) {
       const available = manifest.patches.map((p) => p.filename).join(', ');
       throw new GeneralError(
-        `--patches: no patch in the queue matches "${name}". Available patches: ${available}`
+        `No patch in the queue matches "${name}". In --per-patch mode, positional arguments ` +
+          `and --patches select patches (filename, stem, manifest name, or slug) — not engine ` +
+          `files; drop --per-patch to lint engine paths. Available patches: ${available}`
       );
     }
     for (const p of found) {
@@ -423,15 +485,41 @@ function buildPerRunCheckJs(
 ): PerRunCheckJs | undefined {
   const patchLint = config.patchLint;
   if (!patchLint?.checkJs) return undefined;
+  const testFilesEnabled = patchLint.checkJsTestFiles === true;
 
   const ownedByPatch = new Map<string, Set<string>>();
   for (const entry of ctx.entries) {
     const owned = new Set<string>();
     for (const f of entry.newFiles.keys()) {
       if (f.endsWith('.sys.mjs')) owned.add(f);
+      else if (testFilesEnabled && isTestScriptFile(f)) owned.add(f);
     }
     if (owned.size > 0) ownedByPatch.set(entry.filename, owned);
   }
+
+  // One build for the whole run: the queue-wide `.sys.mjs` program plus —
+  // when `patchLint.checkJsTestFiles` is on (FORGE G5) — one small
+  // script-scope program per patch-owned test file, merged by file.
+  const buildAll = async (): Promise<GroupedCheckJsResult> => {
+    const sys = await invokePatchLintCheckJsGrouped(
+      paths.engine,
+      resolvePatchOwnedSysMjs(new Set(), ctx),
+      patchLint,
+      projectRoot
+    );
+    if (!testFilesEnabled) return sys;
+    const tests = await runCheckJsTestFilesGrouped(
+      paths.engine,
+      resolvePatchOwnedTestScripts(new Set(), ctx),
+      patchLint,
+      projectRoot
+    );
+    const byFile = new Map(sys.byFile);
+    for (const [rel, list] of tests.byFile) {
+      byFile.set(rel, [...(byFile.get(rel) ?? []), ...list]);
+    }
+    return { byFile, global: [...sys.global, ...tests.global] };
+  };
 
   // Memoise the *promise*, not the resolved value: under the bounded pool
   // several patches can reach `getGrouped` before the first build resolves, and
@@ -439,22 +527,8 @@ function buildPerRunCheckJs(
   let groupedPromise: Promise<GroupedCheckJsResult> | undefined;
   return {
     ownedByPatch,
-    getGrouped: () =>
-      (groupedPromise ??= invokePatchLintCheckJsGrouped(
-        paths.engine,
-        resolvePatchOwnedSysMjs(new Set(), ctx),
-        patchLint,
-        projectRoot
-      )),
-    getGlobal: async () =>
-      (
-        await (groupedPromise ??= invokePatchLintCheckJsGrouped(
-          paths.engine,
-          resolvePatchOwnedSysMjs(new Set(), ctx),
-          patchLint,
-          projectRoot
-        ))
-      ).global,
+    getGrouped: () => (groupedPromise ??= buildAll()),
+    getGlobal: async () => (await (groupedPromise ??= buildAll())).global,
   };
 }
 
@@ -527,13 +601,8 @@ export async function lintPerPatch(
     checkJs,
   });
 
-  const { linted, skipped, cacheDirty, reusedCacheEntries } = await applyPerPatchResults(
-    subset,
-    results,
-    issues,
-    checkJs,
-    cache
-  );
+  const { linted, skipped, cacheDirty, reusedCacheEntries, suppressed } =
+    await applyPerPatchResults(subset, results, issues, checkJs, cache);
 
   for (const issue of lintPatchQueue(ctx)) {
     if (isSubset && !subsetTouchedFiles.has(issue.file)) continue;
@@ -545,6 +614,13 @@ export async function lintPerPatch(
     info(
       `Reused lint cache for ${reusedCacheEntries} patch${reusedCacheEntries === 1 ? '' : 'es'}.`
     );
+  }
+  if (suppressed > 0) {
+    info(`Suppressed ${suppressed} issue(s) via per-patch lintIgnore.`);
+  }
+
+  if (options.report !== undefined) {
+    await writePerPatchLintReport(options.report, subset, results);
   }
 
   reportPerPatchOutcome(issues, linted, skipped, options);

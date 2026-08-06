@@ -220,18 +220,37 @@ describe('per-patch lint cache', () => {
   it('loads, reuses, and clears cached issues', async () => {
     const cacheKey = await key();
     const cache = await loadPerPatchLintCache(projectRoot);
-    setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, [
-      {
-        file: 'browser/a.js',
-        check: 'missing-modification-comment',
-        message: 'marker missing',
-        severity: 'warning',
-      },
-    ]);
+    setCachedPerPatchLintIssues(
+      cache,
+      patch.filename,
+      cacheKey,
+      [
+        {
+          file: 'browser/a.js',
+          check: 'missing-modification-comment',
+          message: 'marker missing',
+          severity: 'warning',
+        },
+      ],
+      [
+        {
+          file: '(patch)',
+          check: 'large-patch-lines',
+          message: 'Patch is 4200 lines (hard limit: 3000).',
+          severity: 'error',
+        },
+      ],
+      4200
+    );
     await savePerPatchLintCache(projectRoot, cache);
 
     const loaded = await loadPerPatchLintCache(projectRoot);
-    expect(getCachedPerPatchLintIssues(loaded, patch.filename, cacheKey)).toHaveLength(1);
+    const cached = getCachedPerPatchLintIssues(loaded, patch.filename, cacheKey);
+    expect(cached?.issues).toHaveLength(1);
+    // FORGE G10: the waived measurement round-trips through the cache so a
+    // warm run reports the same suppressed sizes as a cold one.
+    expect(cached?.suppressed).toHaveLength(1);
+    expect(cached?.lineCount).toBe(4200);
 
     await clearPerPatchLintCache(projectRoot);
     const cleared = await loadPerPatchLintCache(projectRoot);

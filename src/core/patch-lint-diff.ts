@@ -49,6 +49,36 @@ export function extractAddedLinesPerFile(diffContent: string): Map<string, strin
 }
 
 /**
+ * Extracts 1-based post-patch line numbers of added lines per file from a
+ * unified diff. Walking each hunk with a new-file line counter (`+` and
+ * context lines advance it, `-` lines do not) lets rules that need
+ * full-file context — e.g. comment masking across the context/added
+ * boundary (FORGE G4) — map the patch's additions onto the applied file.
+ */
+export function extractAddedLineNumbersPerFile(diffContent: string): Map<string, number[]> {
+  const result = new Map<string, number[]>();
+  for (const section of parseDiffSections(diffContent)) {
+    for (const hunk of section.hunks) {
+      let newLine = hunk.newStart;
+      for (const line of hunk.lines) {
+        if (line.startsWith('\\')) continue; // "\ No newline at end of file"
+        if (line.startsWith('-')) continue;
+        if (line.startsWith('+')) {
+          let arr = result.get(section.targetPath);
+          if (!arr) {
+            arr = [];
+            result.set(section.targetPath, arr);
+          }
+          arr.push(newLine);
+        }
+        newLine++;
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * Builds the `modifiedFileAdditions` map the cross-patch lint expects for
  * a given unified diff. Exposed so callers that construct synthetic /
  * projected `PatchQueueEntry` values (notably `re-export --files`

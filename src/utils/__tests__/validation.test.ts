@@ -15,6 +15,7 @@ import {
   isValidFirefoxVersion,
   isValidPatchCategory,
   isValidProjectLicense,
+  normalizePatchDisplayName,
   normalizeTokenName,
   parsePositiveIntegerFlag,
   validateFirefoxProductVersionCompatibility,
@@ -238,5 +239,39 @@ describe('normalizeTokenName with validation', () => {
 
   it('throws on invalid names with */', () => {
     expect(() => normalizeTokenName('bad*/token')).toThrow('*/');
+  });
+});
+
+describe('normalizePatchDisplayName (FORGE G13)', () => {
+  it('strips a single category prefix', () => {
+    expect(normalizePatchDisplayName('ui-foo', 'ui')).toBe('foo');
+  });
+
+  it('strips an ordinal + category prefix, repeatedly', () => {
+    expect(normalizePatchDisplayName('203-ui-foo', 'ui')).toBe('foo');
+    expect(normalizePatchDisplayName('203-ui-ui-foo', 'ui')).toBe('foo');
+  });
+
+  it('strips a trailing .patch extension case-insensitively', () => {
+    expect(normalizePatchDisplayName('ui-foo.patch', 'ui')).toBe('foo');
+    expect(normalizePatchDisplayName('foo.PATCH', 'ui')).toBe('foo');
+  });
+
+  it('is case-insensitive on the category token but preserves the remainder', () => {
+    expect(normalizePatchDisplayName('UI-Foo', 'ui')).toBe('Foo');
+  });
+
+  it('never strips a bare leading number', () => {
+    expect(normalizePatchDisplayName('2-step-verification', 'ui')).toBe('2-step-verification');
+  });
+
+  it('leaves other-category and unprefixed names untouched', () => {
+    expect(normalizePatchDisplayName('core-foo', 'ui')).toBe('core-foo');
+    expect(normalizePatchDisplayName('foo', 'ui')).toBe('foo');
+  });
+
+  it('falls back to the stem when stripping would empty the name', () => {
+    expect(normalizePatchDisplayName('ui-', 'ui')).toBe('ui-');
+    expect(normalizePatchDisplayName('203-ui-', 'ui')).toBe('203-ui-');
   });
 });

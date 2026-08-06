@@ -63,7 +63,12 @@ describe('runTestsWithRetries suite dispatch (item E1)', () => {
 
     const outcome = await runTestsWithRetries(makeCtx('xpcshell'), ['a_test.js']);
 
-    expect(xpcshellTestWithOutput).toHaveBeenCalledWith('/engine', ['a_test.js'], []);
+    expect(xpcshellTestWithOutput).toHaveBeenCalledWith(
+      '/engine',
+      ['a_test.js'],
+      [],
+      expect.objectContaining({ XPCSHELL_TEST_PROFILE_DIR: expect.any(String) as string })
+    );
     expect(testWithOutput).not.toHaveBeenCalled();
     expect(mochitestWithOutput).not.toHaveBeenCalled();
     expect(outcome.verdict.kind).toBe('tests-ran-ok');
@@ -84,7 +89,12 @@ describe('runTestsWithRetries suite dispatch (item E1)', () => {
 
     await runTestsWithRetries(makeCtx('generic'), ['a_test.js']);
 
-    expect(testWithOutput).toHaveBeenCalledWith('/engine', ['a_test.js'], []);
+    expect(testWithOutput).toHaveBeenCalledWith(
+      '/engine',
+      ['a_test.js'],
+      [],
+      expect.objectContaining({ XPCSHELL_TEST_PROFILE_DIR: expect.any(String) as string })
+    );
     expect(xpcshellTestWithOutput).not.toHaveBeenCalled();
     expect(mochitestWithOutput).not.toHaveBeenCalled();
   });
@@ -102,5 +112,72 @@ describe('runTestsWithRetries suite dispatch (item E1)', () => {
     const suite = await runTestsWithRetries(makeCtx('xpcshell', 2), ['a_test.js']);
     expect(suite.verdict.kind).toBe('tests-ran-ok');
     expect(suite.attempts).toBe(1);
+  });
+});
+
+/**
+ * FORGE G15b: Firefox's xpcshell harness defaults its profile dir to a
+ * FIXED $TMPDIR path, so concurrent invocations collided. Every harness
+ * invocation that can dispatch xpcshell now exports a fresh per-invocation
+ * XPCSHELL_TEST_PROFILE_DIR; pure mochitest dispatches stay untouched.
+ */
+describe('per-invocation xpcshell profile dir (FORGE G15b)', () => {
+  function capturedEnv(mock: typeof xpcshellTestWithOutput, call = 0): Record<string, string> {
+    return vi.mocked(mock).mock.calls[call]?.[3] ?? {};
+  }
+
+  it('exports a fresh, unique dir per xpcshell harness invocation', async () => {
+    vi.mocked(xpcshellTestWithOutput).mockResolvedValue(GREEN);
+
+    await runTestsWithRetries(makeCtx('xpcshell'), ['a_test.js']);
+    await runTestsWithRetries(makeCtx('xpcshell'), ['b_test.js']);
+
+    const first = capturedEnv(xpcshellTestWithOutput, 0)['XPCSHELL_TEST_PROFILE_DIR'];
+    const second = capturedEnv(xpcshellTestWithOutput, 1)['XPCSHELL_TEST_PROFILE_DIR'];
+    expect(first).toContain('fireforge-xpcshell-profile-');
+    expect(second).toContain('fireforge-xpcshell-profile-');
+    expect(first).not.toBe(second);
+  });
+
+  it('leaves a pure mochitest dispatch env byte-identical (no profile var)', async () => {
+    vi.mocked(mochitestWithOutput).mockResolvedValue(GREEN);
+
+    await runTestsWithRetries(makeCtx('mochitest'), ['browser_x.js']);
+
+    // No env argument at all — the dispatch shape is unchanged.
+    expect(mochitestWithOutput).toHaveBeenCalledWith('/engine', ['browser_x.js'], []);
+  });
+
+  it('crash retries within one invocation reuse the SAME profile dir', async () => {
+    vi.mocked(xpcshellTestWithOutput)
+      .mockResolvedValueOnce(RESOURCE_MONITOR_CRASH)
+      .mockResolvedValueOnce(GREEN);
+
+    const outcome = await runTestsWithRetries(makeCtx('xpcshell', 1), ['a_test.js']);
+
+    expect(outcome.attempts).toBe(2);
+    const first = capturedEnv(xpcshellTestWithOutput, 0)['XPCSHELL_TEST_PROFILE_DIR'];
+    const second = capturedEnv(xpcshellTestWithOutput, 1)['XPCSHELL_TEST_PROFILE_DIR'];
+    expect(first).toBe(second);
+  });
+
+  it('respects an operator-provided XPCSHELL_TEST_PROFILE_DIR verbatim', async () => {
+    vi.mocked(xpcshellTestWithOutput).mockResolvedValue(GREEN);
+
+    const ctx = { ...makeCtx('xpcshell'), env: { XPCSHELL_TEST_PROFILE_DIR: '/operator/dir' } };
+    await runTestsWithRetries(ctx, ['a_test.js']);
+
+    expect(capturedEnv(xpcshellTestWithOutput)['XPCSHELL_TEST_PROFILE_DIR']).toBe('/operator/dir');
+  });
+
+  it('preserves caller env vars alongside the minted profile dir', async () => {
+    vi.mocked(xpcshellTestWithOutput).mockResolvedValue(GREEN);
+
+    const ctx = { ...makeCtx('xpcshell'), env: { MOZ_SAMPLE: '1' } };
+    await runTestsWithRetries(ctx, ['a_test.js']);
+
+    const env = capturedEnv(xpcshellTestWithOutput);
+    expect(env['MOZ_SAMPLE']).toBe('1');
+    expect(env['XPCSHELL_TEST_PROFILE_DIR']).toContain('fireforge-xpcshell-profile-');
   });
 });

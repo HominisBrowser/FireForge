@@ -522,6 +522,32 @@ describe('runCommand', () => {
       expect(readFile).toHaveBeenCalledWith('/tmp/allow.txt', 'utf8');
     });
 
+    it('summarizes per-entry allowlist attribution with zero-hit entries flagged (FORGE G8)', async () => {
+      vi.mocked(readFile).mockResolvedValue('# comment\nknown-flake\nnever-matches\n');
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('JavaScript error: known-flake tripped');
+        opts.onStderrLine?.('JavaScript error: known-flake tripped again');
+        opts.onStderrLine?.('console.error: AsyncShutdown drained');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      await expect(
+        runCommand('/project', {
+          smokeExit: 30,
+          consoleAllowFile: '/tmp/allow.txt',
+          consoleAllow: ['AsyncShutdown'],
+        }).catch(() => undefined)
+      ).resolves.toBeUndefined();
+
+      const infoLines = vi.mocked(info).mock.calls.map((call) => call[0]);
+      expect(infoLines).toContain('  Allowlist attribution (first matching entry per line):');
+      expect(infoLines).toContain('    1×  --console-allow #1  AsyncShutdown');
+      expect(infoLines).toContain('    2×  /tmp/allow.txt:2  known-flake');
+      expect(infoLines).toContain(
+        '    0×  /tmp/allow.txt:3  never-matches  (never matched — candidate for removal)'
+      );
+    });
+
     it('wraps --console-allow-file read errors as InvalidArgumentError', async () => {
       const { InvalidArgumentError } = await import('../../errors/base.js');
       vi.mocked(readFile).mockRejectedValue(new Error('ENOENT: no such file'));

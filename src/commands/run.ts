@@ -17,7 +17,8 @@ import {
 import {
   compileAllowlistFromFile,
   compileAllowlistFromStrings,
-  matchesAllowlist,
+  type CompiledAllowlistEntry,
+  matchAllowlist,
   matchesSmokeError,
 } from '../core/smoke-patterns.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -242,6 +243,7 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   const findings: SmokeFinding[] = [];
   let allowlistedErrorHits = 0;
   let allowlistedTotalHits = 0;
+  const allowlistHits = new Array<number>(allowlist.length).fill(0);
 
   const handleLine = (stream: 'stdout' | 'stderr', line: string): void => {
     // Mirror raw output to the terminal so operators watching the smoke
@@ -259,9 +261,11 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     // total set of allowlisted lines (what the operator sees in the
     // console) and the subset that were error-class (what the smoke
     // exit contract cares about). The exit contract itself is unchanged.
-    const isAllowlisted = allowlist.length > 0 && matchesAllowlist(line, allowlist);
+    const matchIndex = allowlist.length > 0 ? matchAllowlist(line, allowlist) : -1;
+    const isAllowlisted = matchIndex !== -1;
     if (isAllowlisted) {
       allowlistedTotalHits += 1;
+      allowlistHits[matchIndex] = (allowlistHits[matchIndex] ?? 0) + 1;
     }
     if (!matchesSmokeError(line)) return;
     if (isAllowlisted) {
@@ -311,6 +315,8 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     timedOut: result.timedOut,
     allowlistedErrorHits,
     allowlistedTotalHits,
+    allowlist,
+    allowlistHits,
     findings,
     exitCode: result.exitCode,
   });
@@ -344,8 +350,8 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
  * better to surface the typo at parse time than to silently let it
  * match nothing and turn every allowed hit into a smoke failure.
  */
-async function buildAllowlist(options: RunOptions): Promise<RegExp[]> {
-  const allow: RegExp[] = [];
+async function buildAllowlist(options: RunOptions): Promise<CompiledAllowlistEntry[]> {
+  const allow: CompiledAllowlistEntry[] = [];
   if (options.consoleAllow && options.consoleAllow.length > 0) {
     try {
       allow.push(...compileAllowlistFromStrings(options.consoleAllow));
@@ -379,6 +385,8 @@ function reportSmokeSummary(args: {
   timedOut: boolean;
   allowlistedErrorHits: number;
   allowlistedTotalHits: number;
+  allowlist: readonly CompiledAllowlistEntry[];
+  allowlistHits: readonly number[];
   findings: SmokeFinding[];
   exitCode: number;
 }): void {
@@ -397,6 +405,18 @@ function reportSmokeSummary(args: {
   info(`  Allowlisted error hits (suppressed): ${String(args.allowlistedErrorHits)}`);
   info(`  Allowlisted lines total: ${String(args.allowlistedTotalHits)}`);
   info(`  Child exit code:  ${String(args.exitCode)}`);
+
+  // Per-entry attribution (FORGE G8): first-match credit per line, with
+  // zero-hit entries always visible — an allowlist entry whose suppressed
+  // shape changed upstream is only detectable as a 0× row.
+  if (args.allowlist.length > 0) {
+    info('  Allowlist attribution (first matching entry per line):');
+    args.allowlist.forEach((entry, index) => {
+      const hits = args.allowlistHits[index] ?? 0;
+      const zeroSuffix = hits === 0 ? '  (never matched — candidate for removal)' : '';
+      info(`    ${String(hits)}×  ${entry.origin}  ${entry.source}${zeroSuffix}`);
+    });
+  }
 
   if (args.findings.length === 0) return;
 

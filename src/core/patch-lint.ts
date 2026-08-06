@@ -13,7 +13,7 @@ import {
   hasAnyLicenseHeaderAnyStyle,
   hasUpstreamMplBlockHeader,
 } from './license-headers.js';
-import { invokePatchLintCheckJs } from './patch-lint-checkjs.js';
+import { invokePatchLintCheckJs, runCheckJsTestFilesGrouped } from './patch-lint-checkjs.js';
 import { lintChromeScriptJsDocForFile } from './patch-lint-chrome-jsdoc.js';
 import { lintPatchedCss } from './patch-lint-css.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
@@ -22,7 +22,11 @@ import { hasRelativeImport } from './patch-lint-imports.js';
 import { validateExportJsDoc } from './patch-lint-jsdoc.js';
 import { lintMozBuildSortedLists } from './patch-lint-mozbuild.js';
 import { lintObserverTopics } from './patch-lint-observer.js';
-import { resolvePatchOwnedChromeScripts, resolvePatchOwnedSysMjs } from './patch-lint-ownership.js';
+import {
+  resolvePatchOwnedChromeScripts,
+  resolvePatchOwnedSysMjs,
+  resolvePatchOwnedTestScripts,
+} from './patch-lint-ownership.js';
 
 // ---------------------------------------------------------------------------
 // Cross-patch lint re-exports
@@ -555,6 +559,23 @@ export function resolvePatchSizeTier(
 }
 
 /**
+ * Read-only view of the size thresholds a tier enforces (FORGE G9).
+ * Public-API companion to {@link resolvePatchSizeTier} /
+ * {@link countNonBinaryDiffLines} so consumers can build waiver-freshness
+ * checks against the SAME numbers `large-patch-lines` /
+ * `large-patch-files` fire on instead of mirroring them.
+ */
+export function getPatchSizeThresholds(tier: 'general' | 'test' | 'branding'): {
+  lines: { notice: number; warning: number; error: number };
+  maxFiles: number;
+} {
+  return {
+    lines: { ...PATCH_LINE_THRESHOLDS[tier] },
+    maxFiles: PATCH_FILES_THRESHOLDS[tier],
+  };
+}
+
+/**
  * Checks patch size and emits advisory warnings.
  *
  * @param filesAffected - Files touched by the patch
@@ -712,6 +733,14 @@ export interface LintExportedPatchOptions {
    * attributes findings per patch instead of rebuilding per patch.
    */
   precomputedCheckJs?: readonly PatchLintIssue[];
+  /**
+   * Invoked with the issues DROPPED by the `ignoreChecks` waiver filter,
+   * when any were (FORGE G10). Suppression semantics are unchanged — the
+   * returned issue list still excludes them — but the caller can report
+   * the measurement a waived size finding carried (per-patch NOTICE lines
+   * and the `--report` JSON) instead of losing it entirely.
+   */
+  onSuppressed?: (suppressed: PatchLintIssue[]) => void;
 }
 
 /**
@@ -797,6 +826,21 @@ export async function lintExportedPatch(
         options?.checkJsReportScope
       ))
     );
+    // Export-time twin of per-patch lint's test-file pass (FORGE G5), so
+    // export/re-export and `lint --per-patch` agree on the checked surface.
+    if (config.patchLint.checkJsTestFiles === true) {
+      const testGrouped = await runCheckJsTestFilesGrouped(
+        repoDir,
+        resolvePatchOwnedTestScripts(newFiles, patchQueueCtx),
+        config.patchLint,
+        dirname(repoDir)
+      );
+      issues.push(...testGrouped.global);
+      for (const [rel, list] of testGrouped.byFile) {
+        if (options?.checkJsReportScope && !options.checkJsReportScope.has(rel)) continue;
+        issues.push(...list);
+      }
+    }
   }
 
   // Filter out ignored checks last so every rule still runs (keeps the
@@ -805,6 +849,10 @@ export async function lintExportedPatch(
   // inline `fireforge-ignore: <check>` markers work in the CSS and
   // forward-import rules.
   if (ignoreChecks && ignoreChecks.size > 0) {
+    const suppressed = issues.filter((issue) => ignoreChecks.has(issue.check));
+    if (suppressed.length > 0) {
+      options?.onSuppressed?.(suppressed);
+    }
     return issues.filter((issue) => !ignoreChecks.has(issue.check));
   }
   return issues;

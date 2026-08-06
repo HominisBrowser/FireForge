@@ -124,6 +124,28 @@ export class GitIndexLockError extends GitError {
 }
 
 /**
+ * Detects transient git `index.lock` contention — an external git process
+ * holding `.git/index.lock` while we stage or diff. Mirrors the message
+ * heuristics `core/git.ts` uses when wrapping stale-lock failures during
+ * download, but lives here so command modules can consult it without
+ * importing (frequently vi.mocked) core git internals.
+ */
+export function isGitIndexLockConflict(error: unknown): boolean {
+  if (error instanceof GitIndexLockError) {
+    return true;
+  }
+  if (!(error instanceof GitError)) {
+    return false;
+  }
+  return (
+    /index\.lock/i.test(error.message) &&
+    /(unable to create|another git process seems to be running|file exists|locked)/i.test(
+      error.message
+    )
+  );
+}
+
+/**
  * Error thrown when `git add` (monolithic or chunked) exceeds the
  * configured timeout while indexing the Firefox source tree.
  *

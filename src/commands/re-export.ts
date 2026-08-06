@@ -1,26 +1,24 @@
 // SPDX-License-Identifier: EUPL-1.2
 /* eslint-disable max-lines -- Re-export is at the guardrail; splitting register plumbing is unrelated to this fix. */
-import { dirname, join } from 'node:path';
-
 import { multiselect } from '@clack/prompts';
 import { Command, Option } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
+import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { isGitRepository } from '../core/git.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
-import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
 import { buildPatchQueueContext } from '../core/patch-lint.js';
 import {
-  getClaimedFiles,
   loadPatchesManifest,
   resolvePatchIdentifier,
   stampPatchVersions,
 } from '../core/patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
+import { isGitIndexLockConflict } from '../errors/git.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
@@ -30,6 +28,8 @@ import { pathExists } from '../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../utils/options.js';
 import { runPatchLint } from './export-shared.js';
+import type { AdjacentUnmanagedContext } from './re-export-adjacent.js';
+import { findMissingFiles, reportAdjacentUnmanagedFiles } from './re-export-adjacent.js';
 import { loadScanFilesAssignments, withDryRunReExportLock } from './re-export-bulk-scan.js';
 import { reExportFilesInPlace } from './re-export-files.js';
 import {
@@ -44,72 +44,51 @@ import {
   scanPatchFilesForReExport,
 } from './re-export-scan.js';
 
-async function findMissingFiles(engineDir: string, files: readonly string[]): Promise<string[]> {
-  const missingFiles: string[] = [];
-  for (const file of files) {
-    if (!(await pathExists(join(engineDir, file)))) missingFiles.push(file);
-  }
-  return missingFiles;
-}
+const GIT_INDEX_LOCK_RETRY_MS = 300;
 
-async function findLikelyNewSiblingFiles(args: {
-  currentFilesAffected: readonly string[];
-  engineDir: string;
-  manifest: PatchesManifest;
-  patchFilename: string;
-}): Promise<string[]> {
-  const { currentFilesAffected, engineDir, manifest, patchFilename } = args;
-  const parentDirs = [...new Set(currentFilesAffected.map((file) => dirname(file)))];
-  const currentSet = new Set(currentFilesAffected);
-  const claimedByOthers = getClaimedFiles(manifest, patchFilename);
-  const candidates = new Set<string>();
-
-  for (const dir of parentDirs) {
-    const [modifiedFiles, untrackedFiles] = await Promise.all([
-      getModifiedFilesInDir(engineDir, dir),
-      getUntrackedFilesInDir(engineDir, dir),
-    ]);
-    for (const file of [...modifiedFiles, ...untrackedFiles]) {
-      if (currentSet.has(file) || claimedByOthers.has(file)) continue;
-      candidates.add(file);
-    }
-  }
-
-  return [...candidates].sort();
-}
-
-async function warnPlainReExportFileDrift(args: {
-  patch: PatchMetadata;
-  paths: ReturnType<typeof getProjectPaths>;
-  manifest: PatchesManifest;
-  currentFilesAffected: readonly string[];
-}): Promise<void> {
-  const { patch, paths, manifest, currentFilesAffected } = args;
-  const missingFiles = await findMissingFiles(paths.engine, currentFilesAffected);
-  if (missingFiles.length > 0) {
-    warn(
-      `${patch.filename}: some files in patches.json no longer exist on disk ` +
-        `(${missingFiles.join(', ')}). Without --scan, re-export keeps the manifest's ` +
-        `filesAffected unchanged and the missing entries will be preserved — ` +
-        `\`fireforge verify\` may flag manifest inconsistency after this run.\n` +
-        `  Re-run with --scan to reconcile filesAffected with the current worktree, ` +
-        `or pass --files <paths> to set the list explicitly.`
+/**
+ * Retries a single patch re-export exactly once when the failure is
+ * transient git `index.lock` contention (an external git process holding
+ * the engine repo's index). The retry re-enters `reExportSinglePatch`
+ * from the top, so it re-reads clean state; a second lock failure
+ * propagates to the loop's honest "N of M" accounting.
+ */
+async function reExportSinglePatchWithIndexLockRetry(
+  patch: PatchMetadata,
+  paths: ReturnType<typeof getProjectPaths>,
+  manifest: PatchesManifest,
+  options: ReExportOptions,
+  isDryRun: boolean,
+  config: FireForgeConfig,
+  adjacentCtx: AdjacentUnmanagedContext
+): Promise<boolean> {
+  try {
+    return await reExportSinglePatch(
+      patch,
+      paths,
+      manifest,
+      options,
+      isDryRun,
+      config,
+      adjacentCtx
     );
-  }
-
-  const likelyNewFiles = await findLikelyNewSiblingFiles({
-    currentFilesAffected,
-    engineDir: paths.engine,
-    manifest,
-    patchFilename: patch.filename,
-  });
-  if (likelyNewFiles.length === 0) return;
-
-  warn(
-    `${patch.filename}: found ${likelyNewFiles.length} unowned changed sibling file${likelyNewFiles.length === 1 ? '' : 's'} near this patch. Plain re-export keeps filesAffected unchanged; add reviewed files explicitly with --scan-file.`
-  );
-  for (const file of likelyNewFiles) {
-    info(`  ${file} — fireforge re-export ${patch.filename} --scan --scan-file ${file}`);
+  } catch (error: unknown) {
+    if (!isGitIndexLockConflict(error)) {
+      throw error;
+    }
+    warn(
+      `${patch.filename}: git index.lock contention detected — retrying once after ${String(GIT_INDEX_LOCK_RETRY_MS)} ms...`
+    );
+    await new Promise((resolve) => setTimeout(resolve, GIT_INDEX_LOCK_RETRY_MS));
+    return await reExportSinglePatch(
+      patch,
+      paths,
+      manifest,
+      options,
+      isDryRun,
+      config,
+      adjacentCtx
+    );
   }
 }
 
@@ -119,7 +98,8 @@ async function reExportSinglePatch(
   manifest: PatchesManifest,
   options: ReExportOptions,
   isDryRun: boolean,
-  config: FireForgeConfig
+  config: FireForgeConfig,
+  adjacentCtx: AdjacentUnmanagedContext
 ): Promise<boolean> {
   let currentFilesAffected = [...patch.filesAffected];
 
@@ -170,7 +150,8 @@ async function reExportSinglePatch(
     // warning up-front when we can detect the drift cheaply, so the
     // operator has a chance to re-run with `--scan` or `--files`
     // before the stale filesAffected lands in patches.json.
-    await warnPlainReExportFileDrift({ patch, paths, manifest, currentFilesAffected });
+    const args = { patch, paths, manifest, currentFilesAffected, ctx: adjacentCtx };
+    if (await reportAdjacentUnmanagedFiles(args)) return false;
   }
 
   // --- Explicit file-subset path ---
@@ -477,6 +458,15 @@ export async function reExportCommand(
 
   const config = await loadConfig(projectRoot);
 
+  // Classification inputs for the scan-less adjacency advisory, computed
+  // once for the whole run (FORGE G2).
+  const adjacentCtx: AdjacentUnmanagedContext = {
+    binaryName: config.binaryName,
+    furnacePrefixes: await collectFurnaceManagedPrefixes(paths.root),
+    refuseAdjacentUnmanaged: options.refuseAdjacentUnmanaged === true,
+    refusals: [],
+  };
+
   let reExported = 0;
   const reExportedFilenames: string[] = [];
   const progress = spinner('Preparing re-export...');
@@ -491,13 +481,14 @@ export async function reExportCommand(
         `Re-exporting ${index + 1}/${selectedPatches.length}: ${patch.filename} (${patch.filesAffected.length} file(s), ${elapsedSince(startedAt)} elapsed)...`
       );
       try {
-        const exported = await reExportSinglePatch(
+        const exported = await reExportSinglePatchWithIndexLockRetry(
           patch,
           paths,
           manifest,
           patchOptions,
           isDryRun,
-          config
+          config,
+          adjacentCtx
         );
         if (exported) {
           reExported++;
@@ -509,6 +500,16 @@ export async function reExportCommand(
       }
     }
   });
+
+  if (adjacentCtx.refusals.length > 0) {
+    progress.error('Re-export refused');
+    const names = adjacentCtx.refusals.map((r) => r.patchFilename).join(', ');
+    throw new GeneralError(
+      `Refused ${String(adjacentCtx.refusals.length)} patch(es) with adjacent unmanaged files ` +
+        `(--refuse-adjacent-unmanaged): ${names}. Adopt reviewed files with --scan --scan-file, ` +
+        `or export them as a new patch.`
+    );
+  }
 
   if (reExported === 0 && selectedPatches.length > 0) {
     progress.error('Re-export failed');
@@ -592,6 +593,10 @@ export function registerReExport(
           .map((v) => v.trim())
           .filter((v) => v.length > 0)
     )
+    .option(
+      '--refuse-adjacent-unmanaged',
+      'Refuse a scan-less re-export (non-zero exit, patch not written) when unmanaged files exist adjacent to the patch ownership, instead of warning. Mutually exclusive with --scan and --files.'
+    )
     .option('--dry-run', 'Show what would change without writing')
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
     .option(
@@ -630,6 +635,7 @@ export function registerReExport(
           scanFile?: string[];
           scanFiles?: string;
           files?: string[];
+          refuseAdjacentUnmanaged?: boolean;
           dryRun?: boolean;
           skipLint?: boolean;
           yes?: boolean;

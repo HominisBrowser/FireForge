@@ -504,6 +504,116 @@ describe('patch staged-dependency', () => {
     await removeTempProject(projectRoot);
   });
 
+  it('--remove infers --creates when file+specifier match exactly one entry (FORGE G12)', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
+        stagedDependencies: {
+          forwardImports: [
+            {
+              file: 'foo/A.sys.mjs',
+              specifier: 'resource:///modules/B.sys.mjs',
+              creates: 'foo/B.sys.mjs',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      remove: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/B.sys.mjs',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
+  });
+
+  it('--remove refuses with a candidate list when file+specifier are ambiguous (FORGE G12)', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
+        stagedDependencies: {
+          forwardImports: [
+            {
+              file: 'foo/A.sys.mjs',
+              specifier: 'resource:///modules/B.sys.mjs',
+              creates: 'foo/B.sys.mjs',
+            },
+            {
+              file: 'foo/A.sys.mjs',
+              specifier: 'resource:///modules/B.sys.mjs',
+              creates: 'bar/B.sys.mjs',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+        remove: true,
+        file: 'foo/A.sys.mjs',
+        specifier: 'resource:///modules/B.sys.mjs',
+      })
+    ).rejects.toThrow(/--remove matches 2 staged forward-imports.*pass --creates to pick one/s);
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(2);
+  });
+
+  it('--remove with no matching file+specifier keeps the honest no-match summary (FORGE G12)', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
+        stagedDependencies: {
+          forwardImports: [
+            {
+              file: 'foo/A.sys.mjs',
+              specifier: 'resource:///modules/B.sys.mjs',
+              creates: 'foo/B.sys.mjs',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      remove: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/DoesNotExist.sys.mjs',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(1);
+  });
+
+  it('missing-flag errors name the actually-missing flags, not the command (FORGE G12)', async () => {
+    await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
+
+    try {
+      await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+        add: true,
+        file: 'foo/A.sys.mjs',
+      });
+      expect.unreachable('expected InvalidArgumentError');
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(InvalidArgumentError);
+      const userMessage = (error as InvalidArgumentError).userMessage;
+      expect(userMessage).toContain('Argument: --specifier, --creates');
+      expect(userMessage).not.toContain('Argument: patch staged-dependency');
+    }
+
+    try {
+      await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+        remove: true,
+        specifier: 'resource:///modules/B.sys.mjs',
+      });
+      expect.unreachable('expected InvalidArgumentError');
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(InvalidArgumentError);
+      expect((error as InvalidArgumentError).userMessage).toContain('Argument: --file');
+    }
+  });
+
   it('--add writes a staged forward-import declaration', async () => {
     await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
 

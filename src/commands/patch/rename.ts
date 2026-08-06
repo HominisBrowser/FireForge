@@ -374,7 +374,10 @@ export function registerPatchRename(parent: Command, context: CommandContext): v
       '--to <new-name>',
       'New human-readable name, category-prefixed slug, or full filename stem (normalised into the filename slug)'
     )
-    .option('--description <text>', 'Replacement description (omit to leave description unchanged)')
+    .option(
+      '-d, --description <text>',
+      'Replacement description (omit to leave description unchanged)'
+    )
     .option('--dry-run', 'Show what would change without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
     .option('--force-unsafe', 'Bypass force-mode patchPolicy refusals')

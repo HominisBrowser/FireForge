@@ -10,6 +10,7 @@ import { buildOwnershipTable, renderOwnershipTable } from '../core/ownership-tab
 import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../core/patch-lint.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import {
+  type ClassifiedFile,
   classifyFiles,
   type FileClassification,
   type StatusFile,
@@ -27,6 +28,7 @@ import {
   setMachineOutputMode,
   warn,
 } from '../utils/logger.js';
+import { resolveStatusCheckPolicy, runStatusCheck } from './status-check.js';
 import {
   type ClassifiedBuckets,
   renderDefaultStatus,
@@ -132,30 +134,30 @@ function filterFireForgeTempFiles(files: StatusFile[]): StatusFile[] {
 /**
  * Renders classified file status as machine-readable JSON to stdout.
  */
-async function renderJsonStatus(
+async function classifyStatusFiles(
   files: StatusFile[],
   paths: ReturnType<typeof getProjectPaths>,
   projectRoot: string,
   binaryName: string
-): Promise<void> {
+): Promise<ClassifiedFile[]> {
   const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
-  const classified = await classifyFiles(
-    files,
-    paths.engine,
-    paths.patches,
-    binaryName,
-    furnacePrefixes
-  );
+  return classifyFiles(files, paths.engine, paths.patches, binaryName, furnacePrefixes);
+}
+
+function renderJsonStatus(classified: readonly ClassifiedFile[]): void {
   const outputFiles = classified.map((f) => {
     const entry: {
       file: string;
       status: string;
       classification: FileClassification;
+      /** Owning patch filename; null when unowned (FORGE G11, additive to schemaVersion 1). */
+      patch: string | null;
       claimedBy?: string[];
     } = {
       file: f.file,
       status: f.status.trim(),
       classification: f.classification,
+      patch: f.owner ?? null,
     };
     if (f.classification === 'conflict' && f.claimedBy && f.claimedBy.length > 0) {
       entry.claimedBy = [...f.claimedBy];
@@ -255,6 +257,10 @@ export async function statusCommand(
         'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together. Pick at most one.'
       );
     }
+
+    // --check / --fail-on enforcement policy (FORGE G1). Applies only
+    // where classification runs (the default view and --json).
+    const checkPolicy = resolveStatusCheckPolicy(options);
 
     if (!options.raw && !options.json) {
       intro('FireForge Status');
@@ -383,7 +389,9 @@ export async function statusCommand(
     // the output through a JSON parser broke precisely when there was
     // nothing to report. Emit `[]` here and return before the human fallback.
     if (options.json) {
-      await renderJsonStatus(files, paths, projectRoot, config.binaryName);
+      const classified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
+      renderJsonStatus(classified);
+      runStatusCheck(classified, checkPolicy);
       return;
     }
 
@@ -408,14 +416,7 @@ export async function statusCommand(
     }
 
     // Patch-aware classification
-    const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
-    const classified = await classifyFiles(
-      files,
-      paths.engine,
-      paths.patches,
-      config.binaryName,
-      furnacePrefixes
-    );
+    const classified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
 
     const buckets: ClassifiedBuckets = {
       conflict: classified.filter((f) => f.classification === 'conflict'),
@@ -433,6 +434,7 @@ export async function statusCommand(
     }
 
     await renderDefaultStatus(files.length, buckets, projectRoot, config.binaryName);
+    runStatusCheck(classified, checkPolicy);
   } finally {
     if (isMachineOutputMode() !== previousMachineOutputMode) {
       setMachineOutputMode(previousMachineOutputMode);
@@ -459,6 +461,14 @@ export function registerStatus(
       'Show what the last recorded build covers for test packaging (full or scoped paths)'
     )
     .option('--json', 'Output classified file status as JSON')
+    .option(
+      '--check',
+      'Exit non-zero when any unmanaged, patch-owned-drift, or conflict file exists (composes with --json; combine with --fail-on for finer policy)'
+    )
+    .option(
+      '--fail-on <classifications>',
+      'Comma-separated classification list that fails --check, replacing the default set (implies --check). Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict'
+    )
     .action(
       withErrorHandling(
         async (options: {
@@ -467,6 +477,8 @@ export function registerStatus(
           ownership?: boolean;
           testCoverage?: boolean;
           json?: boolean;
+          check?: boolean;
+          failOn?: string;
         }) => {
           await statusCommand(getProjectRoot(), options);
         }

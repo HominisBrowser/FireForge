@@ -37,6 +37,7 @@ import { registerSource } from './source.js';
 import { registerStatus } from './status.js';
 import { registerTest } from './test-register.js';
 import { registerToken } from './token.js';
+import { registerTree } from './tree.js';
 import { registerTypecheck } from './typecheck.js';
 import { registerVerify } from './verify.js';
 import { registerWatch } from './watch.js';
@@ -87,6 +88,7 @@ export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = [
   { name: 'package', group: 'workflow', register: registerPackage },
   { name: 'watch', group: 'workflow', register: registerWatch },
   { name: 'test', group: 'workflow', register: registerTest },
+  { name: 'tree', group: 'workflow', register: registerTree },
   { name: 'config', group: 'project', register: registerConfig },
   { name: 'doctor', group: 'diagnostics', register: registerDoctor },
   { name: 'register', group: 'workflow', register: registerRegister },

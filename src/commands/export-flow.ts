@@ -133,14 +133,22 @@ export function computePlacementPlan(
   const renameMap = new Map<string, PatchRenameEntry>();
   const prefixWidth = prefixWidthForPatches(sorted, requestedOrder);
 
-  // Every existing patch at requestedOrder or later shifts up by one.
+  // Patches at requestedOrder or later shift up by one, but only until the
+  // cascade reaches a free ordinal — a gap absorbs the insert, so the tail
+  // beyond it (including any reserved block) keeps its numbering.
+  let cursor = requestedOrder;
   for (const patch of sorted) {
-    if (patch.order >= requestedOrder) {
-      const newOrder = patch.order + 1;
-      const currentRest = patch.filename.replace(/^\d+-/, '');
-      const newFilename = `${String(newOrder).padStart(prefixWidth, '0')}-${currentRest}`;
-      renameMap.set(patch.filename, { newOrder, newFilename });
+    if (patch.order < requestedOrder) {
+      continue;
     }
+    if (patch.order > cursor) {
+      break;
+    }
+    const newOrder = cursor + 1;
+    const currentRest = patch.filename.replace(/^\d+-/, '');
+    const newFilename = `${String(newOrder).padStart(prefixWidth, '0')}-${currentRest}`;
+    renameMap.set(patch.filename, { newOrder, newFilename });
+    cursor = newOrder;
   }
 
   const newFilename = buildFilenameForPlacement(

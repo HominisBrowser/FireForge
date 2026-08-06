@@ -303,6 +303,36 @@ export function normalizeTokenName(name: string): string {
 }
 
 /**
+ * Normalizes a patch display name against its category (FORGE G13):
+ * strips a trailing `.patch` and any redundant `NNN-<category>-` /
+ * `<category>-` prefixes, case-insensitively and repeatedly, mirroring
+ * the filename slug pipeline's require-the-category-token rule — a bare
+ * leading number is never stripped, so names like `2-step-verification`
+ * survive intact. Falls back to the `.patch`-stripped stem when the
+ * strip would empty the name.
+ */
+export function normalizePatchDisplayName(name: string, category: string): string {
+  const stem = name.trim().replace(/\.patch$/i, '');
+  const escaped = category.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const prefixes = [
+    new RegExp(`^\\d+[-_ ]+${escaped}[-_ ]+`, 'i'),
+    new RegExp(`^${escaped}[-_ ]+`, 'i'),
+  ];
+  let stripped = stem;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const prefix of prefixes) {
+      if (prefix.test(stripped)) {
+        stripped = stripped.replace(prefix, '');
+        changed = true;
+      }
+    }
+  }
+  return stripped.length > 0 ? stripped : stem;
+}
+
+/**
  * Validates a patch name.
  * @param name - The patch name to validate
  * @returns Error message if invalid, undefined if valid

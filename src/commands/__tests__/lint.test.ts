@@ -68,6 +68,11 @@ vi.mock('../../core/patch-lint.js', () => ({
   buildPatchQueueContext: vi.fn(() => Promise.resolve({ entries: [] })),
   lintPatchQueue: vi.fn(() => []),
   resolvePatchSizeTier: vi.fn(() => ({ tier: 'general' })),
+  countNonBinaryDiffLines: vi.fn(() => ({ total: 42, textLines: 42 })),
+  getPatchSizeThresholds: vi.fn(() => ({
+    lines: { notice: 800, warning: 1500, error: 3000 },
+    maxFiles: 5,
+  })),
 }));
 
 vi.mock('../../core/lint-cache.js', () => ({
@@ -498,7 +503,7 @@ describe('lintCommand — branch coverage', () => {
     }
 
     beforeEach(() => {
-      memoryCache = { schemaVersion: 1, entries: {} };
+      memoryCache = { schemaVersion: 2, entries: {} };
       vi.mocked(loadPerPatchLintCache).mockResolvedValue(memoryCache);
       vi.mocked(getPerPatchLintCacheHeadSha).mockResolvedValue('test-head-sha');
       vi.mocked(buildPerPatchLintCacheKey).mockImplementation((input) =>
@@ -507,23 +512,51 @@ describe('lintCommand — branch coverage', () => {
       vi.mocked(getCachedPerPatchLintIssues).mockImplementation((cache, filename, key) => {
         const entry = cache.entries[filename];
         if (!entry || entry.key !== key) return undefined;
-        return entry.issues.map((issue) => ({ ...issue }));
-      });
-      vi.mocked(setCachedPerPatchLintIssues).mockImplementation((cache, filename, key, issues) => {
-        cache.entries[filename] = {
-          key,
-          patchFilename: filename,
-          issues: issues.map((issue) => ({ ...issue })),
-          updatedAt: '2026-01-01T00:00:00.000Z',
+        return {
+          issues: entry.issues.map((issue) => ({ ...issue })),
+          suppressed: entry.suppressed.map((issue) => ({ ...issue })),
+          lineCount: entry.lineCount,
         };
       });
+      vi.mocked(setCachedPerPatchLintIssues).mockImplementation(
+        (cache, filename, key, issues, suppressed, lineCount) => {
+          cache.entries[filename] = {
+            key,
+            patchFilename: filename,
+            issues: issues.map((issue) => ({ ...issue })),
+            suppressed: suppressed.map((issue) => ({ ...issue })),
+            lineCount,
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          };
+        }
+      );
       vi.mocked(savePerPatchLintCache).mockResolvedValue();
       vi.mocked(clearPerPatchLintCache).mockResolvedValue();
     });
 
-    it('rejects --per-patch when combined with explicit file paths', async () => {
-      await expect(lintCommand('/project', ['src/app.ts'], { perPatch: true })).rejects.toThrow(
-        /cannot be combined with explicit engine file paths/
+    it('positional patch names select the per-patch subset like --patches (FORGE G14)', async () => {
+      const a = makePatch('001-ui-a.patch', ['a.ts']);
+      const b = makePatch('002-ui-b.patch', ['b.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a, b]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+      await expect(
+        lintCommand('/project', ['001-ui-a.patch'], { perPatch: true })
+      ).resolves.toBeUndefined();
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(1);
+    });
+
+    it('a non-matching positional in per-patch mode fails loud naming the selection rules (FORGE G14)', async () => {
+      const a = makePatch('001-ui-a.patch', ['a.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+
+      await expect(
+        lintCommand('/project', ['browser/themes/x.css'], { perPatch: true })
+      ).rejects.toThrow(
+        /No patch in the queue matches "browser\/themes\/x\.css".*drop --per-patch to lint engine paths/s
       );
     });
 
@@ -632,7 +665,9 @@ describe('lintCommand — branch coverage', () => {
         memoryCache,
         '001-ui-test.patch',
         'key:001-ui-test.patch',
-        []
+        [],
+        [],
+        42
       );
       expect(savePerPatchLintCache).toHaveBeenCalledWith('/project', memoryCache);
     });
@@ -699,6 +734,8 @@ describe('lintCommand — branch coverage', () => {
             message: 'Patch affects 8 files',
           },
         ],
+        suppressed: [],
+        lineCount: 42,
         updatedAt: '2026-01-01T00:00:00.000Z',
       };
 
@@ -815,6 +852,8 @@ describe('lintCommand — branch coverage', () => {
         key: `key:${patch.filename}`,
         patchFilename: patch.filename,
         issues: [],
+        suppressed: [],
+        lineCount: 42,
         updatedAt: '2026-01-01T00:00:00.000Z',
       };
 

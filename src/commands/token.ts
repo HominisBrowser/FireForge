@@ -139,7 +139,10 @@ export async function tokenAddCommand(
   });
 
   if (result.skipped) {
-    info(`Token ${tokenName} already exists (skipped)`);
+    const where = result.skippedExisting
+      ? ` in category "${result.skippedExisting.category ?? options.category}" (line ${String(result.skippedExisting.line)})`
+      : '';
+    info(`Token ${tokenName} already exists${where} (skipped)`);
   } else {
     const forgeConfig = await loadConfig(projectRoot);
     const tokensCssFile = getTokensCssPath(forgeConfig.binaryName).split('/').pop();

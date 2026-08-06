@@ -104,6 +104,38 @@ describe('assertPlacementAvoidsReservedRanges', () => {
       assertPlacementAvoidsReservedRanges(plan, patches, reservedConfig({ from: 95, to: 100 }));
     }).not.toThrow();
   });
+
+  it('allows a positional insert far below the reserved block when a free ordinal stops the cascade', () => {
+    // FORGE G6: the +1 cascade must stop at the first free ordinal (403 here)
+    // instead of walking the whole tail into the 900-999 reserved block.
+    const patches = [
+      makeMetadata('400-ui-a.patch', 400),
+      makeMetadata('401-ui-b.patch', 401),
+      makeMetadata('402-ui-c.patch', 402),
+      makeMetadata('900-ui-reserved.patch', 900),
+    ];
+    const plan = computePlacementPlan(patches, 'ui', 'incoming', 401);
+
+    expect([...plan.renameMap.keys()]).toEqual(['401-ui-b.patch', '402-ui-c.patch']);
+    expect(plan.renameMap.get('401-ui-b.patch')?.newOrder).toBe(402);
+    expect(plan.renameMap.get('402-ui-c.patch')?.newOrder).toBe(403);
+    expect(() => {
+      assertPlacementAvoidsReservedRanges(plan, patches, reservedConfig({ from: 900, to: 999 }));
+    }).not.toThrow();
+  });
+
+  it('still refuses when a contiguous run genuinely cascades into the reserved block', () => {
+    const patches = [
+      makeMetadata('898-ui-a.patch', 898),
+      makeMetadata('899-ui-b.patch', 899),
+      makeMetadata('900-ui-reserved.patch', 900),
+    ];
+    const plan = computePlacementPlan(patches, 'ui', 'incoming', 898);
+
+    expect(() => {
+      assertPlacementAvoidsReservedRanges(plan, patches, reservedConfig({ from: 900, to: 999 }));
+    }).toThrow(/Positional insert would renumber the reserved range 900-999/);
+  });
 });
 
 describe('resolvePlacementPlan reserved-range wiring', () => {

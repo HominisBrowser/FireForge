@@ -131,7 +131,31 @@ contaminates the console capture (headed non-CI launches print a warning saying 
 Per-patch lint type-checks plain Firefox JS against a built-in Firefox-globals shim that
 tracks upstream WebIDL additions per release; a project's `patchLint.checkJsExtraShim` can
 add members to the structured shim globals via TypeScript interface merging (e.g.
-`interface ChromeUtilsShim { newApi(): any }`).
+`interface ChromeUtilsShim { newApi(): any }`). Opting into
+`patchLint.checkJsTestFiles: true` extends the pass to patch-owned test `.js` files
+(`browser_*`/`test_*`/`xpcshell_*` and `/test/` paths), each checked as its own small
+script-scope program against a loose built-in harness shim; `patchLint.checkJsTestShim`
+points at a project `.d.ts` whose typed declarations (e.g. a real `TestUtils` interface)
+override the loose baseline so calls to nonexistent harness members fail at export time.
+
+For CI enforcement, `fireforge status --check` exits non-zero when any unmanaged,
+drifted, or conflicted file exists (`--fail-on <class,...>` tunes the policy set, and
+`--json` composes — the JSON stays parseable and its `files[]` entries name the owning
+`patch`). `lint --per-patch --report <path>` writes a machine-readable JSON report with
+each patch's line count, tier, active size thresholds, issues, and lintIgnore-suppressed
+issues; the size metrics (`countNonBinaryDiffLines`, `resolvePatchSizeTier`,
+`getPatchSizeThresholds`) are also exported on the programmatic API.
+
+For concurrent read-mostly verification beside a busy primary checkout,
+`fireforge tree create <name>` snapshots the project — applied engine tree included,
+`obj-*` excluded — into `.fireforge/trees/<name>` using filesystem copy-on-write (APFS
+clonefile / btrfs-XFS reflink; ~3 s for a 156 MB applied browser tree). Inside a tree,
+`status`, `lint`, `typecheck`, `verify`, `doctor`, and `export --dry-run` work unmodified
+with their own locks, while every mutating command is refused — patches and exports stay
+strictly serial in the primary tree. `tree list` reports staleness, `tree remove` deletes
+(refusing while a live process holds a tree lock), and `tree exec <name> -- <cmd>` runs a
+command inside a tree. Filesystems without CoW support refuse unless `--force-copy`
+explicitly accepts a full physical copy.
 
 ## Rebasing Firefox Source
 

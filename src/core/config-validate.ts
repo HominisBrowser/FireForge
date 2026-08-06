@@ -422,6 +422,19 @@ function parsePatchLintBlock(
     out.checkJsExtraShim = parseShimPath(checkJsExtraShim, 'patchLint.checkJsExtraShim');
   }
 
+  const checkJsTestFiles = rec.raw('checkJsTestFiles');
+  if (checkJsTestFiles !== undefined) {
+    if (typeof checkJsTestFiles !== 'boolean') {
+      throw new ConfigError('Config field "patchLint.checkJsTestFiles" must be a boolean');
+    }
+    out.checkJsTestFiles = checkJsTestFiles;
+  }
+
+  const checkJsTestShim = rec.raw('checkJsTestShim');
+  if (checkJsTestShim !== undefined) {
+    out.checkJsTestShim = parseShimPath(checkJsTestShim, 'patchLint.checkJsTestShim');
+  }
+
   const rawColorAllowlist = rec.raw('rawColorAllowlist');
   if (rawColorAllowlist !== undefined) {
     if (
@@ -475,6 +488,16 @@ function parsePatchLintBlock(
   if (out.checkJsCompilerOptions !== undefined && out.checkJsStrict !== true) {
     throw new ConfigError(
       'Config field "patchLint.checkJsCompilerOptions" requires "patchLint.checkJsStrict": true'
+    );
+  }
+  if (out.checkJsTestFiles === true && out.checkJs !== true) {
+    throw new ConfigError(
+      'Config field "patchLint.checkJsTestFiles" requires "patchLint.checkJs": true'
+    );
+  }
+  if (out.checkJsTestShim !== undefined && out.checkJsTestFiles !== true) {
+    throw new ConfigError(
+      'Config field "patchLint.checkJsTestShim" requires "patchLint.checkJsTestFiles": true'
     );
   }
 

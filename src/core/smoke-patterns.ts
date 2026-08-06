@@ -34,7 +34,7 @@ export const SMOKE_ERROR_PATTERNS: readonly RegExp[] = [
 /**
  * Returns `true` when `line` matches any pattern in
  * {@link SMOKE_ERROR_PATTERNS}. Does not consult the allowlist — that step
- * lives in {@link matchesAllowlist}, so the smoke runner can count
+ * lives in {@link matchAllowlist}, so the smoke runner can count
  * allowlisted hits separately from raw error matches for its summary.
  */
 export function matchesSmokeError(line: string): boolean {
@@ -47,32 +47,56 @@ export function matchesSmokeError(line: string): boolean {
 }
 
 /**
- * Returns `true` when `line` matches any regex in `allow`. Safe to call
- * with an empty allowlist (always returns `false`).
+ * One compiled allowlist entry with its provenance retained so the smoke
+ * summary can attribute hits per entry (FORGE G8) — an entry that silently
+ * stops matching (its suppressed shape changed upstream) is only
+ * detectable when zero-hit entries are visible.
  */
-export function matchesAllowlist(line: string, allow: readonly RegExp[]): boolean {
-  for (const pattern of allow) {
-    if (pattern.test(line)) {
-      return true;
+export interface CompiledAllowlistEntry {
+  pattern: RegExp;
+  /** Verbatim source text of the entry. */
+  source: string;
+  /** Human-readable origin: `allow.txt:12` or `--console-allow #2`. */
+  origin: string;
+}
+
+/**
+ * Returns the index of the FIRST entry in `allow` matching `line`, or -1.
+ * First-match attribution is deterministic and cheap; a line matching
+ * several entries credits the earliest one. Safe to call with an empty
+ * allowlist (always returns -1).
+ */
+export function matchAllowlist(line: string, allow: readonly CompiledAllowlistEntry[]): number {
+  for (let i = 0; i < allow.length; i++) {
+    if (allow[i]?.pattern.test(line)) {
+      return i;
     }
   }
-  return false;
+  return -1;
 }
 
 /**
  * Parses a newline-delimited allowlist file body. Lines are trimmed; blank
  * lines and `#`-prefixed comments are skipped. Each remaining line is
- * compiled as a RegExp. A bad pattern throws immediately — better to fail
- * fast at CLI parse time than to silently let a typo match nothing.
+ * compiled as a RegExp with its `<file>:<line>` origin retained. A bad
+ * pattern throws immediately — better to fail fast at CLI parse time than
+ * to silently let a typo match nothing.
  */
-export function compileAllowlistFromFile(body: string, sourcePath: string): RegExp[] {
+export function compileAllowlistFromFile(
+  body: string,
+  sourcePath: string
+): CompiledAllowlistEntry[] {
   const lines = body.split(/\r?\n/);
-  const compiled: RegExp[] = [];
+  const compiled: CompiledAllowlistEntry[] = [];
   lines.forEach((raw, index) => {
     const line = raw.trim();
     if (!line || line.startsWith('#')) return;
     try {
-      compiled.push(new RegExp(line));
+      compiled.push({
+        pattern: new RegExp(line),
+        source: line,
+        origin: `${sourcePath}:${String(index + 1)}`,
+      });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid allowlist regex at ${sourcePath}:${String(index + 1)}: ${message}`, {
@@ -87,11 +111,15 @@ export function compileAllowlistFromFile(body: string, sourcePath: string): RegE
  * Compiles an array of regex-string inputs (e.g. repeated `--console-allow`
  * flag values). Same fail-fast semantics as {@link compileAllowlistFromFile}.
  */
-export function compileAllowlistFromStrings(sources: readonly string[]): RegExp[] {
-  const compiled: RegExp[] = [];
+export function compileAllowlistFromStrings(sources: readonly string[]): CompiledAllowlistEntry[] {
+  const compiled: CompiledAllowlistEntry[] = [];
   sources.forEach((source, index) => {
     try {
-      compiled.push(new RegExp(source));
+      compiled.push({
+        pattern: new RegExp(source),
+        source,
+        origin: `--console-allow #${String(index + 1)}`,
+      });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(

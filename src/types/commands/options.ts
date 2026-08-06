@@ -291,6 +291,16 @@ export interface ReExportOptions {
    * the command implementation ignores it.
    */
   waitLock?: number | boolean;
+  /**
+   * Refuse (non-zero exit, patch not written) a scan-less re-export when
+   * unmanaged files exist adjacent to the patch's ownership, instead of
+   * warning. Gate-driven workflows use this so a freshly created file
+   * beside a patch's owned files cannot be silently left out of the
+   * refreshed body. Only meaningful on the plain path — mutually
+   * exclusive with `--scan` and `--files`, which set filesAffected
+   * explicitly.
+   */
+  refuseAdjacentUnmanaged?: boolean;
 }
 
 /**
@@ -845,6 +855,19 @@ export interface StatusOptions {
   testCoverage?: boolean;
   /** Output machine-readable JSON instead of human-readable text. */
   json?: boolean;
+  /**
+   * Exit non-zero when any classification in the fail policy is
+   * non-empty (default policy: unmanaged, patch-owned-drift, conflict).
+   * Composes with the default view and `--json`; refused alongside
+   * `--raw`/`--unmanaged`/`--ownership`/`--test-coverage` (FORGE G1).
+   */
+  check?: boolean;
+  /**
+   * Comma-separated classification list replacing the default `--check`
+   * policy. Implies `--check`. Unknown values refuse, naming the valid
+   * classification set.
+   */
+  failOn?: string;
 }
 
 /**
@@ -940,8 +963,9 @@ export interface LintCommandOptions {
    * the cross-patch rules once over the whole queue so queue-level
    * findings (duplicate creations, forward imports) still surface.
    *
-   * Mutually exclusive with passing explicit file paths — the two
-   * scope contracts are different.
+   * Positional file arguments change meaning under this flag: they are
+   * PATCH selectors resolved like {@link patches} entries, not engine
+   * file paths (FORGE G14).
    */
   perPatch?: boolean;
   /**
@@ -963,4 +987,11 @@ export interface LintCommandOptions {
    * for CLI consistency, but only `--per-patch` currently uses the cache.
    */
   noCache?: boolean;
+  /**
+   * With `--per-patch`, write a machine-readable JSON report (schemaVersion
+   * 1: per-patch lineCount, filesAffected, tier, thresholds, issues, and
+   * lintIgnore-suppressed issues) to this path (FORGE G9/G10). Requires
+   * {@link perPatch}.
+   */
+  report?: string;
 }

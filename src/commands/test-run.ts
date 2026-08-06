@@ -25,6 +25,7 @@ import {
   headedNoOutputTimeoutHint,
 } from '../core/test-harness-crash.js';
 import { retryAfterXpcshellSymlinkRepair, type TestDispatch } from '../core/test-xpcshell-retry.js';
+import { withXpcshellProfileDir } from '../core/xpcshell-profile-dir.js';
 import { BuildError } from '../errors/build.js';
 import { info, note, warn } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
@@ -84,6 +85,25 @@ export async function runTestsWithRetries(
   ctx: TestRunContext,
   paths: string[]
 ): Promise<TestRunOutcome> {
+  // Pure mochitest dispatches keep their env byte-identical — the profile
+  // variable is xpcshell-harness-specific (FORGE G15b). Generic `mach
+  // test` runs may include xpcshell paths, so they get the isolation too.
+  if (ctx.suite === 'mochitest') {
+    return runTestsWithRetriesInner(ctx, paths, ctx.env);
+  }
+  // Fresh profile dir per harness invocation: shards isolate from each
+  // other and from concurrent `fireforge test` processes; the crash /
+  // symlink-repair retries inside one invocation deliberately REUSE the
+  // same directory (they are the same logical run and the harness
+  // re-initialises the profile contents itself).
+  return withXpcshellProfileDir(ctx.env, (env) => runTestsWithRetriesInner(ctx, paths, env));
+}
+
+async function runTestsWithRetriesInner(
+  ctx: TestRunContext,
+  paths: string[],
+  env: Record<string, string> | undefined
+): Promise<TestRunOutcome> {
   const extraArgs = [...ctx.baseExtraArgs];
   const appdirInjectionAttempted = await maybeInjectAppdirArg(
     ctx.engineDir,
@@ -100,8 +120,8 @@ export async function runTestsWithRetries(
 
   for (;;) {
     attempts += 1;
-    result = ctx.env
-      ? await dispatch(ctx.engineDir, paths, extraArgs, ctx.env)
+    result = env
+      ? await dispatch(ctx.engineDir, paths, extraArgs, env)
       : await dispatch(ctx.engineDir, paths, extraArgs);
     result = await retryAfterXpcshellSymlinkRepair(
       ctx.engineDir,
@@ -110,7 +130,7 @@ export async function runTestsWithRetries(
       ctx.classification,
       paths,
       extraArgs,
-      ctx.env,
+      env,
       dispatch
     );
     const combined = `${result.stdout}\n${result.stderr}`;

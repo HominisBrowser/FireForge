@@ -323,4 +323,80 @@ describe('lint integration', () => {
     expect(checks.has('relative-import')).toBe(true);
     expect(checks.has('missing-jsdoc')).toBe(true);
   });
+
+  it('reports a waived size measurement as NOTICE and in the --report JSON (FORGE G9/G10)', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { writeFile } = await import('node:fs/promises');
+    const { info } = await import('../../utils/logger.js');
+    const engineDir = join(projectRoot, 'engine');
+    const modulePath = 'browser/modules/mybrowser/Big.sys.mjs';
+    await initCommittedRepo(engineDir, { [modulePath]: '// placeholder\n' });
+    // Overwrite with an over-notice-threshold module (>800 diff lines).
+    await writeFiles(engineDir, { [modulePath]: generateLargeModule(1600) });
+
+    const manifest = {
+      version: 1,
+      patches: [
+        {
+          filename: '001-core-big.patch',
+          order: 1,
+          category: 'core',
+          name: 'big',
+          description: '',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: [modulePath],
+          lintIgnore: ['large-patch-lines', 'file-too-large'],
+        },
+      ],
+    };
+    await writeFiles(projectRoot, {
+      'patches/patches.json': JSON.stringify(manifest, null, 2) + '\n',
+    });
+    await writeFile(join(projectRoot, 'patches', '001-core-big.patch'), '# stub\n');
+
+    const reportPath = join(projectRoot, 'lint-report.json');
+    // The waiver keeps the run green; the measurement must still surface.
+    await expect(
+      lintCommand(projectRoot, [], { perPatch: true, noCache: true, report: reportPath })
+    ).resolves.toBeUndefined();
+
+    const infoLines = vi.mocked(info).mock.calls.map((call) => call[0]);
+    expect(
+      infoLines.some(
+        (line) =>
+          line.startsWith(
+            'NOTICE [large-patch-lines] 001-core-big.patch: suppressed by lintIgnore — Patch is '
+          ) && line.includes('lines')
+      )
+    ).toBe(true);
+    expect(
+      infoLines.some((line) => /^Suppressed \d+ issue\(s\) via per-patch lintIgnore\.$/.test(line))
+    ).toBe(true);
+
+    const report = JSON.parse(await readFile(reportPath, 'utf8')) as {
+      schemaVersion: number;
+      patches: Array<{
+        filename: string;
+        status: string;
+        lineCount: number;
+        filesAffected: number;
+        tier: { tier: string };
+        thresholds: { lines: { error: number } };
+        suppressedIssues: Array<{ check: string }>;
+      }>;
+      totals: { suppressed: number };
+    };
+    expect(report.schemaVersion).toBe(1);
+    expect(report.patches).toHaveLength(1);
+    const row = report.patches[0];
+    expect(row?.filename).toBe('001-core-big.patch');
+    expect(row?.status).toBe('linted');
+    expect(row?.lineCount).toBeGreaterThan(800);
+    expect(row?.filesAffected).toBe(1);
+    expect(row?.tier.tier).toBe('general');
+    expect(row?.thresholds.lines.error).toBe(3000);
+    expect(row?.suppressedIssues.some((issue) => issue.check === 'large-patch-lines')).toBe(true);
+    expect(report.totals.suppressed).toBeGreaterThanOrEqual(1);
+  });
 });

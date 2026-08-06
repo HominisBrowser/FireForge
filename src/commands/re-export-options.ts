@@ -116,6 +116,13 @@ export function validateReExportOptionCombinations(
     }
   }
 
+  if (options.refuseAdjacentUnmanaged === true && (options.scan || options.files !== undefined)) {
+    throw new InvalidArgumentError(
+      '--refuse-adjacent-unmanaged applies to the scan-less path only and cannot be combined with --scan or --files (those set filesAffected explicitly).',
+      '--refuse-adjacent-unmanaged'
+    );
+  }
+
   const usingTierFlag = options.tier !== undefined;
   const usingLintIgnoreFlag = options.lintIgnore !== undefined && options.lintIgnore.length > 0;
   if (options.all && (usingTierFlag || usingLintIgnoreFlag)) {

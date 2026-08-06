@@ -460,7 +460,8 @@ describe('testCommand', () => {
     expect(testWithOutput).toHaveBeenCalledWith(
       '/project/engine',
       [],
-      expect.arrayContaining(['--auto'])
+      expect.arrayContaining(['--auto']),
+      expect.objectContaining({ XPCSHELL_TEST_PROFILE_DIR: expect.any(String) as string })
     );
   });
 
@@ -1676,7 +1677,8 @@ describe('testCommand', () => {
     expect(testWithOutput).toHaveBeenCalledWith(
       '/project/engine',
       ['browser/base/content/test/foo/test_x.js'],
-      ['--verbose']
+      ['--verbose'],
+      expect.objectContaining({ XPCSHELL_TEST_PROFILE_DIR: expect.any(String) as string })
     );
   });
 

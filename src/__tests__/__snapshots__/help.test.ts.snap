@@ -21,9 +21,14 @@ Options:
   --patches <names...>  With --per-patch, lint only the named patches. Accepts
                         repeated flags, comma lists, full filenames/stems,
                         manifest names, category-prefixed slugs, or bare slugs.
+                        Positional arguments after --per-patch are treated the
+                        same way.
   --max-warnings <n>    Fail when lint reports more than <n> warning(s); use 0
                         for warning-clean release gates.
   --no-cache            Bypass per-patch lint result cache reads and writes.
+  --report <path>       With --per-patch, write a machine-readable JSON report
+                        (per-patch size metrics, tier, thresholds, issues, and
+                        lintIgnore-suppressed issues) to <path>.
   -h, --help            display help for command
 
 Commands:
@@ -95,6 +100,11 @@ Workflow:
   package [options]                 Create distribution package
   watch                             Watch for changes and auto-rebuild
   test [options] [paths...]         Run tests via mach test
+  tree                              Manage copy-on-write verification clones of
+                                    this project for concurrent read-mostly work
+                                    (lint, typecheck, status, verify, export
+                                    --dry-run). Mutation commands are refused
+                                    inside a tree.
   register [options] <path>         Register a file in the appropriate build
                                     manifest
   wire [options] <name>             Wire a chrome subscript into the browser
@@ -417,7 +427,9 @@ Options:
                            --creates
   --reason <text>          Human-readable rationale stored with the declaration
   --dry-run                Show what would change without writing
-  -y, --yes                Skip confirmation prompt (required for non-TTY)
+  -y, --yes                Record scripted consent in the destructive-operation
+                           history log. This command never prompts; the flag
+                           exists for workflow uniformity with commands that do.
   -h, --help               display help for command
 "
 `;

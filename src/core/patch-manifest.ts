@@ -16,8 +16,6 @@ export {
   loadPatchesManifestForWrite,
   mutatePatchRowsInManifest,
   PATCHES_MANIFEST,
-  type PatchManifestRowMutation,
-  type PatchManifestRowMutationResult,
   type PatchRenameEntry,
   removePatchFileAndManifest,
   renumberPatchesInManifest,

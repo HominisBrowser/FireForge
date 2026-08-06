@@ -265,7 +265,7 @@ describe('sparse export placement with patchPolicy reserved ranges', () => {
     expect((await readManifestPatches()).map((patch) => patch.filename)).toEqual(entries);
   });
 
-  it('refuses positional insertion that would renumber a reserved exact exception', async () => {
+  it('leaves a reserved exact exception untouched when the insert lands on a free ordinal (FORGE G6)', async () => {
     const patches = await seedSparseQueue();
     const plan = await resolvePlacementPlan(
       patchesDir,
@@ -274,19 +274,16 @@ describe('sparse export placement with patchPolicy reserved ranges', () => {
       'new-feature'
     );
 
-    expect(plan.renameMap.get('900-infra-bindgen-basic-string-workaround.patch')).toEqual({
-      newFilename: '901-infra-bindgen-basic-string-workaround.patch',
-      newOrder: 901,
-    });
+    // Order 241 is free, so the cascade never starts — nothing renames and
+    // the reserved 900 patch stays out of the plan entirely.
+    expect(plan.insertionOrder).toBe(241);
+    expect(plan.renameMap.size).toBe(0);
     expect(() => {
       assertPlacementAvoidsReservedRanges(plan, patches, sparsePolicyConfig());
-    }).toThrow(/Positional insert would renumber the reserved range 900-999/);
-    expect(() => {
-      assertPlacementAvoidsReservedRanges(plan, patches, sparsePolicyConfig());
-    }).toThrow(/pass --order 899/);
+    }).not.toThrow();
 
-    // The same refusal fires up front from resolvePlacementPlan when the
-    // config is threaded through — one error for the whole shift.
+    // With the config threaded through, the same positional insert resolves
+    // up front instead of refusing via the reserved-range projection.
     await expect(
       resolvePlacementPlan(
         patchesDir,
@@ -295,7 +292,7 @@ describe('sparse export placement with patchPolicy reserved ranges', () => {
         'new-feature',
         sparsePolicyConfig()
       )
-    ).rejects.toThrow(/Positional insert would renumber the reserved range 900-999/);
+    ).resolves.toMatchObject({ insertionOrder: 241, newFilename: '241-ui-new-feature.patch' });
   });
 
   it('rejects exact --order when the requested order is occupied', async () => {

@@ -19,7 +19,7 @@ import { pathExists, readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { hasRawCssColors } from '../utils/regex.js';
 import { loadFurnaceConfig } from './furnace-config.js';
-import { extractAddedLinesPerFile } from './patch-lint-diff.js';
+import { extractAddedLineNumbersPerFile, extractAddedLinesPerFile } from './patch-lint-diff.js';
 
 /** Furnace token-lint inputs, or undefined when furnace.json is unavailable. */
 interface CssTokenContext {
@@ -53,6 +53,49 @@ async function loadCssTokenContext(repoDir: string): Promise<CssTokenContext | u
 }
 
 /**
+ * Masks CSS block comments with spaces, preserving newlines so line
+ * numbers stay stable. An unclosed trailing `/*` is masked to EOF —
+ * matching how a CSS parser treats it (FORGE G4).
+ */
+function maskCssComments(source: string): string {
+  const masked = source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
+  const openerIndex = masked.indexOf('/*');
+  if (openerIndex === -1) return masked;
+  return (
+    masked.slice(0, openerIndex) +
+    masked
+      .slice(openerIndex)
+      .split('\n')
+      .map((line) => ' '.repeat(line.length))
+      .join('\n')
+  );
+}
+
+const RAW_COLOR_IGNORE_MARKER = 'fireforge-ignore: raw-color-value';
+
+/**
+ * Builds the scan source for the diff branch with full-file comment
+ * awareness: comments are masked across the whole post-patch file so a
+ * comment spanning the context/added boundary suppresses its hex, then
+ * only the patch's added line numbers are scanned. Returns undefined
+ * when any added line number falls outside the on-disk file (patch not
+ * applied / drifted) — the caller then falls back to the legacy
+ * joined-added-lines scan rather than misattributing lines.
+ */
+function buildAddedLinesScanSource(
+  rawCss: string,
+  addedNumbers: readonly number[]
+): string | undefined {
+  const rawLines = rawCss.split('\n');
+  if (!addedNumbers.every((n) => n >= 1 && n <= rawLines.length)) return undefined;
+  const maskedLines = maskCssComments(rawCss).split('\n');
+  return addedNumbers
+    .filter((n) => !(rawLines[n - 1] ?? '').includes(RAW_COLOR_IGNORE_MARKER))
+    .map((n) => maskedLines[n - 1] ?? '')
+    .join('\n');
+}
+
+/**
  * Raw-color check for one patched CSS file, scoped to introduced lines
  * when diff context is available. Pushes onto `issues`.
  */
@@ -60,6 +103,7 @@ function checkRawColorValues(
   file: string,
   rawCss: string,
   addedLinesByFile: Map<string, string[]> | undefined,
+  addedLineNumbersByFile: Map<string, number[]> | undefined,
   config: FireForgeConfig | undefined,
   issues: PatchLintIssue[]
 ): void {
@@ -75,28 +119,35 @@ function checkRawColorValues(
   const allowlist = config?.patchLint?.rawColorAllowlist;
   const isAllowlisted = allowlist?.some((entry) => file === entry || file.endsWith('/' + entry));
   const isBranding = file.startsWith('browser/branding/');
+  if (isAllowlisted || isBranding) return;
 
-  if (!isAllowlisted && !isBranding) {
-    // Strip lines with inline fireforge-ignore: raw-color-value suppression.
-    // Check against rawCss (before comment stripping) so the CSS comment marker is still present.
+  let suppressedContent: string | undefined;
+  const addedNumbers = addedLineNumbersByFile?.get(file);
+  if (addedNumbers !== undefined) {
+    suppressedContent = buildAddedLinesScanSource(rawCss, addedNumbers);
+  }
+  if (suppressedContent === undefined) {
+    // Legacy scan: full file (no diff), or the joined added lines when
+    // the diff and on-disk file disagree. Waiver lines are filtered
+    // against the pre-strip text so the CSS comment marker is present.
     const sourceForSuppression = addedLinesByFile
       ? (addedLinesByFile.get(file) ?? []).join('\n')
       : rawCss;
-    const suppressedContent = sourceForSuppression
+    suppressedContent = sourceForSuppression
       .split('\n')
-      .filter((line) => !line.includes('fireforge-ignore: raw-color-value'))
+      .filter((line) => !line.includes(RAW_COLOR_IGNORE_MARKER))
       .join('\n')
       .replace(/\/\*[\s\S]*?\*\//g, '');
+  }
 
-    if (hasRawCssColors(suppressedContent)) {
-      issues.push({
-        file,
-        check: 'raw-color-value',
-        message:
-          'Raw color value found. Use CSS custom properties (var(--...)) for design token consistency.',
-        severity: 'error',
-      });
-    }
+  if (hasRawCssColors(suppressedContent)) {
+    issues.push({
+      file,
+      check: 'raw-color-value',
+      message:
+        'Raw color value found. Use CSS custom properties (var(--...)) for design token consistency.',
+      severity: 'error',
+    });
   }
 }
 
@@ -190,6 +241,9 @@ export async function lintPatchedCss(
 
   const issues: PatchLintIssue[] = [];
   const addedLinesByFile = diffContent ? extractAddedLinesPerFile(diffContent) : undefined;
+  const addedLineNumbersByFile = diffContent
+    ? extractAddedLineNumbersPerFile(diffContent)
+    : undefined;
 
   for (const file of cssFiles) {
     const filePath = join(repoDir, file);
@@ -199,7 +253,7 @@ export async function lintPatchedCss(
     // Strip block comments before scanning
     const cssContent = rawCss.replace(/\/\*[\s\S]*?\*\//g, '');
 
-    checkRawColorValues(file, rawCss, addedLinesByFile, config, issues);
+    checkRawColorValues(file, rawCss, addedLinesByFile, addedLineNumbersByFile, config, issues);
     checkTokenPrefixViolations(file, cssContent, addedLinesByFile, tokenContext, issues);
   }
 

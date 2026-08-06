@@ -392,6 +392,42 @@ describe('validateConfig', () => {
       'Config field "patchLint.checkJsCompilerOptions" requires "patchLint.checkJsStrict": true'
     );
 
+    // FORGE G5: checkJsTestFiles/checkJsTestShim cross-field validation.
+    expect(
+      validateConfig(
+        makeValidConfig({
+          patchLint: {
+            checkJs: true,
+            checkJsTestFiles: true,
+            checkJsTestShim: 'shims/test-harness.d.ts',
+          },
+        })
+      ).patchLint
+    ).toEqual({
+      checkJs: true,
+      checkJsTestFiles: true,
+      checkJsTestShim: 'shims/test-harness.d.ts',
+    });
+    expect(() =>
+      validateConfig(makeValidConfig({ patchLint: { checkJsTestFiles: true } }))
+    ).toThrow('Config field "patchLint.checkJsTestFiles" requires "patchLint.checkJs": true');
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          patchLint: { checkJs: true, checkJsTestShim: 'shims/test-harness.d.ts' },
+        })
+      )
+    ).toThrow(
+      'Config field "patchLint.checkJsTestShim" requires "patchLint.checkJsTestFiles": true'
+    );
+    expect(() =>
+      validateConfig(
+        makeValidConfig({
+          patchLint: { checkJs: true, checkJsTestFiles: true, checkJsTestShim: '/abs.d.ts' },
+        })
+      )
+    ).toThrow('Config field "patchLint.checkJsTestShim" must be a project-relative path');
+
     expect(() =>
       validateConfig(
         makeValidConfig({

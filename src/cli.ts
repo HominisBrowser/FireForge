@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { Command, Help } from 'commander';
 
 import { COMMAND_MANIFEST, type CommandManifestEntry } from './commands/manifest.js';
+import { runTreeGuardHook } from './core/tree-guard.js';
 import { CancellationError, CommandError, FireForgeError } from './errors/base.js';
 import { ExitCode } from './errors/codes.js';
 import { ConfigNotFoundError } from './errors/config.js';
@@ -309,6 +310,12 @@ export function createProgram(): Command {
       if (opts['verbose']) {
         setVerbose(true);
       }
+    })
+    // Verification-tree guard (FORGE G15): when the cwd resolves into a
+    // tree snapshot, refuse mutating commands before their action runs —
+    // one hook covers every command regardless of how the cwd got there.
+    .hook('preAction', async (thisCommand, actionCommand) => {
+      await runTreeGuardHook(thisCommand.name(), actionCommand);
     });
 
   const groupedFormatter = buildGroupedHelpFormatter(COMMAND_MANIFEST);

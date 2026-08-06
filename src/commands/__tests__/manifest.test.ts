@@ -46,6 +46,18 @@ const COMMANDS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HELPER_FILES: ReadonlySet<string> = new Set([
   'manifest.ts',
   'export-flow.ts',
+  // Scan-less re-export adjacency advisory (FORGE G2) split out of
+  // re-export.ts to stay inside the line budget. Exports
+  // reportAdjacentUnmanagedFiles/findMissingFiles consumed by
+  // re-export.ts; no top-level registrar is exported and none is wanted.
+  're-export-adjacent.ts',
+  // status --check / --fail-on enforcement policy (FORGE G1) split out of
+  // status.ts (at the max-lines budget). Exports resolveStatusCheckPolicy
+  // and runStatusCheck consumed by status.ts; no registrar is wanted.
+  'status-check.ts',
+  // Machine-readable per-patch lint report (FORGE G9/G10). Exports
+  // writePerPatchLintReport consumed by lint-per-patch.ts; no registrar.
+  'lint-report.ts',
   // Placement-flag gating split out of export.ts so the command body
   // stays inside the per-function complexity and line budgets. Exports
   // `gatePlacementPlan` / `patchMetadataExtras` consumed by export.ts;

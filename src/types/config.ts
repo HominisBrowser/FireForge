@@ -271,6 +271,25 @@ export interface PatchLintConfig {
    * behaviour (built-in shim only).
    */
   checkJsExtraShim?: string;
+  /**
+   * Extend the checkJs pass to patch-owned test `.js` files
+   * (`browser_*` / `test_*` / `xpcshell_*` basenames and files under a
+   * `/test/` path), each checked as its own small script-scope program
+   * with same-directory patch-owned `head*.js` helpers included (FORGE
+   * G5 — a harness global that does not exist should fail at the patch
+   * boundary where the test was authored, not in a downstream
+   * jsconfig-project run). Opt-in: it is a new failure surface with
+   * nonzero compile cost. Requires `checkJs: true`.
+   */
+  checkJsTestFiles?: boolean;
+  /**
+   * Project-relative `.d.ts` appended to the built-in test-harness shim
+   * (loose `TestUtils`/`BrowserTestUtils`/`add_task`/… declarations) for
+   * the `checkJsTestFiles` pass — a consumer-typed `TestUtils` here is
+   * what turns a call to a nonexistent harness member into a TS2339 at
+   * export time. Requires `checkJsTestFiles: true`.
+   */
+  checkJsTestShim?: string;
   /** File paths exempt from the raw-color-value check (exact or basename match) */
   rawColorAllowlist?: string[];
   /** Enforce JSDoc on class-method exports in patch-owned .sys.mjs files. Default: 'off'. */

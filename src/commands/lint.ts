@@ -261,11 +261,12 @@ export function applyAggregateLintIgnoreSuppression(
 
 /**
  * Up-front flag validation for `lintCommand`: rejects `--only-introduced`
- * without `--since`, non-integer `--max-warnings`, and `--per-patch`
- * combined with explicit file paths — each a misconfiguration that should
- * fail loud rather than silently narrow the result.
+ * without `--since` and non-integer `--max-warnings` — each a
+ * misconfiguration that should fail loud rather than silently narrow the
+ * result. Positional arguments in per-patch mode are patch selectors
+ * (FORGE G14) and are validated downstream by `selectPatchSubset`.
  */
-function validateLintFlags(options: LintCommandOptions, files: string[]): void {
+function validateLintFlags(options: LintCommandOptions): void {
   // `--only-introduced` scopes the exit code to `--since`-tagged issues, so
   // without a revision to anchor the diff there is no "introduced" subset
   // to scope to — reject the combination up-front so a misconfigured CI
@@ -284,24 +285,16 @@ function validateLintFlags(options: LintCommandOptions, files: string[]): void {
     throw new GeneralError('--max-warnings must be a non-negative integer.');
   }
 
-  // `--per-patch` rescopes the diff from "aggregate engine state" to "each
-  // patch's own filesAffected". Mixing in explicit engine file paths would
-  // produce an ambiguous set — is the file list an additional filter, or
-  // does it replace the per-patch scope? Reject up-front, but point at the
-  // first-class subset filter so an operator who wanted to target patches
-  // (not engine files) knows the supported syntax.
-  if (options.perPatch && files.length > 0) {
-    throw new GeneralError(
-      '--per-patch cannot be combined with explicit engine file paths. ' +
-        'To lint a subset of patches, use `--per-patch --patches <name…>`; ' +
-        'to lint specific engine files, drop --per-patch.'
-    );
-  }
-
   // `--patches` only means something in per-patch mode (it filters the
   // queue); in aggregate/file-list mode there is no patch loop to narrow.
   if (options.patches !== undefined && !options.perPatch) {
     throw new GeneralError('--patches requires --per-patch.');
+  }
+
+  // The JSON report is a per-patch artifact (per-patch size metrics and
+  // suppressed issues); aggregate mode has no per-patch rows to report.
+  if (options.report !== undefined && !options.perPatch) {
+    throw new GeneralError('--report requires --per-patch.');
   }
 }
 
@@ -521,7 +514,7 @@ export async function lintCommand(
 ): Promise<void> {
   intro('FireForge Lint');
 
-  validateLintFlags(options, files);
+  validateLintFlags(options);
 
   const paths = getProjectPaths(projectRoot);
 
@@ -536,7 +529,13 @@ export async function lintCommand(
   }
 
   if (options.perPatch) {
-    await lintPerPatch(projectRoot, paths, options);
+    // Positional arguments in per-patch mode select PATCHES through the
+    // same alias resolution as --patches (FORGE G14) — a non-matching
+    // positional fails loud against the queue listing, so an engine path
+    // can never silently lint. Explicit --patches entries come first.
+    const perPatchOptions =
+      files.length > 0 ? { ...options, patches: [...(options.patches ?? []), ...files] } : options;
+    await lintPerPatch(projectRoot, paths, perPatchOptions);
     return;
   }
 
@@ -644,13 +643,17 @@ export function registerLint(
     )
     .option(
       '--patches <names...>',
-      'With --per-patch, lint only the named patches. Accepts repeated flags, comma lists, full filenames/stems, manifest names, category-prefixed slugs, or bare slugs.'
+      'With --per-patch, lint only the named patches. Accepts repeated flags, comma lists, full filenames/stems, manifest names, category-prefixed slugs, or bare slugs. Positional arguments after --per-patch are treated the same way.'
     )
     .option(
       '--max-warnings <n>',
       'Fail when lint reports more than <n> warning(s); use 0 for warning-clean release gates.'
     )
     .option('--no-cache', 'Bypass per-patch lint result cache reads and writes.')
+    .option(
+      '--report <path>',
+      'With --per-patch, write a machine-readable JSON report (per-patch size metrics, tier, thresholds, issues, and lintIgnore-suppressed issues) to <path>.'
+    )
     .action(
       withErrorHandling(
         async (
@@ -662,6 +665,7 @@ export function registerLint(
             patches?: string[];
             maxWarnings?: string;
             cache?: boolean;
+            report?: string;
           }
         ) => {
           const lintOptions: LintCommandOptions = {};
@@ -686,6 +690,9 @@ export function registerLint(
           }
           if (options.cache === false) {
             lintOptions.noCache = true;
+          }
+          if (options.report !== undefined) {
+            lintOptions.report = options.report;
           }
           await lintCommand(getProjectRoot(), paths, lintOptions);
         }

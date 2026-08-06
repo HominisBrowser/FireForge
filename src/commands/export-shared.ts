@@ -22,7 +22,11 @@ import type { FireForgeConfig } from '../types/config.js';
 import { pathExists, readText } from '../utils/fs.js';
 import type { SpinnerHandle } from '../utils/logger.js';
 import { cancel, info, isCancel, warn } from '../utils/logger.js';
-import { PATCH_CATEGORIES, validatePatchName } from '../utils/validation.js';
+import {
+  normalizePatchDisplayName,
+  PATCH_CATEGORIES,
+  validatePatchName,
+} from '../utils/validation.js';
 
 /**
  * Runs the full patch lint pipeline and reports results.
@@ -148,7 +152,10 @@ export async function promptExportPatchMetadata(
 ): Promise<{ patchName: string; selectedCategory: PatchCategory; description: string } | null> {
   const categories =
     config !== undefined ? getPatchPolicyCategories(config) : [...PATCH_CATEGORIES];
-  let patchName = options.name;
+  // A filename-shaped `--name foo.patch` must not die on the dot rule —
+  // strip the extension before validation so the one-step flow works for
+  // both name shapes (FORGE G13).
+  let patchName = options.name?.trim().replace(/\.patch$/i, '');
 
   if (patchName) {
     const validationError = validatePatchName(patchName);
@@ -222,8 +229,19 @@ export async function promptExportPatchMetadata(
     }
   }
 
+  // The filename slug pipeline strips redundant category prefixes; the
+  // manifest display name must agree, or every `export --name ui-foo`
+  // needs a follow-up `patch rename` to satisfy bare-slug naming policy
+  // (FORGE G13).
+  const normalized = normalizePatchDisplayName(patchName, category);
+  if (normalized !== patchName) {
+    info(
+      `Patch name normalized: "${patchName}" → "${normalized}" (the filename carries the order and category prefix).`
+    );
+  }
+
   return {
-    patchName,
+    patchName: normalized,
     selectedCategory: category,
     description,
   };

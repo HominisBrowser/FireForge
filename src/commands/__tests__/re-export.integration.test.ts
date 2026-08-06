@@ -477,3 +477,113 @@ describe('reExportCommand integration', () => {
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Patch-owned worktree drift'));
   });
 });
+
+/**
+ * FORGE G2 reproduction. The consumer field report claimed a scan-less
+ * re-export "silently ignores brand-new adjacent files"; the same-directory
+ * advisory has in fact shipped since v0.27.2, so that sub-claim is
+ * partially REFUTED — the first test pins the advisory firing for the
+ * exact reported shape (a new test created beside a patch's owned tests).
+ * The second test documents the residual blind spot the claim most likely
+ * observed: a new file in a subdirectory that is not the dirname of any
+ * owned file is still not reported (deliberately out of scope — recursive
+ * directory scans are too noisy on Firefox-sized trees).
+ */
+describe('reExportCommand adjacency advisory (FORGE G2)', () => {
+  let projectRoot: string;
+  let restoreTTY: (() => void) | undefined;
+
+  function makeTestsManifest(): string {
+    return `${JSON.stringify(
+      {
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-test.patch',
+            order: 1,
+            category: 'ui',
+            name: 'test',
+            description: '',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['comp/tests/browser/browser_a.js'],
+          },
+        ],
+      },
+      null,
+      2
+    )}\n`;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    restoreTTY = setInteractiveMode(false);
+    projectRoot = await createTempProject();
+    await writeFireForgeConfig(projectRoot);
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      'comp/tests/browser/browser_a.js': blankContextBase,
+    });
+    await writeFiles(projectRoot, {
+      'patches/patches.json': makeTestsManifest(),
+      'patches/001-ui-test.patch':
+        'diff --git a/comp/tests/browser/browser_a.js b/comp/tests/browser/browser_a.js\n',
+    });
+    await writeFiles(join(projectRoot, 'engine'), {
+      'comp/tests/browser/browser_a.js': blankContextModified,
+    });
+  });
+
+  afterEach(async () => {
+    restoreTTY?.();
+    await removeTempProject(projectRoot);
+  });
+
+  it('warns about a brand-new test created beside the patch-owned tests (refutes the "fully silent" claim)', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'comp/tests/browser/browser_b.js': 'new test\n',
+    });
+
+    await reExportCommand(projectRoot, ['001'], {});
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "found 1 unmanaged file(s) adjacent to this patch's ownership (comp/tests/browser/browser_b.js)"
+      )
+    );
+  });
+
+  it('refuses the run under --refuse-adjacent-unmanaged without writing the patch', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'comp/tests/browser/browser_b.js': 'new test\n',
+    });
+    const before = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+
+    await expect(
+      reExportCommand(projectRoot, ['001'], { refuseAdjacentUnmanaged: true })
+    ).rejects.toThrow('Refused 1 patch(es) with adjacent unmanaged files');
+
+    await expect(readProjectText(projectRoot, 'patches/001-ui-test.patch')).resolves.toBe(before);
+  });
+
+  it('reports a new file in a subdirectory below an owned directory (untracked scan is recursive)', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'comp/tests/browser/helpers/head_extra.js': 'helper\n',
+    });
+
+    await reExportCommand(projectRoot, ['001'], {});
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('comp/tests/browser/helpers/head_extra.js')
+    );
+  });
+
+  it('still misses a new file in a cousin directory no owned file lives in (documented blind spot, out of scope)', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'comp/other/new_module.js': 'cousin\n',
+    });
+
+    await reExportCommand(projectRoot, ['001'], {});
+
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('new_module.js'));
+  });
+});

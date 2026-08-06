@@ -21,6 +21,12 @@ export {
   validateFurnaceConfig,
 } from './core/furnace-config.js';
 export { validateAllComponents, validateComponent } from './core/furnace-validate.js';
+export type { PatchSizeTierDecision } from './core/patch-lint.js';
+export {
+  countNonBinaryDiffLines,
+  getPatchSizeThresholds,
+  resolvePatchSizeTier,
+} from './core/patch-lint.js';
 export type { AddTokenOptions, AddTokenResult, TokenMode } from './core/token-manager.js';
 export { addToken, getTokensCssPath, validateTokenAdd } from './core/token-manager.js';
 export {

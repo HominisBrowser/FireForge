@@ -93,6 +93,12 @@ vi.mock('@clack/prompts', () => ({
   isCancel: vi.fn().mockReturnValue(false),
 }));
 
+// The adjacency advisory reads furnace-managed prefixes once per run;
+// mocked empty by default, with dedicated tests overriding it.
+vi.mock('../../core/furnace-config.js', () => ({
+  collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set<string>())),
+}));
+
 // The stale-furnace gate's detection logic is covered by
 // src/core/__tests__/furnace-stale-export.test.ts; here it is mocked to a
 // no-op so existing command tests are unaffected, with dedicated wiring
@@ -104,6 +110,7 @@ vi.mock('../../core/furnace-stale-export.js', () => ({
 import { confirm, multiselect } from '@clack/prompts';
 
 import { withFileLock } from '../../core/file-lock.js';
+import { collectFurnaceManagedPrefixes } from '../../core/furnace-config.js';
 import { enforceFreshFurnaceSources } from '../../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-status.js';
@@ -114,6 +121,7 @@ import {
   loadPatchesManifest,
   stampPatchVersions,
 } from '../../core/patch-manifest.js';
+import { GitError } from '../../errors/git.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { pathExists, readText } from '../../utils/fs.js';
@@ -280,7 +288,7 @@ describe('reExportCommand - --scan flag', () => {
     expect(outro).toHaveBeenCalledWith('Re-export complete');
   });
 
-  it('plain re-export suggests --scan-file for unowned changed sibling files', async () => {
+  it('plain re-export suggests --scan-file for adjacent unmanaged files', async () => {
     const patch = makePatch('001-ui-test.patch', ['browser/branding/hominis/configure.sh']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
     vi.mocked(pathExists).mockResolvedValue(true);
@@ -290,7 +298,9 @@ describe('reExportCommand - --scan flag', () => {
     await reExportCommand('/fake/root', ['001'], {});
 
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('found 1 unowned changed sibling file')
+      expect.stringContaining(
+        "found 1 unmanaged file(s) adjacent to this patch's ownership (browser/branding/hominis/Assets.car)"
+      )
     );
     expect(info).toHaveBeenCalledWith(
       expect.stringContaining(
@@ -298,6 +308,66 @@ describe('reExportCommand - --scan flag', () => {
       )
     );
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it('adjacency notice excludes tool-managed branding and furnace paths (FORGE G2)', async () => {
+    // Config binaryName is "testbrowser": a MODIFIED generated file under
+    // browser/branding/testbrowser is branding-managed; a furnace-prefixed
+    // path is furnace-managed; the plain unmanaged sibling stays listed.
+    const patch = makePatch('001-ui-test.patch', ['browser/branding/testbrowser/configure.sh']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValueOnce(
+      new Set(['browser/branding/testbrowser/furnace-widget/'])
+    );
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([
+      'browser/branding/testbrowser/locales/en-US/brand.ftl',
+    ]);
+    vi.mocked(getUntrackedFilesInDir).mockResolvedValue([
+      'browser/branding/testbrowser/furnace-widget/part.css',
+      'browser/branding/testbrowser/new-asset.icns',
+    ]);
+
+    await reExportCommand('/fake/root', ['001'], {});
+
+    // Only the new unowned branding asset (Assets.car precedent) is listed;
+    // the generated brand.ftl edit and the furnace-prefixed file are not.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "found 1 unmanaged file(s) adjacent to this patch's ownership (browser/branding/testbrowser/new-asset.icns)"
+      )
+    );
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('brand.ftl'));
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('furnace-widget/part.css'));
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it('--refuse-adjacent-unmanaged skips the offending patch and fails the run (FORGE G2)', async () => {
+    const offending = makePatch('001-ui-offending.patch', ['dir/a.js']);
+    const clean = makePatch('002-ui-clean.patch', ['other/b.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([offending, clean]));
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(getModifiedFilesInDir).mockResolvedValue([]);
+    vi.mocked(getUntrackedFilesInDir).mockImplementation((_engineDir: string, dir: string) =>
+      Promise.resolve(dir === 'dir' ? ['dir/new-test.js'] : [])
+    );
+
+    await expect(
+      reExportCommand('/fake/root', ['001', '002'], { refuseAdjacentUnmanaged: true })
+    ).rejects.toThrow(
+      'Refused 1 patch(es) with adjacent unmanaged files (--refuse-adjacent-unmanaged): 001-ui-offending.patch'
+    );
+
+    // The offending patch is never written; the clean patch was already
+    // re-exported before the run-level refusal fired.
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[1]).toBe('002-ui-clean.patch');
+  });
+
+  it('--refuse-adjacent-unmanaged is refused alongside --scan', async () => {
+    await expect(
+      reExportCommand('/fake/root', ['001'], { scan: true, refuseAdjacentUnmanaged: true })
+    ).rejects.toThrow('--refuse-adjacent-unmanaged applies to the scan-less path only');
   });
 
   it('should discover new files in scanned directories', async () => {
@@ -1286,6 +1356,77 @@ describe('reExportCommand - --scan flag', () => {
     expect(handle?.message).toHaveBeenCalledWith(
       expect.stringContaining('Re-exporting 2/2: 002-ui-second.patch')
     );
+  });
+
+  describe('transient git index.lock retry (FORGE G7)', () => {
+    const indexLockError = (): GitError =>
+      new GitError(
+        "fatal: Unable to create '/fake/engine/.git/index.lock': File exists.\n" +
+          'Another git process seems to be running in this repository',
+        'diff'
+      );
+
+    beforeEach(() => {
+      const patch = makePatch('001-ui-test.patch', ['dir/a.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+    });
+
+    it('retries once after index.lock contention and completes the re-export', async () => {
+      vi.mocked(getDiffForFilesAgainstHead).mockRejectedValueOnce(indexLockError());
+
+      await expect(reExportCommand('/fake/root', ['001'], {})).resolves.toBeUndefined();
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('git index.lock contention detected — retrying once')
+      );
+      expect(getDiffForFilesAgainstHead).toHaveBeenCalledTimes(2);
+      expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+      expect(success).toHaveBeenCalledWith('Re-exported 1 of 1 patch(es)');
+    });
+
+    it('keeps the honest failure when the retry also hits the lock', async () => {
+      vi.mocked(getDiffForFilesAgainstHead)
+        .mockRejectedValueOnce(indexLockError())
+        .mockRejectedValueOnce(indexLockError());
+
+      await expect(reExportCommand('/fake/root', ['001'], {})).rejects.toThrow(
+        'All selected patches failed to re-export'
+      );
+
+      expect(getDiffForFilesAgainstHead).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith('Failed to re-export 001-ui-test.patch');
+      expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+    });
+
+    it('reports partial success when one patch keeps failing on the lock and another succeeds', async () => {
+      const locked = makePatch('001-ui-locked.patch', ['dir/a.js']);
+      const clean = makePatch('002-ui-clean.patch', ['dir/b.js']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([locked, clean]));
+      vi.mocked(getDiffForFilesAgainstHead)
+        .mockRejectedValueOnce(indexLockError())
+        .mockRejectedValueOnce(indexLockError());
+
+      await expect(reExportCommand('/fake/root', ['001', '002'], {})).resolves.toBeUndefined();
+
+      expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+      expect(success).toHaveBeenCalledWith('Re-exported 1 of 2 patch(es)');
+    });
+
+    it('does not retry non-lock git failures', async () => {
+      vi.mocked(getDiffForFilesAgainstHead).mockRejectedValueOnce(
+        new GitError('fatal: bad revision HEAD', 'diff')
+      );
+
+      await expect(reExportCommand('/fake/root', ['001'], {})).rejects.toThrow(
+        'All selected patches failed to re-export'
+      );
+
+      expect(getDiffForFilesAgainstHead).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('git index.lock contention detected')
+      );
+    });
   });
 
   describe('--stamp', () => {

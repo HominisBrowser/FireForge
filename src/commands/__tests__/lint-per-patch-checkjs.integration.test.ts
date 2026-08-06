@@ -169,3 +169,96 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
     expect(warmLines.length).toBe(coldLines.length);
   });
 });
+
+/**
+ * FORGE G5: per-patch checkJs never included patch-adopted test `.js`
+ * files, so a call to a harness member the consumer's shim does not
+ * declare (the TS2339 on `TestUtils.waitForCondition`) was invisible at
+ * the patch boundary and surfaced only in the downstream composed gate.
+ */
+describe('lint --per-patch checkJs over patch-owned test files (FORGE G5)', () => {
+  let projectRoot: string;
+  let engineDir: string;
+  let restoreTTY: (() => void) | undefined;
+
+  const TEST_FILE = 'browser/components/mb/test/browser/browser_mb_basic.js';
+  const TEST_SOURCE = [
+    HEADER,
+    'add_task(async function test_basic() {',
+    '  await TestUtils.waitForCondition(() => true);',
+    '  ok(true, "ran");',
+    '});',
+    '',
+  ].join('\n');
+  // Consumer-typed harness shim: TestUtils exists but declares only
+  // waitForTick — the waitForCondition call must fail as a type error.
+  const TYPED_TEST_SHIM = [
+    'interface TypedTestUtils {',
+    '  waitForTick(): Promise<void>;',
+    '}',
+    'declare var TestUtils: TypedTestUtils;',
+    '',
+  ].join('\n');
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    restoreTTY = setInteractiveMode(false);
+    projectRoot = await createTempProject('ff-perpatch-checkjs-tests-');
+    engineDir = join(projectRoot, 'engine');
+    await initCommittedRepo(engineDir, { 'browser/components/mb/.gitkeep': '' });
+    await writeFiles(engineDir, { [TEST_FILE]: TEST_SOURCE });
+    await writeFiles(projectRoot, { 'shims/test-harness.d.ts': TYPED_TEST_SHIM });
+
+    const patchesDir = join(projectRoot, 'patches');
+    await ensureDir(patchesDir);
+    await writeFile(join(patchesDir, '001-test.patch'), newFilePatchBody(TEST_FILE));
+    const manifest: PatchesManifest = {
+      version: 1,
+      patches: [meta('001-test.patch', 1, [TEST_FILE])],
+    };
+    await writeFile(join(patchesDir, 'patches.json'), JSON.stringify(manifest, null, 2));
+  });
+
+  afterEach(async () => {
+    restoreTTY?.();
+    await removeTempProject(projectRoot);
+  });
+
+  it('pins the pre-0.40.0 gap: without checkJsTestFiles the test file is never checked', async () => {
+    await writeFireForgeConfig(projectRoot, { patchLint: { checkJs: true } });
+
+    await lintCommand(projectRoot, [], { perPatch: true, noCache: true }).catch(() => undefined);
+
+    expect(checkJsLines()).toHaveLength(0);
+  });
+
+  it('surfaces the TS2339-class harness error attributed to the owning patch when enabled', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchLint: {
+        checkJs: true,
+        checkJsTestFiles: true,
+        checkJsTestShim: 'shims/test-harness.d.ts',
+      },
+    });
+
+    await lintCommand(projectRoot, [], { perPatch: true, noCache: true }).catch(() => undefined);
+
+    const lines = checkJsLines();
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    expect(lines.join('\n')).toContain('001-test.patch');
+    expect(lines.join('\n')).toContain('browser_mb_basic.js');
+    expect(lines.join('\n')).toContain('waitForCondition');
+  });
+
+  it('passes with the loose built-in harness shim when no consumer shim narrows it', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchLint: { checkJs: true, checkJsTestFiles: true },
+    });
+
+    await expect(
+      lintCommand(projectRoot, [], { perPatch: true, noCache: true })
+    ).resolves.toBeUndefined();
+
+    expect(checkJsLines()).toHaveLength(0);
+  });
+});

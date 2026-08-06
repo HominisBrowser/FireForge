@@ -40,6 +40,21 @@ mutating command, read the decision table at the bottom first.
    `confirmDestructive` (they used to accept `--yes` without ever
    prompting, so the flag only appeared in the history record). Enforced
    by `patch-tier-and-lint-ignore.integration.test.ts`.
+7. **A verification tree never mutates shared state** (FORGE G15). Trees
+   are full project-root CoW snapshots under `.fireforge/trees/<name>`
+   with NO merge-back model. Enforcement is layered: the `.fireforge/
+tree.json` marker plus a default-deny command-verdict table
+   (`src/core/tree-guard.ts`) refuse every mutating command through one
+   commander `preAction` hook in `cli.ts` — a newly added command is
+   refused in trees until classified (drift test). Because a tree is a
+   full project root, its build and engine-session locks key on the TREE
+   root, so in-tree reads never contend with the primary. `tree create`
+   snapshots under the PRIMARY engine-session lock (never captures a
+   mid-mutation state); tree create/remove serialise on a primary-side
+   `.fireforge/trees.lock`; `tree remove` refuses while a live PID holds
+   a tree lock and path-contains its `rm -rf` target. Enforced by
+   `tree-guard.test.ts` (verdict drift gate) and
+   `tree.integration.test.ts` (real-program refusal).
 
 ## Who owns what
 
@@ -53,6 +68,8 @@ mutating command, read the decision table at the bottom first.
 | `src/core/signal-critical.ts`     | Registry of signal-deferred critical sections (`runInSignalCriticalSection`). Pure registry — installs no handlers; the bin pipeline drains it with a bounded wait.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `src/core/patch-lock.ts`          | `withPatchDirectoryLock` — serializes patch filename allocation and manifest read-modify-writes. **Not reentrant**: callers must not already hold it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `src/core/destructive.ts`         | The destructive-operation contract: `confirmDestructive` (summary, prompt, `--yes`, `--dry-run`, conflict refusal, `--force-unsafe`) and the `.fireforge-history.jsonl` audit log.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `src/core/tree-store.ts`          | Verification-tree lifecycle: CoW snapshot contents/exclusions, the `.fireforge/tree.json` marker, staleness fingerprints, the primary-side `trees.lock`, and live-holder-refusing removal with rm-target containment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `src/core/tree-guard.ts`          | Read-only enforcement inside trees: the default-deny per-command verdict table and the `preAction` hook body `runTreeGuardHook` installed by `createProgram()` (invariant 7).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ## The signal pipeline, end to end
 
@@ -81,6 +98,7 @@ On SIGINT/SIGTERM, `bin/fireforge.ts`:
 | Touches the patch directory / manifest                                                                               | `withPatchDirectoryLock` (never nested)                                                      |
 | Deletes or rewrites user-owned patch state                                                                           | The `confirmDestructive` contract, history appended only on success                          |
 | Only reads                                                                                                           | Nothing — dry-runs must not block or be blocked                                              |
+| Runs read verification concurrently beside a busy primary                                                            | A `fireforge tree` (CoW snapshot; mutation refused inside — invariant 7)                     |
 
 ## Where this is tested
 

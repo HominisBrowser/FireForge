@@ -70,13 +70,13 @@ jobs:
       - if: steps.code_scanning.outputs.enabled == 'true'
         run: npm ci
       - if: steps.code_scanning.outputs.enabled == 'true'
-        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           languages: javascript-typescript
       - if: steps.code_scanning.outputs.enabled == 'true'
         run: npm run build
       - if: steps.code_scanning.outputs.enabled == 'true'
-        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
       - if: steps.code_scanning.outputs.enabled != 'true'
         run: echo 'Skipping CodeQL because this repository is not configured to accept code scanning uploads from this workflow.'
 

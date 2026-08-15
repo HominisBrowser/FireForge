@@ -34,6 +34,7 @@ import {
   commanderArgParser,
   pickDefined,
   resolveWaitLockSeconds,
+  stringListOption,
 } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { parsePositiveIntegerFlag } from '../utils/validation.js';
@@ -564,8 +565,7 @@ export function registerExport(
     .option(
       '--lint-ignore <check-id>',
       'Suppress a lint check on this patch (writes to PatchMetadata.lintIgnore; repeatable)',
-      (value: string, prev: string[]) => [...prev, value],
-      [] as string[]
+      ...stringListOption()
     );
   addWaitLockOption(exportCmd).action(
     withErrorHandling(

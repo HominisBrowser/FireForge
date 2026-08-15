@@ -475,6 +475,8 @@ export async function writeFurnaceConfig(root: string, config: FurnaceConfig): P
       const raw = await readJson<unknown>(paths.furnaceConfig);
       if (isObject(raw)) existing = raw;
     } catch {
+      // A missing or corrupt furnace.json means there is no prior document to
+      // preserve key order from; the writer falls back to canonical ordering.
       existing = undefined;
     }
   }

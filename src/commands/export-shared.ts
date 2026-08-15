@@ -8,6 +8,7 @@ import { findAllPatchesForFiles } from '../core/patch-export.js';
 import {
   commentStyleForFile,
   detectNewFilesInDiff,
+  formatPatchLintIssue,
   isAcceptableNewFileHeader,
   lintExportedPatch,
   resolvePatchSizeTier,
@@ -16,7 +17,7 @@ import { resolvePatchOwnedSysMjs } from '../core/patch-lint-ownership.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { getPatchPolicyCategories, isCategoryAllowedByConfig } from '../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
-import type { PatchesManifest } from '../types/commands/index.js';
+import type { PatchesManifest, PatchLintIssue } from '../types/commands/index.js';
 import type { ExportOptions, PatchCategory } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { pathExists, readText } from '../utils/fs.js';
@@ -94,6 +95,16 @@ export async function runPatchLint(
     patchTier,
     checkJsReportScope ? { checkJsReportScope } : undefined
   );
+  reportPatchLintOutcome(issues, skipLint);
+}
+
+/**
+ * Prints a patch-lint issue list with `runPatchLint`'s exact severity
+ * buckets and skip-lint semantics, throwing on errors unless `skipLint`.
+ * Factored out so `re-export`'s cached-lint path (FORGE J1) can replay
+ * stored issues through the identical reporter without re-linting.
+ */
+export function reportPatchLintOutcome(issues: PatchLintIssue[], skipLint?: boolean): void {
   if (issues.length === 0) return;
 
   const errors = issues.filter((i) => i.severity === 'error');
@@ -101,18 +112,18 @@ export async function runPatchLint(
   const notices = issues.filter((i) => i.severity === 'notice');
 
   for (const issue of notices) {
-    info(`NOTICE [${issue.check}] ${issue.file}: ${issue.message}`);
+    info(`NOTICE ${formatPatchLintIssue(issue)}`);
   }
   for (const issue of warnings) {
-    warn(`[${issue.check}] ${issue.file}: ${issue.message}`);
+    warn(formatPatchLintIssue(issue));
   }
 
   if (errors.length > 0) {
     for (const issue of errors) {
       if (skipLint) {
-        warn(`[${issue.check}] ${issue.file}: ${issue.message}`);
+        warn(formatPatchLintIssue(issue));
       } else {
-        warn(`ERROR [${issue.check}] ${issue.file}: ${issue.message}`);
+        warn(`ERROR ${formatPatchLintIssue(issue)}`);
       }
     }
 
@@ -183,7 +194,7 @@ export async function promptExportPatchMetadata(
       return null;
     }
 
-    patchName = String(nameResult).trim();
+    patchName = nameResult.trim();
   }
 
   let category = options.category;
@@ -214,7 +225,7 @@ export async function promptExportPatchMetadata(
       return null;
     }
 
-    category = categoryResult as PatchCategory;
+    category = categoryResult;
   }
 
   let description = options.description ?? '';
@@ -225,7 +236,7 @@ export async function promptExportPatchMetadata(
     });
 
     if (!isCancel(descResult)) {
-      description = String(descResult);
+      description = descResult;
     }
   }
 

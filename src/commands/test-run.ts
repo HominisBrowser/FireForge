@@ -30,6 +30,7 @@ import { BuildError } from '../errors/build.js';
 import { info, note, warn } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { maybeInjectAppdirArg } from './test-appdir.js';
+import { emitHarnessVerdict } from './test-verdict.js';
 
 /** Default bounded retry budget for recognized harness crashes. */
 export const DEFAULT_HARNESS_RETRIES = 2;
@@ -174,20 +175,47 @@ const SHARD_STATUS_LABEL: Record<HarnessRunVerdict['kind'], string> = {
   'no-tests': 'NO-TESTS',
 };
 
+/** Aggregate result of a sharded run, verdict emission deferred to the caller. */
+export interface ShardedRunSummary {
+  shards: ShardOutcome[];
+  passed: number;
+  total: number;
+  /** Aggregate classifier verdict — see {@link deriveAggregateShardVerdict}. */
+  aggregate: HarnessRunVerdict;
+}
+
+/**
+ * Derives the aggregate classification for a sharded run: all-green is
+ * `tests-ran-ok`; otherwise the most structural failure wins — a crashed
+ * shard makes the whole run `harness-crash`, then `no-tests`, then plain
+ * `test-failures` — so the aggregate `reason=` keeps the classifier-driven
+ * contract instead of collapsing every failure to `test-failures`.
+ */
+export function deriveAggregateShardVerdict(shards: ShardOutcome[]): HarnessRunVerdict {
+  const kinds = new Set(shards.map(({ outcome }) => outcome.verdict.kind));
+  if (kinds.has('harness-crash')) return { kind: 'harness-crash' };
+  if (kinds.has('no-tests')) return { kind: 'no-tests' };
+  if (kinds.has('test-failures')) return { kind: 'test-failures' };
+  return { kind: 'tests-ran-ok' };
+}
+
 /**
  * Runs each requested path argument as its own sequential harness
  * invocation (a directory argument's enumerated files stay together in
  * one invocation — see {@link ShardGroup}) and prints an aggregate
  * report. Per-shard failures are diagnosed via `diagnoseShardFailure`
  * (which receives the throwing diagnosis chain from the command layer)
- * but downgraded to warnings so every shard runs; a single aggregate
- * error is thrown at the end when any shard did not pass.
+ * but downgraded to warnings so every shard runs. The aggregate verdict
+ * line and the aggregate error are NOT produced here — the caller runs
+ * the engine-generation integrity check first and then calls
+ * {@link finalizeShardedOutcome}, so a run invalidated by a concurrent
+ * `engine/` mutation can never print `PASS` before the check fails.
  */
 export async function runShardedTests(
   ctx: TestRunContext,
   groups: ShardGroup[],
   diagnoseShardFailure: (outcome: TestRunOutcome, label: string) => string | undefined
-): Promise<void> {
+): Promise<ShardedRunSummary> {
   const shards: ShardOutcome[] = [];
   for (const [index, group] of groups.entries()) {
     info(`— Shard ${index + 1}/${groups.length}: ${group.label}`);
@@ -218,9 +246,26 @@ export async function runShardedTests(
     'Sharded Test Summary'
   );
 
-  if (failing.length > 0) {
+  return {
+    shards,
+    passed: shards.length - failing.length,
+    total: shards.length,
+    aggregate: deriveAggregateShardVerdict(shards),
+  };
+}
+
+/**
+ * Emits the aggregate FIREFORGE-VERDICT line for a sharded run, then
+ * throws the aggregate error when any shard did not pass — the same
+ * emit-then-throw shape as `finalizeSingleRunOutcome`. Called only after
+ * the engine-generation check succeeded.
+ */
+export function finalizeShardedOutcome(summary: ShardedRunSummary): void {
+  emitHarnessVerdict(summary.aggregate, { passed: summary.passed, total: summary.total });
+  if (summary.passed < summary.total) {
+    const failing = summary.shards.filter(({ outcome }) => outcome.verdict.kind !== 'tests-ran-ok');
     throw new BuildError(
-      `${failing.length} of ${shards.length} sharded test run(s) did not pass: ` +
+      `${failing.length} of ${summary.total} sharded test run(s) did not pass: ` +
         `${failing.map(({ label }) => label).join(', ')}. ` +
         'See the per-shard diagnosis above. Use --no-shard to reproduce the combined single-invocation behaviour.',
       'mach test'

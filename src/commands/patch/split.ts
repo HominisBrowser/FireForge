@@ -26,6 +26,7 @@ import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { appendHistory, confirmDestructive } from '../../core/destructive.js';
 import { normalizePatchArtifact } from '../../core/patch-artifact-normalize.js';
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
+import { buildPatchQueueContext } from '../../core/patch-lint.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
   loadPatchesManifest,
@@ -42,7 +43,13 @@ import type { FireForgeConfig } from '../../types/config.js';
 import { toError } from '../../utils/errors.js';
 import { readText, removeFile, writeText } from '../../utils/fs.js';
 import { info, intro, outro, success, warn } from '../../utils/logger.js';
-import { commanderArgParser, pickDefined } from '../../utils/options.js';
+import {
+  addWaitLockOption,
+  commanderArgParser,
+  pickDefined,
+  resolveWaitLockSeconds,
+} from '../../utils/options.js';
+import { normalizePatchDisplayName } from '../../utils/validation.js';
 import { placementPlansEqual, resolvePlacementPlan } from '../export-flow.js';
 import { runPatchLint } from '../export-shared.js';
 import {
@@ -69,145 +76,149 @@ export async function commitPatchSplit(
   patchesDir: string,
   plan: SplitPlan,
   newMetadata: PatchMetadata,
-  options: Pick<PatchSplitOptions, 'yes' | 'forceUnsafe'>,
+  options: Pick<PatchSplitOptions, 'yes' | 'forceUnsafe' | 'waitLock'>,
   config: FireForgeConfig
 ): Promise<void> {
-  await withPatchDirectoryLock(patchesDir, async () => {
-    const manifest = await loadPatchesManifest(patchesDir);
-    if (!manifest) throw new GeneralError('Manifest disappeared while waiting for lock.');
-    const current = manifest.patches.find((p) => p.filename === plan.source.filename);
-    if (!current || current.filesAffected.join('\n') !== plan.source.filesAffected.join('\n')) {
-      throw new InvalidArgumentError(
-        'Patch queue changed while waiting for split confirmation. Re-run the command.',
-        'patch split'
-      );
-    }
-    const currentPlacement = await resolvePlacementPlan(
-      patchesDir,
-      plan.placementOptions,
-      plan.category,
-      plan.name,
-      config
-    );
-    if (!placementPlansEqual(currentPlacement, plan.placement)) {
-      throw new InvalidArgumentError(
-        'Patch queue changed while waiting for split confirmation. Re-run the command.',
-        'patch split'
-      );
-    }
-
-    const movedSet = new Set(plan.movedFiles);
-    const effectiveSourceFilename =
-      plan.placement.renameMap.get(plan.source.filename)?.newFilename ?? plan.source.filename;
-    const newPatchPath = join(patchesDir, plan.placement.newFilename);
-    const sourcePathBefore = join(patchesDir, plan.source.filename);
-    const sourcePathAfter = join(patchesDir, effectiveSourceFilename);
-    const originalSourceBody = await readText(sourcePathBefore);
-    let renumberApplied = false;
-    let newPatchWritten = false;
-    let sourceRewritten = false;
-
-    try {
-      if (plan.placement.renameMap.size > 0) {
-        await renumberPatchesInManifest(patchesDir, plan.placement.renameMap);
-        renumberApplied = true;
-      }
-      await writeText(newPatchPath, normalizePatchArtifact(plan.movedDiff));
-      newPatchWritten = true;
-      await writeText(sourcePathAfter, normalizePatchArtifact(plan.remainingDiff));
-      sourceRewritten = true;
-
-      const fresh = await loadPatchesManifest(patchesDir);
-      if (!fresh) throw new GeneralError('Manifest disappeared during split commit.');
-      const updatedPatches = fresh.patches.map((patch) => {
-        let withOwners = rewriteSplitOwners(
-          patch,
-          effectiveSourceFilename,
-          movedSet,
-          plan.placement.newFilename
+  await withPatchDirectoryLock(
+    patchesDir,
+    async () => {
+      const manifest = await loadPatchesManifest(patchesDir);
+      if (!manifest) throw new GeneralError('Manifest disappeared while waiting for lock.');
+      const current = manifest.patches.find((p) => p.filename === plan.source.filename);
+      if (!current || current.filesAffected.join('\n') !== plan.source.filesAffected.join('\n')) {
+        throw new InvalidArgumentError(
+          'Patch queue changed while waiting for split confirmation. Re-run the command.',
+          'patch split'
         );
-        // Persist the auto-declared forward edges into the new patch so the
-        // real per-patch gate stays clean (keyed by post-rename filename).
-        const decls = plan.stagedDependencyAdditions.get(withOwners.filename);
-        if (decls?.length) {
-          withOwners = mergeStagedForwardImports(withOwners, decls);
-        }
-        if (patch.filename !== effectiveSourceFilename) return withOwners;
-        return { ...withOwners, filesAffected: plan.remainingFiles };
-      });
-      updatedPatches.push(newMetadata);
-      updatedPatches.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
-      const updated = validatePatchesManifest({ ...fresh, patches: updatedPatches });
-      await savePatchesManifest(patchesDir, updated);
+      }
+      const currentPlacement = await resolvePlacementPlan(
+        patchesDir,
+        plan.placementOptions,
+        plan.category,
+        plan.name,
+        config
+      );
+      if (!placementPlansEqual(currentPlacement, plan.placement)) {
+        throw new InvalidArgumentError(
+          'Patch queue changed while waiting for split confirmation. Re-run the command.',
+          'patch split'
+        );
+      }
+
+      const movedSet = new Set(plan.movedFiles);
+      const effectiveSourceFilename =
+        plan.placement.renameMap.get(plan.source.filename)?.newFilename ?? plan.source.filename;
+      const newPatchPath = join(patchesDir, plan.placement.newFilename);
+      const sourcePathBefore = join(patchesDir, plan.source.filename);
+      const sourcePathAfter = join(patchesDir, effectiveSourceFilename);
+      const originalSourceBody = await readText(sourcePathBefore);
+      let renumberApplied = false;
+      let newPatchWritten = false;
+      let sourceRewritten = false;
 
       try {
-        await appendHistory(patchesDir, {
-          operation: 'patch-split',
-          args: {
-            source: effectiveSourceFilename,
-            newFilename: plan.placement.newFilename,
-            order: plan.placement.insertionOrder,
-            files: plan.movedFiles,
-            ownerRewrites: plan.ownerRewrites,
-            renames: [...plan.placement.renameMap.entries()].map(([from, entry]) => ({
-              from,
-              to: entry.newFilename,
-            })),
-          },
-          ...(options.yes === true ? { yes: true } : {}),
-          ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
-          result: 'ok',
+        if (plan.placement.renameMap.size > 0) {
+          await renumberPatchesInManifest(patchesDir, plan.placement.renameMap);
+          renumberApplied = true;
+        }
+        await writeText(newPatchPath, normalizePatchArtifact(plan.movedDiff));
+        newPatchWritten = true;
+        await writeText(sourcePathAfter, normalizePatchArtifact(plan.remainingDiff));
+        sourceRewritten = true;
+
+        const fresh = await loadPatchesManifest(patchesDir);
+        if (!fresh) throw new GeneralError('Manifest disappeared during split commit.');
+        const updatedPatches = fresh.patches.map((patch) => {
+          let withOwners = rewriteSplitOwners(
+            patch,
+            effectiveSourceFilename,
+            movedSet,
+            plan.placement.newFilename
+          );
+          // Persist the auto-declared forward edges into the new patch so the
+          // real per-patch gate stays clean (keyed by post-rename filename).
+          const decls = plan.stagedDependencyAdditions.get(withOwners.filename);
+          if (decls?.length) {
+            withOwners = mergeStagedForwardImports(withOwners, decls);
+          }
+          if (patch.filename !== effectiveSourceFilename) return withOwners;
+          return { ...withOwners, filesAffected: plan.remainingFiles };
         });
-      } catch (historyError: unknown) {
-        warn(
-          `History log append failed after patch split committed: ${toError(historyError).message}`
-        );
-      }
-    } catch (error: unknown) {
-      // Reverse-order rollback; each step warns on its own failure so the
-      // original error stays visible.
-      if (sourceRewritten) {
+        updatedPatches.push(newMetadata);
+        updatedPatches.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
+        const updated = validatePatchesManifest({ ...fresh, patches: updatedPatches });
+        await savePatchesManifest(patchesDir, updated);
+
         try {
-          await writeText(sourcePathAfter, originalSourceBody);
-        } catch (rollbackError: unknown) {
-          warn(
-            `Rollback warning: could not restore source body: ${toError(rollbackError).message}`
-          );
-        }
-      }
-      if (newPatchWritten) {
-        try {
-          await removeFile(newPatchPath);
-        } catch (rollbackError: unknown) {
-          warn(
-            `Rollback warning: could not remove new patch file: ${toError(rollbackError).message}`
-          );
-        }
-      }
-      if (renumberApplied) {
-        const inverseMap = new Map(
-          [...plan.placement.renameMap.entries()].map(([oldFilename, entry]) => [
-            entry.newFilename,
-            {
-              newOrder: parseInt(oldFilename.split('-')[0] ?? '0', 10),
-              newFilename: oldFilename,
+          await appendHistory(patchesDir, {
+            operation: 'patch-split',
+            args: {
+              source: effectiveSourceFilename,
+              newFilename: plan.placement.newFilename,
+              order: plan.placement.insertionOrder,
+              files: plan.movedFiles,
+              ownerRewrites: plan.ownerRewrites,
+              renames: [...plan.placement.renameMap.entries()].map(([from, entry]) => ({
+                from,
+                to: entry.newFilename,
+              })),
             },
-          ])
-        );
-        try {
-          await renumberPatchesInManifest(patchesDir, inverseMap);
-        } catch (rollbackError: unknown) {
-          warn(`Rollback warning: could not invert renumber: ${toError(rollbackError).message}`);
+            ...(options.yes === true ? { yes: true } : {}),
+            ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
+            result: 'ok',
+          });
+        } catch (historyError: unknown) {
+          warn(
+            `History log append failed after patch split committed: ${toError(historyError).message}`
+          );
         }
+      } catch (error: unknown) {
+        // Reverse-order rollback; each step warns on its own failure so the
+        // original error stays visible.
+        if (sourceRewritten) {
+          try {
+            await writeText(sourcePathAfter, originalSourceBody);
+          } catch (rollbackError: unknown) {
+            warn(
+              `Rollback warning: could not restore source body: ${toError(rollbackError).message}`
+            );
+          }
+        }
+        if (newPatchWritten) {
+          try {
+            await removeFile(newPatchPath);
+          } catch (rollbackError: unknown) {
+            warn(
+              `Rollback warning: could not remove new patch file: ${toError(rollbackError).message}`
+            );
+          }
+        }
+        if (renumberApplied) {
+          const inverseMap = new Map(
+            [...plan.placement.renameMap.entries()].map(([oldFilename, entry]) => [
+              entry.newFilename,
+              {
+                newOrder: parseInt(oldFilename.split('-')[0] ?? '0', 10),
+                newFilename: oldFilename,
+              },
+            ])
+          );
+          try {
+            await renumberPatchesInManifest(patchesDir, inverseMap);
+          } catch (rollbackError: unknown) {
+            warn(`Rollback warning: could not invert renumber: ${toError(rollbackError).message}`);
+          }
+        }
+        try {
+          await savePatchesManifest(patchesDir, manifest);
+        } catch (rollbackError: unknown) {
+          warn(`Rollback warning: could not restore manifest: ${toError(rollbackError).message}`);
+        }
+        throw error;
       }
-      try {
-        await savePatchesManifest(patchesDir, manifest);
-      } catch (rollbackError: unknown) {
-        warn(`Rollback warning: could not restore manifest: ${toError(rollbackError).message}`);
-      }
-      throw error;
-    }
-  });
+    },
+    { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch split' }
+  );
 }
 
 /**
@@ -274,6 +285,16 @@ export async function patchSplitCommand(
     config
   );
 
+  // The filename slug pipeline strips redundant category prefixes; the
+  // manifest display name must agree with the bare-slug naming policy,
+  // exactly as `export --name` already does (FORGE G13/H4).
+  const displayName = normalizePatchDisplayName(options.name, category);
+  if (displayName !== options.name) {
+    info(
+      `Patch name normalized: "${options.name}" → "${displayName}" (the filename carries the order and category prefix).`
+    );
+  }
+
   const plan: SplitPlan = {
     source,
     movedFiles,
@@ -283,7 +304,7 @@ export async function patchSplitCommand(
     placement,
     placementOptions,
     category,
-    name: options.name,
+    name: displayName,
     description: options.description ?? '',
     ownerRewrites: findOwnerRewriteHolders(manifest.patches, source.filename, movedSet),
     // Populated by runProjectedSplitLint below (forward edges into the new patch).
@@ -292,6 +313,10 @@ export async function patchSplitCommand(
 
   // Per-patch lint both projected bodies, threading the source patch's
   // tier/lintIgnore so an intentional-advisory patch can still split.
+  // The whole-queue context (built once, with the config for committed-gate
+  // parity) resolves cross-patch imports and sibling head.js harness roots
+  // instead of linting each projected body blind (FORGE I3).
+  const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
   await runPatchLint(
     paths.engine,
@@ -299,7 +324,7 @@ export async function patchSplitCommand(
     remainingDiff,
     config,
     options.skipLint,
-    undefined,
+    patchQueueCtx,
     ignoreChecks,
     source.tier
   );
@@ -309,12 +334,12 @@ export async function patchSplitCommand(
     movedDiff,
     config,
     options.skipLint,
-    undefined,
+    patchQueueCtx,
     ignoreChecks,
     source.tier
   );
 
-  const { conflicts, stagedDependencyAdditions } = await runProjectedSplitLint(paths.patches, plan);
+  const { conflicts, stagedDependencyAdditions } = runProjectedSplitLint(plan, patchQueueCtx);
   plan.stagedDependencyAdditions = stagedDependencyAdditions;
   const newMetadata = buildNewPatchMetadata(plan, config);
   enforcePatchPolicy({
@@ -358,7 +383,7 @@ export async function patchSplitCommand(
  */
 export function registerPatchSplit(parent: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  parent
+  const command = parent
     .command('split <source>')
     .description(
       'Move files out of a patch into a new patch as one transaction (shrink + create + staged-dependency owner rewrites)'
@@ -389,41 +414,43 @@ export function registerPatchSplit(parent: Command, context: CommandContext): vo
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
     .option('--force-unsafe', 'Bypass projected-lint refusals')
-    .option('--skip-lint', 'Skip per-patch lint of the projected bodies')
-    .action(
-      withErrorHandling(
-        async (
-          sourceId: string,
-          options: {
-            files: string[];
-            name: string;
-            category?: string;
-            description?: string;
-            order?: number;
-            before?: string;
-            after?: string;
-            dryRun?: boolean;
-            yes?: boolean;
-            forceUnsafe?: boolean;
-            skipLint?: boolean;
-          }
-        ) => {
-          await patchSplitCommand(getProjectRoot(), sourceId, {
-            files: options.files,
-            name: options.name,
-            ...pickDefined({
-              category: options.category,
-              description: options.description,
-              order: options.order,
-              before: options.before,
-              after: options.after,
-              dryRun: options.dryRun,
-              yes: options.yes,
-              forceUnsafe: options.forceUnsafe,
-              skipLint: options.skipLint,
-            }),
-          });
+    .option('--skip-lint', 'Skip per-patch lint of the projected bodies');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (
+        sourceId: string,
+        options: {
+          files: string[];
+          name: string;
+          category?: string;
+          description?: string;
+          order?: number;
+          before?: string;
+          after?: string;
+          dryRun?: boolean;
+          yes?: boolean;
+          forceUnsafe?: boolean;
+          skipLint?: boolean;
+          waitLock?: number | boolean;
         }
-      )
-    );
+      ) => {
+        await patchSplitCommand(getProjectRoot(), sourceId, {
+          files: options.files,
+          name: options.name,
+          ...pickDefined({
+            category: options.category,
+            description: options.description,
+            order: options.order,
+            before: options.before,
+            after: options.after,
+            dryRun: options.dryRun,
+            yes: options.yes,
+            forceUnsafe: options.forceUnsafe,
+            skipLint: options.skipLint,
+            waitLock: options.waitLock,
+          }),
+        });
+      }
+    )
+  );
 }

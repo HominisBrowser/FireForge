@@ -24,6 +24,7 @@ import {
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceApplyOptions } from '../../types/commands/index.js';
+import { getNodeErrorCode, toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, spinner, warn } from '../../utils/logger.js';
 
@@ -63,11 +64,11 @@ function checksumMapsEqual(a: Map<string, string>, b: Map<string, string>): bool
  * collapsed all causes into one string and made diagnosis difficult.
  */
 function classifyWatchApplyError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = toError(err).message;
   if (err instanceof FurnaceError) {
     return `Apply failed: ${message}`;
   }
-  const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+  const code = getNodeErrorCode(err);
   switch (code) {
     case 'EACCES':
     case 'EPERM':
@@ -185,9 +186,7 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
       // Directory vanished between the pathExists check and fs.watch, or
       // fs.watch otherwise refused. refreshWatchers will retry on the next
       // poll tick.
-      warn(
-        `Could not start watcher on ${dir}: ${err instanceof Error ? err.message : String(err)}`
-      );
+      warn(`Could not start watcher on ${dir}: ${toError(err).message}`);
       return false;
     }
   };

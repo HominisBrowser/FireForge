@@ -50,13 +50,28 @@ vi.mock('../../core/mach.js', () => {
 });
 
 vi.mock('../../core/build-prepare.js', () => ({
-  prepareBuildEnvironment: vi.fn(() => Promise.resolve({ furnaceApplied: 0, reconfigured: false })),
+  prepareBuildEnvironment: vi.fn(() =>
+    Promise.resolve({ furnaceApplied: 0, reconfigured: false, fullBuildRequired: false })
+  ),
 }));
 
 vi.mock('../../core/build-baseline.js', () => ({
   readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
   writeBuildBaseline: vi.fn(() => Promise.resolve()),
 }));
+
+// The --extend-coverage anchor probes real git/file state (covered by
+// src/core/__tests__/coverage-extend.test.ts); here the command-level
+// contract is what the command does with each verdict, so the probes are
+// mocked and the union stays real.
+vi.mock('../../core/coverage-extend.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/coverage-extend.js')>();
+  return {
+    ...actual,
+    checkExtendCoverageAnchor: vi.fn(() => Promise.resolve({ ok: true })),
+    checkExtendMozconfigAnchor: vi.fn(() => Promise.resolve({ ok: true })),
+  };
+});
 
 // Default to the pass-through analysis (file args, no siblings) so every
 // existing dispatch assertion stays valid; the directory-scope tests
@@ -88,6 +103,7 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  setStdoutSealed: vi.fn(),
   intro: vi.fn(),
   info: vi.fn(),
   note: vi.fn(),
@@ -134,6 +150,7 @@ vi.mock('../../core/marionette-port.js', async () => {
   return {
     ...actual,
     assertMarionettePortAvailable: vi.fn(() => Promise.resolve()),
+    ensureLaunchableBrowserNotRunning: vi.fn(() => Promise.resolve()),
     ensureMarionettePortAvailable: vi.fn(() => Promise.resolve()),
     probeMarionettePort: vi.fn(() => Promise.resolve({ inUse: false })),
   };
@@ -163,9 +180,20 @@ vi.mock('../../core/xpcshell-appdir.js', () => ({
   operatorAlreadySetAppPath: vi.fn(() => false),
 }));
 
-import { writeBuildBaseline } from '../../core/build-baseline.js';
+// The in-tree objdir/marker cross-check is a pass-through by default; the
+// dedicated test drives its refusal. Real behavior is covered in
+// tree-store.integration.test.ts.
+vi.mock('../../core/tree-store.js', () => ({
+  assertObjdirMatchesTreeMarker: vi.fn(() => Promise.resolve()),
+}));
+
+import { readBuildBaseline, writeBuildBaseline } from '../../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { loadConfig } from '../../core/config.js';
+import {
+  checkExtendCoverageAnchor,
+  checkExtendMozconfigAnchor,
+} from '../../core/coverage-extend.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
@@ -176,6 +204,7 @@ import {
 } from '../../core/mach.js';
 import {
   assertMarionettePortAvailable,
+  ensureLaunchableBrowserNotRunning,
   ensureMarionettePortAvailable,
 } from '../../core/marionette-port.js';
 import {
@@ -188,6 +217,7 @@ import {
   checkStaticComponentsStale,
   formatStaleBuildWarning,
 } from '../../core/test-stale-check.js';
+import { assertObjdirMatchesTreeMarker } from '../../core/tree-store.js';
 import {
   findNearestXpcshellManifest,
   operatorAlreadySetAppPath,
@@ -408,6 +438,38 @@ describe('testCommand', () => {
     );
   });
 
+  it('escalates a jar.mn-changing pre-test build to a full build', async () => {
+    vi.mocked(prepareBuildEnvironment).mockResolvedValueOnce({
+      furnaceApplied: 0,
+      reconfigured: false,
+      fullBuildRequired: true,
+    });
+    vi.mocked(testWithOutput).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stderr: '',
+    });
+
+    await testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+      build: true,
+    });
+
+    expect(runProtectedMachBuild).toHaveBeenCalledWith(
+      'full',
+      '/project/engine',
+      expect.objectContaining({ retries: 2 })
+    );
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      '/project',
+      '/project/engine',
+      'mybrowser',
+      ['browser/components/tests/unit/test_distribution.js'],
+      undefined,
+      'fireforge test --build browser/components/tests/unit/test_distribution.js',
+      'refresh'
+    );
+  });
+
   it('fails with an AmbiguousBuildArtifactsError when multiple objdirs are detected', async () => {
     vi.mocked(hasBuildArtifacts).mockResolvedValueOnce({
       exists: true,
@@ -423,10 +485,14 @@ describe('testCommand', () => {
   });
 
   it('surfaces build artifact mismatch messages before invoking mach test', async () => {
-    vi.mocked(buildArtifactMismatchMessage).mockReturnValue('Build artifacts do not match Tests');
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({
+      exists: true,
+      objDir: 'obj-debug',
+      metadataMismatch: { objDir: 'obj-debug', topsrcdir: '/other/workspace/engine' },
+    });
 
     await expect(testCommand('/project', [], { auto: true })).rejects.toThrow(
-      'Build artifacts do not match Tests'
+      /copied or relocated build artifacts/i
     );
 
     expect(testWithOutput).not.toHaveBeenCalled();
@@ -439,6 +505,22 @@ describe('testCommand', () => {
       'Tests require a completed build'
     );
 
+    expect(testWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('refuses inside a tree when the objdir found is not the one the marker vouched for', async () => {
+    // The guard admits build-less in-tree test on the marker's clonedObjdir;
+    // preflight must then prove the objdir it actually found IS that one —
+    // any other objdir was never rewritten/reconfigured to the tree.
+    vi.mocked(assertObjdirMatchesTreeMarker).mockRejectedValueOnce(
+      new GeneralError('This verification tree\'s marker records "obj-e2e" as its cloned build')
+    );
+
+    await expect(testCommand('/project', [], { auto: true })).rejects.toThrow(
+      /marker records "obj-e2e"/
+    );
+
+    expect(assertObjdirMatchesTreeMarker).toHaveBeenCalledWith('/project', 'obj-debug');
     expect(testWithOutput).not.toHaveBeenCalled();
   });
 
@@ -497,14 +579,24 @@ describe('testCommand', () => {
       stderr: '',
     });
 
-    await expect(testCommand('/project', [], { canary: true })).resolves.toBeUndefined();
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await expect(testCommand('/project', [], { canary: true })).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/base/content/test/foo/browser_canary.js'],
-      expect.arrayContaining(['--timeout=12'])
-    );
-    expect(success).toHaveBeenCalledWith('Canary: green');
+      expect(testWithOutput).toHaveBeenCalledWith(
+        '/project/engine',
+        ['browser/base/content/test/foo/browser_canary.js'],
+        expect.arrayContaining(['--timeout=12'])
+      );
+      expect(success).toHaveBeenCalledWith('Canary: green');
+      // FORGE I5: the canary path ends with the machine-readable verdict.
+      const rawWrites = writeSpy.mock.calls
+        .map((args) => args[0])
+        .filter((chunk): chunk is string => typeof chunk === 'string');
+      expect(rawWrites.at(-1)).toMatch(/^FIREFORGE-VERDICT: PASS/);
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 
   it('classifies a canary no-output timeout as hang', async () => {
@@ -514,11 +606,23 @@ describe('testCommand', () => {
       stderr: '',
     });
 
-    await expect(
-      testCommand('/project', [], {
-        canary: 'browser/base/content/test/foo/browser_canary.js',
-      })
-    ).rejects.toThrow(/Canary: hang/);
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await expect(
+        testCommand('/project', [], {
+          canary: 'browser/base/content/test/foo/browser_canary.js',
+        })
+      ).rejects.toThrow(/Canary: hang/);
+
+      // FORGE I5: the FAIL verdict line is emitted before the throw
+      // propagates, so it is the canary run's last stdout write.
+      const rawWrites = writeSpy.mock.calls
+        .map((args) => args[0])
+        .filter((chunk): chunk is string => typeof chunk === 'string');
+      expect(rawWrites.at(-1)).toMatch(/^FIREFORGE-VERDICT: FAIL reason=crash/);
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 
   it('throws a BuildError when the incremental pre-test build fails', async () => {
@@ -941,6 +1045,8 @@ describe('testCommand', () => {
           )
         )
       ).toBe(true);
+      // FORGE I5: doctor-only runs end with the machine-readable verdict.
+      expect(rawWrites).toContain('FIREFORGE-VERDICT: PASS\n');
     } finally {
       writeSpy.mockRestore();
       if (ttyDescriptor) {
@@ -1088,7 +1194,8 @@ describe('testCommand', () => {
       'mybrowser',
       ['browser/components/tests/unit/test_distribution.js'],
       undefined,
-      'fireforge test --build browser/components/tests/unit/test_distribution.js'
+      'fireforge test --build browser/components/tests/unit/test_distribution.js',
+      'auto'
     );
     // Same ordering contract as `fireforge build`: the baseline records a
     // build that actually completed.
@@ -1120,7 +1227,8 @@ describe('testCommand', () => {
       'mybrowser',
       ['browser/components/tests/unit'],
       undefined,
-      'fireforge test --build browser/components/tests/unit'
+      'fireforge test --build browser/components/tests/unit',
+      'auto'
     );
   });
 
@@ -1145,7 +1253,8 @@ describe('testCommand', () => {
       'mybrowser',
       'full',
       undefined,
-      'fireforge test --build'
+      'fireforge test --build',
+      'auto'
     );
   });
 
@@ -1717,6 +1826,233 @@ describe('testCommand', () => {
     expect(testWithOutput).not.toHaveBeenCalled();
   });
 
+  function captureStdout(): { verdicts: () => string[]; restore: () => void } {
+    const writes: string[] = [];
+    const spy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+        return true;
+      });
+    return {
+      verdicts: () => writes.filter((w) => w.startsWith('FIREFORGE-VERDICT:')),
+      restore: () => {
+        spy.mockRestore();
+      },
+    };
+  }
+
+  describe('--build-only union build (FORGE J9)', () => {
+    const MIXED_PATHS = [
+      'browser/base/content/test/xpcshell/test_tile.js',
+      'browser/base/content/test/browser/browser_tile.js',
+    ];
+
+    it('accepts mixed harness paths, builds once with union coverage, and never dispatches', async () => {
+      vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
+        Promise.resolve(path.includes('/xpcshell/') ? '/project/engine/foo/xpcshell.toml' : null)
+      );
+
+      const capture = captureStdout();
+      try {
+        await expect(
+          testCommand('/project', MIXED_PATHS, { buildOnly: true })
+        ).resolves.toBeUndefined();
+      } finally {
+        capture.restore();
+      }
+
+      expect(runProtectedMachBuild).toHaveBeenCalledTimes(1);
+      expect(testWithOutput).not.toHaveBeenCalled();
+      expect(xpcshellTestWithOutput).not.toHaveBeenCalled();
+      // The baseline coverage claim lists BOTH harness halves.
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        '/project',
+        '/project/engine',
+        expect.any(String),
+        MIXED_PATHS,
+        undefined,
+        expect.stringContaining('fireforge test --build'),
+        'auto'
+      );
+      expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: PASS\n']);
+      expect(info).toHaveBeenCalledWith('Run each harness separately without --build:');
+    });
+
+    it('still refuses mixed paths without --build-only', async () => {
+      vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
+        Promise.resolve(path.includes('/xpcshell/') ? '/project/engine/foo/xpcshell.toml' : null)
+      );
+
+      await expect(testCommand('/project', MIXED_PATHS, { build: true })).rejects.toThrow(
+        /cannot run xpcshell and browser\/mochitest paths/i
+      );
+      expect(runProtectedMachBuild).not.toHaveBeenCalled();
+    });
+
+    it('rejects --build-only with mode flags', async () => {
+      await expect(testCommand('/project', [], { buildOnly: true, doctor: true })).rejects.toThrow(
+        /--build-only.*cannot be combined with --doctor/s
+      );
+    });
+  });
+
+  describe('--extend-coverage union claim (FORGE L1)', () => {
+    const SLICE_A = 'browser/base/content/test/a/browser_a.js';
+    const SLICE_B = 'browser/base/content/test/b/browser_b.js';
+
+    function greenBuild(): void {
+      vi.mocked(runProtectedMachBuild).mockResolvedValue({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        attempts: 1,
+      });
+      vi.mocked(testWithOutput).mockResolvedValue({
+        exitCode: 0,
+        stdout: 'TEST-START | t\nTEST-OK | t',
+        stderr: '',
+      });
+    }
+
+    it('unions the new paths onto the recorded scoped claim', async () => {
+      greenBuild();
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        engineHeadSha: 'abc',
+        builtAt: '2026-08-11T00:00:00.000Z',
+        binaryName: 'mybrowser',
+        testPackagingCoverage: [SLICE_A],
+      });
+
+      await expect(
+        testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
+      ).resolves.toBeUndefined();
+
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        '/project',
+        '/project/engine',
+        'mybrowser',
+        [SLICE_A, SLICE_B],
+        expect.anything(),
+        expect.stringContaining('--extend-coverage'),
+        'carry-forward'
+      );
+    });
+
+    it("keeps a 'full' claim full and still carries the static-components anchor forward", async () => {
+      greenBuild();
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        engineHeadSha: 'abc',
+        builtAt: '2026-08-11T00:00:00.000Z',
+        binaryName: 'mybrowser',
+        testPackagingCoverage: 'full',
+      });
+
+      await expect(
+        testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
+      ).resolves.toBeUndefined();
+
+      // 'carry-forward' matters precisely here: the union evaluates to
+      // 'full', but the build behind it was a scoped `mach build faster`
+      // that did not rebake the compiled StaticComponents table.
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        '/project',
+        '/project/engine',
+        'mybrowser',
+        'full',
+        expect.anything(),
+        expect.any(String),
+        'carry-forward'
+      );
+    });
+
+    it('refuses before building when the head/fingerprint anchor moved', async () => {
+      greenBuild();
+      vi.mocked(checkExtendCoverageAnchor).mockResolvedValueOnce({
+        ok: false,
+        reason: 'head-moved',
+        detail: ['recorded abc', 'current def'],
+      });
+
+      await expect(
+        testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
+      ).rejects.toThrow(/--extend-coverage refused: engine HEAD moved/);
+
+      expect(runProtectedMachBuild).not.toHaveBeenCalled();
+      expect(writeBuildBaseline).not.toHaveBeenCalled();
+    });
+
+    it('refuses on a regenerated mozconfig, after prepare but before mach', async () => {
+      greenBuild();
+      vi.mocked(checkExtendMozconfigAnchor).mockResolvedValueOnce({
+        ok: false,
+        reason: 'mozconfig-changed',
+        detail: [],
+      });
+
+      await expect(
+        testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
+      ).rejects.toThrow(/engine\/mozconfig differs from the recorded build/);
+
+      expect(runProtectedMachBuild).not.toHaveBeenCalled();
+    });
+
+    it('refuses when no previous baseline exists', async () => {
+      greenBuild();
+      vi.mocked(checkExtendCoverageAnchor).mockResolvedValueOnce({
+        ok: false,
+        reason: 'no-baseline',
+        detail: [],
+      });
+
+      await expect(
+        testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
+      ).rejects.toThrow(/nothing to extend/);
+    });
+
+    it('is refused without --build/--build-only', async () => {
+      await expect(testCommand('/project', [SLICE_B], { extendCoverage: true })).rejects.toThrow(
+        /--extend-coverage requires --build or --build-only/
+      );
+    });
+
+    it('is refused for a path-less build (full coverage already covers everything)', async () => {
+      await expect(
+        testCommand('/project', [], { build: true, auto: true, extendCoverage: true })
+      ).rejects.toThrow(/--extend-coverage requires explicit test paths/);
+    });
+
+    it('composes with --build-only, which is the union-build shape it exists for', async () => {
+      greenBuild();
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        engineHeadSha: 'abc',
+        builtAt: '2026-08-11T00:00:00.000Z',
+        binaryName: 'mybrowser',
+        testPackagingCoverage: [SLICE_A],
+      });
+
+      const capture = captureStdout();
+      try {
+        await expect(
+          testCommand('/project', [SLICE_B], { buildOnly: true, extendCoverage: true })
+        ).resolves.toBeUndefined();
+      } finally {
+        capture.restore();
+      }
+
+      expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: PASS\n']);
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        '/project',
+        '/project/engine',
+        'mybrowser',
+        [SLICE_A, SLICE_B],
+        expect.anything(),
+        expect.stringContaining('--extend-coverage'),
+        'carry-forward'
+      );
+    });
+  });
+
   it('skips the Marionette preflight and client flags for xpcshell-only runs (FORGE F10)', async () => {
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
@@ -1734,6 +2070,7 @@ describe('testCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(assertMarionettePortAvailable).not.toHaveBeenCalled();
+    expect(ensureLaunchableBrowserNotRunning).not.toHaveBeenCalled();
     const [, , extraArgs] = vi.mocked(xpcshellTestWithOutput).mock.calls[0] ?? [];
     expect(extraArgs).not.toEqual(
       expect.arrayContaining([expect.stringContaining('--setpref=marionette.port')])
@@ -1765,6 +2102,7 @@ describe('testCommand', () => {
 
     expect(ensureMarionettePortAvailable).not.toHaveBeenCalled();
     expect(assertMarionettePortAvailable).not.toHaveBeenCalled();
+    expect(ensureLaunchableBrowserNotRunning).not.toHaveBeenCalled();
   });
 
   it('keeps the Marionette preflight for xpcshell-only --doctor runs (FORGE F10)', async () => {
@@ -1979,6 +2317,10 @@ describe('testCommand', () => {
     expect(assertMarionettePortAvailable).toHaveBeenCalledWith(
       2838,
       expect.objectContaining({ binaryName: 'mybrowser' })
+    );
+    expect(ensureLaunchableBrowserNotRunning).toHaveBeenCalledWith(
+      '/project/engine/obj-debug/dist/bin/firefox',
+      { killStaleBrowser: false }
     );
   });
 
@@ -2319,38 +2661,56 @@ describe('testCommand harness resilience (C1-C4)', () => {
   it('shards multi-path requests into sequential single-path invocations', async () => {
     vi.mocked(testWithOutput).mockResolvedValue(GREEN);
 
-    await expect(
-      testCommand('/project', [
-        'browser/components/a/test/browser_a.js',
-        'browser/components/b/test/browser_b.js',
-      ])
-    ).resolves.toBeUndefined();
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await expect(
+        testCommand('/project', [
+          'browser/components/a/test/browser_a.js',
+          'browser/components/b/test/browser_b.js',
+        ])
+      ).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(testWithOutput).mock.calls[0]?.[1]).toEqual([
-      'browser/components/a/test/browser_a.js',
-    ]);
-    expect(vi.mocked(testWithOutput).mock.calls[1]?.[1]).toEqual([
-      'browser/components/b/test/browser_b.js',
-    ]);
-    expect(note).toHaveBeenCalledWith(
-      expect.stringContaining('2/2 shard(s) passed'),
-      'Sharded Test Summary'
-    );
+      expect(testWithOutput).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(testWithOutput).mock.calls[0]?.[1]).toEqual([
+        'browser/components/a/test/browser_a.js',
+      ]);
+      expect(vi.mocked(testWithOutput).mock.calls[1]?.[1]).toEqual([
+        'browser/components/b/test/browser_b.js',
+      ]);
+      expect(note).toHaveBeenCalledWith(
+        expect.stringContaining('2/2 shard(s) passed'),
+        'Sharded Test Summary'
+      );
+      // FORGE I5: the sharded aggregate ends with the machine-readable verdict.
+      expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
+        'FIREFORGE-VERDICT: PASS shards=2/2\n'
+      );
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 
   it('runs every shard, warns per failure, and throws one aggregate error', async () => {
     vi.mocked(testWithOutput).mockResolvedValueOnce(GREEN).mockResolvedValueOnce(REAL_FAILURE);
 
-    await expect(
-      testCommand('/project', [
-        'browser/components/a/test/browser_a.js',
-        'browser/components/b/test/browser_b.js',
-      ])
-    ).rejects.toThrow(/1 of 2 sharded test run\(s\) did not pass: browser\/components\/b/);
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await expect(
+        testCommand('/project', [
+          'browser/components/a/test/browser_a.js',
+          'browser/components/b/test/browser_b.js',
+        ])
+      ).rejects.toThrow(/1 of 2 sharded test run\(s\) did not pass: browser\/components\/b/);
 
-    expect(testWithOutput).toHaveBeenCalledTimes(2);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Tests failed with exit code 1'));
+      expect(testWithOutput).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Tests failed with exit code 1'));
+      // FORGE I5: the FAIL aggregate verdict is emitted before the throw.
+      expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
+        'FIREFORGE-VERDICT: FAIL reason=test-failures shards=1/2\n'
+      );
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 
   it('--no-shard keeps multiple paths in one combined invocation', async () => {
@@ -2423,5 +2783,148 @@ describe('testCommand harness resilience (C1-C4)', () => {
       expect.stringContaining('(2 attempts)'),
       'Sharded Test Summary'
     );
+  });
+});
+
+describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per run)', () => {
+  const GREEN = {
+    exitCode: 0,
+    stdout: 'TEST-START | requested-test\nTEST-OK | requested-test\nPassed: 3',
+    stderr: '',
+  };
+  const CRASH = {
+    exitCode: 1,
+    stdout: [
+      'Traceback (most recent call last):',
+      "AttributeError: 'SystemResourceMonitor' object has no attribute 'poll_interval'",
+      'Error running mach',
+    ].join('\n'),
+    stderr: '',
+  };
+  const REAL_FAILURE = {
+    exitCode: 1,
+    stdout:
+      'TEST-START | browser_a.js\nTEST-UNEXPECTED-FAIL | browser_a.js | Assertion failed\nFailed: 1',
+    stderr: '',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
+    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
+    vi.mocked(findNearestXpcshellManifest).mockResolvedValue(null);
+    vi.mocked(isSymlink).mockResolvedValue(false);
+  });
+
+  function captureVerdictLines(): {
+    all: () => string[];
+    verdicts: () => string[];
+    restore: () => void;
+  } {
+    const writes: string[] = [];
+    const spy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+        return true;
+      });
+    return {
+      all: () => writes,
+      verdicts: () => writes.filter((w) => w.startsWith('FIREFORGE-VERDICT:')),
+      restore: () => {
+        spy.mockRestore();
+      },
+    };
+  }
+
+  it('a missing engine emits exactly one FAIL reason=preflight line', async () => {
+    vi.mocked(pathExists).mockResolvedValue(false);
+
+    const capture = captureVerdictLines();
+    try {
+      await expect(
+        testCommand('/project', ['browser/components/foo/test/browser_foo.js'])
+      ).rejects.toThrow(/Firefox source not found/);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=preflight\n']);
+  });
+
+  it('a missing test path emits exactly one FAIL reason=preflight line', async () => {
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === '/project/engine')
+    );
+
+    const capture = captureVerdictLines();
+    try {
+      await expect(
+        testCommand('/project', ['browser/components/foo/test/browser_missing.js'])
+      ).rejects.toThrow(/run "fireforge import" first/i);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=preflight\n']);
+  });
+
+  it('a pathless run without a mode emits exactly one FAIL reason=preflight line', async () => {
+    const capture = captureVerdictLines();
+    try {
+      await expect(testCommand('/project', [])).rejects.toThrow(/pathless mode/i);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=preflight\n']);
+  });
+
+  it('a crashed shard classifies the aggregate as reason=crash, not test-failures (FORGE I7)', async () => {
+    vi.mocked(testWithOutput).mockResolvedValueOnce(GREEN).mockResolvedValueOnce(CRASH);
+
+    const capture = captureVerdictLines();
+    try {
+      await expect(
+        testCommand(
+          '/project',
+          ['browser/components/a/test/browser_a.js', 'browser/components/b/test/browser_b.js'],
+          { harnessRetries: 0 }
+        )
+      ).rejects.toThrow(/1 of 2 sharded test run\(s\) did not pass/);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=crash shards=1/2\n']);
+  });
+
+  it('a single failing run emits its classifier verdict once, with no preflight fallback on top', async () => {
+    vi.mocked(testWithOutput).mockResolvedValue(REAL_FAILURE);
+
+    const capture = captureVerdictLines();
+    try {
+      await expect(
+        testCommand('/project', ['browser/components/foo/test/browser_foo.js'])
+      ).rejects.toThrow(/Tests failed with exit code 1/);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=test-failures\n']);
+  });
+
+  it('a failing doctor preflight emits its reason=preflight line exactly once', async () => {
+    vi.mocked(runMarionettePreflight).mockResolvedValue({
+      ok: false,
+      durationMs: 500,
+      detail: 'handshake refused',
+    });
+
+    const capture = captureVerdictLines();
+    try {
+      await expect(testCommand('/project', [], { doctor: true })).rejects.toThrow(
+        /Marionette preflight reported FAIL/
+      );
+    } finally {
+      capture.restore();
+    }
+    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=preflight\n']);
   });
 });

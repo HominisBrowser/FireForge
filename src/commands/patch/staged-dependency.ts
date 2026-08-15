@@ -19,6 +19,7 @@ import type {
 import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
+import { validateStagedDependencyAdd } from './staged-dependency-validate.js';
 
 type StagedDependencyMode = 'add' | 'remove' | 'clear';
 type StagedDependencyKind = 'import' | 'registration';
@@ -337,6 +338,15 @@ export async function patchStagedDependencyCommand(
       : mode === 'add'
         ? requireRegistrationOptions(options)
         : resolveRegistrationRemovalTarget(options, targetPatch.stagedDependencies);
+  // Shape-check --add declarations against the loaded queue (FORGE K10):
+  // a patch-name-shaped --creates/--file is refused HERE instead of
+  // surfacing later as an undischargeable staged-dependency-unused.
+  if (mode === 'add') {
+    const added = importDependency ?? registrationDependency;
+    if (added !== undefined) {
+      validateStagedDependencyAdd(added, manifest.patches);
+    }
+  }
   const target =
     importDependency !== undefined
       ? importView(importDependency)

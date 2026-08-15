@@ -20,6 +20,7 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
 import { ensureMach } from './mach.js';
@@ -123,7 +124,7 @@ export async function runMarionettePreflight(
   } catch (error: unknown) {
     return fail(
       'mach-available',
-      `mach not available in engine: ${(error as Error).message}`,
+      `mach not available in engine: ${toError(error).message}`,
       elapsed()
     );
   }
@@ -135,7 +136,7 @@ export async function runMarionettePreflight(
   } catch (error: unknown) {
     return fail(
       'python-available',
-      `Python interpreter required by mach is not available: ${(error as Error).message}`,
+      `Python interpreter required by mach is not available: ${toError(error).message}`,
       elapsed()
     );
   }
@@ -147,7 +148,7 @@ export async function runMarionettePreflight(
   } catch (error: unknown) {
     return fail(
       'profile-creatable',
-      `Could not create a throwaway browser profile in ${tmpdir()}: ${(error as Error).message}`,
+      `Could not create a throwaway browser profile in ${tmpdir()}: ${toError(error).message}`,
       elapsed()
     );
   }
@@ -188,7 +189,7 @@ export async function runMarionettePreflight(
     } catch (error: unknown) {
       return fail(
         'browser-spawns',
-        `Could not spawn mach run: ${(error as Error).message}`,
+        `Could not spawn mach run: ${toError(error).message}`,
         elapsed()
       );
     }
@@ -267,7 +268,7 @@ export async function runMarionettePreflight(
     try {
       await rm(profileDir, { recursive: true, force: true });
     } catch (error: unknown) {
-      warn(`Could not clean up marionette preflight profile: ${(error as Error).message}`);
+      warn(`Could not clean up marionette preflight profile: ${toError(error).message}`);
     }
   }
 }

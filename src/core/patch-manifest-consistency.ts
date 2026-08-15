@@ -179,10 +179,24 @@ async function rebuildPatchesManifestUnderLock(
   }, 0);
   let nextRecoveredOrder = highestFiniteOrder + 1;
 
-  for (const patch of patches) {
+  // Prefetch the two independent per-patch reads concurrently. This runs
+  // while the patch-directory lock is held, and it was two serialised awaits
+  // per patch across the whole queue — 58 round-trips on a 29-patch queue.
+  // The fold below stays sequential because `nextRecoveredOrder` is
+  // loop-carried: parallelising the assignment would scramble the recovered
+  // ordinals.
+  const prefetched = await Promise.all(
+    patches.map(async (patch) => ({
+      filesAffected: normalizeFiles(await getAllTargetFilesFromPatch(patch.path)),
+      patchStats: await stat(patch.path),
+    }))
+  );
+
+  for (const [index, patch] of patches.entries()) {
     const existing = existingEntries.get(patch.filename);
-    const filesAffected = normalizeFiles(await getAllTargetFilesFromPatch(patch.path));
-    const patchStats = await stat(patch.path);
+    const prefetch = prefetched[index];
+    if (!prefetch) continue;
+    const { filesAffected, patchStats } = prefetch;
     const inferred = inferPatchMetadataFromFilename(patch.filename);
     const recoveredOrder = Number.isFinite(patch.order) ? patch.order : nextRecoveredOrder++;
 

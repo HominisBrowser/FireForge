@@ -50,6 +50,19 @@ export async function validateRegistrationPatterns(
   for (const [name, customConfig] of Object.entries(config.custom)) {
     if (!customConfig.register) continue;
 
+    // A component that is not mentioned at all is a distinct defect from one
+    // registered in the wrong block: `--fix` can repair the former (idempotent
+    // insert) but deliberately refuses the latter (moving code between blocks).
+    if (!isTagAlreadyRegistered(content, name)) {
+      issues.push({
+        component: name,
+        severity: 'error',
+        check: 'missing-custom-element-registration',
+        message: `${name} has register: true but no registration in ${CUSTOM_ELEMENTS_JS}. Run "fireforge furnace validate ${name} --fix" to add it.`,
+      });
+      continue;
+    }
+
     const stripped = stripJsComments(content);
     const tagPattern = new RegExp(`["']${escapeRegex(name)}["']`);
     if (tagPattern.test(stripped) && !isTagInCorrectCustomElementsPlacement(content, name, true)) {
@@ -324,6 +337,8 @@ async function autoDetectTokenHostDocuments(
   try {
     entries = await readdir(contentDir);
   } catch {
+    // No readable chrome-document directory means no documents reference the
+    // tag, which is the same verdict as an empty directory.
     return [];
   }
 
@@ -338,6 +353,8 @@ async function autoDetectTokenHostDocuments(
     try {
       content = await readText(absPath);
     } catch {
+      // An unreadable chrome document cannot be searched for the tag; skip it and
+      // keep scanning the rest.
       continue;
     }
     if (content.includes(tagName)) {

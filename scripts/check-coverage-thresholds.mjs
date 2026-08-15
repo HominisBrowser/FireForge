@@ -6,6 +6,20 @@ const COVERAGE_SUMMARY_PATH = resolve('coverage/coverage-summary.json');
 
 const MODULE_THRESHOLDS = {
   'src/core/mach.ts': { lines: 95, branches: 88 },
+  // 0.41.0 K-wave modules (FORGE K1/K2/K8/K9/K10) — pinned just below
+  // their landing coverage.
+  'src/utils/concurrency.ts': { lines: 100, branches: 90, functions: 100 },
+  // Identity must degrade to the plain semver, never throw — the guarded
+  // fallbacks are the point of the module.
+  'src/utils/build-info.ts': { lines: 90, branches: 80, functions: 100 },
+  'src/commands/status-json.ts': { lines: 95, branches: 80 },
+  // 0.41.0 L-wave modules (FORGE L1/L3) — pinned just below landing
+  // coverage. The extend anchor is the fail-closed guard for a coverage
+  // claim, so every refusal branch must stay exercised.
+  'src/core/coverage-extend.ts': { lines: 95, branches: 85 },
+  'src/commands/status-ownership.ts': { lines: 95, branches: 85 },
+  'src/commands/export-placement-conflicts.ts': { lines: 95, branches: 80 },
+  'src/commands/patch/staged-dependency-validate.ts': { lines: 95, branches: 85 },
   // 0.31.0 modules — pinned just below their landing coverage so
   // regressions surface without blocking unrelated refactors.
   'src/core/test-harness-crash.ts': { lines: 98, branches: 90 },
@@ -14,6 +28,8 @@ const MODULE_THRESHOLDS = {
   'src/core/patch-lint-observer.ts': { lines: 94, branches: 85 },
   'src/commands/test-run.ts': { lines: 94, branches: 75 },
   'src/commands/test-diagnose.ts': { lines: 92, branches: 85 },
+  // 0.41.0: the verdict sink is tiny and fully unit-tested; hold it there.
+  'src/commands/test-verdict.ts': { lines: 100, branches: 100 },
   // The command body's uncovered ranges are the under-lock rollback warns
   // and the commander registration block; the planning logic carries the
   // higher split-plan.ts thresholds.
@@ -136,6 +152,60 @@ const MODULE_THRESHOLDS = {
   'src/core/furnace-validate-compatibility.ts': { lines: 94, branches: 88, functions: 95 },
   // Tar extraction preflight — rejects traversal names and escaping links.
   'src/core/firefox-extract.ts': { lines: 90, branches: 85, functions: 85 },
+  // 0.41.0 quality-survey remediation. These four sit on destructive or
+  // verdict-blessing paths and had NO pin at all: with 314 files diluting the
+  // global aggregate, a refactor could drop any of them 15 points and
+  // `release:check` would still pass. Pinned just below landing coverage.
+  //
+  // Process-liveness primitives. `isProcessAlive` must keep treating EPERM as
+  // ALIVE — two copies read it as "dead" before 0.41.0 and both gated an
+  // `rm -rf`. Kept at 100 because the module is tiny and pure.
+  'src/utils/errors.ts': { lines: 100, branches: 95, functions: 100 },
+  // Tree clone removal: `inspectTreeLock` gates `rm -rf` of a full project
+  // clone in `removeTree`.
+  'src/core/tree-store.ts': { lines: 92, branches: 84 },
+  // `doctor --repair-furnace` deletes the furnace lock directory. Had no test
+  // file whatsoever before 0.41.0 (measured 78.9/69.9 → 83.9/74.0).
+  'src/commands/doctor-furnace.ts': { lines: 82, branches: 72 },
+  // Engine generation guard: decides whether a test verdict is trustworthy.
+  // The suite bypasses the lock by default, so its own tests are the only
+  // exercise this module gets (measured 75.0/72.2 → 92.3/81.8).
+  'src/core/engine-session-lock.ts': { lines: 90, branches: 80 },
+  // Severity resolution for every doctor check — one resolver shared by
+  // `doctor.ts` and `bootstrap.ts`, which disagreed before 0.41.0.
+  'src/commands/doctor-check-core.ts': { lines: 100, branches: 95, functions: 100 },
+  // 0.41.0 quality-survey backfill. Each of these was a coverage outlier with
+  // no pin, so the global aggregate could not see a regression in it.
+  //
+  // Pure config validator with zero I/O that runs on EVERY config load, and
+  // had no test file importing it at all (was 10.5% line / 4.5% branch).
+  'src/core/config-validate-test-toolchains.ts': { lines: 98, branches: 95, functions: 100 },
+  // Commander wiring for `fireforge test`. Was 13.3% line / 0% branch: the
+  // registration ran during help tests but no argParser callback or action
+  // body was ever invoked. The two numeric flags must keep rejecting
+  // out-of-range input through commander's invalid-argument channel.
+  'src/commands/test-register.ts': { lines: 95, branches: 90, functions: 100 },
+  // Stale jar.mn registration check (0.34.0 field report: --repair-furnace
+  // reported success without pruning). Was 56.3 / 33.3.
+  'src/commands/doctor-furnace-jar.ts': { lines: 95, branches: 90, functions: 100 },
+  // Deletes engine sources and rewrites three jar manifests. Had the worst
+  // branch coverage in the repo (86.1 / 51.2) because the only tests were
+  // happy-path round trips; the refusal, cancel, idempotent-re-remove and
+  // rollback arms were all dark.
+  'src/commands/furnace/chrome-doc-remove.ts': { lines: 95, branches: 85, functions: 100 },
+  // The two furnace mutators the survey called "the clearest risk
+  // concentration in the corpus": both delete engine files, and both were the
+  // weakest-tested commands in their own subsystem. Pinned so the §6 cap
+  // extractions cannot silently thin the nets that now guard them.
+  // remove.ts was 75.9 / 73.6; refresh.ts was 79.9 / 70.9.
+  'src/commands/furnace/remove.ts': { lines: 96, branches: 84, functions: 100 },
+  'src/commands/furnace/refresh.ts': { lines: 94, branches: 88, functions: 100 },
+  // `tree remove --all` deletes whole cloned trees and `tree exec` spawns the
+  // CLI inside one; `treeExecCommand` was entirely untested (was 61.7 / 60.5).
+  'src/commands/tree.ts': { lines: 94, branches: 92 },
+  // The ftlBasePath shape probe was unreachable in the all-mocked suite
+  // because it only runs when engine/ exists (was 73.5 / 74.6).
+  'src/commands/furnace/init.ts': { lines: 90, branches: 90 },
 };
 
 function loadCoverageSummary() {

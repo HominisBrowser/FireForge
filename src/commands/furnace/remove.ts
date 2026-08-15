@@ -5,13 +5,6 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import { removeCustomFtlJarMnEntry } from '../../core/furnace-apply-ftl.js';
-import {
-  extractComponentChecksums,
-  getOverrideEngineTargetPath,
-  isOverrideCopyCandidate,
-  restoreOverrideFileToBaseline,
-} from '../../core/furnace-apply-helpers.js';
 import {
   getFurnacePaths,
   loadFurnaceConfig,
@@ -21,10 +14,6 @@ import {
 } from '../../core/furnace-config.js';
 import { resolveFtlDir, xpcshellTestParentDir } from '../../core/furnace-constants.js';
 import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
-import {
-  removeCustomElementRegistration,
-  removeJarMnEntries,
-} from '../../core/furnace-registration.js';
 import {
   createRollbackJournal,
   restoreRollbackJournalOrThrow,
@@ -37,11 +26,15 @@ import { deregisterTestManifest } from '../../core/manifest-register.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceRemoveOptions } from '../../types/commands/index.js';
 import type { FurnaceState } from '../../types/furnace.js';
-import type { ComponentType, OverrideComponentConfig } from '../../types/furnace.js';
+import type { ComponentType } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
-import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
+import { pathExists, readText, removeDir, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, warn } from '../../utils/logger.js';
-import { dropChecksumsByPrefix, removeDeployedCustomFiles } from './remove-state.js';
+import {
+  performCustomRemovalMutations,
+  performOverrideRemovalMutations,
+} from './remove-mutations.js';
+import { dropChecksumsByPrefix } from './remove-state.js';
 
 /**
  * Removes an entire TOML section (header + body lines) for a given test file.
@@ -96,70 +89,6 @@ function findComponentType(
   if (name in config.overrides) return 'override';
   if (name in config.custom) return 'custom';
   return undefined;
-}
-
-/**
- * Restores every override-deployed file in `engine/` to its pristine HEAD
- * state, inverting what `applyOverrideComponent` would have written. Files that
- * existed in HEAD are restored via `git restore`; files the override
- * introduced (not in HEAD) are deleted outright.
- *
- * The restore set is the **union** of (a) files currently in the override
- * workspace directory and (b) filenames recorded in `previousChecksumKeys`
- * — i.e. files we know we deployed last time, even if the developer has
- * since deleted them from the workspace. Without (b), a workspace deletion
- * leaves an orphaned engine copy that `furnace remove` would never see.
- *
- * Every touched engine file is snapshotted into the rollback journal before
- * mutation so a mid-remove failure still rolls the engine back to its
- * pre-command state.
- */
-async function restoreOverrideEngineFiles(
-  engineDir: string,
-  overrideDir: string,
-  overrideConfig: OverrideComponentConfig,
-  previousChecksumKeys: string[],
-  ftlDir: string,
-  journal: RollbackJournal
-): Promise<{ restored: number; removed: number }> {
-  // Engine-as-git is a hard precondition for restoration: git HEAD is the only
-  // honest oracle for "what was there before the override". If the engine is
-  // not a git repo we refuse rather than silently leaving files behind — the
-  // previous warn-and-continue behaviour is exactly what this fix removes.
-  if (!(await isGitRepository(engineDir))) {
-    throw new FurnaceError(
-      'Cannot restore override files: engine is not a git repository. Run "fireforge download" to initialise it.'
-    );
-  }
-
-  // Build the union of "files we still see on disk" and "files state.json
-  // claims we deployed". The state set is the only authority for files that
-  // were deployed and later deleted from the workspace; the workspace set is
-  // the only authority for files added since last apply that have not yet
-  // been recorded in state. We need both.
-  const fileSet = new Set<string>();
-  if (await pathExists(overrideDir)) {
-    const entries = await readdir(overrideDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      if (!isOverrideCopyCandidate(entry.name, overrideConfig.type)) continue;
-      fileSet.add(entry.name);
-    }
-  }
-  for (const key of previousChecksumKeys) {
-    fileSet.add(key);
-  }
-
-  let restored = 0;
-  let removed = 0;
-  for (const fileName of fileSet) {
-    const enginePath = getOverrideEngineTargetPath(engineDir, overrideConfig, fileName, ftlDir);
-    const action = await restoreOverrideFileToBaseline(engineDir, enginePath, journal);
-    if (action === 'restored') restored += 1;
-    else if (action === 'removed') removed += 1;
-  }
-
-  return { restored, removed };
 }
 
 /**
@@ -536,107 +465,25 @@ export async function furnaceRemoveCommand(
       } = await loadFreshRemoveTarget(projectRoot, name, paths.engine);
 
       if (freshType === 'override') {
-        const overrideConfig = freshConfig.overrides[name];
-        const dir = join(furnacePaths.overridesDir, name);
-
-        // Restore deployed engine files BEFORE removing the workspace
-        // directory. The restore set is the union of (a) files currently in
-        // the workspace and (b) files state.json says we deployed last time
-        // — without (b), source-side deletions would orphan engine copies
-        // that this command can never see again.
-        if (overrideConfig?.basePath) {
-          const previousKeys = Object.keys(
-            extractComponentChecksums(freshState.appliedChecksums, 'override', name)
-          );
-          const { restored, removed } = await restoreOverrideEngineFiles(
-            paths.engine,
-            dir,
-            overrideConfig,
-            previousKeys,
-            ftlDir,
-            journal
-          );
-          if (restored > 0) {
-            info(
-              `Restored ${restored} file${restored === 1 ? '' : 's'} in engine/${overrideConfig.basePath} to Firefox baseline`
-            );
-          }
-          if (removed > 0) {
-            info(
-              `Removed ${removed} override-introduced file${removed === 1 ? '' : 's'} from engine/${overrideConfig.basePath}`
-            );
-          }
-        }
-
-        if (await pathExists(dir)) {
-          await snapshotDir(journal, dir);
-          await removeDir(dir);
-          info(`Deleted components/overrides/${name}/`);
-        }
+        await performOverrideRemovalMutations({
+          name,
+          paths,
+          furnacePaths,
+          freshConfig,
+          freshState,
+          ftlDir,
+          journal,
+        });
       } else if (freshType === 'custom') {
-        const customConfig = freshConfig.custom[name];
-
-        // Custom-component removal mutates engine files (jar.mn,
-        // customElements.js, deployed widgets, optional .ftl) and the
-        // rollback journal is the only safety net for those edits while
-        // the command runs. The git-as-engine precondition is enforced
-        // before the lock is acquired (see furnaceRemoveCommand above)
-        // so if we reach this point, the engine is a git repository.
-
-        if (customConfig?.register) {
-          // customElements.js is the only file removeCustomElementRegistration touches.
-          await snapshotFile(journal, join(paths.engine, 'toolkit/content/customElements.js'));
-          await removeCustomElementRegistration(paths.engine, name);
-          info(`Deregistered ${name} from customElements.js`);
-        }
-
-        // jar.mn is the only file removeJarMnEntries touches.
-        await snapshotFile(journal, join(paths.engine, 'toolkit/content/jar.mn'));
-        await removeJarMnEntries(paths.engine, name);
-        info(`Removed ${name} entries from toolkit/content/jar.mn`);
-
-        const dir = join(furnacePaths.customDir, name);
-        if (await pathExists(dir)) {
-          await snapshotDir(journal, dir);
-          await removeDir(dir);
-          info(`Deleted components/custom/${name}/`);
-        }
-        // Clean up deployed files in engine (per-file — see helper doc).
-        if (customConfig?.targetPath) {
-          await removeDeployedCustomFiles(
-            projectRoot,
-            paths.engine,
-            name,
-            customConfig.targetPath,
-            journal
-          );
-        }
-
-        // Localized components deploy a .ftl outside targetPath into the
-        // shared Fluent tree; apply writes it, so remove must delete it too
-        // or the locale payload is orphaned.
-        if (customConfig?.localized) {
-          const ftlRel = join(ftlDir, `${name}.ftl`);
-          const ftlPath = join(paths.engine, ftlRel);
-          if (await pathExists(ftlPath)) {
-            await snapshotFile(journal, ftlPath);
-            await removeFile(ftlPath);
-            info(`Deleted localized file engine/${ftlRel}`);
-          }
-          // Drop the locale jar.mn chrome registration that `applyCustomFtlFile`
-          // wrote during deploy — otherwise the engine is left with a
-          // `locale/.../${name}.ftl` entry pointing at a file we just
-          // deleted. 2026-04-21 eval (Finding #1): `furnace remove` left
-          // `browser/locales/jar.mn` referencing the missing FTL, which
-          // would break the next package-manifest validation.
-          await removeCustomFtlJarMnEntry(
-            paths.engine,
-            `${name}.ftl`,
-            ftlDir,
-            customConfig,
-            journal
-          );
-        }
+        await performCustomRemovalMutations({
+          projectRoot,
+          name,
+          paths,
+          furnacePaths,
+          freshConfig,
+          ftlDir,
+          journal,
+        });
       }
 
       const testCleanupFailures =

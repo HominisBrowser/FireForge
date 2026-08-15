@@ -23,9 +23,12 @@ import {
 } from '../core/test-harness-output.js';
 import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
+import { toError } from '../utils/errors.js';
 import { info } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
+import { escapeRegex } from '../utils/regex.js';
 import type { TestRunOutcome } from './test-run.js';
+import { emitHarnessVerdict } from './test-verdict.js';
 
 function buildUnknownTestMessage(testPaths: string[]): string {
   return (
@@ -77,8 +80,16 @@ function hasStaleBuildArtifactsSignal(output: string): boolean {
  * failures surface the right diagnosis.
  */
 function hasForkModuleSignal(output: string, binaryName: string): boolean {
+  // `binaryName` comes from fireforge.json, and config validation
+  // (`config-validate.ts:59-70`) bars only `..`, path separators, NUL and
+  // absolute paths — regex metacharacters get through. The inline escape
+  // this replaced wrote its character class as `[.*+?^${}()|[\\]\\\\]`,
+  // which closes early after the escaped backslash, so it escaped nothing:
+  // `my.browser` matched `myXbrowser`, and an unbalanced `(` or `[` threw a
+  // SyntaxError out of the failure-diagnosis path, replacing the real test
+  // failure with an opaque regex error.
   const pattern = new RegExp(
-    `Failed to load resource:\\/\\/\\/modules\\/${binaryName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\/`,
+    `Failed to load resource:\\/\\/\\/modules\\/${escapeRegex(binaryName)}\\/`,
     'i'
   );
   return pattern.test(output);
@@ -159,7 +170,12 @@ function buildMochitestHttp3ServerMessage(): string {
 }
 
 /**
+ * Maps a non-zero mach exit to the most specific actionable diagnosis the
+ * captured output supports, throwing it as a domain error.
  *
+ * The branch order is load-bearing: narrower signals are checked before
+ * broader ones so, for example, a fork-owned module failure is not reported as
+ * a stale build (2026-04-21 eval Finding #14).
  */
 function handleNonZeroTestExit(
   result: { stdout: string; stderr: string; exitCode: number },
@@ -246,6 +262,24 @@ export function finalizeSingleRunOutcome(
   binaryName: string,
   postRebuildContext: PostRebuildFailureContext | undefined,
   headless = false
+): void {
+  // The FIREFORGE-VERDICT line is the LAST stdout write of the run, on the
+  // pass return and every throw path alike — written raw (not via clack,
+  // whose renderer drops output under non-TTY capture) so harness-verdict
+  // consumers grep one stable line instead of mach internals.
+  try {
+    applySingleRunOutcome(outcome, normalizedPaths, binaryName, postRebuildContext, headless);
+  } finally {
+    emitHarnessVerdict(outcome.verdict);
+  }
+}
+
+function applySingleRunOutcome(
+  outcome: TestRunOutcome,
+  normalizedPaths: string[],
+  binaryName: string,
+  postRebuildContext: PostRebuildFailureContext | undefined,
+  headless: boolean
 ): void {
   if (outcome.verdict.kind === 'harness-crash' && outcome.verdict.signature) {
     const base = buildHarnessCrashMessage(outcome.verdict.signature, outcome.attempts);
@@ -338,7 +372,7 @@ export function diagnoseShardOutcome(
     );
     return undefined;
   } catch (error: unknown) {
-    const diagnosis = error instanceof Error ? error.message : String(error);
+    const diagnosis = toError(error).message;
     const blocks = formatFailureBlocks(outcome.verdict.realFailureBlocks);
     return blocks !== undefined ? `${blocks}\n${diagnosis}` : diagnosis;
   }

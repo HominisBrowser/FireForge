@@ -40,3 +40,23 @@ export class NoRebaseSessionError extends RebaseError {
     super('No rebase session in progress. Start one with "fireforge rebase".');
   }
 }
+
+/**
+ * Thrown when the session file exists but cannot be used.
+ *
+ * This case had no error of its own before 0.41.0 and was reported as
+ * {@link NoRebaseSessionError} by `--continue`/`--abort` while `rebase`
+ * reported {@link RebaseSessionExistsError} — a closed cycle in which each
+ * command pointed at the other two. The message names the file so an operator
+ * always has a way out, and `--abort` now clears a corrupt session rather than
+ * refusing to run against one.
+ */
+export class CorruptRebaseSessionError extends RebaseError {
+  constructor(sessionPath: string, reason: string) {
+    super(
+      `The rebase session at ${sessionPath} cannot be read (${reason}).\n` +
+        'Run "fireforge rebase --abort" to discard it and restore the engine, ' +
+        'or delete the file to start over.'
+    );
+  }
+}

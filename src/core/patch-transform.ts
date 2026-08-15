@@ -92,12 +92,27 @@ export async function applyPatchToContent(
   patchPath: string,
   targetFile: string
 ): Promise<string> {
-  const patchContent = await readText(patchPath);
+  return applyPatchTextToContent(content, await readText(patchPath), targetFile);
+}
 
+/**
+ * Applies an already-read patch body to content. Batched callers that hold
+ * many (patch, file) pairs use this to read each patch body once instead of
+ * once per pair.
+ * @param content - Original content (null for new files)
+ * @param patchContent - Full text of the patch body
+ * @param targetFile - The file path within the patch
+ * @returns Modified content
+ */
+export function applyPatchTextToContent(
+  content: string | null,
+  patchContent: string,
+  targetFile: string
+): string {
   // Check if this is a new file patch for the target file specifically
   if (content === null) {
     if (isNewFileInPatch(patchContent, targetFile)) {
-      return await extractNewFileContent(patchPath, targetFile);
+      return extractNewFileContentFromDiff(patchContent, targetFile);
     }
     // If not a new file patch but content is null, return empty
     return '';

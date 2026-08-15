@@ -597,11 +597,13 @@ describe('generateBinaryFilePatch', () => {
     // First call: tracked diff returns empty
     mockExec
       .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
-      // Second call: git add --intent-to-add
+      // Second call: git ls-files --stage (no prior index entry)
       .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
-      // Third call: git diff --binary (untracked)
+      // Third call: git add --intent-to-add
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      // Fourth call: git diff --binary (untracked)
       .mockResolvedValueOnce({ stdout: 'untracked binary diff\n', stderr: '', exitCode: 0 })
-      // Fourth call: git reset HEAD
+      // Fifth call: git reset HEAD
       .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
 
     const result = await generateBinaryFilePatch('/repo', 'new.png');
@@ -618,10 +620,68 @@ describe('generateBinaryFilePatch', () => {
     mockExec
       .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
       .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
       .mockRejectedValueOnce(new Error('diff failed'))
       .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
 
     await expect(generateBinaryFilePatch('/repo', 'new.png')).rejects.toThrow('diff failed');
+    expect(mockExec).toHaveBeenCalledWith('git', ['reset', 'HEAD', '--', 'new.png'], {
+      cwd: '/repo',
+    });
+  });
+
+  it('restores a pre-existing stage-0 index entry instead of resetting to HEAD (FORGE H1)', async () => {
+    mockExec
+      // Tracked diff returns empty (the race shape: the entry appeared after,
+      // or the staged path's worktree file is gone so `diff HEAD` sees nothing)
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      // ls-files --stage: a prior staged entry exists
+      .mockResolvedValueOnce({
+        stdout: '100644 0123456789abcdef0123456789abcdef01234567 0\tnew.png\n',
+        stderr: '',
+        exitCode: 0,
+      })
+      // add --intent-to-add
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      // diff --binary
+      .mockResolvedValueOnce({ stdout: 'untracked binary diff\n', stderr: '', exitCode: 0 })
+      // update-index restore
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+
+    await generateBinaryFilePatch('/repo', 'new.png');
+
+    expect(mockExec).toHaveBeenCalledWith(
+      'git',
+      [
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        '100644,0123456789abcdef0123456789abcdef01234567,new.png',
+      ],
+      { cwd: '/repo' }
+    );
+    expect(mockExec).not.toHaveBeenCalledWith('git', ['reset', 'HEAD', '--', 'new.png'], {
+      cwd: '/repo',
+    });
+  });
+
+  it('falls back to reset HEAD for an unmerged prior entry that --cacheinfo cannot rebuild', async () => {
+    mockExec
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      // ls-files --stage: conflict stages, not a stage-0 entry
+      .mockResolvedValueOnce({
+        stdout:
+          '100644 0123456789abcdef0123456789abcdef01234567 1\tnew.png\n' +
+          '100644 89abcdef0123456789abcdef0123456789abcdef 2\tnew.png\n',
+        stderr: '',
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: 'untracked binary diff\n', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+
+    await generateBinaryFilePatch('/repo', 'new.png');
+
     expect(mockExec).toHaveBeenCalledWith('git', ['reset', 'HEAD', '--', 'new.png'], {
       cwd: '/repo',
     });

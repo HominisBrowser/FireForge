@@ -8,7 +8,12 @@ import { lstat, readlink, realpath } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import { PatchError } from '../errors/patch.js';
-import type { ImportSummary, PatchInfo, PatchResult } from '../types/commands/index.js';
+import type {
+  ImportSummary,
+  PatchInfo,
+  PatchMetadata,
+  PatchResult,
+} from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
@@ -17,9 +22,9 @@ import { exec } from '../utils/process.js';
 import { applyPatchIdempotent, reversePatch } from './git.js';
 import { getFileContentFromHead } from './git-file-ops.js';
 import { discoverPatches } from './patch-files.js';
-import { findPatchesAffectingFile, loadPatchesManifest } from './patch-manifest.js';
+import { loadPatchesManifest } from './patch-manifest.js';
 import { extractAffectedFiles, extractConflictingFiles, isNewFileInPatch } from './patch-parse.js';
-import { applyPatchToContent, extractNewFileContent } from './patch-transform.js';
+import { applyPatchTextToContent, extractNewFileContent } from './patch-transform.js';
 
 // Re-export from split modules so existing import sites continue working
 export { PatchError } from '../errors/patch.js';
@@ -469,45 +474,32 @@ export async function applyPatchesWithContinue(
 }
 
 /**
- * Computes the cumulative patched content for a file.
- * @param patchesDir - Path to the patches directory
- * @param engineDir - Path to the engine directory
- * @param filePath - File path to compute content for
- * @returns Content after all patches applied, or null if file doesn't exist
+ * Batched patched-content computation shared by status classification,
+ * import's unmanaged-dirty guard, and discard baseline planning.
  */
-export async function computePatchedContent(
-  patchesDir: string,
-  engineDir: string,
-  filePath: string
-): Promise<string | null> {
-  let content = await getFileContentFromHead(engineDir, filePath);
-
-  // Find all patches affecting this file
-  const affectingPatches = await findPatchesAffectingFile(patchesDir, filePath);
-
-  if (affectingPatches.length === 0) {
-    return content;
-  }
-
-  // Apply each patch in order
-  for (const { patch } of affectingPatches) {
-    content = await applyPatchToContent(content, patch.path, filePath);
-  }
-
-  return content;
+export interface PatchedContentContext {
+  /** Manifest rows, so callers don't re-load the manifest per file. */
+  manifestPatches: readonly PatchMetadata[];
+  /** Cumulative patched content for a file (null if absent at HEAD with no creator). */
+  computePatched: (filePath: string) => Promise<string | null>;
+  /** Patches affecting a file, sorted by order (from the shared inverted index). */
+  getAffectingPatches: (filePath: string) => readonly PatchInfo[];
+  /** Patch body text, memoized per patch path across the whole batch. */
+  readPatchBody: (patch: PatchInfo) => Promise<string>;
 }
 
 /**
- * Builds a batched variant of {@link computePatchedContent} that loads the
- * manifest and discovers patch files ONCE for many lookups. The per-call
- * function re-runs `loadPatchesManifest` + `discoverPatches` for every
- * file — O(dirtyFiles × patches) redundant IO when classifying a broad
- * engine edit session during `import`.
+ * Builds a batched patched-content context that loads the manifest and
+ * discovers patch files ONCE for many lookups, and memoizes each patch
+ * body read across the batch. The old per-call helper re-ran
+ * `loadPatchesManifest` + `discoverPatches` and re-read every affecting
+ * patch body for every file — O(dirtyFiles × patches) redundant IO when
+ * classifying a broad engine edit session during `status` or `import`.
  */
-export async function createPatchedContentComputer(
+export async function createPatchedContentContext(
   patchesDir: string,
   engineDir: string
-): Promise<(filePath: string) => Promise<string | null>> {
+): Promise<PatchedContentContext> {
   const manifest = await loadPatchesManifest(patchesDir);
   const patches = await discoverPatches(patchesDir);
   const patchByFilename = new Map(patches.map((p) => [p.filename, p]));
@@ -526,11 +518,32 @@ export async function createPatchedContentComputer(
     list.sort((a, b) => a.order - b.order);
   }
 
-  return async (filePath: string): Promise<string | null> => {
-    let content = await getFileContentFromHead(engineDir, filePath);
-    for (const patch of affectingByFile.get(filePath) ?? []) {
-      content = await applyPatchToContent(content, patch.path, filePath);
+  // Promise-memoized so concurrent classification workers never read the
+  // same body twice (memoizing the promise, not the value, closes the
+  // window between two workers missing the cache at once).
+  const bodyPromises = new Map<string, Promise<string>>();
+  const readPatchBody = (patch: PatchInfo): Promise<string> => {
+    let body = bodyPromises.get(patch.path);
+    if (!body) {
+      body = readText(patch.path);
+      bodyPromises.set(patch.path, body);
     }
-    return content;
+    return body;
+  };
+
+  const getAffectingPatches = (filePath: string): readonly PatchInfo[] =>
+    affectingByFile.get(filePath) ?? [];
+
+  return {
+    manifestPatches: manifest?.patches ?? [],
+    getAffectingPatches,
+    readPatchBody,
+    computePatched: async (filePath: string): Promise<string | null> => {
+      let content = await getFileContentFromHead(engineDir, filePath);
+      for (const patch of getAffectingPatches(filePath)) {
+        content = applyPatchTextToContent(content, await readPatchBody(patch), filePath);
+      }
+      return content;
+    },
   };
 }

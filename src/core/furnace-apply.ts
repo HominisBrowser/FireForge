@@ -2,12 +2,7 @@
 import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
-import type {
-  ApplyResult,
-  CustomComponentConfig,
-  DryRunAction,
-  OverrideComponentConfig,
-} from '../types/furnace.js';
+import type { ApplyResult, CustomComponentConfig, DryRunAction } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
@@ -18,7 +13,6 @@ import {
   computeComponentChecksums,
   diffDeletedFiles,
   extractComponentChecksums,
-  getOverrideEngineTargetPath,
   hasComponentChanged,
   hasCustomEngineDrift,
   hasOverrideEngineDrift,
@@ -26,6 +20,15 @@ import {
   undeployCustomFiles,
   undeployOverrideFiles,
 } from './furnace-apply-helpers.js';
+import {
+  findPatchOwnedOverwrites,
+  loadPatchClaimsForApply,
+  recordOverwriteWarnings,
+} from './furnace-apply-overwrite-warn.js';
+import {
+  buildCustomUndeployActions,
+  buildOverrideUndeployActions,
+} from './furnace-apply-undeploy-actions.js';
 import {
   getFurnacePaths,
   loadFurnaceConfig,
@@ -77,23 +80,6 @@ function addMissingComponentError(
   });
 }
 
-function buildOverrideUndeployActions(
-  name: string,
-  config: OverrideComponentConfig,
-  engineDir: string,
-  deletedFiles: string[],
-  ftlDir: string
-): DryRunAction[] {
-  return deletedFiles.map<DryRunAction>((fileName) => ({
-    component: name,
-    action: 'undeploy-restore',
-    target: getOverrideEngineTargetPath(engineDir, config, fileName, ftlDir),
-    description: `Restore engine/${
-      fileName.endsWith('.ftl') ? `${ftlDir}/${fileName}` : `${config.basePath}/${fileName}`
-    } to Firefox baseline`,
-  }));
-}
-
 async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
   const { config, furnacePaths, state, engineDir, ftlDir, dryRun } = ctx;
   const { result, allActions, newChecksums, rollbackJournal, componentName } = ctx;
@@ -115,9 +101,10 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
     }
 
     const previous = extractComponentChecksums(state.appliedChecksums, 'override', name);
+    const currentChecksums = await computeComponentChecksums(componentDir);
 
     if (!dryRun) {
-      const changed = await hasComponentChanged(componentDir, previous);
+      const changed = await hasComponentChanged(componentDir, previous, currentChecksums);
 
       if (!changed) {
         // Fast path holds only if the engine still reflects what we deployed.
@@ -145,7 +132,6 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
       // Compute which files (if any) were removed from the workspace since
       // the last apply. We do this for both dry-run and real runs so the
       // planned-actions output stays honest.
-      const currentChecksums = await computeComponentChecksums(componentDir);
       const deletedFiles = diffDeletedFiles(previous, currentChecksums);
 
       if (dryRun) {
@@ -163,6 +149,24 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
           rollbackJournal
         );
         filesAffectedTotal.push(...restored, ...removed);
+      }
+
+      if (!dryRun) {
+        // Runs unconditionally — including when the component source
+        // changed — because the lost-work case is precisely a deployed
+        // engine edit that the incoming copy is about to replace (J6).
+        recordOverwriteWarnings(
+          result,
+          await findPatchOwnedOverwrites({
+            type: 'override',
+            engineDir,
+            name,
+            componentDir,
+            config: overrideConfig,
+            ftlDir,
+            patchClaims: ctx.patchClaims,
+          })
+        );
       }
 
       const { affectedPaths: filesAffected, actions } = await applyOverrideComponent(
@@ -190,43 +194,6 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
       });
     }
   }
-}
-
-function buildCustomUndeployActions(
-  name: string,
-  config: CustomComponentConfig,
-  engineDir: string,
-  deletedFiles: string[],
-  ftlDir: string
-): DryRunAction[] {
-  const actions: DryRunAction[] = [];
-  for (const fileName of deletedFiles) {
-    const enginePath = fileName.endsWith('.ftl')
-      ? join(engineDir, ftlDir, fileName)
-      : join(engineDir, config.targetPath, fileName);
-    actions.push({
-      component: name,
-      action: 'undeploy-remove',
-      target: enginePath,
-      description: `Remove orphaned ${fileName} from engine`,
-    });
-  }
-  // jar.mn re-sync planned for any custom-file deletion when registered.
-  if (config.register && deletedFiles.some((f) => f.endsWith('.mjs') || f.endsWith('.css'))) {
-    actions.push({
-      component: name,
-      action: 'unregister-jar',
-      description: `Re-sync ${name} jar.mn entries to drop deleted files`,
-    });
-  }
-  if (config.register && deletedFiles.some((f) => f === `${name}.mjs`)) {
-    actions.push({
-      component: name,
-      action: 'unregister-ce',
-      description: `Deregister ${name} from customElements.js (.mjs deleted)`,
-    });
-  }
-  return actions;
 }
 
 /**
@@ -351,9 +318,10 @@ async function applyCustomBatch(
     }
 
     const previous = extractComponentChecksums(state.appliedChecksums, 'custom', name);
+    const currentChecksums = await computeComponentChecksums(componentDir);
 
     if (!dryRun) {
-      const changed = await hasComponentChanged(componentDir, previous);
+      const changed = await hasComponentChanged(componentDir, previous, currentChecksums);
 
       if (!changed) {
         // As with overrides, the checksum record is not sufficient on its
@@ -374,7 +342,6 @@ async function applyCustomBatch(
       // Diff against previous to find files the developer has deleted from
       // the workspace since last apply. Run for both dry-run and real apply
       // so plan output and execution stay aligned.
-      const currentChecksums = await computeComponentChecksums(componentDir);
       const deletedFiles = diffDeletedFiles(previous, currentChecksums);
 
       if (dryRun) {
@@ -392,6 +359,23 @@ async function applyCustomBatch(
           rollbackJournal
         );
         filesAffectedTotal.push(...removed);
+      }
+
+      if (!dryRun) {
+        // Runs unconditionally — the `changed === true` path used to skip
+        // drift detection entirely, which is exactly when a deployed
+        // engine-only fix gets silently replaced (J6).
+        recordOverwriteWarnings(
+          result,
+          await findPatchOwnedOverwrites({
+            type: 'custom',
+            root,
+            name,
+            config: customConfig,
+            ftlDir,
+            patchClaims: ctx.patchClaims,
+          })
+        );
       }
 
       const {
@@ -449,6 +433,22 @@ async function applyCustomBatch(
 }
 
 /**
+ * Result of {@link applyAllComponents}.
+ *
+ * Named because the anonymous intersection this replaced forced eight
+ * `Awaited<ReturnType<typeof applyAllComponents>>` indirections across
+ * `furnace/deploy.ts`, `furnace/preview.ts`, `furnace-state-persist.ts` and
+ * `build-prepare.ts` — none of which could be read without opening this file.
+ *
+ * `actions` is populated only on a dry run; `rollbackJournal` only when
+ * `persistState: false` hands journal ownership back to the caller.
+ */
+export type ApplyAllComponentsResult = ApplyResult & {
+  actions?: DryRunAction[];
+  rollbackJournal?: RollbackJournal;
+};
+
+/**
  * Applies all override and custom components to the engine source tree.
  *
  * Unchanged components (matching checksums) are skipped. If any component
@@ -478,7 +478,7 @@ export async function applyAllComponents(
     operationContext?: FurnaceOperationContext;
     componentName?: string;
   }
-): Promise<ApplyResult & { actions?: DryRunAction[]; rollbackJournal?: RollbackJournal }> {
+): Promise<ApplyAllComponentsResult> {
   const persistState = options?.persistState ?? true;
   const operationContext = options?.operationContext;
   const config = await loadFurnaceConfig(root);
@@ -528,6 +528,11 @@ export async function applyAllComponents(
     }
   }
 
+  // Patch-claim map for the overwrite warning (FORGE J6): loaded once per
+  // apply. A missing/unreadable manifest degrades to an empty map — the
+  // warning is advisory and must never block the apply.
+  const patchClaims = await loadPatchClaimsForApply(root);
+
   const batchContext: ApplyBatchContext = {
     config,
     furnacePaths,
@@ -540,6 +545,7 @@ export async function applyAllComponents(
     newChecksums,
     rollbackJournal,
     componentName,
+    patchClaims,
   };
   await applyOverrideBatch(batchContext);
   await applyCustomBatch(batchContext, root, markerComment);
@@ -626,4 +632,6 @@ interface ApplyBatchContext {
   newChecksums: Record<string, string>;
   rollbackJournal?: RollbackJournal | undefined;
   componentName?: string | undefined;
+  /** File → owning patch filenames, for the overwrite warning (FORGE J6). */
+  patchClaims: ReadonlyMap<string, readonly string[]>;
 }

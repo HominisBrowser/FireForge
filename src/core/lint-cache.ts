@@ -15,7 +15,11 @@ import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-li
 // issues and the measured non-binary line count, so a warm run can report
 // waived size measurements identically to a cold one (the F5-class hazard:
 // a cache hit must never surface LESS than a fresh lint).
-export const LINT_CACHE_SCHEMA_VERSION = 2;
+// Schema 3 (FORGE H2): the key additionally content-hashes the
+// `patchLint.checkJsTestShim` file exactly as `checkJsExtraShim`'s already
+// was — before this, editing the test shim in place replayed every cached
+// verdict (the same warm-run-reports-less-than-cold hazard class).
+export const LINT_CACHE_SCHEMA_VERSION = 3;
 const LINT_IMPLEMENTATION_VERSION = 1;
 
 const LINT_CACHE_DIRNAME = 'lint-cache';
@@ -135,31 +139,50 @@ function buildOwnershipFingerprint(
  * The key includes source, metadata, config, engine state, and ownership inputs.
  */
 export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput): Promise<string> {
+  // Hash in parallel, then insert in sorted order. The sort is load-bearing:
+  // `stableHash` below serialises this record, so insertion order is part of
+  // the cache key — assigning as results land would make the key
+  // nondeterministic. Hashing was strictly sequential until 0.41.0, in the hot
+  // path of the cache whose entire purpose is making lint faster.
+  const sortedFiles = [...input.existingFiles].sort((a, b) => a.localeCompare(b));
+  const hashes = await Promise.all(
+    sortedFiles.map((file) => fileHash(join(input.engineDir, file)))
+  );
   const engineFiles: Record<string, JsonValue> = {};
-  for (const file of [...input.existingFiles].sort((a, b) => a.localeCompare(b))) {
-    engineFiles[file] = await fileHash(join(input.engineDir, file));
-  }
+  hashes.forEach((hash, index) => {
+    const file = sortedFiles[index];
+    if (file !== undefined) engineFiles[file] = hash;
+  });
 
   const furnaceConfigPath = getFurnacePaths(input.projectRoot).furnaceConfig;
-  const extraShimPath = input.config.patchLint?.checkJsExtraShim;
-  const extraShim =
-    extraShimPath === undefined
+  const shimHashOf = async (
+    shimPath: string | undefined
+  ): Promise<{ path: string; hash: { exists: boolean; sha256?: string } } | null> =>
+    shimPath === undefined
       ? null
-      : {
-          path: extraShimPath,
-          hash: await fileHash(resolve(input.projectRoot, extraShimPath)),
-        };
+      : { path: shimPath, hash: await fileHash(resolve(input.projectRoot, shimPath)) };
+  // Both shims feed compiled checkJs programs, so both are content-hashed —
+  // the config block alone only carries their PATHS, and an in-place edit
+  // must invalidate the programs it feeds (FORGE H2).
+  const [extraShim, testShim] = await Promise.all([
+    shimHashOf(input.config.patchLint?.checkJsExtraShim),
+    shimHashOf(input.config.patchLint?.checkJsTestShim),
+  ]);
 
   return stableHash({
     cacheSchemaVersion: LINT_CACHE_SCHEMA_VERSION,
     engineHeadSha: input.engineHeadSha ?? null,
     lintImplementationVersion: LINT_IMPLEMENTATION_VERSION,
+    // Deliberately the PLAIN semver, not the +g<sha> build identity
+    // (FORGE K2): identity churns every commit at the same version and
+    // would invalidate the cache for no correctness gain.
     packageVersion: input.packageVersion ?? getPackageVersion(),
     patchFile: await fileHash(join(input.patchesDir, input.patch.filename)),
     patchMetadata: normalizePatchMetadata(input.patch),
     lintConfig: normalizeLintConfig(input.config),
     furnaceConfig: await fileHash(furnaceConfigPath),
     checkJsExtraShim: extraShim,
+    checkJsTestShim: testShim,
     engineFiles,
     queueOwnership: buildOwnershipFingerprint(input.existingFiles, input.queueContext),
   });
@@ -206,6 +229,9 @@ export async function loadPerPatchLintCache(projectRoot: string): Promise<PerPat
     }
     return { schemaVersion: LINT_CACHE_SCHEMA_VERSION, entries };
   } catch {
+    // Any unreadable or malformed cache file is treated as a cold cache. The
+    // cache is a pure optimisation, so discarding it is always safe — the
+    // alternative is failing lint over a corrupt sidecar.
     return createEmptyPerPatchLintCache();
   }
 }

@@ -21,6 +21,8 @@ async function resolveDeclaredTool(
       const line = found.stdout.split(/\r?\n/).find((entry) => entry.trim().length > 0);
       return found.exitCode === 0 ? line?.trim() : undefined;
     } catch {
+      // `xcrun -find` is absent or the tool is unknown — either way the tool has
+      // no resolvable path, which is what `undefined` means to the caller.
       return undefined;
     }
   }

@@ -38,6 +38,7 @@ import { dirname, join } from 'node:path';
 
 import { pathExists, readText } from '../utils/fs.js';
 import { getPlatform, type Platform } from '../utils/platform.js';
+import { escapeRegex } from '../utils/regex.js';
 
 /** Outcome of a moz.build platform-gate lookup for a single source file. */
 export interface PlatformGateResult {
@@ -114,7 +115,7 @@ async function findOwningMozBuild(
  * `"stubinstaller/installing_page.css"`.
  */
 function matchesQuotedBasename(line: string, basename: string): boolean {
-  const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegex(basename);
   return new RegExp(`["'](?:[^"']*\\/)?${escaped}["']`).test(line);
 }
 
@@ -231,6 +232,8 @@ export async function detectPlatformGate(
   try {
     host = getPlatform();
   } catch {
+    // Unrecognised host platform. The platform gates below are advisory, so an
+    // unknown host disables them rather than failing a warn-only audit.
     host = undefined;
   }
 
@@ -241,6 +244,8 @@ export async function detectPlatformGate(
     try {
       content = await readText(mozBuild);
     } catch {
+      // An unreadable moz.build contributes no platform gates. The audit is
+      // warn-only, so a missing input degrades to 'no gate found', not an error.
       content = '';
     }
     const sourceBasename = sourcePath.split('/').pop() ?? '';

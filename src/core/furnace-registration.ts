@@ -4,11 +4,6 @@ import { join } from 'node:path';
 import { FurnaceError } from '../errors/furnace.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 
-/** Escapes special regex characters in a literal string. */
-function escapeForRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /**
  * Detects the indentation used by existing `content/global/elements/` lines
  * in jar.mn. Falls back to 3 spaces (the historical Firefox convention) when
@@ -30,6 +25,7 @@ export {
   removeCustomElementRegistration,
   validateCustomElementRegistration,
 } from './furnace-registration-ast.js';
+import { escapeRegex } from '../utils/regex.js';
 import { JAR_MN } from './furnace-constants.js';
 
 /**
@@ -83,7 +79,7 @@ export async function addJarMnEntries(
   // Filter to files not already registered. Use a word-boundary-aware
   // check so that "moz-card.css" does not match "moz-card-group.css".
   const newFiles = files.filter(
-    (f) => !new RegExp(`content/global/elements/${escapeForRegex(f)}(?:\\s|$)`, 'm').test(content)
+    (f) => !new RegExp(`content/global/elements/${escapeRegex(f)}(?:\\s|$)`, 'm').test(content)
   );
 
   if (newFiles.length === 0) return 0;
@@ -182,8 +178,8 @@ export async function addLocaleFtlJarMnEntry(
   const lines = content.split('\n');
 
   const ftlFile = `${tagName}.ftl`;
-  const escapedTag = escapeForRegex(tagName);
-  const escapedChrome = escapeForRegex(chromeSubPath);
+  const escapedTag = escapeRegex(tagName);
+  const escapedChrome = escapeRegex(chromeSubPath);
   const presencePattern = new RegExp(
     `locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapedChrome}\\/${escapedTag}\\.ftl`,
     'm'
@@ -227,7 +223,7 @@ export async function addLocaleFtlJarMnEntry(
 
 /** Detects locale jar.mn indentation by sampling an existing matching entry. */
 function detectLocaleJarMnIndent(lines: string[], chromeSubPath: string): string {
-  const escapedChrome = escapeForRegex(chromeSubPath);
+  const escapedChrome = escapeRegex(chromeSubPath);
   const pattern = new RegExp(`^(\\s+)locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapedChrome}\\/`);
   for (const line of lines) {
     const match = pattern.exec(line);
@@ -260,7 +256,7 @@ export async function removeLocaleFtlJarMnEntry(
   const content = await readText(filePath);
   const lines = content.split('\n');
   const pattern = new RegExp(
-    `locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapeForRegex(chromeSubPath)}\\/${escapeForRegex(tagName)}\\.ftl`
+    `locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapeRegex(chromeSubPath)}\\/${escapeRegex(tagName)}\\.ftl`
   );
 
   const filtered = lines.filter((line) => !pattern.test(line));
@@ -295,8 +291,8 @@ export async function removeJarMnEntries(engineDir: string, tagName: string): Pr
   // report). The legacy target-path match is kept as an OR for lines
   // written by older FireForge versions without a source mapping. Word
   // boundaries keep "moz-card" from matching "moz-card-group".
-  const sourcePattern = new RegExp(`\\(widgets/${escapeForRegex(tagName)}/`);
-  const legacyTargetPattern = new RegExp(`content/global/elements/${escapeForRegex(tagName)}\\.`);
+  const sourcePattern = new RegExp(`\\(widgets/${escapeRegex(tagName)}/`);
+  const legacyTargetPattern = new RegExp(`content/global/elements/${escapeRegex(tagName)}\\.`);
 
   const filtered = lines.filter(
     (line) => !sourcePattern.test(line) && !legacyTargetPattern.test(line)
@@ -391,7 +387,7 @@ export async function validateJarMnInsertionForFiles(
   const lines = content.split('\n');
 
   const newFiles = files.filter(
-    (f) => !new RegExp(`content/global/elements/${escapeForRegex(f)}(?:\\s|$)`, 'm').test(content)
+    (f) => !new RegExp(`content/global/elements/${escapeRegex(f)}(?:\\s|$)`, 'm').test(content)
   );
   if (newFiles.length === 0) return;
 

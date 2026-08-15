@@ -12,7 +12,7 @@ import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { escapeRegex } from '../utils/regex.js';
-import { type AcornESTreeNode, detectIndent, parseScript } from './ast-utils.js';
+import { asEstree, detectIndent, parseScript } from './ast-utils.js';
 import { withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,
@@ -56,7 +56,10 @@ export function addDestroyAST(
   }
 
   // Insert at top of method body (LIFO ordering)
-  const firstStmt = body.body[0] as AcornESTreeNode<estree.Statement> | undefined;
+  // `noUncheckedIndexedAccess` makes this `Statement | undefined`; narrow
+  // before casting rather than laundering the undefined through the cast.
+  const firstRaw = body.body[0];
+  const firstStmt = firstRaw ? asEstree<estree.Statement>(firstRaw) : undefined;
   let insertPos: number;
   let indent: string;
 
@@ -160,7 +163,15 @@ export async function addDestroyToBrowserInit(
   const { value, usedFallback } = withParserFallback(
     () => addDestroyAST(content, expression, marker),
     () => legacyAddDestroy(content, expression, marker),
-    BROWSER_INIT_JS
+    BROWSER_INIT_JS,
+    // Rethrow only the internal-invariant GeneralErrors ("Unexpected empty
+    // …array"): those are programming bugs, and retrying the legacy scanner
+    // cannot fix a broken invariant — it just buries the stack. Everything
+    // else still falls back, which is load-bearing: the AST path raises a raw
+    // acorn SyntaxError on chrome sources acorn cannot parse (preprocessor
+    // directives), and BuildError when the file's shape is unexpected. Both
+    // are exactly what the legacy scanner is here to handle.
+    (error) => error instanceof GeneralError
   );
 
   if (usedFallback) {

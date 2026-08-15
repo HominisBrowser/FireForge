@@ -15,6 +15,7 @@ import { ConfigError, ConfigNotFoundError } from '../errors/config.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import * as fsUtils from '../utils/fs.js';
+import { isObject } from '../utils/validation.js';
 import { getProjectPaths } from './config-paths.js';
 import { validateConfig } from './config-validate.js';
 import { createSiblingLockPath, withFileLock } from './file-lock.js';
@@ -35,11 +36,21 @@ export { validateConfig } from './config-validate.js';
 
 // ---- config I/O (stays here because it bridges paths + validation) ----
 
+/**
+ * Config-file existence probe.
+ *
+ * Uses {@link pathExistsStrict} deliberately: a permission error probing
+ * `fireforge.json` must propagate rather than read as "no config here", which
+ * is what plain `pathExists` would report.
+ *
+ * The `fsUtils as typeof fsUtils & { pathExistsStrict?: … }` cast this
+ * replaced re-declared a real, non-optional export as optional so a partial
+ * `vi.mock` of `utils/fs.js` would fall back to `pathExists` — production code
+ * shaped around a test double, and shaped around the *wrong* function, since
+ * the two differ precisely on whether EACCES propagates.
+ */
 async function configPathExists(path: string): Promise<boolean> {
-  const fs = fsUtils as typeof fsUtils & {
-    pathExistsStrict?: typeof fsUtils.pathExists;
-  };
-  return (fs.pathExistsStrict ?? fsUtils.pathExists)(path);
+  return fsUtils.pathExistsStrict(path);
 }
 
 /**
@@ -102,10 +113,10 @@ export async function loadRawConfigDocument(root: string): Promise<Record<string
 
   try {
     const data = await fsUtils.readJson<unknown>(paths.config);
-    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    if (!isObject(data)) {
       throw new ConfigError(`Invalid fireforge.json at ${paths.config}: expected an object`);
     }
-    return data as Record<string, unknown>;
+    return data;
   } catch (error: unknown) {
     if (error instanceof ConfigError || error instanceof ConfigNotFoundError) {
       throw error;

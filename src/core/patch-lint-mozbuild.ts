@@ -45,39 +45,122 @@ interface MozBuildListOccurrence {
   items: string[];
 }
 
-/** Extracts every strict-ordered list (with items in file order) from moz.build content. */
+/**
+ * Strips a Python trailing comment from a moz.build line.
+ *
+ * `#` inside a quoted string is not a comment, so the scan tracks quote state
+ * rather than using `indexOf('#')`.
+ */
+/**
+ * True when `line` contains a `]` outside any quoted span. A bracket inside an
+ * item (`"icons[2x].png"`) is filename text, not the list's close — reading it
+ * as one truncated the item set and left every later item unchecked.
+ */
+function hasUnquotedCloseBracket(line: string): boolean {
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote !== undefined) {
+      if (ch === '\\') i += 1;
+      else if (ch === quote) quote = undefined;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === ']') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function stripMozBuildComment(line: string): string {
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote !== undefined) {
+      if (ch === '\\') i += 1;
+      else if (ch === quote) quote = undefined;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === '#') {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+
+/**
+ * Extracts every strict-ordered list (with items in file order) from moz.build
+ * content.
+ *
+ * Comments are stripped before both the item scan and the close-bracket test.
+ * moz.build is Python, and before 0.41.0 neither step knew that:
+ *
+ * - a quoted string in a trailing comment was scraped in as a phantom list
+ *   item (`"Zeta.cpp",  # replaces "Beta.cpp"` yielded a `Beta.cpp` entry), so
+ *   the sort check reported an unsorted list naming a file that is not in it —
+ *   with a fingerprint that could never stabilise, because the item does not
+ *   exist to be moved;
+ * - a `]` anywhere in a comment (`# see foo[0]`) closed the list early and
+ *   silently truncated the item set.
+ *
+ * The scan also no longer advances the caller's loop counter: an unterminated
+ * list used to consume the rest of the file, so every *later* list in it was
+ * skipped entirely.
+ *
+ * Nor does an unterminated list borrow the NEXT list's bracket. The forward
+ * scan stops at the next list opener rather than reading through it: without
+ * that, an unclosed `EXTRA_COMPONENTS` swallowed the following
+ * `EXTRA_JS_MODULES` — its items merged into the first list's item set and its
+ * `]` accepted as the first list's close — reporting a sorting error against a
+ * variable that never contained those items, and skipping the second list.
+ */
 function collectStrictOrderedLists(content: string): MozBuildListOccurrence[] {
   const lines = content.split('\n');
   const occurrences: MozBuildListOccurrence[] = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const opener = LIST_OPENER.exec(line);
+    const opener = LIST_OPENER.exec(lines[i] ?? '');
     if (!opener) continue;
 
     const varName = opener[1] ?? '';
     const items: string[] = [];
     // Items may start on the opener line (`VAR += ["a", "b"]`) or span
     // following lines until the closing bracket.
-    let rest = line.slice(opener[0].length);
+    let rest = stripMozBuildComment((lines[i] ?? '').slice(opener[0].length));
     let closed = false;
+    // Scan ahead on a local cursor so an unterminated list costs only itself.
+    let cursor = i;
     for (;;) {
-      for (const quoted of rest.matchAll(/["']([^"']+)["']/g)) {
-        items.push(quoted[1] ?? '');
+      // Quote types are matched pairwise so an apostrophe inside a
+      // double-quoted item ("don't.cpp") cannot terminate the match early and
+      // scrape in a phantom item.
+      for (const quoted of rest.matchAll(/"([^"]+)"|'([^']+)'/g)) {
+        items.push(quoted[1] ?? quoted[2] ?? '');
       }
-      if (/\]/.test(rest)) {
+      if (hasUnquotedCloseBracket(rest)) {
         closed = true;
         break;
       }
-      i += 1;
-      if (i >= lines.length) break;
-      rest = lines[i] ?? '';
+      cursor += 1;
+      if (cursor >= lines.length) break;
+      rest = stripMozBuildComment(lines[cursor] ?? '');
+      if (LIST_OPENER.test(rest)) {
+        // A new list starts here, so the previous one never closed. Rewind so
+        // the outer loop examines this line as its own opener.
+        cursor -= 1;
+        break;
+      }
       if (/^\s*\]/.test(rest)) {
         closed = true;
         break;
       }
     }
-    if (closed) occurrences.push({ varName, items });
+    if (closed) {
+      occurrences.push({ varName, items });
+      // Resume after the list we just consumed; a list that never closed
+      // leaves `i` untouched so the next line is still examined.
+      i = cursor;
+    }
   }
 
   return occurrences;

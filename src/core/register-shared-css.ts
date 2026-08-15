@@ -7,6 +7,7 @@ import { basename, join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
+import { escapeRegex } from '../utils/regex.js';
 import { findAlphabeticalPosition, findAlphabeticalTokenPosition } from './manifest-helpers.js';
 import { tokenizeJarMn } from './manifest-tokenizers.js';
 import { withParserFallback } from './parser-fallback.js';
@@ -34,9 +35,7 @@ function registerSharedCSSTokenized(
   let previousEntry: string | undefined;
 
   if (after) {
-    const afterPattern = new RegExp(
-      `(?:^|/)${after.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|\\)|$)`
-    );
+    const afterPattern = new RegExp(`(?:^|/)${escapeRegex(after)}(?:\\s|\\)|$)`);
     const afterToken = tokens.find((t) => afterPattern.test(t.raw));
     if (afterToken) {
       insertIndex = afterToken.lineIndex + 1;

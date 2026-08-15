@@ -10,9 +10,15 @@ import { CancellationError, CommandError, FireForgeError } from './errors/base.j
 import { ExitCode } from './errors/codes.js';
 import { ConfigNotFoundError } from './errors/config.js';
 import type { CommandContext } from './types/cli.js';
+import { getCliVersion } from './utils/build-info.js';
 import { toError } from './utils/errors.js';
-import { cancel, error as logError, setVerbose } from './utils/logger.js';
-import { getPackageVersion } from './utils/package-root.js';
+import {
+  cancel,
+  error as logError,
+  setMachineOutputMode,
+  setStdoutSealed,
+  setVerbose,
+} from './utils/logger.js';
 
 const brokenPipeInstalledKey = Symbol.for('fireforge.cli.brokenPipeHandlerInstalled');
 const brokenPipeListenerKey = Symbol.for('fireforge.cli.brokenPipeHandlerListener');
@@ -126,6 +132,13 @@ export function withErrorHandling<T extends unknown[]>(
     try {
       await handler(...args);
     } catch (error: unknown) {
+      // Sentinel errors have already been rendered by the command. Passing
+      // them through prevents machine-readable refusal paths from acquiring
+      // an "Unexpected error" banner and stack trace on stderr.
+      if (error instanceof CommandError) {
+        throw error;
+      }
+
       if (error instanceof CancellationError) {
         cancel('Operation cancelled');
         // 130 (128+SIGINT) is the conventional "user interrupted" code —
@@ -145,6 +158,15 @@ export function withErrorHandling<T extends unknown[]>(
         console.error(normalizedError.stack);
       }
       throw new CommandError(ExitCode.GENERAL_ERROR);
+    } finally {
+      // Central machine-mode and stdout-seal reset. Commands leave both
+      // ENGAGED while an error propagates (a mid-throw restore would route
+      // the styled error to stdout, corrupting the `--json`/`--raw` payload
+      // stream or displacing the FIREFORGE-VERDICT line); the reset happens
+      // here, after logError has picked its stream, so no state leaks into
+      // a subsequent in-process invocation.
+      setMachineOutputMode(false);
+      setStdoutSealed(false);
     }
   };
 }
@@ -305,6 +327,10 @@ export function createProgram(): Command {
     .name('fireforge')
     .description('A build tool for customizing Firefox')
     .option('-v, --verbose', 'Enable debug output')
+    .option(
+      '--ignore-corrupt-tree-marker',
+      'Run even when .fireforge/tree.json exists but cannot be parsed. Without this the tree guard refuses, because an unreadable marker leaves it unknown whether this is a snapshot or the primary tree.'
+    )
     .hook('preAction', (thisCommand) => {
       const opts = thisCommand.opts();
       if (opts['verbose']) {
@@ -346,7 +372,7 @@ export async function main(): Promise<void> {
   const userArgs = process.argv.slice(2);
   const hasSubcommand = userArgs.some((arg) => !arg.startsWith('-'));
   if (!hasSubcommand && userArgs.some((arg) => arg === '--version' || arg === '-V')) {
-    process.stdout.write(`${getPackageVersion()}\n`);
+    process.stdout.write(`${getCliVersion()}\n`);
     return;
   }
 

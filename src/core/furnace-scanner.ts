@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type * as estree from 'estree';
 
 import type { ScannedComponent } from '../types/furnace.js';
+import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
 import type { AcornESTreeNode } from './ast-utils.js';
@@ -141,7 +142,7 @@ export async function scanCustomElementsRegistrations(
     // Best-effort scanner: if upstream syntax changes or the file is damaged,
     // fall back to the old literal callback heuristic instead of failing the
     // whole scan command.
-    const reason = parseError instanceof Error ? parseError.message : String(parseError);
+    const reason = toError(parseError).message;
     warn(
       `AST parsing of customElements.js failed (${reason}). Falling back to regex-based heuristic. ` +
         'Results may be incomplete — run "fireforge furnace validate" to verify registration consistency.'

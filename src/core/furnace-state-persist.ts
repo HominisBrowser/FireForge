@@ -27,20 +27,18 @@ import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
 import {
-  type applyAllComponents,
+  type ApplyAllComponentsResult,
   computeComponentChecksums,
   prefixChecksums,
 } from './furnace-apply.js';
 import { type getFurnacePaths, updateFurnaceState } from './furnace-config.js';
 import { countEntriesWithBlockingStepErrors } from './furnace-step-errors.js';
 
-type ApplyAllResult = Awaited<ReturnType<typeof applyAllComponents>>;
-
 /**
  * Counts applied entries that carry at least one BLOCKING step error
  * (advisory step errors are warnings and never fail a run).
  */
-export function getStepFailureCount(result: ApplyAllResult): number {
+export function getStepFailureCount(result: ApplyAllComponentsResult): number {
   return countEntriesWithBlockingStepErrors(result.applied);
 }
 
@@ -56,7 +54,7 @@ export function getStepFailureCount(result: ApplyAllResult): number {
  * state.
  */
 export function shouldPersistSingleComponentState(
-  result: ApplyAllResult,
+  result: ApplyAllComponentsResult,
   isDryRun: boolean
 ): boolean {
   if (isDryRun) return false;
@@ -79,7 +77,7 @@ export function shouldPersistSingleComponentState(
 export function getPersistableAppliedEntry(
   commandLabel: string,
   name: string,
-  appliedEntry: ApplyAllResult['applied'][number] | undefined
+  appliedEntry: ApplyAllComponentsResult['applied'][number] | undefined
 ): { name: string; type: 'override' | 'custom' } {
   if (!appliedEntry) {
     throw new FurnaceError(

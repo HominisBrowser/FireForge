@@ -17,6 +17,7 @@ import { getClaimedFiles } from '../core/patch-manifest.js';
 import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { PatchesManifest } from '../types/commands/index.js';
+import { mapWithConcurrency } from '../utils/concurrency.js';
 import { pathExists } from '../utils/fs.js';
 import { cancel, info, isCancel, warn } from '../utils/logger.js';
 import {
@@ -26,6 +27,9 @@ import {
 } from '../utils/paths.js';
 
 const SCAN_ADD_COUNT_THRESHOLD = 3;
+
+/** Concurrency bound for existence probes (matches the classify/lint pools). */
+const PATH_PROBE_CONCURRENCY = 8;
 const SCAN_DIR_COUNT_THRESHOLD = 2;
 
 export interface ScanResult {
@@ -122,6 +126,10 @@ async function scanPatchFilesTargeted(args: {
   const claimedByOthers = getClaimedFiles(manifest, patchFilename);
   const added: string[] = [];
 
+  // Phase-split for bounded concurrency: the sync claimed-by-others check
+  // first (first offender in argument order, as before), then pooled
+  // existence probes with the refusal chosen by ordered iteration so the
+  // FIRST missing file in argument order is named deterministically.
   for (const file of scanFiles) {
     if (claimedByOthers.has(file)) {
       throw new InvalidArgumentError(
@@ -129,7 +137,12 @@ async function scanPatchFilesTargeted(args: {
         '--scan-file'
       );
     }
-    if (!(await pathExists(join(engineDir, file)))) {
+  }
+  const exists = await mapWithConcurrency(scanFiles, PATH_PROBE_CONCURRENCY, (file) =>
+    pathExists(join(engineDir, file))
+  );
+  for (const [index, file] of scanFiles.entries()) {
+    if (exists[index] !== true) {
       throw new InvalidArgumentError(
         `--scan-file path not found in engine/: ${file}`,
         '--scan-file'
@@ -143,11 +156,10 @@ async function scanPatchFilesTargeted(args: {
 }
 
 async function findRemovedFiles(files: readonly string[], engineDir: string): Promise<string[]> {
-  const removed: string[] = [];
-  for (const file of files) {
-    if (!(await pathExists(join(engineDir, file)))) removed.push(file);
-  }
-  return removed.sort();
+  const exists = await mapWithConcurrency(files, PATH_PROBE_CONCURRENCY, (file) =>
+    pathExists(join(engineDir, file))
+  );
+  return files.filter((_, index) => exists[index] !== true).sort();
 }
 
 function reportScanResult(

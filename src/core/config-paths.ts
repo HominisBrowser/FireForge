@@ -71,6 +71,8 @@ export const SUPPORTED_CONFIG_PATHS = [
   'patchLint.checkJsStrict',
   'patchLint.checkJsCompilerOptions',
   'patchLint.checkJsExtraShim',
+  'patchLint.checkJsTestFiles',
+  'patchLint.checkJsTestShim',
   'patchLint.rawColorAllowlist',
   'patchLint.jsdocClassMethods',
   'patchLint.testAssertionFloor',

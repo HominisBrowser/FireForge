@@ -23,6 +23,7 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
 import type { PatchLintSeverityGate, TypecheckConfig } from '../types/config.js';
 import type { TypecheckIssue, TypecheckProjectResult } from '../types/typecheck.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import {
@@ -129,7 +130,7 @@ export async function runTypecheck(
     } catch (err) {
       // A missing or unreadable shim fails only the project(s) that use it,
       // not the whole run — projects with a different (or no) shim still run.
-      const message = err instanceof Error ? err.message : String(err);
+      const message = toError(err).message;
       results.push({
         project: projectPath,
         issues: [

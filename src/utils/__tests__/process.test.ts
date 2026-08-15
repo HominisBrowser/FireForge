@@ -592,6 +592,54 @@ describe('process-group reaping (0.37.0 item 9a)', () => {
       expect(survivors).toEqual([]);
       expect(mockSpawn).not.toHaveBeenCalled();
     });
+
+    /** A fake pgrep child that fails to spawn, forcing the kill(0) fallback. */
+    function brokenPgrepChild(): () => MockChildProcess {
+      return () => {
+        const child = makeChild();
+        queueMicrotask(() => {
+          child.emit('error', new Error('spawn pgrep ENOENT'));
+        });
+        return child;
+      };
+    }
+
+    it('treats EPERM from the fallback group probe as live members, not an empty group', async () => {
+      // A root-owned group (sudo build, container uid mismatch) makes
+      // kill(-pgid, 0) throw EPERM. That is proof the group EXISTS; reading
+      // it as "gone" is the same misclassification isProcessAlive fixes.
+      const eperm = Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+        if (signal === 0) throw eperm;
+        return true;
+      });
+      mockSpawn
+        .mockImplementationOnce(brokenPgrepChild())
+        .mockImplementationOnce(brokenPgrepChild())
+        .mockImplementationOnce(brokenPgrepChild());
+
+      const { survivors } = await sweepProcessGroup(4242, 10);
+
+      expect(survivors).toHaveLength(1);
+      expect(survivors[0]?.command).toContain('liveness probe denied');
+      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
+      killSpy.mockRestore();
+    });
+
+    it('treats ESRCH from the fallback group probe as no survivors', async () => {
+      const esrch = Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+        if (signal === 0) throw esrch;
+        return true;
+      });
+      mockSpawn.mockImplementationOnce(brokenPgrepChild());
+
+      const { survivors } = await sweepProcessGroup(4242, 10);
+
+      expect(survivors).toEqual([]);
+      expect(killSpy).not.toHaveBeenCalledWith(-4242, 'SIGTERM');
+      killSpy.mockRestore();
+    });
   });
 
   describe('execStream with processGroup', () => {

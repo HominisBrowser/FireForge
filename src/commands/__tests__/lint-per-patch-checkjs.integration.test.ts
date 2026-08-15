@@ -141,6 +141,54 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
     expect(groupedSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('roots the program at the --patches subset with full-queue resolution and identical findings (FORGE J1c)', async () => {
+    const groupedSpy = vi.spyOn(checkjs, 'invokePatchLintCheckJsGrouped');
+
+    // Subset run over the bad patch: same finding as a full run.
+    await lintCommand(projectRoot, [], {
+      perPatch: true,
+      noCache: true,
+      patches: ['002-bad.patch'],
+    }).catch(() => undefined);
+    const subsetLines = checkJsLines();
+    expect(subsetLines).toHaveLength(1);
+    expect(subsetLines[0]).toContain('Bad.sys.mjs');
+    // The program received a rootScope restricted to the subset's files.
+    expect(groupedSpy.mock.calls[0]?.[4]).toEqual(new Set([BAD]));
+
+    vi.mocked(warn).mockClear();
+
+    // Subset run over the clean patch: the bad patch's finding must NOT
+    // surface (its file is resolvable but not a root).
+    await lintCommand(projectRoot, [], {
+      perPatch: true,
+      noCache: true,
+      patches: ['001-good.patch'],
+    }).catch(() => undefined);
+    expect(checkJsLines()).toHaveLength(0);
+  });
+
+  it('an all-warm run does not build the checkJs program at all (FORGE J1b)', async () => {
+    // Cold run populates the cache.
+    await lintCommand(projectRoot, [], { perPatch: true }).catch(() => undefined);
+
+    // spyOn returns the same persistent spy across tests in this file, so
+    // drop the cold run's recorded build before asserting on the warm run.
+    const groupedSpy = vi.spyOn(checkjs, 'invokePatchLintCheckJsGrouped');
+    groupedSpy.mockClear();
+    vi.mocked(warn).mockClear();
+
+    // Warm run: every patch hits the cache; run-level globals come from the
+    // cheap probe, so the ~37 s program build never happens.
+    await lintCommand(projectRoot, [], { perPatch: true }).catch(() => undefined);
+
+    expect(groupedSpy).not.toHaveBeenCalled();
+    // The cached findings still surface identically.
+    const lines = checkJsLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Bad.sys.mjs');
+  });
+
   it('a warm (all-cache-hit) run still surfaces run-level checkJs errors (FORGE F5)', async () => {
     // A broken extra shim produces a GLOBAL checkJs error (no owning file).
     // Global findings are never cached, so before the fix an all-cache-hit

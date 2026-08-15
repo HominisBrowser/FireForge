@@ -32,6 +32,7 @@ import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 
@@ -171,33 +172,36 @@ export function formatMajorVersionHopNotice(
 export async function readDeclaredToolchainMinimums(
   engineDir: string
 ): Promise<Partial<Record<ToolchainTool, string>>> {
-  const minimums: Partial<Record<ToolchainTool, string>> = {};
-  for (const [tool, declaration] of Object.entries(MINIMUM_DECLARATIONS) as [
+  const entries = Object.entries(MINIMUM_DECLARATIONS) as [
     ToolchainTool,
     (typeof MINIMUM_DECLARATIONS)[ToolchainTool],
-  ][]) {
-    const filePath = join(engineDir, declaration.relPath);
-    if (!(await pathExists(filePath))) {
-      verbose(`Toolchain preflight: ${declaration.relPath} not found; skipping ${tool}.`);
-      continue;
-    }
-    try {
-      const content = await readText(filePath);
-      const match = declaration.pattern.exec(content);
-      if (match?.[1]) {
-        minimums[tool] = match[1];
-      } else {
+  ][];
+  const resolved = await Promise.all(
+    entries.map(async ([tool, declaration]) => {
+      const filePath = join(engineDir, declaration.relPath);
+      if (!(await pathExists(filePath))) {
+        verbose(`Toolchain preflight: ${declaration.relPath} not found; skipping ${tool}.`);
+        return undefined;
+      }
+      try {
+        const content = await readText(filePath);
+        const match = declaration.pattern.exec(content);
+        if (match?.[1]) {
+          return [tool, match[1]] as const;
+        } else {
+          verbose(
+            `Toolchain preflight: no ${tool} minimum declaration recognized in ${declaration.relPath}; skipping.`
+          );
+        }
+      } catch (error: unknown) {
         verbose(
-          `Toolchain preflight: no ${tool} minimum declaration recognized in ${declaration.relPath}; skipping.`
+          `Toolchain preflight: could not read ${declaration.relPath} (${toError(error).message}); skipping ${tool}.`
         );
       }
-    } catch (error: unknown) {
-      verbose(
-        `Toolchain preflight: could not read ${declaration.relPath} (${error instanceof Error ? error.message : String(error)}); skipping ${tool}.`
-      );
-    }
-  }
-  return minimums;
+      return undefined;
+    })
+  );
+  return Object.fromEntries(resolved.filter((entry) => entry !== undefined));
 }
 
 /** Runs `<binary> --version` and parses the leading version number. */
@@ -233,16 +237,15 @@ async function probeHostToolCandidates(tool: ToolchainTool): Promise<ToolchainCa
     ? [envOverride]
     : [...probe.stateDirRelPaths.map((rel) => join(mozbuildStateDir(), rel)), tool];
 
-  const candidates: ToolchainCandidate[] = [];
-  for (const binary of binaries) {
-    const version = await probeBinaryVersion(binary, probe.versionPattern);
-    if (version !== undefined) {
-      candidates.push({ binary, version });
-    } else {
+  const candidates = await Promise.all(
+    binaries.map(async (binary): Promise<ToolchainCandidate | undefined> => {
+      const version = await probeBinaryVersion(binary, probe.versionPattern);
+      if (version !== undefined) return { binary, version };
       verbose(`Toolchain preflight: "${binary} --version" failed or not found; skipping.`);
-    }
-  }
-  return candidates;
+      return undefined;
+    })
+  );
+  return candidates.filter((candidate) => candidate !== undefined);
 }
 
 /**
@@ -258,33 +261,33 @@ async function probeHostToolCandidates(tool: ToolchainTool): Promise<ToolchainCa
  */
 export async function runToolchainPreflight(engineDir: string): Promise<ToolchainMismatch[]> {
   const minimums = await readDeclaredToolchainMinimums(engineDir);
-  const mismatches: ToolchainMismatch[] = [];
+  const results = await Promise.all(
+    (Object.entries(minimums) as [ToolchainTool, string][]).map(async ([tool, minimumVersion]) => {
+      const minimum = parseVersionComponents(minimumVersion);
+      if (!minimum) return undefined;
+      const candidates = await probeHostToolCandidates(tool);
+      const parsed = candidates.filter((c) => parseVersionComponents(c.version) !== undefined);
+      if (parsed.length === 0) return undefined;
+      const satisfying = parsed.find((c) => {
+        const components = parseVersionComponents(c.version);
+        return components !== undefined && !isVersionLower(components, minimum);
+      });
+      if (satisfying) {
+        verbose(
+          `Toolchain preflight: ${tool} ${satisfying.version} (${satisfying.binary}) satisfies minimum ${minimumVersion}.`
+        );
+        return undefined;
+      }
+      return {
+        tool,
+        minimumVersion,
+        declaredIn: MINIMUM_DECLARATIONS[tool].relPath,
+        candidates: parsed,
+      } satisfies ToolchainMismatch;
+    })
+  );
 
-  for (const [tool, minimumVersion] of Object.entries(minimums) as [ToolchainTool, string][]) {
-    const minimum = parseVersionComponents(minimumVersion);
-    if (!minimum) continue;
-    const candidates = await probeHostToolCandidates(tool);
-    const parsed = candidates.filter((c) => parseVersionComponents(c.version) !== undefined);
-    if (parsed.length === 0) continue;
-    const satisfying = parsed.find((c) => {
-      const components = parseVersionComponents(c.version);
-      return components !== undefined && !isVersionLower(components, minimum);
-    });
-    if (satisfying) {
-      verbose(
-        `Toolchain preflight: ${tool} ${satisfying.version} (${satisfying.binary}) satisfies minimum ${minimumVersion}.`
-      );
-      continue;
-    }
-    mismatches.push({
-      tool,
-      minimumVersion,
-      declaredIn: MINIMUM_DECLARATIONS[tool].relPath,
-      candidates: parsed,
-    });
-  }
-
-  return mismatches;
+  return results.filter((mismatch) => mismatch !== undefined);
 }
 
 /**

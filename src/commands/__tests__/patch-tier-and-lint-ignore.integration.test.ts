@@ -729,6 +729,135 @@ describe('patch staged-dependency', () => {
     ).rejects.toBeInstanceOf(InvalidArgumentError);
   });
 
+  // ── FORGE K10: --add refuses patch-name-shaped path values ──
+
+  it('--add refuses a --creates naming a queue patch, pointing at --owner (FORGE K10)', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs']),
+      makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn']),
+    ]);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+        add: true,
+        file: 'foo/A.sys.mjs',
+        specifier: 'resource:///modules/B.sys.mjs',
+        creates: '200-ui-jar.patch',
+      })
+    ).rejects.toThrow(
+      /--creates takes the engine-relative path.*not a patch name.*matches patch 200-ui-jar\.patch.*pass it with --owner/s
+    );
+
+    // Nothing was written: the mixup is refused at --add time instead of
+    // surfacing later as staged-dependency-unused.
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
+  });
+
+  it('--add refuses a --creates naming a queue patch by stem or any .patch-suffixed value (FORGE K10)', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs']),
+      makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn']),
+    ]);
+    const base = {
+      add: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/B.sys.mjs',
+    };
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+        ...base,
+        creates: '200-ui-jar',
+      })
+    ).rejects.toThrow(/matches patch 200-ui-jar\.patch/);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+        ...base,
+        creates: 'not-in-queue.patch',
+      })
+    ).rejects.toThrow(/looks like a patch filename/);
+  });
+
+  it('--add accepts slash paths and non-patch suffixes that merely resemble patch names (FORGE K10)', async () => {
+    await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
+
+    // A deep engine path always contains '/', so it can never trip the
+    // patch-name refusal even with a numeric prefix or .patch inside it.
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      add: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/B.sys.mjs',
+      creates: 'browser/base/010-foo.css',
+    });
+    let manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(1);
+
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      add: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/C.sys.mjs',
+      creates: 'weird-file.patch.txt',
+    });
+    manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(2);
+  });
+
+  it('--add refuses a malformed --owner and warns on an owner absent from the queue (FORGE K10)', async () => {
+    await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
+    const base = {
+      add: true,
+      file: 'foo/A.sys.mjs',
+      specifier: 'resource:///modules/B.sys.mjs',
+      creates: 'foo/B.sys.mjs',
+    };
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+        ...base,
+        owner: 'foo/B.sys.mjs',
+      })
+    ).rejects.toThrow(
+      /--owner names the owning patch artifact.*created file path goes in --creates/s
+    );
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+        ...base,
+        owner: '200-ui-jar',
+      })
+    ).rejects.toThrow(/does not look like a patch filename/);
+
+    // Well-formed but not (yet) in the queue: advisory only — the owner
+    // may be exported moments later.
+    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+      ...base,
+      owner: '999-ui-ghost.patch',
+    });
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies?.forwardImports?.[0]?.owner).toBe(
+      '999-ui-ghost.patch'
+    );
+  });
+
+  it('--add --kind registration gets the same --creates refusal (FORGE K10)', async () => {
+    await seed(patchesDir, [
+      makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn']),
+      makeMetadata('300-ui-widget.patch', 300, ['browser/widget/W.sys.mjs']),
+    ]);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+        add: true,
+        kind: 'registration',
+        file: 'toolkit/content/jar.mn',
+        line: 'content/browser/W.sys.mjs (widget/W.sys.mjs)',
+        creates: '300-ui-widget.patch',
+      })
+    ).rejects.toThrow(/matches patch 300-ui-widget\.patch/);
+  });
+
   // ── 0.37.0 item 5: registration-kind entries ──
 
   it('--add --kind registration writes a registrations declaration', async () => {

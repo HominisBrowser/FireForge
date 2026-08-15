@@ -4,14 +4,11 @@ import { Command } from 'commander';
 import { validateBrandOverride } from '../core/brand-validation.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import {
-  buildArtifactMismatchMessage,
-  hasBuildArtifacts,
-  machPackageCapture,
-} from '../core/mach.js';
+import { hasBuildArtifacts, machPackageCapture } from '../core/mach.js';
+import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import { explainMachError } from '../core/mach-error-hints.js';
 import { GeneralError } from '../errors/base.js';
-import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
+import { BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PackageOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
@@ -38,22 +35,12 @@ export async function packageCommand(projectRoot: string, options: PackageOption
   }
 
   const buildCheck = await hasBuildArtifacts(paths.engine);
-  if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
-    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
-  }
-  const mismatchMessage = buildArtifactMismatchMessage(paths.engine, buildCheck, 'Package');
-  if (mismatchMessage) {
-    throw new GeneralError(mismatchMessage);
-  }
-  if (!buildCheck.exists) {
-    const detail = buildCheck.objDir
-      ? `Build artifacts incomplete in ${buildCheck.objDir}/`
-      : 'No build artifacts found (obj-*/ directory missing)';
-    throw new GeneralError(
-      `Packaging requires a completed build. ${detail}\n\n` +
-        "Run 'fireforge build' first, then rerun 'fireforge package'."
-    );
-  }
+  assertBuildArtifacts(paths.engine, buildCheck, {
+    label: 'Package',
+    requirement: 'Packaging requires a completed build.',
+    remediation: "Run 'fireforge build' first, then rerun 'fireforge package'.",
+    requireExisting: true,
+  });
 
   // Log brand info if specified
   if (options.brand) {

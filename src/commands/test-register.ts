@@ -2,16 +2,57 @@
 import { Command } from 'commander';
 
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
-import { GeneralError } from '../errors/base.js';
+import { GeneralError, LockContentionError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import {
   addWaitLockOption,
   commanderArgParser,
   pickDefined,
   resolveWaitLockSeconds,
+  stringListOption,
 } from '../utils/options.js';
 import { testCommand } from './test.js';
 import { DEFAULT_HARNESS_RETRIES } from './test-run.js';
+import { emitFailVerdict, resetVerdictEmission, verdictEmitted } from './test-verdict.js';
+
+const TEST_HELP_TEXT = [
+  '',
+  '[paths...] semantics: a directory argument selects EXACTLY that',
+  'directory. FireForge enumerates the test files of exactly that',
+  'directory and passes the explicit file list to mach, because mach',
+  'resolves test paths by string prefix and a bare directory name',
+  'silently sweeps in sibling directories sharing the prefix (e.g.',
+  'foo also running foo-extras) — an explicit file list cannot',
+  'prefix-match anything. The directory still runs as ONE mach',
+  'invocation (one browser instance), so cross-file state carries',
+  'within it. When prefix-named siblings exist, the excluded',
+  'directories are listed with their test-file counts; pass them as',
+  'separate paths to include them.',
+  '',
+  'Multiple path arguments shard into sequential isolated harness',
+  'runs (one browser instance per argument) by default, which does',
+  'not exercise cross-argument state; --no-shard restores the',
+  'combined single-instance invocation.',
+  '',
+  'Machine-readable verdict: every run (single, sharded, --canary,',
+  '--doctor) ends with exactly one raw stdout line',
+  '  FIREFORGE-VERDICT: PASS|FAIL [reason=crash|test-failures|',
+  '  no-tests|preflight|inconclusive|lock-timeout] [checks=<n>]',
+  '  [unexpected=<n>] [shards=<p>/<t>]',
+  'The status follows the harness classifier, not the raw exit code:',
+  'a crash-classified run says FAIL reason=crash even at exit 0, and',
+  'a green-summary-override pass says PASS despite a non-zero mach',
+  'exit. reason=preflight covers any failure before the harness ran',
+  '(missing/stale build, invalid paths, port conflicts, config',
+  'errors); reason=inconclusive means engine/ changed while the',
+  'tests ran, so the harness result cannot be trusted;',
+  'reason=lock-timeout means the run never started because another',
+  'engine-mutating command held the lock past the wait budget. A sharded',
+  'aggregate reason is the most structural failing shard (crash,',
+  'then no-tests, then test-failures). Count keys are omitted when',
+  'the embedded summary did not print them. Key on this line',
+  'instead of mach internals.',
+].join('\n');
 
 /** Registers the test command on the CLI program. */
 export function registerTest(
@@ -23,6 +64,14 @@ export function registerTest(
     .description('Run tests via mach test')
     .option('--headless', 'Run tests in headless mode')
     .option('--build', 'Run incremental UI build before testing')
+    .option(
+      '--build-only',
+      'Run the scoped pre-test build (packaging exactly [paths...], mixed harnesses allowed) and exit without dispatching tests — one build covers both harness halves, then run each half without --build'
+    )
+    .option(
+      '--extend-coverage',
+      'With --build/--build-only and explicit paths, union those paths into the recorded test-packaging coverage instead of replacing it, so an earlier scoped build stays covered. Refused when the build anchor moved (engine HEAD, mozconfig, or a previously fingerprinted packageable file changed).'
+    )
     .option('--auto', 'Forward mach test --auto. Valid only when no explicit paths are provided.')
     .option(
       '--allow-stale-build',
@@ -34,7 +83,7 @@ export function registerTest(
     )
     .option(
       '--kill-stale-marionette',
-      'Terminate a recognized stale browser process holding the Marionette port before running tests'
+      'Terminate a recognized stale browser from this objdir or one holding the Marionette port before running tests'
     )
     .option(
       '--canary [path]',
@@ -47,11 +96,7 @@ export function registerTest(
     .option(
       '--mach-arg <arg>',
       'Forward this argument verbatim to `mach test` (repeatable). Escape valve for upstream xpcshell/mochitest flags FireForge does not model.',
-      (value: string, acc: string[]) => {
-        acc.push(value);
-        return acc;
-      },
-      [] as string[]
+      ...stringListOption()
     )
     .option(
       '--harness-retries <n>',
@@ -87,28 +132,7 @@ export function registerTest(
         return n;
       })
     )
-    .addHelpText(
-      'after',
-      [
-        '',
-        '[paths...] semantics: a directory argument selects EXACTLY that',
-        'directory. FireForge enumerates the test files of exactly that',
-        'directory and passes the explicit file list to mach, because mach',
-        'resolves test paths by string prefix and a bare directory name',
-        'silently sweeps in sibling directories sharing the prefix (e.g.',
-        'foo also running foo-extras) — an explicit file list cannot',
-        'prefix-match anything. The directory still runs as ONE mach',
-        'invocation (one browser instance), so cross-file state carries',
-        'within it. When prefix-named siblings exist, the excluded',
-        'directories are listed with their test-file counts; pass them as',
-        'separate paths to include them.',
-        '',
-        'Multiple path arguments shard into sequential isolated harness',
-        'runs (one browser instance per argument) by default, which does',
-        'not exercise cross-argument state; --no-shard restores the',
-        'combined single-instance invocation.',
-      ].join('\n')
-    );
+    .addHelpText('after', TEST_HELP_TEXT);
   addWaitLockOption(test).action(
     withErrorHandling(
       async (
@@ -116,6 +140,8 @@ export function registerTest(
         options: {
           headless?: boolean;
           build?: boolean;
+          buildOnly?: boolean;
+          extendCoverage?: boolean;
           auto?: boolean;
           allowStaleBuild?: boolean;
           allowStaleComponents?: boolean;
@@ -132,12 +158,23 @@ export function registerTest(
         }
       ) => {
         const projectRoot = getProjectRoot();
-        await withEngineSessionLock(
-          projectRoot,
-          'test',
-          () => testCommand(projectRoot, paths, pickDefined(options)),
-          { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
-        );
+        // The engine session lock is acquired outside testCommand's own
+        // exactly-one-verdict guarantee, so a lock failure must emit here or
+        // the run ends with no FIREFORGE-VERDICT line at all.
+        resetVerdictEmission();
+        try {
+          await withEngineSessionLock(
+            projectRoot,
+            'test',
+            () => testCommand(projectRoot, paths, pickDefined(options)),
+            { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
+          );
+        } catch (error: unknown) {
+          if (!verdictEmitted()) {
+            emitFailVerdict(error instanceof LockContentionError ? 'lock-timeout' : 'preflight');
+          }
+          throw error;
+        }
       }
     )
   );

@@ -165,6 +165,28 @@ describe('planDiscardBaselines', () => {
     ).rejects.toThrow(/patches\.json is unreadable.*--to-upstream/s);
   });
 
+  // chmod 0o000 does not bar root (some CI containers) — skip there, matching
+  // the unreadable-marker test in tree-store.integration.test.ts.
+  it.skipIf(process.getuid?.() === 0)(
+    'refuses on an unreadable owning patch instead of degrading to upstream',
+    async () => {
+      // Both reads of the owning patch — the baseline reconstruction and the
+      // deletion probe — must refuse, never degrade. A swallowed read in the
+      // deletion probe reports "not deleted at baseline", which restores a
+      // path the patch DELETES as present: rewritten instead of removed.
+      const { chmod } = await import('node:fs/promises');
+      const patchPath = join(patchesDir, '0001-ui-edit.patch');
+      await chmod(patchPath, 0o000);
+      try {
+        await expect(
+          planDiscardBaselines(patchesDir, engineDir, [makeGitStatusEntry({ file: TRACKED })])
+        ).rejects.toThrow(/--to-upstream/s);
+      } finally {
+        await chmod(patchPath, 0o644);
+      }
+    }
+  );
+
   it('refuses when a claimed baseline cannot be reconstructed', async () => {
     // A patch body that cannot apply to HEAD content (context mismatch).
     await writeFile(

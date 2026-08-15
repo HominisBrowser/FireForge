@@ -68,6 +68,10 @@ vi.mock('../../core/patch-export.js', () => ({
 }));
 
 vi.mock('../../core/patch-lint.js', () => ({
+  formatPatchLintIssue: vi.fn(
+    (issue: { check: string; file: string; message: string }) =>
+      `[${issue.check}] ${issue.file}: ${issue.message}`
+  ),
   lintExportedPatch: vi.fn().mockResolvedValue([]),
   detectNewFilesInDiff: vi.fn().mockReturnValue(new Set()),
   commentStyleForFile: vi.fn().mockReturnValue(null),

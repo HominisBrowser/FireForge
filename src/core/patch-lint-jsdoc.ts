@@ -18,14 +18,17 @@ import type {
   VariableDeclaration,
 } from 'estree';
 
+import { toError } from '../utils/errors.js';
 import type { AcornESTreeNode } from './ast-utils.js';
-import { parseModule } from './ast-utils.js';
+import { asEstree, parseModule } from './ast-utils.js';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type JsDocCheck =
+  /** The source could not be parsed, so no JSDoc rule could run on it. */
+  | 'jsdoc-unparseable-source'
   | 'missing-jsdoc'
   | 'jsdoc-param-mismatch'
   | 'jsdoc-missing-returns'
@@ -446,7 +449,7 @@ export function validateClassMethods(
 
   for (const member of cls.body.body) {
     if (member.type !== 'MethodDefinition') continue;
-    const method = member as AcornESTreeNode<MethodDefinition>;
+    const method = asEstree<MethodDefinition>(member);
 
     if (isPrivateMethodKey(method)) continue;
     const name = staticMethodName(method);
@@ -480,7 +483,7 @@ export function validateClassMethods(
 
     const skipReturns = method.kind === 'constructor' || method.kind === 'set';
 
-    validateParamsAndReturns(method.value as AcornESTreeNode<FunctionExpression>, jsDoc, issues, {
+    validateParamsAndReturns(asEstree<FunctionExpression>(method.value), jsDoc, issues, {
       label,
       line,
       paramCheck: 'jsdoc-class-method-param-mismatch',
@@ -511,8 +514,17 @@ export function validateExportJsDoc(
   let ast: AcornESTreeNode<import('estree').Program>;
   try {
     ast = parseModule(source, comments);
-  } catch {
-    return [];
+  } catch (error: unknown) {
+    // An unparseable source is NOT a clean file. Returning `[]` here was the
+    // same value as "fully documented", so a syntax error silently cleared
+    // every rule this module enforces. Report it instead.
+    return [
+      {
+        line: 1,
+        check: 'jsdoc-unparseable-source',
+        message: `Source could not be parsed for JSDoc analysis: ${toError(error).message}`,
+      },
+    ];
   }
 
   const issues: JsDocIssue[] = [];

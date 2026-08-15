@@ -16,7 +16,9 @@ import { createTempProject, removeTempProject } from '../../test-utils/index.js'
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { ensureDir } from '../../utils/fs.js';
+import type { SpinnerHandle } from '../../utils/logger.js';
 import { computePlacementPlan, resolvePlacementPlan } from '../export-flow.js';
+import { gatePlacementPlan } from '../export-placement-gate.js';
 import { assertPlacementAvoidsReservedRanges } from '../export-placement-policy.js';
 
 function makeMetadata(filename: string, order: number): PatchMetadata {
@@ -187,5 +189,68 @@ describe('resolvePlacementPlan reserved-range wiring', () => {
         reservedConfig({ from: 95, to: 100 })
       )
     ).rejects.toThrow(/Positional insert would renumber the reserved range 095-100/);
+  });
+
+  // Field report FORGE J8 claimed `export --dry-run -d "…"` drops the
+  // description and fails its own description-required policy check. The
+  // plumbing is intact end-to-end (cannot-reproduce); these pins keep it so.
+  describe('dry-run carries --description into the policy projection (FORGE J8)', () => {
+    const stubSpinner = (): SpinnerHandle => ({
+      message: () => undefined,
+      stop: () => undefined,
+      error: () => undefined,
+    });
+
+    function requireDescriptionConfig(): FireForgeConfig {
+      return {
+        name: 'MyBrowser',
+        vendor: 'Acme',
+        appId: 'org.acme.browser',
+        binaryName: 'mybrowser',
+        firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+        patchPolicy: {
+          requireDescription: true,
+          ranges: [{ from: 1, to: 200, category: 'ui' }],
+        },
+      };
+    }
+
+    it('a dry-run placement with a description passes description-required', async () => {
+      await seed([{ ...makeMetadata('001-ui-existing.patch', 1), description: 'existing' }]);
+
+      await expect(
+        gatePlacementPlan({
+          patchesDir,
+          options: { order: 5, dryRun: true, yes: true },
+          selectedCategory: 'ui',
+          patchName: 'incoming',
+          description: 'From the -d flag',
+          filesAffected: ['browser/incoming.js'],
+          diff: '',
+          config: requireDescriptionConfig(),
+          isDryRun: true,
+          s: stubSpinner(),
+        })
+      ).resolves.toBe('stop');
+    });
+
+    it('an empty description still trips description-required on the dry run', async () => {
+      await seed([{ ...makeMetadata('001-ui-existing.patch', 1), description: 'existing' }]);
+
+      await expect(
+        gatePlacementPlan({
+          patchesDir,
+          options: { order: 5, dryRun: true, yes: true },
+          selectedCategory: 'ui',
+          patchName: 'incoming',
+          description: '',
+          filesAffected: ['browser/incoming.js'],
+          diff: '',
+          config: requireDescriptionConfig(),
+          isDryRun: true,
+          s: stubSpinner(),
+        })
+      ).rejects.toThrow(/\[description-required\].*005-ui-incoming/);
+    });
   });
 });

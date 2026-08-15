@@ -64,6 +64,10 @@ vi.mock('../../core/patch-apply.js', () => ({
 }));
 
 vi.mock('../../core/patch-lint.js', () => ({
+  formatPatchLintIssue: vi.fn(
+    (issue: { check: string; file: string; message: string }) =>
+      `[${issue.check}] ${issue.file}: ${issue.message}`
+  ),
   lintExportedPatch: vi.fn(() => Promise.resolve([])),
   buildPatchQueueContext: vi.fn(() => Promise.resolve({ entries: [] })),
   lintPatchQueue: vi.fn(() => []),
@@ -503,7 +507,9 @@ describe('lintCommand — branch coverage', () => {
     }
 
     beforeEach(() => {
-      memoryCache = { schemaVersion: 2, entries: {} };
+      // Literal (not the imported constant): this module is fully vi.mock'd,
+      // so the real LINT_CACHE_SCHEMA_VERSION value is unavailable at runtime.
+      memoryCache = { schemaVersion: 3, entries: {} };
       vi.mocked(loadPerPatchLintCache).mockResolvedValue(memoryCache);
       vi.mocked(getPerPatchLintCacheHeadSha).mockResolvedValue('test-head-sha');
       vi.mocked(buildPerPatchLintCacheKey).mockImplementation((input) =>

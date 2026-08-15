@@ -4,6 +4,8 @@
  * Used to safely narrow types from unknown values.
  */
 import { InvalidArgumentError } from '../errors/base.js';
+import type { FirefoxProduct } from '../types/config.js';
+import { escapeRegex } from './regex.js';
 
 /**
  * Checks whether a value is a string.
@@ -108,11 +110,37 @@ export function isValidFirefoxCandidate(candidate: string): boolean {
 }
 
 /**
- * Validates a Firefox product string.
- * Accepts: firefox, firefox-esr, firefox-beta, firefox-devedition
+ * Valid Firefox product identifiers.
+ *
+ * `satisfies readonly FirefoxProduct[]` links the runtime list to the union at
+ * `types/config.ts:5` in ONE direction: it rejects an entry here that the union
+ * does not declare. It cannot see a union member missing from this list —
+ * widening a `readonly T[]` check never fails for being short. The reverse
+ * direction is covered by the exhaustive switch in
+ * `utils/__tests__/validation.test.ts`, which fails to compile when the union
+ * grows.
+ *
+ * Two further copies of this list existed before 0.41.0 — an inline literal
+ * inside the validator below and `SOURCE_PRODUCTS` in `commands/source.ts` —
+ * neither linked to the union.
  */
-export function isValidFirefoxProduct(product: string): boolean {
-  return ['firefox', 'firefox-esr', 'firefox-beta', 'firefox-devedition'].includes(product);
+export const FIREFOX_PRODUCTS = [
+  'firefox',
+  'firefox-esr',
+  'firefox-beta',
+  'firefox-devedition',
+] as const satisfies readonly FirefoxProduct[];
+
+/**
+ * Validates a Firefox product string.
+ *
+ * A type predicate, matching its siblings {@link isValidPatchCategory} and
+ * {@link isValidProjectLicense}. It returned plain `boolean` until 0.41.0,
+ * which forced `as FirefoxProduct` casts at both call sites even though the
+ * `.includes` check IS the runtime proof.
+ */
+export function isValidFirefoxProduct(product: string): product is FirefoxProduct {
+  return (FIREFOX_PRODUCTS as readonly string[]).includes(product);
 }
 
 /**
@@ -313,7 +341,7 @@ export function normalizeTokenName(name: string): string {
  */
 export function normalizePatchDisplayName(name: string, category: string): string {
   const stem = name.trim().replace(/\.patch$/i, '');
-  const escaped = category.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegex(category);
   const prefixes = [
     new RegExp(`^\\d+[-_ ]+${escaped}[-_ ]+`, 'i'),
     new RegExp(`^${escaped}[-_ ]+`, 'i'),

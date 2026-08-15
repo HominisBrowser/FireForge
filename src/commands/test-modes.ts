@@ -3,8 +3,9 @@ import { loadConfig } from '../core/config.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
-import { success } from '../utils/logger.js';
+import { info, success } from '../utils/logger.js';
 import type { TestRunOutcome } from './test-run.js';
+import { emitHarnessVerdict } from './test-verdict.js';
 
 type ProjectConfig = Awaited<ReturnType<typeof loadConfig>>;
 
@@ -14,6 +15,7 @@ export function assertPathlessTestMode(testPaths: readonly string[], options: Te
     testPaths.length === 0 &&
     options.auto !== true &&
     options.doctor !== true &&
+    options.buildOnly !== true &&
     options.canary === undefined
   ) {
     throw new GeneralError(buildPathlessTestMessage());
@@ -42,6 +44,14 @@ export function assertTestModeCombinations(
         'Pass `fireforge test --canary <path>` or set `test.canaryPath` in fireforge.json.'
     );
   }
+  if (
+    options.buildOnly === true &&
+    (options.doctor === true || options.canary !== undefined || options.auto === true)
+  ) {
+    throw new GeneralError(
+      '`fireforge test --build-only` builds and exits without dispatching tests; it cannot be combined with --doctor, --canary, or --auto.'
+    );
+  }
 }
 
 /** Resolves the canary path from CLI or config. */
@@ -61,24 +71,30 @@ export function canaryTimeoutSeconds(projectConfig: ProjectConfig): number {
 
 /** Emits or throws the one-word canary verdict. */
 export function reportCanaryOutcome(outcome: TestRunOutcome): void {
-  if (outcome.verdict.kind === 'tests-ran-ok') {
-    success('Canary: green');
-    return;
-  }
-  if (
-    outcome.verdict.kind === 'harness-crash' &&
-    outcome.verdict.signature?.reason.includes('no-output timeout')
-  ) {
-    throw new GeneralError(`Canary: hang\n\n${outcome.verdict.signature.line}`);
-  }
-  if (outcome.verdict.kind === 'harness-crash') {
+  // Written raw as the run's last stdout line on green and throw paths
+  // alike — see the FIREFORGE-VERDICT contract in test-harness-crash.ts.
+  try {
+    if (outcome.verdict.kind === 'tests-ran-ok') {
+      success('Canary: green');
+      return;
+    }
+    if (
+      outcome.verdict.kind === 'harness-crash' &&
+      outcome.verdict.signature?.reason.includes('no-output timeout')
+    ) {
+      throw new GeneralError(`Canary: hang\n\n${outcome.verdict.signature.line}`);
+    }
+    if (outcome.verdict.kind === 'harness-crash') {
+      throw new GeneralError(
+        `Canary: crash\n\n${outcome.verdict.signature ? outcome.verdict.signature.line : 'Harness crashed before the canary completed.'}`
+      );
+    }
     throw new GeneralError(
-      `Canary: crash\n\n${outcome.verdict.signature ? outcome.verdict.signature.line : 'Harness crashed before the canary completed.'}`
+      'Canary: crash\n\nThe canary did not complete green; see mach output above.'
     );
+  } finally {
+    emitHarnessVerdict(outcome.verdict);
   }
-  throw new GeneralError(
-    'Canary: crash\n\nThe canary did not complete green; see mach output above.'
-  );
 }
 
 function buildPathlessTestMessage(): string {
@@ -137,14 +153,38 @@ function buildMixedHarnessMessage(classification: HarnessClassification): string
  */
 export async function classifyBeforeDispatch(
   engineDir: string,
-  normalizedPaths: string[]
+  normalizedPaths: string[],
+  options?: { allowMixed?: boolean }
 ): Promise<{ classification: HarnessClassification; xpcshellOnly: boolean }> {
   const classification = await classifyTestHarnesses(engineDir, normalizedPaths);
   if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {
-    throw new GeneralError(buildMixedHarnessMessage(classification));
+    // `--build-only` never dispatches, so a mixed request is legal there —
+    // packaging the union is the whole point (FORGE J9).
+    if (options?.allowMixed !== true) {
+      throw new GeneralError(buildMixedHarnessMessage(classification));
+    }
   }
   return {
     classification,
     xpcshellOnly: normalizedPaths.length > 0 && classification.nonXpcshell.length === 0,
   };
+}
+
+/**
+ * Prints the `--build-only` completion guidance: the union build is
+ * recorded as the packaging-coverage claim, so each harness half can now
+ * run build-less without tripping the stale/coverage gate.
+ */
+export function reportBuildOnlyCompletion(
+  classification: HarnessClassification,
+  normalizedPaths: readonly string[]
+): void {
+  info('Build complete. The recorded packaging coverage includes every requested path.');
+  if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {
+    info('Run each harness separately without --build:');
+    info(`  fireforge test ${classification.xpcshell.join(' ')}`);
+    info(`  fireforge test ${classification.nonXpcshell.join(' ')}`);
+  } else if (normalizedPaths.length > 0) {
+    info(`Run: fireforge test ${normalizedPaths.join(' ')}`);
+  }
 }

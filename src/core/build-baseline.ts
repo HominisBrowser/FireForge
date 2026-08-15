@@ -21,19 +21,28 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { toError } from '../utils/errors.js';
+import { mapWithConcurrency } from '../utils/concurrency.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
-import type {
-  BuildBaseline,
-  StaticComponentsBaseline,
-  TestPackagingCoverage,
+import {
+  type BuildBaseline,
+  DELETED_FILE_FINGERPRINT,
+  type StaticComponentsBaseline,
+  type TestPackagingCoverage,
 } from './build-baseline-types.js';
 import { FIREFORGE_DIR } from './config-paths.js';
+import { hashEngineFile } from './coverage-extend.js';
 import { getHead, hasChanges, isMissingHeadError } from './git.js';
 import { git } from './git-base.js';
 import { getUntrackedFiles } from './git-status.js';
+
+/*
+ * Keep the IO fan-out bounded: a patched Firefox checkout can carry hundreds
+ * of dirty packageable paths and serial reads add directly to every build.
+ */
+const FINGERPRINT_IO_CONCURRENCY = 16;
 
 /** Name of the last-build marker file under `.fireforge/`. */
 export const BUILD_BASELINE_FILENAME = 'last-build.json';
@@ -83,6 +92,14 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
  *   `staticComponentsBaseline` forward verbatim — `mach build faster`
  *   does not rebake `components.conf` registrations, so the last FULL
  *   build stays the honest anchor for the compiled StaticComponents table.
+ * @param recordedBy - Invocation shape that produced this baseline.
+ * @param staticComponentsHandling - `'auto'` (default) refreshes the
+ *   static-components anchor whenever the coverage claim is `'full'` or
+ *   absent. `'refresh'` records it even for a scoped coverage claim whose
+ *   implementation escalated to a full build. `'carry-forward'` always keeps the previous anchor: needed by
+ *   `--extend-coverage` (FORGE L1), whose union can EVALUATE to `'full'`
+ *   while the build that produced it was still a scoped `mach build
+ *   faster` that did not rebake the compiled table.
  */
 export async function writeBuildBaseline(
   projectRoot: string,
@@ -90,7 +107,8 @@ export async function writeBuildBaseline(
   binaryName: string,
   testPackagingCoverage?: TestPackagingCoverage,
   previousBaseline?: BuildBaseline,
-  recordedBy?: string
+  recordedBy?: string,
+  staticComponentsHandling: 'auto' | 'refresh' | 'carry-forward' = 'auto'
 ): Promise<void> {
   let engineHeadSha = '';
   try {
@@ -112,9 +130,13 @@ export async function writeBuildBaseline(
   // the current engine state. A scoped write did not — carry the previous
   // anchor forward verbatim.
   const staticComponentsBaseline =
-    testPackagingCoverage === undefined || testPackagingCoverage === 'full'
+    staticComponentsHandling === 'refresh' ||
+    (staticComponentsHandling === 'auto' &&
+      (testPackagingCoverage === undefined || testPackagingCoverage === 'full'))
       ? await collectStaticComponentsBaseline(engineDir, engineHeadSha)
       : previousBaseline?.staticComponentsBaseline;
+
+  const mozconfigHash = await hashEngineFile(engineDir, 'mozconfig');
 
   const baseline: BuildBaseline = {
     engineHeadSha,
@@ -122,6 +144,7 @@ export async function writeBuildBaseline(
     binaryName,
     ...(packageableFingerprints !== undefined ? { packageableFingerprints } : {}),
     ...(testPackagingCoverage !== undefined ? { testPackagingCoverage } : {}),
+    ...(mozconfigHash !== undefined ? { mozconfigHash } : {}),
     ...(staticComponentsBaseline !== undefined ? { staticComponentsBaseline } : {}),
     ...(recordedBy !== undefined ? { recordedBy } : {}),
   };
@@ -202,19 +225,33 @@ async function collectDirtyFingerprints(
       return {};
     }
 
-    const fingerprints: Record<string, string> = {};
-    for (const relPath of included) {
-      try {
-        const buffer = await readFile(join(engineDir, relPath));
-        fingerprints[relPath] = createHash('sha256').update(buffer).digest('hex');
-      } catch (fileError: unknown) {
-        // A file that disappeared between status probe and hash is
-        // expected in concurrent scenarios; skip it without failing the
-        // whole baseline write.
-        verbose(
-          `Build baseline: skipping ${contextLabel} for ${relPath} — ${toError(fileError).message}`
-        );
+    const entries = await mapWithConcurrency(
+      included,
+      FINGERPRINT_IO_CONCURRENCY,
+      async (relPath) => {
+        try {
+          const buffer = await readFile(join(engineDir, relPath));
+          return [relPath, createHash('sha256').update(buffer).digest('hex')] as const;
+        } catch (fileError: unknown) {
+          if (getNodeErrorCode(fileError) === 'ENOENT') {
+            // A path reported by git but absent on disk is normally a tracked
+            // deletion, not a failed fingerprint. Recording the tombstone lets
+            // the next stale check prove that deletion was already built.
+            return [relPath, DELETED_FILE_FINGERPRINT] as const;
+          }
+          // A file that disappeared between status probe and hash is
+          // expected in concurrent scenarios; non-ENOENT failures remain
+          // untrusted and are skipped without failing the whole baseline write.
+          verbose(
+            `Build baseline: skipping ${contextLabel} for ${relPath} — ${toError(fileError).message}`
+          );
+          return undefined;
+        }
       }
+    );
+    const fingerprints: Record<string, string> = {};
+    for (const entry of entries) {
+      if (entry !== undefined) fingerprints[entry[0]] = entry[1];
     }
     return fingerprints;
   } catch (error: unknown) {

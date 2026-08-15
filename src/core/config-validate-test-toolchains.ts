@@ -3,6 +3,7 @@ import { ConfigError } from '../errors/config.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { parseObject } from '../utils/parse.js';
 import { isContainedRelativePath } from '../utils/paths.js';
+import { isObject } from '../utils/validation.js';
 
 type ConfigRecord = ReturnType<typeof parseObject>;
 
@@ -66,12 +67,12 @@ export function parseExternalToolchainsBlock(rec: ConfigRecord, config: FireForg
   }
 
   config.externalToolchains = raw.map((entry: unknown, index) => {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+    if (!isObject(entry)) {
       throw new ConfigError(
         `Config field "externalToolchains[${String(index)}]" must be an object`
       );
     }
-    const item = entry as Record<string, unknown>;
+    const item = entry;
     const name = item['name'];
     if (typeof name !== 'string' || name.trim() === '') {
       throw new ConfigError(
@@ -100,10 +101,10 @@ function parseExternalToolRequirement(
   toolIndex: number
 ): NonNullable<FireForgeConfig['externalToolchains']>[number]['tools'][number] {
   const label = `externalToolchains[${String(index)}].tools[${String(toolIndex)}]`;
-  if (typeof tool !== 'object' || tool === null || Array.isArray(tool)) {
+  if (!isObject(tool)) {
     throw new ConfigError(`Config field "${label}" must be an object`);
   }
-  const toolRec = tool as Record<string, unknown>;
+  const toolRec = tool;
   const toolName = toolRec['name'];
   if (typeof toolName !== 'string' || toolName.trim() === '') {
     throw new ConfigError(`Config field "${label}.name" must be a non-empty string`);

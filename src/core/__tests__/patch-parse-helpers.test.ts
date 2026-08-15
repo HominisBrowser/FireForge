@@ -300,6 +300,43 @@ describe('patch parse helper coverage', () => {
     expect(sections[1]?.hunks[0]?.lines).toEqual(['-old', '+new']);
   });
 
+  it('parses index-line blob hashes in the metadata zone (FORGE J3)', () => {
+    const patch = [
+      'diff --git a/icons/logo.png b/icons/logo.png',
+      'index 1234567890abcdef1234567890abcdef12345678..fedcba0987654321fedcba0987654321fedcba09 100644',
+      'GIT binary patch',
+      'literal 100',
+      '+K}0e#0ssI2',
+      '',
+      'diff --git a/readme.txt b/readme.txt',
+      'index abc1234..def5678 100644',
+      '--- a/readme.txt',
+      '+++ b/readme.txt',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+      'diff --git a/no-index.txt b/no-index.txt',
+      '--- a/no-index.txt',
+      '+++ b/no-index.txt',
+      '@@ -1 +1 @@',
+      '-a',
+      '+b',
+      '',
+    ].join('\n');
+
+    const sections = parseDiffSections(patch);
+    expect(sections[0]).toMatchObject({
+      indexOldHash: '1234567890abcdef1234567890abcdef12345678',
+      indexNewHash: 'fedcba0987654321fedcba0987654321fedcba09',
+      isBinary: true,
+    });
+    // Abbreviated hashes (text sections) parse too; mode suffix optional.
+    expect(sections[1]).toMatchObject({ indexOldHash: 'abc1234', indexNewHash: 'def5678' });
+    expect(sections[2]?.indexOldHash).toBeUndefined();
+    expect(sections[2]?.indexNewHash).toBeUndefined();
+  });
+
   it('extracts all conflicting files from git apply error output', () => {
     const errorOutput = [
       'error: patch failed: browser/a.js:12',

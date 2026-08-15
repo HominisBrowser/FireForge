@@ -33,6 +33,7 @@ export {
   isPatchFullyCovered,
   type SupersedeCoverageDetail,
 } from './patch-export-coverage.js';
+import { escapeRegex } from '../utils/regex.js';
 export { mutatePatchMetadata, updatePatchMetadata } from './patch-export-metadata.js';
 export { updatePatchAndMetadata } from './patch-export-update.js';
 
@@ -73,10 +74,6 @@ export function sanitizeName(name: string): string {
     .slice(0, 50);
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /**
  * Strips a leading `NNN-<category>-` prefix from a sanitized name slug.
  * Operators frequently pass the DESIRED FILENAME stem to `--name`
@@ -88,8 +85,8 @@ function escapeRegExp(value: string): string {
  */
 export function stripRedundantCategoryPrefix(sanitizedName: string, category: string): string {
   const prefixes = [
-    new RegExp(`^\\d+-${escapeRegExp(category)}-`),
-    new RegExp(`^${escapeRegExp(category)}-`),
+    new RegExp(`^\\d+-${escapeRegex(category)}-`),
+    new RegExp(`^${escapeRegex(category)}-`),
   ];
   let stripped = sanitizedName;
   let changed = true;

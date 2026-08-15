@@ -5,6 +5,7 @@ import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.
 import type { FireForgeConfig } from '../../types/config.js';
 import {
   allocatePolicyOrder,
+  enforcePatchPolicy,
   evaluatePatchPolicy,
   getPatchPolicyCategories,
   isCategoryAllowedByConfig,
@@ -186,5 +187,33 @@ describe('patch policy evaluation', () => {
     expect(getPatchPolicyCategories(cfg)).toEqual(['bootstrap']);
     expect(isCategoryAllowedByConfig(cfg, 'bootstrap')).toBe(true);
     expect(isCategoryAllowedByConfig(cfg, 'ui')).toBe(false);
+  });
+
+  describe('enforcePatchPolicy hints (FORGE J11)', () => {
+    it('appends a caller-supplied remediation hint to matching issue details', () => {
+      expect(() => {
+        enforcePatchPolicy({
+          config: policyConfig(),
+          manifest: manifest([patch({ description: '' })]),
+          command: 'patch move-files --create',
+          hints: {
+            'description-required': 'Pass --description "<text>" to set the description.',
+          },
+        });
+      }).toThrow(
+        /\[description-required\].*\n\s+→ Pass --description "<text>" to set the description\./
+      );
+    });
+
+    it('leaves details without a matching hint untouched', () => {
+      expect(() => {
+        enforcePatchPolicy({
+          config: policyConfig(),
+          manifest: manifest([patch({ description: '' })]),
+          command: 'patch move-files --create',
+          hints: { 'order-collision': 'irrelevant hint' },
+        });
+      }).toThrow(/\[description-required\][^\n]*empty description[^→]*$/);
+    });
   });
 });

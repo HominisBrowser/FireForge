@@ -68,6 +68,12 @@ vi.mock('../../utils/fs.js', () => ({
   checkDiskSpace: vi.fn().mockResolvedValue(undefined),
 }));
 
+// testCommand's in-tree objdir/marker cross-check is inert here — this suite
+// runs outside any verification tree.
+vi.mock('../../core/tree-store.js', () => ({
+  assertObjdirMatchesTreeMarker: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../../utils/process.js', () => ({
   // `watch` uses `findExecutable` to resolve watchman's absolute path
   // so it can prepend the directory to the mach subprocess PATH
@@ -79,6 +85,7 @@ vi.mock('../../utils/process.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  setStdoutSealed: vi.fn(),
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -141,10 +148,11 @@ describe('build artifact preflight', () => {
   });
 
   it('testCommand rejects copied build artifacts that point at another workspace', async () => {
-    vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
-    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(
-      'Tests cannot use copied or relocated build artifacts'
-    );
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({
+      exists: true,
+      objDir: 'obj-debug',
+      metadataMismatch: { objDir: 'obj-debug', topsrcdir: '/other/workspace/engine' },
+    });
 
     await expect(testCommand('/project', [], { auto: true })).rejects.toThrow(
       /copied or relocated build artifacts/i
@@ -152,10 +160,11 @@ describe('build artifact preflight', () => {
   });
 
   it('watchCommand rejects copied build artifacts that point at another workspace', async () => {
-    vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
-    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(
-      'Watch mode cannot use copied or relocated build artifacts'
-    );
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({
+      exists: true,
+      objDir: 'obj-debug',
+      metadataMismatch: { objDir: 'obj-debug', topsrcdir: '/other/workspace/engine' },
+    });
 
     await expect(watchCommand('/project')).rejects.toThrow(/copied or relocated build artifacts/i);
   });
@@ -174,10 +183,11 @@ describe('build artifact preflight', () => {
   });
 
   it('packageCommand rejects copied build artifacts that point at another workspace', async () => {
-    vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
-    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(
-      'Package cannot use copied or relocated build artifacts'
-    );
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({
+      exists: true,
+      objDir: 'obj-debug',
+      metadataMismatch: { objDir: 'obj-debug', topsrcdir: '/other/workspace/engine' },
+    });
 
     await expect(packageCommand('/project', {})).rejects.toThrow(
       /copied or relocated build artifacts/i

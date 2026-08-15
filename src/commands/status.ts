@@ -6,16 +6,10 @@ import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { getUntrackedFilesInDir, resolveMaxUntrackedFilesPerDir } from '../core/git-status.js';
-import { buildOwnershipTable, renderOwnershipTable } from '../core/ownership-table.js';
-import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../core/patch-lint.js';
+import { renderOwnershipTable } from '../core/ownership-table.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
-import {
-  type ClassifiedFile,
-  classifyFiles,
-  type FileClassification,
-  type StatusFile,
-} from '../core/status-classify.js';
-import { CommandError, GeneralError } from '../errors/base.js';
+import { type ClassifiedFile, classifyFiles, type StatusFile } from '../core/status-classify.js';
+import { CommandError, GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
 import type { CommandContext } from '../types/cli.js';
 import type { StatusOptions } from '../types/commands/index.js';
@@ -29,12 +23,18 @@ import {
   warn,
 } from '../utils/logger.js';
 import { resolveStatusCheckPolicy, runStatusCheck } from './status-check.js';
+import { renderJsonStatus, renderJsonSummaryStatus } from './status-json.js';
 import {
   type ClassifiedBuckets,
   renderDefaultStatus,
   renderTestCoverageStatus,
   renderUnmanagedOnly,
 } from './status-output.js';
+import {
+  buildOwnershipJsonBlock,
+  collectOwnershipRows,
+  summarizeOwnership,
+} from './status-ownership.js';
 
 /**
  * Renders raw worktree status as machine-parseable porcelain-style output.
@@ -144,46 +144,68 @@ async function classifyStatusFiles(
   return classifyFiles(files, paths.engine, paths.patches, binaryName, furnacePrefixes);
 }
 
-function renderJsonStatus(classified: readonly ClassifiedFile[]): void {
-  const outputFiles = classified.map((f) => {
-    const entry: {
-      file: string;
-      status: string;
-      classification: FileClassification;
-      /** Owning patch filename; null when unowned (FORGE G11, additive to schemaVersion 1). */
-      patch: string | null;
-      claimedBy?: string[];
-    } = {
-      file: f.file,
-      status: f.status.trim(),
-      classification: f.classification,
-      patch: f.owner ?? null,
-    };
-    if (f.classification === 'conflict' && f.claimedBy && f.claimedBy.length > 0) {
-      entry.claimedBy = [...f.claimedBy];
-    }
-    return entry;
-  });
-  const byClassification: Record<FileClassification, number> = {
-    unmanaged: 0,
-    'patch-owned-drift': 0,
-    'patch-backed': 0,
-    branding: 0,
-    furnace: 0,
-    conflict: 0,
-  };
-  for (const file of outputFiles) {
-    byClassification[file.classification]++;
+/**
+ * The one worktree scan every classifying mode shares: porcelain status,
+ * collapsed-directory expansion, atomic-temp-file filtering, and the
+ * truncation banner. `--ownership` used to carry its own copy of this
+ * block (FORGE L3); a non-git engine degrades to an empty list there,
+ * which is why the git probe is a parameter rather than a hard guard.
+ * @param engineDir - Path to the engine directory
+ * @param requireGitRepository - When false, a non-git engine yields `[]`
+ *   instead of being probed (the historical `--ownership` behavior)
+ */
+async function scanEngineStatusFiles(
+  engineDir: string,
+  requireGitRepository: boolean
+): Promise<StatusFile[]> {
+  if (!requireGitRepository && !(await isGitRepository(engineDir))) {
+    return [];
   }
-  const output = {
-    schemaVersion: 1,
-    summary: {
-      total: outputFiles.length,
-      byClassification,
-    },
-    files: outputFiles,
-  };
-  process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+  const { entries, truncations } = await expandDirectoryEntries(
+    await getStatusWithCodes(engineDir),
+    engineDir
+  );
+  renderTruncationBanner(truncations);
+  return filterFireForgeTempFiles(entries);
+}
+
+/**
+ * Emits the `--json` payload (full or `--summary`) and applies the
+ * `--check` policy, which stays the SOLE exit driver on this path.
+ *
+ * `--include-ownership` (FORGE L3) is a MODIFIER, not a mode: it appends an
+ * ownership block without touching exit semantics, so an ownership conflict
+ * still fails only the human `--ownership` mode.
+ * @param classified - Classified worktree entries
+ * @param files - The same entries pre-classification, for ownership rows
+ * @param paths - Resolved project paths
+ * @param options - Status display options
+ * @param checkPolicy - Resolved `--check`/`--fail-on` policy
+ */
+async function renderJsonMode(
+  classified: ClassifiedFile[],
+  files: StatusFile[],
+  paths: ReturnType<typeof getProjectPaths>,
+  options: StatusOptions,
+  checkPolicy: ReturnType<typeof resolveStatusCheckPolicy>
+): Promise<void> {
+  const ownership =
+    options.includeOwnership === true
+      ? buildOwnershipJsonBlock(
+          await collectOwnershipRows(
+            paths.patches,
+            (await loadPatchesManifest(paths.patches))?.patches ?? [],
+            files,
+            classified
+          )
+        )
+      : undefined;
+  if (options.summary === true) {
+    renderJsonSummaryStatus(classified, checkPolicy, ownership);
+  } else {
+    renderJsonStatus(classified, ownership);
+  }
+  runStatusCheck(classified, checkPolicy);
 }
 
 /**
@@ -244,202 +266,190 @@ export async function statusCommand(
     setMachineOutputMode(true);
   }
 
-  try {
-    const modeCount = [
-      options.raw,
-      options.unmanaged,
-      options.ownership,
-      options.testCoverage,
-      options.json,
-    ].filter((v) => v === true).length;
-    if (modeCount > 1) {
-      throw new GeneralError(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together. Pick at most one.'
-      );
-    }
+  // On a throw, machine mode deliberately stays ENGAGED: withErrorHandling
+  // routes the styled error to stderr while the mode is on and resets it
+  // centrally (a mid-throw restore here put the refusal on stdout after the
+  // JSON payload, breaking the 0.40.0 stderr promise).
+  await runStatusCommandBody(projectRoot, options);
 
-    // --check / --fail-on enforcement policy (FORGE G1). Applies only
-    // where classification runs (the default view and --json).
-    const checkPolicy = resolveStatusCheckPolicy(options);
+  if (isMachineOutputMode() !== previousMachineOutputMode) {
+    setMachineOutputMode(previousMachineOutputMode);
+  }
+}
 
-    if (!options.raw && !options.json) {
-      intro('FireForge Status');
-    }
+/** The status body proper; the machine-mode lifecycle lives in {@link statusCommand}. */
+async function runStatusCommandBody(projectRoot: string, options: StatusOptions): Promise<void> {
+  const modeCount = [
+    options.raw,
+    options.unmanaged,
+    options.ownership,
+    options.testCoverage,
+    options.json,
+  ].filter((v) => v === true).length;
+  if (modeCount > 1) {
+    throw new GeneralError(
+      'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together. Pick at most one.'
+    );
+  }
 
-    // Test-coverage mode needs only the project root (the baseline lives
-    // in .fireforge/), so it short-circuits before any engine/git guards.
-    if (options.testCoverage) {
-      renderTestCoverageStatus(await readBuildBaseline(projectRoot));
-      return;
-    }
+  // --summary elides the files[] payload for gate consumers (FORGE K8);
+  // it only makes sense on the JSON shape.
+  if (options.summary === true && options.json !== true) {
+    throw new InvalidArgumentError('--summary requires --json.', '--summary');
+  }
 
-    const paths = getProjectPaths(projectRoot);
-    const config = await loadConfig(projectRoot);
+  // --include-ownership adds a block to the JSON payload; it is meaningless
+  // on the human views, where --ownership is the mode that renders the
+  // table (FORGE L3).
+  if (options.includeOwnership === true && options.json !== true) {
+    throw new InvalidArgumentError(
+      '--include-ownership requires --json. Use --ownership for the human table.',
+      '--include-ownership'
+    );
+  }
 
-    const emitJsonError = (code: string, message: string): never => {
-      process.stdout.write(JSON.stringify({ schemaVersion: 1, error: message, code }) + '\n');
-      throw new CommandError(ExitCode.GENERAL_ERROR);
-    };
+  // --check / --fail-on enforcement policy (FORGE G1). Applies only
+  // where classification runs (the default view and --json).
+  const checkPolicy = resolveStatusCheckPolicy(options);
 
-    // Ownership mode is a flat file→patch table; sources are the manifest's
-    // filesAffected, any worktree drift, and the cross-patch
-    // duplicate-new-file-creation map produced by walking each patch
-    // body. The latter is the alignment fix between `status --ownership`
-    // and `fireforge verify` — see buildOwnershipTable's header comment.
-    // Runs before the default classify path so we can short-circuit
-    // without computing patch-backed state.
-    if (options.ownership) {
-      if (!(await pathExists(paths.engine))) {
-        throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-      }
-      const manifest = await loadPatchesManifest(paths.patches);
-      const ownershipExpansion = (await isGitRepository(paths.engine))
-        ? await expandDirectoryEntries(await getStatusWithCodes(paths.engine), paths.engine)
-        : { entries: [], truncations: [] };
-      // Filter atomic-write temp files (Finding #18) so a mid-flight
-      // `.fireforge-tmp-<pid>-<uuid>` artefact never shows up in any
-      // status mode. The pattern is tight enough to let legitimately
-      // similar names through.
-      const rawFilesOwnership = filterFireForgeTempFiles(ownershipExpansion.entries);
-      renderTruncationBanner(ownershipExpansion.truncations);
+  if (!options.raw && !options.json) {
+    intro('FireForge Status');
+  }
 
-      // Only walk the patch bodies when the directory actually exists.
-      // Fresh projects with no patch queue yet pass through with an empty
-      // creators map, which degrades to the old filesAffected-only
-      // behavior for the empty case.
-      const newFileCreatorsByPath = (await pathExists(paths.patches))
-        ? collectNewFileCreatorsByPath(await buildPatchQueueContext(paths.patches))
-        : new Map<string, string[]>();
+  // Test-coverage mode needs only the project root (the baseline lives
+  // in .fireforge/), so it short-circuits before any engine/git guards.
+  if (options.testCoverage) {
+    renderTestCoverageStatus(await readBuildBaseline(projectRoot));
+    return;
+  }
 
-      const rows = buildOwnershipTable(
-        manifest?.patches ?? [],
-        rawFilesOwnership,
-        newFileCreatorsByPath,
-        new Map(
-          (
-            await classifyFiles(
-              rawFilesOwnership,
-              paths.engine,
-              paths.patches,
-              config.binaryName,
-              await collectFurnaceManagedPrefixes(projectRoot)
-            )
-          ).map((entry) => [entry.file, entry.classification])
-        )
-      );
-      renderOwnershipTable(rows);
+  const paths = getProjectPaths(projectRoot);
+  const config = await loadConfig(projectRoot);
 
-      const conflictCount = rows.filter((r) => r.conflict).length;
-      const unmanagedCount = rows.filter((r) => r.unmanaged).length;
-      const managedCount = rows.filter((r) => !r.unmanaged).length;
+  const emitJsonError = (code: string, message: string): never => {
+    process.stdout.write(JSON.stringify({ schemaVersion: 1, error: message, code }) + '\n');
+    throw new CommandError(ExitCode.GENERAL_ERROR);
+  };
 
-      const parts: string[] = [`${managedCount} managed`];
-      if (conflictCount > 0)
-        parts.push(`${conflictCount} conflict${conflictCount === 1 ? '' : 's'}`);
-      if (unmanagedCount > 0) parts.push(`${unmanagedCount} unmanaged`);
-      outro(parts.join(', '));
-
-      if (conflictCount > 0) {
-        throw new GeneralError(
-          `${conflictCount} path(s) are claimed by more than one patch. ` +
-            'Run "fireforge verify" for full details, then use "re-export --files" or ' +
-            '"patch delete" to resolve.'
-        );
-      }
-      return;
-    }
-
-    // Check if engine exists
+  // Ownership mode is a flat file→patch table; sources are the manifest's
+  // filesAffected, any worktree drift, and the cross-patch
+  // duplicate-new-file-creation map produced by walking each patch
+  // body. The latter is the alignment fix between `status --ownership`
+  // and `fireforge verify` — see buildOwnershipTable's header comment.
+  // Runs before the default classify path so we can short-circuit
+  // without computing patch-backed state.
+  if (options.ownership) {
     if (!(await pathExists(paths.engine))) {
-      if (options.json) {
-        emitJsonError(
-          'engine-missing',
-          'Firefox source not found. Run "fireforge download" first.'
-        );
-      }
       throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
     }
+    const manifest = await loadPatchesManifest(paths.patches);
+    // Same scan and the SAME classification pass as every other mode
+    // (FORGE L3). This branch keeps its historical guard shape on purpose:
+    // no baseline-commit assertion, and a non-git engine degrades to an
+    // empty table rather than the recovery banner.
+    const rawFilesOwnership = await scanEngineStatusFiles(paths.engine, false);
+    const rows = await collectOwnershipRows(
+      paths.patches,
+      manifest?.patches ?? [],
+      rawFilesOwnership,
+      await classifyStatusFiles(rawFilesOwnership, paths, projectRoot, config.binaryName)
+    );
+    renderOwnershipTable(rows);
 
-    // Check if it's a git repository
-    if (!(await isGitRepository(paths.engine))) {
-      if (options.json) {
-        emitJsonError(
-          'engine-not-git',
-          'Engine directory is not a git repository. Run "fireforge download" to initialize.'
-        );
-      }
+    const { managed, unmanaged, conflicts } = summarizeOwnership(rows);
+    const parts: string[] = [`${managed} managed`];
+    if (conflicts > 0) parts.push(`${conflicts} conflict${conflicts === 1 ? '' : 's'}`);
+    if (unmanaged > 0) parts.push(`${unmanaged} unmanaged`);
+    outro(parts.join(', '));
+
+    if (conflicts > 0) {
       throw new GeneralError(
+        `${conflicts} path(s) are claimed by more than one patch. ` +
+          'Run "fireforge verify" for full details, then use "re-export --files" or ' +
+          '"patch delete" to resolve.'
+      );
+    }
+    return;
+  }
+
+  // Check if engine exists
+  if (!(await pathExists(paths.engine))) {
+    if (options.json) {
+      emitJsonError('engine-missing', 'Firefox source not found. Run "fireforge download" first.');
+    }
+    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
+  }
+
+  // Check if it's a git repository
+  if (!(await isGitRepository(paths.engine))) {
+    if (options.json) {
+      emitJsonError(
+        'engine-not-git',
         'Engine directory is not a git repository. Run "fireforge download" to initialize.'
       );
     }
-
-    await assertEngineHasBaselineCommit(paths.engine, options);
-
-    const rawFiles = await getStatusWithCodes(paths.engine);
-    const { entries: expanded, truncations } = await expandDirectoryEntries(rawFiles, paths.engine);
-    // Strip atomic-write temp files (Finding #18) before every mode
-    // branch so raw / unmanaged / default / json all agree.
-    const files = filterFireForgeTempFiles(expanded);
-    renderTruncationBanner(truncations);
-
-    // `--json` callers expect machine-parseable output on every invocation,
-    // including the clean-tree case. Before this ordering fix a clean tree
-    // printed "No modified files" / "Working tree clean" via the human
-    // branch below and `--json` was silently ignored, so scripts that piped
-    // the output through a JSON parser broke precisely when there was
-    // nothing to report. Emit `[]` here and return before the human fallback.
-    if (options.json) {
-      const classified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
-      renderJsonStatus(classified);
-      runStatusCheck(classified, checkPolicy);
-      return;
-    }
-
-    // `--raw` consumers parse the native `git status --porcelain` output
-    // directly. On a clean tree the raw mode should produce nothing on
-    // stdout — the human "Working tree clean" banner would contaminate the
-    // pipe. Short-circuit before the human clean-tree branch below.
-    if (options.raw && files.length === 0) {
-      return;
-    }
-
-    if (files.length === 0) {
-      info('No modified files');
-      outro('Working tree clean');
-      return;
-    }
-
-    // Raw mode: existing behavior
-    if (options.raw) {
-      renderRawStatus(files);
-      return;
-    }
-
-    // Patch-aware classification
-    const classified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
-
-    const buckets: ClassifiedBuckets = {
-      conflict: classified.filter((f) => f.classification === 'conflict'),
-      unmanaged: classified.filter((f) => f.classification === 'unmanaged'),
-      patchOwnedDrift: classified.filter((f) => f.classification === 'patch-owned-drift'),
-      patchBacked: classified.filter((f) => f.classification === 'patch-backed'),
-      branding: classified.filter((f) => f.classification === 'branding'),
-      furnace: classified.filter((f) => f.classification === 'furnace'),
-    };
-
-    // --unmanaged mode: only show unmanaged
-    if (options.unmanaged) {
-      await renderUnmanagedOnly(buckets.unmanaged, files.length, projectRoot, config.binaryName);
-      return;
-    }
-
-    await renderDefaultStatus(files.length, buckets, projectRoot, config.binaryName);
-    runStatusCheck(classified, checkPolicy);
-  } finally {
-    if (isMachineOutputMode() !== previousMachineOutputMode) {
-      setMachineOutputMode(previousMachineOutputMode);
-    }
+    throw new GeneralError(
+      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
+    );
   }
+
+  await assertEngineHasBaselineCommit(paths.engine, options);
+
+  const files = await scanEngineStatusFiles(paths.engine, true);
+
+  // `--json` callers expect machine-parseable output on every invocation,
+  // including the clean-tree case. Before this ordering fix a clean tree
+  // printed "No modified files" / "Working tree clean" via the human
+  // branch below and `--json` was silently ignored, so scripts that piped
+  // the output through a JSON parser broke precisely when there was
+  // nothing to report. Emit `[]` here and return before the human fallback.
+  if (options.json) {
+    const classified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
+    await renderJsonMode(classified, files, paths, options, checkPolicy);
+    return;
+  }
+
+  // `--raw` consumers parse the native `git status --porcelain` output
+  // directly. On a clean tree the raw mode should produce nothing on
+  // stdout — the human "Working tree clean" banner would contaminate the
+  // pipe. Short-circuit before the human clean-tree branch below.
+  if (options.raw && files.length === 0) {
+    return;
+  }
+
+  if (files.length === 0) {
+    info('No modified files');
+    outro('Working tree clean');
+    return;
+  }
+
+  // Raw mode: existing behavior
+  if (options.raw) {
+    renderRawStatus(files);
+    return;
+  }
+
+  // Patch-aware classification
+  const classified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
+
+  const buckets: ClassifiedBuckets = {
+    conflict: classified.filter((f) => f.classification === 'conflict'),
+    unmanaged: classified.filter((f) => f.classification === 'unmanaged'),
+    patchOwnedDrift: classified.filter((f) => f.classification === 'patch-owned-drift'),
+    patchBacked: classified.filter((f) => f.classification === 'patch-backed'),
+    branding: classified.filter((f) => f.classification === 'branding'),
+    furnace: classified.filter((f) => f.classification === 'furnace'),
+    binaryUnsupported: classified.filter((f) => f.classification === 'binary-unsupported'),
+  };
+
+  // --unmanaged mode: only show unmanaged
+  if (options.unmanaged) {
+    await renderUnmanagedOnly(buckets.unmanaged, files.length, projectRoot, config.binaryName);
+    return;
+  }
+
+  await renderDefaultStatus(files.length, buckets, projectRoot, config.binaryName);
+  runStatusCheck(classified, checkPolicy);
 }
 
 /** Registers the status command on the CLI program. */
@@ -462,12 +472,20 @@ export function registerStatus(
     )
     .option('--json', 'Output classified file status as JSON')
     .option(
+      '--summary',
+      'With --json: emit only summary counts (plus offending files when --check/--fail-on is active), omitting the per-file files[] payload'
+    )
+    .option(
+      '--include-ownership',
+      'With --json (composes with --summary): append an ownership block (path->owning-patch rows plus managed/unmanaged/conflict counts) to the payload, so one scan serves the classification, ownership, and check views. Does not change exit semantics.'
+    )
+    .option(
       '--check',
       'Exit non-zero when any unmanaged, patch-owned-drift, or conflict file exists (composes with --json; combine with --fail-on for finer policy)'
     )
     .option(
       '--fail-on <classifications>',
-      'Comma-separated classification list that fails --check, replacing the default set (implies --check). Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict'
+      'Comma-separated classification list that fails --check, replacing the default set (implies --check). Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict, binary-unsupported'
     )
     .action(
       withErrorHandling(
@@ -477,6 +495,8 @@ export function registerStatus(
           ownership?: boolean;
           testCoverage?: boolean;
           json?: boolean;
+          summary?: boolean;
+          includeOwnership?: boolean;
           check?: boolean;
           failOn?: string;
         }) => {

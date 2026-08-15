@@ -52,6 +52,25 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: npm version "$INPUT_VERSION" --no-git-tag-version
 
+      # The bump is committed BEFORE anything builds. `npm version
+      # --no-git-tag-version` leaves package.json/package-lock.json modified
+      # in the worktree, and prepack stamps dist/build-info.json from live
+      # git state — so publishing here used to ship a `.dirty` identity
+      # naming the PRE-bump commit, while the tag was created afterwards on
+      # a commit that was never built. Committing first makes the tree clean
+      # at prepack, and makes the published `+g<sha>` the same commit the
+      # tag below points at. Runs on dry-run too (the runner is ephemeral,
+      # nothing is pushed), so a dry run validates the real identity.
+      - name: Commit version bump
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          VERSION="$(node -p 'require("./package.json").version')"
+          git diff --cached --quiet || git commit -m "release: v$VERSION"
+
       - name: Run release checks
         run: npm run release:check
 
@@ -59,12 +78,20 @@ jobs:
         id: version
         run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
 
+      # FIREFORGE_PACK_STRICT turns prepack's dirty-tree banner into a hard
+      # refusal, so the ordering above is self-enforcing: if anything ever
+      # dirties the worktree before publish again, the release fails loudly
+      # instead of shipping an artifact no commit can reproduce.
       - name: Publish to npm
         if: inputs.dry-run != true
+        env:
+          FIREFORGE_PACK_STRICT: '1'
         run: npm publish --provenance --access public
 
       - name: Publish dry run
         if: inputs.dry-run == true
+        env:
+          FIREFORGE_PACK_STRICT: '1'
         run: npm publish --dry-run
 
       - name: Tag and push
@@ -72,9 +99,5 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json
-          git diff --cached --quiet || git commit -m "release: v$VERSION"
           git tag "v$VERSION"
           git push origin HEAD --tags

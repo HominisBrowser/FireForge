@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.41.0
+
+### Release and build integrity
+
+- Release publishing commits version bumps before building and enforces a clean tree with `FIREFORGE_PACK_STRICT=1`.
+- Builds stamp `dist/build-info.json`; installed `--version` output includes the commit and dirty-content hash.
+- Build baselines retain deletion tombstones, so removed packageable files and `components.conf` entries cannot look fresh.
+- `test --build` uses a full build for new `jar.mn` registrations; mixed-harness `--build-only` packages all requested paths once.
+- `--extend-coverage` unions scoped packaging coverage only while HEAD, packageable inputs, and `mozconfig` remain unchanged.
+- Shared build and engine preflights now reject incomplete builds and unborn engine repositories consistently.
+
+### Tests and verification trees
+
+- Tests emit exactly one final `FIREFORGE-VERDICT:` line with the correct pass/failure reason, including sharded, lock-timeout, crash, and inconclusive runs.
+- `tree exec` preserves the child verdict as the final stdout line; pre-spawn refusals emit no verdict.
+- Engine-integrity checks run before successful verdicts.
+- Browser preflight detects stale apps from the same objdir even after they release Marionette; `--kill-stale-marionette` can terminate them.
+- Mach commands use process groups and reap surviving browser or harness descendants.
+- `tree create --with-objdir` supports build-less tests after relocation and reconfiguration checks.
+- Tree creation refuses symlinked objdirs, cleans failed clones, validates markers, and handles unreadable locks fail-closed.
+- Tree freshness covers dirty engine content and patch bodies.
+- Tree creation skips unwanted `obj-*` directories before cloning and uses bounded concurrency.
+- `tree create --wait-lock` now matches its lock-refusal guidance.
+- Verification trees permit `re-export --dry-run`; mutating operations remain blocked.
+- Test assertion lint now recognizes real assertion calls, and critical modules have explicit coverage floors.
+
+### Status and diagnostics
+
+- Status classification reuses one patch context and classifies files through a bounded pool.
+- `status --json --summary` returns counts and offenders without the full file payload.
+- `status --json --include-ownership` adds ownership data without another scan.
+- JSON output drains fully through slow pipes, and machine-mode refusals route to stderr.
+- Multi-owner files remain conflicts even when Furnace-managed or generated branding paths.
+- Lock contention and unreadable/corrupt state now produce concise, accurate diagnostics.
+
+### Patch, export, and lint workflow
+
+- `export-all --exclude-furnace` keeps its filtered scope after license-header repair.
+- `re-export --expect <path>` permits intended drift and reports paths skipped by earlier refusals as not evaluated.
+- Missing drift baselines fail closed, binary patches compare by content, and partial or fully refused re-exports exit non-zero.
+- `re-export --dry-run` uses before/after fingerprints and cannot roll back another completed write.
+- Re-export builds checkJs once per run and reuses the per-patch cache; `--patches` subsets narrow computation.
+- Re-export probes and purity hashing use bounded concurrency; patch writes remain serial.
+- Patch lint rejects new imported system modules without a projected `moz.build` registration.
+- The checkJs cache hashes both configurable shims.
+- Export placement refusals print projected errors and identify renumbering consequences.
+- `patch rename` can recategorize and renumber atomically.
+- `patch move-files` and `patch split` use whole-queue projection lint, normalize names, and provide split guidance.
+- `patch move-files --create` names the required `--description` option.
+- Queue-mutating patch commands support `--wait-lock` and avoid unsafe stale-lock advice.
+- Staged-dependency declarations reject patch-name-shaped file arguments.
+- `CommandError` passes through the top-level handler without duplicate or JSON-corrupting output.
+
+### Furnace and validation
+
+- Furnace computes checksums once per apply and warns before overwriting divergent patch-owned files.
+- Furnace jsconfig synchronization includes `register: false` components.
+- Manifest-sync failures are visible, and repairs run under the Furnace lock.
+- `furnace validate --fix` changes only reported components and detects missing custom-element registrations.
+- Localization validation recognizes non-Latin text while exempting emoji and punctuation.
+- `furnace rename` uses single-pass, boundary-aware substitutions.
+- Rollback failures retain repair breadcrumbs for `doctor --repair-furnace`.
+- The reported no-change/apply-state disagreement was not reproducible and is regression-tested.
+
+### Safety, performance, and maintenance
+
+- Rebase loading distinguishes absent and corrupt sessions; `rebase --abort` can recover invalid state.
+- PID liveness treats `EPERM` as alive, preventing deletion through another user's lock.
+- The moz.build parser handles comments, quoted brackets/apostrophes, and unterminated lists.
+- Parser failures no longer silently certify validation success; internal invariant errors bypass fallback.
+- Toolchain probes, baseline fingerprints, cache hashes, and manifest reads use bounded concurrency.
+- Existing Git tuning remains enabled; fsmonitor stays disabled because of stale-daemon risk.
+- A persistent checkJs daemon remains deferred until safe invalidation is cheaper; see `docs/lint-daemon-design.md`.
+- Shared helpers replace duplicated preflights, error conversion, regex escaping, option parsing, object guards, and ESTree casts.
+- Four local ESLint rules prevent unsafe error casts, duplicate regex escaping, and empty JSDoc.
+- Oversized modules were split or simplified, silent degradations documented, and stale dead-code suppressions removed.
+- The release gate pins weak critical modules so aggregate coverage cannot hide local regressions.
+
 ## 0.40.0
 
 - **Dependencies: adopted all five open dependabot PRs (#48, #47, #45, #44, #42) after Go-based TypeScript 6 compatibility review** — the pinned `typescript ~6.0.0` (6.0.3 installed) constrained which upgrades were feasible; every bumped tool checked out: `typescript-eslint` declares peer `typescript >=4.8.4 <6.1.0`, `knip` carries no TypeScript dependency at all (oxc parser), and `dpdm` bundles its own nested TypeScript 5.9.3, so none touch the root compiler. Production: `acorn` 8.17.0→8.18.0 (lockfile-only) and `magic-string` 0.30.21→**1.1.0** — a major that only drops the CJS/UMD builds for pure ESM (FireForge is pure ESM; the five `MagicString` call sites use the unchanged core API). Dev: `@types/node` 26.1.2, `dpdm` 4.3.0, `eslint` 10.8.0, `eslint-plugin-jsdoc` 63.3.3, `knip` 6.29.0, `lint-staged` 17.3.0, `prettier` 3.9.6, `typescript-eslint` 8.66.0, `vite` 8.2.1, and `eslint-plugin-simple-import-sort` 13→**14** (breaking only for string-literal export names, which the codebase does not use); four of these resolved one patch/minor past PR #48's snapshot within the existing caret ranges (typescript-eslint 8.66.0 re-verified against the same `<6.1.0` peer window). CI: the SHA-pinned actions group (checkout 7.0.1 with `--unset`-escaping and branch-trim fixes, setup-node, codeql init/analyze). knip 6.29's stricter re-export tracking flagged seven type re-exports (`PatchCoverage`, `ClearablePatchMetadataField`, `PatchMetadataMutation{,Result}` in `patch-export.ts`; `ForwardImportEdge` in `patch-lint-reexports.ts`; `PatchManifestRowMutation{,Result}` in `patch-manifest.ts`) that no module, test, or public-API entry consumed via the barrel hop — a real 6.26 blind spot, so the dead re-exports were removed (the types stay exported from their defining modules). Verified by a full green `release:check`.

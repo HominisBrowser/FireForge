@@ -33,6 +33,7 @@ import {
   note,
   outro,
   setMachineOutputMode,
+  setStdoutSealed,
   setVerbose,
   spinner,
   step,
@@ -122,6 +123,55 @@ describe('logger machine-output mode', () => {
     expect(isMachineOutputMode()).toBe(true);
     setMachineOutputMode(false);
     expect(isMachineOutputMode()).toBe(false);
+  });
+});
+
+describe('logger stdout seal (FORGE I12)', () => {
+  let stderrLines: string[];
+  let stderrSpy: { mockRestore: () => void };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stderrLines = [];
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrLines.push(String(chunk));
+      return true;
+    });
+    setStdoutSealed(true);
+  });
+
+  afterEach(() => {
+    setStdoutSealed(false);
+    stderrSpy.mockRestore();
+  });
+
+  it('routes human output to stderr while sealed, without engaging machine mode', () => {
+    expect(isMachineOutputMode()).toBe(false);
+    error('post-verdict error');
+    info('post-verdict info');
+    cancel('post-verdict cancel');
+
+    expect(stderrLines).toEqual([
+      'error: post-verdict error\n',
+      'post-verdict info\n',
+      'cancelled: post-verdict cancel\n',
+    ]);
+    expect(clack.log.error).not.toHaveBeenCalled();
+    expect(clack.log.info).not.toHaveBeenCalled();
+    expect(clack.cancel).not.toHaveBeenCalled();
+  });
+
+  it('suppresses outro banners while sealed (nothing may follow the verdict on stdout)', () => {
+    outro('Test completed');
+    expect(stderrLines).toEqual([]);
+    expect(clack.outro).not.toHaveBeenCalled();
+  });
+
+  it('unsealing restores stdout routing through clack', () => {
+    setStdoutSealed(false);
+    info('normal again');
+    expect(stderrLines).toEqual([]);
+    expect(clack.log.info).toHaveBeenCalledWith('normal again');
   });
 });
 

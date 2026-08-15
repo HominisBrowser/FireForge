@@ -77,6 +77,29 @@ vi.mock('../furnace-apply-helpers.js', () => ({
   undeployOverrideFiles: vi.fn(() => Promise.resolve({ restored: [], removed: [] })),
 }));
 
+vi.mock('../furnace-apply-overwrite-warn.js', () => ({
+  findPatchOwnedOverwrites: vi.fn(() => Promise.resolve([])),
+  loadPatchClaimsForApply: vi.fn(() => Promise.resolve(new Map<string, string[]>())),
+  recordOverwriteWarnings: vi.fn(
+    (
+      result: { warnings?: string[] },
+      warnings: { component: string; file: string; owners: string[] }[]
+    ) => {
+      if (warnings.length === 0) return;
+      result.warnings ??= [];
+      result.warnings.push(
+        ...warnings.map(
+          (w) => `${w.component}: overwriting deployed ${w.file} (owned by ${w.owners.join(', ')})`
+        )
+      );
+    }
+  ),
+  formatPatchOwnedOverwriteWarning: vi.fn(
+    (w: { component: string; file: string; owners: string[] }) =>
+      `${w.component}: overwriting deployed ${w.file} (owned by ${w.owners.join(', ')})`
+  ),
+}));
+
 vi.mock('../furnace-validate-registration.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../furnace-validate-registration.js')>();
   return {
@@ -104,6 +127,7 @@ import {
   undeployCustomFiles,
   undeployOverrideFiles,
 } from '../furnace-apply-helpers.js';
+import { findPatchOwnedOverwrites } from '../furnace-apply-overwrite-warn.js';
 import { loadFurnaceConfig, loadFurnaceState, updateFurnaceState } from '../furnace-config.js';
 import {
   addJarMnEntries,
@@ -316,6 +340,60 @@ describe('applyAllComponents', () => {
       expect.any(Object),
       'Furnace apply failed'
     );
+  });
+
+  it('records patch-owned overwrite warnings even when the component source changed (FORGE J6)', async () => {
+    // The changed === true path used to skip drift detection entirely —
+    // exactly the case where a deployed engine-only fix gets replaced.
+    vi.mocked(hasComponentChanged).mockResolvedValue(true);
+    vi.mocked(applyOverrideComponent).mockResolvedValue({
+      affectedPaths: ['toolkit/content/widgets/moz-card/moz-card.css'],
+      actions: [],
+    });
+    vi.mocked(applyCustomComponent).mockResolvedValue({
+      affectedPaths: ['browser/components/panel/moz-panel.mjs'],
+      stepErrors: [],
+      actions: [],
+    });
+    vi.mocked(computeComponentChecksums).mockResolvedValue({ 'moz-card.css': 'hash' });
+    vi.mocked(findPatchOwnedOverwrites)
+      .mockResolvedValueOnce([
+        {
+          component: 'moz-card',
+          file: 'toolkit/content/widgets/moz-card/moz-card.css',
+          owners: ['210-ui-card.patch'],
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const result = await applyAllComponents('/project');
+
+    expect(findPatchOwnedOverwrites).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'override', name: 'moz-card' })
+    );
+    expect(findPatchOwnedOverwrites).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'custom', name: 'moz-panel' })
+    );
+    expect(result.warnings).toEqual([
+      'moz-card: overwriting deployed toolkit/content/widgets/moz-card/moz-card.css (owned by 210-ui-card.patch)',
+    ]);
+  });
+
+  it('does not probe patch-owned overwrites on a dry run', async () => {
+    vi.mocked(applyOverrideComponent).mockResolvedValue({
+      affectedPaths: [],
+      actions: [],
+    });
+    vi.mocked(applyCustomComponent).mockResolvedValue({
+      affectedPaths: [],
+      stepErrors: [],
+      actions: [],
+    });
+
+    const result = await applyAllComponents('/project', true);
+
+    expect(findPatchOwnedOverwrites).not.toHaveBeenCalled();
+    expect(result.warnings).toBeUndefined();
   });
 
   it('re-applies an override whose checksums match but whose engine copy has drifted', async () => {

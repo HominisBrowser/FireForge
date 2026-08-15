@@ -134,7 +134,7 @@ export async function restoreRollbackJournal(journal: RollbackJournal): Promise<
       } catch (error: unknown) {
         errors.push({
           path: filePath,
-          error: error instanceof Error ? error.message : String(error),
+          error: toError(error).message,
         });
       }
     }

@@ -176,7 +176,12 @@ describe('syncFurnaceJsconfigPaths', () => {
     ]);
   });
 
-  it('skips unregistered components and is a no-op without typecheckJsconfig', async () => {
+  it('maps unregistered components too — their files deploy under the elements chrome URL (FORGE I4)', async () => {
+    // Deploy copies files and writes jar.mn `content/global/elements/…`
+    // entries regardless of `register` (only the customElements.js
+    // registration is gated), so an unregistered component's imports are
+    // just as real. Pre-0.41.0 the sync skipped them and their chrome
+    // imports silently degraded to the wildcard `any` shim.
     await seedComponent('moz-quiet', ['moz-quiet.mjs']);
     await writeFile(jsconfigPath, JSON.stringify({}) + '\n');
 
@@ -191,8 +196,78 @@ describe('syncFurnaceJsconfigPaths', () => {
         },
       })
     );
-    expect(unregistered.changed).toBe(false);
+    expect(unregistered.changed).toBe(true);
+    expect(unregistered.added).toEqual(['chrome://global/content/elements/moz-quiet.mjs']);
+  });
 
+  it('maps a register:false library component (kind: "library" requires register: false)', async () => {
+    await seedComponent('moz-shared', ['widget-base.mjs']);
+    await writeFile(jsconfigPath, JSON.stringify({}) + '\n');
+
+    const result = await syncFurnaceJsconfigPaths(
+      projectRoot,
+      makeConfig({
+        'moz-shared': {
+          description: 'Shared base classes',
+          targetPath: 'toolkit/content/widgets/moz-shared',
+          register: false,
+          kind: 'library',
+          localized: false,
+        },
+      })
+    );
+    expect(result.added).toEqual(['chrome://global/content/elements/widget-base.mjs']);
+
+    const written = await readJson<JsconfigFixture>(jsconfigPath);
+    expect(written.compilerOptions?.paths).toEqual({
+      'chrome://global/content/elements/widget-base.mjs': [
+        '../components/custom/moz-shared/widget-base.mjs',
+      ],
+    });
+  });
+
+  it('keeps (never prunes) a hand-written mapping for an unregistered component', async () => {
+    // Pre-0.41.0 such an entry passed isManagedEntry but was absent from
+    // the desired set, so every sync pruned it as "stale" — a hand mapping
+    // was not a durable workaround.
+    await seedComponent('moz-shared', ['widget-base.mjs']);
+    await writeFile(
+      jsconfigPath,
+      JSON.stringify({
+        compilerOptions: {
+          paths: {
+            'chrome://global/content/elements/widget-base.mjs': [
+              '../components/custom/moz-shared/widget-base.mjs',
+            ],
+          },
+        },
+      }) + '\n'
+    );
+
+    const result = await syncFurnaceJsconfigPaths(
+      projectRoot,
+      makeConfig({
+        'moz-shared': {
+          description: 'Shared base classes',
+          targetPath: 'toolkit/content/widgets/moz-shared',
+          register: false,
+          kind: 'library',
+          localized: false,
+        },
+      })
+    );
+    expect(result.pruned).toEqual([]);
+    expect(result.changed).toBe(false);
+
+    const written = await readJson<JsconfigFixture>(jsconfigPath);
+    expect(written.compilerOptions?.paths).toEqual({
+      'chrome://global/content/elements/widget-base.mjs': [
+        '../components/custom/moz-shared/widget-base.mjs',
+      ],
+    });
+  });
+
+  it('is a no-op without typecheckJsconfig', async () => {
     const config = makeConfig({});
     delete config.typecheckJsconfig;
     const disabled = await syncFurnaceJsconfigPaths(projectRoot, config);
@@ -201,12 +276,20 @@ describe('syncFurnaceJsconfigPaths', () => {
 
   it('is idempotent: a second run reports no changes', async () => {
     await seedComponent('moz-widget', ['moz-widget.mjs', 'widget-helper.mjs']);
+    await seedComponent('moz-shared', ['widget-base.mjs']);
     await writeFile(jsconfigPath, JSON.stringify({}) + '\n');
     const config = makeConfig({
       'moz-widget': {
         description: 'Widget',
         targetPath: 'toolkit/content/widgets/moz-widget',
         register: true,
+        localized: false,
+      },
+      'moz-shared': {
+        description: 'Shared base classes',
+        targetPath: 'toolkit/content/widgets/moz-shared',
+        register: false,
+        kind: 'library',
         localized: false,
       },
     });

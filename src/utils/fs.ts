@@ -16,6 +16,8 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
+import { getNodeErrorCode } from './errors.js';
+
 const RETRIABLE_REMOVE_ERRORS = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
 
 const RETRIABLE_RENAME_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY']);
@@ -49,10 +51,7 @@ export async function pathExistsStrict(path: string): Promise<boolean> {
     await access(path);
     return true;
   } catch (error: unknown) {
-    const code =
-      error instanceof Error && 'code' in error && typeof error.code === 'string'
-        ? error.code
-        : undefined;
+    const code = getNodeErrorCode(error);
     if (code === 'ENOENT') {
       return false;
     }
@@ -87,10 +86,7 @@ export async function removeDir(path: string): Promise<void> {
       await rm(path, { recursive: true, force: true });
       return;
     } catch (error: unknown) {
-      const code =
-        error instanceof Error && 'code' in error && typeof error.code === 'string'
-          ? error.code
-          : undefined;
+      const code = getNodeErrorCode(error);
 
       if (!code || !RETRIABLE_REMOVE_ERRORS.has(code) || attempt === 4) {
         throw error;
@@ -209,10 +205,7 @@ export async function writeFileAtomic(path: string, content: string | Buffer): P
   try {
     existingMode = (await stat(path)).mode;
   } catch (error: unknown) {
-    const code =
-      error instanceof Error && 'code' in error && typeof error.code === 'string'
-        ? error.code
-        : undefined;
+    const code = getNodeErrorCode(error);
     if (code !== 'ENOENT') {
       throw error;
     }
@@ -258,10 +251,7 @@ async function renameWithRetries(from: string, to: string): Promise<void> {
       await rename(from, to);
       return;
     } catch (error: unknown) {
-      const code =
-        error instanceof Error && 'code' in error && typeof error.code === 'string'
-          ? error.code
-          : undefined;
+      const code = getNodeErrorCode(error);
       if (!code || !RETRIABLE_RENAME_ERRORS.has(code) || attempt === 4) {
         throw error;
       }

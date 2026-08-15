@@ -2,9 +2,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../utils/logger.js', () => ({
+  setStdoutSealed: vi.fn(),
   error: vi.fn(),
   cancel: vi.fn(),
   setVerbose: vi.fn(),
+  setMachineOutputMode: vi.fn(),
 }));
 
 import { withErrorHandling } from '../cli.js';
@@ -47,6 +49,15 @@ describe('withErrorHandling', () => {
       expect(err).toBeInstanceOf(CommandError);
       expect((err as CommandError).exitCode).toBe(ExitCode.GENERAL_ERROR);
     }
+  });
+
+  it('passes an already-rendered CommandError through without logging it again', async () => {
+    const sentinel = new CommandError(ExitCode.INVALID_ARGUMENT);
+    const handler = withErrorHandling(() => Promise.reject(sentinel));
+
+    await expect(handler()).rejects.toBe(sentinel);
+    expect(logError).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
   });
 
   it('does not call process.exit()', async () => {

@@ -20,6 +20,8 @@
  * Additions here should be conservative — false positives turn every
  * smoke run into noise for operators and every CI run into flake.
  */
+import { toError } from '../utils/errors.js';
+
 export const SMOKE_ERROR_PATTERNS: readonly RegExp[] = [
   // Firefox chrome error lines — `JavaScript error: chrome://…, line N: TypeError: …`.
   /^\s*JavaScript error:/i,
@@ -98,7 +100,7 @@ export function compileAllowlistFromFile(
         origin: `${sourcePath}:${String(index + 1)}`,
       });
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = toError(error).message;
       throw new Error(`Invalid allowlist regex at ${sourcePath}:${String(index + 1)}: ${message}`, {
         cause: error,
       });
@@ -121,7 +123,7 @@ export function compileAllowlistFromStrings(sources: readonly string[]): Compile
         origin: `--console-allow #${String(index + 1)}`,
       });
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = toError(error).message;
       throw new Error(
         `Invalid --console-allow regex at position ${String(index + 1)} ("${source}"): ${message}`,
         { cause: error }

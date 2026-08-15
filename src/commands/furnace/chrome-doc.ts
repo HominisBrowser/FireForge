@@ -21,7 +21,11 @@ import { join } from 'node:path';
 
 import { loadConfig } from '../../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
-import { type FurnaceOperationContext, runFurnaceMutation } from '../../core/furnace-operation.js';
+import {
+  type FurnaceOperationContext,
+  recordFurnaceRollbackFailure,
+  runFurnaceMutation,
+} from '../../core/furnace-operation.js';
 import {
   createRollbackJournal,
   recordCreatedDir,
@@ -32,6 +36,7 @@ import { DEFAULT_LICENSE, getLicenseHeader } from '../../core/license-headers.js
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { ProjectLicense } from '../../types/config.js';
+import { toError } from '../../utils/errors.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import { intro, note, outro, warn } from '../../utils/logger.js';
 import {
@@ -277,6 +282,7 @@ async function appendJarEntryIfAbsent(
  * tree in its pre-command state.
  */
 async function performChromeDocMutations(args: {
+  projectRoot: string;
   name: string;
   license: ProjectLicense;
   engineDir: string;
@@ -413,7 +419,19 @@ async function performChromeDocMutations(args: {
       written.push(`browser/base/content/test/${testParentDir}/${args.name}/xpcshell.toml`);
     }
   } catch (error: unknown) {
-    await restoreRollbackJournalOrThrow(journal, `Failed to scaffold chrome-doc "${args.name}"`);
+    try {
+      await restoreRollbackJournalOrThrow(journal, `Failed to scaffold chrome-doc "${args.name}"`);
+    } catch (rollbackError) {
+      // Matches the seven sibling mutation sites: when the rollback itself
+      // fails the engine is in an unknown state, so leave a breadcrumb for
+      // `doctor --repair-furnace` and let the rollback error win.
+      await recordFurnaceRollbackFailure(
+        args.projectRoot,
+        'chrome-doc-rollback',
+        `chrome-doc "${args.name}": ${toError(rollbackError).message}`
+      );
+      throw rollbackError;
+    }
     throw error;
   }
 
@@ -489,6 +507,7 @@ export async function furnaceChromeDocCreateCommand(
 
   const written = await runFurnaceMutation(projectRoot, 'chrome-doc-rollback', (ctx) =>
     performChromeDocMutations({
+      projectRoot,
       name,
       license,
       engineDir,

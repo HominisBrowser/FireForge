@@ -301,6 +301,31 @@ export interface ReExportOptions {
    * explicitly.
    */
   refuseAdjacentUnmanaged?: boolean;
+  /**
+   * Bypass per-patch lint result cache reads AND writes for this
+   * invocation (`--no-cache`). The cache is what makes a repeat
+   * re-export of an unchanged patch skip the checkJs program build
+   * entirely (FORGE J1).
+   */
+  noCache?: boolean;
+  /**
+   * Refuse (non-zero exit, patch not written) a re-export whose refreshed
+   * body would absorb engine lines not present in the old patch body —
+   * the multi-session guard against silently capturing another session's
+   * uncommitted edits in files the patch already owns. The drift preview
+   * always prints; this flag turns it into a hard stop. Mutually
+   * exclusive with `--scan` and `--files`.
+   */
+  refuseForeignDrift?: boolean;
+  /**
+   * Engine-relative files whose drift is EXPECTED (`--expect`, repeatable;
+   * requires `--refuse-foreign-drift`). The content-based drift detector
+   * cannot tell the exporting session's own slice edits from another
+   * session's (FORGE L6), so a real slice export under the refusal flag
+   * names its intended files here: drift confined to expected files
+   * proceeds, drift anywhere else still refuses.
+   */
+  expect?: string[];
 }
 
 /**
@@ -402,6 +427,8 @@ export interface PatchSplitOptions {
   forceUnsafe?: boolean;
   /** Skip per-patch lint of the projected bodies. */
   skipLint?: boolean;
+  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
+  waitLock?: number | boolean;
 }
 
 /**
@@ -430,6 +457,8 @@ export interface PatchMoveFilesOptions {
   forceUnsafe?: boolean;
   /** Skip per-patch lint of the projected bodies. */
   skipLint?: boolean;
+  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
+  waitLock?: number | boolean;
 }
 
 /**
@@ -504,6 +533,24 @@ export interface TestOptions {
   headless?: boolean;
   /** Run incremental UI build before testing */
   build?: boolean;
+  /**
+   * Run the scoped pre-test build (packaging exactly the requested paths,
+   * MIXED harnesses allowed) and exit without dispatching tests. One
+   * ~10-minute build then covers both an xpcshell and a browser-chrome
+   * half of a slice; run each harness afterwards without `--build`
+   * (FORGE J9). Emits `FIREFORGE-VERDICT: PASS` on success.
+   */
+  buildOnly?: boolean;
+  /**
+   * Union the paths this build packages onto the recorded coverage claim
+   * instead of REPLACING it (FORGE L1), so successive scoped builds
+   * accumulate and an earlier slice's build-less runs stay covered. Valid
+   * only with `--build`/`--build-only` and explicit paths. Refused
+   * fail-closed unless the build anchor is unchanged: same engine HEAD,
+   * same `engine/mozconfig`, and every previously fingerprinted packageable
+   * file byte-identical. See `src/core/coverage-extend.ts`.
+   */
+  extendCoverage?: boolean;
   /** Forward mach's pathless auto-selection mode. Valid only with no explicit paths. */
   auto?: boolean;
   /**
@@ -777,6 +824,8 @@ export interface PatchDeleteOptions {
   dryRun?: boolean;
   /** Bypass the hard refusal when later patches depend on the target. */
   forceUnsafe?: boolean;
+  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
+  waitLock?: number | boolean;
 }
 
 /**
@@ -793,9 +842,22 @@ export interface PatchRenameOptions {
    * New human-readable name. Sanitised the same way `export --name`
    * sanitises into the filename slug (lowercase, non-alphanumerics
    * collapsed to `-`, length-capped). The patch's `name` field stores
-   * the raw value; the filename uses the sanitised slug.
+   * the raw value; the filename uses the sanitised slug. Optional when
+   * `--category`/`--order`/`--description` carry the change.
    */
   to?: string;
+  /**
+   * New category (validated against configured categories). Rewrites
+   * the filename prefix and the manifest row in one transaction —
+   * recategorising no longer requires `patch delete` + fresh export.
+   */
+  category?: string;
+  /**
+   * Move the patch to this exact UNUSED sparse order. Collisions refuse
+   * with a pointer to `patch reorder` (which renumbers siblings); an
+   * order change is projected through cross-patch lint first.
+   */
+  order?: number;
   /**
    * Replacement description. Omit to leave the description unchanged
    * (intentional — operators frequently want to relabel the slug
@@ -808,6 +870,8 @@ export interface PatchRenameOptions {
   yes?: boolean;
   /** Bypass force-mode patchPolicy refusals. */
   forceUnsafe?: boolean;
+  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
+  waitLock?: number | boolean;
 }
 
 /**
@@ -820,6 +884,8 @@ export interface PatchReorderOptions {
   yes?: boolean;
   dryRun?: boolean;
   forceUnsafe?: boolean;
+  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
+  waitLock?: number | boolean;
 }
 
 /**
@@ -832,6 +898,8 @@ export interface PatchCompactOptions {
   dryRun?: boolean;
   /** Bypass force-mode patchPolicy refusals. */
   forceUnsafe?: boolean;
+  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
+  waitLock?: number | boolean;
 }
 
 /**
@@ -855,6 +923,23 @@ export interface StatusOptions {
   testCoverage?: boolean;
   /** Output machine-readable JSON instead of human-readable text. */
   json?: boolean;
+  /**
+   * With `--json`: emit only the summary counts (plus the offending
+   * files per fail-set classification when the `--check`/`--fail-on`
+   * policy is active), omitting the per-file `files[]` payload that
+   * grows with the queue (FORGE K8). Refused without `--json`.
+   */
+  summary?: boolean;
+  /**
+   * With `--json` (and composing with `--summary`), append an additive
+   * `ownership` block — the flat path→owning-patch rows plus
+   * managed/unmanaged/conflict counts — so a gate reads ownership,
+   * classification, and the check verdict from ONE scan instead of three
+   * back-to-back `status` invocations (FORGE L3). A modifier, not a mode:
+   * exit semantics are unchanged, so ownership conflicts still fail only
+   * the human `--ownership` mode. Refused without `--json`.
+   */
+  includeOwnership?: boolean;
   /**
    * Exit non-zero when any classification in the fail policy is
    * non-empty (default policy: unmanaged, patch-owned-drift, conflict).

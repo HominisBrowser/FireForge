@@ -25,6 +25,7 @@ const {
   saveRebaseSessionMock,
   clearRebaseSessionMock,
   hasActiveRebaseSessionMock,
+  readRebaseSessionMock,
   getDiffForFilesAgainstHeadMock,
   getStagedDiffForFilesMock,
   stageFilesMock,
@@ -65,6 +66,7 @@ const {
   saveRebaseSessionMock: vi.fn(() => Promise.resolve()),
   clearRebaseSessionMock: vi.fn(() => Promise.resolve()),
   hasActiveRebaseSessionMock: vi.fn(() => Promise.resolve(false)),
+  readRebaseSessionMock: vi.fn(),
   getDiffForFilesAgainstHeadMock: vi.fn(() => Promise.resolve('')),
   getStagedDiffForFilesMock: vi.fn(() => Promise.resolve('')),
   stageFilesMock: vi.fn(() => Promise.resolve()),
@@ -159,6 +161,13 @@ vi.mock('../../core/rebase-session.js', () => ({
   saveRebaseSession: saveRebaseSessionMock,
   clearRebaseSession: clearRebaseSessionMock,
   hasActiveRebaseSession: hasActiveRebaseSessionMock,
+  getRebaseSessionPath: (root: string) => `${root}/.fireforge/rebase-session.json`,
+  // Derived from the two mocks the existing tests already drive, so the
+  // present/valid split stays consistent with them. Tests that need the
+  // corrupt case override this directly; the real absent-vs-corrupt
+  // behaviour is covered against real files in `rebase-session.test.ts`
+  // and `rebase.integration.test.ts`.
+  readRebaseSession: readRebaseSessionMock,
 }));
 
 vi.mock('../../core/signal-critical.js', () => ({
@@ -217,6 +226,23 @@ function setupDefaults(): void {
   hasChangesMock.mockResolvedValue(false);
   getHeadMock.mockResolvedValue('abc123');
   loadStateMock.mockResolvedValue({});
+  // The legacy per-test mocks keep their implementations across describes
+  // (clearAllMocks clears calls, not impls), so pin their no-session defaults
+  // here rather than inheriting whatever the previous describe left behind.
+  hasActiveRebaseSessionMock.mockResolvedValue(false);
+  loadRebaseSessionMock.mockResolvedValue(null);
+  // Default: mirror whatever the two legacy mocks are set to — a loaded
+  // session wins, else liveness comes from `hasActiveRebaseSessionMock`. The
+  // legacy mocks have no notion of "corrupt", so a present session is reported
+  // valid; the real absent/valid/corrupt split is covered against actual files
+  // in `rebase-session.test.ts` and `rebase.integration.test.ts`.
+  readRebaseSessionMock.mockImplementation(async (root: string) => {
+    const session = await loadRebaseSessionMock(root);
+    if (session) return { present: true, valid: true, session };
+    return (await hasActiveRebaseSessionMock())
+      ? { present: true, valid: true, session: makeStubRebaseSession() }
+      : { present: false };
+  });
 }
 
 function makeSession(patches: RebaseSession['patches']): RebaseSession {
@@ -227,6 +253,20 @@ function makeSession(patches: RebaseSession['patches']): RebaseSession {
     preRebaseCommit: 'abc123',
     currentIndex: 0,
     patches,
+  };
+}
+
+/** Minimal valid session for mock reads that only need presence + validity. */
+function makeStubRebaseSession(): RebaseSession {
+  return {
+    startedAt: '2026-01-01T00:00:00Z',
+    fromVersion: '140.0esr',
+    toVersion: '141.0esr',
+    // A shape the real `isValidSession` would accept (hex commit), so the
+    // fixture cannot silently diverge from what the validator allows.
+    preRebaseCommit: 'abc123abc123abc123abc123abc123abc123abc1',
+    patches: [],
+    currentIndex: 0,
   };
 }
 

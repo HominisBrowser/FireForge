@@ -14,11 +14,13 @@
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { confirmDestructive } from '../../core/destructive.js';
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
+import { buildPatchQueueContext } from '../../core/patch-lint.js';
 import { loadPatchesManifest, resolvePatchIdentifier } from '../../core/patch-manifest.js';
 import { enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { PatchMoveFilesOptions } from '../../types/commands/index.js';
 import { info, intro, outro, success } from '../../utils/logger.js';
+import { normalizePatchDisplayName } from '../../utils/validation.js';
 import { resolvePlacementPlan } from '../export-flow.js';
 import { runPatchLint } from '../export-shared.js';
 import { commitPatchSplit } from './split.js';
@@ -104,6 +106,16 @@ export async function patchMoveFilesCreateCommand(
     config
   );
 
+  // The filename slug pipeline (resolvePlacementPlan above) strips redundant
+  // category prefixes; the manifest display name must agree with the bare-slug
+  // naming policy, exactly as `export --name` already does (FORGE G13/H4).
+  const displayName = normalizePatchDisplayName(newPatchName, category);
+  if (displayName !== newPatchName) {
+    info(
+      `Patch name normalized: "${newPatchName}" → "${displayName}" (the filename carries the order and category prefix).`
+    );
+  }
+
   const plan: SplitPlan = {
     source,
     movedFiles,
@@ -113,7 +125,7 @@ export async function patchMoveFilesCreateCommand(
     placement,
     placementOptions,
     category,
-    name: newPatchName,
+    name: displayName,
     description: options.description ?? '',
     ownerRewrites: findOwnerRewriteHolders(manifest.patches, source.filename, movedSet),
     // Populated by runProjectedSplitLint below (forward edges into the new patch).
@@ -122,6 +134,12 @@ export async function patchMoveFilesCreateCommand(
 
   // Per-patch lint both projected bodies, threading the source patch's
   // tier/lintIgnore so an intentional-advisory patch can still move files.
+  // The whole-queue context (built once, with the config so it carries the
+  // same patch-policy shape as the committed `lint --per-patch` gate) makes
+  // cross-patch `resource:///` imports and sibling head.js harness roots
+  // resolve exactly as they will after the move lands — without it the
+  // projection lint was blind (FORGE I3).
+  const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
   await runPatchLint(
     paths.engine,
@@ -129,7 +147,7 @@ export async function patchMoveFilesCreateCommand(
     remainingDiff,
     config,
     options.skipLint,
-    undefined,
+    patchQueueCtx,
     ignoreChecks,
     source.tier
   );
@@ -139,12 +157,12 @@ export async function patchMoveFilesCreateCommand(
     movedDiff,
     config,
     options.skipLint,
-    undefined,
+    patchQueueCtx,
     ignoreChecks,
     source.tier
   );
 
-  const { conflicts, stagedDependencyAdditions } = await runProjectedSplitLint(paths.patches, plan);
+  const { conflicts, stagedDependencyAdditions } = runProjectedSplitLint(plan, patchQueueCtx);
   plan.stagedDependencyAdditions = stagedDependencyAdditions;
   const newMetadata = buildNewPatchMetadata(plan, config);
   enforcePatchPolicy({
@@ -152,6 +170,10 @@ export async function patchMoveFilesCreateCommand(
     manifest: projectSplitManifest(manifest, plan, newMetadata),
     command: 'patch move-files --create',
     forceUnsafe: options.forceUnsafe === true,
+    hints: {
+      'description-required':
+        'Pass --description "<text>" (or -d) on this command to set the created patch\'s description.',
+    },
   });
 
   const decision = await confirmDestructive({

@@ -608,12 +608,16 @@ describe('furnace registration validation helpers', () => {
       expect(issues).toEqual([]);
     });
 
-    it('returns empty when no DOMContentLoaded match exists in content', async () => {
+    it('reports a registered component that the file never mentions (0.41.0)', async () => {
+      // This used to expect [] — which is exactly the blind spot that made a
+      // registration-only defect invisible to validate and unreachable for
+      // the scoped `--fix`.
       vi.mocked(pathExists).mockResolvedValue(true);
       vi.mocked(readText).mockResolvedValue('// no DCL listener here');
 
       const issues = await validateRegistrationPatterns('/project', baseConfig);
-      expect(issues).toEqual([]);
+      expect(issues).toHaveLength(1);
+      expect(issues[0]?.check).toBe('missing-custom-element-registration');
     });
 
     it('finds a component registered in the wrong (before-DCL) block', async () => {

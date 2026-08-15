@@ -2,7 +2,7 @@
 import { join } from 'node:path';
 
 import { getProjectPaths } from '../../core/config.js';
-import { applyAllComponents } from '../../core/furnace-apply.js';
+import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
 import {
   furnaceConfigExists,
   loadFurnaceConfig,
@@ -71,9 +71,7 @@ async function runPreviewTeardown(
  * @returns The total failure count if there were any (always non-zero when
  *          this returns; the function throws after logging).
  */
-function reportPreviewStagingFailures(
-  stageResult: Awaited<ReturnType<typeof applyAllComponents>>
-): never {
+function reportPreviewStagingFailures(stageResult: ApplyAllComponentsResult): never {
   for (const err of stageResult.errors) {
     warn(`Furnace: ${err.name} — ${err.error}`);
   }
@@ -332,7 +330,7 @@ export async function furnacePreviewCommand(
       // sources.
       if (overrideCount + customCount > 0) {
         const stageSpinner = spinner('Staging components for preview...');
-        let stageResult: Awaited<ReturnType<typeof applyAllComponents>>;
+        let stageResult: ApplyAllComponentsResult;
         try {
           stageResult = await applyAllComponents(projectRoot, false, {
             persistState: false,

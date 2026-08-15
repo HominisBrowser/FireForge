@@ -8,6 +8,10 @@ vi.mock('@clack/prompts', () => ({
 }));
 
 vi.mock('../../core/patch-lint.js', () => ({
+  formatPatchLintIssue: vi.fn(
+    (issue: { check: string; file: string; message: string }) =>
+      `[${issue.check}] ${issue.file}: ${issue.message}`
+  ),
   lintExportedPatch: vi.fn(() => Promise.resolve([])),
   commentStyleForFile: vi.fn((file: string) => {
     if (file.endsWith('.css')) return 'css';

@@ -123,6 +123,24 @@ export function validateReExportOptionCombinations(
     );
   }
 
+  if (options.refuseForeignDrift === true && (options.scan || options.files !== undefined)) {
+    throw new InvalidArgumentError(
+      '--refuse-foreign-drift applies to the scan-less path only and cannot be combined with --scan or --files (those explicitly capture the current engine state).',
+      '--refuse-foreign-drift'
+    );
+  }
+
+  if (
+    options.expect !== undefined &&
+    options.expect.length > 0 &&
+    options.refuseForeignDrift !== true
+  ) {
+    throw new InvalidArgumentError(
+      '--expect names files whose drift is expected under --refuse-foreign-drift and has no effect without it. Pass --refuse-foreign-drift, or drop --expect.',
+      '--expect'
+    );
+  }
+
   const usingTierFlag = options.tier !== undefined;
   const usingLintIgnoreFlag = options.lintIgnore !== undefined && options.lintIgnore.length > 0;
   if (options.all && (usingTierFlag || usingLintIgnoreFlag)) {

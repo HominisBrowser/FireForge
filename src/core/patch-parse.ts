@@ -139,6 +139,14 @@ export interface DiffSection {
    * refuse them rather than treat base85 lines starting with `+` as content.
    */
   isBinary: boolean;
+  /**
+   * Old-side blob hash from the section's `index <old>..<new>` line
+   * (possibly abbreviated). Undefined when the metadata zone carries no
+   * parseable index line (hand-written diffs, `Binary files … differ`).
+   */
+  indexOldHash?: string;
+  /** New-side blob hash from the `index` line; see {@link indexOldHash}. */
+  indexNewHash?: string;
   /** Parsed hunks, in file order. Empty for binary or metadata-only sections. */
   hunks: ParsedHunk[];
 }
@@ -213,6 +221,16 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
       }
       if (line === 'GIT binary patch' || /^Binary files .* differ$/.test(line)) {
         current.isBinary = true;
+        continue;
+      }
+      // `git diff --binary` always records full blob hashes here (git
+      // apply requires them); text sections carry abbreviated ones. The
+      // hashes let binary sections be compared by identity when their
+      // payload cannot be applied as text (FORGE J3).
+      const indexMatch = /^index ([0-9a-f]{7,64})\.\.([0-9a-f]{7,64})(?: \d{6})?$/.exec(line);
+      if (indexMatch?.[1] !== undefined && indexMatch[2] !== undefined) {
+        current.indexOldHash = indexMatch[1];
+        current.indexNewHash = indexMatch[2];
         continue;
       }
     }

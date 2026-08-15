@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { getNodeErrorCode, toError } from './errors.js';
+import { isObject } from './validation.js';
+
 interface PackageMetadata {
   name: string;
   version: string;
@@ -63,13 +66,11 @@ export function getPackageRoot(): string {
       // to a wrong ancestor package (any parent exposing bin.fireforge) or
       // end in the unhelpful generic "could not locate" error, hiding the
       // actual syntax problem.
-      const code = (error as NodeJS.ErrnoException).code;
+      const code = getNodeErrorCode(error);
       if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-        throw new Error(
-          `Found ${packagePath} but could not parse it: ` +
-            (error instanceof Error ? error.message : String(error)),
-          { cause: error }
-        );
+        throw new Error(`Found ${packagePath} but could not parse it: ` + toError(error).message, {
+          cause: error,
+        });
       }
     }
 
@@ -83,11 +84,11 @@ export function getPackageRoot(): string {
 
 /** @internal */
 export function isFireForgePackageMetadata(pkg: PackageMetadata): boolean {
-  if (typeof pkg.bin !== 'object' || pkg.bin === null || Array.isArray(pkg.bin)) {
+  if (!isObject(pkg.bin)) {
     return false;
   }
 
-  const bin = pkg.bin as Record<string, unknown>;
+  const bin = pkg.bin;
   return typeof bin['fireforge'] === 'string';
 }
 

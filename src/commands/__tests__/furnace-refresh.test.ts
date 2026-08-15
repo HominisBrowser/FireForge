@@ -126,9 +126,12 @@ vi.mock('node:fs/promises', () => ({
 
 import { loadState } from '../../core/config.js';
 import { loadFurnaceConfig, writeFurnaceConfig } from '../../core/furnace-config.js';
+import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
 import { refreshOverrideFile } from '../../core/furnace-refresh.js';
+import { restoreRollbackJournalOrThrow } from '../../core/furnace-rollback.js';
+import { getHead } from '../../core/git.js';
 import { pathExists } from '../../utils/fs.js';
-import { warn } from '../../utils/logger.js';
+import { info, note, warn } from '../../utils/logger.js';
 import { furnaceRefreshCommand } from '../furnace/refresh.js';
 
 describe('furnace refresh', () => {
@@ -412,5 +415,220 @@ describe('furnace refresh', () => {
       undefined
     );
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-button: merge helper exploded'));
+  });
+});
+
+/**
+ * `vi.clearAllMocks()` clears call records but NOT implementations, so a
+ * `mockResolvedValue` set in one describe leaks into every later one. The
+ * blocks below each start from a known baseline instead.
+ */
+function resetRefreshMocks(): void {
+  vi.clearAllMocks();
+  vi.mocked(pathExists).mockImplementation(() => Promise.resolve(true));
+  vi.mocked(getHead).mockResolvedValue('engine-head-sha999');
+  vi.mocked(restoreRollbackJournalOrThrow).mockResolvedValue(undefined);
+  vi.mocked(writeFurnaceConfig).mockResolvedValue(undefined);
+  vi.mocked(refreshOverrideFile).mockResolvedValue({
+    fileName: 'moz-button.mjs',
+    status: 'merged',
+  } as never);
+  vi.mocked(loadFurnaceConfig).mockResolvedValue({
+    version: 1,
+    componentPrefix: 'moz-',
+    stock: [],
+    overrides: {
+      'moz-button': {
+        type: 'full',
+        description: 'Button override',
+        basePath: 'toolkit/content/widgets/moz-button',
+        baseVersion: '145.0',
+      },
+    },
+    custom: {},
+  } as never);
+}
+
+describe('furnace refresh — argument validation', () => {
+  beforeEach(() => {
+    resetRefreshMocks();
+  });
+
+  it('refuses when neither a name nor --all is given', async () => {
+    await expect(furnaceRefreshCommand('/project', undefined, {})).rejects.toThrow(
+      /Specify a component name or use --all to refresh every override/
+    );
+  });
+
+  it('refuses when both a name and --all are given', async () => {
+    await expect(furnaceRefreshCommand('/project', 'moz-button', { all: true })).rejects.toThrow(
+      /Cannot specify both a component name and --all/
+    );
+  });
+});
+
+describe('furnace refresh --reset-base', () => {
+  beforeEach(() => {
+    resetRefreshMocks();
+  });
+
+  it('re-snapshots the baseline to engine HEAD without merging', async () => {
+    await furnaceRefreshCommand('/project', 'moz-button', { resetBase: true });
+
+    // The whole point: no three-way merge runs.
+    expect(refreshOverrideFile).not.toHaveBeenCalled();
+    expect(getHead).toHaveBeenCalledWith('/project/engine');
+    const written = vi.mocked(writeFurnaceConfig).mock.calls[0]?.[1];
+    expect(written?.overrides['moz-button']).toEqual({
+      type: 'full',
+      description: 'Button override',
+      // The rest of the override entry survives the rewrite.
+      basePath: 'toolkit/content/widgets/moz-button',
+      baseVersion: '140.9.0',
+      baseCommit: 'engine-head-sha999',
+    });
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Resetting "moz-button" baseline to Firefox 140.9.0 (engine-h)')
+    );
+  });
+
+  it('writes nothing under --dry-run', async () => {
+    await furnaceRefreshCommand('/project', 'moz-button', { resetBase: true, dryRun: true });
+
+    expect(writeFurnaceConfig).not.toHaveBeenCalled();
+    expect(refreshOverrideFile).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('Three-way merge skipped'));
+  });
+});
+
+describe('furnace refresh — no source files', () => {
+  beforeEach(() => {
+    resetRefreshMocks();
+  });
+
+  it('returns early when the override directory holds no component sources', async () => {
+    const { readdir } = await import('node:fs/promises');
+    vi.mocked(readdir).mockResolvedValueOnce([
+      { name: 'README.md', isFile: () => true },
+      { name: 'nested', isFile: () => false },
+    ] as never);
+
+    await furnaceRefreshCommand('/project', 'moz-button', {});
+
+    expect(info).toHaveBeenCalledWith('No source files to refresh.');
+    expect(refreshOverrideFile).not.toHaveBeenCalled();
+    expect(writeFurnaceConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('furnace refresh — rollback failure', () => {
+  beforeEach(() => {
+    resetRefreshMocks();
+  });
+
+  it('records a repair breadcrumb and surfaces the rollback error', async () => {
+    // A merge fails, and the rollback that should undo it ALSO fails. The
+    // operator debugging with `doctor --repair-furnace` needs the breadcrumb,
+    // and the rollback error must win — the engine is in an unknown state.
+    vi.mocked(refreshOverrideFile).mockRejectedValue(new Error('merge exploded'));
+    vi.mocked(restoreRollbackJournalOrThrow).mockRejectedValue(
+      new Error('could not restore moz-button.mjs')
+    );
+
+    await expect(furnaceRefreshCommand('/project', 'moz-button', {})).rejects.toThrow(
+      /could not restore moz-button\.mjs/
+    );
+
+    expect(recordFurnaceRollbackFailure).toHaveBeenCalledWith(
+      '/project',
+      'refresh-rollback',
+      expect.stringContaining('override "moz-button": could not restore moz-button.mjs')
+    );
+  });
+
+  it('does not attempt rollback under --dry-run', async () => {
+    vi.mocked(refreshOverrideFile).mockRejectedValue(new Error('merge exploded'));
+
+    await expect(furnaceRefreshCommand('/project', 'moz-button', { dryRun: true })).rejects.toThrow(
+      /merge exploded/
+    );
+
+    expect(restoreRollbackJournalOrThrow).not.toHaveBeenCalled();
+    expect(recordFurnaceRollbackFailure).not.toHaveBeenCalled();
+  });
+});
+
+describe('furnace refresh --all tallies', () => {
+  beforeEach(() => {
+    resetRefreshMocks();
+  });
+
+  it('reports when there is nothing to refresh', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValueOnce({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+    } as never);
+
+    await furnaceRefreshCommand('/project', undefined, { all: true });
+
+    expect(info).toHaveBeenCalledWith('No overrides to refresh.');
+    expect(refreshOverrideFile).not.toHaveBeenCalled();
+  });
+
+  it('counts unchanged files in the batch summary', async () => {
+    const { readdir } = await import('node:fs/promises');
+    vi.mocked(readdir).mockResolvedValue([{ name: 'moz-button.mjs', isFile: () => true }] as never);
+    vi.mocked(refreshOverrideFile).mockResolvedValue({
+      fileName: 'moz-button.mjs',
+      status: 'unchanged',
+    } as never);
+
+    await furnaceRefreshCommand('/project', undefined, { all: true });
+
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining('0 file(s) merged, 1 unchanged, 0 conflict(s)'),
+      'Refresh Summary'
+    );
+  });
+
+  it('counts an override that yields no results as already up-to-date', async () => {
+    // A component whose refresh returns zero results is "skipped", a distinct
+    // tally arm from a component whose files all came back unchanged.
+    const { readdir } = await import('node:fs/promises');
+    vi.mocked(readdir).mockResolvedValue([{ name: 'README.md', isFile: () => true }] as never);
+
+    await furnaceRefreshCommand('/project', undefined, { all: true });
+
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining('1 override(s) processed, 1 already up-to-date'),
+      'Refresh Summary'
+    );
+    expect(refreshOverrideFile).not.toHaveBeenCalled();
+  });
+
+  it('warns naming every component that produced a conflict', async () => {
+    const { readdir } = await import('node:fs/promises');
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'moz-button.mjs', isFile: () => true },
+      { name: 'moz-button.css', isFile: () => true },
+    ] as never);
+    // Two conflicting files in ONE component must list that component once.
+    vi.mocked(refreshOverrideFile).mockResolvedValue({
+      fileName: 'moz-button.mjs',
+      status: 'conflict',
+      conflictCount: 1,
+    } as never);
+
+    await furnaceRefreshCommand('/project', undefined, { all: true });
+
+    const conflictWarn = vi
+      .mocked(warn)
+      .mock.calls.map((c) => c[0])
+      .find((m) => m.includes('moz-button'));
+    expect(conflictWarn).toBeDefined();
+    expect(conflictWarn?.match(/moz-button/g)).toHaveLength(1);
   });
 });

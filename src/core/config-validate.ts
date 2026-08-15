@@ -14,6 +14,7 @@ import { verbose } from '../utils/logger.js';
 import { parseObject } from '../utils/parse.js';
 import { isContainedRelativePath, isExplicitAbsolutePath } from '../utils/paths.js';
 import {
+  isObject,
   isValidAppId,
   isValidFirefoxCandidate,
   isValidFirefoxVersion,
@@ -330,12 +331,12 @@ const PATCH_LINT_CHECKJS_COMPILER_OPTION_KEYS = [
  * be typed from their real sources without an ambient stub shim.
  */
 function parseCheckJsPathsMapping(raw: unknown): Record<string, string[]> {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+  if (!isObject(raw)) {
     throw new ConfigError(
       'Config field "patchLint.checkJsCompilerOptions.paths" must be a plain object'
     );
   }
-  const rec = raw as Record<string, unknown>;
+  const rec = raw;
   const out: Record<string, string[]> = {};
   for (const [pattern, targets] of Object.entries(rec)) {
     if ((pattern.match(/\*/g) ?? []).length > 1) {
@@ -354,10 +355,10 @@ function parseCheckJsPathsMapping(raw: unknown): Record<string, string[]> {
 }
 
 function parsePatchLintCheckJsCompilerOptions(raw: unknown): PatchLintCheckJsCompilerOptions {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+  if (!isObject(raw)) {
     throw new ConfigError('Config field "patchLint.checkJsCompilerOptions" must be a plain object');
   }
-  const rec = raw as Record<string, unknown>;
+  const rec = raw;
   const allowed = new Set<string>(PATCH_LINT_CHECKJS_COMPILER_OPTION_KEYS);
   const out: PatchLintCheckJsCompilerOptions = {};
   for (const key of Object.keys(rec)) {
@@ -391,26 +392,41 @@ function parseSeverityGate(raw: unknown, label: string): PatchLintSeverityGate |
   return raw as PatchLintSeverityGate;
 }
 
+/**
+ * Reads an optional boolean `patchLint` field, rejecting a non-boolean with
+ * the field-named message. Three identical inline copies of this shape were
+ * part of what held `parsePatchLintBlock` at complexity 25/30.
+ */
+function optionalPatchLintBoolean(
+  rec: ReturnType<typeof parseObject>,
+  key: string
+): boolean | undefined {
+  const value = rec.raw(key);
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new ConfigError(`Config field "patchLint.${key}" must be a boolean`);
+  }
+  return value;
+}
+
+/** Severity-gate fields, each parsed and assigned identically. */
+const PATCH_LINT_SEVERITY_GATE_KEYS = [
+  'jsdocClassMethods',
+  'testAssertionFloor',
+  'chromeScriptJsDoc',
+  'undefinedIdentifiers',
+] as const;
+
 function parsePatchLintBlock(
   rec: ReturnType<typeof parseObject>
 ): NonNullable<FireForgeConfig['patchLint']> {
   const out: NonNullable<FireForgeConfig['patchLint']> = {};
 
-  const checkJs = rec.raw('checkJs');
-  if (checkJs !== undefined) {
-    if (typeof checkJs !== 'boolean') {
-      throw new ConfigError('Config field "patchLint.checkJs" must be a boolean');
-    }
-    out.checkJs = checkJs;
-  }
+  const checkJs = optionalPatchLintBoolean(rec, 'checkJs');
+  if (checkJs !== undefined) out.checkJs = checkJs;
 
-  const checkJsStrict = rec.raw('checkJsStrict');
-  if (checkJsStrict !== undefined) {
-    if (typeof checkJsStrict !== 'boolean') {
-      throw new ConfigError('Config field "patchLint.checkJsStrict" must be a boolean');
-    }
-    out.checkJsStrict = checkJsStrict;
-  }
+  const checkJsStrict = optionalPatchLintBoolean(rec, 'checkJsStrict');
+  if (checkJsStrict !== undefined) out.checkJsStrict = checkJsStrict;
 
   const checkJsCompilerOptionsRaw = rec.raw('checkJsCompilerOptions');
   if (checkJsCompilerOptionsRaw !== undefined) {
@@ -422,13 +438,8 @@ function parsePatchLintBlock(
     out.checkJsExtraShim = parseShimPath(checkJsExtraShim, 'patchLint.checkJsExtraShim');
   }
 
-  const checkJsTestFiles = rec.raw('checkJsTestFiles');
-  if (checkJsTestFiles !== undefined) {
-    if (typeof checkJsTestFiles !== 'boolean') {
-      throw new ConfigError('Config field "patchLint.checkJsTestFiles" must be a boolean');
-    }
-    out.checkJsTestFiles = checkJsTestFiles;
-  }
+  const checkJsTestFiles = optionalPatchLintBoolean(rec, 'checkJsTestFiles');
+  if (checkJsTestFiles !== undefined) out.checkJsTestFiles = checkJsTestFiles;
 
   const checkJsTestShim = rec.raw('checkJsTestShim');
   if (checkJsTestShim !== undefined) {
@@ -448,36 +459,9 @@ function parsePatchLintBlock(
     out.rawColorAllowlist = rawColorAllowlist as string[];
   }
 
-  const jsdocClassMethods = parseSeverityGate(
-    rec.raw('jsdocClassMethods'),
-    'patchLint.jsdocClassMethods'
-  );
-  if (jsdocClassMethods !== undefined) {
-    out.jsdocClassMethods = jsdocClassMethods;
-  }
-
-  const testAssertionFloor = parseSeverityGate(
-    rec.raw('testAssertionFloor'),
-    'patchLint.testAssertionFloor'
-  );
-  if (testAssertionFloor !== undefined) {
-    out.testAssertionFloor = testAssertionFloor;
-  }
-
-  const chromeScriptJsDoc = parseSeverityGate(
-    rec.raw('chromeScriptJsDoc'),
-    'patchLint.chromeScriptJsDoc'
-  );
-  if (chromeScriptJsDoc !== undefined) {
-    out.chromeScriptJsDoc = chromeScriptJsDoc;
-  }
-
-  const undefinedIdentifiers = parseSeverityGate(
-    rec.raw('undefinedIdentifiers'),
-    'patchLint.undefinedIdentifiers'
-  );
-  if (undefinedIdentifiers !== undefined) {
-    out.undefinedIdentifiers = undefinedIdentifiers;
+  for (const key of PATCH_LINT_SEVERITY_GATE_KEYS) {
+    const gate = parseSeverityGate(rec.raw(key), `patchLint.${key}`);
+    if (gate !== undefined) out[key] = gate;
   }
 
   if (out.checkJsStrict === true && out.checkJs !== true) {

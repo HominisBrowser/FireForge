@@ -262,6 +262,10 @@ export async function exportAllCommand(
   // post-hoc string surgery on the aggregate diff, which keeps the
   // output shape aligned with the single-file `export` command.
   let diff: string;
+  // Retain the exact scope used to build the aggregate. Interactive
+  // license-header repair mutates engine files and therefore has to rebuild
+  // the diff, but it must not silently widen an --exclude-furnace export.
+  let scopedExportPaths: string[] | undefined;
   if (furnaceExcluded.size > 0) {
     const rawChanged = await getWorkingTreeStatus(paths.engine);
     const allChanged = await expandUntrackedDirectoryEntries(paths.engine, rawChanged);
@@ -274,6 +278,7 @@ export async function exportAllCommand(
           .filter((file) => !furnaceExcluded.has(file))
       ),
     ].sort();
+    scopedExportPaths = nonFurnacePaths;
 
     if (nonFurnacePaths.length === 0) {
       info(
@@ -321,7 +326,10 @@ export async function exportAllCommand(
     isDryRun
   );
   if (headersAdded) {
-    diff = await getAllDiff(paths.engine);
+    diff =
+      scopedExportPaths === undefined
+        ? await getAllDiff(paths.engine)
+        : await getDiffForFilesAgainstHead(paths.engine, scopedExportPaths);
   }
 
   const metadata = await promptExportPatchMetadata(options, isInteractive, 'export-all', config);

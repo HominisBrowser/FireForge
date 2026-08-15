@@ -20,3 +20,4 @@ export {
   type PatchQueueEntry,
 } from './patch-lint-cross.js';
 export { buildModifiedFileAdditionsFromDiff, detectNewFilesInDiff } from './patch-lint-diff.js';
+export { lintPatchQueueModuleRegistrations } from './patch-lint-module-registration.js';

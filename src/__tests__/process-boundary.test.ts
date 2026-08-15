@@ -49,16 +49,19 @@ describe('process exit boundary', () => {
     const binEntrypoint = join(process.cwd(), 'bin', 'fireforge.ts');
     const content = stripComments(await readFile(binEntrypoint, 'utf-8'));
 
-    // bin/fireforge.ts owns every process.exit in the project. The expected
-    // count is the sum of:
-    //   1. unhandledRejection handler
-    //   2. CommandError exit in main().catch
-    //   3. fallback fatal-error exit in main().catch
-    //   4. SIGINT/SIGTERM re-entrant force-exit (in installFurnaceSignalHandler)
-    //   5. SIGINT/SIGTERM post-rollback exit (in installFurnaceSignalHandler)
-    // The signal handler is a single helper invoked once for each signal,
-    // so its two process.exit calls show up once in the source even though
-    // they apply to both signals.
-    expect(content.match(/process\.exit\(/g)).toHaveLength(5);
+    // bin/fireforge.ts owns every process.exit in the project. Only two
+    // direct call sites remain:
+    //   1. inside exitAfterStdioFlush — the drain-then-exit helper every
+    //      delayed exit (unhandledRejection, both main().catch branches,
+    //      the SIGINT/SIGTERM post-rollback exit) routes through, so a
+    //      piped stdout is flushed before termination
+    //   2. the SIGINT/SIGTERM re-entrant force-exit (a second Ctrl+C means
+    //      "out NOW" and must not wait on a full pipe)
+    expect(content.match(/process\.exit\(/g)).toHaveLength(2);
+
+    // The helper's definition plus its four delayed-exit call sites; a new
+    // direct process.exit would silently reintroduce the 64 KiB pipe
+    // truncation this guards against.
+    expect(content.match(/exitAfterStdioFlush\(/g)).toHaveLength(5);
   });
 });

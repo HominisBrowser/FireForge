@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   countNonBinaryDiffLines,
   detectNewFilesInDiff,
+  hasBrowserChromeAssertion,
   isTestFile,
   lintExportedPatch,
   lintModificationComments,
@@ -2264,5 +2265,82 @@ describe('lintExportedPatch', () => {
     expect(issuesWithEmpty.map((i) => i.check).sort()).toEqual(
       issuesWithUndefined.map((i) => i.check).sort()
     );
+  });
+});
+
+describe('hasBrowserChromeAssertion', () => {
+  it.each([
+    ['Assert.equal(a, b);', 'Assert.equal'],
+    ['Assert.ok(x);', 'Assert.ok'],
+    ['SimpleTest.ok(x);', 'SimpleTest.ok'],
+    ['SimpleTest.is(a, b);', 'SimpleTest.is'],
+    ['Assert.deepEqual(a, b);', 'Assert.deepEqual'],
+    ['Assert.greater(a, b);', 'Assert.greater'],
+    ['SimpleTest.todo_is(a, b);', 'SimpleTest.todo_is (a recorded outcome)'],
+    ['await Assert.rejects(p, /boom/);', 'Assert.rejects'],
+    ['  ok(true, "msg");', 'bare ok()'],
+    ['is(a, b, "eq");', 'bare is()'],
+    ['isnot(a, b);', 'isnot()'],
+    ['isDeeply(a, b);', 'isDeeply()'],
+    ['ok (x);', 'whitespace before paren'],
+    ['if (x) { ok(y); }', 'nested in a block'],
+    // Qualified spellings of the bare globals are still the same assertions;
+    // blocking them flagged real-assertion tests as assertion-free.
+    ['window.ok(x);', 'window-qualified global'],
+    ['win?.ok(x, "still asserts");', 'optional-chained call'],
+  ])('accepts %s (%s)', (source) => {
+    expect(hasBrowserChromeAssertion(source)).toBe(true);
+  });
+
+  it.each([
+    // The bug: a bare `includes()` match meant any identifier ENDING in a
+    // token satisfied the floor, so an assertion-free smoke test passed.
+    ['this.axis(3);', 'axis( ends with is('],
+    ['const v = book(1);', 'book( ends with ok('],
+    ['promiseIsDeeply(x);', 'suffix isDeeply('],
+    ['myok(1);', 'myok('],
+    ['foo.is(1);', 'unknown namespace .is('],
+    ['SpecialPowers.ok(1);', 'API surface, not an assertion'],
+    ['thing-is(1);', 'hyphenated identifier'],
+    ['registerCleanupFunction(() => {});', 'no assertion at all'],
+    ['info("just logging");', 'smoke-only test body'],
+    ['await BrowserTestUtils.browserLoaded(tab);', 'harness call only'],
+    // Broadening the namespace arm to `(?:Assert|SimpleTest)\.` matched the
+    // namespace and dot alone, so SimpleTest's HARNESS surface — the exact
+    // calls an assertion-free smoke test contains — cleared the floor.
+    ['SimpleTest.finish();', 'SimpleTest harness call, not an assertion'],
+    ['SimpleTest.waitForExplicitFinish();', 'SimpleTest harness call'],
+    ['SimpleTest.requestCompleteLog();', 'SimpleTest harness call'],
+    ['SimpleTest.expectUncaughtException();', 'SimpleTest harness call'],
+    ['SimpleTest.executeSoon(() => {});', 'SimpleTest harness call'],
+    ['Assert.reportAssertionsResult(x);', 'Assert non-assertion member'],
+    ['SimpleTest.ok', 'member access with no call'],
+    ['$ok(1);', '$-prefixed identifier'],
+    ['foo.window.ok(1);', 'window as a property, not the global'],
+  ])('rejects %s (%s)', (source) => {
+    expect(hasBrowserChromeAssertion(source)).toBe(false);
+  });
+
+  it('rejects a mochikit smoke test whose only SimpleTest calls are harness plumbing', () => {
+    const smokeOnly = [
+      'SimpleTest.waitForExplicitFinish();',
+      'add_task(async function test_widget_defined() {',
+      '  await customElements.whenDefined("moz-widget");',
+      '  info("defined");',
+      '});',
+      'SimpleTest.finish();',
+    ].join('\n');
+    expect(hasBrowserChromeAssertion(smokeOnly)).toBe(false);
+  });
+
+  it('flags a realistic smoke-only test that used to clear the gate', () => {
+    const smokeOnly = [
+      'add_task(async function test_axis() {',
+      '  const chart = document.querySelector("my-chart");',
+      '  this.axis(3);',
+      '  info("rendered");',
+      '});',
+    ].join('\n');
+    expect(hasBrowserChromeAssertion(smokeOnly)).toBe(false);
   });
 });

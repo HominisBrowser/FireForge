@@ -15,6 +15,12 @@ vi.mock('node:path', async (importOriginal) => {
   return { ...actual, dirname: vi.fn(actual.dirname) };
 });
 
+// Deterministic build identity: the real reader consults live git, whose
+// clean/dirty state varies by checkout (FORGE K2).
+vi.mock('../utils/build-info.js', () => ({
+  getCliVersion: vi.fn(() => '0.41.0+gtestsha12345.dirty'),
+}));
+
 import {
   createProgram,
   getProjectRoot,
@@ -23,7 +29,6 @@ import {
   resetBrokenPipeHandlerForTests,
 } from '../cli.js';
 import * as logger from '../utils/logger.js';
-import { getPackageVersion } from '../utils/package-root.js';
 
 function getInstalledStdoutErrorHandler(
   stdoutListenersBefore: number
@@ -156,7 +161,7 @@ describe('main', () => {
       process.argv = previousArgv;
     }
 
-    expect(writeSpy).toHaveBeenCalledWith(`${getPackageVersion()}\n`);
+    expect(writeSpy).toHaveBeenCalledWith('0.41.0+gtestsha12345.dirty\n');
     expect(parseAsyncSpy).not.toHaveBeenCalled();
   });
 
@@ -178,7 +183,7 @@ describe('main', () => {
       process.argv = previousArgv;
     }
 
-    expect(writeSpy).toHaveBeenCalledWith(`${getPackageVersion()}\n`);
+    expect(writeSpy).toHaveBeenCalledWith('0.41.0+gtestsha12345.dirty\n');
     expect(parseAsyncSpy).not.toHaveBeenCalled();
   });
 
@@ -199,7 +204,7 @@ describe('main', () => {
       process.argv = previousArgv;
     }
 
-    expect(writeSpy).not.toHaveBeenCalledWith(`${getPackageVersion()}\n`);
+    expect(writeSpy).not.toHaveBeenCalledWith('0.41.0+gtestsha12345.dirty\n');
     expect(parseAsyncSpy).toHaveBeenCalled();
   });
 

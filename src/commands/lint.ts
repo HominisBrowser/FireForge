@@ -21,6 +21,7 @@ import { extractAffectedFiles } from '../core/patch-apply.js';
 import {
   buildPatchQueueContext,
   countNonBinaryDiffLines,
+  formatPatchLintIssue,
   lintExportedPatch,
   lintPatchQueue,
   lintPatchSize,
@@ -436,13 +437,13 @@ async function reportLintOutcome(
     sinceActive && issue.tag ? `[${issue.tag}] ` : '';
 
   for (const issue of notices) {
-    info(`${tagPrefix(issue)}NOTICE [${issue.check}] ${issue.file}: ${issue.message}`);
+    info(`${tagPrefix(issue)}NOTICE ${formatPatchLintIssue(issue)}`);
   }
   for (const issue of warnings) {
-    warn(`${tagPrefix(issue)}[${issue.check}] ${issue.file}: ${issue.message}`);
+    warn(`${tagPrefix(issue)}${formatPatchLintIssue(issue)}`);
   }
   for (const issue of errors) {
-    warn(`${tagPrefix(issue)}ERROR [${issue.check}] ${issue.file}: ${issue.message}`);
+    warn(`${tagPrefix(issue)}ERROR ${formatPatchLintIssue(issue)}`);
   }
 
   if (sinceActive) {

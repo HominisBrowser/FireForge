@@ -12,6 +12,14 @@ const targetFileOverride = process.env.FIREFORGE_FULL_TARGET_FILE;
 const firefoxVersionOverride = process.env.FIREFORGE_FULL_FIREFOX_VERSION;
 const keepPatch = process.env.FIREFORGE_FULL_KEEP_PATCH === '1';
 const skipSetup = process.env.FIREFORGE_FULL_SKIP_SETUP === '1';
+// FIREFORGE_FULL_TREE=1 additionally exercises `tree create --with-objdir`
+// against the real build: it proves the clone was reconfigured to the tree
+// (no primary paths left in configure output) and that the primary objdir's
+// metadata is untouched afterwards. FIREFORGE_FULL_TREE_TEST_PATH may name a
+// cheap in-tree test (e.g. an xpcshell test) to run through the tree's own
+// build-less `fireforge test`.
+const runTreePhase = process.env.FIREFORGE_FULL_TREE === '1';
+const treeTestPath = process.env.FIREFORGE_FULL_TREE_TEST_PATH;
 
 if (!projectRoot) {
   throw new Error(
@@ -459,6 +467,84 @@ async function writeNotesTemplate() {
   );
 }
 
+/**
+ * Opt-in tree scenario (FIREFORGE_FULL_TREE=1): the direct real-Firefox proof
+ * that a `tree create --with-objdir` clone is fully relocated — regenerated
+ * configure output contains no primary paths, mach anchored in-tree (venvs
+ * rebuilt there), and nothing in the primary objdir's metadata changed.
+ */
+async function runTreeScenario(primaryObjDir) {
+  const treeName = `full-suite-tree-${artifactStamp}`;
+  const treeRoot = join(projectRoot, '.fireforge', 'trees', treeName);
+  const treeObservations = {};
+  report.observations.tree = treeObservations;
+
+  const primaryMetadataFiles = ['config.status', 'backend.mk', 'Makefile', 'mozinfo.json'];
+  const statPrimaryMetadata = async () => {
+    const { stat } = await import('node:fs/promises');
+    const snapshot = {};
+    for (const name of primaryMetadataFiles) {
+      snapshot[name] = await stat(join(engineDir, primaryObjDir, name)).then(
+        (s) => s.mtimeMs,
+        () => null
+      );
+    }
+    return snapshot;
+  };
+
+  const metadataBefore = await statPrimaryMetadata();
+  try {
+    await runFireforge('tree-create', ['tree', 'create', treeName, '--with-objdir']);
+
+    // The regenerated configure output must name the TREE, never the primary.
+    for (const name of ['config.status', 'backend.mk']) {
+      const filePath = join(treeRoot, 'engine', primaryObjDir, name);
+      const content = await readFile(filePath, 'utf8').catch(() => null);
+      if (content === null) {
+        throw new Error(`Tree scenario: expected regenerated ${name} at ${filePath}`);
+      }
+      if (content.includes(engineDir)) {
+        throw new Error(
+          `Tree scenario: ${name} in the cloned objdir still names the primary engine (${engineDir}) — the in-tree reconfigure did not relocate it.`
+        );
+      }
+    }
+    // mach anchored in-tree: configure re-bootstrapped the venvs INSIDE the tree.
+    const treeVenvs = join(treeRoot, 'engine', primaryObjDir, '_virtualenvs');
+    if (!(await pathExists(treeVenvs))) {
+      throw new Error(
+        `Tree scenario: ${treeVenvs} missing — mach did not re-bootstrap inside the tree.`
+      );
+    }
+    treeObservations.reconfiguredClean = true;
+
+    if (treeTestPath) {
+      await runFireforge('tree-test', ['tree', 'exec', treeName, '--', 'test', treeTestPath]);
+      treeObservations.inTreeTest = treeTestPath;
+    } else {
+      treeObservations.inTreeTest =
+        'Skipped — set FIREFORGE_FULL_TREE_TEST_PATH to run a harness inside the tree.';
+    }
+
+    // The primary objdir's metadata must be byte-for-byte undisturbed.
+    const metadataAfter = await statPrimaryMetadata();
+    for (const name of primaryMetadataFiles) {
+      if (metadataBefore[name] !== metadataAfter[name]) {
+        throw new Error(
+          `Tree scenario: primary ${primaryObjDir}/${name} changed while operating on the tree (mtime ${metadataBefore[name]} -> ${metadataAfter[name]}).`
+        );
+      }
+    }
+    treeObservations.primaryUntouched = true;
+  } finally {
+    if (await pathExists(treeRoot)) {
+      await runFireforge('tree-remove', ['tree', 'remove', treeName]).catch((error) => {
+        report.cleanup.errors.push(`Failed to remove tree ${treeName}: ${toError(error).message}`);
+      });
+    }
+  }
+}
+
 async function main() {
   await ensureArtifactDirectory();
 
@@ -565,6 +651,13 @@ async function main() {
     report.observations.buildArtifactWarning =
       'Build exited successfully but no obj-* directory exists in engine/. ' +
       'mach may have masked a build failure with exit code 0.';
+  }
+
+  if (runTreePhase) {
+    if (!firstObjDir) {
+      throw new Error('FIREFORGE_FULL_TREE=1 requires a completed build with an obj-* directory.');
+    }
+    await runTreeScenario(firstObjDir);
   }
 
   await writeFile(targetAbsolutePath, appendMarker(originalTargetContent, patchMarker), 'utf8');

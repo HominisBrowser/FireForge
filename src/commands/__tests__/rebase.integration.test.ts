@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadState } from '../../core/config.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
-import { hasActiveRebaseSession, loadRebaseSession } from '../../core/rebase-session.js';
+import {
+  getRebaseSessionPath,
+  hasActiveRebaseSession,
+  loadRebaseSession,
+} from '../../core/rebase-session.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
   createTempProject,
@@ -15,6 +19,7 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
+import { escapeRegex } from '../../utils/regex.js';
 import { exportCommand } from '../export.js';
 import { rebaseCommand } from '../rebase.js';
 import { setupCommand } from '../setup.js';
@@ -306,5 +311,47 @@ describe('rebase integration', () => {
 
     // No session should be created
     expect(await hasActiveRebaseSession(projectRoot)).toBe(false);
+  });
+
+  it('recovers from a corrupt session file instead of wedging (0.41.0)', async () => {
+    // The wedge: with an unreadable session file, `rebase` reported "already
+    // in progress — use --continue or --abort", and BOTH of those reported
+    // "no rebase session in progress". No CLI path deleted the file and no
+    // message named it, so the only escape was knowing to rm it by hand.
+    const engineDir = join(projectRoot, 'engine');
+    await initCommittedRepo(engineDir, {
+      'browser/base/content/browser.js': 'export const title = "upstream";\n',
+    });
+    await writeFiles(projectRoot, { 'patches/patches.json': '{"version":1,"patches":[]}\n' });
+
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    await mkdir(join(projectRoot, '.fireforge'), { recursive: true });
+    const sessionFile = getRebaseSessionPath(projectRoot);
+    await writeFile(sessionFile, '{ "startedAt": "2026-01-01", ', 'utf-8');
+
+    // A fresh start names the file and points at --abort, rather than
+    // claiming a resumable rebase is in progress.
+    await expect(rebaseCommand(projectRoot, { yes: true })).rejects.toThrow(
+      /cannot be read[\s\S]*--abort/
+    );
+    await expect(rebaseCommand(projectRoot, { yes: true })).rejects.toThrow(
+      new RegExp(escapeRegex(sessionFile))
+    );
+
+    // --continue reports the corruption rather than "no session in progress".
+    await expect(rebaseCommand(projectRoot, { continue: true, yes: true })).rejects.toThrow(
+      /cannot be read/
+    );
+
+    // --abort is the escape hatch and must succeed against the corrupt file.
+    await rebaseCommand(projectRoot, { abort: true, yes: true });
+    expect(await hasActiveRebaseSession(projectRoot)).toBe(false);
+
+    // And a fresh rebase is no longer blocked by the session check: it now
+    // reaches the manifest, failing on the empty queue instead of claiming a
+    // rebase is already in progress.
+    await expect(rebaseCommand(projectRoot, { yes: true })).rejects.toThrow(
+      /No patches found in manifest/
+    );
   });
 });

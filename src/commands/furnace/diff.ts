@@ -10,6 +10,7 @@ import { isComponentSourceFile, resolveFtlDir } from '../../core/furnace-constan
 import { getFileContentAtRef } from '../../core/git-file-ops.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
+import { toError } from '../../utils/errors.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { formatErrorText, formatSuccessText, info, intro, outro } from '../../utils/logger.js';
 
@@ -92,7 +93,7 @@ async function diffOverride(
     } catch (error: unknown) {
       throw new FurnaceError(
         `Cannot read baseline for "${entry.name}" at commit ${baseCommit.slice(0, 8)}: ` +
-          `${error instanceof Error ? error.message : String(error)}. ` +
+          `${toError(error).message}. ` +
           `The commit may no longer exist in the engine history (e.g. after a re-download). ` +
           `Run "fireforge furnace refresh --reset-base ${name}" to establish a new baseline.`,
         name

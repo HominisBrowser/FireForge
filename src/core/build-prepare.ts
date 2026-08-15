@@ -15,7 +15,7 @@ import { info, spinner, verbose, warn } from '../utils/logger.js';
 import { isBrandingSetup, setupBranding } from './branding.js';
 import type { BuildBaseline } from './build-baseline-types.js';
 import { collectChangedEnginePaths } from './engine-changes.js';
-import { applyAllComponents } from './furnace-apply.js';
+import { applyAllComponents, type ApplyAllComponentsResult } from './furnace-apply.js';
 import {
   furnaceConfigExists,
   getFurnacePaths,
@@ -36,6 +36,8 @@ export interface BuildPreparation {
   furnaceApplied: number;
   /** True when `mach configure` was auto-run to refresh a stale backend. */
   reconfigured: boolean;
+  /** A changed packaging manifest cannot be safely handled by `mach build faster`. */
+  fullBuildRequired?: boolean;
 }
 
 /** Options for {@link prepareBuildEnvironment}. */
@@ -52,6 +54,11 @@ export interface PrepareBuildOptions {
 
 /** Path fragments of files whose edits invalidate the recursive-make backend. */
 const BACKEND_INVALIDATING_SUFFIXES = ['moz.build', 'moz.configure', 'Makefile.in'];
+
+/** Packaging manifests whose graph/destination directories need a full build. */
+export function requiresFullBuildForIncrementalTest(path: string): boolean {
+  return path === 'jar.mn' || path.endsWith('/jar.mn');
+}
 
 /**
  * Extracts the tail of captured `mach configure` output so the underlying
@@ -159,6 +166,7 @@ export async function prepareBuildEnvironment(
   // before the build step. Prevents incremental builds from silently skipping
   // work against a stale recursive-make backend.
   let reconfigured = false;
+  let fullBuildRequired = false;
   if (options.previousBaseline) {
     const changed = await collectChangedEnginePaths(
       paths.engine,
@@ -166,6 +174,7 @@ export async function prepareBuildEnvironment(
       'Auto-configure'
     );
     const invalidating = changed.filter(isBackendInvalidatingFile);
+    fullBuildRequired = changed.some(requiresFullBuildForIncrementalTest);
     if (invalidating.length > 0) {
       info(
         `Backend config changed; running backend regeneration first (${invalidating.length} file${invalidating.length === 1 ? '' : 's'} touched).`
@@ -239,7 +248,7 @@ export async function prepareBuildEnvironment(
 
     if (hasComponents) {
       const furnaceSpinner = spinner('Applying Furnace components...');
-      let result: Awaited<ReturnType<typeof applyAllComponents>>;
+      let result: ApplyAllComponentsResult;
       try {
         result = await runFurnaceMutation(projectRoot, 'apply-rollback', (ctx) =>
           applyAllComponents(projectRoot, false, { operationContext: ctx })
@@ -302,5 +311,5 @@ export async function prepareBuildEnvironment(
     throw error;
   }
 
-  return { furnaceApplied, reconfigured };
+  return { furnaceApplied, reconfigured, fullBuildRequired };
 }

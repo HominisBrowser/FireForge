@@ -6,14 +6,14 @@ import { Command } from 'commander';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
 import {
-  buildArtifactMismatchMessage,
   generateMozconfig,
   hasBuildArtifacts,
   hasRunnableBundle,
   watchWithOutput,
 } from '../core/mach.js';
+import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import { GeneralError } from '../errors/base.js';
-import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
+import { BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
@@ -162,26 +162,17 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   await probeWatchman();
 
   // Check for build artifacts before starting watch
+  // The mismatch rung rejects copied or relocated obj-* dirs whose mozinfo
+  // metadata (topsrcdir, topobjdir, mozconfig) still points at a different
+  // source tree; mach watch against stale metadata produces confusing errors.
   const buildCheck = await hasBuildArtifacts(paths.engine);
-  if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
-    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
-  }
-  // Reject copied or relocated obj-* dirs whose mozinfo metadata (topsrcdir,
-  // topobjdir, mozconfig) still points at a different source tree. Running mach
-  // watch against stale metadata produces confusing build errors.
-  const mismatchMessage = buildArtifactMismatchMessage(paths.engine, buildCheck, 'Watch mode');
-  if (mismatchMessage) {
-    throw new GeneralError(mismatchMessage);
-  }
-  if (!buildCheck.exists) {
-    const detail = buildCheck.objDir
-      ? `Build artifacts incomplete in ${buildCheck.objDir}/`
-      : 'No build artifacts found (obj-*/ directory missing)';
-    throw new GeneralError(
-      `Watch mode requires a completed build. ${detail}\n\n` +
-        "Run 'fireforge build' first to create the initial build, then run 'fireforge watch'."
-    );
-  }
+  assertBuildArtifacts(paths.engine, buildCheck, {
+    label: 'Watch mode',
+    requirement: 'Watch mode requires a completed build.',
+    remediation:
+      "Run 'fireforge build' first to create the initial build, then run 'fireforge watch'.",
+    requireExisting: true,
+  });
 
   // Report bundle state alongside the "Using build artifacts..." banner
   // so an operator watching a mid-build tree can see why `fireforge run`
@@ -228,10 +219,17 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   const watchmanDir = dirname(watchmanPath);
   const existingPath = process.env['PATH'] ?? '';
   const pathSegments = existingPath.split(delimiter).filter((segment) => segment.length > 0);
+  // Both arms filter identically; the cast this replaced laundered
+  // `string | undefined` on one arm while the other built the annotated shape
+  // honestly.
+  const baseEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) baseEnv[key] = value;
+  }
   const watchmanEnv: Record<string, string> = pathSegments.includes(watchmanDir)
-    ? ({ ...process.env } as Record<string, string>)
+    ? baseEnv
     : {
-        ...process.env,
+        ...baseEnv,
         PATH: [watchmanDir, ...pathSegments].join(delimiter),
       };
   verbose(`watch: resolved watchman at ${watchmanPath}; forwarding directory in subprocess PATH.`);

@@ -71,6 +71,17 @@ function countContentLines(content: string): number {
 }
 
 /**
+ * Canonical `[check] file: message` rendering of a patch-lint issue — the
+ * one string shape every reporter and refusal message uses, so operators
+ * can grep one format across lint output and refusal details.
+ */
+export function formatPatchLintIssue(
+  issue: Pick<PatchLintIssue, 'check' | 'file' | 'message'>
+): string {
+  return `[${issue.check}] ${issue.file}: ${issue.message}`;
+}
+
+/**
  * Counts the total lines in a unified diff and the number of non-binary
  * text lines, so binary hunks do not inflate patch size checks.
  *
@@ -164,6 +175,18 @@ const PATCH_FILES_THRESHOLDS = {
 } as const;
 
 /**
+ * Shared remedy sentence for the over-budget findings (FORGE H4): the two
+ * places an operator stands when a patch outgrows its budget must name the
+ * sanctioned one-transaction way out, or they reach for the wrong tools
+ * first (the field report tried two before finding it). One constant, four
+ * emission sites — the wording cannot drift.
+ */
+const SPLIT_HINT =
+  'Consider splitting into smaller, focused patches — ' +
+  '"fireforge patch move-files <from> <to> --file <path> --create --order <n>" ' +
+  'moves files into a new patch in one transaction.';
+
+/**
  * Fixed allowlist of non-branding sibling paths that real-world Firefox
  * branding patches legitimately need to touch to register the new
  * branding flavor with the top-level configure. The 2026-04-21
@@ -238,6 +261,72 @@ function isBrowserChromeTestFile(file: string): boolean {
   const basename = file.split('/').pop() ?? '';
   if (basename === 'head.js' || /^head_.*\.js$/.test(basename)) return false;
   return basename.startsWith('browser_');
+}
+
+/**
+ * Bare assertion-call detection for the `test-needs-assertion` floor.
+ *
+ * Each alternative must sit at a call boundary: preceded by something that is
+ * not an identifier character, `.`, `#`, or `-`. Until 0.41.0 this was a plain
+ * `strippedContent.includes(tok)` over the tokens `Assert.`, `ok(`, `is(`,
+ * `isnot(`, `isDeeply(`, so any identifier merely *ending* in one satisfied
+ * the gate — `this.axis(3)` contains `is(`, `book(` contains `ok(`,
+ * `promiseIsDeeply(` contains `isDeeply(`. An assertion-free smoke test using
+ * any such call passed the floor, which is exactly what the rule exists to
+ * catch.
+ *
+ * The namespaced arm must name a member and a call. Matching the namespace and
+ * its dot alone — as `(?:Assert|SimpleTest)\.` did — re-opened the same hole
+ * from the other side: `SimpleTest` is mostly *harness* API, so
+ * `SimpleTest.finish()`, `SimpleTest.waitForExplicitFinish()` and
+ * `SimpleTest.requestCompleteLog()` each cleared the floor on their own. Those
+ * are the exact calls an assertion-free smoke test contains. The enumeration
+ * below is the mochitest/xpcshell assertion surface both namespaces share, and
+ * it is what the user-facing message already names.
+ *
+ * Two qualified spellings of the bare four still count: `window.ok(...)` (the
+ * globals ARE window properties) and an optional-chained `win?.ok(...)`.
+ * Blocking those flagged tests whose only assertions are real as
+ * assertion-free. `SpecialPowers.ok(` stays excluded — that is API surface,
+ * not an assertion.
+ *
+ * Deliberately still textual, not AST-based: this runs over patch bodies
+ * rather than resolvable sources, and the surrounding rule is a floor, not a
+ * proof.
+ */
+const ASSERTION_MEMBERS = [
+  'ok',
+  'is',
+  'isnot',
+  'isDeeply',
+  'equal',
+  'notEqual',
+  'deepEqual',
+  'notDeepEqual',
+  'strictEqual',
+  'notStrictEqual',
+  'greater',
+  'greaterOrEqual',
+  'less',
+  'lessOrEqual',
+  'stringMatches',
+  'stringContains',
+  'throws',
+  'rejects',
+  // `todo`, `todo_is`, `todo_isnot`, `info`-free — todo* record an expected
+  // failure, which is still a recorded assertion outcome.
+  'todo',
+  'todo_is',
+  'todo_isnot',
+].join('|');
+
+const BROWSER_CHROME_ASSERTION = new RegExp(
+  `(?<![\\w.#$-])(?:(?:Assert|SimpleTest)\\.(?:${ASSERTION_MEMBERS})\\s*\\(|(?:window\\.|[\\w$]+\\?\\.)?(?:ok|is|isnot|isDeeply)\\s*\\()`
+);
+
+/** True when `strippedContent` contains at least one assertion call. */
+export function hasBrowserChromeAssertion(strippedContent: string): boolean {
+  return BROWSER_CHROME_ASSERTION.test(strippedContent);
 }
 
 /**
@@ -458,8 +547,7 @@ export async function lintPatchedJs(
     // browser_*.js silently passed under the old `isNew` gate).
     const assertionFloor = config.patchLint?.testAssertionFloor;
     if (assertionFloor && assertionFloor !== 'off' && isBrowserChromeTestFile(file)) {
-      const ASSERTION_TOKENS = ['Assert.', 'ok(', 'is(', 'isnot(', 'isDeeply('];
-      const hasAssertion = ASSERTION_TOKENS.some((tok) => strippedContent.includes(tok));
+      const hasAssertion = hasBrowserChromeAssertion(strippedContent);
       if (!hasAssertion) {
         issues.push({
           file,
@@ -624,7 +712,7 @@ export function lintPatchSize(
     issues.push({
       file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-files',
-      message: `Patch affects ${filesAffected.length} files (recommended: ≤${fileThreshold}). Consider splitting into smaller, focused patches.`,
+      message: `Patch affects ${filesAffected.length} files (recommended: ≤${fileThreshold}). ${SPLIT_HINT}`,
       severity: 'warning',
     });
   }
@@ -633,21 +721,21 @@ export function lintPatchSize(
     issues.push({
       file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',
-      message: `Patch is ${lineCount} lines (hard limit: ${lineThresholds.error}). Consider splitting into smaller, focused patches.`,
+      message: `Patch is ${lineCount} lines (hard limit: ${lineThresholds.error}). ${SPLIT_HINT}`,
       severity: 'error',
     });
   } else if (lineCount > lineThresholds.warning) {
     issues.push({
       file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',
-      message: `Patch is ${lineCount} lines (soft limit: ${lineThresholds.warning}, hard limit: ${lineThresholds.error}). Consider splitting into smaller, focused patches.`,
+      message: `Patch is ${lineCount} lines (soft limit: ${lineThresholds.warning}, hard limit: ${lineThresholds.error}). ${SPLIT_HINT}`,
       severity: 'warning',
     });
   } else if (lineCount > lineThresholds.notice) {
     issues.push({
       file: AGGREGATE_PATCH_FILE,
       check: 'large-patch-lines',
-      message: `Patch is ${lineCount} lines (soft limit: ${lineThresholds.warning}, hard limit: ${lineThresholds.error}). Consider splitting into smaller, focused patches.`,
+      message: `Patch is ${lineCount} lines (soft limit: ${lineThresholds.warning}, hard limit: ${lineThresholds.error}). ${SPLIT_HINT}`,
       severity: 'notice',
     });
   }

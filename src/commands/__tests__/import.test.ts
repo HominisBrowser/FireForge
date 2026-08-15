@@ -40,11 +40,15 @@ vi.mock('../../core/patch-apply.js', async (importOriginal) => {
     discoverPatches: vi.fn().mockResolvedValue([]),
     extractAffectedFiles: vi.fn().mockReturnValue([]),
     applyPatchesWithContinue: vi.fn(),
-    computePatchedContent: computePatchedContentMock,
-    // Batched computer delegates to the same mock so existing
-    // computePatchedContent.mockResolvedValue calls keep driving tests.
-    createPatchedContentComputer: vi.fn(() =>
-      Promise.resolve((file: string) => computePatchedContentMock('', '', file))
+    // Batched context delegates to the shared mock so
+    // computePatchedContentMock.mockResolvedValue calls drive tests.
+    createPatchedContentContext: vi.fn(() =>
+      Promise.resolve({
+        manifestPatches: [],
+        computePatched: (file: string) => computePatchedContentMock('', '', file),
+        getAffectingPatches: () => [],
+        readPatchBody: vi.fn(),
+      })
     ),
     // Real matcher: --until scope-set resolution must share the apply
     // loop's identifier semantics (filenames AND bare ordinals).
@@ -94,7 +98,6 @@ import { getHead } from '../../core/git.js';
 import { getDirtyFiles } from '../../core/git-status.js';
 import {
   applyPatchesWithContinue,
-  computePatchedContent,
   countPatches,
   discoverPatches,
   extractAffectedFiles,
@@ -137,7 +140,7 @@ describe('importCommand drift handling', () => {
     vi.mocked(getHead).mockResolvedValue('drifted-head');
     vi.mocked(countPatches).mockResolvedValue(1);
     vi.mocked(getDirtyFiles).mockResolvedValue([]);
-    vi.mocked(computePatchedContent).mockResolvedValue('');
+    computePatchedContentMock.mockResolvedValue('');
     vi.mocked(discoverPatches).mockResolvedValue([
       { filename: '001-ui-test.patch', path: '/fake/patches/001.patch', order: 1 },
     ]);
@@ -267,7 +270,7 @@ describe('importCommand drift handling', () => {
       'browser/modules/mybrowser/FlushManager.sys.mjs',
     ]);
     vi.mocked(getDirtyFiles).mockResolvedValue(['browser/modules/mybrowser/FlushManager.sys.mjs']);
-    vi.mocked(computePatchedContent).mockResolvedValue('patched-content\n');
+    computePatchedContentMock.mockResolvedValue('patched-content\n');
     vi.mocked(readText).mockResolvedValue('patched-content\n');
     vi.mocked(pathExists).mockResolvedValue(true);
 
@@ -310,7 +313,7 @@ describe('importCommand drift handling', () => {
       'browser/modules/mybrowser/FlushManager.sys.mjs',
     ]);
     vi.mocked(getDirtyFiles).mockResolvedValue(['browser/modules/mybrowser/FlushManager.sys.mjs']);
-    vi.mocked(computePatchedContent).mockResolvedValue('patched-content\n');
+    computePatchedContentMock.mockResolvedValue('patched-content\n');
     vi.mocked(readText).mockResolvedValue('patched-content\n// local drift\n');
     vi.mocked(pathExists).mockResolvedValue(true);
 
@@ -336,7 +339,7 @@ describe('importCommand drift handling', () => {
       'browser/modules/mybrowser/FlushManager.sys.mjs',
       'browser/components/sidebar/sidebar.css',
     ]);
-    vi.mocked(computePatchedContent)
+    computePatchedContentMock
       .mockResolvedValueOnce('patched-content\n')
       .mockResolvedValueOnce(':root { color: blue; }\n');
     vi.mocked(readText).mockImplementation((targetPath) => {

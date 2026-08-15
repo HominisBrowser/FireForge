@@ -230,43 +230,66 @@ export async function furnaceStatusCommand(projectRoot: string, name?: string): 
   // hints, so report them separately rather than collapsing into a single
   // "something is off" message.
   if (await pathExists(paths.engine)) {
-    let workspaceChanged = false;
-    let engineDrifted = false;
+    // Held in an object rather than two `let`s: the scanner below mutates
+    // them from inside a closure, and TS's control-flow analysis does not
+    // propagate that through the call — it would narrow both to the literal
+    // `false` and flag every later read as always-falsy.
+    const drift = { workspaceChanged: false, engineDrifted: false };
 
-    for (const [oName, overrideConfig] of Object.entries(config.overrides)) {
-      const componentDir = join(furnacePaths.overridesDir, oName);
-      if (!(await pathExists(componentDir))) continue;
-      const previous = extractComponentChecksums(state.appliedChecksums, 'override', oName);
-      if (await hasComponentChanged(componentDir, previous)) {
-        workspaceChanged = true;
-      } else if (await hasOverrideEngineDrift(paths.engine, componentDir, overrideConfig, ftlDir)) {
-        engineDrifted = true;
-      }
-      if (workspaceChanged && engineDrifted) break;
-    }
-
-    if (!(workspaceChanged && engineDrifted)) {
-      for (const [cName, customConfig] of Object.entries(config.custom)) {
-        const componentDir = join(furnacePaths.customDir, cName);
+    /**
+     * Scans one component family for workspace or engine drift.
+     *
+     * The engine probe sits behind `else if` deliberately: a component whose
+     * workspace already changed does not need an engine comparison to decide
+     * what `status` reports, and the probe is the expensive half (it re-hashes
+     * deployed files). The consequence is that engine drift can go UNREPORTED
+     * for a component that also has workspace changes — the summary says
+     * "workspace changed", not both. Preserved verbatim from the two
+     * hand-written copies this replaced.
+     */
+    const scanFamily = async <TConfig>(
+      entries: [string, TConfig][],
+      baseDir: string,
+      kind: 'override' | 'custom',
+      probeEngineDrift: (
+        componentName: string,
+        componentDir: string,
+        cfg: TConfig
+      ) => Promise<boolean>
+    ): Promise<void> => {
+      for (const [componentName, componentConfig] of entries) {
+        if (drift.workspaceChanged && drift.engineDrifted) return;
+        const componentDir = join(baseDir, componentName);
         if (!(await pathExists(componentDir))) continue;
-        const previous = extractComponentChecksums(state.appliedChecksums, 'custom', cName);
+        const previous = extractComponentChecksums(state.appliedChecksums, kind, componentName);
         if (await hasComponentChanged(componentDir, previous)) {
-          workspaceChanged = true;
-        } else if (
-          await hasCustomEngineDrift(projectRoot, cName, componentDir, customConfig, ftlDir)
-        ) {
-          engineDrifted = true;
+          drift.workspaceChanged = true;
+        } else if (await probeEngineDrift(componentName, componentDir, componentConfig)) {
+          drift.engineDrifted = true;
         }
-        if (workspaceChanged && engineDrifted) break;
       }
-    }
+    };
 
-    if (workspaceChanged) {
+    await scanFamily(
+      Object.entries(config.overrides),
+      furnacePaths.overridesDir,
+      'override',
+      (_name, componentDir, cfg) => hasOverrideEngineDrift(paths.engine, componentDir, cfg, ftlDir)
+    );
+    await scanFamily(
+      Object.entries(config.custom),
+      furnacePaths.customDir,
+      'custom',
+      (name, componentDir, cfg) =>
+        hasCustomEngineDrift(projectRoot, name, componentDir, cfg, ftlDir)
+    );
+
+    if (drift.workspaceChanged) {
       warn(
         'Components have been modified since last apply. Run `fireforge build` or `fireforge furnace apply`.'
       );
     }
-    if (engineDrifted) {
+    if (drift.engineDrifted) {
       warn(
         'Engine drift detected since last apply (reset/download/manual edit). Run `fireforge furnace apply` to re-deploy.'
       );

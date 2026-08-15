@@ -21,6 +21,7 @@
  */
 
 import { GeneralError } from '../errors/base.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
 import { extractComponentChecksums, hasComponentChanged } from './furnace-apply-helpers.js';
@@ -117,9 +118,7 @@ export async function findStaleFurnaceComponentsForFiles(
     }
     return stale;
   } catch (error: unknown) {
-    verbose(
-      `Stale-furnace export gate skipped due to an error: ${error instanceof Error ? error.message : String(error)}`
-    );
+    verbose(`Stale-furnace export gate skipped due to an error: ${toError(error).message}`);
     return [];
   }
 }

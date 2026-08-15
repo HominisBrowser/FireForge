@@ -33,7 +33,12 @@ interface DirectoryEntry {
   name: string;
 }
 
-function isRegularFile(entry: DirectoryEntry): boolean {
+/**
+ * True for a plain-file directory entry — symlinks and directories are
+ * never copy candidates. Exported for the patch-owned overwrite probe
+ * (FORGE J6), which walks the same override copy-candidate set as apply.
+ */
+export function isRegularFile(entry: DirectoryEntry): boolean {
   if (!entry.isFile()) return false;
   if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) return false;
   return true;
@@ -243,9 +248,18 @@ export async function undeployOverrideFiles(
 /** Compares current component file checksums against the previously recorded state. */
 export async function hasComponentChanged(
   componentDir: string,
-  previousChecksums: Record<string, string>
+  previousChecksums: Record<string, string>,
+  currentChecksums?: Record<string, string>
 ): Promise<boolean> {
-  const current = await computeComponentChecksums(componentDir);
+  const current = currentChecksums ?? (await computeComponentChecksums(componentDir));
+  return componentChecksumsChanged(current, previousChecksums);
+}
+
+/** Pure checksum-map comparison used when the caller already walked the component. */
+function componentChecksumsChanged(
+  current: Readonly<Record<string, string>>,
+  previousChecksums: Readonly<Record<string, string>>
+): boolean {
   const currentKeys = Object.keys(current);
   const previousKeys = Object.keys(previousChecksums);
 

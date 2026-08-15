@@ -12,7 +12,13 @@ import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { escapeRegex } from '../utils/regex.js';
-import { type AcornESTreeNode, detectIndent, getNodeSource, parseScript } from './ast-utils.js';
+import {
+  type AcornESTreeNode,
+  asEstree,
+  detectIndent,
+  getNodeSource,
+  parseScript,
+} from './ast-utils.js';
 import { withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,
@@ -33,6 +39,34 @@ const BROWSER_INIT_JS = 'browser/base/content/browser-init.js';
  * fallback code paths agree on the shape.
  */
 const DEFAULT_MARKER = 'FIREFORGE:';
+
+/**
+ * Default insertion point: after the last consecutive fireforge block, or at
+ * the top of the method body when there is none.
+ *
+ * Both callers below — the `--after`-target-not-found fallthrough and the
+ * no-`--after` default — ran a character-for-character copy of this ladder,
+ * including both throw guards. `browser-init.js` is written through those two
+ * independent paths and they MUST emit identical blocks, so having one
+ * implementation enforces the invariant rather than merely tidying.
+ */
+function resolveDefaultInsertion(
+  content: string,
+  body: AcornESTreeNode<estree.BlockStatement>,
+  fireforgeBlocks: AcornESTreeNode<estree.Statement>[]
+): { insertPos: number; indent: string } {
+  if (fireforgeBlocks.length > 0) {
+    const lastBlock = fireforgeBlocks[fireforgeBlocks.length - 1];
+    if (!lastBlock) throw new GeneralError('Unexpected empty fireforgeBlocks array');
+    return { insertPos: lastBlock.end, indent: detectIndent(content, lastBlock.start) };
+  }
+  const firstStmt = body.body[0];
+  if (firstStmt) {
+    const insertPos = asEstree<estree.Statement>(firstStmt).start;
+    return { insertPos, indent: detectIndent(content, insertPos) };
+  }
+  return { insertPos: body.start + 1, indent: '    ' };
+}
 
 /**
  * AST-based implementation: finds onLoad() method body, locates existing
@@ -70,7 +104,7 @@ export function addInitAST(
   const fireforgeBlocks: AcornESTreeNode<estree.TryStatement>[] = [];
   for (const stmt of body.body) {
     if (stmt.type === 'TryStatement') {
-      const tryNode = stmt as AcornESTreeNode<estree.TryStatement>;
+      const tryNode = asEstree<estree.TryStatement>(stmt);
       const src = getNodeSource(content, tryNode);
       if (/typeof\s+\w+\s*!==\s*"undefined"/.test(src)) {
         fireforgeBlocks.push(tryNode);
@@ -93,40 +127,11 @@ export function addInitAST(
       indent = detectIndent(content, targetBlock.start);
     } else {
       // --after target not found: fall through to default (after last fireforge block)
-      if (fireforgeBlocks.length > 0) {
-        const lastBlock = fireforgeBlocks[fireforgeBlocks.length - 1];
-        if (!lastBlock) throw new GeneralError('Unexpected empty fireforgeBlocks array');
-        insertPos = lastBlock.end;
-        indent = detectIndent(content, lastBlock.start);
-      } else {
-        // No fireforge blocks, insert at top of method body
-        const firstStmt = body.body[0];
-        if (firstStmt) {
-          insertPos = (firstStmt as AcornESTreeNode<estree.Statement>).start;
-          indent = detectIndent(content, insertPos);
-        } else {
-          insertPos = body.start + 1;
-          indent = '    ';
-        }
-      }
+      ({ insertPos, indent } = resolveDefaultInsertion(content, body, fireforgeBlocks));
     }
   } else {
     // Default: insert after the last consecutive fireforge block at the start
-    if (fireforgeBlocks.length > 0) {
-      const lastBlock = fireforgeBlocks[fireforgeBlocks.length - 1];
-      if (!lastBlock) throw new GeneralError('Unexpected empty fireforgeBlocks array');
-      insertPos = lastBlock.end;
-      indent = detectIndent(content, lastBlock.start);
-    } else {
-      const firstStmt = body.body[0];
-      if (firstStmt) {
-        insertPos = (firstStmt as AcornESTreeNode<estree.Statement>).start;
-        indent = detectIndent(content, insertPos);
-      } else {
-        insertPos = body.start + 1;
-        indent = '    ';
-      }
-    }
+    ({ insertPos, indent } = resolveDefaultInsertion(content, body, fireforgeBlocks));
   }
 
   const block = [
@@ -271,7 +276,15 @@ export async function addInitToBrowserInit(
   const { value, usedFallback } = withParserFallback(
     () => addInitAST(content, expression, after, marker),
     () => legacyAddInit(content, expression, after, marker),
-    BROWSER_INIT_JS
+    BROWSER_INIT_JS,
+    // Rethrow only the internal-invariant GeneralErrors ("Unexpected empty
+    // …array"): those are programming bugs, and retrying the legacy scanner
+    // cannot fix a broken invariant — it just buries the stack. Everything
+    // else still falls back, which is load-bearing: the AST path raises a raw
+    // acorn SyntaxError on chrome sources acorn cannot parse (preprocessor
+    // directives), and BuildError when the file's shape is unexpected. Both
+    // are exactly what the legacy scanner is here to handle.
+    (error) => error instanceof GeneralError
   );
 
   if (usedFallback) {

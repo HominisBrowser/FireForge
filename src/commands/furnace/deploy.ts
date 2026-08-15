@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import { applyAllComponents } from '../../core/furnace-apply.js';
+import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
 import {
   furnaceConfigExists,
@@ -52,9 +52,7 @@ function buildDeployFailureMessage(
   return `${mode} completed with ${validationErrors} validation error(s).`;
 }
 
-function getFailedComponentNames(
-  result: Awaited<ReturnType<typeof applyAllComponents>>
-): Set<string> {
+function getFailedComponentNames(result: ApplyAllComponentsResult): Set<string> {
   const failed = new Set(result.errors.map((entry) => entry.name));
 
   for (const applied of result.applied) {
@@ -96,7 +94,7 @@ async function applyNamedComponent(
   isDryRun: boolean,
   projectRoot: string,
   operationContext?: FurnaceOperationContext
-): Promise<Awaited<ReturnType<typeof applyAllComponents>> | 'stock'> {
+): Promise<ApplyAllComponentsResult | 'stock'> {
   if (!(name in config.overrides) && !(name in config.custom)) {
     if (config.stock.includes(name)) {
       return 'stock';
@@ -121,7 +119,7 @@ async function applyNamedComponent(
  * @param isDryRun - Whether deploy was running in dry-run mode
  */
 function printDeploymentSummary(
-  result: Awaited<ReturnType<typeof applyAllComponents>>,
+  result: ApplyAllComponentsResult,
   totalErrors: number,
   totalWarnings: number,
   componentCount: number,
@@ -243,9 +241,7 @@ export async function furnaceDeployCommand(
     'deploy-rollback',
     async (
       ctx
-    ): Promise<
-      { kind: 'stock' } | { kind: 'result'; result: Awaited<ReturnType<typeof applyAllComponents>> }
-    > => {
+    ): Promise<{ kind: 'stock' } | { kind: 'result'; result: ApplyAllComponentsResult }> => {
       if (name) {
         const namedApplyResult = await applyNamedComponent(
           name,

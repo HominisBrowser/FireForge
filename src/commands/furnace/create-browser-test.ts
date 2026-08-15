@@ -79,7 +79,12 @@ export function resolveTestDirOverride(raw: string): string {
 // Exported for direct unit testing of the --test-dir / collision-safety
 // behaviour (the full create command needs a furnace project fixture).
 /**
+ * Writes the browser-mochitest scaffold for a component: the test file, its
+ * `browser.toml` manifest entry, and the parent `moz.build` registration.
  *
+ * Every write is recorded in `journal` when one is supplied, so a failure
+ * partway through is rolled back rather than leaving a half-registered test
+ * the harness will try to run.
  */
 export async function scaffoldTestFiles(
   componentName: string,

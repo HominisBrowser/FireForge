@@ -20,6 +20,7 @@ import {
 } from '../../core/destructive.js';
 import {
   buildPatchQueueContext,
+  formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueContext,
   type PatchQueueEntry,
@@ -38,7 +39,12 @@ import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchReorderOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
-import { commanderArgParser, pickDefined } from '../../utils/options.js';
+import {
+  addWaitLockOption,
+  commanderArgParser,
+  pickDefined,
+  resolveWaitLockSeconds,
+} from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
@@ -158,9 +164,11 @@ function renameMapsEqual(
 
 /**
  * Applies a rename map to a {@link PatchQueueContext} so cross-patch lint
- * can run against the projected state without touching disk.
+ * can run against the projected state without touching disk. Exported for
+ * `patch rename --order`, which projects the same single-row move shape
+ * (FORGE J10).
  */
-function projectReorder(
+export function projectReorder(
   base: PatchQueueContext,
   renameMap: Map<string, PatchRenameEntry>
 ): PatchQueueContext {
@@ -263,88 +271,98 @@ async function commitReorderPlan(
   config: Awaited<ReturnType<typeof loadConfig>>,
   buildHistoryEntry: (finalRenameMap: Map<string, PatchRenameEntry>) => HistoryEntry
 ): Promise<void> {
-  await withPatchDirectoryLock(patchesDir, async () => {
-    const currentManifest = await loadPatchesManifest(patchesDir);
-    if (!currentManifest || currentManifest.patches.length === 0) {
-      throw new GeneralError('Patch queue changed while waiting for confirmation. Re-run reorder.');
-    }
-
-    const currentTarget = currentManifest.patches.find((p) => p.filename === target.filename);
-    if (!currentTarget) {
-      throw new GeneralError(
-        `Patch queue changed while waiting for confirmation. ${target.filename} no longer exists; re-run reorder.`
-      );
-    }
-
-    let currentDestinationOrder: number;
-    if (options.to !== undefined) {
-      currentDestinationOrder = options.to;
-    } else if (options.before !== undefined) {
-      const currentAnchor = currentManifest.patches.find((p) => p.filename === anchorFilename);
-      if (!currentAnchor) {
+  await withPatchDirectoryLock(
+    patchesDir,
+    async () => {
+      const currentManifest = await loadPatchesManifest(patchesDir);
+      if (!currentManifest || currentManifest.patches.length === 0) {
         throw new GeneralError(
-          'Patch queue changed while waiting for confirmation. The reorder anchor moved or disappeared; re-run reorder.'
+          'Patch queue changed while waiting for confirmation. Re-run reorder.'
         );
       }
-      currentDestinationOrder = currentAnchor.order;
-    } else {
-      const currentAnchor = currentManifest.patches.find((p) => p.filename === anchorFilename);
-      if (!currentAnchor) {
+
+      const currentTarget = currentManifest.patches.find((p) => p.filename === target.filename);
+      if (!currentTarget) {
         throw new GeneralError(
-          'Patch queue changed while waiting for confirmation. The reorder anchor moved or disappeared; re-run reorder.'
+          `Patch queue changed while waiting for confirmation. ${target.filename} no longer exists; re-run reorder.`
         );
       }
-      currentDestinationOrder = currentAnchor.order + 1;
-    }
 
-    const currentRenameMap = computeRenameMap(
-      currentManifest.patches,
-      currentTarget,
-      currentDestinationOrder
-    );
-    if (!renameMapsEqual(renameMap, currentRenameMap)) {
-      throw new GeneralError(
-        'Patch queue changed while waiting for confirmation. Re-run reorder to recompute the rename plan.'
+      let currentDestinationOrder: number;
+      if (options.to !== undefined) {
+        currentDestinationOrder = options.to;
+      } else if (options.before !== undefined) {
+        const currentAnchor = currentManifest.patches.find((p) => p.filename === anchorFilename);
+        if (!currentAnchor) {
+          throw new GeneralError(
+            'Patch queue changed while waiting for confirmation. The reorder anchor moved or disappeared; re-run reorder.'
+          );
+        }
+        currentDestinationOrder = currentAnchor.order;
+      } else {
+        const currentAnchor = currentManifest.patches.find((p) => p.filename === anchorFilename);
+        if (!currentAnchor) {
+          throw new GeneralError(
+            'Patch queue changed while waiting for confirmation. The reorder anchor moved or disappeared; re-run reorder.'
+          );
+        }
+        currentDestinationOrder = currentAnchor.order + 1;
+      }
+
+      const currentRenameMap = computeRenameMap(
+        currentManifest.patches,
+        currentTarget,
+        currentDestinationOrder
       );
-    }
+      if (!renameMapsEqual(renameMap, currentRenameMap)) {
+        throw new GeneralError(
+          'Patch queue changed while waiting for confirmation. Re-run reorder to recompute the rename plan.'
+        );
+      }
 
-    enforcePatchPolicy({
-      config,
-      manifest: applyRenameMapToManifest(currentManifest, currentRenameMap),
-      command: 'patch reorder',
-      forceUnsafe: options.forceUnsafe === true,
-    });
+      enforcePatchPolicy({
+        config,
+        manifest: applyRenameMapToManifest(currentManifest, currentRenameMap),
+        command: 'patch reorder',
+        forceUnsafe: options.forceUnsafe === true,
+      });
 
-    const currentProjected = projectReorder(
-      await buildPatchQueueContext(patchesDir),
-      currentRenameMap
-    );
-    const currentConflicts = lintPatchQueue(currentProjected).filter((i) => i.severity === 'error');
-    if (currentConflicts.length > 0 && options.forceUnsafe !== true) {
-      throw new InvalidArgumentError(
-        `Refusing to run patch reorder: reorder would introduce ${currentConflicts.length} cross-patch lint error(s). Pass --force-unsafe to override.`,
-        '--force-unsafe'
+      const currentProjected = projectReorder(
+        await buildPatchQueueContext(patchesDir),
+        currentRenameMap
       );
-    }
-
-    await renumberPatchesInManifest(patchesDir, currentRenameMap);
-
-    // Append the history record inside the lock so two concurrent
-    // reorders cannot interleave mutation and history writes, and so a
-    // crash between the rename and the history write cannot orphan a
-    // committed reorder with no audit trail. If the append itself
-    // fails (disk full, permissions), we warn but do not re-throw:
-    // the mutation has already succeeded and is not reversible, so
-    // surfacing the history failure as a command failure would
-    // mislead the caller.
-    try {
-      await appendHistory(patchesDir, buildHistoryEntry(currentRenameMap));
-    } catch (historyError: unknown) {
-      warn(
-        `History log append failed after patch reorder committed: ${toError(historyError).message}`
+      const currentConflicts = lintPatchQueue(currentProjected).filter(
+        (i) => i.severity === 'error'
       );
-    }
-  });
+      if (currentConflicts.length > 0 && options.forceUnsafe !== true) {
+        throw new InvalidArgumentError(
+          `Refusing to run patch reorder: reorder would introduce ${currentConflicts.length} cross-patch lint error(s):\n  ${currentConflicts
+            .map(formatPatchLintIssue)
+            .join('\n  ')}\nPass --force-unsafe to override.`,
+          '--force-unsafe'
+        );
+      }
+
+      await renumberPatchesInManifest(patchesDir, currentRenameMap);
+
+      // Append the history record inside the lock so two concurrent
+      // reorders cannot interleave mutation and history writes, and so a
+      // crash between the rename and the history write cannot orphan a
+      // committed reorder with no audit trail. If the append itself
+      // fails (disk full, permissions), we warn but do not re-throw:
+      // the mutation has already succeeded and is not reversible, so
+      // surfacing the history failure as a command failure would
+      // mislead the caller.
+      try {
+        await appendHistory(patchesDir, buildHistoryEntry(currentRenameMap));
+      } catch (historyError: unknown) {
+        warn(
+          `History log append failed after patch reorder committed: ${toError(historyError).message}`
+        );
+      }
+    },
+    { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch reorder' }
+  );
 }
 
 /**
@@ -416,7 +434,7 @@ export async function patchReorderCommand(
     errorIssues.length > 0
       ? {
           reason: `reorder would introduce ${errorIssues.length} cross-patch lint error(s)`,
-          details: errorIssues.map((i) => `[${i.check}] ${i.file}: ${i.message}`),
+          details: errorIssues.map(formatPatchLintIssue),
         }
       : null;
 
@@ -499,7 +517,7 @@ export async function patchReorderCommand(
  */
 export function registerPatchReorder(parent: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  parent
+  const command = parent
     .command('reorder <name>')
     .description('Move a patch to a different position in the queue (destructive)')
     .addOption(
@@ -511,22 +529,26 @@ export function registerPatchReorder(parent: Command, context: CommandContext): 
     .option('--after <anchor>', 'Place the patch immediately after <anchor>')
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
-    .option('--force-unsafe', 'Bypass the refusal when the projected order introduces a lint error')
-    .action(
-      withErrorHandling(
-        async (
-          name: string,
-          options: {
-            to?: number;
-            before?: string;
-            after?: string;
-            dryRun?: boolean;
-            yes?: boolean;
-            forceUnsafe?: boolean;
-          }
-        ) => {
-          await patchReorderCommand(getProjectRoot(), name, pickDefined(options));
-        }
-      )
+    .option(
+      '--force-unsafe',
+      'Bypass the refusal when the projected order introduces a lint error'
     );
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (
+        name: string,
+        options: {
+          to?: number;
+          before?: string;
+          after?: string;
+          dryRun?: boolean;
+          yes?: boolean;
+          forceUnsafe?: boolean;
+          waitLock?: number | boolean;
+        }
+      ) => {
+        await patchReorderCommand(getProjectRoot(), name, pickDefined(options));
+      }
+    )
+  );
 }

@@ -455,6 +455,131 @@ describe('projectPlacementForLint', () => {
     expect(await readdir(patchesDir)).not.toContain('001-infra-new.patch');
   });
 
+  it('names the projected lint errors in the under-lock refusal, not just a count (FORGE J7)', async () => {
+    // The refusal used to report only "would introduce N cross-patch lint
+    // error(s)" and discard the per-issue details, forcing operators to
+    // re-derive the errors with a separate lint run.
+    await seed(patchesDir, [
+      {
+        metadata: makeMetadata('005-infra-b.patch', 5, ['foo/B.sys.mjs']),
+        body: createDiff('foo/B.sys.mjs', 'export const B = 1;'),
+      },
+    ]);
+    const expectedPlan = computePlacementPlan(
+      [makeMetadata('005-infra-b.patch', 5, ['foo/B.sys.mjs'])],
+      'infra',
+      'a',
+      1
+    );
+
+    await expect(
+      commitPlacementExport({
+        patchesDir,
+        options: { order: 1 },
+        category: 'infra',
+        name: 'a',
+        diff: createDiff(
+          'foo/A.sys.mjs',
+          'import { B } from "resource:///modules/B.sys.mjs";\nexport const A = B;'
+        ),
+        metadata: makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs']),
+        expectedPlan,
+      })
+    ).rejects.toThrow(
+      /Refusing to run export:.*\n\s+errors in the exported patch content \(1\):\n\s+\[forward-import\] foo\/A\.sys\.mjs:/
+    );
+
+    expect(await readdir(patchesDir)).not.toContain('001-infra-a.patch');
+  });
+
+  it('labels errors already present in the queue as pre-existing, not renumbering consequences (FORGE K9)', async () => {
+    // The base queue is ALREADY broken: 001 imports a module that 005
+    // creates later (forward-import fires today, before any placement).
+    // Placing a new, clean patch re-detects the same error in the
+    // projection; blaming it on the renumber — or on the new patch —
+    // would misattribute, so it must land in the "already present" group.
+    await seed(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-early.patch', 1, ['foo/Early.sys.mjs']),
+        body: createDiff(
+          'foo/Early.sys.mjs',
+          'import { L } from "resource:///modules/Late.sys.mjs";\nexport const E = L;'
+        ),
+      },
+      {
+        metadata: makeMetadata('005-infra-late.patch', 5, ['foo/Late.sys.mjs']),
+        body: createDiff('foo/Late.sys.mjs', 'export const L = 1;'),
+      },
+    ]);
+    const plan = computePlacementPlan(
+      [
+        makeMetadata('001-infra-early.patch', 1, ['foo/Early.sys.mjs']),
+        makeMetadata('005-infra-late.patch', 5, ['foo/Late.sys.mjs']),
+      ],
+      'infra',
+      'tail',
+      3
+    );
+
+    const conflicts = await projectPlacementForLint(
+      patchesDir,
+      plan,
+      createDiff('foo/Tail.sys.mjs', 'export const T = 1;')
+    );
+
+    expect(conflicts).not.toBeNull();
+    const details = conflicts?.details ?? [];
+    expect(details[0]).toBe('errors already present in the queue before this export (1):');
+    expect(details[1]).toMatch(/^ {2}\[forward-import\] foo\/Early\.sys\.mjs:/);
+    expect(details.join('\n')).not.toContain('exported patch content');
+    expect(details.join('\n')).not.toContain('consequences of renumbering');
+  });
+
+  it('classifies an error introduced between existing patches by the renumber as a renumbering consequence (FORGE K9)', async () => {
+    // A uniform ordinal shift preserves relative order, so a renumbering
+    // casualty needs policy interplay (e.g. a category-range violation on
+    // a shifted patch) that is expensive to stage end-to-end. Pin the
+    // attribution contract directly through the helper: an error that
+    // implicates only existing (renamed) patches and is absent from the
+    // baseline renders under the renumbering header with the
+    // NOT-from-the-exported-content disclaimer.
+    const { groupProjectedPlacementErrors } = await import('../export-placement-conflicts.js');
+    const renameMap = new Map([
+      ['010-infra-shifted.patch', { newFilename: '011-infra-shifted.patch', newOrder: 11 }],
+    ]);
+    const details = groupProjectedPlacementErrors(
+      [
+        {
+          file: 'foo/Shifted.sys.mjs',
+          check: 'forward-import',
+          patches: ['011-infra-shifted.patch'],
+          message: 'renumber casualty',
+          severity: 'error',
+        },
+        {
+          file: 'foo/New.sys.mjs',
+          check: 'forward-import',
+          patches: ['003-infra-new.patch'],
+          message: 'new patch defect',
+          severity: 'error',
+        },
+      ],
+      [],
+      {
+        insertionOrder: 3,
+        newFilename: '003-infra-new.patch',
+        renameMap,
+      }
+    );
+
+    expect(details).toEqual([
+      'errors in the exported patch content (1):',
+      '  [forward-import] foo/New.sys.mjs: new patch defect',
+      'consequences of renumbering existing patches to make room at ordinal 3 (1) — these come from renumbering, NOT from the exported content:',
+      '  [forward-import] foo/Shifted.sys.mjs: renumber casualty',
+    ]);
+  });
+
   it('rejects export placement into a reserved policy range', async () => {
     await seed(patchesDir, [
       {

@@ -40,6 +40,29 @@ export function isMachineOutputMode(): boolean {
   return machineOutputMode;
 }
 
+/**
+ * Whether stdout is sealed behind a machine-readable final line.
+ *
+ * The `FIREFORGE-VERDICT:` contract promises that line as the run's LAST
+ * stdout write — but emit-then-throw failure paths rethrow into
+ * `withErrorHandling`, whose clack error/cancel rendering lands on stdout
+ * in non-machine mode, displacing the verdict from the final line. The
+ * verdict sink seals stdout the moment it writes; every later logger call
+ * routes to stderr through the same diagnostic channel machine mode uses.
+ * `withErrorHandling`'s finally clears the seal (alongside machine mode).
+ */
+let stdoutSealed = false;
+
+/** Seals (or unseals) stdout after a machine-readable final line. */
+export function setStdoutSealed(sealed: boolean): void {
+  stdoutSealed = sealed;
+}
+
+/** True when human output must avoid stdout. */
+function routeToStderr(): boolean {
+  return machineOutputMode || stdoutSealed;
+}
+
 /** Writes a plain diagnostic line to stderr (machine-mode side channel). */
 function writeDiagnostic(prefix: string, message: string): void {
   process.stderr.write(`${prefix}${message}\n`);
@@ -59,7 +82,7 @@ function isVerbose(): boolean {
  */
 export function verbose(message: string): void {
   if (!isVerbose()) return;
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     writeDiagnostic('[debug] ', message);
     return;
   }
@@ -84,19 +107,19 @@ function supportsInteractiveSpinner(): boolean {
 
 /** Displays the top-level intro banner for a command. */
 export function intro(message: string): void {
-  if (machineOutputMode) return;
+  if (routeToStderr()) return;
   p.intro(message);
 }
 
 /** Displays the closing outro banner for a command. */
 export function outro(message: string): void {
-  if (machineOutputMode) return;
+  if (routeToStderr()) return;
   p.outro(message);
 }
 
 /** Logs an informational message. */
 export function info(message: string): void {
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     writeDiagnostic('', message);
     return;
   }
@@ -105,7 +128,7 @@ export function info(message: string): void {
 
 /** Logs a success message. */
 export function success(message: string): void {
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     writeDiagnostic('', message);
     return;
   }
@@ -114,7 +137,7 @@ export function success(message: string): void {
 
 /** Logs a warning message. */
 export function warn(message: string): void {
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     writeDiagnostic('warning: ', message);
     return;
   }
@@ -123,7 +146,7 @@ export function warn(message: string): void {
 
 /** Logs an error message. */
 export function error(message: string): void {
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     writeDiagnostic('error: ', message);
     return;
   }
@@ -132,7 +155,7 @@ export function error(message: string): void {
 
 /** Logs an in-progress step message. */
 export function step(message: string): void {
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     writeDiagnostic('', message);
     return;
   }
@@ -141,7 +164,7 @@ export function step(message: string): void {
 
 /** Logs a plain message without a status prefix. */
 export function message(message: string): void {
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     writeDiagnostic('', message);
     return;
   }
@@ -164,7 +187,7 @@ export function formatErrorText(message: string): string {
  * @returns Spinner handle with message(), stop(), and error() methods
  */
 export function spinner(initialMessage: string): SpinnerHandle {
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     // Spinner progress is diagnostics; keep stdout clean for the payload.
     return {
       message: (msg: string) => {
@@ -214,21 +237,31 @@ export function spinner(initialMessage: string): SpinnerHandle {
 
 /** Emits a cancellation message. */
 export function cancel(message: string): void {
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     writeDiagnostic('cancelled: ', message);
     return;
   }
   p.cancel(message);
 }
 
-/** Checks whether a prompt result represents a user cancellation. */
-export function isCancel(value: unknown): boolean {
+/**
+ * Checks whether a prompt result represents a user cancellation.
+ *
+ * Narrows to `symbol` — clack returns its cancel sentinel as a symbol and
+ * `p.isCancel` is itself a type predicate. This wrapper erased that narrowing
+ * by returning plain `boolean` until 0.41.0, which forced eleven `as string`
+ * / `as PatchCategory` / `as OverrideType` casts across six command modules
+ * on the *non*-cancelled branch, where the value is already known not to be
+ * the sentinel. Keep the predicate form: it is the single highest-leverage
+ * signature in the codebase for escape-hatch count.
+ */
+export function isCancel(value: unknown): value is symbol {
   return p.isCancel(value);
 }
 
 /** Displays a titled note block for follow-up details. */
 export function note(message: string, title?: string): void {
-  if (machineOutputMode) {
+  if (routeToStderr()) {
     writeDiagnostic('', title ? `${title}: ${message}` : message);
     return;
   }

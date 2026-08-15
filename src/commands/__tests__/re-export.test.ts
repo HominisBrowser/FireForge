@@ -32,6 +32,16 @@ vi.mock('../../core/file-lock.js', () => ({
   withFileLock: vi.fn((_lockPath: string, operation: () => Promise<unknown>) => operation()),
 }));
 
+// The dry-run purity guard fingerprints the engine generation and fails
+// closed on an `unavailable:` token (FORGE I9). This suite's fake
+// `/project/engine` has no git checkout, so the probe is stubbed to a
+// stable measurable token; the fail-closed behavior itself is pinned in
+// re-export.integration.test.ts against a real repository.
+vi.mock('../../core/engine-session-lock.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/engine-session-lock.js')>()),
+  snapshotEngineGeneration: vi.fn(() => Promise.resolve('test-head\0')),
+}));
+
 vi.mock('../../core/git-diff.js', () => ({
   getDiffForFilesAgainstHead: vi.fn().mockResolvedValue('diff --git a/x b/x\n+content\n'),
 }));
@@ -57,6 +67,10 @@ vi.mock('../../core/patch-manifest.js', async (importOriginal) => {
 });
 
 vi.mock('../../core/patch-lint.js', () => ({
+  formatPatchLintIssue: vi.fn(
+    (issue: { check: string; file: string; message: string }) =>
+      `[${issue.check}] ${issue.file}: ${issue.message}`
+  ),
   lintExportedPatch: vi.fn().mockResolvedValue([]),
   detectNewFilesInDiff: vi.fn().mockReturnValue(new Set()),
   commentStyleForFile: vi.fn().mockReturnValue(null),
@@ -64,6 +78,16 @@ vi.mock('../../core/patch-lint.js', () => ({
   buildModifiedFileAdditionsFromDiff: vi.fn().mockReturnValue(new Map()),
   lintPatchQueue: vi.fn().mockReturnValue([]),
   resolvePatchSizeTier: vi.fn().mockReturnValue({ tier: 'general' }),
+  countNonBinaryDiffLines: vi.fn().mockReturnValue({ total: 0, textLines: 0 }),
+}));
+
+vi.mock('../../core/lint-cache.js', () => ({
+  loadPerPatchLintCache: vi.fn(() => Promise.resolve({ schemaVersion: 3, entries: {} })),
+  getPerPatchLintCacheHeadSha: vi.fn(() => Promise.resolve('headsha')),
+  buildPerPatchLintCacheKey: vi.fn(() => Promise.resolve('cache-key')),
+  getCachedPerPatchLintIssues: vi.fn(() => undefined),
+  setCachedPerPatchLintIssues: vi.fn(),
+  savePerPatchLintCache: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -280,12 +304,33 @@ describe('reExportCommand - --scan flag', () => {
       return Promise.resolve(true);
     });
 
-    await expect(reExportCommand('/fake/root', ['001', '002'], {})).resolves.toBeUndefined();
+    // FORGE H8: partial re-export throws AFTER the summary prints, so the
+    // honest "N of M" accounting stays visible but the exit code is non-zero.
+    await expect(reExportCommand('/fake/root', ['001', '002'], {})).rejects.toThrow(
+      /Re-exported only 1 of 2 selected patch\(es\)\. Skipped: 1 patch\(es\)/
+    );
 
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith('Skipped 002-ui-missing.patch: all affected files missing');
     expect(success).toHaveBeenCalledWith('Re-exported 1 of 2 patch(es)');
     expect(outro).toHaveBeenCalledWith('Re-export complete');
+  });
+
+  it('a partial dry-run also exits non-zero, after printing the preview summary (FORGE H8)', async () => {
+    const existingPatch = makePatch('001-ui-keep.patch', ['a.js']);
+    const missingPatch = makePatch('002-ui-missing.patch', ['missing.js']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([existingPatch, missingPatch]));
+    vi.mocked(pathExists).mockImplementation((targetPath: string) => {
+      if (targetPath.endsWith('/missing.js')) return Promise.resolve(false);
+      return Promise.resolve(true);
+    });
+
+    await expect(reExportCommand('/fake/root', ['001', '002'], { dryRun: true })).rejects.toThrow(
+      /\[dry-run\] Would re-export only 1 of 2 selected patch\(es\)/
+    );
+
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+    expect(success).toHaveBeenCalledWith('[dry-run] Would re-export 1 of 2 patch(es)');
   });
 
   it('plain re-export suggests --scan-file for adjacent unmanaged files', async () => {
@@ -368,6 +413,21 @@ describe('reExportCommand - --scan flag', () => {
     await expect(
       reExportCommand('/fake/root', ['001'], { scan: true, refuseAdjacentUnmanaged: true })
     ).rejects.toThrow('--refuse-adjacent-unmanaged applies to the scan-less path only');
+  });
+
+  it('--refuse-foreign-drift is refused alongside --scan and --files', async () => {
+    await expect(
+      reExportCommand('/fake/root', ['001'], { scan: true, refuseForeignDrift: true })
+    ).rejects.toThrow('--refuse-foreign-drift applies to the scan-less path only');
+    await expect(
+      reExportCommand('/fake/root', ['001'], { files: ['a.js'], refuseForeignDrift: true })
+    ).rejects.toThrow('--refuse-foreign-drift applies to the scan-less path only');
+  });
+
+  it('--expect is refused without --refuse-foreign-drift (FORGE L6)', async () => {
+    await expect(
+      reExportCommand('/fake/root', ['001'], { expect: ['comp/mod.js'] })
+    ).rejects.toThrow('--expect names files whose drift is expected under --refuse-foreign-drift');
   });
 
   it('should discover new files in scanned directories', async () => {
@@ -939,9 +999,11 @@ describe('reExportCommand - --scan flag', () => {
     vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
     vi.mocked(getClaimedFiles).mockReturnValue(new Set<string>());
 
-    // pathExists calls: engine dir, a.js (scan), deleted.js (scan), a.js (missing check)
+    // pathExists calls: engine dir, patches dir (hoisted lint context),
+    // a.js (scan), deleted.js (scan), a.js (missing check)
     vi.mocked(pathExists)
       .mockResolvedValueOnce(true) // engine dir exists
+      .mockResolvedValueOnce(true) // patches dir exists (lint context)
       .mockResolvedValueOnce(true) // a.js exists (scan removal check)
       .mockResolvedValueOnce(false) // deleted.js does not exist (scan removal check)
       .mockResolvedValueOnce(true); // a.js exists (missing file check)
@@ -1259,7 +1321,9 @@ describe('reExportCommand - --scan flag', () => {
       ])
       .mockResolvedValueOnce([]);
 
-    await expect(reExportCommand('/fake/root', [], { all: true })).resolves.toBeUndefined();
+    await expect(reExportCommand('/fake/root', [], { all: true })).rejects.toThrow(
+      /Re-exported only 1 of 2 selected patch\(es\)\. Failed: 001-ui-first\.patch\./
+    );
 
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
     expect(updatePatchAndMetadata).toHaveBeenCalledWith(
@@ -1407,7 +1471,9 @@ describe('reExportCommand - --scan flag', () => {
         .mockRejectedValueOnce(indexLockError())
         .mockRejectedValueOnce(indexLockError());
 
-      await expect(reExportCommand('/fake/root', ['001', '002'], {})).resolves.toBeUndefined();
+      await expect(reExportCommand('/fake/root', ['001', '002'], {})).rejects.toThrow(
+        /Re-exported only 1 of 2 selected patch\(es\)\. Failed: 001-ui-locked\.patch\./
+      );
 
       expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
       expect(success).toHaveBeenCalledWith('Re-exported 1 of 2 patch(es)');
@@ -1461,7 +1527,10 @@ describe('reExportCommand - --scan flag', () => {
         return Promise.resolve(true);
       });
 
-      await reExportCommand('/fake/root', [], { all: true, stamp: true });
+      // The stamp refusal warn prints before the FORGE H8 partial-run throw.
+      await expect(reExportCommand('/fake/root', [], { all: true, stamp: true })).rejects.toThrow(
+        /Re-exported only 1 of 2 selected patch\(es\)/
+      );
 
       expect(stampPatchVersions).not.toHaveBeenCalled();
       expect(warn).toHaveBeenCalledWith(

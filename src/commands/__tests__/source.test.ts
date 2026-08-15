@@ -12,10 +12,12 @@ import { success } from '../../utils/logger.js';
 import { sourceSetCommand } from '../source.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  setStdoutSealed: vi.fn(),
   intro: vi.fn(),
   outro: vi.fn(),
   success: vi.fn(),
   info: vi.fn(),
+  setMachineOutputMode: vi.fn(),
 }));
 
 describe('sourceSetCommand', () => {

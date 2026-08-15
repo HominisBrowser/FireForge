@@ -2,7 +2,7 @@
 import type * as estree from 'estree';
 
 import { GeneralError, ParserFallbackError } from '../errors/base.js';
-import { type AcornESTreeNode, walkAST } from './ast-utils.js';
+import { type AcornESTreeNode, asEstree, walkAST } from './ast-utils.js';
 
 /**
  * Validates a name for safe interpolation into generated JavaScript string literals.
@@ -393,15 +393,15 @@ export function findMethodBody(
     enter(node) {
       if (found) return;
       if (node.type === 'Property') {
-        const prop = node as AcornESTreeNode<estree.Property>;
+        const prop = asEstree<estree.Property>(node);
         if (
           prop.key.type === 'Identifier' &&
           names.includes(prop.key.name) &&
           (prop.value.type === 'FunctionExpression' ||
             prop.value.type === 'ArrowFunctionExpression')
         ) {
-          const fn = prop.value as AcornESTreeNode<estree.FunctionExpression>;
-          found = fn.body as AcornESTreeNode<estree.BlockStatement>;
+          const fn = asEstree<estree.FunctionExpression>(prop.value);
+          found = asEstree<estree.BlockStatement>(fn.body);
         }
       }
     },

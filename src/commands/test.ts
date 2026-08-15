@@ -1,23 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join, resolve } from 'node:path';
 
-import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
-import type { TestPackagingCoverage } from '../core/build-baseline-types.js';
-import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import {
   assertEngineGenerationUnchanged,
   snapshotEngineGeneration,
 } from '../core/engine-session-lock.js';
-import {
-  buildArtifactMismatchMessage,
-  hasBuildArtifacts,
-  hasRunnableBundle,
-  runProtectedMachBuild,
-  withBuildLock,
-} from '../core/mach.js';
+import { hasBuildArtifacts, hasRunnableBundle } from '../core/mach.js';
+import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import {
   assertMarionettePortAvailable,
+  ensureLaunchableBrowserNotRunning,
   ensureMarionettePortAvailable,
   extractForwardedMarionettePort,
   forwardedMachArgsIncludeMarionetteClient,
@@ -28,20 +21,20 @@ import {
   reportMarionettePreflight,
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
-import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
 import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
 import {
   analyzeTestPathScopes,
   formatScopeNotice,
   type TestPathScope,
 } from '../core/test-path-scope.js';
+import { assertObjdirMatchesTreeMarker } from '../core/tree-store.js';
 import { GeneralError } from '../errors/base.js';
-import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
+import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
-import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, outro, spinner, success, verbose } from '../utils/logger.js';
+import { info, intro, outro, success, verbose } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
+import { runTestBuildPhase } from './test-build-phase.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
 import {
   assertPathlessTestMode,
@@ -54,14 +47,21 @@ import {
 } from './test-modes.js';
 import {
   DEFAULT_HARNESS_RETRIES,
+  finalizeShardedOutcome,
   runShardedTests,
   runTestsWithRetries,
+  type ShardedRunSummary,
   type ShardGroup,
   type TestRunContext,
   type TestRunOutcome,
   type TestSuite,
 } from './test-run.js';
-import { enforceStaleBuildGate, enforceStaticComponentsGate } from './test-stale-gate.js';
+import {
+  emitFailVerdict,
+  emitPassVerdict,
+  resetVerdictEmission,
+  verdictEmitted,
+} from './test-verdict.js';
 
 async function assertTestPathsExist(engineDir: string, testPaths: string[]): Promise<void> {
   const missingPaths: string[] = [];
@@ -144,75 +144,6 @@ async function resolveLaunchablePathForTests(
   return bundleCheck.expectedPath;
 }
 
-async function runPreTestBuild(
-  projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  projectConfig: Awaited<ReturnType<typeof loadConfig>>,
-  harnessRetries: number,
-  testPackagingCoverage: TestPackagingCoverage
-): Promise<void> {
-  await withBuildLock(projectRoot, async () => {
-    // Pass the previous baseline exactly like `fireforge build` does, so
-    // auto-configure runs under the same conditions on both paths. The
-    // pre-test build must never invalidate more of the objdir than a plain
-    // `mach build faster` would (field incident: a failed pre-test build
-    // was followed by a ~64-minute full rebuild where an incremental one
-    // should have sufficed).
-    const previousBaseline = await readBuildBaseline(projectRoot);
-    await prepareBuildEnvironment(projectRoot, paths, projectConfig, { previousBaseline });
-    const s = spinner('Running incremental build...');
-    // The pre-test build routes through the same protected mach dispatch as
-    // `fireforge build` / `build --ui`: in-venv resource-monitor guard plus
-    // the uniform recognized-crash retry budget, with a fresh mach process
-    // (and fresh guard install) per attempt. prepareBuildEnvironment runs
-    // ONCE, outside the retry loop — retries never re-run mach configure.
-    const result = await runProtectedMachBuild('faster', paths.engine, {
-      retries: harnessRetries,
-      onRetry: (signature, nextAttempt, maxAttempts) => {
-        s.message(
-          `Pre-test build hit a harness crash (${signature.reason}); ` +
-            `retrying (attempt ${nextAttempt} of ${maxAttempts})...`
-        );
-      },
-    });
-    if (result.exitCode === 0) {
-      s.stop('Build complete');
-      // Same record, same failure tolerance as `fireforge build` /
-      // `build --ui` (build.ts): a green pre-test build refreshes the
-      // stale-build baseline so a later plain `fireforge test` over the
-      // same files — in any invocation shape — is not refused. A failed
-      // write never fails the run. The coverage claim is scoped to the
-      // requested test paths, since a file-scoped `test --build` only
-      // guarantees packaging for those manifests. The previous baseline is
-      // passed through so a scoped write carries the static-components
-      // anchor forward (a `mach build faster` does not rebake
-      // components.conf into the compiled table).
-      try {
-        await writeBuildBaseline(
-          projectRoot,
-          paths.engine,
-          projectConfig.binaryName,
-          testPackagingCoverage,
-          previousBaseline,
-          testPackagingCoverage === 'full'
-            ? 'fireforge test --build'
-            : `fireforge test --build ${testPackagingCoverage.join(' ')}`
-        );
-      } catch (baselineError: unknown) {
-        verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
-      }
-      return;
-    }
-    s.error('Pre-test build failed');
-    throw new BuildError(
-      result.crashSignature
-        ? buildHarnessCrashMessage(result.crashSignature, result.attempts, 'mach build faster')
-        : 'Pre-test build failed',
-      'mach build faster'
-    );
-  });
-}
-
 function logTestSelection(scopes: readonly TestPathScope[]): void {
   if (scopes.length > 0) {
     const labels = scopes.map((scope) =>
@@ -225,36 +156,6 @@ function logTestSelection(scopes: readonly TestPathScope[]): void {
     info('Running all tests...');
   }
   info('');
-}
-
-/**
- * Validates the build-artifact preconditions for running tests: rejects
- * ambiguous multi-objdir checkouts, platform-mismatched artifacts, and
- * missing/incomplete builds with the actionable message for each. Returns
- * the successful artifact probe for downstream objdir use.
- */
-async function assertTestBuildArtifacts(
-  engineDir: string
-): Promise<Awaited<ReturnType<typeof hasBuildArtifacts>>> {
-  const buildCheck = await hasBuildArtifacts(engineDir);
-  if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
-    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
-  }
-  const mismatchMessage = buildArtifactMismatchMessage(engineDir, buildCheck, 'Tests');
-  if (mismatchMessage) {
-    throw new GeneralError(mismatchMessage);
-  }
-  if (!buildCheck.exists) {
-    const detail = buildCheck.objDir
-      ? `Build artifacts incomplete in ${buildCheck.objDir}/`
-      : 'No build artifacts found (obj-*/ directory missing)';
-    throw new GeneralError(
-      `Tests require a completed build. ${detail}\n\n` +
-        "Run 'fireforge build' first, then run 'fireforge test'."
-    );
-  }
-
-  return buildCheck;
 }
 
 /**
@@ -299,13 +200,19 @@ async function runDoctorPreflight(args: {
   reportMarionettePreflight(preflight);
   if (!hasTestPaths) {
     if (!preflight.ok) {
+      emitFailVerdict('preflight');
       throw new GeneralError('Marionette preflight reported FAIL — see output above.');
     }
     success(directLine);
+    // Doctor-only runs end here, so they carry their own verdict line
+    // (reason=preflight on failure); with test paths the verdict comes
+    // from the actual harness run downstream.
+    emitPassVerdict();
     outro('Test completed');
     return 'stop';
   }
   if (!preflight.ok) {
+    emitFailVerdict('preflight');
     throw new GeneralError(
       'Marionette preflight reported FAIL — see output above. Aborting before mach test runs.'
     );
@@ -383,6 +290,8 @@ async function ensureTestMarionettePortAvailable(
   options: TestOptions,
   skip: { xpcshellOnly: boolean; doctor: boolean }
 ): Promise<void> {
+  // Refuse a stale listener before mach surfaces a generic bind failure.
+  // This also recognizes a fork-branded browser via binaryName.
   if (skip.xpcshellOnly && !skip.doctor) {
     // xpcshell does not bind the browser Marionette port, so a developer's
     // interactive browser holding 2828 must not kill an xpcshell run
@@ -405,8 +314,51 @@ async function ensureTestMarionettePortAvailable(
   await assertMarionettePortAvailable(port, { binaryName });
 }
 
+async function ensureTestBrowserEnvironment(
+  engineDir: string,
+  launchablePath: string | undefined,
+  xpcshellOnly: boolean,
+  binaryName: string,
+  options: TestOptions
+): Promise<{ forwardedPort: number | undefined; effectivePort: number | undefined }> {
+  // A timed-out mochitest can leave the built app alive after its Marionette
+  // listener has disappeared. The port probe cannot see that case, but the
+  // survivor can still steal focus and wedge every later headed run.
+  if (!xpcshellOnly && launchablePath) {
+    await ensureLaunchableBrowserNotRunning(join(engineDir, launchablePath), {
+      killStaleBrowser: options.killStaleMarionette === true,
+    });
+  }
+  const forwardedPort = options.machArg
+    ? extractForwardedMarionettePort(options.machArg)
+    : undefined;
+  const effectivePort = options.marionettePort ?? forwardedPort;
+  await ensureTestMarionettePortAvailable(effectivePort, binaryName, options, {
+    xpcshellOnly,
+    doctor: options.doctor === true,
+  });
+  return { forwardedPort, effectivePort };
+}
+
+/** Build-artifact preflight wording for `fireforge test`. */
+const TEST_BUILD_PREFLIGHT = {
+  label: 'Tests',
+  requirement: 'Tests require a completed build.',
+  remediation: "Run 'fireforge build' first, then run 'fireforge test'.",
+  requireExisting: true,
+} as const;
+
 /**
  * Runs the test command to execute mach tests.
+ *
+ * Owns the run's exactly-one-`FIREFORGE-VERDICT:`-line guarantee: the sink
+ * is re-armed at entry, and any failure that reaches this boundary without
+ * an inner writer having emitted — the preflight ladder (missing engine or
+ * build, config errors, stale-build and port gates, missing paths), and a
+ * harness process that failed to start — emits `FAIL reason=preflight`,
+ * since no harness classification exists for such a run. Writers closer to
+ * the harness (doctor, canary, single, sharded, the engine-generation
+ * guard) emit first and win.
  * @param projectRoot - Root directory of the project
  * @param testPaths - Test file or directory paths
  * @param options - Test options
@@ -417,7 +369,39 @@ export async function testCommand(
   options: TestOptions = {}
 ): Promise<void> {
   intro('FireForge Test');
+  resetVerdictEmission();
+  try {
+    await runTestCommandBody(projectRoot, testPaths, options);
+  } catch (error: unknown) {
+    if (!verdictEmitted()) emitFailVerdict('preflight');
+    throw error;
+  }
+}
 
+/**
+ * Verifies `engine/` did not change under the run before any PASS verdict
+ * may print. On failure the run's verdict is `FAIL reason=inconclusive` —
+ * the harness result exists but cannot be trusted (`preflight` would
+ * misdescribe a run whose harness already executed) — emitted here so the
+ * guard's throw can never leave a stale or missing verdict line behind.
+ */
+async function verifyEngineGenerationOrEmitInconclusive(
+  engineDir: string,
+  before: string
+): Promise<void> {
+  try {
+    await assertEngineGenerationUnchanged(engineDir, before);
+  } catch (error: unknown) {
+    emitFailVerdict('inconclusive');
+    throw error;
+  }
+}
+
+async function runTestCommandBody(
+  projectRoot: string,
+  testPaths: string[],
+  options: TestOptions = {}
+): Promise<void> {
   const paths = getProjectPaths(projectRoot);
 
   // Check if engine exists
@@ -426,7 +410,11 @@ export async function testCommand(
   }
   assertPathlessTestMode(testPaths, options);
 
-  const buildCheck = await assertTestBuildArtifacts(paths.engine);
+  const buildCheck = await hasBuildArtifacts(paths.engine);
+  assertBuildArtifacts(paths.engine, buildCheck, TEST_BUILD_PREFLIGHT);
+  // Inside a verification tree, only the objdir the marker records was
+  // proven rewritten-and-reconfigured to the tree; refuse any other.
+  await assertObjdirMatchesTreeMarker(projectRoot, buildCheck.objDir);
 
   // Load the project config once so both the build and the port
   // probe have access to `binaryName` (the port probe uses it to
@@ -461,25 +449,17 @@ export async function testCommand(
 
   const { classification, xpcshellOnly } = await classifyBeforeDispatch(
     paths.engine,
-    normalizedPaths
+    normalizedPaths,
+    { allowMixed: options.buildOnly === true }
   );
 
-  // Run incremental build if requested
-  if (options.build) {
-    // A path-less `test --build` runs (and packages for) the full suite;
-    // a scoped invocation only vouches for the requested paths. A SCOPED
-    // rebuild also cannot regenerate the compiled StaticComponents table,
-    // so it runs the components.conf gate up-front (the path-less shape
-    // refreshes the anchor itself and skips it).
-    const coverage: TestPackagingCoverage = normalizedPaths.length === 0 ? 'full' : normalizedPaths;
-    if (normalizedPaths.length > 0) {
-      const previousBaseline = await readBuildBaseline(projectRoot);
-      await enforceStaticComponentsGate(paths.engine, previousBaseline, options);
-    }
-    await runPreTestBuild(projectRoot, paths, projectConfig, harnessRetries, coverage);
-    info('');
-  } else {
-    await enforceStaleBuildGate(projectRoot, paths.engine, options, normalizedPaths);
+  if (
+    await runTestBuildPhase(projectRoot, paths, projectConfig, harnessRetries, options, {
+      classification,
+      normalizedPaths,
+    })
+  ) {
+    return;
   }
 
   // Resolve the effective Marionette port. Operator precedence:
@@ -492,23 +472,13 @@ export async function testCommand(
   // documented `--mach-arg --marionette-port=NNNN` workaround would still
   // hit the wrapper preflight refusing on 2828 before the forwarded arg
   // ever reached mach.
-  const forwardedPort = options.machArg
-    ? extractForwardedMarionettePort(options.machArg)
-    : undefined;
-  const effectivePort = options.marionettePort ?? forwardedPort;
-
-  // Stale-browser probe: an interrupted earlier test run can leave a
-  // Firefox/ForgeFresh/fork instance listening on the Marionette
-  // control port, which breaks the next mach test launch with a
-  // bind error that points nowhere near the real cause. Raise a
-  // targeted refusal up front instead of letting mach surface the
-  // generic bind failure. 2026-04-21 eval (Finding #20): a stale
-  // `-marionette` process from `fresh/` poisoned a later test run in
-  // the sibling `mybrowser/` workspace.
-  await ensureTestMarionettePortAvailable(effectivePort, projectConfig.binaryName, options, {
+  const { forwardedPort, effectivePort } = await ensureTestBrowserEnvironment(
+    paths.engine,
+    launchablePath,
     xpcshellOnly,
-    doctor: options.doctor === true,
-  });
+    projectConfig.binaryName,
+    options
+  );
 
   if (options.doctor) {
     const doctorOutcome = await runDoctorPreflight({
@@ -618,13 +588,19 @@ export async function testCommand(
         'Cross-argument state is NOT exercised — pass --no-shard for a combined single-instance run.'
     );
     const generationBefore = await snapshotEngineGeneration(paths.engine);
+    let summary: ShardedRunSummary;
     try {
-      await runShardedTests(runCtx, dispatchGroups, (outcome, label) =>
+      summary = await runShardedTests(runCtx, dispatchGroups, (outcome, label) =>
         diagnoseShardOutcome(outcome, label, projectConfig.binaryName, postRebuildContext)
       );
     } finally {
-      await assertEngineGenerationUnchanged(paths.engine, generationBefore);
+      // Runs BEFORE the aggregate verdict below: a mutated engine/ emits
+      // `FAIL reason=inconclusive` and throws, so an invalidated run can
+      // never print `PASS shards=N/N` first. (A throw here masks an
+      // in-flight shard error, as the plain assert always did.)
+      await verifyEngineGenerationOrEmitInconclusive(paths.engine, generationBefore);
     }
+    finalizeShardedOutcome(summary);
     return;
   }
 
@@ -640,7 +616,7 @@ export async function testCommand(
       error instanceof Error ? error : undefined
     );
   } finally {
-    await assertEngineGenerationUnchanged(paths.engine, generationBefore);
+    await verifyEngineGenerationOrEmitInconclusive(paths.engine, generationBefore);
   }
 
   if (canaryPath !== undefined) {

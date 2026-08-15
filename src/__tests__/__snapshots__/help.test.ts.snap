@@ -54,6 +54,11 @@ A build tool for customizing Firefox
 Options:
   -V, --version                     output the version number
   -v, --verbose                     Enable debug output
+  --ignore-corrupt-tree-marker      Run even when .fireforge/tree.json exists
+                                    but cannot be parsed. Without this the tree
+                                    guard refuses, because an unreadable marker
+                                    leaves it unknown whether this is a snapshot
+                                    or the primary tree.
   -h, --help                        display help for command
 
 Project:
@@ -102,9 +107,10 @@ Workflow:
   test [options] [paths...]         Run tests via mach test
   tree                              Manage copy-on-write verification clones of
                                     this project for concurrent read-mostly work
-                                    (lint, typecheck, status, verify, export
-                                    --dry-run). Mutation commands are refused
-                                    inside a tree.
+                                    (lint, typecheck, status, verify,
+                                    export/re-export --dry-run; build-less test
+                                    with create --with-objdir). Mutation
+                                    commands are refused inside a tree.
   register [options] <path>         Register a file in the appropriate build
                                     manifest
   wire [options] <name>             Wire a chrome subscript into the browser
@@ -143,8 +149,8 @@ Options:
   --force                Proceed despite baseVersion drift (stale overrides)
   -w, --watch            Watch component directories and re-apply on changes
   --wait-lock [seconds]  Wait up to this many seconds (default 60) for another
-                         FireForge engine-mutating command to release the engine
-                         lock, instead of failing immediately
+                         FireForge command to release the contended lock,
+                         instead of failing on the default budget
   -h, --help             display help for command
 "
 `;
@@ -219,8 +225,8 @@ Options:
   --force                Proceed despite baseVersion drift (stale overrides)
   --skip-validate        Skip the validation step (apply only)
   --wait-lock [seconds]  Wait up to this many seconds (default 60) for another
-                         FireForge engine-mutating command to release the engine
-                         lock, instead of failing immediately
+                         FireForge command to release the contended lock,
+                         instead of failing on the default budget
   -h, --help             display help for command
 "
 `;
@@ -360,9 +366,8 @@ Options:
                              theirs = accept upstream) (choices: "ours",
                              "theirs")
   --wait-lock [seconds]      Wait up to this many seconds (default 60) for
-                             another FireForge engine-mutating command to
-                             release the engine lock, instead of failing
-                             immediately
+                             another FireForge command to release the contended
+                             lock, instead of failing on the default budget
   -h, --help                 display help for command
 "
 `;
@@ -387,20 +392,23 @@ create the target patch and move the files in one transaction with --create
 --order <n>.
 
 Options:
-  --file <path>          File path relative to engine/ to move (repeatable)
-                         (default: [])
-  --create               Create <to> as a new patch and move the files into it
-                         (requires --order)
-  --order <n>            Exact sparse order for the created patch (only valid
-                         with --create)
-  --category <category>  Category for the created patch (default: the source
-                         patch's)
-  --description <desc>   Description for the created patch
-  --dry-run              Show what would happen without writing
-  -y, --yes              Skip confirmation prompt (required for non-TTY)
-  --force-unsafe         Bypass projected-lint refusals
-  --skip-lint            Skip per-patch lint of the projected bodies
-  -h, --help             display help for command
+  --file <path>             File path relative to engine/ to move (repeatable)
+                            (default: [])
+  --create                  Create <to> as a new patch and move the files into
+                            it (requires --order)
+  --order <n>               Exact sparse order for the created patch (only valid
+                            with --create)
+  --category <category>     Category for the created patch (default: the source
+                            patch's)
+  -d, --description <desc>  Description for the created patch
+  --dry-run                 Show what would happen without writing
+  -y, --yes                 Skip confirmation prompt (required for non-TTY)
+  --force-unsafe            Bypass projected-lint refusals
+  --skip-lint               Skip per-patch lint of the projected bodies
+  --wait-lock [seconds]     Wait up to this many seconds (default 60) for
+                            another FireForge command to release the contended
+                            lock, instead of failing on the default budget
+  -h, --help                display help for command
 "
 `;
 

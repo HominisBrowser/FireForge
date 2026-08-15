@@ -13,7 +13,9 @@ import {
   classifyHarnessRun,
   collectUnexpectedFailureBlocks,
   detectHarnessCrashSignature,
+  extractSummaryCounts,
   findCrashMarkerLine,
+  formatFireforgeVerdictLine,
   hasCompletedGreenSummary,
   headedNoOutputTimeoutHint,
   stripNonSignalNoise,
@@ -217,6 +219,77 @@ const GREEN_XPCSHELL_WITH_DEGRADATION_NOISE = [
 ].join('\n');
 
 const XPCSHELL_DIR_PATHS = ['toolkit/components/foo/test/unit'];
+
+describe('extractSummaryCounts (FORGE I5)', () => {
+  it('parses checks and unexpected from an xpcshell result summary', () => {
+    expect(extractSummaryCounts(XPCSHELL_PASS_RUN)).toEqual({ checks: 16, unexpected: 0 });
+  });
+
+  it('last summary wins when a multi-suite run prints several', () => {
+    const multi = [
+      'Ran 4 checks',
+      'Unexpected results: 2',
+      'Ran 16 checks',
+      'Unexpected results: 0',
+    ].join('\n');
+    expect(extractSummaryCounts(multi)).toEqual({ checks: 16, unexpected: 0 });
+  });
+
+  it('omits both keys when no summary printed them', () => {
+    expect(extractSummaryCounts(GREEN_RUN)).toEqual({});
+  });
+
+  it('classifyHarnessRun carries the parsed counts on its verdict', () => {
+    const verdict = classifyHarnessRun(0, XPCSHELL_PASS_RUN, [
+      'toolkit/components/foo/test/unit/test_settings.js',
+    ]);
+    expect(verdict.kind).toBe('tests-ran-ok');
+    expect(verdict.checks).toBe(16);
+    expect(verdict.unexpected).toBe(0);
+  });
+});
+
+describe('formatFireforgeVerdictLine (FORGE I5)', () => {
+  it('formats a pass with counts', () => {
+    expect(formatFireforgeVerdictLine({ kind: 'tests-ran-ok', checks: 16, unexpected: 0 })).toBe(
+      'FIREFORGE-VERDICT: PASS checks=16 unexpected=0'
+    );
+  });
+
+  it('formats a pass without counts (keys omitted, never zeroed)', () => {
+    expect(formatFireforgeVerdictLine({ kind: 'tests-ran-ok' })).toBe('FIREFORGE-VERDICT: PASS');
+  });
+
+  it('a greenSummaryOverride pass still says PASS (verdict over exit code)', () => {
+    expect(
+      formatFireforgeVerdictLine({ kind: 'tests-ran-ok', greenSummaryOverride: true, checks: 16 })
+    ).toBe('FIREFORGE-VERDICT: PASS checks=16');
+  });
+
+  it('a crash-classified run says FAIL reason=crash even when the summary looks green at exit 0', () => {
+    const verdict = classifyHarnessRun(0, HANG_WITH_FALSE_SUMMARY, PATHS);
+    expect(verdict.kind).toBe('harness-crash');
+    expect(formatFireforgeVerdictLine(verdict)).toMatch(/^FIREFORGE-VERDICT: FAIL reason=crash/);
+  });
+
+  it('maps no-tests and test-failures reasons', () => {
+    expect(formatFireforgeVerdictLine({ kind: 'no-tests' })).toBe(
+      'FIREFORGE-VERDICT: FAIL reason=no-tests'
+    );
+    expect(formatFireforgeVerdictLine({ kind: 'test-failures', unexpected: 3 })).toBe(
+      'FIREFORGE-VERDICT: FAIL reason=test-failures unexpected=3'
+    );
+  });
+
+  it('a rejected green summary formats as test-failures', () => {
+    expect(
+      formatFireforgeVerdictLine({
+        kind: 'test-failures',
+        greenSummaryRejected: { neverStarted: [], neverEnded: ['a.js'] },
+      })
+    ).toBe('FIREFORGE-VERDICT: FAIL reason=test-failures');
+  });
+});
 
 describe('green-summary veto and noise exclusion (0.34.0)', () => {
   it('does not classify a completed green suite with degradation noise as a crash', () => {
@@ -562,8 +635,10 @@ describe('green-summary rejection on crash/truncation evidence (0.35.0 field rep
   });
 
   it('leaves mach exit 0 classification untouched', () => {
+    // `unexpected` rides along since I5 — the fixture's summary prints it.
     expect(classifyHarnessRun(0, GREEN_PAIRED_WITH_MONITOR_NOISE, TWO_HOMINIS_FILES)).toEqual({
       kind: 'tests-ran-ok',
+      unexpected: 0,
     });
     expect(classifyHarnessRun(0, GREEN_RUN, PATHS)).toEqual({ kind: 'tests-ran-ok' });
   });

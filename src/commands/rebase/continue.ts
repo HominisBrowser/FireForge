@@ -10,10 +10,18 @@ import { getStagedDiffForFiles } from '../../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../../core/git-file-ops.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
-import { loadRebaseSession, saveRebaseSession } from '../../core/rebase-session.js';
+import {
+  getRebaseSessionPath,
+  readRebaseSession,
+  saveRebaseSession,
+} from '../../core/rebase-session.js';
 import { runInSignalCriticalSection } from '../../core/signal-critical.js';
 import { GeneralError } from '../../errors/base.js';
-import { NoRebaseSessionError, RebaseError } from '../../errors/rebase.js';
+import {
+  CorruptRebaseSessionError,
+  NoRebaseSessionError,
+  RebaseError,
+} from '../../errors/rebase.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, success, warn } from '../../utils/logger.js';
 import { runPatchLoop } from './patch-loop.js';
@@ -24,8 +32,15 @@ import { runPatchLoop } from './patch-loop.js';
 export async function handleContinue(projectRoot: string, maxFuzz: number): Promise<void> {
   intro('FireForge Rebase — Continue');
 
-  const session = await loadRebaseSession(projectRoot);
-  if (!session) throw new NoRebaseSessionError();
+  // A present-but-unreadable session is NOT "no session in progress" — that
+  // conflation is what made a corrupt file unrecoverable. Name the file and
+  // point at --abort, which can now clear it.
+  const read = await readRebaseSession(projectRoot);
+  if (!read.present) throw new NoRebaseSessionError();
+  if (!read.valid) {
+    throw new CorruptRebaseSessionError(getRebaseSessionPath(projectRoot), read.reason);
+  }
+  const session = read.session;
 
   const paths = getProjectPaths(projectRoot);
 

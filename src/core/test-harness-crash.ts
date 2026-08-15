@@ -33,8 +33,16 @@ export interface HarnessCrashSignature {
   line: string;
 }
 
+/** Numeric counts parsed from the harness's embedded result summary. */
+export interface HarnessSummaryCounts {
+  /** Total checks the suite ran (`Ran N checks`), when the summary prints one. */
+  checks?: number;
+  /** Unexpected-result count (`Unexpected results: N`), when the summary prints one. */
+  unexpected?: number;
+}
+
 /** Result of {@link classifyHarnessRun}. */
-export interface HarnessRunVerdict {
+export interface HarnessRunVerdict extends HarnessSummaryCounts {
   kind: HarnessRunClassification;
   signature?: HarnessCrashSignature;
   /** First concrete test-failure evidence line, when available. */
@@ -541,6 +549,7 @@ export function classifyHarnessRun(
   output: string,
   requestedPaths: readonly string[]
 ): HarnessRunVerdict {
+  const counts = extractSummaryCounts(output);
   const realFailures = realUnexpectedFailureLines(output);
   const firstRealFailure = realFailures[0];
   const failureBlocks = collectUnexpectedFailureBlocks(output);
@@ -548,16 +557,16 @@ export function classifyHarnessRun(
     firstRealFailure !== undefined ? detectSecondaryHarnessNoise(output) : undefined;
   const signature = detectHarnessCrashSignature(output);
   if (signature) {
-    return { kind: 'harness-crash', signature };
+    return { kind: 'harness-crash', signature, ...counts };
   }
 
   const ranTests = hasExecutionSignal(output);
   if (!ranTests && requestedPaths.length > 0) {
-    return { kind: 'no-tests' };
+    return { kind: 'no-tests', ...counts };
   }
 
   if (exitCode === 0) {
-    return { kind: 'tests-ran-ok' };
+    return { kind: 'tests-ran-ok', ...counts };
   }
   // Exit codes follow the corrected verdict: a run whose embedded summary
   // completed green is a pass even when the wrapper exit code went
@@ -582,6 +591,7 @@ export function classifyHarnessRun(
     ) {
       return {
         kind: 'test-failures',
+        ...counts,
         ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
         ...(failureBlocks.length > 0 ? { realFailureBlocks: failureBlocks } : {}),
         ...(secondaryHarnessSignature !== undefined ? { secondaryHarnessSignature } : {}),
@@ -592,14 +602,75 @@ export function classifyHarnessRun(
         },
       };
     }
-    return { kind: 'tests-ran-ok', greenSummaryOverride: true };
+    return { kind: 'tests-ran-ok', greenSummaryOverride: true, ...counts };
   }
   return {
     kind: 'test-failures',
+    ...counts,
     ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
     ...(failureBlocks.length > 0 ? { realFailureBlocks: failureBlocks } : {}),
     ...(secondaryHarnessSignature !== undefined ? { secondaryHarnessSignature } : {}),
   };
+}
+
+/**
+ * Parses the numeric counts from the harness's embedded result summary
+ * (`Ran N checks` / `Unexpected results: N`). The LAST occurrence of each
+ * wins — a multi-suite run prints one summary per suite and the final one
+ * covers the aggregate the operator sees. Absent counts are omitted (the
+ * `FIREFORGE-VERDICT:` contract: an absent key means "summary did not
+ * print it", never zero).
+ */
+export function extractSummaryCounts(output: string): HarnessSummaryCounts {
+  const checks = lastCapturedCount(output, /\bRan (\d+) checks?\b/g);
+  const unexpected = lastCapturedCount(output, /\bUnexpected results:\s*(\d+)\b/g);
+  return {
+    ...(checks !== undefined ? { checks } : {}),
+    ...(unexpected !== undefined ? { unexpected } : {}),
+  };
+}
+
+/** Last captured integer for `pattern` in `output`, if any occurrence matches. */
+function lastCapturedCount(output: string, pattern: RegExp): number | undefined {
+  let last: number | undefined;
+  for (const match of output.matchAll(pattern)) {
+    const captured = match[1];
+    if (captured !== undefined) {
+      last = Number.parseInt(captured, 10);
+    }
+  }
+  return last;
+}
+
+/**
+ * Formats the machine-readable `FIREFORGE-VERDICT:` line — the stable,
+ * greppable last line every `fireforge test` run prints so harness-verdict
+ * consumers stop regexing mach internals. The status follows THIS
+ * classifier, never the raw exit code: a crash-classified run says
+ * `FAIL reason=crash` even at exit 0, and a green-summary-override pass
+ * says `PASS` despite a non-zero mach exit. Count keys are omitted when
+ * the embedded summary did not print them. Sharded aggregate lines carry
+ * a trailing `shards=<passed>/<total>` instead of counts (counts belong
+ * to a single embedded suite summary).
+ */
+export function formatFireforgeVerdictLine(
+  verdict: HarnessRunVerdict,
+  shards?: { passed: number; total: number }
+): string {
+  const counts =
+    (verdict.checks !== undefined ? ` checks=${verdict.checks}` : '') +
+    (verdict.unexpected !== undefined ? ` unexpected=${verdict.unexpected}` : '');
+  const shardSuffix = shards ? ` shards=${shards.passed}/${shards.total}` : '';
+  if (verdict.kind === 'tests-ran-ok') {
+    return `FIREFORGE-VERDICT: PASS${counts}${shardSuffix}`;
+  }
+  const reason =
+    verdict.kind === 'harness-crash'
+      ? 'crash'
+      : verdict.kind === 'no-tests'
+        ? 'no-tests'
+        : 'test-failures';
+  return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${shardSuffix}`;
 }
 
 /**

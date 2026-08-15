@@ -59,6 +59,17 @@ export function parseModule(
 /**
  * Convenience cast from `acorn.Node` (or the generic ESTree union returned
  * by estree-walker callbacks) to a positioned, narrowly-typed node.
+ *
+ * **Caller obligation: you must already have discriminated on `node.type`.**
+ * This performs no runtime check — it exists to attach acorn's `start`/`end`
+ * offsets to a node the caller has *already* narrowed, typically inside a
+ * `if (node.type === 'CallExpression')` branch or an equivalent walker guard.
+ * Calling it on an undiscriminated node produces a value whose type is a lie.
+ *
+ * A runtime `type` assertion was considered and rejected: every call site sits
+ * in the hot loop of a lint or registration walker, and all of them are
+ * already post-narrowing, so the check would cost traversal time on every node
+ * to re-prove something the enclosing branch established.
  */
 export function asEstree<T extends estree.Node>(node: estree.Node): AcornESTreeNode<T> {
   return node as AcornESTreeNode<T>;

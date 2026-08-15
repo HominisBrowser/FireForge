@@ -25,7 +25,9 @@ import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { stripJsComments } from '../utils/regex.js';
 import { discoverPatches } from './patch-files.js';
+import { collectNewFileCreatorsByPath } from './patch-lint-creators.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
+import { lintPatchQueueModuleRegistrations } from './patch-lint-module-registration.js';
 import { loadPatchesManifest } from './patch-manifest-io.js';
 import { categoryRangeForOrder, categoryRangeLabel } from './patch-policy.js';
 import { extractNewFileContent } from './patch-transform.js';
@@ -157,37 +159,14 @@ export async function buildPatchQueueContext(
   return { entries, ...(config?.patchPolicy ? { patchPolicy: config.patchPolicy } : {}) };
 }
 
-/**
- * Returns the raw `path → patches[]` map of files created in `new file
- * mode` by at least one patch in the queue. Paths created by only one
- * patch are also included so callers can distinguish "no creator" from
- * "exactly one creator" without re-scanning the diffs.
- *
- * Split out from {@link lintPatchQueueDuplicateCreations} so
- * `status --ownership` (and any future caller that wants ownership
- * without a rendered PatchLintIssue) can consume the same structured
- * data the rule itself relies on. Previously status had to parse the
- * rule's human-readable message to recover the patch list, which was
- * both fragile and made the lint message format part of an implicit
- * contract.
- *
- * @param ctx - Pre-built queue context
- */
-export function collectNewFileCreatorsByPath(ctx: PatchQueueContext): Map<string, string[]> {
-  const creators = new Map<string, string[]>();
-  for (const entry of ctx.entries) {
-    const newFiles = detectNewFilesInDiff(entry.diff);
-    for (const file of newFiles) {
-      let owners = creators.get(file);
-      if (!owners) {
-        owners = [];
-        creators.set(file, owners);
-      }
-      owners.push(entry.filename);
-    }
-  }
-  return creators;
-}
+// The creators map (split out of `lintPatchQueueDuplicateCreations` so
+// `status --ownership` can consume the structured data) lives in
+// `patch-lint-creators.ts` with its per-context memoisation (FORGE J1);
+// re-exported here so callers keep importing from `patch-lint.ts`.
+export {
+  collectNewFileCreatorsByPath,
+  invalidateNewFileCreatorsCache,
+} from './patch-lint-creators.js';
 
 /**
  * Cross-patch lint rule: the same path is newly created (`--- /dev/null →
@@ -208,6 +187,7 @@ export function lintPatchQueueDuplicateCreations(ctx: PatchQueueContext): PatchL
       issues.push({
         file,
         check: 'duplicate-new-file-creation',
+        patches: [...owners].sort((a, b) => a.localeCompare(b)),
         fingerprint: `duplicate-new-file-creation|${file}|${[...owners].sort((a, b) => a.localeCompare(b)).join(',')}`,
         message:
           `File "${file}" is created (new file mode) by multiple patches: ${owners.join(', ')}. ` +
@@ -702,6 +682,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
     issues.push({
       file: sitePath,
       check: 'forward-import',
+      patches: [entry.filename],
       fingerprint: `forward-import|${sitePath}|${cleaned}|${fingerprintOwners}`,
       message:
         `${sitePath} in ${entry.filename} imports "${specifier}", ` +
@@ -721,6 +702,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
       issues.push({
         file: dependency.file,
         check: 'staged-dependency-unused',
+        patches: [entry.filename],
         fingerprint: `staged-dependency-unused|${entry.filename}|${dependency.file}|${dependency.specifier}|${dependency.creates}|${dependency.owner ?? ''}`,
         message:
           `${entry.filename} declares a staged forward import from ${dependency.file} ` +
@@ -744,6 +726,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
       issues.push({
         file: registration.file,
         check: 'staged-dependency-unused',
+        patches: [entry.filename],
         fingerprint: `staged-dependency-unused|${entry.filename}|${registration.file}|reg:${registration.line}|${registration.creates}|${registration.owner ?? ''}`,
         message:
           `${entry.filename} declares a staged registration in ${registration.file} ` +
@@ -841,5 +824,9 @@ function isRegistrationLinePresent(
  *   manually for projected/hypothetical states)
  */
 export function lintPatchQueue(ctx: PatchQueueContext): PatchLintIssue[] {
-  return [...lintPatchQueueDuplicateCreations(ctx), ...lintPatchQueueForwardImports(ctx)];
+  return [
+    ...lintPatchQueueDuplicateCreations(ctx),
+    ...lintPatchQueueForwardImports(ctx),
+    ...lintPatchQueueModuleRegistrations(ctx),
+  ];
 }

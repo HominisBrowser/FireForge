@@ -47,6 +47,7 @@ import {
 } from './build-audit-registration.js';
 import {
   countTrailingSegmentMatches,
+  GENERIC_PATH_SEGMENTS,
   isTestPath,
   resolveBestArtifact,
 } from './build-audit-resolve.js';
@@ -179,6 +180,7 @@ async function resolveDistRoot(engineDir: string): Promise<string | undefined> {
   try {
     entries = await readdir(engineDir);
   } catch {
+    // No readable engine directory means no objdir can be identified.
     return undefined;
   }
   const objDirs = entries.filter((e) => e.startsWith('obj-'));
@@ -202,6 +204,7 @@ async function resolveTestsRoot(engineDir: string): Promise<string | undefined> 
   try {
     entries = await readdir(engineDir);
   } catch {
+    // No readable engine directory means no objdir can be identified.
     return undefined;
   }
   const objDirs = entries.filter((e) => e.startsWith('obj-'));
@@ -289,25 +292,7 @@ function isConfidentMatch(source: string, candidate: string): boolean {
   }
   const sourceSegs = source.split('/').filter(Boolean);
   const candSegs = candidate.split('/').filter(Boolean);
-  const generic = new Set([
-    'content',
-    'chrome',
-    'bin',
-    'browser',
-    'toolkit',
-    'modules',
-    'base',
-    'app',
-    'profile',
-    'shared',
-    'themes',
-    'test',
-    'tests',
-    'unit',
-    'common',
-    'xpcshell',
-    'mochitest',
-  ]);
+  const generic = GENERIC_PATH_SEGMENTS;
   // Skip the basename itself (which trail-matches by definition).
   for (let i = 0; i < sourceSegs.length - 1; i += 1) {
     const seg = sourceSegs[i];

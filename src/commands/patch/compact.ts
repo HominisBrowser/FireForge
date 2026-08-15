@@ -27,7 +27,7 @@ import type { PatchCompactOptions, PatchMetadata } from '../../types/commands/in
 import type { PatchPolicyConfig } from '../../types/config.js';
 import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
-import { pickDefined } from '../../utils/options.js';
+import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
 import { requirePatchQueue } from './patch-context.js';
 import { rebuildFilenameForOrder } from './reorder.js';
 
@@ -184,51 +184,55 @@ export async function patchCompactCommand(
     return;
   }
 
-  await withPatchDirectoryLock(paths.patches, async () => {
-    const currentManifest = await loadPatchesManifest(paths.patches);
-    if (!currentManifest) {
-      throw new GeneralError('Manifest disappeared while waiting for lock.');
-    }
+  await withPatchDirectoryLock(
+    paths.patches,
+    async () => {
+      const currentManifest = await loadPatchesManifest(paths.patches);
+      if (!currentManifest) {
+        throw new GeneralError('Manifest disappeared while waiting for lock.');
+      }
 
-    const currentRenameMap = computeCompactRenameMap(currentManifest.patches, policyCfg);
-    if (currentRenameMap.size === 0) {
-      info('Patch queue was compacted by another process. Nothing to do.');
-      return;
-    }
+      const currentRenameMap = computeCompactRenameMap(currentManifest.patches, policyCfg);
+      if (currentRenameMap.size === 0) {
+        info('Patch queue was compacted by another process. Nothing to do.');
+        return;
+      }
 
-    enforcePatchPolicy({
-      config,
-      manifest: applyRenameMapToManifest(currentManifest, currentRenameMap),
-      command: 'patch compact',
-      forceUnsafe: options.forceUnsafe === true,
-    });
+      enforcePatchPolicy({
+        config,
+        manifest: applyRenameMapToManifest(currentManifest, currentRenameMap),
+        command: 'patch compact',
+        forceUnsafe: options.forceUnsafe === true,
+      });
 
-    await renumberPatchesInManifest(paths.patches, currentRenameMap);
+      await renumberPatchesInManifest(paths.patches, currentRenameMap);
 
-    const historyEntry: HistoryEntry = {
-      operation: 'patch-compact',
-      args: {
-        renames: [...currentRenameMap.entries()]
-          .sort((a, b) => a[1].newOrder - b[1].newOrder)
-          .map(([from, entry]) => ({
-            from,
-            to: entry.newFilename,
-            order: entry.newOrder,
-          })),
-      },
-      ...(options.yes === true ? { yes: true } : {}),
-      ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
-      result: 'ok',
-    };
+      const historyEntry: HistoryEntry = {
+        operation: 'patch-compact',
+        args: {
+          renames: [...currentRenameMap.entries()]
+            .sort((a, b) => a[1].newOrder - b[1].newOrder)
+            .map(([from, entry]) => ({
+              from,
+              to: entry.newFilename,
+              order: entry.newOrder,
+            })),
+        },
+        ...(options.yes === true ? { yes: true } : {}),
+        ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
+        result: 'ok',
+      };
 
-    try {
-      await appendHistory(paths.patches, historyEntry);
-    } catch (historyError: unknown) {
-      warn(
-        `History log append failed after patch compact committed: ${toError(historyError).message}`
-      );
-    }
-  });
+      try {
+        await appendHistory(paths.patches, historyEntry);
+      } catch (historyError: unknown) {
+        warn(
+          `History log append failed after patch compact committed: ${toError(historyError).message}`
+        );
+      }
+    },
+    { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch compact' }
+  );
 
   info(`Compacted ${renameMap.size} patch(es).`);
   outro('Compact complete');
@@ -242,19 +246,24 @@ export async function patchCompactCommand(
  */
 export function registerPatchCompact(parent: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  parent
+  const command = parent
     .command('compact')
     .description(
       'Close ordinal gaps in the patch queue (range-aware when patchPolicy.ranges is configured)'
     )
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
-    .option('--force-unsafe', 'Bypass force-mode patchPolicy refusals')
-    .action(
-      withErrorHandling(
-        async (options: { dryRun?: boolean; yes?: boolean; forceUnsafe?: boolean }) => {
-          await patchCompactCommand(getProjectRoot(), pickDefined(options));
-        }
-      )
-    );
+    .option('--force-unsafe', 'Bypass force-mode patchPolicy refusals');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (options: {
+        dryRun?: boolean;
+        yes?: boolean;
+        forceUnsafe?: boolean;
+        waitLock?: number | boolean;
+      }) => {
+        await patchCompactCommand(getProjectRoot(), pickDefined(options));
+      }
+    )
+  );
 }

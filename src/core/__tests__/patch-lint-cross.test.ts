@@ -16,6 +16,7 @@ import {
   lintPatchQueue,
   lintPatchQueueDuplicateCreations,
   lintPatchQueueForwardImports,
+  lintPatchQueueModuleRegistrations,
   type PatchQueueContext,
   type PatchQueueEntry,
 } from '../patch-lint.js';
@@ -85,6 +86,9 @@ describe('lintPatchQueueDuplicateCreations', () => {
     expect(issue?.message).toContain('001-infra-a.patch');
     expect(issue?.message).toContain('002-infra-b.patch');
     expect(issue?.severity).toBe('error');
+    // Structured attribution for the export placement gate (FORGE K9):
+    // every creator is implicated.
+    expect(issue?.patches).toEqual(['001-infra-a.patch', '002-infra-b.patch']);
   });
 
   it('does not flag the same path being modified in two patches', () => {
@@ -143,6 +147,8 @@ describe('lintPatchQueueForwardImports', () => {
     expect(issue?.file).toBe('foo/A.sys.mjs');
     expect(issue?.message).toContain('002-infra-b.patch');
     expect(issue?.severity).toBe('error');
+    // Structured attribution (FORGE K9): the IMPORTING entry is implicated.
+    expect(issue?.patches).toEqual(['001-infra-a.patch']);
   });
 
   it('flags a bare getter-property line added to an existing defineESModuleGetters map (FORGE F3)', () => {
@@ -864,6 +870,66 @@ describe('lintPatchQueue orchestrator', () => {
     const checks = issues.map((i) => i.check);
     expect(checks).toContain('duplicate-new-file-creation');
     expect(checks).toContain('forward-import');
+  });
+});
+
+describe('lintPatchQueueModuleRegistrations', () => {
+  const modulePath = 'browser/modules/hominis/HominisThemeLoader.sys.mjs';
+  const importer =
+    'import { HominisThemeLoader } from "resource:///modules/hominis/HominisThemeLoader.sys.mjs";';
+
+  it('flags an imported new system module with no moz.build registration', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-loader.patch', 1, '', {
+          [modulePath]: 'export const HominisThemeLoader = {};',
+          'browser/modules/hominis/Consumer.sys.mjs': importer,
+        }),
+      ],
+    };
+
+    const issues = lintPatchQueueModuleRegistrations(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      file: modulePath,
+      check: 'unregistered-system-module',
+      severity: 'error',
+    });
+    expect(issues[0]?.message).toContain('EXTRA_JS_MODULES');
+  });
+
+  it('accepts registration added by any patch in the projected queue', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry(
+          '001-infra-register.patch',
+          1,
+          '',
+          {},
+          {
+            'browser/modules/hominis/moz.build': '    "HominisThemeLoader.sys.mjs",',
+          }
+        ),
+        makeEntry('002-infra-loader.patch', 2, '', {
+          [modulePath]: 'export const HominisThemeLoader = {};',
+          'browser/modules/hominis/Consumer.sys.mjs': importer,
+        }),
+      ],
+    };
+
+    expect(lintPatchQueueModuleRegistrations(ctx)).toEqual([]);
+  });
+
+  it('does not require registration for an unimported support file', () => {
+    const ctx: PatchQueueContext = {
+      entries: [
+        makeEntry('001-infra-loader.patch', 1, '', {
+          [modulePath]: 'export const HominisThemeLoader = {};',
+        }),
+      ],
+    };
+
+    expect(lintPatchQueueModuleRegistrations(ctx)).toEqual([]);
   });
 });
 

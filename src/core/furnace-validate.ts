@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { ComponentType, FurnaceConfig, ValidationIssue } from '../types/furnace.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { getFurnacePaths, loadFurnaceConfig, loadFurnaceState } from './furnace-config.js';
@@ -168,7 +169,7 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
   try {
     validateComposesReferences(config.stock, config.overrides, config.custom);
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = toError(err).message;
     // Attribute the issue to the first custom component with a bad composes reference
     for (const [name, cfg] of Object.entries(config.custom)) {
       if (cfg.composes) {
@@ -188,7 +189,7 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
   try {
     detectComposesCycles(config.custom);
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = toError(err).message;
     // Attribute the cycle issue to the first custom component in the cycle
     for (const name of Object.keys(config.custom)) {
       if (config.custom[name]?.composes) {
@@ -342,6 +343,7 @@ async function findOrphanXpcshellScaffolds(
     const dirents = await readdir(parentAbs, { withFileTypes: true });
     entries = dirents.filter((d) => d.isDirectory()).map((d) => d.name);
   } catch {
+    // An unreadable parent directory yields no sibling component dirs.
     return [];
   }
 

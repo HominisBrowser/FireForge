@@ -14,18 +14,22 @@
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { assertEngineGitReady } from '../../core/engine-precondition.js';
 import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
-import { getHead, isGitRepository, isMissingHeadError, resetChanges } from '../../core/git.js';
+import { getHead, resetChanges } from '../../core/git.js';
 import { discoverPatches } from '../../core/patch-files.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { getPatchSourceProduct, getPatchSourceVersion } from '../../core/patch-source-metadata.js';
 import type { RebaseSession } from '../../core/rebase-session.js';
-import { hasActiveRebaseSession, saveRebaseSession } from '../../core/rebase-session.js';
+import {
+  getRebaseSessionPath,
+  readRebaseSession,
+  saveRebaseSession,
+} from '../../core/rebase-session.js';
 import { GeneralError } from '../../errors/base.js';
-import { RebaseSessionExistsError } from '../../errors/rebase.js';
+import { CorruptRebaseSessionError, RebaseSessionExistsError } from '../../errors/rebase.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { RebaseOptions } from '../../types/commands/index.js';
-import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, spinner } from '../../utils/logger.js';
 import { commanderArgParser, pickDefined } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
@@ -42,41 +46,26 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
 
   intro(isDryRun ? 'FireForge Rebase (dry run)' : 'FireForge Rebase');
 
-  if (await hasActiveRebaseSession(projectRoot)) {
+  // One read decides liveness AND validity: a pathExists pre-probe here left
+  // a window where the file vanished between probe and read, reporting
+  // "already in progress" with no session on disk.
+  const existing = await readRebaseSession(projectRoot);
+  if (existing.present) {
+    // A corrupt session must not be reported as "already in progress": that
+    // message tells the operator to run --continue or --abort, and before
+    // 0.41.0 both of those then reported "no rebase session in progress".
+    if (!existing.valid) {
+      throw new CorruptRebaseSessionError(getRebaseSessionPath(projectRoot), existing.reason);
+    }
     throw new RebaseSessionExistsError();
   }
 
   const paths = getProjectPaths(projectRoot);
 
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
-
-  if (!(await isGitRepository(paths.engine))) {
-    throw new GeneralError(
-      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
-    );
-  }
-
-  // 2026-04-24 eval Finding 11: `rebase --dry-run` used to print
-  // "Dry run complete" without validating that the engine had a valid
-  // HEAD. A previous `download --force` abort could leave `.git/`
-  // initialized but unborn (no baseline commit); the real rebase then
-  // failed immediately with `fatal: ambiguous argument 'HEAD'` on the
-  // first `git rev-parse HEAD` call. Replicate the same baseline check
-  // here so dry-run mirrors the real-run preconditions and operators
-  // cannot mistake a broken baseline for a ready-to-rebase tree.
-  try {
-    await getHead(paths.engine);
-  } catch (err: unknown) {
-    if (isMissingHeadError(err)) {
-      throw new GeneralError(
-        'Engine repository has no baseline commit yet — a previous "fireforge download" was interrupted before git created the initial Firefox source commit. ' +
-          'Re-run "fireforge download --force" to recreate the baseline repository cleanly, then retry the rebase.'
-      );
-    }
-    throw err;
-  }
+  // Keeps the rebase-specific tail on the unborn-HEAD remediation (2026-04-24
+  // eval Finding 11: --dry-run used to skip this check entirely, so the real
+  // run then failed on `git rev-parse HEAD`).
+  await assertEngineGitReady(paths.engine, { unbornHeadSuffix: ', then retry the rebase.' });
 
   const config = await loadConfig(projectRoot);
   const currentVersion = config.firefox.version;

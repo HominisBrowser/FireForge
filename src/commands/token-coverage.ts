@@ -2,12 +2,12 @@
 import { join } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
-import { isGitRepository } from '../core/git.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { measureTokenCoverage } from '../core/token-coverage.js';
 import { getTokensCssPath } from '../core/token-manager.js';
-import { GeneralError } from '../errors/base.js';
+import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 
@@ -26,15 +26,7 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
 
   const paths = getProjectPaths(projectRoot);
 
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
-
-  if (!(await isGitRepository(paths.engine))) {
-    throw new GeneralError(
-      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
-    );
-  }
+  await assertEngineGitReady(paths.engine);
 
   const config = await loadConfig(projectRoot);
   const tokensCssPath = getTokensCssPath(config.binaryName);
@@ -203,7 +195,7 @@ async function collectFurnaceCustomCssFiles(
     furnaceConfig = await loadFurnaceConfig(projectRoot);
   } catch (error: unknown) {
     warn(
-      `Could not load furnace.json for token coverage — scanning modified files only (${(error as Error).message})`
+      `Could not load furnace.json for token coverage — scanning modified files only (${toError(error).message})`
     );
     return [];
   }

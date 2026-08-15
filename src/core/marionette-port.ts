@@ -77,6 +77,105 @@ export interface MarionettePortProbeResult {
   holder?: MarionettePortHolder;
 }
 
+/** A Firefox-family process launched from this project's built bundle. */
+export interface RunningBundleProcess {
+  pid: number;
+  commandLine: string;
+}
+
+/**
+ * Finds browser processes whose command line names the exact launchable
+ * binary from this project's objdir. Unlike the Marionette-port probe, this
+ * also catches a wedged browser that survived a harness timeout but no longer
+ * owns the control port. Best-effort: unavailable process-list tooling yields
+ * an empty result rather than blocking tests.
+ */
+async function findRunningBundleProcesses(
+  launchableBinary: string
+): Promise<RunningBundleProcess[]> {
+  try {
+    if (process.platform === 'win32') {
+      const escapedPath = launchableBinary.replaceAll("'", "''");
+      const script =
+        `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '${escapedPath}' } | ` +
+        'ForEach-Object { Write-Output ("$($_.ProcessId) $($_.CommandLine)") }';
+      const result = await exec('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        script,
+      ]);
+      return parseProcessList(result.stdout, launchableBinary);
+    }
+
+    const result = await exec('ps', ['-axo', 'pid=,args=']);
+    return parseProcessList(result.stdout, launchableBinary);
+  } catch {
+    return [];
+  }
+}
+
+/** Pure parser kept exported so platform output handling is regression-testable. */
+export function parseProcessList(stdout: string, launchableBinary: string): RunningBundleProcess[] {
+  const matches: RunningBundleProcess[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(.+)$/.exec(line);
+    if (!match?.[1] || !match[2]?.includes(launchableBinary)) continue;
+    const pid = Number(match[1]);
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    matches.push({ pid, commandLine: match[2] });
+  }
+  return matches;
+}
+
+/**
+ * Refuses a browser-harness launch when this objdir's app is already alive,
+ * or terminates the parent when the operator explicitly opted into stale
+ * browser cleanup. This closes the no-listening-port variant of the stale
+ * Marionette process failure.
+ */
+export async function ensureLaunchableBrowserNotRunning(
+  launchableBinary: string,
+  options: { killStaleBrowser?: boolean } = {}
+): Promise<void> {
+  const processes = await findRunningBundleProcesses(launchableBinary);
+  if (processes.length === 0) return;
+
+  const parent = processes.find((candidate) => !candidate.commandLine.includes('-contentproc'));
+  const holder = parent ?? processes[0];
+  if (!holder) return;
+
+  if (options.killStaleBrowser) {
+    try {
+      if (process.platform === 'win32') {
+        await exec('powershell.exe', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `Stop-Process -Id ${holder.pid} -Force`,
+        ]);
+      } else {
+        process.kill(holder.pid, 'SIGTERM');
+      }
+      return;
+    } catch (error: unknown) {
+      throw new GeneralError(
+        `A browser from this objdir is still running (PID ${holder.pid}), but FireForge could not terminate it: ${toError(error).message}`
+      );
+    }
+  }
+
+  const killHint =
+    process.platform === 'win32'
+      ? `Stop-Process -Id ${holder.pid} -Force`
+      : `kill ${holder.pid}  # or "kill -9 ${holder.pid}" if it doesn't exit`;
+  throw new GeneralError(
+    `A browser from this project's objdir is already running (PID ${holder.pid}). ` +
+      'It may have survived a previously timed-out or interrupted "fireforge test" run and can wedge the next headed launch. ' +
+      `Stop it with "${killHint}", or retry with "--kill-stale-marionette".`
+  );
+}
+
 /**
  * Returns `true` when the holder's command basename or command-line
  * flags clearly identify it as a Firefox-family browser with
@@ -136,13 +235,12 @@ async function probeWithLsof(port: number): Promise<MarionettePortProbeResult> {
       // ps not available — keep the basename.
     }
     return { inUse: true, holder: { pid, command, commandLine } };
-  } catch (error: unknown) {
-    // `lsof` missing, or stdout parse failed. Treat as "unknown" ⇒
-    // port probe is silently skipped.
-    const message = toError(error).message;
-    if (/ENOENT|not found|command not found/i.test(message)) {
-      return { inUse: false };
-    }
+  } catch {
+    // `lsof` missing, or its stdout did not parse. Either way the port state
+    // is unknown, and an unknown port is reported as free so the probe never
+    // blocks a run on its own uncertainty. (The errno test that used to sit
+    // here returned the same value as this fallthrough, so it decided
+    // nothing.)
     return { inUse: false };
   }
 }
@@ -181,6 +279,8 @@ async function probeWithPowerShell(port: number): Promise<MarionettePortProbeRes
     if (!Number.isFinite(pid) || command === '') return { inUse: false };
     return { inUse: true, holder: { pid, command, commandLine } };
   } catch {
+    // Unparseable netstat/PowerShell output. The port state is unknown, and an unknown port
+    // is reported free so the probe never blocks a run on its own uncertainty.
     return { inUse: false };
   }
 }
@@ -199,6 +299,8 @@ export async function probeMarionettePort(
   try {
     platform = getPlatform();
   } catch {
+    // Unrecognised host platform — no probe strategy applies, so the port is
+    // reported free rather than blocking the run.
     return { inUse: false };
   }
   if (platform === 'darwin' || platform === 'linux') {
@@ -282,7 +384,7 @@ export async function ensureMarionettePortAvailable(
   } catch (error: unknown) {
     throw new GeneralError(
       `Marionette port ${port} is held by stale browser ${holder.command} (PID ${holder.pid}), ` +
-        `but FireForge could not terminate it: ${error instanceof Error ? error.message : String(error)}`
+        `but FireForge could not terminate it: ${toError(error).message}`
     );
   }
 }

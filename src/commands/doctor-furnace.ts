@@ -19,7 +19,7 @@ import type {
   FurnaceConfig,
   FurnacePendingRepairOperation,
 } from '../types/furnace.js';
-import { toError } from '../utils/errors.js';
+import { isProcessAlive, toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import type { CheckResult, DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, warning } from './doctor-check-core.js';
@@ -155,6 +155,9 @@ async function collectFurnaceDrift(
         drifted.push(name);
       }
     } catch {
+      // A drift probe that cannot complete is reported AS drift: the doctor check
+      // must not claim a component is clean when it failed to look. Mirrors the
+      // documented twin above.
       drifted.push(name);
     }
   }
@@ -563,16 +566,9 @@ async function readFurnaceLockPid(lockPath: string): Promise<number | null> {
     const pid = parseInt(pidContent.trim(), 10);
     return Number.isFinite(pid) ? pid : null;
   } catch {
+    // No PID file, or it is unreadable/unparseable. The caller falls back to the
+    // age-only staleness heuristic, which is why this is `null` and not a throw.
     return null;
-  }
-}
-
-function isProcessStillRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -612,7 +608,13 @@ const furnaceStaleLockCheck: DoctorCheckDefinition = {
     //      this bucket; the age gate avoids false positives on a lock
     //      that was just acquired by a concurrent process that hadn't
     //      written its PID yet.
-    const ownerDead = pid !== null && !isProcessStillRunning(pid);
+    //
+    // `isProcessAlive` treats EPERM as ALIVE. The local copy it replaced
+    // returned false for EPERM, so a furnace lock held by a live process
+    // owned by another uid was reported as "owner is no longer running"
+    // and deleted by --repair-furnace, dropping mutual exclusion under a
+    // concurrent furnace operation.
+    const ownerDead = pid !== null && !isProcessAlive(pid);
     const pidMissingAndOld = pid === null && (ageMs ?? 0) > 60_000;
     const isStale = ownerDead || pidMissingAndOld;
 

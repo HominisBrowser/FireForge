@@ -90,6 +90,143 @@ describe('patch rename', () => {
     await removeTempProject(projectRoot);
   });
 
+  describe('--category / --order (FORGE J10)', () => {
+    it('recategorises in one transaction: filename prefix + manifest row', async () => {
+      await seed(patchesDir, [makeMetadata('010-infra-widget.patch', 10, ['a.js'])]);
+
+      await patchRenameCommand(projectRoot, '010-infra-widget.patch', {
+        category: 'ui',
+        yes: true,
+      });
+
+      expect(await fileExists(join(patchesDir, '010-infra-widget.patch'))).toBe(false);
+      expect(await fileExists(join(patchesDir, '010-ui-widget.patch'))).toBe(true);
+      const manifest = await loadManifest(patchesDir);
+      expect(manifest.patches[0]).toMatchObject({
+        filename: '010-ui-widget.patch',
+        category: 'ui',
+        order: 10,
+        name: 'widget',
+      });
+    });
+
+    it('moves the patch to an exact unused order, preserving zero-padding', async () => {
+      await seed(patchesDir, [makeMetadata('010-infra-widget.patch', 10, ['a.js'])]);
+
+      await patchRenameCommand(projectRoot, '010-infra-widget.patch', { order: 25, yes: true });
+
+      expect(await fileExists(join(patchesDir, '025-infra-widget.patch'))).toBe(true);
+      const manifest = await loadManifest(patchesDir);
+      expect(manifest.patches[0]).toMatchObject({
+        filename: '025-infra-widget.patch',
+        order: 25,
+        category: 'infra',
+      });
+    });
+
+    it('changes category, order, name, and description together', async () => {
+      await seed(patchesDir, [makeMetadata('010-infra-widget.patch', 10, ['a.js'])]);
+
+      await patchRenameCommand(projectRoot, '010-infra-widget.patch', {
+        to: 'dock-widget',
+        category: 'ui',
+        order: 30,
+        description: 'Dock widget work',
+        yes: true,
+      });
+
+      const manifest = await loadManifest(patchesDir);
+      expect(manifest.patches[0]).toMatchObject({
+        filename: '030-ui-dock-widget.patch',
+        category: 'ui',
+        order: 30,
+        name: 'dock-widget',
+        description: 'Dock widget work',
+      });
+      expect(await fileExists(join(patchesDir, '030-ui-dock-widget.patch'))).toBe(true);
+    });
+
+    it('refuses an order collision with a pointer to patch reorder', async () => {
+      await seed(patchesDir, [
+        makeMetadata('010-infra-widget.patch', 10, ['a.js']),
+        makeMetadata('020-infra-other.patch', 20, ['b.js']),
+      ]);
+
+      await expect(
+        patchRenameCommand(projectRoot, '010-infra-widget.patch', { order: 20, yes: true })
+      ).rejects.toThrow(/already used by 020-infra-other\.patch.*patch reorder/s);
+      expect(await fileExists(join(patchesDir, '010-infra-widget.patch'))).toBe(true);
+    });
+
+    it('rejects a category outside the configured set', async () => {
+      await seed(patchesDir, [makeMetadata('010-infra-widget.patch', 10, ['a.js'])]);
+
+      await expect(
+        patchRenameCommand(projectRoot, '010-infra-widget.patch', {
+          category: 'nonsense',
+          yes: true,
+        })
+      ).rejects.toThrow(/Invalid category\. Must be one of:/);
+    });
+
+    it('refuses an order change that would introduce a forward-import error', async () => {
+      // 010 creates Helper.sys.mjs; 020 imports it. Moving the creator
+      // after the importer must be refused with the projected error named.
+      const creatorBody = [
+        'diff --git a/foo/Helper.sys.mjs b/foo/Helper.sys.mjs',
+        'new file mode 100644',
+        'index 0000000..1111111',
+        '--- /dev/null',
+        '+++ b/foo/Helper.sys.mjs',
+        '@@ -0,0 +1,1 @@',
+        '+export const H = 1;',
+        '',
+      ].join('\n');
+      const importerBody = [
+        'diff --git a/foo/A.sys.mjs b/foo/A.sys.mjs',
+        'new file mode 100644',
+        'index 0000000..1111111',
+        '--- /dev/null',
+        '+++ b/foo/A.sys.mjs',
+        '@@ -0,0 +1,2 @@',
+        '+import { H } from "resource:///modules/Helper.sys.mjs";',
+        '+export const A = H;',
+        '',
+      ].join('\n');
+      await seed(
+        patchesDir,
+        [
+          makeMetadata('010-infra-helper.patch', 10, ['foo/Helper.sys.mjs']),
+          makeMetadata('020-infra-importer.patch', 20, ['foo/A.sys.mjs']),
+        ],
+        {
+          '010-infra-helper.patch': creatorBody,
+          '020-infra-importer.patch': importerBody,
+        }
+      );
+
+      await expect(
+        patchRenameCommand(projectRoot, '010-infra-helper.patch', { order: 30, yes: true })
+      ).rejects.toThrow(/\[forward-import\]/);
+      expect(await fileExists(join(patchesDir, '010-infra-helper.patch'))).toBe(true);
+    });
+
+    it('supports --dry-run without writing', async () => {
+      await seed(patchesDir, [makeMetadata('010-infra-widget.patch', 10, ['a.js'])]);
+
+      await patchRenameCommand(projectRoot, '010-infra-widget.patch', {
+        category: 'ui',
+        order: 25,
+        dryRun: true,
+      });
+
+      expect(await fileExists(join(patchesDir, '010-infra-widget.patch'))).toBe(true);
+      const manifest = await loadManifest(patchesDir);
+      expect(manifest.patches[0]?.category).toBe('infra');
+      expect(manifest.patches[0]?.order).toBe(10);
+    });
+  });
+
   it('renames the .patch file on disk and updates manifest filename + name', async () => {
     await seed(patchesDir, [makeMetadata('0044-ui-mybrowser-dock-widgets.patch', 44, ['a.js'])]);
 

@@ -8,6 +8,7 @@
 
 import { type ChildProcess, spawn } from 'node:child_process';
 
+import { getNodeErrorCode } from './errors.js';
 import { verbose, warn } from './logger.js';
 
 /**
@@ -112,8 +113,13 @@ async function listGroupSurvivors(pgid: number): Promise<ProcessGroupSurvivor[]>
   try {
     process.kill(-pgid, 0);
     return [{ pid: -1, command: 'unknown (pgrep unavailable; group still has live members)' }];
-  } catch {
-    return [];
+  } catch (error: unknown) {
+    // Same errno semantics as `isProcessAlive` (which cannot be called here —
+    // it probes a single positive pid): only ESRCH proves the group is gone.
+    // EPERM means it exists under another uid, and an unrecognized failure is
+    // not evidence of absence — report survivors in both cases.
+    if (getNodeErrorCode(error) === 'ESRCH') return [];
+    return [{ pid: -1, command: 'unknown (pgrep unavailable; group liveness probe denied)' }];
   }
 }
 
@@ -152,6 +158,8 @@ export async function sweepProcessGroup(
   try {
     process.kill(-pgid, 'SIGTERM');
   } catch {
+    // The group vanished between the listing and the signal — nothing left to
+    // escalate against, so report the survivors collected so far.
     return { survivors };
   }
   await sweepDelay(graceMs);
@@ -160,6 +168,8 @@ export async function sweepProcessGroup(
     try {
       process.kill(-pgid, 'SIGKILL');
     } catch {
+      // The group died during the grace period, so the SIGKILL escalation has
+      // nothing to signal.
       return { survivors };
     }
     await sweepDelay(Math.min(200, graceMs));

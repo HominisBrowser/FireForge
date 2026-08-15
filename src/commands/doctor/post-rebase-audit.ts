@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { DoctorCheck } from '../../types/commands/index.js';
+import { toError } from '../../utils/errors.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from '../doctor-check-core.js';
 import { ok, warning } from '../doctor-check-core.js';
@@ -13,16 +14,29 @@ async function readEngineText(engineDir: string, relativePath: string): Promise<
   return readText(fullPath);
 }
 
-async function collectBrowserTomlFiles(root: string): Promise<string[]> {
+/**
+ * Collects every `browser.toml` under the engine's browser-chrome test tree.
+ *
+ * Reports unreadable directories separately from "none found": the consumer
+ * turns an empty result into the issue "no browser.toml files found", which is
+ * the opposite diagnosis from "the tree could not be read". A swallowed
+ * mid-walk EACCES also silently *shrank* the result set, so one unreadable
+ * subdirectory produced a false clean for that subtree.
+ */
+async function collectBrowserTomlFiles(
+  root: string
+): Promise<{ files: string[]; unreadable: string[] }> {
   const testRoot = join(root, 'browser/base/content/test');
-  if (!(await pathExists(testRoot))) return [];
+  if (!(await pathExists(testRoot))) return { files: [], unreadable: [] };
   const result: string[] = [];
+  const unreadable: string[] = [];
 
   async function walk(absDir: string, relDir: string): Promise<void> {
     let entries;
     try {
       entries = await readdir(absDir, { withFileTypes: true });
-    } catch {
+    } catch (error: unknown) {
+      unreadable.push(`${relDir || '.'} (${toError(error).message})`);
       return;
     }
     for (const entry of entries) {
@@ -37,13 +51,19 @@ async function collectBrowserTomlFiles(root: string): Promise<string[]> {
   }
 
   await walk(testRoot, '');
-  return result.sort();
+  return { files: result.sort(), unreadable };
 }
 
 async function runPostRebaseAudit(ctx: DoctorCheckContext): Promise<DoctorCheck> {
   const issues: string[] = [];
   const engineDir = ctx.paths.engine;
 
+  // The four probes below are upstream-Firefox shape markers: each names a
+  // file and a token that a healthy post-rebase tree must still contain. A
+  // rebase that dropped a fork patch, or an upstream reorganisation, shows up
+  // as one of these going missing. The tokens are deliberately coarse — this
+  // is a smoke check that runs warn-only behind an opt-in flag, not a
+  // structural validator.
   const mozConfigure = await readEngineText(engineDir, 'browser/moz.configure');
   if (mozConfigure === null) {
     issues.push('browser/moz.configure is missing');
@@ -76,7 +96,13 @@ async function runPostRebaseAudit(ctx: DoctorCheckContext): Promise<DoctorCheck>
   }
 
   const browserTomls = await collectBrowserTomlFiles(engineDir);
-  if (browserTomls.length === 0) {
+  if (browserTomls.unreadable.length > 0) {
+    issues.push(
+      `could not read ${String(browserTomls.unreadable.length)} ` +
+        `${browserTomls.unreadable.length === 1 ? 'directory' : 'directories'} under ` +
+        `browser/base/content/test: ${browserTomls.unreadable.join(', ')}`
+    );
+  } else if (browserTomls.files.length === 0) {
     issues.push('no browser.toml files found under browser/base/content/test');
   }
 

@@ -210,10 +210,41 @@ function isClickOnSyntheticInteractive(content: string, clickIndex: number): boo
   return !NATIVE_CLICK_INTERACTIVE_TAGS.has(tagName);
 }
 
+/** ASCII punctuation that reads as decoration rather than localizable text. */
+const SYMBOL_ONLY_ASCII = '+-*=<>|/\\^~@#&!?%';
+
+/**
+ * Reports whether `text` is decoration (arrows, maths, emoji, bare
+ * punctuation) rather than user-facing prose that needs localizing.
+ *
+ * The letter/number/mark test comes first and is script-agnostic. Until
+ * 0.41.0 the only non-ASCII rule was `code > 0xff`, which classified *every*
+ * code point above U+00FF as a symbol — so all CJK, Cyrillic, Greek, Arabic,
+ * Hebrew, Devanagari and Thai text was exempted from a **localization**
+ * validator, i.e. the rule was blind to precisely the strings most likely to
+ * need translating.
+ *
+ * Combining marks are deliberately NOT counted as text: the check is an
+ * `every()`, so a script's base letters already disqualify the string, and
+ * treating marks as text would flag emoji carrying a variation selector
+ * (U+FE0F is category Mn — `⚙️` is U+2699 + U+FE0F).
+ *
+ * High code points that are not letters — emoji, arrows, CJK punctuation —
+ * stay exempt, which is the rule's original intent.
+ *
+ * A handful of emoji are ALSO Unicode letters, and the letter test alone gets
+ * them wrong. U+2139 (`ℹ`, the base of the very common `ℹ️`) is category Ll, so
+ * the `\p{L}` branch classified an info badge as prose needing localization.
+ * Non-ASCII code points carrying `Emoji` are therefore read as symbols before
+ * the letter test. The ASCII guard matters: `\p{Emoji}` also covers the digits
+ * `0`-`9`, `#` and `*`, which must keep their existing classification.
+ */
 function isSymbolOnlyText(text: string): boolean {
   return Array.from(text).every((character) => {
     const code = character.codePointAt(0) ?? 0;
-    return code > 0xff || '+-*=<>|/\\^~@#&!?%'.includes(character);
+    if (code > 0x7f && /\p{Emoji}/u.test(character)) return true;
+    if (/[\p{L}\p{N}]/u.test(character)) return false;
+    return code > 0xff || SYMBOL_ONLY_ASCII.includes(character);
   });
 }
 

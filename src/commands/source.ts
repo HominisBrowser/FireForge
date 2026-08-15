@@ -14,14 +14,11 @@ import type { CommandContext } from '../types/cli.js';
 import type { SourceSetOptions } from '../types/commands/index.js';
 import type { FirefoxProduct } from '../types/config.js';
 import { info, intro, outro, success } from '../utils/logger.js';
-import { isValidFirefoxCandidate, isValidFirefoxProduct } from '../utils/validation.js';
-
-const SOURCE_PRODUCTS = [
-  'firefox',
-  'firefox-esr',
-  'firefox-beta',
-  'firefox-devedition',
-] as const satisfies readonly FirefoxProduct[];
+import {
+  FIREFOX_PRODUCTS,
+  isValidFirefoxCandidate,
+  isValidFirefoxProduct,
+} from '../utils/validation.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -37,10 +34,10 @@ function cloneRawConfig(raw: Record<string, unknown>): Record<string, unknown> {
 
 function parseSourceProduct(product: string): FirefoxProduct {
   if (isValidFirefoxProduct(product)) {
-    return product as FirefoxProduct;
+    return product;
   }
   throw new InvalidArgumentError(
-    `--product must be one of: ${SOURCE_PRODUCTS.join(', ')}`,
+    `--product must be one of: ${FIREFOX_PRODUCTS.join(', ')}`,
     '--product'
   );
 }
@@ -136,7 +133,7 @@ export function registerSource(
     .requiredOption('--version <version>', 'Firefox version to base on')
     .addOption(
       new Option('--product <product>', 'Firefox product')
-        .choices([...SOURCE_PRODUCTS])
+        .choices([...FIREFOX_PRODUCTS])
         .makeOptionMandatory()
     )
     .option('--sha256 <hash>', 'Pinned SHA-256 for the resolved source archive')

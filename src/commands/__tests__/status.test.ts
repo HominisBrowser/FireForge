@@ -7,7 +7,6 @@ import { collectFurnaceManagedPrefixes } from '../../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository } from '../../core/git.js';
 import { getUntrackedFilesInDir } from '../../core/git-status.js';
 import { isFileRegistered, matchesRegistrablePattern } from '../../core/manifest-rules.js';
-import { computePatchedContent } from '../../core/patch-apply.js';
 import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../../core/patch-lint.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { GeneralError } from '../../errors/base.js';
@@ -72,8 +71,25 @@ vi.mock('../../core/manifest-rules.js', () => ({
   isFileRegistered: vi.fn(),
 }));
 
+const computePatchedContentMock = vi.hoisted(() =>
+  vi.fn<(file: string) => Promise<string | null>>()
+);
+
 vi.mock('../../core/patch-apply.js', () => ({
-  computePatchedContent: vi.fn(),
+  // The batched context mirrors production wiring: manifest rows come from
+  // the (mocked) loadPatchesManifest, content comparisons delegate to the
+  // shared computePatchedContentMock so tests drive drift with
+  // mockResolvedValue exactly as they did against computePatchedContent.
+  createPatchedContentContext: vi.fn(async (patchesDir: string) => {
+    const { loadPatchesManifest } = await import('../../core/patch-manifest.js');
+    const manifest = await loadPatchesManifest(patchesDir);
+    return {
+      manifestPatches: manifest?.patches ?? [],
+      computePatched: (file: string) => computePatchedContentMock(file),
+      getAffectingPatches: () => [],
+      readPatchBody: vi.fn(),
+    };
+  }),
 }));
 
 vi.mock('../../core/patch-manifest.js', () => ({
@@ -142,7 +158,7 @@ describe('statusCommand', () => {
     vi.mocked(isFileRegistered).mockResolvedValue(false);
     vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
     vi.mocked(loadPatchesManifest).mockResolvedValue(null);
-    vi.mocked(computePatchedContent).mockResolvedValue(null);
+    computePatchedContentMock.mockResolvedValue(null);
     vi.mocked(readText).mockResolvedValue('');
     vi.mocked(buildPatchQueueContext).mockResolvedValue({ entries: [] });
     vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(new Map());
@@ -329,7 +345,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('expected content');
+      computePatchedContentMock.mockResolvedValue('expected content');
       vi.mocked(readText).mockResolvedValue('expected content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([{ status: 'M', file: 'toolkit/foo.cpp' }]);
@@ -358,7 +374,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('expected content');
+      computePatchedContentMock.mockResolvedValue('expected content');
       vi.mocked(readText).mockResolvedValue('expected content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -391,7 +407,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('expected content');
+      computePatchedContentMock.mockResolvedValue('expected content');
       vi.mocked(readText).mockResolvedValue('different actual content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([{ status: 'M', file: 'toolkit/foo.cpp' }]);
@@ -430,7 +446,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('expected content');
+      computePatchedContentMock.mockResolvedValue('expected content');
       vi.mocked(readText).mockResolvedValue('manual resolution content');
       vi.mocked(getStatusWithCodes).mockResolvedValue(files.map((file) => ({ status: 'M', file })));
 
@@ -460,7 +476,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('matched content');
+      computePatchedContentMock.mockResolvedValue('matched content');
       vi.mocked(readText).mockResolvedValue('matched content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -494,7 +510,7 @@ describe('statusCommand', () => {
         ],
       });
       // computePatchedContent returns null → file should not exist after patches
-      vi.mocked(computePatchedContent).mockResolvedValue(null);
+      computePatchedContentMock.mockResolvedValue(null);
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([{ status: 'D', file: 'toolkit/old.cpp' }]);
 
@@ -521,7 +537,7 @@ describe('statusCommand', () => {
         ],
       });
       // computePatchedContent returns content → file should exist after patches
-      vi.mocked(computePatchedContent).mockResolvedValue('modified content');
+      computePatchedContentMock.mockResolvedValue('modified content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([
         { status: 'D', file: 'toolkit/modified.cpp' },
@@ -550,7 +566,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('content');
+      computePatchedContentMock.mockResolvedValue('content');
       vi.mocked(readText).mockResolvedValue('content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([{ status: 'M', file: 'toolkit/foo.cpp' }]);
@@ -604,7 +620,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('exported override content');
+      computePatchedContentMock.mockResolvedValue('exported override content');
       vi.mocked(readText).mockResolvedValue('freshly re-deployed content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -638,7 +654,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('deployed override content');
+      computePatchedContentMock.mockResolvedValue('deployed override content');
       vi.mocked(readText).mockResolvedValue('deployed override content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -684,7 +700,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('matched content');
+      computePatchedContentMock.mockResolvedValue('matched content');
       vi.mocked(readText).mockResolvedValue('matched content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -744,7 +760,7 @@ describe('statusCommand', () => {
       await statusCommand(projectRoot, { raw: true });
 
       expect(loadPatchesManifest).not.toHaveBeenCalled();
-      expect(computePatchedContent).not.toHaveBeenCalled();
+      expect(computePatchedContentMock).not.toHaveBeenCalled();
       writeSpy.mockRestore();
     });
   });
@@ -766,7 +782,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('content');
+      computePatchedContentMock.mockResolvedValue('content');
       vi.mocked(readText).mockResolvedValue('content');
 
       vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -1057,7 +1073,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('expected content');
+      computePatchedContentMock.mockResolvedValue('expected content');
       vi.mocked(readText).mockResolvedValue('manual resolution content');
       vi.mocked(getStatusWithCodes).mockResolvedValue(files.map((file) => ({ status: 'M', file })));
 
@@ -1095,7 +1111,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('exported override content');
+      computePatchedContentMock.mockResolvedValue('exported override content');
       vi.mocked(readText).mockResolvedValue('freshly re-deployed content');
       vi.mocked(getStatusWithCodes).mockResolvedValue([
         { status: 'M', file: 'toolkit/content/widgets/moz-button/moz-button.css' },
@@ -1189,7 +1205,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('expected');
+      computePatchedContentMock.mockResolvedValue('expected');
       vi.mocked(readText).mockResolvedValue('expected');
 
       await statusCommand(projectRoot);
@@ -1421,7 +1437,7 @@ describe('statusCommand', () => {
         ],
       });
       // Content matches expected patch content → `patch-backed`.
-      vi.mocked(computePatchedContent).mockResolvedValue('ok');
+      computePatchedContentMock.mockResolvedValue('ok');
       vi.mocked(readText).mockResolvedValue('ok');
 
       const writes: string[] = [];
@@ -1473,7 +1489,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('ok');
+      computePatchedContentMock.mockResolvedValue('ok');
       vi.mocked(readText).mockResolvedValue('ok');
     }
 
@@ -1555,11 +1571,288 @@ describe('statusCommand', () => {
 
       const payload = JSON.parse(writes.join('')) as { schemaVersion: number };
       expect(payload.schemaVersion).toBe(1);
+
+      // Machine mode must SURVIVE the refusal's propagation: withErrorHandling
+      // (not statusCommand) resets it after routing the message to stderr. A
+      // mid-throw restore here put clack's styled refusal on stdout after the
+      // JSON, breaking the 0.40.0 stderr promise.
+      expect(setMachineOutputMode).toHaveBeenCalledTimes(1);
+      expect(setMachineOutputMode).toHaveBeenCalledWith(true);
     });
 
     it('is refused alongside --raw', async () => {
       await expect(statusCommand(projectRoot, { raw: true, check: true })).rejects.toThrow(
         '--check cannot be combined with --raw, --unmanaged, --ownership, or --test-coverage'
+      );
+    });
+  });
+
+  describe('--json --summary gate payload (FORGE K8)', () => {
+    function captureStdout(): { writes: string[]; restore: () => void } {
+      const writes: string[] = [];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+      return {
+        writes,
+        restore: () => {
+          stdoutSpy.mockRestore();
+        },
+      };
+    }
+
+    it('emits counts without files[] when no check policy is active', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: 'browser/base/new-a.js' },
+        { status: '??', file: 'browser/base/new-b.js' },
+      ]);
+      const { writes, restore } = captureStdout();
+
+      try {
+        await statusCommand(projectRoot, { json: true, summary: true });
+      } finally {
+        restore();
+      }
+
+      const payload = JSON.parse(writes.join('')) as {
+        schemaVersion: number;
+        summary: { total: number; byClassification: Record<string, number> };
+        files?: unknown;
+        check?: unknown;
+      };
+      expect(payload.schemaVersion).toBe(1);
+      expect(payload.summary.total).toBe(2);
+      expect(payload.summary.byClassification['unmanaged']).toBe(2);
+      expect(payload.files).toBeUndefined();
+      expect(payload.check).toBeUndefined();
+    });
+
+    it('lists offenders only for fail-set classifications and still exits non-zero', async () => {
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-backed.patch',
+            order: 1,
+            category: 'ui',
+            name: 'backed',
+            description: '',
+            createdAt: '2026-04-21T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/backed.js'],
+          },
+        ],
+      });
+      computePatchedContentMock.mockResolvedValue('ok');
+      vi.mocked(readText).mockResolvedValue('ok');
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        // patch-backed (outside the default fail set → NOT an offender)
+        { status: ' M', file: 'browser/base/backed.js' },
+        { status: '??', file: 'browser/base/new-a.js' },
+      ]);
+      const { writes, restore } = captureStdout();
+
+      try {
+        await expect(
+          statusCommand(projectRoot, { json: true, summary: true, check: true })
+        ).rejects.toThrow('status --check failed: 1 unmanaged (browser/base/new-a.js)');
+      } finally {
+        restore();
+      }
+
+      const payload = JSON.parse(writes.join('')) as {
+        summary: { total: number };
+        files?: unknown;
+        check?: {
+          enabled: boolean;
+          failOn: string[];
+          failed: boolean;
+          offenders: { classification: string; count: number; files: string[] }[];
+        };
+      };
+      expect(payload.summary.total).toBe(2);
+      expect(payload.files).toBeUndefined();
+      expect(payload.check?.enabled).toBe(true);
+      expect(payload.check?.failed).toBe(true);
+      expect(payload.check?.failOn).toEqual(['unmanaged', 'patch-owned-drift', 'conflict']);
+      expect(payload.check?.offenders).toEqual([
+        { classification: 'unmanaged', count: 1, files: ['browser/base/new-a.js'] },
+      ]);
+    });
+
+    it('emits total 0 with a passing check block on a clean tree', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+      vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+      const { writes, restore } = captureStdout();
+
+      try {
+        await statusCommand(projectRoot, { json: true, summary: true, check: true });
+      } finally {
+        restore();
+      }
+
+      const payload = JSON.parse(writes.join('')) as {
+        summary: { total: number };
+        check?: { failed: boolean; offenders: unknown[] };
+      };
+      expect(payload.summary.total).toBe(0);
+      expect(payload.check?.failed).toBe(false);
+      expect(payload.check?.offenders).toEqual([]);
+    });
+
+    it('is refused without --json', async () => {
+      await expect(statusCommand(projectRoot, { summary: true })).rejects.toThrow(
+        '--summary requires --json.'
+      );
+    });
+  });
+
+  describe('--include-ownership JSON block (FORGE L3)', () => {
+    interface OwnershipPayload {
+      files?: unknown;
+      ownership?: {
+        rows: {
+          path: string;
+          owners: string[];
+          conflict: boolean;
+          conflictReason: string | null;
+          unmanaged: boolean;
+          state: string;
+        }[];
+        summary: { managed: number; unmanaged: number; conflicts: number };
+      };
+    }
+
+    function captureStdout(): { writes: string[]; restore: () => void } {
+      const writes: string[] = [];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+      return {
+        writes,
+        restore: () => {
+          stdoutSpy.mockRestore();
+        },
+      };
+    }
+
+    function conflictedQueue(): void {
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-a.patch',
+            order: 1,
+            category: 'ui',
+            name: 'a',
+            description: '',
+            createdAt: '2026-04-21T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/content/browser.js'],
+          },
+          {
+            filename: '002-ui-b.patch',
+            order: 2,
+            category: 'ui',
+            name: 'b',
+            description: '',
+            createdAt: '2026-04-21T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/content/browser.js'],
+          },
+        ],
+      });
+    }
+
+    async function runJson(
+      options: Parameters<typeof statusCommand>[1]
+    ): Promise<OwnershipPayload> {
+      const { writes, restore } = captureStdout();
+      try {
+        await statusCommand(projectRoot, options);
+      } finally {
+        restore();
+      }
+      return JSON.parse(writes.join('')) as OwnershipPayload;
+    }
+
+    it('carries rows and counts for a conflicted queue WITHOUT failing the run', async () => {
+      conflictedQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+
+      const payload = await runJson({ json: true, includeOwnership: true });
+
+      const conflictRow = payload.ownership?.rows.find(
+        (r) => r.path === 'browser/base/content/browser.js'
+      );
+      expect(conflictRow?.conflict).toBe(true);
+      expect(conflictRow?.conflictReason).toBe('files-affected');
+      expect(conflictRow?.owners).toEqual(['001-ui-a.patch', '002-ui-b.patch']);
+      expect(payload.ownership?.summary.conflicts).toBe(1);
+      // The human --ownership mode exits 1 on conflicts; --json must not.
+      // Reaching this line at all is the assertion.
+    });
+
+    it('composes with --summary, which still omits files[]', async () => {
+      conflictedQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+
+      const payload = await runJson({ json: true, summary: true, includeOwnership: true });
+
+      expect(payload.files).toBeUndefined();
+      expect(payload.ownership?.summary.conflicts).toBe(1);
+    });
+
+    it('omits the ownership key entirely without the flag', async () => {
+      conflictedQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+
+      const full = await runJson({ json: true });
+      const summary = await runJson({ json: true, summary: true });
+
+      expect(full.ownership).toBeUndefined();
+      expect(summary.ownership).toBeUndefined();
+    });
+
+    it('lists manifest-claimed paths even on a clean worktree', async () => {
+      conflictedQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+      vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+
+      const payload = await runJson({ json: true, includeOwnership: true });
+
+      expect(payload.ownership?.rows.map((r) => r.path)).toContain(
+        'browser/base/content/browser.js'
+      );
+    });
+
+    it('leaves --check as the sole exit driver when both are set', async () => {
+      conflictedQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: '??', file: 'browser/base/new-a.js' },
+      ]);
+      const { restore } = captureStdout();
+
+      try {
+        // The unmanaged file trips the check policy — not the ownership
+        // conflict, which never fails --json.
+        await expect(
+          statusCommand(projectRoot, { json: true, includeOwnership: true, check: true })
+        ).rejects.toThrow('status --check failed: 1 unmanaged (browser/base/new-a.js)');
+      } finally {
+        restore();
+      }
+    });
+
+    it('is refused without --json', async () => {
+      await expect(statusCommand(projectRoot, { includeOwnership: true })).rejects.toThrow(
+        '--include-ownership requires --json.'
       );
     });
   });
@@ -1627,7 +1920,7 @@ describe('statusCommand', () => {
           },
         ],
       });
-      vi.mocked(computePatchedContent).mockResolvedValue('ok');
+      computePatchedContentMock.mockResolvedValue('ok');
       vi.mocked(readText).mockImplementation((path: string) =>
         Promise.resolve(path.endsWith('drifted.js') ? 'DRIFTED' : 'ok')
       );

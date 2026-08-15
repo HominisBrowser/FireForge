@@ -144,6 +144,39 @@ describe('logApplyResult — component errors', () => {
   });
 });
 
+describe('logApplyResult — patch-owned overwrite warnings (FORGE J6)', () => {
+  it('warns each recorded overwrite line on a non-dry-run apply', () => {
+    const result: ApplyResult = {
+      applied: [{ name: 'moz-card', type: 'override', filesAffected: ['moz-card.css'] }],
+      skipped: [],
+      errors: [],
+      warnings: ['moz-card: overwriting deployed a/b.css — its engine content differs'],
+    };
+
+    logApplyResult(result, false);
+
+    expect(mockWarn).toHaveBeenCalledWith(
+      'moz-card: overwriting deployed a/b.css — its engine content differs'
+    );
+  });
+
+  it('still prints warnings on the rolled-back branch (the overwrite happened before restore)', () => {
+    const result: ApplyResult = {
+      applied: [{ name: 'moz-card', type: 'override', filesAffected: [] }],
+      skipped: [],
+      errors: [{ name: 'moz-panel', error: 'boom' }],
+      rolledBack: true,
+      warnings: ['moz-card: overwriting deployed a/b.css — its engine content differs'],
+    };
+
+    logApplyResult(result, false);
+
+    expect(mockWarn).toHaveBeenCalledWith(
+      'moz-card: overwriting deployed a/b.css — its engine content differs'
+    );
+  });
+});
+
 describe('logApplyResult — mixed result', () => {
   it('emits applied, skipped, step-error, and component-error sections in order', () => {
     const result: ApplyResult = {

@@ -12,6 +12,7 @@ import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, warn } from '../utils/logger.js';
 import { detectBootstrapIssues, runPostBootstrapChecks } from './bootstrap-checks.js';
 import { reportDoctorResults } from './doctor.js';
+import { resolveDoctorSeverity } from './doctor-check-core.js';
 
 /**
  * Builds a human-readable failure message for hard failures (non-zero exit).
@@ -88,7 +89,10 @@ export async function bootstrapCommand(projectRoot: string): Promise<ExitCode> {
 
   if (issues.length > 0) {
     const checks = await runPostBootstrapChecks(issues);
-    const hasErrors = checks.some((c) => c.severity === 'error' || (!c.passed && !c.warning));
+    // Shares one resolver with reportDoctorResults so the two consumers of
+    // this same array cannot drift apart again — before 0.41.0 they
+    // disagreed on `passed: false, warning: true` with no severity.
+    const hasErrors = checks.some((c) => resolveDoctorSeverity(c) === 'error');
 
     info('');
     if (hasErrors) {

@@ -218,6 +218,8 @@ export async function validateCssFragments(
   try {
     entries = await readdir(componentDir);
   } catch {
+    // An unreadable component directory contributes no fragment issues; return
+    // what has been collected so far rather than failing validation.
     return issues;
   }
   for (const fileName of entries) {

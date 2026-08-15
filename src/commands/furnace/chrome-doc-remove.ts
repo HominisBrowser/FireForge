@@ -10,7 +10,11 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 
 import { loadConfig } from '../../core/config.js';
-import { type FurnaceOperationContext, runFurnaceMutation } from '../../core/furnace-operation.js';
+import {
+  type FurnaceOperationContext,
+  recordFurnaceRollbackFailure,
+  runFurnaceMutation,
+} from '../../core/furnace-operation.js';
 import {
   createRollbackJournal,
   restoreRollbackJournalOrThrow,
@@ -18,6 +22,7 @@ import {
   snapshotFile,
 } from '../../core/furnace-rollback.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import { toError } from '../../utils/errors.js';
 import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro } from '../../utils/logger.js';
 import { buildChromeDocPlan, type ChromeDocPlan, validateChromeDocName } from './chrome-doc.js';
@@ -91,6 +96,7 @@ function renderChromeDocRemoveDryRun(name: string, plan: ChromeDocPlan): string 
 }
 
 async function performChromeDocRemoveMutations(args: {
+  projectRoot: string;
   name: string;
   engineDir: string;
   plan: ChromeDocPlan;
@@ -135,7 +141,19 @@ async function performChromeDocRemoveMutations(args: {
       journal
     );
   } catch (error: unknown) {
-    await restoreRollbackJournalOrThrow(journal, `Failed to remove chrome-doc "${args.name}"`);
+    try {
+      await restoreRollbackJournalOrThrow(journal, `Failed to remove chrome-doc "${args.name}"`);
+    } catch (rollbackError) {
+      // Matches the seven sibling mutation sites: a failed rollback leaves the
+      // engine in an unknown state, so record the repair breadcrumb and let
+      // the rollback error win rather than discarding it.
+      await recordFurnaceRollbackFailure(
+        args.projectRoot,
+        'chrome-doc-rollback',
+        `chrome-doc "${args.name}": ${toError(rollbackError).message}`
+      );
+      throw rollbackError;
+    }
     throw error;
   }
 
@@ -193,6 +211,7 @@ export async function furnaceChromeDocRemoveCommand(
 
   const result = await runFurnaceMutation(projectRoot, 'chrome-doc-rollback', (ctx) =>
     performChromeDocRemoveMutations({
+      projectRoot,
       name,
       engineDir,
       plan,

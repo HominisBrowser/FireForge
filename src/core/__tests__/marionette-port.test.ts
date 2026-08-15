@@ -23,11 +23,13 @@ import { exec } from '../../utils/process.js';
 import {
   assertMarionettePortAvailable,
   DEFAULT_MARIONETTE_PORT,
+  ensureLaunchableBrowserNotRunning,
   ensureMarionettePortAvailable,
   extractForwardedMarionettePort,
   forwardedMachArgsIncludeMarionetteClient,
   hasExplicitXpcshellFlavor,
   isMarionetteFlavor,
+  parseProcessList,
   probeMarionettePort,
   shouldAutoForwardMarionettePortToMach,
 } from '../marionette-port.js';
@@ -44,6 +46,49 @@ function lsofOutput(pid: number, command: string): string {
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetPlatform.mockReturnValue('darwin');
+});
+
+describe('objdir browser process preflight', () => {
+  const binary = '/project/engine/obj-debug/dist/Hominis.app/Contents/MacOS/hominis';
+
+  it('matches only the exact built binary and ignores the current process', () => {
+    const output =
+      `  41 ${binary} -marionette -profile /tmp/test\n` +
+      '  42 /Applications/Firefox.app/Contents/MacOS/firefox -marionette\n' +
+      `  ${process.pid} ${binary} --synthetic-current-process\n`;
+    expect(parseProcessList(output, binary)).toEqual([
+      { pid: 41, commandLine: `${binary} -marionette -profile /tmp/test` },
+    ]);
+  });
+
+  it('refuses a surviving app even when no Marionette port is listening', async () => {
+    mockExec.mockResolvedValue({
+      exitCode: 0,
+      stdout: `37001 ${binary} -profile /tmp/mochitest\n`,
+      stderr: '',
+    });
+
+    await expect(ensureLaunchableBrowserNotRunning(binary)).rejects.toThrow(
+      /already running \(PID 37001\)/
+    );
+  });
+
+  it('terminates a surviving app when explicitly requested', async () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    mockExec.mockResolvedValue({
+      exitCode: 0,
+      stdout: `37002 ${binary} -profile /tmp/mochitest\n`,
+      stderr: '',
+    });
+    try {
+      await expect(
+        ensureLaunchableBrowserNotRunning(binary, { killStaleBrowser: true })
+      ).resolves.toBeUndefined();
+      expect(killSpy).toHaveBeenCalledWith(37002, 'SIGTERM');
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
 });
 
 describe('probeMarionettePort', () => {

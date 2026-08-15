@@ -99,7 +99,7 @@ function validatePatchMetadata(data: unknown, index: number): PatchMetadata {
         `patches[${index}].sourceProduct must be one of: firefox, firefox-esr, firefox-beta, firefox-devedition`
       );
     }
-    sourceProduct = sourceProductRaw as FirefoxProduct;
+    sourceProduct = sourceProductRaw;
   }
   const order = rec.nonNegativeInteger('order');
   const category = rec.validatedString(

@@ -138,6 +138,20 @@ export class ExecTimeoutError extends FireForgeError {
 }
 
 /**
+ * Error thrown when a file-lock wait times out because another process
+ * holds the lock (FORGE H5).
+ *
+ * Dedicated subclass so the CLI boundary renders lock contention as the
+ * one-line reason-first/remedy-second refusal it is — before this, the
+ * timeout surfaced as a plain `Error`, which `withErrorHandling` treats
+ * as an internal failure and prints with a five-frame stack. The refusal
+ * was always correct; the presentation made it look like a crash.
+ */
+export class LockContentionError extends FireForgeError {
+  readonly code = ExitCode.GENERAL_ERROR;
+}
+
+/**
  * Error thrown when the user cancels an interactive prompt.
  */
 export class CancellationError extends FireForgeError {

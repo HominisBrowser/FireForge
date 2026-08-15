@@ -54,6 +54,15 @@ export function validateChromeScriptJsDoc(
   try {
     ast = parseScript(source, comments);
   } catch {
+    // Deliberate carve-out, unlike the `.sys.mjs` walker in
+    // `patch-lint-jsdoc.ts` (which reports a parse failure as an issue).
+    // `parseScript` rejects `import`/`export`, so a chrome subscript that was
+    // misclassified as a `.js` file — or that mistakenly uses module syntax —
+    // would emit a pseudo-issue for every rule here. The orchestrator already
+    // runs the export walker on `.sys.mjs` separately, so silently declining
+    // to lint an unparseable script is the correct degradation for this file
+    // and only this file. Pinned by "returns no issues when the source uses
+    // module-only syntax" in patch-lint-chrome-jsdoc.test.ts.
     return [];
   }
 

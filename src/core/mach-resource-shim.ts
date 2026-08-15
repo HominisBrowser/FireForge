@@ -478,6 +478,7 @@ async function listSubdirs(dir: string): Promise<string[]> {
     const entries = await readdir(dir, { withFileTypes: true });
     return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   } catch {
+    // An unreadable directory contributes no subdirectories to the shim scan.
     return [];
   }
 }

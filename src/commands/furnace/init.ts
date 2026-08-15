@@ -16,7 +16,7 @@ import { getTokensCssPath } from '../../core/token-manager.js';
 import { generateDefaultTokensCss } from '../../core/token-scaffold.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
-import { toError } from '../../utils/errors.js';
+import { getNodeErrorCode, toError } from '../../utils/errors.js';
 import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
 
@@ -94,8 +94,8 @@ async function validateFtlBasePath(value: string, engineDir?: string): Promise<v
   if (engineDir) {
     const resolved = join(engineDir, value);
     try {
-      const info = await stat(resolved);
-      if (!info.isDirectory()) {
+      const stats = await stat(resolved);
+      if (!stats.isDirectory()) {
         throw new FurnaceError(
           `ftlBasePath "${value}" resolves to a non-directory at ${resolved}. FireForge expects a locale directory (for example toolkit/locales/en-US/toolkit/global or browser/locales/en-US/browser).`
         );
@@ -106,10 +106,7 @@ async function validateFtlBasePath(value: string, engineDir?: string): Promise<v
       if (error instanceof FurnaceError) throw error;
       // ENOENT is expected on a fresh project before `fireforge
       // download` has populated engine/; only warn.
-      const code =
-        typeof error === 'object' && error !== null && 'code' in error
-          ? (error as { code?: unknown }).code
-          : undefined;
+      const code = getNodeErrorCode(error);
       if (code === 'ENOENT') {
         warn(
           `ftlBasePath "${value}" does not yet exist at ${resolved}. This is fine if you have not run "fireforge download" yet; rerun "fireforge furnace init --force" after the engine is extracted to re-validate.`
@@ -179,7 +176,7 @@ export async function furnaceInitCommand(
       cancel('Init cancelled');
       return;
     }
-    config.componentPrefix = prefixResult as string;
+    config.componentPrefix = prefixResult;
   }
 
   // Resolve ftlBasePath
@@ -195,7 +192,7 @@ export async function furnaceInitCommand(
       cancel('Init cancelled');
       return;
     }
-    const ftlValue = (ftlResult as string).trim();
+    const ftlValue = ftlResult.trim();
     if (ftlValue) {
       await validateFtlBasePath(ftlValue, engineForValidation);
       config.ftlBasePath = ftlValue;

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { hasBrowserChromeAssertion } from '../../../core/patch-lint.js';
 import { ensureDir, writeText } from '../../../utils/fs.js';
 import { scaffoldMochikitTestFiles } from '../create-mochikit.js';
 import {
@@ -37,6 +38,13 @@ describe('mochikit templates', () => {
     const html = generateMochikitTestContent('moz-widget');
     expect(html).not.toContain('waitForExplicitFinish');
     expect(html).not.toContain('SimpleTest.finish');
+  });
+
+  it('clears the patch-lint assertion floor', () => {
+    // The scaffold's only SimpleTest reference is the harness <script> src, so
+    // it must satisfy the floor through its real `ok()`/`is()` assertions —
+    // not through a lint rule loose enough to accept the script tag.
+    expect(hasBrowserChromeAssertion(generateMochikitTestContent('moz-widget'))).toBe(true);
   });
 
   it('chrome.toml skeleton has an empty [DEFAULT] stanza', () => {

@@ -20,6 +20,7 @@ import type { Command } from 'commander';
 import { InvalidArgumentError as CommanderInvalidArgumentError } from 'commander';
 
 import { GeneralError } from '../errors/base.js';
+import { toError } from './errors.js';
 
 /**
  * Wraps an option-argument parser so its failures surface through
@@ -40,11 +41,27 @@ export function commanderArgParser<T>(parse: (raw: string) => T): (raw: string) 
     try {
       return parse(raw);
     } catch (error: unknown) {
-      throw new CommanderInvalidArgumentError(
-        error instanceof Error ? error.message : String(error)
-      );
+      throw new CommanderInvalidArgumentError(toError(error).message);
     }
   };
+}
+
+/**
+ * Commander plumbing for a repeatable string option, as a spreadable
+ * `[accumulator, default]` pair:
+ *
+ * ```ts
+ * .option('--mach-arg <arg>', 'Repeatable.', ...stringListOption())
+ * ```
+ *
+ * Seven call sites open-coded this, each with its own `[] as string[]`
+ * default — commander types that slot as `unknown`, so every one carried the
+ * cast. Two of the seven also mutated the accumulator in place rather than
+ * returning a new array. Returning a fresh array per call additionally means
+ * the default cannot be shared between two `.option()` registrations.
+ */
+export function stringListOption(): [(value: string, previous: string[]) => string[], string[]] {
+  return [(value: string, previous: string[]): string[] => [...previous, value], []];
 }
 
 /** Wait budget applied when `--wait-lock` is passed without a value. */
@@ -81,15 +98,17 @@ export function resolveWaitLockSeconds(
 }
 
 /**
- * Registers the shared `--wait-lock [seconds]` flag on an engine-mutating
- * command. The parsed option value is `true` for the bare flag or a validated
- * integer; feed it through {@link resolveWaitLockSeconds} at the call site to
- * obtain the `waitLockSeconds` for `withEngineSessionLock`.
+ * Registers the shared `--wait-lock [seconds]` flag on a lock-taking
+ * command (the engine session lock for engine-mutating commands, the patch
+ * directory lock for queue-mutating ones). The parsed option value is `true`
+ * for the bare flag or a validated integer; feed it through
+ * {@link resolveWaitLockSeconds} at the call site to obtain the
+ * `waitLockSeconds` for `withEngineSessionLock`/`withPatchDirectoryLock`.
  */
 export function addWaitLockOption(command: Command): Command {
   return command.option(
     '--wait-lock [seconds]',
-    'Wait up to this many seconds (default 60) for another FireForge engine-mutating command to release the engine lock, instead of failing immediately',
+    'Wait up to this many seconds (default 60) for another FireForge command to release the contended lock, instead of failing on the default budget',
     commanderArgParser((raw: string) => resolveWaitLockSeconds(raw))
   );
 }

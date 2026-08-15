@@ -12,6 +12,7 @@ import {
   buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
   detectNewFilesInDiff,
+  formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../core/patch-lint.js';
@@ -100,7 +101,7 @@ async function runProjectedCrossPatchLint(
   if (regressions.length === 0) return null;
   return {
     reason: `projected --files state introduces ${regressions.length} new cross-patch lint error(s)`,
-    details: regressions.map((i) => `[${i.check}] ${i.file}: ${i.message}`),
+    details: regressions.map(formatPatchLintIssue),
   };
 }
 
@@ -171,7 +172,9 @@ async function confirmFilesModeProjection(args: {
       info(`  ${line}`);
     }
     throw new InvalidArgumentError(
-      `Refusing to re-export ${target.filename} with --files because it would remove ${removed.length} existing patch-owned file${removed.length === 1 ? '' : 's'}. Run again with --allow-shrink after reviewing the dry-run output.`,
+      `Refusing to re-export ${target.filename} with --files because it would remove ${removed.length} existing patch-owned file${removed.length === 1 ? '' : 's'}. Run again with --allow-shrink after reviewing the dry-run output. ` +
+        'If the intent is to move those files into their own patch instead, ' +
+        '"fireforge patch move-files <from> <to> --file <path> --create --order <n>" does the shrink and the new patch in one transaction.',
       '--allow-shrink'
     );
   }

@@ -56,14 +56,10 @@ async function promptAddComponents(
 
   const selected = await multiselect({
     message: 'Select components to add as stock',
-    options: untrackedComponents.map((c) => {
-      const features: string[] = [];
-      if (c.hasCSS) features.push('CSS');
-      if (c.hasFTL) features.push('FTL');
-      if (c.isRegistered) features.push('registered');
-      const label = features.length > 0 ? `${c.tagName} — ${features.join(', ')}` : c.tagName;
-      return { value: c.tagName, label };
-    }),
+    options: untrackedComponents.map((c) => ({
+      value: c.tagName,
+      label: `${c.tagName}${formatComponentFeatures(c)}`,
+    })),
   });
 
   if (isCancel(selected)) {
@@ -72,9 +68,9 @@ async function promptAddComponents(
     return;
   }
 
-  await persistStockComponents(projectRoot, selected as string[]);
+  await persistStockComponents(projectRoot, selected);
 
-  const addedNames = selected as string[];
+  const addedNames = selected;
   success(
     `Added ${addedNames.length} component${addedNames.length === 1 ? '' : 's'} to furnace.json`
   );
@@ -98,7 +94,7 @@ async function promptAddComponents(
     return;
   }
 
-  await furnaceOverrideCommand(projectRoot, overrideTarget as string);
+  await furnaceOverrideCommand(projectRoot, overrideTarget);
 }
 
 /**
@@ -149,6 +145,24 @@ async function persistStockComponents(projectRoot: string, names: string[]): Pro
       throw error;
     }
   });
+}
+
+/**
+ * Renders a component's discovered capabilities as a display suffix.
+ * Written twice before 0.41.0 — once for the interactive multiselect labels
+ * and once for the report rows — which is part of what pinned
+ * `furnaceScanCommand` at complexity 30/30.
+ */
+function formatComponentFeatures(component: {
+  hasCSS: boolean;
+  hasFTL: boolean;
+  isRegistered: boolean;
+}): string {
+  const features: string[] = [];
+  if (component.hasCSS) features.push('CSS');
+  if (component.hasFTL) features.push('FTL');
+  if (component.isRegistered) features.push('registered');
+  return features.length > 0 ? ` — ${features.join(', ')}` : '';
 }
 
 /**
@@ -208,34 +222,16 @@ export async function furnaceScanCommand(
     }
   }
 
-  // Display each component
+  // Partition once and reuse: the tracked/untracked split was computed twice
+  // (imperatively here, declaratively again for --track) before 0.41.0.
+  const untrackedComponentList = components.filter((c) => !tracked.has(c.tagName));
+  const untrackedCount = untrackedComponentList.length;
+  const trackedCount = components.length - untrackedCount;
+
   for (const component of components) {
-    const features: string[] = [];
-    if (component.hasCSS) features.push('CSS');
-    if (component.hasFTL) features.push('FTL');
-    if (component.isRegistered) features.push('registered');
-
-    let line = component.tagName;
-    if (features.length > 0) {
-      line += ` — ${features.join(', ')}`;
-    }
-
     const type = tracked.get(component.tagName);
-    if (type) {
-      line += ` [${type}]`;
-    }
-
-    info(line);
+    info(`${component.tagName}${formatComponentFeatures(component)}${type ? ` [${type}]` : ''}`);
   }
-
-  // Summary
-  let trackedCount = 0;
-  for (const component of components) {
-    if (tracked.has(component.tagName)) {
-      trackedCount++;
-    }
-  }
-  const untrackedCount = components.length - trackedCount;
 
   note(
     `Total: ${components.length}  Tracked: ${trackedCount}  Untracked: ${untrackedCount}`,
@@ -252,7 +248,7 @@ export async function furnaceScanCommand(
       outro('Scan complete');
       return;
     }
-    const untrackedNames = components.filter((c) => !tracked.has(c.tagName)).map((c) => c.tagName);
+    const untrackedNames = untrackedComponentList.map((c) => c.tagName);
     await persistStockComponents(projectRoot, untrackedNames);
     success(
       `Tracked ${untrackedNames.length} component${untrackedNames.length === 1 ? '' : 's'} in the stock section of furnace.json`

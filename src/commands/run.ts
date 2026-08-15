@@ -7,13 +7,8 @@ import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
-import {
-  buildArtifactMismatchMessage,
-  hasBuildArtifacts,
-  hasRunnableBundle,
-  run,
-  runMachSmoke,
-} from '../core/mach.js';
+import { hasBuildArtifacts, hasRunnableBundle, run, runMachSmoke } from '../core/mach.js';
+import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import {
   compileAllowlistFromFile,
   compileAllowlistFromStrings,
@@ -22,7 +17,7 @@ import {
   matchesSmokeError,
 } from '../core/smoke-patterns.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
-import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
+import { BuildError } from '../errors/build.js';
 import { ExitCode } from '../errors/codes.js';
 import { SmokeRunError } from '../errors/run.js';
 import type { CommandContext } from '../types/cli.js';
@@ -30,7 +25,7 @@ import type { RunOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, removeDir, removeFile } from '../utils/fs.js';
 import { info, intro, verbose, warn } from '../utils/logger.js';
-import { commanderArgParser, pickDefined } from '../utils/options.js';
+import { commanderArgParser, pickDefined, stringListOption } from '../utils/options.js';
 
 /**
  * Exit code returned by smoke-run mode when the captured console stream
@@ -108,22 +103,12 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
   }
 
   const buildCheck = await hasBuildArtifacts(paths.engine);
-  if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
-    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
-  }
-  const mismatchMessage = buildArtifactMismatchMessage(paths.engine, buildCheck, 'Run');
-  if (mismatchMessage) {
-    throw new GeneralError(mismatchMessage);
-  }
-  if (!buildCheck.exists) {
-    const detail = buildCheck.objDir
-      ? `Build artifacts incomplete in ${buildCheck.objDir}/`
-      : 'No build artifacts found (obj-*/ directory missing)';
-    throw new GeneralError(
-      `Run requires a completed build. ${detail}\n\n` +
-        "Run 'fireforge build' first, then rerun 'fireforge run'."
-    );
-  }
+  assertBuildArtifacts(paths.engine, buildCheck, {
+    label: 'Run',
+    requirement: 'Run requires a completed build.',
+    remediation: "Run 'fireforge build' first, then rerun 'fireforge run'.",
+    requireExisting: true,
+  });
 
   // `hasBuildArtifacts` only checks for an `obj-*/dist/` directory; a
   // build that configured but hasn't yet produced the launchable binary
@@ -455,11 +440,7 @@ export function registerRun(
     .option(
       '--console-allow <regex>',
       'Allowlist regex (repeatable). Lines that match any entry do not count toward the smoke exit code.',
-      (value: string, acc: string[]) => {
-        acc.push(value);
-        return acc;
-      },
-      [] as string[]
+      ...stringListOption()
     )
     .option(
       '--console-allow-file <path>',

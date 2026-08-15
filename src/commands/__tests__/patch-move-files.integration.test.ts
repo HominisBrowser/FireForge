@@ -299,6 +299,8 @@ describe('patch move-files --create', () => {
     expect(byName.get('001-ui-feature.patch')?.filesAffected).toEqual([FILE_A]);
     expect(byName.get('005-ui-feature-styles.patch')?.filesAffected).toEqual([FILE_B]);
     expect(byName.get('005-ui-feature-styles.patch')?.order).toBe(5);
+    // An already-bare slug is kept verbatim (FORGE H4).
+    expect(byName.get('005-ui-feature-styles.patch')?.name).toBe('feature-styles');
 
     const newBody = await readFile(join(patchesDir, '005-ui-feature-styles.patch'), 'utf-8');
     expect(newBody).toContain(FILE_B);
@@ -307,6 +309,45 @@ describe('patch move-files --create', () => {
     const sourceBody = await readFile(join(patchesDir, '001-ui-feature.patch'), 'utf-8');
     expect(sourceBody).toContain(FILE_A);
     expect(sourceBody).not.toContain(FILE_B);
+  });
+
+  it('names --description in the description-required refusal (FORGE J11)', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        requireDescription: true,
+        ranges: [{ from: 1, to: 99, category: 'ui' }],
+      },
+    });
+    await seed(patchesDir, [
+      {
+        ...makeMetadata('001-ui-feature.patch', 1, [FILE_A, FILE_B]),
+        description: 'Feature work',
+      },
+    ]);
+
+    await expect(
+      patchMoveFilesCommand(projectRoot, '001-ui-feature.patch', 'feature-styles', {
+        file: [FILE_B],
+        create: true,
+        order: 5,
+        yes: true,
+        skipLint: true,
+      })
+    ).rejects.toThrow(/\[description-required\][\s\S]*→ Pass --description "<text>" \(or -d\)/);
+
+    // A supplied description satisfies the policy.
+    await patchMoveFilesCommand(projectRoot, '001-ui-feature.patch', 'feature-styles', {
+      file: [FILE_B],
+      create: true,
+      order: 5,
+      yes: true,
+      skipLint: true,
+      description: 'Styles split out',
+    });
+    const manifest = await readManifest(patchesDir);
+    expect(
+      manifest.patches.find((p) => p.filename === '005-ui-feature-styles.patch')?.description
+    ).toBe('Styles split out');
   });
 
   it('does not double-suffix when the --create target name carries .patch (FORGE F9)', async () => {
@@ -329,6 +370,11 @@ describe('patch move-files --create', () => {
     const filenames = manifest.patches.map((p) => p.filename);
     expect(filenames).toContain('005-ui-feature-styles.patch');
     expect(filenames).not.toContain('005-ui-feature-styles-patch.patch');
+    // FORGE H4: the manifest display name is the bare slug run through the
+    // G13 normalizer, never the full filename the operator typed — the
+    // policy audit's patch-metadata-shape check rejects anything else.
+    const created = manifest.patches.find((p) => p.filename === '005-ui-feature-styles.patch');
+    expect(created?.name).toBe('feature-styles');
   });
 
   it('re-points staged-dependency owners at the created patch', async () => {
@@ -431,5 +477,221 @@ describe('patch move-files --create', () => {
         skipLint: true,
       })
     ).rejects.toThrow(/cross-patch lint error/);
+  });
+});
+
+describe('patch move-files projection lint runs with the whole-queue context (FORGE I3)', () => {
+  const A_PATH = 'browser/modules/mb/A.sys.mjs';
+  const B_PATH = 'browser/modules/mb/B.sys.mjs';
+  const KEEP_CSS = 'browser/base/content/keep.css';
+  const TARGET_CSS = 'browser/base/content/target.css';
+  const HEAD_PATH = 'browser/base/content/test/head.js';
+  const BROWSER_TEST_PATH = 'browser/base/content/test/browser_feature.js';
+
+  const A_SOURCE = [
+    '/* SPDX-License-Identifier: EUPL-1.2 */',
+    '/**',
+    ' * Doubles a number.',
+    ' * @param {number} n - input',
+    ' * @returns {number} doubled',
+    ' */',
+    'export function dbl(n) {',
+    '  return n * 2;',
+    '}',
+    '',
+  ].join('\n');
+
+  const B_MISUSE = [
+    '/* SPDX-License-Identifier: EUPL-1.2 */',
+    "import { dbl } from 'resource:///modules/A.sys.mjs';",
+    '/** @returns {number} result */',
+    'export function use() {',
+    "  return dbl('not a number');",
+    '}',
+    '',
+  ].join('\n');
+
+  const B_CLEAN = [
+    '/* SPDX-License-Identifier: EUPL-1.2 */',
+    "import { dbl } from 'resource:///modules/A.sys.mjs';",
+    '/** @returns {number} result */',
+    'export function use() {',
+    '  return dbl(2);',
+    '}',
+    '',
+  ].join('\n');
+
+  function newFilePatchBody(path: string, addedLine: string): string {
+    return [
+      `diff --git a/${path} b/${path}`,
+      'new file mode 100644',
+      '--- /dev/null',
+      `+++ b/${path}`,
+      '@@ -0,0 +1,1 @@',
+      `+${addedLine}`,
+      '',
+    ].join('\n');
+  }
+
+  let projectRoot: string;
+  let engineDir: string;
+  let patchesDir: string;
+  let restoreTTY: () => void = () => undefined;
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-pmf-ctx-');
+    await writeFireForgeConfig(projectRoot, {
+      patchLint: { checkJs: true, checkJsTestFiles: true },
+    });
+    engineDir = join(projectRoot, 'engine');
+    patchesDir = join(projectRoot, 'patches');
+    await initCommittedRepo(engineDir, {
+      'browser/modules/mb/.gitkeep': '',
+      'browser/base/content/test/.gitkeep': '',
+    });
+    restoreTTY = setInteractiveMode(false);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(async () => {
+    restoreTTY();
+    vi.restoreAllMocks();
+    await removeTempProject(projectRoot);
+  });
+
+  async function seedCrossPatchQueue(bSource: string): Promise<void> {
+    await writeFiles(engineDir, {
+      [A_PATH]: A_SOURCE,
+      [B_PATH]: bSource,
+      [KEEP_CSS]: '/* SPDX-License-Identifier: EUPL-1.2 */\n.keep { color: red; }\n',
+      [TARGET_CSS]: '/* SPDX-License-Identifier: EUPL-1.2 */\n.target { color: green; }\n',
+    });
+    await ensureDir(patchesDir);
+    await writeFile(
+      join(patchesDir, '001-ui-a.patch'),
+      newFilePatchBody(A_PATH, 'export function dbl(n) { return n * 2; }')
+    );
+    await writeFile(
+      join(patchesDir, '002-ui-b.patch'),
+      newFilePatchBody(B_PATH, "import { dbl } from 'resource:///modules/A.sys.mjs';")
+    );
+    await writeFile(
+      join(patchesDir, '003-ui-target.patch'),
+      newFilePatchBody(TARGET_CSS, '.target { color: green; }')
+    );
+    const manifest: PatchesManifest = {
+      version: 1,
+      patches: [
+        makeMetadata('001-ui-a.patch', 1, [A_PATH]),
+        makeMetadata('002-ui-b.patch', 2, [B_PATH, KEEP_CSS]),
+        makeMetadata('003-ui-target.patch', 3, [TARGET_CSS]),
+      ],
+    };
+    await writeFile(join(patchesDir, 'patches.json'), JSON.stringify(manifest, null, 2));
+  }
+
+  it('--create: a moved body misusing another patch module is refused (pre-fix it slipped through)', async () => {
+    // Without the queue context B's `resource:///` import degraded to the
+    // ambient wildcard and the misuse passed the projection lint — leaving
+    // a queue the committed per-patch gate immediately failed.
+    await seedCrossPatchQueue(B_MISUSE);
+
+    await expect(
+      patchMoveFilesCommand(projectRoot, '002-ui-b.patch', 'b-solo', {
+        file: [B_PATH],
+        create: true,
+        order: 5,
+        yes: true,
+      })
+    ).rejects.toThrow(/Patch lint found/);
+  });
+
+  it('--create: a clean cross-patch import resolves and the move succeeds', async () => {
+    await seedCrossPatchQueue(B_CLEAN);
+
+    await patchMoveFilesCommand(projectRoot, '002-ui-b.patch', 'b-solo', {
+      file: [B_PATH],
+      create: true,
+      order: 5,
+      yes: true,
+    });
+
+    const manifest = await readManifest(patchesDir);
+    const created = manifest.patches.find((p) => p.filename === '005-ui-b-solo.patch');
+    expect(created?.filesAffected).toEqual([B_PATH]);
+  });
+
+  it('into-existing: a moved body misusing another patch module is refused', async () => {
+    await seedCrossPatchQueue(B_MISUSE);
+
+    await expect(
+      patchMoveFilesCommand(projectRoot, '002-ui-b.patch', '003-ui-target.patch', {
+        file: [B_PATH],
+        yes: true,
+      })
+    ).rejects.toThrow(/Patch lint found/);
+  });
+
+  it('into-existing: a clean cross-patch import resolves and the move succeeds', async () => {
+    await seedCrossPatchQueue(B_CLEAN);
+
+    await patchMoveFilesCommand(projectRoot, '002-ui-b.patch', '003-ui-target.patch', {
+      file: [B_PATH],
+      yes: true,
+    });
+
+    const manifest = await readManifest(patchesDir);
+    const target = manifest.patches.find((p) => p.filename === '003-ui-target.patch');
+    expect(target?.filesAffected).toEqual([TARGET_CSS, B_PATH].sort());
+  });
+
+  it('--create: a moved browser test whose head.js stays in the source patch lints clean (the handoff shape)', async () => {
+    // Pre-fix the projection lint had no queue context, so the sibling
+    // head.js was not a checkJs program root and the harness helper it
+    // defines reported as a spurious undefined-identifier warning — noise
+    // the committed-context gate then contradicted, leaving the operator
+    // unable to tell "the split is wrong" from "the projection is blind".
+    await writeFiles(engineDir, {
+      [HEAD_PATH]: [
+        '/* SPDX-License-Identifier: EUPL-1.2 */',
+        '/** @returns {number} helper */',
+        'function featureHelper() {',
+        '  return 1;',
+        '}',
+        '',
+      ].join('\n'),
+      [BROWSER_TEST_PATH]: ['/* SPDX-License-Identifier: EUPL-1.2 */', 'featureHelper();', ''].join(
+        '\n'
+      ),
+      [KEEP_CSS]: '/* SPDX-License-Identifier: EUPL-1.2 */\n.keep { color: red; }\n',
+    });
+    await ensureDir(patchesDir);
+    await writeFile(join(patchesDir, '001-ui-tests.patch'), newFilePatchBody(HEAD_PATH, '// head'));
+    const manifest: PatchesManifest = {
+      version: 1,
+      patches: [makeMetadata('001-ui-tests.patch', 1, [HEAD_PATH, BROWSER_TEST_PATH, KEEP_CSS])],
+    };
+    await writeFile(join(patchesDir, 'patches.json'), JSON.stringify(manifest, null, 2));
+
+    // Re-spy with capture: clack renders warnings through stdout, so the
+    // spurious pre-fix diagnostic is observable in the captured writes.
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array): boolean => {
+      writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    });
+
+    await patchMoveFilesCommand(projectRoot, '001-ui-tests.patch', 'feature-test', {
+      file: [BROWSER_TEST_PATH],
+      create: true,
+      order: 5,
+      yes: true,
+    });
+
+    const created = (await readManifest(patchesDir)).patches.find(
+      (p) => p.filename === '005-ui-feature-test.patch'
+    );
+    expect(created?.filesAffected).toEqual([BROWSER_TEST_PATH]);
+    expect(writes.join('')).not.toContain('checkjs-type-error');
   });
 });

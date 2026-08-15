@@ -169,4 +169,159 @@ describe('lintMozBuildSortedLists', () => {
     ]);
     expect(issues).toEqual([]);
   });
+
+  it('ignores quoted strings inside trailing comments (phantom items)', async () => {
+    // `"Beta.sys.mjs"` lives in a comment, not the list. Scraping it in produced
+    // an unsorted-list report naming a file that is not in the list, with a
+    // fingerprint that could never stabilise because the item does not exist
+    // to be moved.
+    await writeFiles(repoDir, {
+      'browser/modules/moz.build': [
+        'EXTRA_JS_MODULES += [',
+        '    "Alpha.sys.mjs",',
+        '    "Zeta.sys.mjs",  # replaces "Beta.sys.mjs" upstream',
+        ']',
+        '',
+      ].join('\n'),
+    });
+
+    const issues = await lintMozBuildSortedLists(repoDir, ['browser/modules/moz.build']);
+    expect(issues).toEqual([]);
+  });
+
+  it('does not let a bracket inside a comment truncate the list', async () => {
+    // `foo[0]` in a comment used to close the list early, so `Alpha.cpp`
+    // never entered the item set and the real disorder went unreported.
+    await writeFiles(repoDir, {
+      'browser/modules/moz.build': [
+        'EXTRA_JS_MODULES += [',
+        '    "Zeta.sys.mjs",  # see foo[0] for context',
+        '    "Alpha.sys.mjs",',
+        ']',
+        '',
+      ].join('\n'),
+    });
+
+    const issues = await lintMozBuildSortedLists(repoDir, ['browser/modules/moz.build']);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain('Alpha.sys.mjs');
+  });
+
+  it('does not let a bracket inside a quoted item close the list', async () => {
+    // `"icons[2x].png"` is filename text. Reading its `]` as the list close
+    // truncated the item set, so the out-of-order `Alpha.png` below it never
+    // entered the comparison and the disorder went unreported.
+    await writeFiles(repoDir, {
+      'browser/modules/moz.build': [
+        'EXTRA_JS_MODULES += [',
+        '    "icons[2x].png",',
+        '    "Alpha.png",',
+        ']',
+        '',
+      ].join('\n'),
+    });
+
+    const issues = await lintMozBuildSortedLists(repoDir, ['browser/modules/moz.build']);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain('Alpha.png');
+  });
+
+  it('pairs quote types, so an apostrophe inside a double-quoted item is not a delimiter', async () => {
+    // The old single character-class regex closed the match at the apostrophe,
+    // scraping in a phantom `don` item that reported a disorder against an
+    // item the list does not contain.
+    await writeFiles(repoDir, {
+      'browser/modules/moz.build': [
+        'EXTRA_JS_MODULES += [',
+        '    "don\'t.sys.mjs",',
+        '    "later.sys.mjs",',
+        ']',
+        '',
+      ].join('\n'),
+    });
+
+    const issues = await lintMozBuildSortedLists(repoDir, ['browser/modules/moz.build']);
+    expect(issues).toEqual([]);
+  });
+
+  it('keeps a # inside a quoted item', async () => {
+    await writeFiles(repoDir, {
+      'browser/modules/moz.build': [
+        'EXTRA_JS_MODULES += [',
+        '    "Alpha#1.sys.mjs",',
+        '    "Beta.sys.mjs",',
+        ']',
+        '',
+      ].join('\n'),
+    });
+
+    const issues = await lintMozBuildSortedLists(repoDir, ['browser/modules/moz.build']);
+    expect(issues).toEqual([]);
+  });
+
+  it('still checks lists that follow an unterminated one', async () => {
+    // The scan used to advance the outer loop counter past end-of-file for an
+    // unterminated list, so every later list in the file was skipped.
+    await writeFiles(repoDir, {
+      'browser/modules/moz.build': [
+        'EXTRA_JS_MODULES += [',
+        '    "Broken.sys.mjs",',
+        '',
+        'EXTRA_JS_MODULES += [',
+        '    "Zeta.sys.mjs",',
+        '    "Alpha.sys.mjs",',
+        ']',
+        '',
+      ].join('\n'),
+    });
+
+    const issues = await lintMozBuildSortedLists(repoDir, ['browser/modules/moz.build']);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain('Alpha.sys.mjs');
+  });
+
+  it('does not let an unterminated list borrow the next list’s bracket', async () => {
+    // Two DIFFERENT variables, and the second list is correctly sorted. The
+    // forward scan used to read straight through the second opener, merge its
+    // items into the first list, and accept its `]` as the first list's close
+    // — reporting a sorting error against EXTRA_COMPONENTS for items that only
+    // ever belonged to EXTRA_JS_MODULES, and skipping the second list. The
+    // pre-existing test above missed this because both of its lists share one
+    // variable name and it only asserts on an item name.
+    await writeFiles(repoDir, {
+      'browser/modules/moz.build': [
+        'EXTRA_COMPONENTS += [',
+        '    "Broken.js",',
+        '',
+        'EXTRA_JS_MODULES += [',
+        '    "Alpha.sys.mjs",',
+        '    "Zeta.sys.mjs",',
+        ']',
+        '',
+      ].join('\n'),
+    });
+
+    const issues = await lintMozBuildSortedLists(repoDir, ['browser/modules/moz.build']);
+    expect(issues).toEqual([]);
+  });
+
+  it('reports the SECOND list against its own variable when the first never closes', async () => {
+    await writeFiles(repoDir, {
+      'browser/modules/moz.build': [
+        'EXTRA_COMPONENTS += [',
+        '    "Broken.js",',
+        '',
+        'EXTRA_JS_MODULES += [',
+        '    "Zeta.sys.mjs",',
+        '    "Alpha.sys.mjs",',
+        ']',
+        '',
+      ].join('\n'),
+    });
+
+    const issues = await lintMozBuildSortedLists(repoDir, ['browser/modules/moz.build']);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain('moz.build list EXTRA_JS_MODULES');
+    expect(issues[0]?.fingerprint).toContain('|EXTRA_JS_MODULES|');
+  });
 });

@@ -56,6 +56,16 @@ export function logApplyResult(result: ApplyResultWithActions, isDryRun: boolean
     }
   }
 
+  // Patch-owned overwrite warnings (FORGE J6) print on every non-dry-run
+  // outcome — including the rolled-back branch, where the overwrite
+  // happened before the rollback restored it and the operator still needs
+  // to know the deployed copy was momentarily replaced.
+  if (!isDryRun && result.warnings !== undefined) {
+    for (const line of result.warnings) {
+      warn(line);
+    }
+  }
+
   for (const err of result.errors) {
     error(`${err.name} — ${err.error}`);
   }

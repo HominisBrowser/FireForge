@@ -119,10 +119,20 @@ vi.mock('node:fs/promises', () => ({
   stat: vi.fn(() => Promise.reject(new Error('not found'))),
   readFile: vi.fn(() => Promise.reject(new Error('not found'))),
   rm: vi.fn(() => Promise.resolve()),
+  rmdir: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../core/furnace-apply.js', () => ({
   applyAllComponents: vi.fn(() => Promise.resolve({ applied: [], skipped: [], errors: [] })),
+}));
+
+// The manifest-sync repair now performs its load→mutate→write under the
+// furnace lock (it previously raced the very lost-write it repairs). This
+// suite mocks the filesystem, so a real lock cannot be acquired — run the
+// body directly.
+vi.mock('../../core/file-lock.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/file-lock.js')>()),
+  withFileLock: vi.fn(async (_path: string, body: () => Promise<unknown>) => body()),
 }));
 
 vi.mock('../../core/furnace-operation.js', () => ({
@@ -162,6 +172,7 @@ vi.mock('../../core/patch-manifest.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
+  pathExistsStrict: vi.fn(() => Promise.resolve(true)),
   readJson: vi.fn(() => Promise.reject(new Error('not found'))),
   readText: vi.fn(() => Promise.resolve('')),
 }));
@@ -200,7 +211,7 @@ vi.mock('../verify.js', () => ({
   ),
 }));
 
-import { readdir, rm } from 'node:fs/promises';
+import { readdir, rm, rmdir } from 'node:fs/promises';
 
 import { configExists, loadConfig, loadState, updateState } from '../../core/config.js';
 import { applyAllComponents } from '../../core/furnace-apply.js';
@@ -343,6 +354,65 @@ describe('doctorCommand', () => {
       true
     );
     expect(warnMessages.some((message) => message.includes('BROWSER_CHROME_URL'))).toBe(true);
+  });
+
+  /** Makes the four shape probes read clean so only the browser.toml walk can warn. */
+  function mockCleanShapeProbes(): void {
+    vi.mocked(readText).mockImplementation((filePath: string) => {
+      if (filePath.endsWith('browser/moz.configure')) {
+        return Promise.resolve('option("--with-browser-chrome-url", help=BROWSER_CHROME_URL)');
+      }
+      if (filePath.endsWith('browser/base/jar.mn')) {
+        return Promise.resolve('content/browser/browser.xhtml');
+      }
+      if (filePath.endsWith('toolkit/content/customElements.js')) {
+        return Promise.resolve('customElements.setElementCreationCallback("moz-dock", () => {})');
+      }
+      if (filePath.endsWith('toolkit/content/jar.mn')) {
+        return Promise.resolve('content/global/elements/moz-dock.mjs');
+      }
+      return Promise.resolve('');
+    });
+  }
+
+  it('reports an unreadable test tree as unreadable, not as "no browser.toml files"', async () => {
+    // An EACCES on the walk root used to degrade into "no browser.toml files
+    // found" — the opposite diagnosis from "could not look".
+    mockCleanShapeProbes();
+    vi.mocked(readdir).mockRejectedValue(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    );
+
+    const result = await doctorCommand('/project', { postRebaseAudit: true });
+
+    expect(result.exitCode).toBe(0);
+    const warnMessages = vi.mocked(warn).mock.calls.map(([message]) => message);
+    expect(warnMessages.some((message) => message.includes('could not read 1 directory'))).toBe(
+      true
+    );
+    expect(warnMessages.some((message) => message.includes('no browser.toml files found'))).toBe(
+      false
+    );
+  });
+
+  it('surfaces a mid-walk unreadable subdirectory instead of silently shrinking the result', async () => {
+    mockCleanShapeProbes();
+    vi.mocked(readdir)
+      .mockResolvedValueOnce([
+        { isDirectory: () => true, isFile: () => false, name: 'locked' },
+        { isDirectory: () => false, isFile: () => true, name: 'browser.toml' },
+      ] as never)
+      .mockRejectedValueOnce(
+        Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+      );
+
+    const result = await doctorCommand('/project', { postRebaseAudit: true });
+
+    expect(result.exitCode).toBe(0);
+    const warnMessages = vi.mocked(warn).mock.calls.map(([message]) => message);
+    // A browser.toml WAS found, but the subtree that could not be read is
+    // still reported — one unreadable directory is not a clean subtree.
+    expect(warnMessages.some((message) => message.includes('locked'))).toBe(true);
   });
 
   it('reports a clean workspace as fully passing', async () => {
@@ -1559,7 +1629,7 @@ describe('doctorCommand', () => {
 
       const result = await doctorCommand('/project', { repairFurnace: true });
 
-      expect(rm).toHaveBeenCalledWith('/project/components/custom/moz-empty');
+      expect(rmdir).toHaveBeenCalledWith('/project/components/custom/moz-empty');
       expect(
         vi
           .mocked(warn)
@@ -1605,7 +1675,7 @@ describe('doctorCommand', () => {
 
       const result = await doctorCommand('/project', { repairFurnace: true });
 
-      expect(rm).not.toHaveBeenCalledWith('/project/components/custom/moz-lived-in');
+      expect(rmdir).not.toHaveBeenCalledWith('/project/components/custom/moz-lived-in');
       expect(
         vi
           .mocked(warn)
@@ -1668,7 +1738,7 @@ describe('doctorCommand', () => {
       const result = await doctorCommand('/project', { repairFurnace: true });
 
       expect(writeFurnaceConfig).toHaveBeenCalled();
-      expect(rm).toHaveBeenCalledWith('/project/components/custom/moz-empty');
+      expect(rmdir).toHaveBeenCalledWith('/project/components/custom/moz-empty');
       expect(
         vi
           .mocked(warn)

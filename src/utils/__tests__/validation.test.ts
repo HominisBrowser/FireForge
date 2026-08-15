@@ -2,7 +2,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { InvalidArgumentError } from '../../errors/base.js';
+import type { FirefoxProduct } from '../../types/config.js';
 import {
+  FIREFOX_PRODUCTS,
   inferProductFromVersion,
   isArray,
   isBoolean,
@@ -273,5 +275,68 @@ describe('normalizePatchDisplayName (FORGE G13)', () => {
   it('falls back to the stem when stripping would empty the name', () => {
     expect(normalizePatchDisplayName('ui-', 'ui')).toBe('ui-');
     expect(normalizePatchDisplayName('203-ui-', 'ui')).toBe('203-ui-');
+  });
+});
+
+describe('FIREFOX_PRODUCTS', () => {
+  it('narrows to FirefoxProduct so call sites need no cast', () => {
+    const raw: string = 'firefox-esr';
+    if (isValidFirefoxProduct(raw)) {
+      // Compile-time proof: assignable to the union without `as`.
+      const product: FirefoxProduct = raw;
+      expect(product).toBe('firefox-esr');
+    } else {
+      expect.unreachable('firefox-esr must validate');
+    }
+  });
+
+  it('accepts every member of the union and rejects near-misses', () => {
+    for (const p of FIREFOX_PRODUCTS) {
+      expect(isValidFirefoxProduct(p)).toBe(true);
+    }
+    for (const bad of ['Firefox', 'firefox-nightly', 'esr', '', 'firefox ']) {
+      expect(isValidFirefoxProduct(bad)).toBe(false);
+    }
+  });
+
+  it('stays in lock-step with the FirefoxProduct union (drift guard)', () => {
+    // `satisfies readonly FirefoxProduct[]` catches additions to the const that
+    // are not in the union. The reverse — a union member with no entry in the
+    // const — needs an exhaustive switch, which is what this is. The previous
+    // version claimed to be one but was a hand-written list of `assertCovered`
+    // calls plus `seen.size === 4`: adding a fifth union member compiled fine
+    // and only tripped the size assertion, naming nothing.
+    //
+    // Here, a new union member makes `product` non-`never` in the default
+    // branch, so `tsc` fails at BUILD time and names the missing member.
+    const describeProduct = (product: FirefoxProduct): string => {
+      switch (product) {
+        case 'firefox':
+          return 'firefox';
+        case 'firefox-esr':
+          return 'firefox-esr';
+        case 'firefox-beta':
+          return 'firefox-beta';
+        case 'firefox-devedition':
+          return 'firefox-devedition';
+        default: {
+          const exhaustive: never = product;
+          return exhaustive;
+        }
+      }
+    };
+
+    // Every union member the switch enumerates must be in the runtime const.
+    const seen = new Set<string>(FIREFOX_PRODUCTS);
+    for (const product of [
+      'firefox',
+      'firefox-esr',
+      'firefox-beta',
+      'firefox-devedition',
+    ] as const) {
+      expect(describeProduct(product)).toBe(product);
+      expect(seen.has(product)).toBe(true);
+    }
+    expect(seen.size).toBe(4);
   });
 });

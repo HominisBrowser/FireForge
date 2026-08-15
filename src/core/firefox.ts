@@ -11,6 +11,7 @@ import { rename } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { FirefoxProduct } from '../types/config.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { ensureDir, removeDir } from '../utils/fs.js';
 import { resolveArchive } from './firefox-archive.js';
 import { ensureCachedArchive, invalidateArchiveCache } from './firefox-cache.js';
@@ -74,8 +75,8 @@ export type FirefoxSourceProgressCallback = (message: string) => void;
  * genuinely bad archive can never survive in the cache.
  */
 function isLikelyArchiveCorruptionError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  const message = toError(error).message;
+  const code = getNodeErrorCode(error);
   if (code === 'ENOSPC' || code === 'EACCES' || code === 'EPERM' || code === 'EDQUOT') {
     return false;
   }
@@ -113,6 +114,8 @@ export async function sweepOrphanedEngineWorkDirs(destDir: string): Promise<stri
   try {
     entries = await readdir(parent);
   } catch {
+    // An unreadable parent directory holds no sweepable work dirs. The sweep is
+    // best-effort housekeeping and must never fail the download it follows.
     return [];
   }
 

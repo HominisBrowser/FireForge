@@ -60,9 +60,14 @@ vi.mock('../../core/patch-export.js', () => ({
 }));
 
 vi.mock('../../core/patch-lint.js', () => ({
+  formatPatchLintIssue: vi.fn(
+    (issue: { check: string; file: string; message: string }) =>
+      `[${issue.check}] ${issue.file}: ${issue.message}`
+  ),
   lintExportedPatch: vi.fn().mockResolvedValue([]),
   detectNewFilesInDiff: vi.fn().mockReturnValue(new Set()),
   commentStyleForFile: vi.fn().mockReturnValue(null),
+  isAcceptableNewFileHeader: vi.fn().mockReturnValue(true),
   buildPatchQueueContext: vi.fn().mockResolvedValue({ entries: [] }),
   collectNewFileCreatorsByPath: vi.fn().mockReturnValue(new Map()),
   resolvePatchSizeTier: vi.fn().mockReturnValue({ tier: 'general' }),
@@ -76,8 +81,14 @@ vi.mock('../../utils/fs.js', () => {
     pathExists,
     pathExistsStrict: pathExists,
     ensureDir: vi.fn().mockResolvedValue(undefined),
+    readText: vi.fn().mockResolvedValue('// file without a header\n'),
   };
 });
+
+vi.mock('../../core/license-headers.js', () => ({
+  addLicenseHeaderToFile: vi.fn().mockResolvedValue(true),
+  hasThirdPartyPermissiveBanner: vi.fn().mockReturnValue(false),
+}));
 
 vi.mock('../../core/furnace-config.js', () => ({
   collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set())),
@@ -130,7 +141,9 @@ import { commitExportedPatch, findAllPatchesForFiles } from '../../core/patch-ex
 import {
   buildPatchQueueContext,
   collectNewFileCreatorsByPath,
+  commentStyleForFile,
   detectNewFilesInDiff,
+  isAcceptableNewFileHeader,
   lintExportedPatch,
 } from '../../core/patch-lint.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
@@ -538,6 +551,55 @@ describe('exportAllCommand', () => {
     const diffCall = vi.mocked(getDiffForFilesAgainstHead).mock.calls.at(-1);
     expect(diffCall?.[1]).toContain('toolkit/modules/AppConstants.sys.mjs');
     expect(diffCall?.[1]).not.toContain('toolkit/content/widgets/moz-button/moz-button.css');
+  });
+
+  it('keeps the Furnace exclusion when license-header repair regenerates the diff', async () => {
+    restoreTTY = setInteractiveMode(true);
+    const { getDiffForFilesAgainstHead } = await import('../../core/git-diff.js');
+    const nonFurnacePath = 'toolkit/modules/NewModule.sys.mjs';
+    const filteredDiff =
+      `diff --git a/${nonFurnacePath} b/${nonFurnacePath}\n` +
+      'new file mode 100644\n' +
+      `--- /dev/null\n+++ b/${nonFurnacePath}\n+content\n`;
+    vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue(filteredDiff);
+    vi.mocked(detectNewFilesInDiff).mockReturnValue(new Set([nonFurnacePath]));
+    vi.mocked(commentStyleForFile).mockReturnValue('js');
+    vi.mocked(isAcceptableNewFileHeader).mockReturnValue(false);
+    vi.mocked(extractAffectedFiles).mockReturnValue([nonFurnacePath]);
+    vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(
+      new Set(['toolkit/content/widgets/moz-button/'])
+    );
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      {
+        status: ' M',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        file: 'toolkit/content/widgets/moz-button/moz-button.css',
+        isUntracked: false,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+      {
+        status: '??',
+        indexStatus: '?',
+        worktreeStatus: '?',
+        file: nonFurnacePath,
+        isUntracked: true,
+        isRenameOrCopy: false,
+        isDeleted: false,
+      },
+    ]);
+
+    await exportAllCommand('/fake/root', {
+      name: 'header-repair',
+      category: 'ui',
+      description: 'test',
+      excludeFurnace: true,
+    });
+
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledTimes(2);
+    expect(getDiffForFilesAgainstHead).toHaveBeenLastCalledWith('/fake/engine', [nonFurnacePath]);
+    expect(getAllDiff).not.toHaveBeenCalled();
   });
 
   it('reports "Nothing to export" when --exclude-furnace removes every changed path', async () => {

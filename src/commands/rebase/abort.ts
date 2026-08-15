@@ -6,9 +6,13 @@
 import { getProjectPaths, updateState } from '../../core/config.js';
 import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { resetChanges } from '../../core/git.js';
-import { clearRebaseSession, loadRebaseSession } from '../../core/rebase-session.js';
+import {
+  clearRebaseSession,
+  getRebaseSessionPath,
+  readRebaseSession,
+} from '../../core/rebase-session.js';
 import { NoRebaseSessionError } from '../../errors/rebase.js';
-import { intro, outro, spinner, success } from '../../utils/logger.js';
+import { intro, outro, spinner, success, warn } from '../../utils/logger.js';
 import { confirmDirtyEngineReset } from './confirm.js';
 
 /**
@@ -17,8 +21,19 @@ import { confirmDirtyEngineReset } from './confirm.js';
 export async function handleAbort(projectRoot: string, yes?: boolean): Promise<void> {
   intro('FireForge Rebase — Abort');
 
-  const session = await loadRebaseSession(projectRoot);
-  if (!session) throw new NoRebaseSessionError();
+  // Abort is the escape hatch, so it deliberately does NOT require a *valid*
+  // session — only that one is present. Nothing below reads the session
+  // object (the restore works off `paths.engine` and `resetChanges`), and the
+  // pre-0.41.0 `if (!session) throw` refused to run against a corrupt file,
+  // which was the only command that could have cleared it.
+  const read = await readRebaseSession(projectRoot);
+  if (!read.present) throw new NoRebaseSessionError();
+  if (!read.valid) {
+    warn(
+      `The rebase session at ${getRebaseSessionPath(projectRoot)} is unreadable ` +
+        `(${read.reason}). Aborting anyway: the engine will be restored and the session cleared.`
+    );
+  }
 
   const paths = getProjectPaths(projectRoot);
 

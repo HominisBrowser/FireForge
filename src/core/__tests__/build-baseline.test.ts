@@ -12,6 +12,7 @@ import {
   readBuildBaseline,
   writeBuildBaseline,
 } from '../build-baseline.js';
+import { DELETED_FILE_FINGERPRINT } from '../build-baseline-types.js';
 import { FIREFORGE_DIR } from '../config-paths.js';
 import * as git from '../git.js';
 
@@ -123,11 +124,7 @@ describe('build-baseline', () => {
     expect(stored?.packageableFingerprints).toBeUndefined();
   });
 
-  it('skips per-file fingerprint when readFile throws but completes overall', async () => {
-    // Concurrency case: a file that is enumerated by `git diff` can be
-    // deleted between the enumeration and the hash. The per-file try
-    // block catches that specific error and moves on, so the rest of
-    // the fingerprint set still lands.
+  it('records an explicit tombstone for a dirty path missing at build completion', async () => {
     const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
     try {
       vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
@@ -140,9 +137,9 @@ describe('build-baseline', () => {
       );
       vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
 
-      // `present.js` exists, `vanishing.js` doesn't — readFile will
-      // throw ENOENT on the second but the writer must still produce a
-      // fingerprint for the first.
+      // `present.js` exists, `vanishing.js` doesn't. The missing path is a
+      // tracked deletion from the baseline's point of view and must remain
+      // representable after a successful build.
       const { writeText, ensureDir: ensureDirLocal } = await import('../../utils/fs.js');
       await ensureDirLocal(join(engineDir, 'browser/base/content'));
       await writeText(join(engineDir, 'browser/base/content/present.js'), 'present\n');
@@ -151,7 +148,7 @@ describe('build-baseline', () => {
       const stored = await readBuildBaseline(projectRoot);
       const recorded = stored?.packageableFingerprints ?? {};
       expect(Object.keys(recorded)).toContain('browser/base/content/present.js');
-      expect(Object.keys(recorded)).not.toContain('browser/base/content/vanishing.js');
+      expect(recorded['browser/base/content/vanishing.js']).toBe(DELETED_FILE_FINGERPRINT);
     } finally {
       await rm(engineDir, { recursive: true, force: true });
     }

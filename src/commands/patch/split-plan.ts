@@ -18,6 +18,7 @@ import {
   buildPatchQueueContext,
   collectForwardImportEdges,
   detectNewFilesInDiff,
+  formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../../core/patch-lint.js';
@@ -59,7 +60,9 @@ export interface SplitPlan {
 }
 
 /**
- *
+ * Refuses the split unless the source patch currently owns every requested
+ * file. Splitting out a file the source does not own would produce a new patch
+ * whose diff cannot apply.
  */
 export function assertSourceOwnsFiles(source: PatchMetadata, files: readonly string[]): void {
   const owned = new Set(source.filesAffected);
@@ -74,7 +77,9 @@ export function assertSourceOwnsFiles(source: PatchMetadata, files: readonly str
 }
 
 /**
- *
+ * Generates the diff for one side of a split by re-deriving it from the engine
+ * working tree, scoped to `files`. Re-derived rather than sliced out of the
+ * source patch so hunk context is correct for the new file set.
  */
 export async function buildSplitDiff(
   engineDir: string,
@@ -159,17 +164,13 @@ function buildEntryProjection(
 }
 
 /** Builds the projected post-split queue entries (renumber + shrunken source + new patch). */
-async function buildProjectedSplitEntries(
-  patchesDir: string,
+function buildProjectedSplitEntries(
+  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>,
   plan: SplitPlan
-): Promise<{
-  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>;
-  entries: PatchQueueEntry[];
-}> {
+): PatchQueueEntry[] {
   const movedSet = new Set(plan.movedFiles);
   const ownerLookup = (old: string): string | undefined =>
     plan.placement.renameMap.get(old)?.newFilename;
-  const baseCtx = await buildPatchQueueContext(patchesDir);
 
   const entries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
     let metadata = entry.metadata;
@@ -197,7 +198,7 @@ async function buildProjectedSplitEntries(
     ...buildEntryProjection(plan.movedDiff),
   });
   entries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
-  return { baseCtx, entries };
+  return entries;
 }
 
 /**
@@ -282,14 +283,14 @@ function injectStagedDependencyAdditions(
  * patch are auto-declared (and the declarations returned) so the projection
  * matches the real per-patch gate the split leaves behind.
  */
-export async function runProjectedSplitLint(
-  patchesDir: string,
-  plan: SplitPlan
-): Promise<{
+export function runProjectedSplitLint(
+  plan: SplitPlan,
+  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>
+): {
   conflicts: ConflictReport | null;
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
-}> {
-  const { baseCtx, entries: projectedEntries } = await buildProjectedSplitEntries(patchesDir, plan);
+} {
+  const projectedEntries = buildProjectedSplitEntries(baseCtx, plan);
 
   // Discover and auto-declare the forward edges this split introduces into
   // the new patch, then inject them before linting so they resolve.
@@ -300,9 +301,12 @@ export async function runProjectedSplitLint(
   injectStagedDependencyAdditions(projectedEntries, stagedDependencyAdditions);
 
   const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
-  const projectedIssues = lintPatchQueue({ entries: projectedEntries }).filter(
-    (i) => i.severity === 'error'
-  );
+  const projectedIssues = lintPatchQueue({
+    entries: projectedEntries,
+    // Keep the projection patch-policy-aware whenever the baseline is, so
+    // computeProjectedLintRegressions compares symmetric rule sets.
+    ...(baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {}),
+  }).filter((i) => i.severity === 'error');
   const regressions = computeProjectedLintRegressions(baselineIssues, projectedIssues);
   if (baselineIssues.length > 0 && regressions.length === 0) {
     warn(
@@ -315,7 +319,7 @@ export async function runProjectedSplitLint(
       ? null
       : {
           reason: `split would introduce ${regressions.length} cross-patch lint error(s)`,
-          details: regressions.map((i) => `[${i.check}] ${i.file}: ${i.message}`),
+          details: regressions.map(formatPatchLintIssue),
         };
   return { conflicts, stagedDependencyAdditions };
 }
@@ -344,7 +348,8 @@ export function projectSplitManifest(
 }
 
 /**
- *
+ * Builds the manifest row for the patch created by a split, carrying the
+ * source's provenance (product, version, category) onto the new patch.
  */
 export function buildNewPatchMetadata(plan: SplitPlan, config: FireForgeConfig): PatchMetadata {
   return {
@@ -360,7 +365,8 @@ export function buildNewPatchMetadata(plan: SplitPlan, config: FireForgeConfig):
 }
 
 /**
- *
+ * Renders the operator-facing summary lines for a planned split — the text
+ * shown by `--dry-run` and by the destructive-operation confirmation prompt.
  */
 export function buildSplitSummary(plan: SplitPlan): string[] {
   const summary = [

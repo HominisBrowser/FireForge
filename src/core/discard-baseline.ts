@@ -29,7 +29,7 @@ import {
   restoreTrackedPath,
   unstageFiles,
 } from './git-file-ops.js';
-import { createPatchedContentComputer } from './patch-apply.js';
+import { createPatchedContentContext } from './patch-apply.js';
 import { loadPatchesManifestState } from './patch-manifest-io.js';
 import { type DiffSection, parseDiffSections } from './patch-parse.js';
 import { buildPatchClaims } from './status-classify.js';
@@ -96,7 +96,7 @@ export async function planDiscardBaselines(
     return planUpstreamDiscards(entries);
   }
 
-  const computePatched = await createPatchedContentComputer(patchesDir, engineDir);
+  const { computePatched } = await createPatchedContentContext(patchesDir, engineDir);
   const claimedFiles = [
     ...new Set(
       claimedEntries.flatMap((entry) =>
@@ -132,8 +132,24 @@ export async function planDiscardBaselines(
       if (!sections) {
         try {
           sections = parseDiffSections(await readText(join(patchesDir, owner)));
-        } catch {
-          sections = [];
+        } catch (error: unknown) {
+          // Fail closed. Swallowing this yielded no sections, which falls
+          // through to `return false` — "not deleted at baseline" — so a path
+          // the owning patch DELETES would be restored as present, i.e.
+          // rewritten instead of removed: silent data loss on the command
+          // whose header promises a refusal for exactly this class of failure.
+          //
+          // In the current flow `computeExpected` above reads the same patch
+          // first and refuses, so this is defence-in-depth against a TOCTOU
+          // (the patch file removed or made unreadable mid-plan) rather than a
+          // reachable branch today. It refuses with the same remediation as
+          // its sibling so the two cannot drift into disagreeing.
+          throw new GeneralError(
+            `Cannot read the owning patch ${owner} to determine the baseline for ${path} ` +
+              `(${toError(error).message}). ` +
+              'Fix the owning patch, or pass --to-upstream to explicitly revert to pristine ' +
+              'upstream (HEAD).'
+          );
         }
         sectionCache.set(owner, sections);
       }

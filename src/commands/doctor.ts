@@ -27,7 +27,7 @@ import { error, info, intro, outro, success, warn } from '../utils/logger.js';
 import { findExecutable } from '../utils/process.js';
 import { POST_REBASE_AUDIT_CHECK } from './doctor/post-rebase-audit.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
-import { failure, ok, warning } from './doctor-check-core.js';
+import { failure, ok, resolveDoctorSeverity, warning } from './doctor-check-core.js';
 import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { ORPHANED_HARNESS_DOCTOR_CHECK } from './doctor-orphaned-harness.js';
@@ -512,8 +512,7 @@ export function reportDoctorResults(checks: DoctorCheck[]): ExitCode {
   let failedCount = 0;
 
   for (const check of checks) {
-    const severity =
-      check.severity ?? (check.passed ? (check.warning ? 'warning' : 'ok') : 'error');
+    const severity = resolveDoctorSeverity(check);
 
     if (severity === 'warning') {
       warn(`! ${check.name}: ${check.message}`);

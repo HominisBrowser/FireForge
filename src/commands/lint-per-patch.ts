@@ -14,28 +14,21 @@ import {
 import {
   buildPatchQueueContext,
   countNonBinaryDiffLines,
+  formatPatchLintIssue,
   lintExportedPatch,
   type LintExportedPatchOptions,
   lintPatchQueue,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
-import {
-  type GroupedCheckJsResult,
-  invokePatchLintCheckJsGrouped,
-  runCheckJsTestFilesGrouped,
-} from '../core/patch-lint-checkjs.js';
-import {
-  isTestScriptFile,
-  resolvePatchOwnedSysMjs,
-  resolvePatchOwnedTestScripts,
-} from '../core/patch-lint-ownership.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
 import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { LintCommandOptions } from '../types/commands/index.js';
+import { mapWithConcurrency } from '../utils/concurrency.js';
 import { pathExists } from '../utils/fs.js';
 import { info, outro, success, warn } from '../utils/logger.js';
+import { buildPerRunCheckJs, type PerRunCheckJs } from './lint-per-run-checkjs.js';
 import { writePerPatchLintReport } from './lint-report.js';
 
 function buildPerPatchMaxWarningsMessage(
@@ -57,25 +50,6 @@ function emitTierNotice(filename: string, files: string[], tier: PatchMetadata['
       ? `${filename}: branding threshold tier applied via patches.json \`tier: "branding"\` opt-in.`
       : `${filename}: branding threshold tier applied (all files under browser/branding/ plus registration siblings).`
   );
-}
-
-/**
- * Queue-wide checkJs program built once per run and sliced per patch, so a
- * single type regression surfaces once against its owning patch instead of
- * being duplicated for every patch in the queue (the program used to be
- * rebuilt over the full owned set for each patch).
- */
-interface PerRunCheckJs {
-  /** Patch filename → the `.sys.mjs` files that patch creates. */
-  ownedByPatch: Map<string, Set<string>>;
-  /** Builds (once, lazily on first cache miss) and returns the grouped run.
-   *  Promise-memoised so the bounded per-patch pool builds the program exactly
-   *  once even when several patches reach it concurrently. */
-  getGrouped: () => Promise<GroupedCheckJsResult>;
-  /** Run-level checkJs errors (e.g. TypeScript missing). Builds the grouped
-   *  run if nothing else has yet — an all-cache-hit run must still surface
-   *  global findings, which are never cached (FORGE F5 hardening). */
-  getGlobal: () => Promise<PatchLintIssue[]>;
 }
 
 /** Shared inputs threaded into every per-patch lint invocation. */
@@ -127,10 +101,10 @@ async function lintQueuedPatch(
   lintCtx: QueuedPatchLintContext
 ): Promise<QueuedPatchResult> {
   const { projectRoot, paths, config, ctx, cache, engineHeadSha } = lintCtx;
-  const existing: string[] = [];
-  for (const f of patch.filesAffected) {
-    if (await pathExists(join(paths.engine, f))) existing.push(f);
-  }
+  const present = await mapWithConcurrency(patch.filesAffected, 8, (f) =>
+    pathExists(join(paths.engine, f))
+  );
+  const existing = patch.filesAffected.filter((_, index) => present[index] === true);
   if (existing.length === 0) {
     return {
       status: 'skipped',
@@ -385,9 +359,9 @@ function reportPerPatchOutcome(
   const errors = issues.filter((i) => i.severity === 'error');
   const warnings = issues.filter((i) => i.severity === 'warning');
   const notices = issues.filter((i) => i.severity === 'notice');
-  for (const issue of notices) info(`NOTICE [${issue.check}] ${issue.file}: ${issue.message}`);
-  for (const issue of warnings) warn(`[${issue.check}] ${issue.file}: ${issue.message}`);
-  for (const issue of errors) warn(`ERROR [${issue.check}] ${issue.file}: ${issue.message}`);
+  for (const issue of notices) info(`NOTICE ${formatPatchLintIssue(issue)}`);
+  for (const issue of warnings) warn(formatPatchLintIssue(issue));
+  for (const issue of errors) warn(`ERROR ${formatPatchLintIssue(issue)}`);
 
   info(
     `\nLint (per-patch over ${linted} patch(es)): ${errors.length} error(s), ${warnings.length} warning(s)`
@@ -472,67 +446,6 @@ function selectPatchSubset(
 }
 
 /**
- * Builds the per-run checkJs program controller when `patchLint.checkJs` is
- * enabled, or returns undefined. The program is built lazily on the first
- * cache miss (so an all-warm run never pays for it) and reused for every
- * subsequent patch in the run.
- */
-function buildPerRunCheckJs(
-  projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  ctx: Awaited<ReturnType<typeof buildPatchQueueContext>>
-): PerRunCheckJs | undefined {
-  const patchLint = config.patchLint;
-  if (!patchLint?.checkJs) return undefined;
-  const testFilesEnabled = patchLint.checkJsTestFiles === true;
-
-  const ownedByPatch = new Map<string, Set<string>>();
-  for (const entry of ctx.entries) {
-    const owned = new Set<string>();
-    for (const f of entry.newFiles.keys()) {
-      if (f.endsWith('.sys.mjs')) owned.add(f);
-      else if (testFilesEnabled && isTestScriptFile(f)) owned.add(f);
-    }
-    if (owned.size > 0) ownedByPatch.set(entry.filename, owned);
-  }
-
-  // One build for the whole run: the queue-wide `.sys.mjs` program plus —
-  // when `patchLint.checkJsTestFiles` is on (FORGE G5) — one small
-  // script-scope program per patch-owned test file, merged by file.
-  const buildAll = async (): Promise<GroupedCheckJsResult> => {
-    const sys = await invokePatchLintCheckJsGrouped(
-      paths.engine,
-      resolvePatchOwnedSysMjs(new Set(), ctx),
-      patchLint,
-      projectRoot
-    );
-    if (!testFilesEnabled) return sys;
-    const tests = await runCheckJsTestFilesGrouped(
-      paths.engine,
-      resolvePatchOwnedTestScripts(new Set(), ctx),
-      patchLint,
-      projectRoot
-    );
-    const byFile = new Map(sys.byFile);
-    for (const [rel, list] of tests.byFile) {
-      byFile.set(rel, [...(byFile.get(rel) ?? []), ...list]);
-    }
-    return { byFile, global: [...sys.global, ...tests.global] };
-  };
-
-  // Memoise the *promise*, not the resolved value: under the bounded pool
-  // several patches can reach `getGrouped` before the first build resolves, and
-  // `??=` on the promise (a synchronous expression) guarantees a single build.
-  let groupedPromise: Promise<GroupedCheckJsResult> | undefined;
-  return {
-    ownedByPatch,
-    getGrouped: () => (groupedPromise ??= buildAll()),
-    getGlobal: async () => (await (groupedPromise ??= buildAll())).global,
-  };
-}
-
-/**
  * Lints each patch in the queue as its own isolated diff, honouring
  * per-patch `lintIgnore` entries. Cross-patch rules still run once over
  * the whole queue so queue-level findings are not lost by the rescoping.
@@ -586,7 +499,16 @@ export async function lintPerPatch(
     });
   }
 
-  const checkJs = buildPerRunCheckJs(projectRoot, paths, config, ctx);
+  // With `--patches`, the checkJs program roots at only the subset's owned
+  // files — the full queue stays resolvable, so a cold subset run costs the
+  // subset's import closure instead of the whole queue (FORGE J1c).
+  const checkJs = buildPerRunCheckJs(
+    projectRoot,
+    paths,
+    config,
+    ctx,
+    isSubset ? subsetNames : undefined
+  );
 
   // Lint patches concurrently, then apply every side effect in patch order so
   // the issue rows, the run-level checkJs errors, and the saved cache are

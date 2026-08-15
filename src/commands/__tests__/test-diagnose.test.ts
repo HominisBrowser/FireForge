@@ -7,9 +7,10 @@
  * `src/core/__tests__/test-harness-crash.test.ts`; the command-level
  * composition by `test.test.ts`.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../utils/logger.js', () => ({
+  setStdoutSealed: vi.fn(),
   info: vi.fn(),
 }));
 
@@ -17,6 +18,13 @@ import { createPostRebuildFailureContext } from '../../core/test-harness-output.
 import { info } from '../../utils/logger.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from '../test-diagnose.js';
 import type { TestRunOutcome } from '../test-run.js';
+import { resetVerdictEmission } from '../test-verdict.js';
+
+// The verdict sink is first-write-wins per run; `testCommand` re-arms it at
+// entry, so direct unit invocations re-arm it here.
+beforeEach(() => {
+  resetVerdictEmission();
+});
 
 function makeOutcome(overrides: {
   exitCode: number;
@@ -32,6 +40,97 @@ function makeOutcome(overrides: {
 }
 
 const PATHS = ['browser/base/content/test/hominis/browser_hominis_first.js'];
+
+describe('finalizeSingleRunOutcome FIREFORGE-VERDICT line (FORGE I5)', () => {
+  function captureStdout(): { writes: string[]; restore: () => void } {
+    const writes: string[] = [];
+    const spy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+        return true;
+      });
+    return {
+      writes,
+      restore: () => {
+        spy.mockRestore();
+      },
+    };
+  }
+
+  it('a pass emits exactly one PASS line as the last stdout write (previously nothing at all)', () => {
+    const capture = captureStdout();
+    try {
+      finalizeSingleRunOutcome(
+        makeOutcome({
+          exitCode: 0,
+          verdict: { kind: 'tests-ran-ok', checks: 16, unexpected: 0 },
+        }),
+        PATHS,
+        'mybrowser',
+        undefined
+      );
+    } finally {
+      capture.restore();
+    }
+    const verdictLines = capture.writes.filter((w) => w.startsWith('FIREFORGE-VERDICT:'));
+    expect(verdictLines).toEqual(['FIREFORGE-VERDICT: PASS checks=16 unexpected=0\n']);
+    expect(capture.writes.at(-1)).toBe('FIREFORGE-VERDICT: PASS checks=16 unexpected=0\n');
+  });
+
+  it('every throw path still rejects AND the last stdout write is the FAIL line', () => {
+    const cases: Array<{ verdict: TestRunOutcome['verdict']; exitCode: number; line: string }> = [
+      {
+        verdict: {
+          kind: 'harness-crash',
+          signature: { reason: 'resource monitor traceback', line: 'Traceback' },
+        },
+        exitCode: 1,
+        line: 'FIREFORGE-VERDICT: FAIL reason=crash\n',
+      },
+      {
+        verdict: { kind: 'no-tests' },
+        exitCode: 0,
+        line: 'FIREFORGE-VERDICT: FAIL reason=no-tests\n',
+      },
+      {
+        verdict: {
+          kind: 'test-failures',
+          unexpected: 2,
+          greenSummaryRejected: {
+            crashLine: 'killed by SIGSEGV',
+            neverStarted: [],
+            neverEnded: [],
+          },
+        },
+        exitCode: 1,
+        line: 'FIREFORGE-VERDICT: FAIL reason=test-failures unexpected=2\n',
+      },
+      {
+        verdict: { kind: 'test-failures' },
+        exitCode: 1,
+        line: 'FIREFORGE-VERDICT: FAIL reason=test-failures\n',
+      },
+    ];
+    for (const { verdict, exitCode, line } of cases) {
+      resetVerdictEmission();
+      const capture = captureStdout();
+      try {
+        expect(() => {
+          finalizeSingleRunOutcome(
+            makeOutcome({ exitCode, verdict }),
+            PATHS,
+            'mybrowser',
+            undefined
+          );
+        }).toThrow();
+      } finally {
+        capture.restore();
+      }
+      expect(capture.writes.at(-1)).toBe(line);
+    }
+  });
+});
 
 describe('finalizeSingleRunOutcome', () => {
   it('throws the rejection explanation when a green-looking summary was rejected on crash evidence', () => {
@@ -74,6 +173,47 @@ describe('finalizeSingleRunOutcome', () => {
     expect(() => {
       finalizeSingleRunOutcome(outcome, PATHS, 'mybrowser', undefined);
     }).toThrow(/harness symlinks/);
+  });
+
+  describe('fork-module signal regex escaping', () => {
+    // The inline escape this replaced wrote `[.*+?^${}()|[\\]\\\\]`, a class
+    // that closes early and therefore escaped nothing. Config validation
+    // (`config-validate.ts:59-70`) lets regex metacharacters through in
+    // `binaryName`, so both cases below were reachable from a valid config.
+    function diagnose(binaryName: string, stdout: string): () => void {
+      return () => {
+        finalizeSingleRunOutcome(
+          makeOutcome({ exitCode: 1, verdict: { kind: 'test-failures' }, stdout }),
+          PATHS,
+          binaryName,
+          undefined
+        );
+      };
+    }
+
+    it('matches the fork-module failure for a plain binary name', () => {
+      expect(
+        diagnose('mybrowser', 'Failed to load resource:///modules/mybrowser/Store.sys.mjs')
+      ).toThrow(/fork-owned module/);
+    });
+
+    it('does not let a dot in the binary name match an arbitrary character', () => {
+      // Unescaped, `my.browser` matched `myXbrowser` and misdiagnosed an
+      // unrelated module failure as this fork's registration problem.
+      expect(
+        diagnose('my.browser', 'Failed to load resource:///modules/myXbrowser/Store.sys.mjs')
+      ).not.toThrow(/fork-owned module/);
+      expect(
+        diagnose('my.browser', 'Failed to load resource:///modules/my.browser/Store.sys.mjs')
+      ).toThrow(/fork-owned module/);
+    });
+
+    it('does not throw a SyntaxError for a binary name containing regex metacharacters', () => {
+      // Unescaped, the unbalanced `(` threw out of the diagnosis path and
+      // replaced the real test failure with an opaque regex error.
+      expect(diagnose('my(browser', 'some unrelated failure output')).not.toThrow(SyntaxError);
+      expect(diagnose('my[browser', 'some unrelated failure output')).not.toThrow(SyntaxError);
+    });
   });
 
   it('echoes the TEST-UNEXPECTED blocks with assertion text into the failure summary (0.37.0 item 7)', () => {

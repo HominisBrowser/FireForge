@@ -130,6 +130,8 @@ export async function findRegisteredTarget(
       try {
         content = await readText(jarMn);
       } catch {
+        // An unreadable jar.mn contributes no registration hints; the resolver falls
+        // through to its other strategies.
         content = '';
       }
       const rel = relative(current, sourceAbs).split(sep).join('/');

@@ -2,8 +2,10 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 
+import { GeneralError } from '../errors/base.js';
+import { AmbiguousBuildArtifactsError } from '../errors/build.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { pathExists, readJson, readText, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { isObject, isString } from '../utils/validation.js';
@@ -68,7 +70,11 @@ function validateBuildMozinfo(data: unknown): BuildMozinfo {
 
 /**
  * Checks if build artifacts exist in the engine directory.
- * Looks for obj-* directories with a dist subdirectory.
+ * Looks for obj-* directories with a dist subdirectory. Detection is
+ * deliberately symlink-agnostic — building/running against a symlinked
+ * objdir in place is the user's own arrangement; the clone path, where a
+ * symlink would route writes into the original build, refuses separately
+ * (`assertCloneSafeObjdir` in tree-store.ts).
  * @param engineDir - Path to the engine directory
  * @returns Build artifact check result
  */
@@ -199,6 +205,8 @@ export async function hasRunnableBundle(
     try {
       entries = await readdir(distDir, { withFileTypes: true });
     } catch {
+      // No readable dist directory means no runnable bundle, which is exactly
+      // what the caller needs to know.
       return { runnable: false };
     }
     for (const entry of entries) {
@@ -389,4 +397,134 @@ export async function attemptMozinfoRewrite(
     newTopobjdir: newObj,
     ...(newMozconfig ? { newMozconfig } : {}),
   };
+}
+
+/** Per-command wording for {@link assertBuildArtifacts}. */
+export interface BuildArtifactPreflightOptions {
+  /** Label passed to {@link buildArtifactMismatchMessage} (e.g. `'Tests'`). */
+  label: string;
+  /** Sentence naming what needs a build, e.g. `'Tests require a completed build.'` */
+  requirement: string;
+  /** Follow-up telling the operator what to run, shown after `requirement`. */
+  remediation: string;
+  /**
+   * Whether a missing/incomplete build is fatal. `fireforge build` runs
+   * legitimately with no artifacts and only enforces this under `--ui`, so it
+   * opts in rather than out.
+   */
+  requireExisting?: boolean;
+}
+
+/**
+ * Shared build-artifact preflight: rejects ambiguous multi-objdir checkouts,
+ * artifacts whose metadata points at another tree, and (when
+ * `requireExisting`) missing or incomplete builds — each with the actionable
+ * message for that case.
+ *
+ * Takes an already-probed {@link BuildArtifactCheck} rather than probing
+ * itself, so it stays a pure validator: callers keep their own
+ * `hasBuildArtifacts` call (which their suites already stub) and this function
+ * needs no test double of its own.
+ *
+ * Five commands carried a character-identical copy of this ladder, including
+ * the same `ambiguous && objDirs && objDirs.length > 0` expression that
+ * `BuildArtifactCheck`'s boolean-plus-optionals shape forces at every reader.
+ * The shape itself is unchanged — it has several producers and a documented
+ * refusal contract (see the containment predicates below) — but it is now
+ * destructured in exactly one place.
+ */
+export function assertBuildArtifacts(
+  engineDir: string,
+  buildCheck: BuildArtifactCheck,
+  options: BuildArtifactPreflightOptions
+): void {
+  if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
+    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
+  }
+
+  const mismatchMessage = buildArtifactMismatchMessage(engineDir, buildCheck, options.label);
+  if (mismatchMessage) {
+    throw new GeneralError(mismatchMessage);
+  }
+
+  if (options.requireExisting && !buildCheck.exists) {
+    const detail = buildCheck.objDir
+      ? `Build artifacts incomplete in ${buildCheck.objDir}/`
+      : 'No build artifacts found (obj-*/ directory missing)';
+    throw new GeneralError(`${options.requirement} ${detail}\n\n${options.remediation}`);
+  }
+}
+
+/**
+ * Post-`mach configure` relocation check for a cloned objdir: confirms
+ * configure actually regenerated `<engineDir>/<objDir>` and that none of
+ * the four configure-generated root files (`config.status`, `backend.mk`,
+ * `Makefile`, `config/autoconf.mk`) still names `forbiddenDir` (the
+ * primary engine a relocated clone must never consult). Exit code 0 alone
+ * proves neither — a stray MOZCONFIG/MOZ_OBJDIR can steer configure at a
+ * different objdir entirely. Nested Makefiles are products of the verified
+ * `config.status` and are not scanned; `.deps` files are build products a
+ * configure cannot regenerate and are explicitly out of scope — any
+ * primary-path strings they retain are read-only staleness corrected by
+ * the first in-tree rebuild. Pure checker: returns a human-readable
+ * violation, or `undefined` when clean; callers own the error type and
+ * remediation copy. Unreadable metadata is itself a violation (fail
+ * closed).
+ */
+export async function findObjdirRelocationViolation(args: {
+  /** The relocated (tree) engine directory configure ran in. */
+  engineDir: string;
+  /** The obj-* directory name configure was expected to target. */
+  objDir: string;
+  /** The primary engine dir whose absolute path must not appear. */
+  forbiddenDir: string;
+}): Promise<string | undefined> {
+  const { engineDir, objDir, forbiddenDir } = args;
+  const objDirPath = join(engineDir, objDir);
+  if (!(await pathExists(join(objDirPath, 'config.status')))) {
+    return (
+      `${objDir}/config.status was not written — mach configure may have targeted a ` +
+      'different objdir (check MOZCONFIG / MOZ_OBJDIR)'
+    );
+  }
+
+  let mozinfo: BuildMozinfo;
+  try {
+    mozinfo = validateBuildMozinfo(await readJson<unknown>(join(objDirPath, 'mozinfo.json')));
+  } catch (error: unknown) {
+    return `${objDir}/mozinfo.json could not be read after configure: ${toError(error).message}`;
+  }
+  const expectedSrcDir = resolve(engineDir);
+  const expectedObjDir = resolve(objDirPath);
+  const actualSrcDir = mozinfo.topsrcdir ? resolve(mozinfo.topsrcdir) : undefined;
+  const actualObjDir = mozinfo.topobjdir ? resolve(mozinfo.topobjdir) : undefined;
+  if (actualSrcDir !== expectedSrcDir) {
+    return `${objDir}/mozinfo.json topsrcdir resolves to ${actualSrcDir ?? '(absent)'}, expected ${expectedSrcDir}`;
+  }
+  if (actualObjDir !== expectedObjDir) {
+    return `${objDir}/mozinfo.json topobjdir resolves to ${actualObjDir ?? '(absent)'}, expected ${expectedObjDir}`;
+  }
+
+  // The canonical no-primary-paths assertion (mirrors the opt-in real-mach
+  // proof in scripts/run-full-firefox-integration.mjs): substring search on
+  // the resolved primary engine dir is collision-safe against the tree's own
+  // paths — `<primary>/.fireforge/trees/<name>/engine` never contains the
+  // substring `<primary>/engine`. Scans exactly the configure-generated
+  // root files; `config.status` is mandatory (checked above), the rest are
+  // optional-if-absent because not every configure backend writes them.
+  const forbidden = resolve(forbiddenDir);
+  for (const name of ['config.status', 'backend.mk', 'Makefile', 'config/autoconf.mk']) {
+    const filePath = join(objDirPath, ...name.split('/'));
+    if (name !== 'config.status' && !(await pathExists(filePath))) continue;
+    let content: string;
+    try {
+      content = await readText(filePath);
+    } catch (error: unknown) {
+      return `${objDir}/${name} could not be read after configure: ${toError(error).message}`;
+    }
+    if (content.includes(forbidden)) {
+      return `${objDir}/${name} still contains the primary engine path ${forbidden}`;
+    }
+  }
+  return undefined;
 }

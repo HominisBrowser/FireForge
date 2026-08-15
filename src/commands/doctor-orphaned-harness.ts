@@ -22,6 +22,7 @@
  */
 
 import type { DoctorCheck } from '../types/commands/index.js';
+import { toError } from '../utils/errors.js';
 import { exec } from '../utils/process.js';
 import type { DoctorCheckDefinition } from './doctor-check-core.js';
 import { ok, warning } from './doctor-check-core.js';
@@ -124,7 +125,7 @@ async function runOrphanedHarnessCheck(): Promise<DoctorCheck> {
   } catch (error: unknown) {
     return warning(
       CHECK_NAME,
-      `Could not scan system processes (${error instanceof Error ? error.message : String(error)}); skipping the orphaned-worker check.`
+      `Could not scan system processes (${toError(error).message}); skipping the orphaned-worker check.`
     );
   }
 

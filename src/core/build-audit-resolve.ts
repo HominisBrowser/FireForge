@@ -94,6 +94,38 @@ export function countTrailingSegmentMatches(a: string, b: string): number {
 }
 
 /**
+ * Path segments too common to identify an artifact on their own.
+ *
+ * Shared deliberately: this set governs two halves of ONE decision, and the
+ * halves disagreed before 0.41.0. `scoreCandidate` (selection) used an
+ * 11-entry copy while `isConfidentMatch` (confirmation, in `build-audit.ts`)
+ * used a 17-entry one, so a source path containing `test`, `tests`, `unit`,
+ * `common`, `xpcshell` or `mochitest` earned a +1 selection bonus for a
+ * segment that confirmation then rejected as meaningless — the chosen
+ * artifact could never be confirmed. The union is authoritative; any addition
+ * must apply to both halves, which is now automatic.
+ */
+export const GENERIC_PATH_SEGMENTS: ReadonlySet<string> = new Set([
+  'content',
+  'chrome',
+  'bin',
+  'browser',
+  'toolkit',
+  'modules',
+  'base',
+  'app',
+  'profile',
+  'shared',
+  'themes',
+  'test',
+  'tests',
+  'unit',
+  'common',
+  'xpcshell',
+  'mochitest',
+]);
+
+/**
  * Computes a score for `candidatePath` relative to `sourcePath`. Higher
  * scores win. Score = trailing-segment match count, with a bonus when
  * the candidate's path contains a meaningful intermediate segment from
@@ -120,19 +152,7 @@ export function scoreCandidate(sourcePath: string, candidatePath: string): numbe
   // but are not part of the trailing match. Each unique mid-path hit on
   // a meaningful (>2-char, not generic like 'content'/'chrome'/'bin')
   // segment adds 1 to the score.
-  const generic = new Set([
-    'content',
-    'chrome',
-    'bin',
-    'browser',
-    'toolkit',
-    'modules',
-    'base',
-    'app',
-    'profile',
-    'shared',
-    'themes',
-  ]);
+  const generic = GENERIC_PATH_SEGMENTS;
   const trailingSet = new Set(sourceSegs.slice(sourceSegs.length - trailing));
   let bonus = 0;
   for (const seg of sourceSegs) {
@@ -171,6 +191,8 @@ export async function findAllByBasename(
     try {
       children = await readdir(entry.dir, { withFileTypes: true });
     } catch {
+      // An unreadable subdirectory yields no candidates. Skip it and keep
+      // scoring the rest rather than abandoning the whole resolution.
       continue;
     }
     for (const child of children) {

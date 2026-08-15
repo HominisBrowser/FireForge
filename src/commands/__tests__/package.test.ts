@@ -115,12 +115,14 @@ describe('packageCommand', () => {
   });
 
   it('rejects copied or relocated build artifacts before invoking mach', async () => {
-    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(
-      'Package cannot use copied or relocated build artifacts.'
-    );
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({
+      exists: true,
+      objDir: 'obj-debug',
+      metadataMismatch: { objDir: 'obj-debug', topsrcdir: '/other/workspace/engine' },
+    });
 
     await expect(packageCommand('/project', {})).rejects.toThrow(
-      'Package cannot use copied or relocated build artifacts.'
+      /copied or relocated build artifacts/i
     );
 
     expect(machPackageCapture).not.toHaveBeenCalled();

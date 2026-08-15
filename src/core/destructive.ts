@@ -188,7 +188,9 @@ export async function confirmDestructive(input: DestructiveOpInput): Promise<Des
     initialValue: false,
   });
 
-  if (isCancel(confirmed) || confirmed !== true) {
+  // `isCancel` narrows the clack sentinel away, leaving a plain boolean —
+  // the defensive `!== true` this replaced is now provably redundant.
+  if (isCancel(confirmed) || !confirmed) {
     return 'cancelled';
   }
 

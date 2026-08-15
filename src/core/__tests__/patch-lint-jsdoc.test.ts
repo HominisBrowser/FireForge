@@ -242,11 +242,16 @@ describe('validateExportJsDoc', () => {
 
   // ── Parse error resilience ──────────────────────────────────────────
 
-  it('returns empty on parse error', () => {
+  it('reports a parse failure instead of silently passing the file', () => {
+    // `[]` is the same value as "fully documented", so returning it here made
+    // an unparseable .sys.mjs clear every rule in this module. A source that
+    // cannot be analysed is not a source that passed analysis.
     const source = 'export function { broken syntax\n';
     const issues = validateExportJsDoc(source);
 
-    expect(issues).toHaveLength(0);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ line: 1, check: 'jsdoc-unparseable-source' });
+    expect(issues[0]?.message).toMatch(/could not be parsed for JSDoc analysis/);
   });
 
   // ── Line numbers ────────────────────────────────────────────────────

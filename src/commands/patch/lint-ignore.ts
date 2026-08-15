@@ -29,6 +29,7 @@ import type { CommandContext } from '../../types/cli.js';
 import type { PatchLintIgnoreOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
+import { stringListOption } from '../../utils/options.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 type LintIgnoreMode = 'add' | 'remove' | 'clear';
@@ -247,14 +248,12 @@ export function registerPatchLintIgnore(parent: Command, context: CommandContext
     .option(
       '--add <check-id>',
       'Lint check ID to add to the patch lintIgnore list (repeatable)',
-      (value: string, prev: string[]) => [...prev, value],
-      [] as string[]
+      ...stringListOption()
     )
     .option(
       '--remove <check-id>',
       'Lint check ID to remove from the patch lintIgnore list (repeatable)',
-      (value: string, prev: string[]) => [...prev, value],
-      [] as string[]
+      ...stringListOption()
     )
     .option('--clear', 'Drop the lintIgnore field entirely')
     .option('--dry-run', 'Show what would change without writing')

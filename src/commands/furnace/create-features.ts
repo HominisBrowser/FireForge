@@ -64,7 +64,7 @@ export async function resolveCreateFeatures(
       return null;
     }
 
-    const selected = features as string[];
+    const selected = features;
     localized = selected.includes('localized');
     register = selected.includes('register');
   }

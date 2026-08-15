@@ -13,6 +13,7 @@ import { BuildError } from '../errors/build.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import {
   type AcornESTreeNode,
+  asEstree,
   detectIndent,
   getNodeSource,
   parseScript,
@@ -51,7 +52,7 @@ export function addSubscriptAST(
   walkAST(ast, {
     enter(node) {
       if (node.type === 'TryStatement') {
-        const n = node as AcornESTreeNode<estree.TryStatement>;
+        const n = asEstree<estree.TryStatement>(node);
         const src = getNodeSource(content, n);
         if (src.includes('loadSubScript')) {
           tryNodes.push(n);
@@ -183,7 +184,15 @@ export async function addSubscriptToBrowserMain(
   const { value, usedFallback } = withParserFallback(
     () => addSubscriptAST(content, name, marker),
     () => legacyAddSubscript(content, name, marker),
-    BROWSER_MAIN_JS
+    BROWSER_MAIN_JS,
+    // Rethrow only the internal-invariant GeneralErrors ("Unexpected empty
+    // …array"): those are programming bugs, and retrying the legacy scanner
+    // cannot fix a broken invariant — it just buries the stack. Everything
+    // else still falls back, which is load-bearing: the AST path raises a raw
+    // acorn SyntaxError on chrome sources acorn cannot parse (preprocessor
+    // directives), and BuildError when the file's shape is unexpected. Both
+    // are exactly what the legacy scanner is here to handle.
+    (error) => error instanceof GeneralError
   );
 
   if (usedFallback) {

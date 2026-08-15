@@ -10,7 +10,7 @@ import { getDirtyFiles } from '../core/git-status.js';
 import {
   applyPatchesWithContinue,
   countPatches,
-  createPatchedContentComputer,
+  createPatchedContentContext,
   discoverPatches,
   extractAffectedFiles,
   matchesUntilFilename,
@@ -27,7 +27,8 @@ import { warnIfStaticComponentsStale } from '../core/test-stale-check.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ImportOptions, PatchesManifest } from '../types/commands/index.js';
-import { toError } from '../utils/errors.js';
+import { mapWithConcurrency } from '../utils/concurrency.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import {
   error,
@@ -53,8 +54,8 @@ import { pickDefined } from '../utils/options.js';
 const SAFE_IO_FALLBACK_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'EBUSY']);
 
 function isSafeIoFallback(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return typeof code === 'string' && SAFE_IO_FALLBACK_CODES.has(code);
+  const code = getNodeErrorCode(error);
+  return code !== undefined && SAFE_IO_FALLBACK_CODES.has(code);
 }
 
 /** Concurrency bound for per-file classification (each call spawns git). */
@@ -68,7 +69,10 @@ async function getUnmanagedDirtyFiles(
   // One manifest+patch-discovery load for the whole batch (the per-call
   // computePatchedContent re-read everything for every file), and bounded
   // concurrency instead of an unbounded Promise.all over git spawns.
-  const computeExpected = await createPatchedContentComputer(patchesDir, engineDir);
+  const { computePatched: computeExpected } = await createPatchedContentContext(
+    patchesDir,
+    engineDir
+  );
   const classifications = await mapWithConcurrency(
     dirtyFiles,
     UNMANAGED_CLASSIFY_CONCURRENCY,
@@ -102,25 +106,6 @@ async function getUnmanagedDirtyFiles(
   );
 
   return classifications.filter((file): file is string => file !== null).sort();
-}
-
-/** Maps items with at most `limit` in-flight promises. Preserves order. */
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    for (;;) {
-      const index = next++;
-      if (index >= items.length) return;
-      results[index] = await fn(items[index] as T);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }
 
 function reportForcedOverwriteRisk(unmanagedDirtyFiles: string[]): void {

@@ -375,7 +375,7 @@ export async function furnaceOverrideCommand(
       return;
     }
 
-    componentName = selected as string;
+    componentName = selected;
   }
 
   assertNoComponentCollision(config, componentName);
@@ -416,7 +416,7 @@ export async function furnaceOverrideCommand(
       return;
     }
 
-    overrideType = typeResult as OverrideType;
+    overrideType = typeResult;
   } else if (!overrideType) {
     throw new InvalidArgumentError(
       'Override type is required in non-interactive mode. Use -t css-only or -t full.',
@@ -440,7 +440,7 @@ export async function furnaceOverrideCommand(
     });
 
     if (!isCancel(descResult)) {
-      description = String(descResult);
+      description = descResult;
     }
   }
 
@@ -574,7 +574,7 @@ export async function furnaceBatchOverrideCommand(
         info(`Skipping ${componentName} (cancelled)`);
         continue;
       }
-      overrideType = typeResult as OverrideType;
+      overrideType = typeResult;
     }
 
     if (overrideType === 'css-only' && !details.hasCSS) {
@@ -608,7 +608,7 @@ export async function furnaceBatchOverrideCommand(
     } catch (error: unknown) {
       failed.push({
         name: componentName,
-        error: error instanceof Error ? error.message : String(error),
+        error: toError(error).message,
       });
     }
   }

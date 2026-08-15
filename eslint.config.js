@@ -5,7 +5,9 @@ import jsdoc from 'eslint-plugin-jsdoc';
 import simpleImportSort from 'eslint-plugin-simple-import-sort';
 import tseslint from 'typescript-eslint';
 
-const jsToolingFiles = ['eslint.config.js', 'scripts/**/*.mjs'];
+import fireforge from './eslint-rules/index.js';
+
+const jsToolingFiles = ['eslint.config.js', 'scripts/**/*.mjs', 'eslint-rules/**/*.js'];
 
 const sharedRules = {
   'no-throw-literal': 'error',
@@ -56,6 +58,7 @@ export default tseslint.config(
     files: ['**/*.ts', '**/*.tsx', '**/*.mts', '**/*.cts'],
     plugins: {
       'simple-import-sort': simpleImportSort,
+      fireforge,
     },
     languageOptions: {
       parserOptions: {
@@ -65,6 +68,14 @@ export default tseslint.config(
     },
     rules: {
       ...sharedRules,
+      // Local rules (eslint-rules/index.js). Each pins a convention the
+      // 2026-08-06 quality survey found hand-rolled across dozens of files,
+      // in two cases with a silently broken copy. Landed in 0.41.0 with the
+      // last of the corresponding fixes, so they start clean.
+      'fireforge/no-open-coded-to-error': 'error',
+      'fireforge/no-errno-cast': 'error',
+      'fireforge/prefer-shared-regex-escape': 'error',
+      'fireforge/no-empty-jsdoc': 'error',
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-non-null-assertion': 'error',
       '@typescript-eslint/explicit-function-return-type': [
@@ -135,6 +146,11 @@ export default tseslint.config(
       'jsdoc/require-jsdoc': 'off',
       'max-lines': 'off',
       'max-lines-per-function': 'off',
+      // Test assertions legitimately construct and inspect raw throwables to
+      // pin the shapes production code must survive; routing those through
+      // `toError` would assert the helper rather than the behaviour.
+      'fireforge/no-open-coded-to-error': 'off',
+      'fireforge/no-errno-cast': 'off',
     },
   },
   {

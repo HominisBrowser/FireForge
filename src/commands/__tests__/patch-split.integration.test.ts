@@ -150,6 +150,26 @@ describe('patch split integration', () => {
     expect(lintPatchQueue(ctx).filter((i) => i.severity === 'error')).toEqual([]);
   });
 
+  it('normalizes a filename-shaped --name to the bare slug in the manifest (FORGE H4)', async () => {
+    await seedManifest(patchesDir, [
+      { metadata: makeMetadata('001-infra-feature.patch', 1, [FILE_A, FILE_B]), body: '(stale)' },
+    ]);
+
+    await patchSplitCommand(projectRoot, '001-infra-feature.patch', {
+      files: [FILE_B],
+      name: '002-infra-feature-styles.patch',
+      yes: true,
+      skipLint: true,
+    });
+
+    const manifest = await readManifest(patchesDir);
+    const created = manifest.patches.find((p) => p.filename === '002-infra-feature-styles.patch');
+    expect(created).toBeDefined();
+    // The display name is the bare slug, not the typed filename — same G13
+    // normalization `export --name` applies.
+    expect(created?.name).toBe('feature-styles');
+  });
+
   it('rewrites staged-dependency owners pointing at moved files (the A4 flow)', async () => {
     // 001 forward-imports feature.css... modelled as a JS helper created by
     // the source: 001 imports Helper.sys.mjs which 002 creates; the helper
@@ -212,15 +232,21 @@ describe('patch split integration', () => {
     // clean (no refusal) AND the committed queue lints clean.
     const helperPath = 'browser/modules/Helper.sys.mjs';
     const importerPath = 'browser/modules/Importer.sys.mjs';
+    const mozBuildPath = 'browser/modules/moz.build';
     await writeFiles(engineDir, {
       [helperPath]: 'export const H = 1;\n',
       [importerPath]:
         'import { H } from "resource:///modules/Helper.sys.mjs";\nexport const I = H;\n',
+      [mozBuildPath]: 'EXTRA_JS_MODULES += ["Helper.sys.mjs", "Importer.sys.mjs"]\n',
     });
 
     await seedManifest(patchesDir, [
       {
-        metadata: makeMetadata('001-infra-feature.patch', 1, [importerPath, helperPath]),
+        metadata: makeMetadata('001-infra-feature.patch', 1, [
+          importerPath,
+          helperPath,
+          mozBuildPath,
+        ]),
         body: '(stale)',
       },
     ]);
@@ -402,5 +428,113 @@ describe('patch split integration', () => {
         skipLint: true,
       })
     ).rejects.toBeInstanceOf(InvalidArgumentError);
+  });
+});
+
+describe('patch split projection lint runs with the whole-queue context (FORGE I3)', () => {
+  const A_PATH = 'browser/modules/mb/A.sys.mjs';
+  const B_PATH = 'browser/modules/mb/B.sys.mjs';
+  const KEEP_CSS = 'browser/base/content/keep.css';
+
+  const A_SOURCE = [
+    '/* SPDX-License-Identifier: EUPL-1.2 */',
+    '/**',
+    ' * Doubles a number.',
+    ' * @param {number} n - input',
+    ' * @returns {number} doubled',
+    ' */',
+    'export function dbl(n) {',
+    '  return n * 2;',
+    '}',
+    '',
+  ].join('\n');
+
+  function bSource(argument: string): string {
+    return [
+      '/* SPDX-License-Identifier: EUPL-1.2 */',
+      "import { dbl } from 'resource:///modules/A.sys.mjs';",
+      '/** @returns {number} result */',
+      'export function use() {',
+      `  return dbl(${argument});`,
+      '}',
+      '',
+    ].join('\n');
+  }
+
+  function newFilePatchBody(path: string, addedLine: string): string {
+    return [
+      `diff --git a/${path} b/${path}`,
+      'new file mode 100644',
+      '--- /dev/null',
+      `+++ b/${path}`,
+      '@@ -0,0 +1,1 @@',
+      `+${addedLine}`,
+      '',
+    ].join('\n');
+  }
+
+  let projectRoot: string;
+  let engineDir: string;
+  let patchesDir: string;
+  let restoreTTY: () => void = () => undefined;
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-split-ctx-');
+    await writeFireForgeConfig(projectRoot, { patchLint: { checkJs: true } });
+    engineDir = join(projectRoot, 'engine');
+    patchesDir = join(projectRoot, 'patches');
+    await initCommittedRepo(engineDir, { 'browser/modules/mb/.gitkeep': '' });
+    restoreTTY = setInteractiveMode(false);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(async () => {
+    restoreTTY();
+    vi.restoreAllMocks();
+    await removeTempProject(projectRoot);
+  });
+
+  async function seedCrossPatchQueue(argument: string): Promise<void> {
+    await writeFiles(engineDir, {
+      [A_PATH]: A_SOURCE,
+      [B_PATH]: bSource(argument),
+      [KEEP_CSS]: '/* SPDX-License-Identifier: EUPL-1.2 */\n.keep { color: red; }\n',
+    });
+    await seedManifest(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-a.patch', 1, [A_PATH]),
+        body: newFilePatchBody(A_PATH, 'export function dbl(n) { return n * 2; }'),
+      },
+      {
+        metadata: makeMetadata('002-infra-b.patch', 2, [B_PATH, KEEP_CSS]),
+        body: newFilePatchBody(B_PATH, "import { dbl } from 'resource:///modules/A.sys.mjs';"),
+      },
+    ]);
+  }
+
+  it('a split body misusing another patch module is refused (pre-fix it slipped through)', async () => {
+    await seedCrossPatchQueue("'not a number'");
+
+    await expect(
+      patchSplitCommand(projectRoot, '002-infra-b.patch', {
+        files: [B_PATH],
+        name: 'b-solo',
+        yes: true,
+      })
+    ).rejects.toThrow(/Patch lint found/);
+  });
+
+  it('a clean cross-patch import resolves and the split succeeds', async () => {
+    await seedCrossPatchQueue('2');
+
+    await patchSplitCommand(projectRoot, '002-infra-b.patch', {
+      files: [B_PATH],
+      name: 'b-solo',
+      yes: true,
+    });
+
+    const manifest = await readManifest(patchesDir);
+    const created = manifest.patches.find((p) => p.filename === '003-infra-b-solo.patch');
+    expect(created?.filesAffected).toEqual([B_PATH]);
   });
 });

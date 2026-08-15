@@ -18,9 +18,15 @@ const ALL_CLASSIFICATIONS: readonly FileClassification[] = [
   'branding',
   'furnace',
   'conflict',
+  'binary-unsupported',
 ];
 
-/** Default `--check` policy: everything outside {patch-backed, branding, furnace} fails. */
+/**
+ * Default `--check` policy: everything outside {patch-backed, branding,
+ * furnace, binary-unsupported} fails. `binary-unsupported` is deliberately
+ * excluded — an honest "cannot compare" must not keep the gate permanently
+ * red (FORGE J3); strict CI can opt in via `--fail-on binary-unsupported`.
+ */
 const DEFAULT_FAIL_CLASSIFICATIONS: readonly FileClassification[] = [
   'unmanaged',
   'patch-owned-drift',
@@ -99,6 +105,34 @@ function parseFailOnClassifications(raw: string | undefined): FileClassification
 
 const CHECK_FILE_PREVIEW_MAX = 3;
 
+/** One fail-set classification with a non-empty file list. */
+export interface StatusCheckOffender {
+  classification: FileClassification;
+  count: number;
+  files: string[];
+}
+
+/**
+ * Collects the fail-set classifications that have offending files, in
+ * policy order with full file lists. Shared by the human `--check`
+ * verdict and the `--json --summary` payload so the two views can never
+ * disagree about what failed.
+ */
+export function collectStatusCheckOffenders(
+  classified: readonly ClassifiedFile[],
+  policy: StatusCheckPolicy
+): StatusCheckOffender[] {
+  const offenders: StatusCheckOffender[] = [];
+  for (const classification of policy.failOn) {
+    const files = classified
+      .filter((entry) => entry.classification === classification)
+      .map((entry) => entry.file);
+    if (files.length === 0) continue;
+    offenders.push({ classification, count: files.length, files });
+  }
+  return offenders;
+}
+
 /**
  * Throws a GeneralError (exit 1) when the policy is enabled and any of
  * its classifications is non-empty, naming each offending classification
@@ -110,19 +144,14 @@ export function runStatusCheck(
   policy: StatusCheckPolicy
 ): void {
   if (!policy.checkEnabled) return;
-  const offending: string[] = [];
-  for (const classification of policy.failOn) {
-    const files = classified
-      .filter((entry) => entry.classification === classification)
-      .map((entry) => entry.file);
-    if (files.length === 0) continue;
-    const preview = files.slice(0, CHECK_FILE_PREVIEW_MAX).join(', ');
+  const offending = collectStatusCheckOffenders(classified, policy).map((offender) => {
+    const preview = offender.files.slice(0, CHECK_FILE_PREVIEW_MAX).join(', ');
     const more =
-      files.length > CHECK_FILE_PREVIEW_MAX
-        ? `, +${String(files.length - CHECK_FILE_PREVIEW_MAX)} more`
+      offender.count > CHECK_FILE_PREVIEW_MAX
+        ? `, +${String(offender.count - CHECK_FILE_PREVIEW_MAX)} more`
         : '';
-    offending.push(`${String(files.length)} ${classification} (${preview}${more})`);
-  }
+    return `${String(offender.count)} ${offender.classification} (${preview}${more})`;
+  });
   if (offending.length === 0) return;
   throw new GeneralError(
     `status --check failed: ${offending.join(', ')}. Export or adopt unmanaged files, ` +

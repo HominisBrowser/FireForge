@@ -18,6 +18,7 @@ vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
+import { FireForgeError, LockContentionError } from '../../errors/base.js';
 import { warn } from '../../utils/logger.js';
 import { createSiblingLockPath, withFileLock } from '../file-lock.js';
 
@@ -100,6 +101,25 @@ describe('file-lock', () => {
         onTimeoutMessage: 'lock still held',
       })
     ).rejects.toThrow('lock still held');
+  });
+
+  it('rejects a timeout with LockContentionError so the CLI renders one line, not a stack (FORGE H5)', async () => {
+    const tempDir = await makeTempDir('fireforge-typed-timeout-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+
+    const rejection = await withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+      timeoutMs: 25,
+      pollMs: 5,
+      staleMs: 60_000,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(rejection).toBeInstanceOf(LockContentionError);
+    expect(rejection).toBeInstanceOf(FireForgeError);
+    expect((rejection as Error).message).toContain('Timed out waiting for file lock');
   });
 
   it('serialises concurrent lock attempts on the same path', async () => {

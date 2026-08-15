@@ -70,7 +70,7 @@ import type { FireForgeConfig, ProjectPaths } from '../../types/config.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, spinner, warn } from '../../utils/logger.js';
 import { isBrandingSetup, setupBranding } from '../branding.js';
-import { prepareBuildEnvironment } from '../build-prepare.js';
+import { prepareBuildEnvironment, requiresFullBuildForIncrementalTest } from '../build-prepare.js';
 import { applyAllComponents } from '../furnace-apply.js';
 import { furnaceConfigExists, loadFurnaceConfig, loadFurnaceState } from '../furnace-config.js';
 import { runFurnaceMutation } from '../furnace-operation.js';
@@ -380,6 +380,28 @@ describe('prepareBuildEnvironment', () => {
 });
 
 describe('prepareBuildEnvironment auto-configure', () => {
+  it('marks jar.mn changes as requiring a full pre-test build', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
+    vi.mocked(hasChanges).mockResolvedValue(false);
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+      },
+    });
+
+    expect(result.fullBuildRequired).toBe(true);
+  });
+
+  it('limits full-build escalation to jar.mn manifests', () => {
+    expect(requiresFullBuildForIncrementalTest('browser/base/jar.mn')).toBe(true);
+    expect(requiresFullBuildForIncrementalTest('browser/base/moz.build')).toBe(false);
+    expect(requiresFullBuildForIncrementalTest('browser/base/content/existing.svg')).toBe(false);
+  });
   it('runs mach configure when moz.build changed since the baseline', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');

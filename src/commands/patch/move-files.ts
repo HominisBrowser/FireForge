@@ -18,7 +18,7 @@ import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchMoveFilesOptions } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, warn } from '../../utils/logger.js';
-import { commanderArgParser, pickDefined } from '../../utils/options.js';
+import { addWaitLockOption, commanderArgParser, pickDefined } from '../../utils/options.js';
 import { patchMoveFilesCreateCommand } from './move-files-create.js';
 import { runMoveFilesInto } from './move-files-into.js';
 
@@ -233,7 +233,7 @@ export async function patchMoveFilesCommand(
  */
 export function registerPatchMoveFiles(parent: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  parent
+  const command = parent
     .command('move-files <from> <to>')
     .description(
       'Preview the re-export commands needed to move file ownership between patches, ' +
@@ -261,42 +261,44 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
       })
     )
     .option('--category <category>', "Category for the created patch (default: the source patch's)")
-    .option('--description <desc>', 'Description for the created patch')
+    .option('-d, --description <desc>', 'Description for the created patch')
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
     .option('--force-unsafe', 'Bypass projected-lint refusals')
-    .option('--skip-lint', 'Skip per-patch lint of the projected bodies')
-    .action(
-      withErrorHandling(
-        async (
-          from: string,
-          to: string,
-          options: {
-            file?: string[];
-            create?: boolean;
-            order?: number;
-            category?: string;
-            description?: string;
-            dryRun?: boolean;
-            yes?: boolean;
-            forceUnsafe?: boolean;
-            skipLint?: boolean;
-          }
-        ) => {
-          await patchMoveFilesCommand(getProjectRoot(), from, to, {
-            ...pickDefined({
-              file: options.file,
-              create: options.create,
-              order: options.order,
-              category: options.category,
-              description: options.description,
-              dryRun: options.dryRun,
-              yes: options.yes,
-              forceUnsafe: options.forceUnsafe,
-              skipLint: options.skipLint,
-            }),
-          });
+    .option('--skip-lint', 'Skip per-patch lint of the projected bodies');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (
+        from: string,
+        to: string,
+        options: {
+          file?: string[];
+          create?: boolean;
+          order?: number;
+          category?: string;
+          description?: string;
+          dryRun?: boolean;
+          yes?: boolean;
+          forceUnsafe?: boolean;
+          skipLint?: boolean;
+          waitLock?: number | boolean;
         }
-      )
-    );
+      ) => {
+        await patchMoveFilesCommand(getProjectRoot(), from, to, {
+          ...pickDefined({
+            file: options.file,
+            create: options.create,
+            order: options.order,
+            category: options.category,
+            description: options.description,
+            dryRun: options.dryRun,
+            yes: options.yes,
+            forceUnsafe: options.forceUnsafe,
+            skipLint: options.skipLint,
+            waitLock: options.waitLock,
+          }),
+        });
+      }
+    )
+  );
 }

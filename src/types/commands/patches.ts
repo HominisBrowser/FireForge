@@ -224,6 +224,14 @@ export interface PatchLintIssue {
   fingerprint?: string;
   /** Human-readable description of the issue */
   message: string;
+  /**
+   * Queue entry filenames this issue implicates (the declaring/importing
+   * patch, or every creator for a duplicate-creation clash). Used by the
+   * export placement gate to attribute projected errors to the exported
+   * patch vs pre-existing patches without parsing messages or the
+   * rename-sensitive fingerprint (FORGE K9).
+   */
+  patches?: string[];
   /** Severity: errors block export, warnings are advisory, notices are informational (not counted) */
   severity: 'error' | 'warning' | 'notice';
   /**

@@ -4,7 +4,10 @@ import { coverageConfigDefaults, defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     root: '.',
-    include: ['src/**/*.test.ts'],
+    // `eslint-rules/` is plain JS tooling outside `src/`, but its rules are
+    // `error`-level in eslint.config.js — they need the same regression cover
+    // as the code they police.
+    include: ['src/**/*.test.ts', 'eslint-rules/**/*.test.js'],
     // The pack smoke test runs a real `npm pack` + install + tsc (~2 min);
     // it runs only via `pack:verify` (vitest.pack.config.ts), not in every
     // plain `npm test` — and no longer twice per release:check.

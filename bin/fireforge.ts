@@ -22,6 +22,7 @@ import {
 import { waitForActiveCriticalSections } from '../src/core/signal-critical.js';
 import { CommandError } from '../src/errors/base.js';
 import { waitForActiveChildShutdown } from '../src/utils/process.js';
+import { waitForStdioDrain } from '../src/utils/stdio-drain.js';
 
 /**
  * Upper bound (ms) the signal handler will wait for any in-flight critical
@@ -42,6 +43,27 @@ const SIGNAL_CRITICAL_SECTION_TIMEOUT_MS = 5_000;
  */
 const CHILD_SHUTDOWN_TIMEOUT_MS = 12_000;
 
+/**
+ * Upper bound (ms) a delayed exit waits for stdout/stderr to drain. When
+ * stdout is a pipe it is ASYNC, and `process.exit()` discards anything
+ * queued past the 64 KiB kernel buffer — which truncated the
+ * `status --json --fail-on` refusal payload for every piped consumer.
+ * Bounded so a stalled reader can never wedge a failing process; an
+ * EPIPE'd/closed pipe releases the wait immediately.
+ */
+const STDIO_FLUSH_TIMEOUT_MS = 5_000;
+
+/**
+ * Drains stdio, then exits. Every delayed exit routes through here — only
+ * the second-Ctrl+C force-exit (an explicit "out NOW") and this helper's
+ * own call terminate directly.
+ */
+function exitAfterStdioFlush(code: number): void {
+  void waitForStdioDrain(STDIO_FLUSH_TIMEOUT_MS).finally(() => {
+    process.exit(code);
+  });
+}
+
 installBrokenPipeHandler();
 
 process.on('unhandledRejection', (reason: unknown) => {
@@ -52,7 +74,7 @@ process.on('unhandledRejection', (reason: unknown) => {
   if (reason instanceof Error && reason.stack) {
     console.error(reason.stack);
   }
-  process.exit(1);
+  exitAfterStdioFlush(1);
 });
 
 // SIGINT / SIGTERM handlers run any in-flight furnace rollback before
@@ -97,7 +119,7 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
       // best-effort (errors are logged, not thrown).
       .then(() => forceReleaseFurnaceLocksForActiveOperations())
       .finally(() => {
-        process.exit(exitCode);
+        exitAfterStdioFlush(exitCode);
       });
   });
 }
@@ -107,10 +129,11 @@ installFurnaceSignalHandler('SIGTERM', 143);
 
 main().catch((error: unknown) => {
   if (error instanceof CommandError) {
-    process.exit(error.exitCode);
+    exitAfterStdioFlush(error.exitCode);
+    return;
   }
 
   // Truly unexpected — CommandError should have been thrown by withErrorHandling
   console.error('Fatal error:', error);
-  process.exit(1);
+  exitAfterStdioFlush(1);
 });

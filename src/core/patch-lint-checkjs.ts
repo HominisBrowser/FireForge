@@ -34,6 +34,7 @@ import type {
   PatchLintConfig,
   PatchLintSeverityGate,
 } from '../types/config.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import {
@@ -187,6 +188,14 @@ export interface GroupedCheckJsResult {
  *   the built-in Firefox-globals shim (from `patchLint.checkJsExtraShim`)
  * @param projectRoot - Absolute project root for resolving `extraShimPath`
  * @param mode - Strictness preset plus allowlisted compiler-option overrides
+ * @param builtinShimSuffix - Optional shim text appended AFTER the consumer shim
+ * @param rootScope - When set, only these repo-relative files become program
+ *   ROOTS; resolution (and the host allowlist) still spans all of
+ *   `resolutionOwned`, so a subset root's cross-patch imports type-check
+ *   against the real owning sources while unrelated owned files are never
+ *   parsed. `.mjs` files are module-scoped, so a root's diagnostics are
+ *   identical whether other owned files are roots or mere resolution
+ *   targets (pinned by the rootScope parity test — FORGE J1c).
  * @returns Diagnostics grouped per owning file plus run-level errors
  */
 export async function runCheckJsGrouped(
@@ -195,7 +204,8 @@ export async function runCheckJsGrouped(
   extraShimPath?: string,
   projectRoot?: string,
   mode?: CheckJsMode,
-  builtinShimSuffix?: string
+  builtinShimSuffix?: string,
+  rootScope?: ReadonlySet<string>
 ): Promise<GroupedCheckJsResult> {
   const empty: GroupedCheckJsResult = { byFile: new Map(), global: [] };
   if (resolutionOwned.size === 0) return empty;
@@ -220,14 +230,17 @@ export async function runCheckJsGrouped(
     };
   }
 
-  // Resolve absolute paths for root files, filtering to files that exist
+  // Resolve absolute paths for root files, filtering to files that exist.
+  // Under a rootScope, non-scoped owned files stay resolvable (host
+  // allowlist + relByAbsolute) but are not program roots — they are only
+  // parsed if a scoped root's import closure reaches them.
   const rootFiles: string[] = [];
   const ownedAbsolute = new Set<string>();
   const relByAbsolute = new Map<string, string>();
   for (const rel of resolutionOwned) {
     const abs = resolve(repoDir, rel);
     if (await pathExists(abs)) {
-      rootFiles.push(abs);
+      if (rootScope === undefined || rootScope.has(rel)) rootFiles.push(abs);
       ownedAbsolute.add(abs);
       relByAbsolute.set(abs, rel);
     }
@@ -258,7 +271,7 @@ export async function runCheckJsGrouped(
         {
           file: extraShimPath ?? '(checkJs)',
           check: 'checkjs-type-error',
-          message: err instanceof Error ? err.message : String(err),
+          message: toError(err).message,
           severity: 'error',
         },
       ],
@@ -522,7 +535,8 @@ export async function runCheckJsTestFilesGrouped(
   repoDir: string,
   testFiles: Set<string>,
   patchLint: PatchLintConfig,
-  projectRoot: string
+  projectRoot: string,
+  rootScope?: ReadonlySet<string>
 ): Promise<GroupedCheckJsResult> {
   const merged: GroupedCheckJsResult = { byFile: new Map(), global: [] };
   if (testFiles.size === 0) return merged;
@@ -531,6 +545,10 @@ export async function runCheckJsTestFilesGrouped(
   const seenGlobal = new Set<string>();
   const files = [...testFiles].sort((a, b) => a.localeCompare(b));
   for (const file of files) {
+    // Under a rootScope only the scoped files get their own program, but
+    // head.js helper discovery still spans the full owned set so a scoped
+    // test keeps its cross-patch harness globals (FORGE J1c).
+    if (rootScope !== undefined && !rootScope.has(file)) continue;
     const dir = file.slice(0, file.lastIndexOf('/') + 1);
     const roots = new Set([file]);
     for (const candidate of files) {
@@ -586,18 +604,77 @@ function modeFromPatchLintConfig(patchLint: PatchLintConfig): CheckJsMode {
  * @param patchOwnedFiles - Every patch-owned `.sys.mjs` in the queue
  * @param patchLint - The resolved `patchLint` config block
  * @param projectRoot - FireForge project root for shim resolution
+ * @param rootScope - Optional subset of files to use as program roots
+ *   (`--patches`); resolution still spans the whole queue (FORGE J1c)
  */
 export async function invokePatchLintCheckJsGrouped(
   repoDir: string,
   patchOwnedFiles: Set<string>,
   patchLint: PatchLintConfig,
-  projectRoot: string
+  projectRoot: string,
+  rootScope?: ReadonlySet<string>
 ): Promise<GroupedCheckJsResult> {
   return runCheckJsGrouped(
     repoDir,
     patchOwnedFiles,
     patchLint.checkJsExtraShim,
     projectRoot,
-    modeFromPatchLintConfig(patchLint)
+    modeFromPatchLintConfig(patchLint),
+    undefined,
+    rootScope
   );
+}
+
+/**
+ * Cheap probe reproducing the only run-level ("global") checkJs findings
+ * the build path can produce — a missing `typescript` package and an
+ * unreadable consumer shim (`checkJsExtraShim`, and `checkJsTestShim`
+ * when `checkJsTestFiles` is on). The built program itself never
+ * contributes globals (see {@link runCheckJsGrouped}), so a warm
+ * all-cache-hit run can satisfy the "warm never reports less than cold"
+ * invariant (FORGE F5) with this probe instead of building the whole
+ * TypeScript program. Issue objects are byte-identical to the build
+ * path's, deduplicated by message like {@link runCheckJsTestFilesGrouped}.
+ */
+export async function probeCheckJsGlobalIssues(
+  patchLint: PatchLintConfig,
+  projectRoot: string
+): Promise<PatchLintIssue[]> {
+  try {
+    await import('typescript');
+  } catch {
+    return [
+      {
+        file: '(checkJs)',
+        check: 'checkjs-type-error',
+        message:
+          'patchLint.checkJs is enabled but the "typescript" package is not installed. ' +
+          'Run "npm install typescript" to enable type checking.',
+        severity: 'error',
+      },
+    ];
+  }
+
+  const issues: PatchLintIssue[] = [];
+  const seen = new Set<string>();
+  const probeShim = async (shimPath: string | undefined): Promise<void> => {
+    try {
+      await composeShimSource(projectRoot, shimPath);
+    } catch (err) {
+      const message = toError(err).message;
+      if (seen.has(message)) return;
+      seen.add(message);
+      issues.push({
+        file: shimPath ?? '(checkJs)',
+        check: 'checkjs-type-error',
+        message,
+        severity: 'error',
+      });
+    }
+  };
+  await probeShim(patchLint.checkJsExtraShim);
+  if (patchLint.checkJsTestFiles === true) {
+    await probeShim(patchLint.checkJsTestShim);
+  }
+  return issues;
 }

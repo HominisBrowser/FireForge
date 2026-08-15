@@ -156,9 +156,11 @@ describe('runCommand', () => {
   });
 
   it('fails before launching when build artifacts belong to another workspace', async () => {
-    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(
-      'Run cannot use copied or relocated build artifacts'
-    );
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({
+      exists: true,
+      objDir: 'obj-debug',
+      metadataMismatch: { objDir: 'obj-debug', topsrcdir: '/other/workspace/engine' },
+    });
 
     await expect(runCommand('/project')).rejects.toThrow(/copied or relocated build artifacts/i);
     expect(run).not.toHaveBeenCalled();

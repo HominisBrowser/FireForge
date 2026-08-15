@@ -24,7 +24,7 @@ vi.mock('../patch-manifest.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../patch-manifest.js')>();
   return {
     ...actual,
-    findPatchesAffectingFile: vi.fn(),
+    loadPatchesManifest: vi.fn(),
   };
 });
 
@@ -42,6 +42,7 @@ vi.mock('../patch-transform.js', async (importOriginal) => {
   return {
     ...actual,
     applyPatchToContent: vi.fn(),
+    applyPatchTextToContent: vi.fn(),
   };
 });
 
@@ -62,17 +63,17 @@ import { getFileContentFromHead } from '../git-file-ops.js';
 import {
   applyPatches,
   applyPatchesWithContinue,
-  computePatchedContent,
   countPatches,
+  createPatchedContentContext,
   discoverPatches,
   getAllTargetFilesFromPatch,
   getTargetFileFromPatch,
   isNewFilePatch,
   validatePatches,
 } from '../patch-apply.js';
-import { findPatchesAffectingFile } from '../patch-manifest.js';
+import { loadPatchesManifest } from '../patch-manifest.js';
 import { extractAffectedFiles, extractConflictingFiles } from '../patch-parse.js';
-import { applyPatchToContent } from '../patch-transform.js';
+import { applyPatchTextToContent } from '../patch-transform.js';
 
 describe('patch orchestration helpers', () => {
   beforeEach(() => {
@@ -404,20 +405,20 @@ describe('patch orchestration helpers', () => {
 
   it('returns HEAD content unchanged when no patches affect the file', async () => {
     vi.mocked(getFileContentFromHead).mockResolvedValue('base content\n');
-    vi.mocked(findPatchesAffectingFile).mockResolvedValue([]);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(null);
+    vi.mocked(pathExists).mockResolvedValue(false);
 
-    await expect(computePatchedContent('/patches', '/engine', 'browser/app.css')).resolves.toBe(
-      'base content\n'
-    );
-    expect(applyPatchToContent).not.toHaveBeenCalled();
+    const ctx = await createPatchedContentContext('/patches', '/engine');
+    await expect(ctx.computePatched('browser/app.css')).resolves.toBe('base content\n');
+    expect(applyPatchTextToContent).not.toHaveBeenCalled();
   });
 
-  it('applies affecting patches in order when computing patched content', async () => {
+  it('applies affecting patches in order and reads each body once when computing patched content', async () => {
     vi.mocked(getFileContentFromHead).mockResolvedValue('base content\n');
-    vi.mocked(findPatchesAffectingFile).mockResolvedValue([
-      {
-        patch: { filename: '001-alpha.patch', path: '/patches/001-alpha.patch', order: 1 },
-        metadata: {
+    vi.mocked(loadPatchesManifest).mockResolvedValue({
+      version: 1,
+      patches: [
+        {
           filename: '001-alpha.patch',
           order: 1,
           category: 'ui',
@@ -427,10 +428,7 @@ describe('patch orchestration helpers', () => {
           sourceEsrVersion: '140.9.0esr',
           filesAffected: ['browser/app.css'],
         },
-      },
-      {
-        patch: { filename: '002-beta.patch', path: '/patches/002-beta.patch', order: 2 },
-        metadata: {
+        {
           filename: '002-beta.patch',
           order: 2,
           category: 'ui',
@@ -440,27 +438,41 @@ describe('patch orchestration helpers', () => {
           sourceEsrVersion: '140.9.0esr',
           filesAffected: ['browser/app.css'],
         },
-      },
-    ]);
-    vi.mocked(applyPatchToContent)
-      .mockResolvedValueOnce('after patch one\n')
-      .mockResolvedValueOnce('after patch two\n');
+      ],
+    });
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([
+      { name: '001-alpha.patch', isFile: () => true },
+      { name: '002-beta.patch', isFile: () => true },
+    ] as never);
+    vi.mocked(readText).mockImplementation((filePath) =>
+      Promise.resolve(filePath === '/patches/001-alpha.patch' ? 'body-one' : 'body-two')
+    );
+    vi.mocked(applyPatchTextToContent)
+      .mockReturnValueOnce('after patch one\n')
+      .mockReturnValueOnce('after patch two\n');
 
-    const result = await computePatchedContent('/patches', '/engine', 'browser/app.css');
+    const ctx = await createPatchedContentContext('/patches', '/engine');
+    const result = await ctx.computePatched('browser/app.css');
 
-    expect(applyPatchToContent).toHaveBeenNthCalledWith(
+    expect(applyPatchTextToContent).toHaveBeenNthCalledWith(
       1,
       'base content\n',
-      '/patches/001-alpha.patch',
+      'body-one',
       'browser/app.css'
     );
-    expect(applyPatchToContent).toHaveBeenNthCalledWith(
+    expect(applyPatchTextToContent).toHaveBeenNthCalledWith(
       2,
       'after patch one\n',
-      '/patches/002-beta.patch',
+      'body-two',
       'browser/app.css'
     );
     expect(result).toBe('after patch two\n');
+
+    // Bodies are memoized: a second computation re-applies but re-reads nothing.
+    const readsAfterFirst = vi.mocked(readText).mock.calls.length;
+    await ctx.computePatched('browser/app.css');
+    expect(vi.mocked(readText).mock.calls.length).toBe(readsAfterFirst);
   });
 
   it('rolls back succeeded patches in applyPatches when a later patch fails', async () => {

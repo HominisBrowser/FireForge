@@ -25,7 +25,7 @@ vi.mock('../../utils/logger.js', () => ({
 
 import { warn } from '../../utils/logger.js';
 import { readBuildBaseline } from '../build-baseline.js';
-import type { BuildBaseline } from '../build-baseline-types.js';
+import { type BuildBaseline, DELETED_FILE_FINGERPRINT } from '../build-baseline-types.js';
 import { hasChanges } from '../git.js';
 import { git } from '../git-base.js';
 import { getUntrackedFiles } from '../git-status.js';
@@ -227,6 +227,21 @@ describe('checkStaleBuildForTest', () => {
     } finally {
       await rm(engineDir, { recursive: true, force: true });
     }
+  });
+
+  it('treats a deletion recorded by a successful build as fresh', async () => {
+    const relPath = 'browser/base/content/removed.js';
+    mockReadBaseline.mockResolvedValue({
+      engineHeadSha: 'abc',
+      builtAt: new Date().toISOString(),
+      binaryName: 'mybrowser',
+      packageableFingerprints: { [relPath]: DELETED_FILE_FINGERPRINT },
+    });
+    mockGit.mockResolvedValueOnce(`${relPath}\n`);
+
+    const result = await checkStaleBuildForTest('/project', '/project/engine');
+    expect(result.stale).toBe(false);
+    expect(result.changedPaths).toEqual([]);
   });
 });
 
@@ -483,6 +498,17 @@ describe('checkStaticComponentsStale', () => {
     } finally {
       await rm(engineDir, { recursive: true, force: true });
     }
+  });
+
+  it('treats a components.conf deletion recorded by the full build as fresh', async () => {
+    const relPath = 'browser/components/mybrowser/components.conf';
+    mockGit.mockResolvedValueOnce(`${relPath}\n`);
+
+    const result = await checkStaticComponentsStale(
+      '/project/engine',
+      anchoredBaseline({ [relPath]: DELETED_FILE_FINGERPRINT })
+    );
+    expect(result).toEqual({ stale: false, changedManifests: [] });
   });
 
   it('degrades to fresh when the git probes fail (broken probe must not block tests)', async () => {

@@ -14,6 +14,7 @@ import { readText } from '../../utils/fs.js';
 import { setupCommand } from '../setup.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  setStdoutSealed: vi.fn(),
   intro: vi.fn(),
   outro: vi.fn(),
   spinner: vi.fn(() => ({
@@ -23,6 +24,7 @@ vi.mock('../../utils/logger.js', () => ({
   cancel: vi.fn(),
   note: vi.fn(),
   isCancel: vi.fn().mockReturnValue(false),
+  setMachineOutputMode: vi.fn(),
 }));
 
 describe('setupCommand integration', () => {

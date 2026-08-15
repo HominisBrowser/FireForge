@@ -2,7 +2,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ClassifiedFile } from '../../core/status-classify.js';
-import { resolveStatusCheckPolicy, runStatusCheck } from '../status-check.js';
+import {
+  collectStatusCheckOffenders,
+  resolveStatusCheckPolicy,
+  runStatusCheck,
+} from '../status-check.js';
 
 function entry(file: string, classification: ClassifiedFile['classification']): ClassifiedFile {
   return { file, status: ' M', classification };
@@ -29,7 +33,7 @@ describe('resolveStatusCheckPolicy', () => {
 
   it('refuses an unknown classification naming the valid set', () => {
     expect(() => resolveStatusCheckPolicy({ failOn: 'bogus' })).toThrow(
-      /Unknown --fail-on classification "bogus"\. Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict\./
+      /Unknown --fail-on classification "bogus"\. Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict, binary-unsupported\./
     );
   });
 
@@ -77,5 +81,34 @@ describe('runStatusCheck', () => {
     }).toThrow(
       'status --check failed: 4 unmanaged (a.js, b.js, c.js, +1 more), 1 patch-owned-drift (e.js)'
     );
+  });
+});
+
+describe('collectStatusCheckOffenders', () => {
+  it('collects only fail-set classifications with full file lists, in policy order', () => {
+    const files = [
+      entry('a.js', 'unmanaged'),
+      entry('b.js', 'patch-owned-drift'),
+      entry('c.js', 'unmanaged'),
+      entry('d.js', 'patch-backed'),
+    ];
+    expect(
+      collectStatusCheckOffenders(files, {
+        checkEnabled: true,
+        failOn: ['patch-owned-drift', 'unmanaged'],
+      })
+    ).toEqual([
+      { classification: 'patch-owned-drift', count: 1, files: ['b.js'] },
+      { classification: 'unmanaged', count: 2, files: ['a.js', 'c.js'] },
+    ]);
+  });
+
+  it('returns an empty list when nothing in the fail set is present', () => {
+    expect(
+      collectStatusCheckOffenders([entry('a.js', 'patch-backed')], {
+        checkEnabled: true,
+        failOn: ['unmanaged'],
+      })
+    ).toEqual([]);
   });
 });

@@ -45,6 +45,7 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
+import { groupProjectedPlacementErrors } from './export-placement-conflicts.js';
 import { assertPlacementAvoidsReservedRanges } from './export-placement-policy.js';
 import { findPartialOwnershipOverlap } from './export-shared.js';
 
@@ -311,14 +312,23 @@ export async function projectPlacementForLint(
     modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff),
   });
   projectedEntries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
+  const policyRest = baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {};
   const projectedIssues = lintPatchQueue({
     entries: projectedEntries,
-    ...(baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {}),
+    ...policyRest,
   }).filter((i) => i.severity === 'error');
   if (projectedIssues.length === 0) return null;
+  // Baseline lint over the UN-renumbered queue: an error present here is
+  // pre-existing breakage, not a consequence of this placement — calling
+  // it one would misattribute (FORGE K9). Entries are already in memory,
+  // so this second pass costs no additional IO.
+  const baselineIssues = lintPatchQueue({
+    entries: baseCtx.entries,
+    ...policyRest,
+  }).filter((i) => i.severity === 'error');
   return {
     reason: `placement would introduce ${projectedIssues.length} cross-patch lint error(s)`,
-    details: projectedIssues.map((i) => `[${i.check}] ${i.file}: ${i.message}`),
+    details: groupProjectedPlacementErrors(projectedIssues, baselineIssues, plan),
   };
 }
 
@@ -405,7 +415,7 @@ export async function commitPlacementExport(
     );
     if (conflicts && input.unsafeOverride !== true) {
       throw new InvalidArgumentError(
-        `Refusing to run export: ${conflicts.reason}. ` +
+        `Refusing to run export: ${conflicts.reason}:\n  ${conflicts.details.join('\n  ')}\n` +
           'If the conflict names files owned by another patch (e.g. duplicate-new-file-creation), ' +
           're-run the export with an explicit file list that leaves those files with their owner — ' +
           'do NOT bypass with --force-unsafe. Pass --force-unsafe only for a reviewed placement conflict.',

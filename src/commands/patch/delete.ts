@@ -25,7 +25,7 @@ import type { CommandContext } from '../../types/cli.js';
 import type { PatchDeleteOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
-import { pickDefined } from '../../utils/options.js';
+import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /**
@@ -192,26 +192,30 @@ export async function patchDeleteCommand(
   // concurrent mutation's record appearing first. A history append
   // failure is warned but not re-thrown: by that point the mutation
   // has committed and reporting failure to the caller would mislead.
-  await withPatchDirectoryLock(paths.patches, async () => {
-    await removePatchFileAndManifest(paths.patches, target.filename);
-    try {
-      await appendHistory(paths.patches, {
-        operation: 'patch-delete',
-        args: {
-          filename: target.filename,
-          order: target.order,
-          filesAffected: target.filesAffected,
-        },
-        ...(options.yes === true ? { yes: true } : {}),
-        ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
-        result: 'ok',
-      });
-    } catch (historyError: unknown) {
-      warn(
-        `History log append failed after patch delete committed (${target.filename}): ${toError(historyError).message}`
-      );
-    }
-  });
+  await withPatchDirectoryLock(
+    paths.patches,
+    async () => {
+      await removePatchFileAndManifest(paths.patches, target.filename);
+      try {
+        await appendHistory(paths.patches, {
+          operation: 'patch-delete',
+          args: {
+            filename: target.filename,
+            order: target.order,
+            filesAffected: target.filesAffected,
+          },
+          ...(options.yes === true ? { yes: true } : {}),
+          ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
+          result: 'ok',
+        });
+      } catch (historyError: unknown) {
+        warn(
+          `History log append failed after patch delete committed (${target.filename}): ${toError(historyError).message}`
+        );
+      }
+    },
+    { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch delete' }
+  );
 
   info(`Deleted ${target.filename}.`);
   outro('Delete complete');
@@ -225,7 +229,7 @@ export async function patchDeleteCommand(
  */
 export function registerPatchDelete(parent: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  parent
+  const command = parent
     .command('delete <name>')
     .description('Delete a patch from the queue (destructive)')
     .option('--dry-run', 'Show what would happen without writing')
@@ -233,15 +237,20 @@ export function registerPatchDelete(parent: Command, context: CommandContext): v
     .option(
       '--force-unsafe',
       'Bypass the refusal when a later patch depends on this patch (last resort)'
-    )
-    .action(
-      withErrorHandling(
-        async (
-          name: string,
-          options: { dryRun?: boolean; yes?: boolean; forceUnsafe?: boolean }
-        ) => {
-          await patchDeleteCommand(getProjectRoot(), name, pickDefined(options));
-        }
-      )
     );
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (
+        name: string,
+        options: {
+          dryRun?: boolean;
+          yes?: boolean;
+          forceUnsafe?: boolean;
+          waitLock?: number | boolean;
+        }
+      ) => {
+        await patchDeleteCommand(getProjectRoot(), name, pickDefined(options));
+      }
+    )
+  );
 }

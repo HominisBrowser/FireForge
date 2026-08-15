@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../core/furnace-config.js', () => ({
   createDefaultFurnaceConfig: vi.fn(
@@ -108,6 +110,7 @@ vi.mock('../../core/license-headers.js', () => ({
 
 import { text } from '@clack/prompts';
 
+import { getProjectPaths } from '../../core/config.js';
 import {
   createDefaultFurnaceConfig,
   furnaceConfigExists,
@@ -425,5 +428,141 @@ describe('furnaceInitCommand', () => {
     expect(vi.mocked(createDefaultFurnaceConfig)).toHaveBeenCalledWith({});
     const lastWriteCall = vi.mocked(writeFurnaceConfig).mock.calls.slice(-1)[0];
     expect(lastWriteCall?.[1]).not.toHaveProperty('tokenPrefix');
+  });
+});
+
+describe('furnaceInitCommand — ftlBasePath filesystem shape probe', () => {
+  let engineRoot: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+    const { mkdtemp } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    engineRoot = await mkdtemp(join(tmpdir(), 'ff-init-probe-'));
+    // The probe only runs when the engine directory exists; point the mocked
+    // project paths at a real tempdir so the unmocked `stat` has something to
+    // look at. The all-mocked suite above never reached this block.
+    vi.mocked(getProjectPaths).mockReturnValue({
+      root: '/project',
+      engine: engineRoot,
+      config: '/project/fireforge.json',
+      fireforgeDir: '/project/.fireforge',
+      state: '/project/.fireforge/state.json',
+      patches: '/project/patches',
+      configs: '/project/configs',
+      src: '/project/src',
+      componentsDir: '/project/components',
+    });
+    vi.mocked(pathExists).mockImplementation((p: string) => Promise.resolve(p === engineRoot));
+  });
+
+  afterEach(async () => {
+    const { rm } = await import('node:fs/promises');
+    await rm(engineRoot, { recursive: true, force: true });
+  });
+
+  it('accepts a path that resolves to a real directory', async () => {
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(join(engineRoot, 'toolkit/locales/en-US'), { recursive: true });
+
+    await furnaceInitCommand('/project', { ftlBasePath: 'toolkit/locales/en-US' });
+
+    expect(writeFurnaceConfig).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({ ftlBasePath: 'toolkit/locales/en-US' })
+    );
+  });
+
+  it('refuses a path that resolves to a file rather than a directory', async () => {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    await mkdir(join(engineRoot, 'toolkit'), { recursive: true });
+    await writeFile(join(engineRoot, 'toolkit/notadir'), 'x', 'utf-8');
+
+    await expect(
+      furnaceInitCommand('/project', { ftlBasePath: 'toolkit/notadir' })
+    ).rejects.toThrow(/resolves to a non-directory/);
+    expect(writeFurnaceConfig).not.toHaveBeenCalled();
+  });
+
+  it('warns but proceeds when the locale tree is not extracted yet (ENOENT)', async () => {
+    await furnaceInitCommand('/project', { ftlBasePath: 'toolkit/locales/en-US' });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('does not yet exist at'));
+    expect(writeFurnaceConfig).toHaveBeenCalled();
+  });
+
+  it('rejects an empty ftlBasePath before touching the filesystem', async () => {
+    await expect(furnaceInitCommand('/project', { ftlBasePath: '' })).rejects.toThrow(
+      /must not be empty/
+    );
+  });
+});
+
+describe('furnaceInitCommand — interactive ftlBasePath prompt', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    // `vi.clearAllMocks()` clears calls but not implementations, so reset the
+    // two prompt mocks explicitly — earlier blocks leave `mockResolvedValueOnce`
+    // queues and `isCancel` overrides behind.
+    vi.mocked(text).mockReset();
+    vi.mocked(isCancel).mockReset();
+    vi.mocked(isCancel).mockReturnValue(false);
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+  });
+
+  it('keeps the default when the operator submits an empty path', async () => {
+    vi.mocked(text).mockResolvedValueOnce('moz-').mockResolvedValueOnce('   ');
+
+    await furnaceInitCommand('/project', {});
+
+    const written = vi.mocked(writeFurnaceConfig).mock.calls[0]?.[1];
+    expect(written?.componentPrefix).toBe('moz-');
+    // Empty input leaves the created default in place rather than writing ''.
+    expect(written?.ftlBasePath).not.toBe('');
+  });
+
+  it('applies a non-empty answer after validating it', async () => {
+    vi.mocked(text).mockResolvedValueOnce('moz-').mockResolvedValueOnce('  browser/locales/x  ');
+
+    await furnaceInitCommand('/project', {});
+
+    expect(writeFurnaceConfig).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({ ftlBasePath: 'browser/locales/x' })
+    );
+  });
+
+  it('cancels without writing when the ftl prompt is aborted', async () => {
+    vi.mocked(text).mockResolvedValueOnce('moz-').mockResolvedValueOnce('ignored');
+    vi.mocked(isCancel).mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+    await furnaceInitCommand('/project', {});
+
+    expect(cancel).toHaveBeenCalledWith('Init cancelled');
+    expect(writeFurnaceConfig).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty component prefix through the prompt validator', async () => {
+    // This asserted `expect(true).toBe(true)` on a validator it read from a
+    // mock call that the test never made — the command was not invoked at all.
+    vi.mocked(text).mockResolvedValueOnce('moz-').mockResolvedValueOnce('');
+
+    await furnaceInitCommand('/project', {});
+
+    // clack types `validate` as a union with a StandardSchema object, so narrow
+    // to the callback form before invoking it.
+    const validate = vi.mocked(text).mock.calls[0]?.[0]?.validate;
+    if (typeof validate !== 'function') throw new Error('expected a validate callback');
+    expect(validate('')).toBe('Prefix is required');
+    expect(validate('moz-')).toBeUndefined();
   });
 });

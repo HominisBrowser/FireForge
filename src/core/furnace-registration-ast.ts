@@ -16,6 +16,7 @@ import { verbose, warn } from '../utils/logger.js';
 import { escapeRegex } from '../utils/regex.js';
 import {
   type AcornESTreeNode,
+  asEstree,
   detectIndent,
   getNodeSource,
   parseScript,
@@ -91,7 +92,7 @@ function isInsideDOMContentLoaded(ancestors: estree.Node[], content: string): bo
   for (let i = ancestors.length - 1; i >= 0; i--) {
     const ancestor = ancestors[i];
     if (!ancestor || ancestor.type !== 'CallExpression') continue;
-    const call = ancestor as AcornESTreeNode<estree.CallExpression>;
+    const call = asEstree<estree.CallExpression>(ancestor);
     if (
       call.callee.type === 'MemberExpression' &&
       call.callee.object.type === 'Identifier' &&
@@ -140,11 +141,11 @@ function collectArrayDeclarations(
   walkAST(ast, {
     enter(node) {
       if (node.type !== 'VariableDeclarator') return;
-      const declarator = node as AcornESTreeNode<estree.VariableDeclarator>;
+      const declarator = asEstree<estree.VariableDeclarator>(node);
       if (declarator.id.type !== 'Identifier' || declarator.init?.type !== 'ArrayExpression') {
         return;
       }
-      arrays.set(declarator.id.name, declarator.init as AcornESTreeNode<estree.ArrayExpression>);
+      arrays.set(declarator.id.name, asEstree<estree.ArrayExpression>(declarator.init));
     },
   });
   return arrays;
@@ -155,7 +156,7 @@ function resolveForOfArray(
   declaredArrays: Map<string, AcornESTreeNode<estree.ArrayExpression>>
 ): AcornESTreeNode<estree.ArrayExpression> | undefined {
   if (right.type === 'ArrayExpression') {
-    return right as AcornESTreeNode<estree.ArrayExpression>;
+    return asEstree<estree.ArrayExpression>(right);
   }
   if (right.type === 'Identifier') {
     return declaredArrays.get(right.name);
@@ -235,7 +236,7 @@ function addRegistrationAST(
     enter(node) {
       ancestors.push(node);
       if (node.type === 'ForOfStatement') {
-        const forOf = node as AcornESTreeNode<estree.ForOfStatement>;
+        const forOf = asEstree<estree.ForOfStatement>(node);
         const array = resolveForOfArray(forOf.right, declaredArrays);
         if (array) {
           forOfs.push({
@@ -259,7 +260,7 @@ function addRegistrationAST(
   const entries: ASTEntryInfo[] = [];
   for (const el of array.elements) {
     if (!el || el.type !== 'ArrayExpression') continue;
-    const entryArr = el as AcornESTreeNode<estree.ArrayExpression>;
+    const entryArr = asEstree<estree.ArrayExpression>(el);
     const firstEl = entryArr.elements[0];
     if (!firstEl || firstEl.type !== 'Literal') continue;
     const tag = String(firstEl.value);
@@ -271,7 +272,7 @@ function addRegistrationAST(
 
     let innerIndent: string | undefined;
     if (isMultiLine) {
-      const firstElNode = firstEl as AcornESTreeNode<estree.Literal>;
+      const firstElNode = asEstree<estree.Literal>(firstEl);
       innerIndent = detectIndent(content, firstElNode.start);
     }
 

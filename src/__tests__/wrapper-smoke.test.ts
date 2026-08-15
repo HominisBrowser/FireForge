@@ -79,6 +79,7 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
         'LICENSE.md',
         'README.md',
         'dist/bin/fireforge.js',
+        'dist/build-info.json',
         'dist/src/index.js',
         'templates/configs/common.mozconfig',
         'package.json',
@@ -149,7 +150,7 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     );
     expect(commonMozconfig.length).toBeGreaterThan(0);
     expect(shippedFiles).toEqual(
-      expect.arrayContaining(['CHANGELOG.md', 'LICENSE.md', 'README.md'])
+      expect.arrayContaining(['CHANGELOG.md', 'LICENSE.md', 'README.md', 'dist/build-info.json'])
     );
     expect(shippedFiles.some((path) => path.startsWith('templates/configs/'))).toBe(true);
     expect(shippedFiles.some((path) => path.startsWith('configs/'))).toBe(false);
@@ -163,8 +164,16 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     const { stdout } = await execFileAsync(process.execPath, [binPath, '--help']);
     expect(stdout).toContain('Usage: fireforge');
 
+    // The packing repo is a git checkout, so the installed CLI reports the
+    // stamped build identity (FORGE K2). Shape only — the dirty flag
+    // varies with the packing tree, and a dirty pack additionally carries
+    // the content hash that distinguishes it from another pack at the same
+    // HEAD (FORGE L8). A release packs clean, so CI sees the bare form.
+    const versionPattern = new RegExp(
+      `^${packageVersion.replace(/\./g, '\\.')}\\+g[0-9a-f]{7,40}(\\.dirty(\\.[0-9a-f]{8})?)?$`
+    );
     const { stdout: versionOutput } = await execFileAsync(process.execPath, [binPath, '--version']);
-    expect(versionOutput.trim()).toBe(packageVersion);
+    expect(versionOutput.trim()).toMatch(versionPattern);
 
     const installedCliPath = join(
       tempDir,
@@ -179,7 +188,21 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
         cwd: tempDir,
       }
     );
-    expect(installedCliVersion.trim()).toBe(packageVersion);
+    expect(installedCliVersion.trim()).toMatch(versionPattern);
+
+    // The stamped identity travels in the tarball and records the source
+    // commit of the packing checkout (FORGE K3).
+    const buildInfoRaw = await readFile(join(installedPkgRoot, 'dist', 'build-info.json'), 'utf8');
+    const buildInfo = JSON.parse(buildInfoRaw) as {
+      schemaVersion: number;
+      version: string;
+      commit: string | null;
+      dirty: boolean | null;
+    };
+    expect(buildInfo.schemaVersion).toBe(1);
+    expect(buildInfo.version).toBe(packageVersion);
+    expect(buildInfo.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(typeof buildInfo.dirty).toBe('boolean');
 
     const { stdout: exportedKeysOutput } = await execFileAsync(
       process.execPath,

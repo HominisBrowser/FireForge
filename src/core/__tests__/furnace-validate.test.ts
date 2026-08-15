@@ -553,6 +553,38 @@ describe('validateAccessibility', () => {
     const issues = await validateAccessibility('/components/my-comp', 'my-comp');
     expect(issues.some((issue) => issue.check === 'hardcoded-text')).toBe(false);
   });
+
+  it('ignores an emoji that is also a Unicode letter', async () => {
+    // U+2139 (the base of `ℹ️`) is category Ll, so the `\p{L}` branch read the
+    // common info badge as prose needing localization.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<span>ℹ️</span>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'hardcoded-text')).toBe(false);
+  });
+
+  it('still flags non-ASCII PROSE as needing localization', async () => {
+    // The emoji carve-out must not re-open the hole it replaced, where every
+    // code point above U+00FF was exempt — CJK, Cyrillic, Greek included.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+      class MyComponent extends MozLitElement {
+        render() {
+          return html\`<span>设置面板</span>\`;
+        }
+      }
+    `);
+
+    const issues = await validateAccessibility('/components/my-comp', 'my-comp');
+    expect(issues.some((issue) => issue.check === 'hardcoded-text')).toBe(true);
+  });
 });
 
 describe('validateCompatibility', () => {
@@ -1046,6 +1078,37 @@ document.addEventListener("DOMContentLoaded", () => {});
 `);
 
     const issues = await validateRegistrationPatterns('/project', configNoRegister);
+    expect(issues).toHaveLength(0);
+  });
+
+  it('reports a component with register=true that customElements.js never mentions', async () => {
+    // Before 0.41.0 validate emitted NO issue for this state, so
+    // `furnace validate --fix` — once scoped to the issue list — could no
+    // longer repair the one defect its registration block exists to repair.
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(`
+document.addEventListener("DOMContentLoaded", () => {
+  for (let [tag, script] of [
+      ["moz-button", "chrome://global/content/elements/moz-button.mjs"],
+  ]) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`);
+
+    const issues = await validateRegistrationPatterns('/project', baseConfig);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.check).toBe('missing-custom-element-registration');
+    expect(issues[0]?.severity).toBe('error');
+    expect(issues[0]?.message).toContain('--fix');
+  });
+
+  it('does not report missing registration when customElements.js does not exist', async () => {
+    mockPathExists.mockResolvedValue(false);
+
+    const issues = await validateRegistrationPatterns('/project', baseConfig);
     expect(issues).toHaveLength(0);
   });
 });

@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import { toError } from '../utils/errors.js';
+import { LockContentionError } from '../errors/base.js';
+import { getNodeErrorCode, isProcessAlive, toError } from '../utils/errors.js';
 import { ensureDir } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
 
@@ -77,38 +78,18 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-function getNodeErrorCode(error: unknown): string | undefined {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    typeof error.code === 'string'
-  ) {
-    return error.code;
-  }
-
-  return undefined;
-}
-
 /** Derives the sibling lock-directory path used to guard a file-based resource. */
 export function createSiblingLockPath(filePath: string, suffix = '.fireforge.lock'): string {
   return `${filePath}${suffix}`;
 }
 
-const LOCK_PID_FILE = 'pid';
-
 /**
- * Checks whether a process with the given PID is still running.
- * Uses `kill(pid, 0)` which sends no signal but checks existence.
+ * Filename of a lock directory's owner record, relative to the lock dir.
+ *
+ * Exported so external readers (`tree-store.ts`) share the constant instead of
+ * re-spelling `'pid'`; the file *format* is documented on {@link readLockOwner}.
  */
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: unknown) {
-    return getNodeErrorCode(error) !== 'ESRCH';
-  }
-}
+export const LOCK_PID_FILE = 'pid';
 
 /**
  * Owner record read back from a lock directory's PID file.
@@ -352,14 +333,7 @@ export async function withFileLock<T>(
       await mkdir(lockPath);
       break;
     } catch (error: unknown) {
-      const isAlreadyLocked =
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        typeof error.code === 'string' &&
-        error.code === 'EEXIST';
-
-      if (!isAlreadyLocked) {
+      if (getNodeErrorCode(error) !== 'EEXIST') {
         throw error;
       }
 
@@ -374,11 +348,22 @@ export async function withFileLock<T>(
         const owner = await readLockOwner(lockPath);
         const holderHint =
           owner.present && isProcessAlive(owner.pid)
-            ? ` It is held by running process ${String(owner.pid)} — wait for it to finish, or stop it and retry.`
+            ? ` It is held by running process ${String(owner.pid)}${owner.metadata.length > 0 ? ` (${owner.metadata.join(', ')})` : ''} — wait for it to finish, or stop it and retry.`
             : ' If no other FireForge process is running, remove the lock directory and retry.';
-        throw new Error(
-          options.onTimeoutMessage ?? `Timed out waiting for file lock ${lockPath}.${holderHint}`,
-          { cause: error }
+        // Typed as LockContentionError (a FireForgeError) so the CLI
+        // boundary prints the refusal as one clean line instead of an
+        // "Unexpected error" stack (FORGE H5). Callers supplying
+        // onTimeoutMessage still get the holder identification appended —
+        // the reason-first copy stays theirs, the "who holds it" is ours.
+        const identifiedHolder =
+          options.onTimeoutMessage !== undefined && owner.present && isProcessAlive(owner.pid)
+            ? ` The lock is held by PID ${String(owner.pid)}${owner.metadata.length > 0 ? ` (${owner.metadata.join(', ')})` : ''}.`
+            : '';
+        throw new LockContentionError(
+          options.onTimeoutMessage !== undefined
+            ? `${options.onTimeoutMessage}${identifiedHolder}`
+            : `Timed out waiting for file lock ${lockPath}.${holderHint}`,
+          error
         );
       }
 

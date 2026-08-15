@@ -198,6 +198,50 @@ describe('per-patch lint cache', () => {
     await expect(key({ config: withShim })).resolves.not.toBe(before);
   });
 
+  it('invalidates when checkJs test shim content, path, or presence changes (FORGE H2)', async () => {
+    const withTestShim: FireForgeConfig = {
+      ...config,
+      patchLint: {
+        checkJs: true,
+        checkJsTestFiles: true,
+        checkJsTestShim: 'types/test-shim.d.ts',
+      },
+    };
+    await writeFiles(projectRoot, {
+      'types/test-shim.d.ts': 'declare var HominisTestHarness: string;\n',
+    });
+    const before = await key({ config: withTestShim });
+
+    // Content edit in place — the adoption-workflow shape that replayed
+    // stale findings on 0.40.0: the config block only carried the PATH.
+    await writeFiles(projectRoot, {
+      'types/test-shim.d.ts': 'declare var HominisTestHarness: number;\n',
+    });
+    const afterContentEdit = await key({ config: withTestShim });
+    expect(afterContentEdit).not.toBe(before);
+
+    // Path-only change (same content elsewhere) also invalidates.
+    await writeFiles(projectRoot, {
+      'types/renamed-shim.d.ts': 'declare var HominisTestHarness: number;\n',
+    });
+    const renamed: FireForgeConfig = {
+      ...config,
+      patchLint: {
+        checkJs: true,
+        checkJsTestFiles: true,
+        checkJsTestShim: 'types/renamed-shim.d.ts',
+      },
+    };
+    await expect(key({ config: renamed })).resolves.not.toBe(afterContentEdit);
+
+    // Absent → present invalidates too.
+    const withoutShim: FireForgeConfig = {
+      ...config,
+      patchLint: { checkJs: true, checkJsTestFiles: true },
+    };
+    await expect(key({ config: withoutShim })).resolves.not.toBe(afterContentEdit);
+  });
+
   it('invalidates when queue ownership for affected JS files changes', async () => {
     const before = await key();
     const changedCtx: PatchQueueContext = {

@@ -148,7 +148,7 @@ async function assertDomTargetIsWireable(
     await probeDomFragmentInsertionPoint(paths.engine, domFilePath, domTargetPath);
   } catch (probeError: unknown) {
     throw new InvalidArgumentError(
-      `${probeError instanceof Error ? probeError.message : String(probeError)}\n` +
+      `${toError(probeError).message}\n` +
         `The resolved chrome document ${domTargetPath} does not expose an insertion anchor ` +
         'that `fireforge wire` recognises (`#include browser-sets.inc` or `<html:body>`). ' +
         'Add one of those anchors to the chrome doc, or target a document that has them via ' +

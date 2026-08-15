@@ -5,7 +5,7 @@ import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig, loadState, updateState } from '../core/config.js';
-import { isGitRepository } from '../core/git.js';
+import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { getStagedDiffForFiles } from '../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../core/git-file-ops.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
@@ -73,17 +73,7 @@ export async function resolveCommand(
   const { patchFilename } = state.pendingResolution;
   info(`Resolving conflict for patch: ${patchFilename}`);
 
-  // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
-
-  // Check if it's a git repository
-  if (!(await isGitRepository(paths.engine))) {
-    throw new GeneralError(
-      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
-    );
-  }
+  await assertEngineGitReady(paths.engine);
 
   // Non-interactive mode requires an explicit `--yes` to proceed: the
   // operator is asserting the manual merge is complete and the

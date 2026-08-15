@@ -23,6 +23,7 @@ import { elapsedSince } from '../../utils/elapsed.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, spinner, success, warn } from '../../utils/logger.js';
+import { isValidFirefoxVersion } from '../../utils/validation.js';
 import { buildRebaseConflictSummary } from './conflict-summary.js';
 import { printSummary } from './summary.js';
 
@@ -193,6 +194,19 @@ export async function runPatchLoop(
   // succeeded on the patch side, so the operator is committing to the
   // new source baseline; per-component health checking stays with
   // `fireforge furnace validate` / `doctor --repair-furnace`.
+  //
+  // "Unconditional" means unconditional on component health, not on the value:
+  // `stampFurnaceOverrideBaseVersions` assigns and persists whatever string it
+  // is handed, so a session whose `toVersion` is not a real Firefox version
+  // would rewrite every override's baseline to that value. `isValidSession`
+  // now rejects such a session at read time; this refuses to persist it even
+  // if a future caller reaches here another way.
+  if (!isValidFirefoxVersion(session.toVersion)) {
+    throw new RebaseError(
+      `Refusing to stamp Furnace override baseVersion(s): the rebase session's target version ` +
+        `("${session.toVersion}") is not a valid Firefox version.`
+    );
+  }
   try {
     const overridesStamped = await stampFurnaceOverrideBaseVersions(projectRoot, session.toVersion);
     if (overridesStamped > 0) {

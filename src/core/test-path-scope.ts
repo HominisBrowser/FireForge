@@ -70,6 +70,7 @@ async function collectTestFiles(dir: string, relPrefix: string): Promise<string[
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
+    // An unreadable directory contributes no test files to the scope.
     return [];
   }
   for (const entry of entries) {
@@ -87,6 +88,7 @@ async function isDirectorySafe(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isDirectory();
   } catch {
+    // A path that cannot be stat'd is not a directory for scoping purposes.
     return false;
   }
 }

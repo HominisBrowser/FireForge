@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import type { ComponentType, FurnaceConfig, ValidationIssue } from '../types/furnace.js';
 import { pathExists, readText } from '../utils/fs.js';
-import { hasRawCssColors } from '../utils/regex.js';
+import { escapeRegex, hasRawCssColors } from '../utils/regex.js';
 import {
   classExtendsMozLitElement,
   collectCssVariableDeclarations,
@@ -172,27 +172,20 @@ async function validateCssCompatibility(
  */
 function isReferencedAsElement(source: string, tagName: string): boolean {
   // Match as an HTML element: <tagName or </tagName
-  const htmlPattern = new RegExp(`</?${escapeForValidation(tagName)}[\\s/>]`);
+  const htmlPattern = new RegExp(`</?${escapeRegex(tagName)}[\\s/>]`);
   if (htmlPattern.test(source)) return true;
 
   // Match as a CSS tag selector: standalone word at start of line or after combinators
-  const cssPattern = new RegExp(
-    `(?:^|[\\s,>+~])${escapeForValidation(tagName)}(?:[\\s,{:>+~.[#]|$)`,
-    'm'
-  );
+  const cssPattern = new RegExp(`(?:^|[\\s,>+~])${escapeRegex(tagName)}(?:[\\s,{:>+~.[#]|$)`, 'm');
   if (cssPattern.test(source)) return true;
 
   // Also accept querySelector/querySelectorAll('tagName') as intentional usage
   const querySelectorPattern = new RegExp(
-    `querySelector(?:All)?\\(\\s*["'\`]${escapeForValidation(tagName)}(?:[\\s"'\`.,>+~:[#])`
+    `querySelector(?:All)?\\(\\s*["'\`]${escapeRegex(tagName)}(?:[\\s"'\`.,>+~:[#])`
   );
   if (querySelectorPattern.test(source)) return true;
 
   return false;
-}
-
-function escapeForValidation(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

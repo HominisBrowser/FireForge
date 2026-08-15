@@ -24,6 +24,7 @@ export interface ClassifiedBuckets {
   patchOwnedDrift: ClassifiedFile[];
   branding: ClassifiedFile[];
   furnace: ClassifiedFile[];
+  binaryUnsupported: ClassifiedFile[];
 }
 
 function getStatusDescription(code: string): string {
@@ -148,7 +149,15 @@ export async function renderDefaultStatus(
   projectRoot: string,
   binaryName: string
 ): Promise<void> {
-  const { conflict, unmanaged, patchBacked, patchOwnedDrift, branding, furnace } = buckets;
+  const {
+    conflict,
+    unmanaged,
+    patchBacked,
+    patchOwnedDrift,
+    branding,
+    furnace,
+    binaryUnsupported,
+  } = buckets;
   info(`${totalModified} modified file${totalModified === 1 ? '' : 's'}:\n`);
 
   // Sections render in this fixed order, separated by a blank line
@@ -206,6 +215,17 @@ export async function renderDefaultStatus(
         render: () => {
           warn('Furnace-managed component changes:');
           printStatusGroups(furnace);
+        },
+      },
+      {
+        files: binaryUnsupported,
+        label: 'binary — comparison unsupported',
+        render: () => {
+          warn('Binary — comparison unsupported:');
+          printStatusGroups(binaryUnsupported);
+          info(
+            'These patch-owned binary files carry no comparable blob hash in their patch body, so durability cannot be verified. Re-export the owning patch with a git binary body to make them comparable.'
+          );
         },
       },
     ];

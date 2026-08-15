@@ -8,6 +8,8 @@
  */
 
 /** Shape of the on-disk baseline marker. */
+export const DELETED_FILE_FINGERPRINT = '<deleted>';
+
 export interface BuildBaseline {
   /** SHA of engine HEAD at the time the build succeeded. */
   engineHeadSha: string;
@@ -34,7 +36,8 @@ export interface BuildBaseline {
    *
    * Keys are engine-relative POSIX paths. Values are hex-encoded
    * SHA-256 digests of the file contents at the moment the baseline
-   * was recorded.
+   * was recorded, or {@link DELETED_FILE_FINGERPRINT} when the successful
+   * build observed a tracked deletion.
    */
   packageableFingerprints?: Record<string, string>;
   /**
@@ -58,14 +61,32 @@ export interface BuildBaseline {
    * checkouts are refused up-front (`AmbiguousBuildArtifactsError`), so at
    * most one obj dir exists per project.
    *
-   * Union/"shared coverage" across successive scoped builds was evaluated
-   * and rejected as unsound — every baseline write refreshes
-   * `packageableFingerprints` for ALL dirty packageable paths, so a union
-   * would whitewash an earlier scope's edited fixtures while
-   * `obj-*`/`_tests/` still holds its stale staging; coverage therefore
-   * REPLACES.
+   * Union/"shared coverage" across successive scoped builds is unsound in
+   * general — every baseline write refreshes `packageableFingerprints` for
+   * ALL dirty packageable paths, so a blind union would whitewash an
+   * earlier scope's edited fixtures while `obj-*`/`_tests/` still holds its
+   * stale staging; coverage therefore REPLACES by default.
+   *
+   * The one exception is `test --build --extend-coverage` (FORGE L1), which
+   * unions only after proving the previous record's anchor still holds:
+   * same engine HEAD, same {@link BuildBaseline.mozconfigHash}, and every
+   * previously fingerprinted path byte-identical — i.e. the wholesale
+   * fingerprint refresh is a no-op for everything the earlier scope's
+   * staging depended on. Any divergence refuses fail-closed. See
+   * `src/core/coverage-extend.ts`, which also documents the one boundary
+   * that guard does not cover (dirty non-packageable fixtures).
    */
   testPackagingCoverage?: TestPackagingCoverage;
+  /**
+   * Hex-encoded SHA-256 of `engine/mozconfig` as it stood for this build.
+   * Recorded because the mozconfig is REGENERATED from project-side
+   * `configs/*.mozconfig` templates plus `fireforge.json` on every build,
+   * so `engineHeadSha` does not cover it: two builds at the same engine SHA
+   * can configure differently. Consumed by the `--extend-coverage` anchor.
+   * Missing on pre-0.41.0 baselines, which `--extend-coverage` refuses
+   * (one plain build re-records it).
+   */
+  mozconfigHash?: string;
   /**
    * Anchor for the compiled StaticComponents table: the engine HEAD SHA of
    * the last FULL-coverage build plus content fingerprints of the
@@ -97,7 +118,8 @@ export interface StaticComponentsBaseline {
   engineHeadSha: string;
   /**
    * Hex-encoded SHA-256 per `components.conf` path that was dirty
-   * (modified-against-HEAD or untracked) when the full build ran. Keys are
+   * (modified-against-HEAD or untracked) when the full build ran. A tracked
+   * deletion is represented by {@link DELETED_FILE_FINGERPRINT}. Keys are
    * engine-relative POSIX paths.
    */
   fingerprints: Record<string, string>;

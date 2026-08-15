@@ -24,15 +24,12 @@
  * FireForge-recorded baseline update.
  */
 
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-
 import { toError } from '../utils/errors.js';
 import { verbose, warn } from '../utils/logger.js';
 import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
 import { readBuildBaseline } from './build-baseline.js';
 import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
+import { hashEngineFile } from './coverage-extend.js';
 import { collectChangedEnginePaths } from './engine-changes.js';
 
 export { isXpcomManifestPath };
@@ -120,25 +117,6 @@ export async function checkStaleBuildForTest(
   const head = packageable.slice(0, STALE_PATHS_LIMIT);
   const truncated = Math.max(0, packageable.length - head.length);
   return { stale: true, changedPaths: head, truncated, baseline };
-}
-
-/**
- * Reads a file under the engine directory and returns a hex-encoded
- * SHA-256 of its contents, matching the hash the baseline writer
- * produces. Returns `undefined` on any IO error (missing file,
- * permission denied, etc.) so the caller can treat the path as still
- * stale rather than crashing the preflight.
- */
-async function hashEngineFile(engineDir: string, relPath: string): Promise<string | undefined> {
-  try {
-    const buffer = await readFile(join(engineDir, relPath));
-    return createHash('sha256').update(buffer).digest('hex');
-  } catch (error: unknown) {
-    verbose(
-      `Stale-build preflight: could not hash ${relPath} for baseline comparison — ${toError(error).message}`
-    );
-    return undefined;
-  }
 }
 
 /**

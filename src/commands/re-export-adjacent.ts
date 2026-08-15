@@ -20,6 +20,7 @@ import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-statu
 import { getClaimedFiles } from '../core/patch-manifest.js';
 import { isGeneratedBrandingPath } from '../core/status-classify.js';
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
+import { mapWithConcurrency } from '../utils/concurrency.js';
 import { pathExists } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
 
@@ -36,16 +37,18 @@ export interface AdjacentUnmanagedContext {
   refusals: { patchFilename: string; files: string[] }[];
 }
 
+/** Concurrency bound for existence probes (matches the classify/lint pools). */
+const PATH_PROBE_CONCURRENCY = 8;
+
 /** Returns the subset of `files` that no longer exist under `engineDir`. */
 export async function findMissingFiles(
   engineDir: string,
   files: readonly string[]
 ): Promise<string[]> {
-  const missingFiles: string[] = [];
-  for (const file of files) {
-    if (!(await pathExists(join(engineDir, file)))) missingFiles.push(file);
-  }
-  return missingFiles;
+  const exists = await mapWithConcurrency(files, PATH_PROBE_CONCURRENCY, (file) =>
+    pathExists(join(engineDir, file))
+  );
+  return files.filter((_, index) => exists[index] !== true);
 }
 
 function isToolManagedPath(

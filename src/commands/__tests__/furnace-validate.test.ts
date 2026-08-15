@@ -604,6 +604,73 @@ describe('furnaceValidateCommand', () => {
       );
     });
 
+    it('does not register components absent from the issue list (0.41.0)', async () => {
+      // Until 0.41.0 this loop iterated every entry in `config.custom`, so
+      // `furnace validate <one> --fix` wrote customElements.js registrations
+      // for EVERY custom component — outside the issue list it was handed,
+      // and invisibly, since `fixed` was never incremented in that block.
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-sidebar': { description: 'a', targetPath: 'a', register: true, localized: false },
+          'moz-untouched': { description: 'b', targetPath: 'b', register: true, localized: false },
+        },
+      } as never);
+      vi.mocked(validateComponent).mockResolvedValue([mjsIssue('moz-sidebar')]);
+      vi.mocked(readdir).mockImplementation(((dir: unknown) =>
+        Promise.resolve([
+          mockDirent(
+            String(dir).includes('moz-untouched') ? 'moz-untouched.mjs' : 'moz-sidebar.mjs'
+          ),
+        ])) as never);
+
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).rejects.toThrow(/Validation failed/i);
+
+      expect(addCustomElementRegistration).toHaveBeenCalledWith(
+        '/project/engine',
+        'moz-sidebar',
+        expect.any(String)
+      );
+      expect(addCustomElementRegistration).not.toHaveBeenCalledWith(
+        expect.any(String),
+        'moz-untouched',
+        expect.any(String)
+      );
+    });
+
+    it('repairs a registration-only defect via missing-custom-element-registration (0.41.0)', async () => {
+      // The defect the scoped repair loop exists for: a component whose ONLY
+      // issue is that customElements.js never mentions it. Scoping --fix to
+      // the issue list removed the old (over-broad) path that repaired this;
+      // the new validate check is what routes it back into FIXABLE_CHECKS.
+      const missingRegIssue: ValidationIssue = {
+        component: 'moz-sidebar',
+        check: 'missing-custom-element-registration',
+        severity: 'error',
+        message: 'moz-sidebar has register: true but no registration in customElements.js',
+      };
+      vi.mocked(validateComponent)
+        .mockResolvedValueOnce([missingRegIssue])
+        .mockResolvedValueOnce([]);
+      vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);
+
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).resolves.toBeUndefined();
+
+      expect(addCustomElementRegistration).toHaveBeenCalledWith(
+        '/project/engine',
+        'moz-sidebar',
+        'chrome://global/content/elements/moz-sidebar.mjs'
+      );
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('Auto-fixed 1 issue(s)'));
+    });
+
     it('skips customElements registration when register is false', async () => {
       vi.mocked(loadFurnaceConfig).mockResolvedValue({
         version: 1,

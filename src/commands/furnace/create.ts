@@ -352,7 +352,7 @@ async function resolveDescription(
     });
 
     if (!isCancel(descResult)) {
-      description = String(descResult);
+      description = descResult;
     }
   }
   return description;
@@ -411,7 +411,7 @@ export async function furnaceCreateCommand(
       return;
     }
 
-    componentName = String(nameResult);
+    componentName = nameResult;
   }
 
   // Load the current furnace config only after the interactive name prompt

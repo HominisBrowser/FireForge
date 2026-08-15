@@ -275,6 +275,13 @@ export interface ApplyResult {
    * persisted — the engine has been restored to its pre-apply state.
    */
   rolledBack?: boolean;
+  /**
+   * Operator-facing warnings, printed by `logApplyResult`. Populated when
+   * apply overwrote a deployed, patch-owned file whose engine bytes
+   * differed from the component source (FORGE J6) — the case where a
+   * shipped engine-only fix is silently reverted by the copy.
+   */
+  warnings?: string[];
 }
 
 /**

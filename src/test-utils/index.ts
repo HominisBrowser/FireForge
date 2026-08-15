@@ -64,6 +64,43 @@ export async function writeFireForgeConfig(
   });
 }
 
+/**
+ * Writes a synthetic mach objdir (`<engineDir>/<objDirName>`) with the
+ * artifacts the tree/with-objdir machinery consumes: a `dist/`
+ * completeness sentinel, a `mozinfo.json` carrying absolute
+ * topsrcdir/topobjdir/mozconfig paths (defaulting to the engine's own —
+ * i.e. a consistent primary build), a `_virtualenvs` entry standing in
+ * for mach's venvs, and `config.status`/`backend.mk` embedding the
+ * topsrcdir path the way real configure output does — the state the
+ * post-configure relocation check exists to catch when a clone's
+ * reconfigure did not actually regenerate them.
+ */
+export async function writeSyntheticObjdir(
+  engineDir: string,
+  objDirName: string,
+  overrides: {
+    topsrcdir?: string | null;
+    topobjdir?: string | null;
+    mozconfig?: string | null;
+  } = {}
+): Promise<void> {
+  const field = (override: string | null | undefined, fallback: string): string | undefined =>
+    override === null ? undefined : (override ?? fallback);
+  const mozinfo = {
+    topsrcdir: field(overrides.topsrcdir, engineDir),
+    topobjdir: field(overrides.topobjdir, join(engineDir, objDirName)),
+    mozconfig: field(overrides.mozconfig, join(engineDir, 'mozconfig')),
+  };
+  const srcdirLine = mozinfo.topsrcdir ?? engineDir;
+  await writeFiles(join(engineDir, objDirName), {
+    'dist/bin/.gitkeep': '',
+    'mozinfo.json': `${JSON.stringify(mozinfo, null, 2)}\n`,
+    '_virtualenvs/venv/bin/python': '#!/usr/bin/env python3\n',
+    'config.status': `topsrcdir = "${srcdirLine}"\n`,
+    'backend.mk': `topsrcdir := ${srcdirLine}\n`,
+  });
+}
+
 /** Runs a git command in the given repository and returns stdout. */
 export async function runGit(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', args, { cwd });

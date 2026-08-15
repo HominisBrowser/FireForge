@@ -133,6 +133,7 @@ import { readdir, unlink } from 'node:fs/promises';
 
 import * as clack from '@clack/prompts';
 
+import { loadConfig } from '../../core/config.js';
 import { removeCustomFtlJarMnEntry } from '../../core/furnace-apply-ftl.js';
 import {
   loadFurnaceConfig,
@@ -140,6 +141,7 @@ import {
   updateFurnaceState,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
+import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
 import {
   removeCustomElementRegistration,
   removeJarMnEntries,
@@ -779,5 +781,283 @@ describe('furnaceRemoveCommand', () => {
       })
     );
     expect(writeFurnaceConfig).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Shared reset for the appended suites. Mirrors the main describe's
+ * beforeEach — `vi.clearAllMocks()` clears calls but not implementations.
+ */
+function resetRemoveMocks(): void {
+  vi.clearAllMocks();
+  vi.mocked(loadFurnaceConfig).mockResolvedValue(defaultRemoveConfig());
+  vi.mocked(loadFurnaceState).mockResolvedValue({});
+  vi.mocked(updateFurnaceState).mockResolvedValue(undefined);
+  vi.mocked(isGitRepository).mockResolvedValue(true);
+  vi.mocked(pathExists).mockResolvedValue(false);
+  vi.mocked(readdir).mockResolvedValue([]);
+  vi.mocked(readText).mockResolvedValue('');
+  vi.mocked(removeDir).mockResolvedValue(undefined);
+  vi.mocked(removeFile).mockResolvedValue(undefined);
+  vi.mocked(writeText).mockResolvedValue(undefined);
+  vi.mocked(unlink).mockResolvedValue(undefined);
+  vi.mocked(fileExistsInHead).mockResolvedValue(true);
+  vi.mocked(restoreTrackedPath).mockResolvedValue(undefined);
+  vi.mocked(deregisterTestManifest).mockResolvedValue(false);
+  vi.mocked(removeCustomFtlJarMnEntry).mockResolvedValue(undefined);
+  vi.mocked(removeCustomElementRegistration).mockResolvedValue(undefined);
+  vi.mocked(removeJarMnEntries).mockResolvedValue(undefined);
+  vi.mocked(restoreRollbackJournalOrThrow).mockResolvedValue(undefined);
+  vi.mocked(loadConfig).mockResolvedValue({ binaryName: 'mybrowser' } as never);
+  Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+  Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+}
+
+/** Marks the given engine-relative suffixes as existing on disk. */
+function existsFor(...suffixes: string[]): void {
+  vi.mocked(pathExists).mockImplementation((target: string) =>
+    Promise.resolve(suffixes.some((suffix) => target.includes(suffix)))
+  );
+}
+
+describe('furnaceRemoveCommand — rollback failure', () => {
+  beforeEach(resetRemoveMocks);
+
+  it('records a repair breadcrumb and surfaces the rollback error, not the original', async () => {
+    // The engine is left in an unknown state when rollback itself fails, so
+    // the rollback error must win and `doctor --repair-furnace` must have a
+    // breadcrumb naming the component.
+    vi.mocked(removeCustomElementRegistration).mockRejectedValue(
+      new Error('customElements.js is unparsable')
+    );
+    vi.mocked(restoreRollbackJournalOrThrow).mockRejectedValue(
+      new Error('could not restore moz-audit-widget.mjs')
+    );
+
+    await expect(
+      furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true })
+    ).rejects.toThrow(/could not restore moz-audit-widget\.mjs/);
+
+    expect(recordFurnaceRollbackFailure).toHaveBeenCalledWith(
+      '/project',
+      'remove-rollback',
+      expect.stringContaining(
+        'component "moz-audit-widget": could not restore moz-audit-widget.mjs'
+      )
+    );
+  });
+
+  it('surfaces the original error when rollback succeeds', async () => {
+    vi.mocked(removeCustomElementRegistration).mockRejectedValue(
+      new Error('customElements.js is unparsable')
+    );
+
+    await expect(
+      furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true })
+    ).rejects.toThrow(/customElements\.js is unparsable/);
+
+    expect(restoreRollbackJournalOrThrow).toHaveBeenCalled();
+    expect(recordFurnaceRollbackFailure).not.toHaveBeenCalled();
+  });
+});
+
+describe('furnaceRemoveCommand — concurrent mutation re-check', () => {
+  beforeEach(resetRemoveMocks);
+
+  it('refuses when the component disappears between the pre-lock check and the lock', async () => {
+    // The pre-lock read sees the component; the fresh in-lock read does not,
+    // because a concurrent `furnace remove` won the race.
+    vi.mocked(loadFurnaceConfig)
+      .mockResolvedValueOnce(defaultRemoveConfig())
+      .mockResolvedValue({
+        version: 1 as const,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+      });
+
+    await expect(
+      furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true })
+    ).rejects.toThrow(/Component "moz-audit-widget" not found in furnace\.json/);
+  });
+});
+
+describe('furnaceRemoveCommand — browser mochitest cleanup', () => {
+  beforeEach(resetRemoveMocks);
+
+  it('warns and continues when the project config cannot be loaded', async () => {
+    // Both cleanup helpers read the config independently, so an unloadable
+    // fireforge.json degrades each of them separately rather than aborting
+    // a removal that has already deregistered the component.
+    vi.mocked(loadConfig).mockRejectedValue(new Error('fireforge.json is corrupt'));
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not load config for test cleanup — fireforge.json is corrupt')
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Could not load config for xpcshell test cleanup — fireforge.json is corrupt'
+      )
+    );
+  });
+
+  it('warns and continues when the test file cannot be unlinked', async () => {
+    existsFor('browser/base/content/test/mybrowser');
+    vi.mocked(unlink).mockRejectedValue(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    );
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not delete test file browser_mybrowser_audit_widget.js')
+    );
+  });
+
+  it('warns and continues when browser.toml cannot be rewritten', async () => {
+    existsFor('browser/base/content/test/mybrowser');
+    vi.mocked(readText).mockResolvedValue('["browser_mybrowser_audit_widget.js"]\n');
+    vi.mocked(writeText).mockRejectedValue(new Error('disk full'));
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not update browser.toml — disk full')
+    );
+  });
+
+  it('leaves browser.toml alone when it does not list the test', async () => {
+    existsFor('browser/base/content/test/mybrowser');
+    vi.mocked(readText).mockResolvedValue('["browser_something_else.js"]\n');
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('keeps the test directory when other browser tests remain', async () => {
+    existsFor('browser/base/content/test/mybrowser');
+    vi.mocked(readdir).mockResolvedValue(['browser_other_test.js'] as never);
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Deleted empty test directory'));
+  });
+
+  it('deletes the test directory once no browser tests remain', async () => {
+    existsFor('browser/base/content/test/mybrowser');
+    vi.mocked(readdir).mockResolvedValue(['some-support-file.json'] as never);
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Deleted empty test directory: browser/base/content/test/mybrowser/')
+    );
+  });
+
+  it('reports the aggregate warning count when cleanup partially failed', async () => {
+    existsFor('browser/base/content/test/mybrowser');
+    vi.mocked(unlink).mockRejectedValue(new Error('EACCES'));
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('test-cleanup warning(s) above'));
+  });
+});
+
+describe('furnaceRemoveCommand — mochikit test cleanup', () => {
+  beforeEach(resetRemoveMocks);
+
+  it('deletes the mochikit test file and prunes its chrome.toml section', async () => {
+    existsFor('toolkit/content/tests/widgets');
+    vi.mocked(readText).mockResolvedValue(
+      '["test_moz-audit-widget.html"]\nsupport-files = []\n\n["other.html"]\n'
+    );
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(unlink).toHaveBeenCalledWith(
+      expect.stringContaining('toolkit/content/tests/widgets/test_moz-audit-widget.html')
+    );
+    const written = vi.mocked(writeText).mock.calls.find(([path]) => path.endsWith('chrome.toml'));
+    expect(written?.[1]).not.toContain('test_moz-audit-widget.html');
+    expect(written?.[1]).toContain('["other.html"]');
+  });
+
+  it('warns and continues when the mochikit test file cannot be deleted', async () => {
+    existsFor('toolkit/content/tests/widgets');
+    vi.mocked(unlink).mockRejectedValue(new Error('EROFS: read-only file system'));
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not delete mochikit test file test_moz-audit-widget.html')
+    );
+  });
+
+  it('warns and continues when chrome.toml cannot be rewritten', async () => {
+    existsFor('toolkit/content/tests/widgets');
+    vi.mocked(readText).mockResolvedValue('["test_moz-audit-widget.html"]\n');
+    vi.mocked(writeText).mockRejectedValue(new Error('disk full'));
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not update widgets chrome.toml — disk full')
+    );
+  });
+});
+
+describe('furnaceRemoveCommand — xpcshell scaffold cleanup', () => {
+  beforeEach(resetRemoveMocks);
+
+  it('removes the component scaffold and the now-empty parent directory', async () => {
+    existsFor('mybrowser-xpcshell');
+    vi.mocked(readdir).mockResolvedValue([] as never);
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(removeDir).toHaveBeenCalledWith(
+      expect.stringContaining('mybrowser-xpcshell/moz-audit-widget')
+    );
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Deleted empty xpcshell parent directory')
+    );
+  });
+
+  it('keeps the parent directory when another component still has a scaffold', async () => {
+    existsFor('mybrowser-xpcshell');
+    vi.mocked(readdir).mockResolvedValue(['moz-other-widget'] as never);
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(info).not.toHaveBeenCalledWith(
+      expect.stringContaining('Deleted empty xpcshell parent directory')
+    );
+  });
+
+  it('warns and continues when the scaffold cannot be deleted', async () => {
+    existsFor('mybrowser-xpcshell');
+    vi.mocked(removeDir).mockRejectedValue(new Error('EBUSY: resource busy'));
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not delete xpcshell test scaffold — EBUSY: resource busy')
+    );
+  });
+
+  it('warns and continues when the parent cleanup fails', async () => {
+    existsFor('mybrowser-xpcshell');
+    vi.mocked(readdir).mockRejectedValue(new Error('EACCES on parent'));
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not clean up xpcshell parent directory — EACCES on parent')
+    );
   });
 });

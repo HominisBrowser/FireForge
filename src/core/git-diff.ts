@@ -546,6 +546,17 @@ export async function generateBinaryFilePatch(repoDir: string, filePath: string)
   // stage/unstage pair mutates the index, so it must not interleave with
   // another concurrent binary patch (see runWithBinaryStagingLock).
   return runWithBinaryStagingLock(async () => {
+    // Snapshot the path's exact index entry before touching it. The cleanup
+    // used to be a blanket `git reset HEAD -- <file>`, which restores the
+    // path to its HEAD state — for a path absent from HEAD that means
+    // *removing* whatever entry the index carried, so any staged state that
+    // arrived between the read-only diff above and this staging block (a
+    // concurrent writer, or a staged-add whose worktree file was deleted)
+    // was silently discarded (FORGE H1). Restoring the captured entry
+    // instead makes the cleanup exact regardless of how the entry got there.
+    const priorEntry = (
+      await execGitWithAllowedExitCodes(repoDir, ['ls-files', '--stage', '--', filePath])
+    ).stdout;
     try {
       await execGitWithAllowedExitCodes(repoDir, ['add', '--intent-to-add', '--', filePath]);
       const diffResult = await execGitWithAllowedExitCodes(repoDir, [
@@ -556,8 +567,39 @@ export async function generateBinaryFilePatch(repoDir: string, filePath: string)
       ]);
       return diffResult.stdout;
     } finally {
-      // Always unstage, even if diff fails
-      await execGitWithAllowedExitCodes(repoDir, ['reset', 'HEAD', '--', filePath]);
+      await restoreIndexEntry(repoDir, filePath, priorEntry);
     }
   });
+}
+
+/**
+ * Restores a path's index entry to a previously captured `ls-files --stage`
+ * snapshot after a temporary `--intent-to-add` staging. No prior entry means
+ * the temporary entry is dropped via `reset HEAD` (the path's HEAD state IS
+ * "absent" — this branch only runs for files untracked in HEAD). A prior
+ * stage-0 entry is re-pointed at its recorded mode and blob. Unmerged entries
+ * (stages 1–3) cannot be rebuilt through `--cacheinfo`; that degenerate state
+ * keeps the legacy reset-to-HEAD behavior rather than corrupting the conflict.
+ * @param repoDir - Repository directory
+ * @param filePath - File path (relative to repo root)
+ * @param priorEntry - Raw `git ls-files --stage -- <file>` output from before staging
+ */
+async function restoreIndexEntry(
+  repoDir: string,
+  filePath: string,
+  priorEntry: string
+): Promise<void> {
+  const entryMatch = /^(\d{6}) ([0-9a-f]{4,64}) 0\t/.exec(priorEntry.trim());
+  const mode = entryMatch?.[1];
+  const oid = entryMatch?.[2];
+  if (mode === undefined || oid === undefined) {
+    await execGitWithAllowedExitCodes(repoDir, ['reset', 'HEAD', '--', filePath]);
+    return;
+  }
+  await execGitWithAllowedExitCodes(repoDir, [
+    'update-index',
+    '--add',
+    '--cacheinfo',
+    `${mode},${oid},${filePath}`,
+  ]);
 }

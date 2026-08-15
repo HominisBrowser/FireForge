@@ -25,6 +25,7 @@ import {
   buildPatchQueueContext,
   collectForwardImportEdges,
   detectNewFilesInDiff,
+  formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../../core/patch-lint.js';
@@ -45,6 +46,7 @@ import type { FireForgeConfig } from '../../types/config.js';
 import { toError } from '../../utils/errors.js';
 import { readText, writeText } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
+import { resolveWaitLockSeconds } from '../../utils/options.js';
 import { runPatchLint } from '../export-shared.js';
 import {
   buildSplitDiff,
@@ -84,15 +86,14 @@ function projectEntryBody(
  * to live in the same patch as the moved file gains a forward edge when the
  * target is later-ordered). Reports only regressions the move itself adds.
  */
-async function runProjectedMoveLint(
-  patchesDir: string,
-  plan: MoveIntoPlan
-): Promise<{
+function runProjectedMoveLint(
+  plan: MoveIntoPlan,
+  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>
+): {
   conflicts: ConflictReport | null;
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
-}> {
+} {
   const movedSet = new Set(plan.movedFiles);
-  const baseCtx = await buildPatchQueueContext(patchesDir);
 
   const entries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
     let metadata = entry.metadata;
@@ -151,7 +152,7 @@ async function runProjectedMoveLint(
       ? null
       : {
           reason: `move would introduce ${regressions.length} cross-patch lint error(s)`,
-          details: regressions.map((i) => `[${i.check}] ${i.file}: ${i.message}`),
+          details: regressions.map(formatPatchLintIssue),
         };
   return { conflicts, stagedDependencyAdditions };
 }
@@ -162,101 +163,109 @@ async function runProjectedMoveLint(
  * owner rewrites + auto-declared forward imports). Rolled back in reverse
  * order on any failure.
  */
-async function commitMoveInto(patchesDir: string, plan: MoveIntoPlan): Promise<void> {
-  await withPatchDirectoryLock(patchesDir, async () => {
-    const manifest = await loadPatchesManifest(patchesDir);
-    if (!manifest) throw new GeneralError('Manifest disappeared while waiting for lock.');
-    const currentSource = manifest.patches.find((p) => p.filename === plan.source.filename);
-    const currentTarget = manifest.patches.find((p) => p.filename === plan.target.filename);
-    if (
-      !currentSource ||
-      !currentTarget ||
-      currentSource.filesAffected.join('\n') !== plan.source.filesAffected.join('\n') ||
-      currentTarget.filesAffected.join('\n') !== plan.target.filesAffected.join('\n')
-    ) {
-      throw new InvalidArgumentError(
-        'Patch queue changed while waiting for move confirmation. Re-run the command.',
-        'patch move-files'
-      );
-    }
-
-    const movedSet = new Set(plan.movedFiles);
-    const sourcePath = join(patchesDir, plan.source.filename);
-    const targetPath = join(patchesDir, plan.target.filename);
-    const originalSourceBody = await readText(sourcePath);
-    const originalTargetBody = await readText(targetPath);
-    let sourceWritten = false;
-    let targetWritten = false;
-
-    try {
-      await writeText(sourcePath, normalizePatchArtifact(plan.sourceDiff));
-      sourceWritten = true;
-      await writeText(targetPath, normalizePatchArtifact(plan.targetDiff));
-      targetWritten = true;
-
-      const updatedPatches = manifest.patches.map((patch) => {
-        let updated = rewriteSplitOwners(
-          patch,
-          plan.source.filename,
-          movedSet,
-          plan.target.filename
+async function commitMoveInto(
+  patchesDir: string,
+  plan: MoveIntoPlan,
+  waitLockSeconds?: number
+): Promise<void> {
+  await withPatchDirectoryLock(
+    patchesDir,
+    async () => {
+      const manifest = await loadPatchesManifest(patchesDir);
+      if (!manifest) throw new GeneralError('Manifest disappeared while waiting for lock.');
+      const currentSource = manifest.patches.find((p) => p.filename === plan.source.filename);
+      const currentTarget = manifest.patches.find((p) => p.filename === plan.target.filename);
+      if (
+        !currentSource ||
+        !currentTarget ||
+        currentSource.filesAffected.join('\n') !== plan.source.filesAffected.join('\n') ||
+        currentTarget.filesAffected.join('\n') !== plan.target.filesAffected.join('\n')
+      ) {
+        throw new InvalidArgumentError(
+          'Patch queue changed while waiting for move confirmation. Re-run the command.',
+          'patch move-files'
         );
-        const decls = plan.stagedDependencyAdditions.get(updated.filename);
-        if (decls?.length) updated = mergeStagedForwardImports(updated, decls);
-        if (updated.filename === plan.source.filename) {
-          return { ...updated, filesAffected: plan.sourceAfter };
-        }
-        if (updated.filename === plan.target.filename) {
-          return { ...updated, filesAffected: plan.targetAfter };
-        }
-        return updated;
-      });
-      const updated = validatePatchesManifest({ ...manifest, patches: updatedPatches });
-      await savePatchesManifest(patchesDir, updated);
+      }
+
+      const movedSet = new Set(plan.movedFiles);
+      const sourcePath = join(patchesDir, plan.source.filename);
+      const targetPath = join(patchesDir, plan.target.filename);
+      const originalSourceBody = await readText(sourcePath);
+      const originalTargetBody = await readText(targetPath);
+      let sourceWritten = false;
+      let targetWritten = false;
 
       try {
-        await appendHistory(patchesDir, {
-          operation: 'patch-move-files',
-          args: {
-            source: plan.source.filename,
-            target: plan.target.filename,
-            files: plan.movedFiles,
-            ownerRewrites: plan.ownerRewrites,
-          },
-          result: 'ok',
+        await writeText(sourcePath, normalizePatchArtifact(plan.sourceDiff));
+        sourceWritten = true;
+        await writeText(targetPath, normalizePatchArtifact(plan.targetDiff));
+        targetWritten = true;
+
+        const updatedPatches = manifest.patches.map((patch) => {
+          let updated = rewriteSplitOwners(
+            patch,
+            plan.source.filename,
+            movedSet,
+            plan.target.filename
+          );
+          const decls = plan.stagedDependencyAdditions.get(updated.filename);
+          if (decls?.length) updated = mergeStagedForwardImports(updated, decls);
+          if (updated.filename === plan.source.filename) {
+            return { ...updated, filesAffected: plan.sourceAfter };
+          }
+          if (updated.filename === plan.target.filename) {
+            return { ...updated, filesAffected: plan.targetAfter };
+          }
+          return updated;
         });
-      } catch (historyError: unknown) {
-        warn(
-          `History log append failed after patch move-files committed: ${toError(historyError).message}`
-        );
-      }
-    } catch (error: unknown) {
-      if (targetWritten) {
+        const updated = validatePatchesManifest({ ...manifest, patches: updatedPatches });
+        await savePatchesManifest(patchesDir, updated);
+
         try {
-          await writeText(targetPath, originalTargetBody);
-        } catch (rollbackError: unknown) {
+          await appendHistory(patchesDir, {
+            operation: 'patch-move-files',
+            args: {
+              source: plan.source.filename,
+              target: plan.target.filename,
+              files: plan.movedFiles,
+              ownerRewrites: plan.ownerRewrites,
+            },
+            result: 'ok',
+          });
+        } catch (historyError: unknown) {
           warn(
-            `Rollback warning: could not restore target body: ${toError(rollbackError).message}`
+            `History log append failed after patch move-files committed: ${toError(historyError).message}`
           );
         }
-      }
-      if (sourceWritten) {
-        try {
-          await writeText(sourcePath, originalSourceBody);
-        } catch (rollbackError: unknown) {
-          warn(
-            `Rollback warning: could not restore source body: ${toError(rollbackError).message}`
-          );
+      } catch (error: unknown) {
+        if (targetWritten) {
+          try {
+            await writeText(targetPath, originalTargetBody);
+          } catch (rollbackError: unknown) {
+            warn(
+              `Rollback warning: could not restore target body: ${toError(rollbackError).message}`
+            );
+          }
         }
+        if (sourceWritten) {
+          try {
+            await writeText(sourcePath, originalSourceBody);
+          } catch (rollbackError: unknown) {
+            warn(
+              `Rollback warning: could not restore source body: ${toError(rollbackError).message}`
+            );
+          }
+        }
+        try {
+          await savePatchesManifest(patchesDir, manifest);
+        } catch (rollbackError: unknown) {
+          warn(`Rollback warning: could not restore manifest: ${toError(rollbackError).message}`);
+        }
+        throw error;
       }
-      try {
-        await savePatchesManifest(patchesDir, manifest);
-      } catch (rollbackError: unknown) {
-        warn(`Rollback warning: could not restore manifest: ${toError(rollbackError).message}`);
-      }
-      throw error;
-    }
-  });
+    },
+    { waitLockSeconds, command: 'patch move-files' }
+  );
 }
 
 /**
@@ -281,13 +290,17 @@ export async function runMoveFilesInto(args: {
   const targetDiff = await buildSplitDiff(enginePath, targetAfter, 'moved', target.filename);
 
   // Per-patch lint both projected bodies with each patch's own waivers.
+  // The whole-queue context (built once, with the config for committed-gate
+  // parity) resolves cross-patch imports and sibling head.js harness roots
+  // instead of linting each projected body blind (FORGE I3).
+  const patchQueueCtx = await buildPatchQueueContext(patchesDir, args.config);
   await runPatchLint(
     enginePath,
     sourceAfter,
     sourceDiff,
     args.config,
     options.skipLint,
-    undefined,
+    patchQueueCtx,
     source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined,
     source.tier
   );
@@ -297,7 +310,7 @@ export async function runMoveFilesInto(args: {
     targetDiff,
     args.config,
     options.skipLint,
-    undefined,
+    patchQueueCtx,
     target.lintIgnore ? new Set<string>(target.lintIgnore) : undefined,
     target.tier
   );
@@ -319,7 +332,7 @@ export async function runMoveFilesInto(args: {
     stagedDependencyAdditions: new Map(),
   };
 
-  const { conflicts, stagedDependencyAdditions } = await runProjectedMoveLint(patchesDir, plan);
+  const { conflicts, stagedDependencyAdditions } = runProjectedMoveLint(plan, patchQueueCtx);
   plan.stagedDependencyAdditions = stagedDependencyAdditions;
 
   const decision = await confirmDestructive({
@@ -347,7 +360,7 @@ export async function runMoveFilesInto(args: {
     return;
   }
 
-  await commitMoveInto(patchesDir, plan);
+  await commitMoveInto(patchesDir, plan, resolveWaitLockSeconds(options.waitLock));
 
   success(`Moved ${files.length} file(s) from ${source.filename} to ${target.filename}`);
   if (plan.ownerRewrites.length > 0) {

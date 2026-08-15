@@ -46,6 +46,13 @@ export interface PatchPolicyEnforcementInput {
   manifest: PatchesManifest;
   command: string;
   forceUnsafe?: boolean;
+  /**
+   * Per-issue-code remediation lines appended to matching details, so a
+   * refusal can name the exact flag or command that fixes it on the
+   * command it was raised from (e.g. `--description` on
+   * `patch move-files --create`).
+   */
+  hints?: Partial<Record<PatchPolicyIssueCode, string>>;
 }
 
 function policy(config: FireForgeConfig): PatchPolicyConfig | undefined {
@@ -447,7 +454,10 @@ export function enforcePatchPolicy(input: PatchPolicyEnforcementInput): void {
   if (issues.length === 0) return;
 
   const mode = mutationMode(input.config);
-  const details = issues.map((issue) => `  [${issue.code}] ${issue.message}`);
+  const details = issues.map((issue) => {
+    const hint = input.hints?.[issue.code];
+    return `  [${issue.code}] ${issue.message}${hint ? `\n      → ${hint}` : ''}`;
+  });
   if (mode === 'warn') {
     warn(`${input.command}: patch policy warning(s):`);
     for (const detail of details) warn(detail);

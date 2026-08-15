@@ -232,6 +232,7 @@ export async function resolveAbsoluteAppPath(
     try {
       entries = await readdir(distDir);
     } catch {
+      // No readable dist directory means no appdir candidate can be resolved.
       return null;
     }
     for (const entry of entries) {
@@ -300,6 +301,8 @@ export async function resolveXpcshellAppdirArg(
     try {
       body = await readText(manifestPath);
     } catch {
+      // An unreadable manifest cannot declare an appdir; skip it and keep
+      // walking the remaining candidates.
       continue;
     }
 

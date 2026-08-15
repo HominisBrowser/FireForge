@@ -28,6 +28,7 @@ import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser';
 
 import { FurnaceError } from '../errors/furnace.js';
 import type { FurnaceConfig } from '../types/furnace.js';
+import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
@@ -58,8 +59,14 @@ interface JsconfigShape {
 
 /**
  * Computes the desired managed `paths` entries: one per `.mjs` file of
- * every registered custom component, keyed by its deployed chrome URL and
- * mapped to the workspace source relative to the jsconfig directory.
+ * every custom component — registered or not — keyed by its deployed
+ * chrome URL and mapped to the workspace source relative to the jsconfig
+ * directory. `register: false` components (notably `kind: "library"`
+ * base-class modules, which REQUIRE register: false) are included because
+ * deploy copies their files and writes jar.mn entries under
+ * `content/global/elements/` unconditionally — only the customElements.js
+ * registration is gated on `register` — so their chrome URLs are just as
+ * real as a registered component's.
  *
  * Workspace sources (not deployed engine copies) are the mapping target —
  * they are the files developers edit, and they exist even when the engine
@@ -73,8 +80,7 @@ async function computeDesiredChromePathEntries(
   const jsconfigDir = dirname(jsconfigAbsPath);
   const entries: Record<string, string[]> = {};
 
-  for (const [name, customConfig] of Object.entries(config.custom)) {
-    if (!customConfig.register) continue;
+  for (const name of Object.keys(config.custom)) {
     const componentDir = join(customDir, name);
     if (!(await pathExists(componentDir))) continue;
 
@@ -112,7 +118,7 @@ function isManagedEntry(
   value: unknown,
   jsconfigDir: string,
   customDir: string
-): boolean {
+): value is [string] {
   if (!key.startsWith(CHROME_ELEMENTS_URL_PREFIX)) return false;
   if (!Array.isArray(value) || value.length !== 1 || typeof value[0] !== 'string') return false;
   const target = resolve(jsconfigDir, value[0]);
@@ -156,14 +162,14 @@ export async function syncFurnaceJsconfigPaths(
   const parseErrors: ParseError[] = [];
   let jsconfig: unknown;
   try {
+    // No cast: the target is declared `unknown` and is validated below, so
+    // an assertion here would be discarded on assignment anyway.
     jsconfig = parse(jsconfigText, parseErrors, {
       allowTrailingComma: true,
       disallowComments: false,
-    }) as JsconfigShape;
+    });
   } catch (error: unknown) {
-    throw new FurnaceError(
-      `Could not parse ${jsconfigRel} as JSONC: ${error instanceof Error ? error.message : String(error)}.`
-    );
+    throw new FurnaceError(`Could not parse ${jsconfigRel} as JSONC: ${toError(error).message}.`);
   }
   if (
     parseErrors.length > 0 ||
@@ -206,7 +212,7 @@ export async function syncFurnaceJsconfigPaths(
     // a hand-written `./` prefix) is not rewritten as "stale" on every run.
     // The existing value is kept verbatim when equivalent — no churn either
     // way; only a genuinely different target updates (to the `./` form).
-    if (!samePathValue((value as string[])[0] ?? '', want[0] ?? '')) {
+    if (!samePathValue(value[0], want[0] ?? '')) {
       result.updated.push(key);
       nextPaths[key] = want;
     } else {

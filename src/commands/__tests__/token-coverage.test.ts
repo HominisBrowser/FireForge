@@ -19,6 +19,11 @@ vi.mock('../../core/furnace-config.js', () => ({
 vi.mock('../../core/git.js', () => ({
   getStatusWithCodes: vi.fn(),
   isGitRepository: vi.fn(),
+  // token-coverage's engine precondition ladder was truncated before 0.41.0
+  // and never reached the unborn-HEAD rung — which is why this mock did not
+  // need these. It does now.
+  getHead: vi.fn(() => Promise.resolve('abc1234')),
+  isMissingHeadError: vi.fn(() => false),
 }));
 
 vi.mock('../../core/git-status.js', () => ({

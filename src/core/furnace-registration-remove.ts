@@ -29,7 +29,7 @@ import type * as estree from 'estree';
 import MagicString from 'magic-string';
 
 import { pathExists, readText, writeText } from '../utils/fs.js';
-import { type AcornESTreeNode, parseScript, walkAST } from './ast-utils.js';
+import { type AcornESTreeNode, asEstree, parseScript, walkAST } from './ast-utils.js';
 import { CUSTOM_ELEMENTS_JS } from './furnace-constants.js';
 
 interface RemovalRange {
@@ -178,7 +178,7 @@ function collectRemovalRanges(
 
       // Standalone call: customElements.setElementCreationCallback(tag, …)
       if (node.type === 'CallExpression') {
-        const call = node as AcornESTreeNode<estree.CallExpression>;
+        const call = asEstree<estree.CallExpression>(node);
         if (isStandaloneCallbackCallFor(call, tagName)) {
           // Find the enclosing statement so we can delete `call(...);` as
           // a unit, not just the call expression body.
@@ -190,7 +190,7 @@ function collectRemovalRanges(
               ancestor.type === 'ExpressionStatement' ||
               ancestor.type === 'VariableDeclaration'
             ) {
-              enclosing = ancestor as AcornESTreeNode<estree.Statement>;
+              enclosing = asEstree<estree.Statement>(ancestor);
               break;
             }
           }
@@ -244,6 +244,9 @@ export async function removeCustomElementRegistration(
   try {
     ast = parseScript(content);
   } catch {
+    // An unparsable customElements.js is left untouched on purpose: this
+    // function only removes registrations, and editing a file it cannot parse
+    // risks corrupting it. The caller's regex fallback handles the retry.
     return;
   }
 

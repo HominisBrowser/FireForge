@@ -86,7 +86,8 @@ Queue maintenance lives under `fireforge patch`: `patch compact` closes ordinal 
 (range-aware when `patchPolicy.ranges` is configured), `patch reorder` moves a patch, and
 `patch split <source> --files <paths...> --name <name>` carves files out of a patch into a
 new one as a single transaction — including staged-dependency owner rewrites — with
-`--dry-run` support.
+`--dry-run` support. `patch rename` also supports `--category` and `--order`; every
+queue-mutating patch command accepts `--wait-lock [seconds]`.
 
 `fireforge test <directory>` runs exactly that directory: FireForge enumerates the
 directory's test files and passes the explicit file list to mach in one invocation, so
@@ -98,14 +99,18 @@ instances do not exercise cross-argument state (`--no-shard` restores one combin
 invocation). Recognized harness crashes retry up to `--harness-retries <n>` times (default
 2), and `--perf-samples <path>` publishes a perf-sample artifact path to the harness
 (exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
+Every test run ends with one machine-readable `FIREFORGE-VERDICT: PASS|FAIL ...` line;
+automation should use it instead of the raw process code and treat a missing verdict as
+failure.
 Pathless test runs must choose a mode: `--auto` forwards mach's own auto-selection,
 `--doctor` runs the Marionette preflight only, and `--canary [path]` runs one short
 browser-chrome canary (`test.canaryPath` / `test.canaryTimeoutSeconds` in `fireforge.json`
 provide defaults). When packageable engine files changed since the last successful
 FireForge build, `test` fails before launching stale artifacts; use `--build` to refresh
-or `--allow-stale-build` only for intentional out-of-band rebuilds. If an interrupted
-browser holds the Marionette port, `--kill-stale-marionette` terminates recognized browser
-holders and still refuses unrelated listeners. In dev builds, files under `obj-*/dist/bin`
+or `--allow-stale-build` only for intentional out-of-band rebuilds. `--build-only`
+packages mixed-harness paths once; `--extend-coverage` safely retains prior scoped
+coverage. `--kill-stale-marionette` terminates recognized stale browsers. In dev builds,
+files under `obj-*/dist/bin`
 may be symlinks back into the source tree (notably prefs), so edit source prefs directly
 and keep a backup before bisection experiments.
 
@@ -141,7 +146,9 @@ override the loose baseline so calls to nonexistent harness members fail at expo
 For CI enforcement, `fireforge status --check` exits non-zero when any unmanaged,
 drifted, or conflicted file exists (`--fail-on <class,...>` tunes the policy set, and
 `--json` composes — the JSON stays parseable and its `files[]` entries name the owning
-`patch`). `lint --per-patch --report <path>` writes a machine-readable JSON report with
+`patch`). `--include-ownership` adds ownership rows to JSON status output. Scan-less
+`re-export` previews drift; `--refuse-foreign-drift --expect <path>` restricts it to
+intended files. `lint --per-patch --report <path>` writes a machine-readable JSON report with
 each patch's line count, tier, active size thresholds, issues, and lintIgnore-suppressed
 issues; the size metrics (`countNonBinaryDiffLines`, `resolvePatchSizeTier`,
 `getPatchSizeThresholds`) are also exported on the programmatic API.
@@ -149,11 +156,10 @@ issues; the size metrics (`countNonBinaryDiffLines`, `resolvePatchSizeTier`,
 For concurrent read-mostly verification beside a busy primary checkout,
 `fireforge tree create <name>` snapshots the project — applied engine tree included,
 `obj-*` excluded — into `.fireforge/trees/<name>` using filesystem copy-on-write (APFS
-clonefile / btrfs-XFS reflink; ~3 s for a 156 MB applied browser tree). Inside a tree,
-`status`, `lint`, `typecheck`, `verify`, `doctor`, and `export --dry-run` work unmodified
-with their own locks, while every mutating command is refused — patches and exports stay
-strictly serial in the primary tree. `tree list` reports staleness, `tree remove` deletes
-(refusing while a live process holds a tree lock), and `tree exec <name> -- <cmd>` runs a
+clonefile / btrfs-XFS reflink; ~3 s for a 156 MB applied browser tree). Read-only commands
+and export/re-export dry runs work inside a tree; mutations are refused. `--with-objdir`
+adds a safely relocated build for build-less tests. `tree list` reports staleness,
+`tree remove` deletes (refusing active locks), and `tree exec <name> -- <cmd>` runs a
 command inside a tree. Filesystems without CoW support refuse unless `--force-copy`
 explicitly accepts a full physical copy.
 

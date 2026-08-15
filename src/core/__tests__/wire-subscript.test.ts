@@ -1,11 +1,25 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Mirrors the real `withParserFallback` contract (primary → rethrowIf →
+// fallback) so tests exercise the `rethrowIf` predicate rather than a stub
+// that can never reach it.
 const parserFallbackMock = vi.hoisted(() =>
-  vi.fn((primary: () => string, ...rest: unknown[]) => {
-    void rest;
-    return { value: primary() };
-  })
+  vi.fn(
+    (
+      primary: () => string,
+      fallback: () => string,
+      _context: string,
+      rethrowIf?: (error: unknown) => boolean
+    ) => {
+      try {
+        return { value: primary(), usedFallback: false };
+      } catch (error: unknown) {
+        if (rethrowIf?.(error)) throw error;
+        return { value: fallback(), usedFallback: true };
+      }
+    }
+  )
 );
 
 vi.mock('../../utils/fs.js', () => ({
@@ -40,7 +54,14 @@ function bootstrapBrowser() {
 describe('wire-subscript', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    parserFallbackMock.mockImplementation((primary: () => string) => ({ value: primary() }));
+    parserFallbackMock.mockImplementation((primary, fallback, _context, rethrowIf) => {
+      try {
+        return { value: primary(), usedFallback: false };
+      } catch (error: unknown) {
+        if (rethrowIf?.(error)) throw error;
+        return { value: fallback(), usedFallback: true };
+      }
+    });
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(readText).mockResolvedValue(BASE_BROWSER_MAIN);
     vi.mocked(writeText).mockResolvedValue(undefined);
@@ -109,10 +130,9 @@ function bootstrapBrowser() {
   });
 
   it('writes the legacy fallback result when parser fallback selects it', async () => {
-    parserFallbackMock.mockImplementation((primary: () => string, ...rest: unknown[]) => {
+    parserFallbackMock.mockImplementation((primary, fallback) => {
       void primary;
-      const fallback = rest[0] as (() => string) | undefined;
-      return { value: fallback ? fallback() : primary() };
+      return { value: fallback(), usedFallback: true };
     });
 
     await expect(addSubscriptToBrowserMain('/engine', 'dock-controller')).resolves.toBe(true);
@@ -120,5 +140,20 @@ function bootstrapBrowser() {
       '/engine/browser/base/content/browser-main.js',
       expect.stringContaining('dock-controller.js')
     );
+  });
+
+  it('falls back to the legacy scanner when acorn cannot parse the source', async () => {
+    // Firefox chrome sources carry preprocessor directives acorn rejects.
+    // That raw SyntaxError is exactly what the legacy path exists for, so the
+    // `rethrowIf` predicate must let it through to the fallback.
+    vi.mocked(readText).mockResolvedValue(
+      ['#ifdef XP_WIN', 'function bootstrapBrowser() {', '  try {', '  } catch (e) {}', '}'].join(
+        '\n'
+      )
+    );
+
+    await expect(addSubscriptToBrowserMain('/engine', 'my-widget')).resolves.toBe(true);
+    expect(parserFallbackMock).toHaveBeenCalled();
+    expect(writeText).toHaveBeenCalled();
   });
 });

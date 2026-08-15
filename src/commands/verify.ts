@@ -23,7 +23,11 @@ import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { isGitRepository } from '../core/git.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
-import { buildPatchQueueContext, lintPatchQueue } from '../core/patch-lint.js';
+import {
+  buildPatchQueueContext,
+  formatPatchLintIssue,
+  lintPatchQueue,
+} from '../core/patch-lint.js';
 import { loadPatchesManifest, validatePatchesManifestConsistency } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { collectPatchRegistrationReferences } from '../core/patch-registration-refs.js';
@@ -255,7 +259,7 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
       issues: lintIssues.map((issue) => {
         const label =
           issue.severity === 'error' ? 'ERROR' : issue.severity === 'warning' ? 'WARN' : 'NOTICE';
-        return `${label} [${issue.check}] ${issue.file}: ${issue.message}`;
+        return `${label} ${formatPatchLintIssue(issue)}`;
       }),
       errorCount: lintErrors,
       warningCount: lintWarnings,

@@ -17,6 +17,7 @@ import { validateAllComponents, validateComponent } from '../../core/furnace-val
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceValidateOptions } from '../../types/commands/index.js';
 import type { ComponentType, ValidationIssue } from '../../types/furnace.js';
+import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, success, warn } from '../../utils/logger.js';
 import { displayValidationIssues } from './validation-output.js';
@@ -27,6 +28,7 @@ const FIXABLE_CHECKS = new Set([
   'missing-jar-mn-css',
   'wrong-registration-pattern',
   'stale-jar-registration',
+  'missing-custom-element-registration',
 ]);
 
 /**
@@ -72,9 +74,7 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
         info(`Fixed: pruned stale jar.mn line for ${entry.tagName}/${entry.fileName}`);
       }
     } catch (err: unknown) {
-      warn(
-        `Could not prune stale jar.mn lines: ${err instanceof Error ? err.message : String(err)}`
-      );
+      warn(`Could not prune stale jar.mn lines: ${toError(err).message}`);
     }
   }
 
@@ -92,25 +92,28 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
         info(`No-op: jar.mn entries for ${componentName} were already present`);
       }
     } catch (err: unknown) {
-      warn(
-        `Could not fix jar.mn for ${componentName}: ${err instanceof Error ? err.message : String(err)}`
-      );
+      warn(`Could not fix jar.mn for ${componentName}: ${toError(err).message}`);
     }
   }
 
-  // Fix missing customElements.js registrations
-  for (const issue of issues) {
-    if (issue.check !== 'wrong-registration-pattern') continue;
+  // `wrong-registration-pattern` is deliberately NOT auto-fixed: it means the
+  // component IS registered but in the wrong block, and moving code between
+  // blocks is too risky to do unattended. Only truly missing registrations are
+  // repaired, below.
 
-    // wrong-registration-pattern means it IS registered, but in the wrong block.
-    // We don't auto-fix this as it requires moving code between blocks, which
-    // is too risky. Only fix truly missing registrations.
-  }
-
-  // Check for components that are missing from customElements.js entirely
-  // (detected by post-apply consistency, not by validate — but we can check here)
-  for (const [componentName, customConfig] of Object.entries(config.custom)) {
-    if (!customConfig.register) continue;
+  // Repair components missing from customElements.js entirely (reported by
+  // validate as `missing-custom-element-registration`).
+  //
+  // Scoped to the components named in `issues`. Until 0.41.0 this iterated
+  // every entry in `config.custom`, so `furnace validate <one-component> --fix`
+  // wrote customElements.js registrations for EVERY custom component — outside
+  // the issue list it was handed, and invisibly, since `fixed` was never
+  // incremented here. The block's own comment already claimed this scoping;
+  // the code did not implement it.
+  const componentsWithIssues = new Set(issues.map((issue) => issue.component));
+  for (const componentName of componentsWithIssues) {
+    const customConfig = config.custom[componentName];
+    if (!customConfig?.register) continue;
 
     const componentDir = join(furnacePaths.customDir, componentName);
     if (!(await pathExists(componentDir))) continue;
@@ -121,12 +124,12 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
 
     const modulePath = `chrome://global/content/elements/${componentName}.mjs`;
     try {
+      // Idempotent: returns without error when already registered, so this
+      // stays a no-op for components whose registration is already correct.
       await addCustomElementRegistration(engineDir, componentName, modulePath);
-      // addCustomElementRegistration is idempotent — it returns without error
-      // if already registered. We only count it as fixed if a matching issue
-      // existed in the input.
     } catch {
-      // Ignore — idempotent call, may already be registered
+      // Best-effort repair — the re-validation pass at the call site reports
+      // whatever is still outstanding.
     }
   }
 

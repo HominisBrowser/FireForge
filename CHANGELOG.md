@@ -66,6 +66,7 @@
 
 ### Safety, performance, and maintenance
 
+- Nano ID 3.3.18 resolves a high-severity audit finding.
 - Rebase loading distinguishes absent and corrupt sessions; `rebase --abort` can recover invalid state.
 - PID liveness treats `EPERM` as alive, preventing deletion through another user's lock.
 - The moz.build parser handles comments, quoted brackets/apostrophes, and unterminated lists.

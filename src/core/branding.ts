@@ -90,6 +90,23 @@ export interface BrandingConfig {
 
 type VendorPlacement = 'branding-configure' | 'moz-configure';
 
+/**
+ * Splits the reverse-domain `appId` for macOS bundle identity. Upstream
+ * `toolkit/moz.configure` composes `CFBundleIdentifier` as
+ * `<--with-distribution-id>.<MOZ_MACBUNDLE_ID>` (the distribution id
+ * defaults to `org.mozilla`), so branding `configure.sh` must carry only
+ * the LEAF segment while the generated mozconfig carries the remainder as
+ * `--with-distribution-id`. Writing the full appId into `MOZ_MACBUNDLE_ID`
+ * double-prefixes the shipped bundle id (observed:
+ * `org.mozilla.org.hominis.browser`, and with a distribution-id flag,
+ * `org.hominis.org.hominis.browser`). Config validation guarantees a
+ * reverse-domain id, so the split always has both halves.
+ */
+export function splitAppId(appId: string): { distributionId: string; leaf: string } {
+  const lastDot = appId.lastIndexOf('.');
+  return { distributionId: appId.slice(0, lastDot), leaf: appId.slice(lastDot + 1) };
+}
+
 const MOZ_APP_VENDOR_IMPLY_REGEX = /imply_option\("MOZ_APP_VENDOR",\s*"[^"]*"\)/;
 const BRANDING_CONFIGURE_MANAGED_KEYS = new Set([
   'MOZ_APP_DISPLAYNAME',
@@ -164,7 +181,7 @@ function buildConfigureScriptContent(
   if (vendorPlacement === 'branding-configure') {
     managedLines.push(`MOZ_APP_VENDOR="${escapeShellValue(config.vendor)}"`);
   }
-  managedLines.push(`MOZ_MACBUNDLE_ID="${escapeShellValue(config.appId)}"`);
+  managedLines.push(`MOZ_MACBUNDLE_ID="${escapeShellValue(splitAppId(config.appId).leaf)}"`);
 
   const preservedLines = existingContent ? extractPreservedConfigureLines(existingContent) : [];
   const body = [...managedLines, ...preservedLines].join('\n');
@@ -202,7 +219,9 @@ function isConfigureScriptCurrent(
   if (assignments.get('MOZ_APP_DISPLAYNAME') !== `"${escapeShellValue(config.name)}"`) {
     return false;
   }
-  if (assignments.get('MOZ_MACBUNDLE_ID') !== `"${escapeShellValue(config.appId)}"`) {
+  if (
+    assignments.get('MOZ_MACBUNDLE_ID') !== `"${escapeShellValue(splitAppId(config.appId).leaf)}"`
+  ) {
     return false;
   }
   const vendorValue = assignments.get('MOZ_APP_VENDOR');

@@ -188,6 +188,22 @@ describe('generateMozconfig', () => {
     );
   });
 
+  it('emits --with-distribution-id from the appId prefix ahead of the templates', async () => {
+    // Upstream composes the mac bundle id as
+    // <distribution-id>.<MOZ_MACBUNDLE_ID>; branding configure.sh carries
+    // the leaf, the generated mozconfig must carry the prefix. appId
+    // 'test.browser.id' → prefix 'test.browser'.
+    mockBrandingMozBuildExists();
+    stubReadTemplates(`COMMON_OPT=\${name}${BRANDING_DIRECTIVE}`, 'PLATFORM_OPT=${vendor}');
+
+    await generateMozconfig('/configs', '/engine', config);
+
+    expect(mockWriteText).toHaveBeenCalledWith(
+      '/engine/mozconfig',
+      expect.stringContaining('ac_add_options --with-distribution-id=test.browser\n')
+    );
+  });
+
   it('skips common template when it does not exist', async () => {
     mockPathExists.mockImplementation((probedPath: string) => {
       // Common does not exist; platform does; branding moz.build does.

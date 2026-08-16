@@ -5,7 +5,7 @@ import { MozconfigError } from '../errors/build.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { getPlatform } from '../utils/platform.js';
-import { BrandingMozconfigMismatchError } from './branding.js';
+import { BrandingMozconfigMismatchError, splitAppId } from './branding.js';
 
 /**
  * Template variables for mozconfig generation.
@@ -129,6 +129,15 @@ export async function generateMozconfig(
   };
 
   let content = '';
+
+  // Bundle identity: branding configure.sh carries only the LEAF of appId
+  // (see splitAppId in branding.ts — upstream composes the mac bundle id as
+  // <distribution-id>.<MOZ_MACBUNDLE_ID>); the prefix travels here so the
+  // two halves can never drift apart.
+  const { distributionId } = splitAppId(config.appId);
+  content +=
+    `# FireForge identity (generated from fireforge.json appId)\n` +
+    `ac_add_options --with-distribution-id=${distributionId}\n\n`;
 
   // Read common config if it exists
   if (await pathExists(commonPath)) {

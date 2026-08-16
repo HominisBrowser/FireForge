@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.42.0
+
+### macOS bundle identity
+
+- `MOZ_MACBUNDLE_ID` in the generated branding `configure.sh` now carries only the LEAF segment of `appId`, and the generated mozconfig emits `ac_add_options --with-distribution-id=<appId prefix>` — upstream `toolkit/moz.configure` composes `CFBundleIdentifier` as `<distribution-id>.<MOZ_MACBUNDLE_ID>`, so writing the full reverse-domain `appId` double-prefixed the shipped bundle id (observed: `org.mozilla.org.hominis.browser`). A `configure.sh` carrying the full `appId` now reads as stale and is rewritten.
+
 ## 0.41.0
 
 ### Release and build integrity

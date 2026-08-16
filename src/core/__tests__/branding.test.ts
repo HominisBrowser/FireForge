@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isBrandingSetup, setupBranding } from '../branding.js';
+import { isBrandingSetup, setupBranding, splitAppId } from '../branding.js';
 
 vi.mock('../../utils/fs.js', () => ({
   readText: vi.fn(),
@@ -38,7 +38,7 @@ describe('isBrandingSetup', () => {
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 MOZ_APP_DISPLAYNAME="MyBrowser"
-MOZ_MACBUNDLE_ID="org.example.mybrowser"
+MOZ_MACBUNDLE_ID="mybrowser"
 `);
       }
       if (filePath.endsWith('brand.properties')) {
@@ -89,7 +89,7 @@ project_flag(
       Promise.resolve(filePath.endsWith('configure.sh'))
     );
     vi.mocked(readText).mockResolvedValue(
-      'MOZ_APP_DISPLAYNAME="OldBrowser"\nMOZ_MACBUNDLE_ID="org.example.mybrowser"\n'
+      'MOZ_APP_DISPLAYNAME="OldBrowser"\nMOZ_MACBUNDLE_ID="mybrowser"\n'
     );
 
     await expect(isBrandingSetup('/engine', config)).resolves.toBe(false);
@@ -103,7 +103,7 @@ project_flag(
       [
         'MOZ_APP_DISPLAYNAME="MyBrowser"',
         'MOZ_APP_VENDOR="My Company"',
-        'MOZ_MACBUNDLE_ID="org.example.mybrowser"',
+        'MOZ_MACBUNDLE_ID="mybrowser"',
         'MOZ_APP_REMOTINGNAME=hominis-dev',
         'MOZ_DEV_EDITION=1',
         '',
@@ -130,7 +130,7 @@ project_flag(
 
 MOZ_APP_DISPLAYNAME="MyBrowser"
 MOZ_APP_VENDOR="My Company"
-MOZ_MACBUNDLE_ID="org.example.mybrowser"
+MOZ_MACBUNDLE_ID="mybrowser"
 `);
       }
       if (filePath.endsWith('brand.properties')) {
@@ -177,7 +177,7 @@ trademarkInfo = { " " }
 
 MOZ_APP_DISPLAYNAME="MyBrowser"
 MOZ_APP_VENDOR="My Company"
-MOZ_MACBUNDLE_ID="org.example.mybrowser"
+MOZ_MACBUNDLE_ID="mybrowser"
 `);
       }
       if (filePath.includes('/toolkit/moz.configure')) {
@@ -420,10 +420,40 @@ project_flag(
       .mocked(writeTextIfChanged)
       .mock.calls.find((call) => call[0].endsWith('configure.sh'));
     expect(configureCall?.[1]).toContain('MOZ_APP_DISPLAYNAME="MyBrowser"');
-    expect(configureCall?.[1]).toContain('MOZ_MACBUNDLE_ID="org.example.mybrowser"');
+    expect(configureCall?.[1]).toContain('MOZ_MACBUNDLE_ID="mybrowser"');
     expect(configureCall?.[1]).toContain('MOZ_APP_REMOTINGNAME=hominis-dev');
     expect(configureCall?.[1]).toContain('MOZ_DEV_EDITION=1');
     expect(configureCall?.[1]).not.toContain('OldBrowser');
     expect(configureCall?.[1]).not.toContain('old.bundle');
+  });
+});
+
+describe('splitAppId', () => {
+  it('splits a reverse-domain appId into distribution id and leaf', () => {
+    expect(splitAppId('org.example.mybrowser')).toEqual({
+      distributionId: 'org.example',
+      leaf: 'mybrowser',
+    });
+    expect(splitAppId('org.hominis.browser')).toEqual({
+      distributionId: 'org.hominis',
+      leaf: 'browser',
+    });
+  });
+});
+
+describe('doubled-bundle-id regression', () => {
+  // Upstream composes the bundle id as <distribution-id>.<MOZ_MACBUNDLE_ID>;
+  // a configure.sh carrying the FULL appId is exactly the bug that shipped
+  // org.mozilla.org.hominis.browser. Such content must read as stale so
+  // setupBranding rewrites it to the leaf.
+  it('treats a configure.sh carrying the full appId as stale', async () => {
+    vi.mocked(pathExists).mockImplementation((filePath: string) =>
+      Promise.resolve(filePath.endsWith('configure.sh'))
+    );
+    vi.mocked(readText).mockResolvedValue(
+      'MOZ_APP_DISPLAYNAME="MyBrowser"\nMOZ_MACBUNDLE_ID="org.example.mybrowser"\n'
+    );
+
+    await expect(isBrandingSetup('/engine', config)).resolves.toBe(false);
   });
 });

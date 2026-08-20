@@ -71,7 +71,7 @@ vi.mock('../../core/furnace-apply-output.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', () => ({
   runFurnaceMutation: vi.fn((_root: string, _kind: string, body: (ctx: unknown) => unknown) =>
-    body({ registerJournal: vi.fn(), registerCleanup: vi.fn() })
+    body({ registerJournal: vi.fn(), registerCleanup: vi.fn(), markRolledBack: vi.fn() })
   ),
 }));
 

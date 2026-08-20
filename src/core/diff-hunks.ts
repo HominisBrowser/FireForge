@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-/* eslint-disable @typescript-eslint/no-non-null-assertion --
- * This module is a tight DP/backtrack line-diff whose bounds are checked
- * structurally (every index into `ops`, `dp`, or the line arrays is either
- * guarded by an explicit `k < range.end` / `i <= m` loop condition or sits
- * inside an array built and consumed in the same function). Wrapping every
- * access in an `if (value === undefined) throw` branch would bloat the hot
- * path without catching a real class of bugs — the non-null assertions here
- * encode the invariant the surrounding logic already guarantees.
- */
+import { assert, expectDefined } from '../utils/assert.js';
 
 /**
  * An edit op produced by {@link computeLineDiff}. Indices are 0-based into the
@@ -87,9 +79,34 @@ export function computeLineDiff(
   const m = oldLines.length;
   const n = newLines.length;
 
+  // The DP below indexes `dp`, `oldLines`, and `newLines` about 4·m·n times
+  // for a worst-case pair, so its bounds are established once here rather
+  // than re-checked per access. Callers gate on LCS_LINE_LIMIT before
+  // reaching this function; if that gate is ever moved or removed, this is
+  // where the resulting allocation blow-up surfaces as a named failure
+  // instead of an out-of-memory crash.
+  assert(
+    m <= LCS_LINE_LIMIT && n <= LCS_LINE_LIMIT,
+    () => `line diff inputs are within LCS_LINE_LIMIT (got ${m}x${n}, limit ${LCS_LINE_LIMIT})`
+  );
+
   const dp = new Int32Array((m + 1) * (n + 1));
   const stride = n + 1;
 
+  // Every index into `dp` is `row * stride + column` with row ≤ m and
+  // column ≤ n, which is exactly the extent allocated above.
+  assert(dp.length === (m + 1) * stride, 'DP table is sized to its stride');
+
+  /* eslint-disable @typescript-eslint/no-non-null-assertion --
+   * The DP fill and backtrack below are the one hot path in this module:
+   * O(m·n) iterations, up to ~4M for a LCS_LINE_LIMIT-sized pair. Every
+   * index is structurally bounded by the loop conditions (`i <= m`,
+   * `j <= n`, `i > 0`, `j > 0`) against the extents asserted immediately
+   * above, so the non-null assertions encode a property already checked
+   * once per call rather than one that is never checked at all. The
+   * rendering loops further down, which run O(ops), use `expectDefined`
+   * instead — this exemption is for the quadratic block only.
+   */
   for (let i = 1; i <= m; i++) {
     const oldLine = oldLines[i - 1]!;
     const rowOffset = i * stride;
@@ -133,6 +150,7 @@ export function computeLineDiff(
     ops.push({ type: 'insert', newIndex: j - 1, line: newLines[j - 1]! });
     j--;
   }
+  /* eslint-enable @typescript-eslint/no-non-null-assertion */
   ops.reverse();
   return ops;
 }
@@ -148,9 +166,13 @@ export function buildHunks(ops: readonly LineDiffOp[], context: number): DiffHun
   const editRanges: { start: number; end: number }[] = [];
   let i = 0;
   while (i < ops.length) {
-    if (ops[i]!.type !== 'equal') {
+    if (expectDefined(ops[i], () => `diff op at index ${i}`).type !== 'equal') {
       const start = i;
-      while (i < ops.length && ops[i]!.type !== 'equal') i++;
+      while (
+        i < ops.length &&
+        expectDefined(ops[i], () => `diff op at index ${i}`).type !== 'equal'
+      )
+        i++;
       editRanges.push({ start, end: i });
     } else {
       i++;
@@ -175,7 +197,7 @@ export function buildHunks(ops: readonly LineDiffOp[], context: number): DiffHun
     let oldLine = 1;
     let newLine = 1;
     for (let k = 0; k < range.start; k++) {
-      const op = ops[k]!;
+      const op = expectDefined(ops[k], () => `diff op at index ${k}`);
       if (op.type === 'equal') {
         oldLine++;
         newLine++;
@@ -190,7 +212,7 @@ export function buildHunks(ops: readonly LineDiffOp[], context: number): DiffHun
     let oldLength = 0;
     let newLength = 0;
     for (let k = range.start; k < range.end; k++) {
-      const op = ops[k]!;
+      const op = expectDefined(ops[k], () => `diff op at index ${k}`);
       if (op.type === 'equal') {
         hunkLines.push({ marker: ' ', content: op.line });
         oldLength++;
@@ -251,13 +273,13 @@ function coalescedHunk(
 
   const hunkLines: HunkLine[] = [];
   for (let k = contextStart; k < firstDiff; k++) {
-    hunkLines.push({ marker: ' ', content: oldLines[k]! });
+    hunkLines.push({ marker: ' ', content: expectDefined(oldLines[k], () => `old line ${k}`) });
   }
   for (let k = firstDiff; k <= lastOldDiff; k++) {
-    hunkLines.push({ marker: '-', content: oldLines[k]! });
+    hunkLines.push({ marker: '-', content: expectDefined(oldLines[k], () => `old line ${k}`) });
   }
   for (let k = firstDiff; k <= lastNewDiff; k++) {
-    hunkLines.push({ marker: '+', content: newLines[k]! });
+    hunkLines.push({ marker: '+', content: expectDefined(newLines[k], () => `new line ${k}`) });
   }
   // Trailing context comes from the common suffix, which lives at
   // DIFFERENT indices on each side (lastOldDiff+1… vs lastNewDiff+1…).
@@ -266,7 +288,7 @@ function coalescedHunk(
   // lines were excluded from the @@ header lengths entirely — so on
   // >LCS_LINE_LIMIT files the rendered header disagreed with the body.
   for (let k = lastNewDiff + 1; k <= contextEndNew; k++) {
-    hunkLines.push({ marker: ' ', content: newLines[k]! });
+    hunkLines.push({ marker: ' ', content: expectDefined(newLines[k], () => `new line ${k}`) });
   }
 
   const leadingContext = firstDiff - contextStart;

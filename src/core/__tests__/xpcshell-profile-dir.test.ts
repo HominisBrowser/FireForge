@@ -19,7 +19,7 @@ async function pathExistsOnDisk(path: string): Promise<boolean> {
   }
 }
 
-describe('withXpcshellProfileDir (FORGE G15b)', () => {
+describe('withXpcshellProfileDir', () => {
   const savedEnv = process.env[XPCSHELL_PROFILE_ENV_VAR];
 
   afterEach(() => {

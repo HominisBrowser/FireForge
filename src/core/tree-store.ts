@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Verification-tree storage and lifecycle for `fireforge tree` (FORGE G15).
+ * Verification-tree storage and lifecycle for `fireforge tree`.
  *
  * A tree is a FULL project-root CoW snapshot under
  * `.fireforge/trees/<name>` — `getProjectRoot()` walks up from cwd, so

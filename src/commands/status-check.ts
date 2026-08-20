@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `status --check` enforcement policy (FORGE G1). Turns the classified
+ * `status --check` enforcement policy. Turns the classified
  * status view into a CI-enforceable non-zero exit: the default policy
  * fails on any classification outside {patch-backed, branding, furnace},
  * and `--fail-on <class,...>` replaces that set for finer control.
@@ -25,7 +25,7 @@ const ALL_CLASSIFICATIONS: readonly FileClassification[] = [
  * Default `--check` policy: everything outside {patch-backed, branding,
  * furnace, binary-unsupported} fails. `binary-unsupported` is deliberately
  * excluded — an honest "cannot compare" must not keep the gate permanently
- * red (FORGE J3); strict CI can opt in via `--fail-on binary-unsupported`.
+ * red; strict CI can opt in via `--fail-on binary-unsupported`.
  */
 const DEFAULT_FAIL_CLASSIFICATIONS: readonly FileClassification[] = [
   'unmanaged',

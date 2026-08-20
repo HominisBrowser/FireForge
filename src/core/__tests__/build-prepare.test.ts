@@ -31,6 +31,7 @@ vi.mock('../git-status.js', () => ({
 vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
   info: vi.fn(),
+  notice: vi.fn(),
   verbose: vi.fn(),
   spinner: vi.fn(() => ({
     message: vi.fn(),
@@ -62,13 +63,14 @@ vi.mock('../furnace-operation.js', () => ({
       body({
         registerJournal: vi.fn(),
         registerCleanup: vi.fn(),
+        markRolledBack: vi.fn(),
       })
   ),
 }));
 
 import type { FireForgeConfig, ProjectPaths } from '../../types/config.js';
 import { pathExists } from '../../utils/fs.js';
-import { info, spinner, warn } from '../../utils/logger.js';
+import { info, notice, spinner, warn } from '../../utils/logger.js';
 import { isBrandingSetup, setupBranding } from '../branding.js';
 import { prepareBuildEnvironment, requiresFullBuildForIncrementalTest } from '../build-prepare.js';
 import { applyAllComponents } from '../furnace-apply.js';
@@ -89,6 +91,7 @@ const mockRunFurnaceMutation = vi.mocked(runFurnaceMutation);
 const mockPathExists = vi.mocked(pathExists);
 const mockWarn = vi.mocked(warn);
 const mockInfo = vi.mocked(info);
+const mockNotice = vi.mocked(notice);
 const mockSpinner = vi.mocked(spinner);
 
 const paths: ProjectPaths = {
@@ -280,7 +283,10 @@ describe('prepareBuildEnvironment', () => {
 
     await prepareBuildEnvironment('/project', paths, config);
 
-    const bannerCall = mockInfo.mock.calls.find(
+    // FireForge's own explanatory banners ride the warning channel so an
+    // agent output filter that keeps only warnings and errors cannot drop
+    // them.
+    const bannerCall = mockNotice.mock.calls.find(
       (call) => typeof call[0] === 'string' && call[0].includes('source → engine sync')
     );
     expect(bannerCall).toBeDefined();
@@ -304,7 +310,7 @@ describe('prepareBuildEnvironment', () => {
 
     await prepareBuildEnvironment('/project', paths, config);
 
-    const bannerCall = mockInfo.mock.calls.find(
+    const bannerCall = mockNotice.mock.calls.find(
       (call) => typeof call[0] === 'string' && call[0].includes('source → engine sync')
     );
     expect(bannerCall).toBeUndefined();
@@ -426,10 +432,15 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
     expect(result.reconfigured).toBe(true);
     expect(runMachCapture).toHaveBeenCalledWith(['configure'], '/project/engine');
-    expect(mockInfo).toHaveBeenCalledWith(
+    // The "why is this run slow" explanation is emitted at warning
+    // severity, so an agent output filter cannot drop it and leave a
+    // multi-minute reconfigure unexplained.
+    expect(mockNotice).toHaveBeenCalledWith(
       expect.stringContaining('Backend config changed; running backend regeneration first')
     );
-    expect(mockInfo).toHaveBeenCalledWith('Backend command: mach configure');
+    expect(mockNotice).toHaveBeenCalledWith(
+      expect.stringContaining('Backend command: mach configure')
+    );
     expect(mockInfo).toHaveBeenCalledWith('Backend regeneration succeeded; continuing with build.');
   });
 

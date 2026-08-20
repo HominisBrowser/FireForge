@@ -15,6 +15,7 @@ import {
   isBinaryFile,
   listTrackedInHead,
 } from './git-file-ops.js';
+import { readOnlyGitIndexEnv } from './git-readonly-index.js';
 import { getUntrackedFiles, getUntrackedFilesInDir } from './git-status.js';
 
 async function execGitWithAllowedExitCodes(
@@ -22,7 +23,15 @@ async function execGitWithAllowedExitCodes(
   args: string[],
   allowedExitCodes: number[] = [0]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const result = await exec('git', args, { cwd: repoDir });
+  // Honour a read-only command's private-index scope: the `--intent-to-add`
+  // / `update-index` staging dance below is a genuine
+  // index write, and inside a read-only command it must land on the
+  // private index, not the primary checkout's.
+  const readOnlyIndexEnv = readOnlyGitIndexEnv(repoDir);
+  const result = await exec('git', args, {
+    cwd: repoDir,
+    ...(readOnlyIndexEnv !== undefined ? { env: readOnlyIndexEnv } : {}),
+  });
   if (allowedExitCodes.includes(result.exitCode)) {
     return result;
   }
@@ -552,7 +561,7 @@ export async function generateBinaryFilePatch(repoDir: string, filePath: string)
     // *removing* whatever entry the index carried, so any staged state that
     // arrived between the read-only diff above and this staging block (a
     // concurrent writer, or a staged-add whose worktree file was deleted)
-    // was silently discarded (FORGE H1). Restoring the captured entry
+    // was silently discarded. Restoring the captured entry
     // instead makes the cleanup exact regardless of how the entry got there.
     const priorEntry = (
       await execGitWithAllowedExitCodes(repoDir, ['ls-files', '--stage', '--', filePath])

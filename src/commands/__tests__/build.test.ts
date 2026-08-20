@@ -337,7 +337,7 @@ describe('buildCommand', () => {
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Build failed after'));
   });
 
-  it('labels signal-shaped exit codes as external interruptions (FORGE F16)', async () => {
+  it('labels signal-shaped exit codes as external interruptions', async () => {
     vi.mocked(build).mockResolvedValue({
       exitCode: 144,
       attempts: 1,
@@ -353,7 +353,7 @@ describe('buildCommand', () => {
     expect((failure as Error).message).toContain('interrupted externally');
   });
 
-  it('does not add the signal-shaped note to regular failures (FORGE F16)', async () => {
+  it('does not add the signal-shaped note to regular failures', async () => {
     vi.mocked(build).mockResolvedValue({
       exitCode: 2,
       attempts: 1,

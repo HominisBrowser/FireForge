@@ -407,6 +407,9 @@ export async function furnacePreviewCommand(
     // message with no guidance. We now collect both failures and, if anything
     // went wrong, persist a `pendingRepair` marker that `fireforge doctor`
     // consumes to finish the reconciliation.
+    // Teardown restores the journal itself, so the lifecycle wrapper must not
+    // restore it again when the throw below propagates out of this body.
+    ctx.markRolledBack();
     const teardownErrors = await runPreviewTeardown(
       paths.engine,
       storiesCleanupRequired,

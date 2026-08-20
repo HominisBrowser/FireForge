@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Batched status classification (FORGE K1): `classifyFiles` builds one
+ * Batched status classification: `classifyFiles` builds one
  * patched-content context and classifies under a bounded pool. These
  * real-git cases pin that batching + concurrency changed no semantics:
  * every bucket still lands where the serial per-file classifier put it,

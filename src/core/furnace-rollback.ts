@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
+import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 
@@ -63,6 +64,14 @@ export async function snapshotDir(journal: RollbackJournal, dirPath: string): Pr
 
 /** Snapshots a file once so rollback can restore its previous contents or absence. */
 export async function snapshotFile(journal: RollbackJournal, filePath: string): Promise<void> {
+  // Journal keys are the paths rollback will later write back to, and the
+  // restore runs from whatever cwd the process happens to be in by then. A
+  // relative key would therefore restore somewhere other than where the
+  // snapshot was taken — silently, and only on the failure path where nobody
+  // is watching. Every caller composes an absolute path already; this keeps
+  // it that way.
+  assert(isAbsolute(filePath), () => `snapshot path is absolute (got "${filePath}")`);
+
   if (journal.files.has(filePath)) {
     return;
   }
@@ -78,6 +87,33 @@ export async function snapshotFile(journal: RollbackJournal, filePath: string): 
     content,
     mode: fileStat.mode,
   });
+}
+
+/**
+ * Asserts that a file about to be mutated was already snapshotted into the
+ * journal that will undo the mutation.
+ *
+ * The snapshot list and the mutation list are separately maintained in every
+ * caller that writes conditionally, and they drift: a new conditional write
+ * whose matching snapshot condition was not updated produces a file the
+ * rollback cannot restore, and nothing notices until a real failure. This
+ * checks the pairing at the point of the write, where the two lists are
+ * supposed to agree.
+ *
+ * @param journal - The journal that will restore this file
+ * @param filePath - Absolute path about to be written
+ * @param context - What is about to write it, for the failure message
+ * @throws {@link InternalInvariantError} when the file was never snapshotted.
+ */
+export function assertSnapshotted(
+  journal: RollbackJournal,
+  filePath: string,
+  context: string
+): void {
+  assert(
+    journal.files.has(filePath),
+    () => `${context} snapshotted "${filePath}" before mutating it`
+  );
 }
 
 async function restoreFile(filePath: string, snapshot: FileSnapshot): Promise<void> {
@@ -149,6 +185,14 @@ export async function restoreRollbackJournal(journal: RollbackJournal): Promise<
     const summary = errors.map((e) => `${e.path}: ${e.error}`).join('; ');
     throw new FurnaceError(`Rollback failed to restore ${errors.length} file(s): ${summary}`);
   }
+
+  // Directory removal is only safe once every file is back where it belongs:
+  // a created directory may hold a restored file, and removing it recursively
+  // would undo the restore we just performed. The throw above is what
+  // normally enforces this; the assertion names it so a future early-return
+  // or error-swallowing edit cannot quietly reach the rm loop with failures
+  // outstanding.
+  assert(errors.length === 0, 'all journal files restored before created directories are removed');
 
   const createdDirs = [...journal.createdDirs].sort((left, right) => right.length - left.length);
   for (const dirPath of createdDirs) {

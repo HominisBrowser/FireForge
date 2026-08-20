@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Behavioural tests for the patch directory lock's `--wait-lock` plumbing
- * (FORGE J4): the wait budget overrides the default timeout, the timeout
+ *: the wait budget overrides the default timeout, the timeout
  * message leads with the wait remedy instead of `rm -rf`, and the default
  * (no options) path stays untouched for the existing callers.
  */

@@ -80,7 +80,7 @@ export interface AddTokenResult {
   /**
    * When the add skipped because the token already lives in the TARGET
    * category, names where the existing base-`:root` declaration sits so
-   * the skip message can point at it (FORGE G3).
+   * the skip message can point at it.
    */
   skippedExisting?: TokenDeclarationLocation;
 }
@@ -220,7 +220,7 @@ async function addVariantTokenToCSS(
 }
 
 /**
- * Evaluates base-`:root` idempotency for one add (FORGE G3): a token
+ * Evaluates base-`:root` idempotency for one add: a token
  * already declared in the TARGET category skips; a token declared
  * anywhere else in the base block refuses loud — the pre-0.40.0
  * whole-file substring check silently skipped (and discarded
@@ -261,7 +261,7 @@ export async function validateTokenAdd(root: string, options: AddTokenOptions): 
   validateDarkValue(options);
   // Variant mode targets a `:root<attr>` block, not a category section —
   // but the required --category must still name a REAL category rather
-  // than being silently discarded (FORGE G3 bypass 2).
+  // than being silently discarded (bypass 2).
   if (normalizeVariantOption(options) !== undefined) {
     await assertTokenCategoryExists(engineDir, tokensCssPath, options.category, false);
     return;
@@ -329,7 +329,7 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
   // base token is not short-circuited by the global idempotency check.
   if (normalizedVariant !== undefined) {
     // The required --category must name a real category even though the
-    // declaration routes into the variant block (FORGE G3 bypass 2).
+    // declaration routes into the variant block (bypass 2).
     await assertTokenCategoryExists(engineDir, tokensCssPath, options.category, false);
     const { added } = await addVariantTokenToCSS(
       engineDir,
@@ -387,7 +387,7 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
  * pair the media query with `:root[data-theme="dark"]` /
  * `:root[data-theme="light"]` blocks (viewer-toggle theming) require every
  * themed list to declare identical token sets, so an override add that only
- * wrote the media block was a guaranteed half-finished edit (FORGE F8).
+ * wrote the media block was a guaranteed half-finished edit.
  */
 const THEME_ATTRIBUTE_VARIANTS = [
   { variant: '[data-theme="dark"]', pick: 'dark' },
@@ -459,7 +459,7 @@ async function addTokenToCSS(
   const content = await readText(filePath);
   const lines = content.split('\n');
 
-  // Per-category idempotency (FORGE G3): a declaration in the TARGET
+  // Per-category idempotency: a declaration in the TARGET
   // category skips; a declaration elsewhere in the base :root block
   // throws instead of silently skipping (and silently discarding
   // --create-category).

@@ -23,6 +23,9 @@
  * of reporting phantom test failures (or phantom passes).
  */
 
+import type { DisplaySleepState } from './display-state.js';
+import { hasKnownTeardownNoise } from './mach-known-noise-filter.js';
+
 /** How a completed harness run should be interpreted. */
 export type HarnessRunClassification =
   'tests-ran-ok' | 'test-failures' | 'harness-crash' | 'no-tests';
@@ -72,6 +75,13 @@ export interface HarnessRunVerdict extends HarnessSummaryCounts {
    * Callers must fail the run and surface the evidence.
    */
   greenSummaryRejected?: GreenSummaryRejection;
+  /**
+   * Short parenthetical appended to the `FIREFORGE-VERDICT:` line when the
+   * bare status would under-describe the run — currently "harness teardown
+   * noise ignored" and the headed display-asleep stall. Advisory text
+   * only; the status and reason keys are unaffected.
+   */
+  note?: string;
 }
 
 /** Why a green-looking embedded summary was not trusted. */
@@ -555,6 +565,22 @@ export function classifyHarnessRun(
   const failureBlocks = collectUnexpectedFailureBlocks(output);
   const secondaryHarnessSignature =
     firstRealFailure !== undefined ? detectSecondaryHarnessNoise(output) : undefined;
+  // Checked BEFORE signature detection: a suite that ran clean
+  // and then died in KNOWN upstream teardown noise is a PASS, not a crash.
+  // The teardown traceback matches the startup-traceback cluster, and the
+  // existing green-summary veto over that cluster requires a `SUITE_END`
+  // marker — which this very traceback is what prevents from printing. So
+  // a substantively green suite (`Ran N checks` / `Unexpected results: 0`,
+  // no unexpected lines) was reported CRASH, indistinguishable at the
+  // summary level from a red run. Every hard-evidence veto still applies:
+  // a crash marker, a non-zero unexpected count, any real TEST-UNEXPECTED
+  // line, the shutdown-re-entry shape, or a requested file that never
+  // started keeps the run failing. Only the missing shutdown marker is
+  // forgiven, and only when the recognized teardown traceback explains it.
+  if (isGreenSuiteEndedByKnownTeardownNoise(output, counts, realFailures, requestedPaths)) {
+    return { kind: 'tests-ran-ok', note: 'harness teardown noise ignored', ...counts };
+  }
+
   const signature = detectHarnessCrashSignature(output);
   if (signature) {
     return { kind: 'harness-crash', signature, ...counts };
@@ -614,6 +640,38 @@ export function classifyHarnessRun(
 }
 
 /**
+ * True when the capture shows a substantively GREEN suite whose only
+ * unexplained residue is the recognized mozsystemmonitor teardown
+ * traceback.
+ *
+ * Requires, all of them: tests actually executed; the summary printed
+ * `Ran N checks` with an explicit `Unexpected results: 0`; no non-zero
+ * unexpected count anywhere; no real `TEST-UNEXPECTED-*`/assertion line;
+ * no crash marker; every requested test file both started and ended; and
+ * the recognized teardown traceback is present. Anything short of that
+ * falls through to the normal (failing) chain.
+ */
+function isGreenSuiteEndedByKnownTeardownNoise(
+  output: string,
+  counts: HarnessSummaryCounts,
+  realFailures: readonly string[],
+  requestedPaths: readonly string[]
+): boolean {
+  if (!hasKnownTeardownNoise(output)) return false;
+  if (!hasExecutionSignal(output)) return false;
+  if (counts.checks === undefined || counts.unexpected !== 0) return false;
+  if (!GREEN_UNEXPECTED_SUMMARY_PATTERN.test(output)) return false;
+  if (NONZERO_UNEXPECTED_SUMMARY_PATTERN.test(output)) return false;
+  if (realFailures.length > 0) return false;
+  if (findCrashMarkerLine(output) !== undefined) return false;
+  // The post-green shutdown re-entry shape is deliberately a crash verdict
+  // on an otherwise-green log; it must not be swept up here.
+  if (SHUTDOWN_REENTRY_PATTERN.test(output)) return false;
+  const completeness = analyzeTestCompleteness(output, requestedPaths);
+  return completeness.neverStarted.length === 0 && completeness.neverEnded.length === 0;
+}
+
+/**
  * Parses the numeric counts from the harness's embedded result summary
  * (`Ran N checks` / `Unexpected results: N`). The LAST occurrence of each
  * wins — a multi-suite run prints one summary per suite and the final one
@@ -661,8 +719,9 @@ export function formatFireforgeVerdictLine(
     (verdict.checks !== undefined ? ` checks=${verdict.checks}` : '') +
     (verdict.unexpected !== undefined ? ` unexpected=${verdict.unexpected}` : '');
   const shardSuffix = shards ? ` shards=${shards.passed}/${shards.total}` : '';
+  const note = verdict.note !== undefined ? ` (${verdict.note})` : '';
   if (verdict.kind === 'tests-ran-ok') {
-    return `FIREFORGE-VERDICT: PASS${counts}${shardSuffix}`;
+    return `FIREFORGE-VERDICT: PASS${counts}${shardSuffix}${note}`;
   }
   const reason =
     verdict.kind === 'harness-crash'
@@ -670,7 +729,7 @@ export function formatFireforgeVerdictLine(
       : verdict.kind === 'no-tests'
         ? 'no-tests'
         : 'test-failures';
-  return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${shardSuffix}`;
+  return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${shardSuffix}${note}`;
 }
 
 /**
@@ -726,22 +785,148 @@ export function buildHarnessCrashMessage(
 }
 
 /**
+ * The three recorded causes of the `timed out … with no output` / `Ran 0
+ * checks` signature, ordered so one stall points at the discriminating
+ * next step. Printed verbatim under the hint.
+ */
+const NO_OUTPUT_STALL_TRIAGE = [
+  '  1. A sleeping or locked display on an unattended HEADED run (macOS). The browser never ' +
+    'paints and never reaches its first test.',
+  '  2. A headless SWGL compositor failure — re-run with --headless to separate this from (1): ' +
+    'if --headless passes, the stall was display/compositor-side, not product-side.',
+  '  3. A broken `chrome://` image on the startup page, which stalls first paint. Run a ' +
+    'known-good control test first; if the control stalls too, the cause is not the test ' +
+    'under investigation.',
+];
+
+/**
  * Optional hint appended to the harness-crash message when a HEADED run on
- * macOS died at the no-output timeout: the display may have slept and frozen
- * the headed browser before any test started (FORGE F17). Pure — the
- * platform is injected so unit tests need no mocking.
+ * macOS died at the no-output timeout.
+ *
+ * When `displayState` names a MEASURED display state, the hint states it
+ * as fact rather than as one of three possibilities — that is the whole
+ * point of probing: an operator staring at a bare test failure should not
+ * have to rediscover that their machine dimmed. `caffeinate` is described
+ * accurately (it prevents sleep; it cannot wake an already-sleeping
+ * display), because the previous wording sent operators to a command that
+ * could not have helped them.
+ *
+ * Pure — the platform and the probed state are injected so unit tests need
+ * no mocking.
+ *
+ * @param signature - The recognized crash shape
+ * @param context - Run mode, platform, and the probed display state
+ * @returns The hint text, or undefined when the shape does not apply
  */
 export function headedNoOutputTimeoutHint(
   signature: HarnessCrashSignature,
-  context: { headless: boolean; platform: string }
+  context: { headless: boolean; platform: string; displayState?: DisplaySleepState }
 ): string | undefined {
   if (context.platform !== 'darwin' || context.headless) return undefined;
   if (!signature.reason.includes('no-output timeout')) return undefined;
+
+  const lead =
+    context.displayState === 'asleep'
+      ? 'Hint: this was a HEADED run on macOS and the display was MEASURED ASLEEP ' +
+        '(IODisplayWrangler below its awake power state). A headed browser on a sleeping ' +
+        'display never paints and never starts a test, so this stall is environmental — not a ' +
+        'product or test failure.'
+      : context.displayState === 'awake'
+        ? 'Hint: this was a HEADED run on macOS that died at the no-output timeout. The display ' +
+          'was measured AWAKE, so the sleeping-display cause below is ruled out for this run.'
+        : 'Hint: this was a HEADED run on macOS that died at the no-output timeout. The display ' +
+          'state could not be measured, so all three causes below remain open.';
+
+  const remedy =
+    'Note that `caffeinate -disu` PREVENTS sleep; it cannot WAKE a display that is already ' +
+    'asleep. Wake the display (or run on an attended machine), or pass --headless.';
+
+  return `${lead}\n\nKnown causes of this exact signature:\n${NO_OUTPUT_STALL_TRIAGE.join(
+    '\n'
+  )}\n\n${remedy}`;
+}
+
+/**
+ * Verdict-line note for a headed no-output stall whose display was
+ * measured asleep. Returned as the parenthetical the verdict line carries,
+ * so the one greppable line an automated consumer reads already names the
+ * environmental cause instead of a bare `FAIL reason=crash`.
+ */
+export function headedDisplayAsleepVerdictNote(
+  signature: HarnessCrashSignature,
+  context: { headless: boolean; platform: string; displayState: DisplaySleepState }
+): string | undefined {
+  if (context.platform !== 'darwin' || context.headless) return undefined;
+  if (context.displayState !== 'asleep') return undefined;
+  if (!signature.reason.includes('no-output timeout')) return undefined;
+  return 'headed run stalled with the display asleep';
+}
+
+/**
+ * Exit codes that mean "the child died on SIGSEGV": Node reports a
+ * signal-killed child as the negated signal number, while a shell layer
+ * in between reports `128 + signal`. Both shapes reach FireForge
+ * depending on how mach wrapped the harness.
+ */
+const SIGSEGV_EXIT_CODES = new Set([-11, 139]);
+
+/**
+ * True when a harness run died on SIGSEGV having produced no test evidence
+ * whatsoever.
+ *
+ * `xpcshell return code: -11` with zero output is the signature of an
+ * `.sys.mjs` that a packaged module imports but whose `EXTRA_JS_MODULES`
+ * registration never landed: the module loader faults before any logging
+ * exists, so there is no import error, no stack, no test output — just a
+ * dead process. It is indistinguishable from a genuine product crash
+ * unless someone names the cause.
+ *
+ * "Produced no evidence" is deliberately semantic rather than a byte
+ * budget: no execution signal, no real failure line, and no mozcrash
+ * marker. A run that got far enough to start a test, report a failure, or
+ * leave a crash dump has evidence of its own, and the regular diagnosis
+ * chain reads it — this branch is only for the case where there is
+ * nothing else to say.
+ *
+ * Pure; exported for direct unit testing.
+ *
+ * @param exitCode - The harness process exit code
+ * @param output - Combined stdout/stderr from the run
+ */
+export function isSilentSegfault(exitCode: number, output: string): boolean {
+  if (!SIGSEGV_EXIT_CODES.has(exitCode)) return false;
+  if (hasExecutionSignal(output)) return false;
+  if (realUnexpectedFailureLines(output).length > 0) return false;
+  return findCrashMarkerLine(output) === undefined;
+}
+
+/**
+ * Names the known cause of a silent SIGSEGV so the operator checks
+ * moz.build registration FIRST instead of paying a full rebuild cycle to
+ * rediscover it.
+ *
+ * @param exitCode - The harness process exit code
+ * @param requestedPaths - Test paths the run requested
+ */
+export function buildSilentSegfaultMessage(
+  exitCode: number,
+  requestedPaths: readonly string[]
+): string {
   return (
-    'Hint: this was a HEADED run on macOS that died at the no-output timeout. ' +
-    'A common cause is the display going to sleep mid-run, which freezes the headed browser ' +
-    'before any test starts. Wrap headed runs in `caffeinate -dimsu <command>` to keep the ' +
-    'display awake, or pass --headless.'
+    `The test harness died on SIGSEGV (exit ${exitCode}) having printed NO output at all.\n\n` +
+    'Known cause, check this FIRST: a `.sys.mjs` imported from a packaged module whose ' +
+    '`EXTRA_JS_MODULES` (or namespaced module list) registration is missing from moz.build. ' +
+    'The module loader faults before any logging exists, so an unregistered module produces ' +
+    'exactly this shape — a dead process with no import error and no stack.\n\n' +
+    'What to do, in order:\n' +
+    '  1. Run `fireforge lint --per-patch`: the unregistered-system-module check names a new ' +
+    'module imported as a resource URL with no moz.build line.\n' +
+    '  2. Run `fireforge verify`: its module-resolution preflight resolves every ' +
+    '`resource:///modules/…` specifier the queue-owned modules import, including imports ' +
+    'added to an EXISTING module — the shape the new-file lint cannot see, and the one that ' +
+    'recurs.\n' +
+    '  3. Only then look for a product crash: a real one prints a crash dump or a stack.\n\n' +
+    `Requested paths: ${requestedPaths.join(', ')}`
   );
 }
 

@@ -108,7 +108,7 @@ describe('assertPlacementAvoidsReservedRanges', () => {
   });
 
   it('allows a positional insert far below the reserved block when a free ordinal stops the cascade', () => {
-    // FORGE G6: the +1 cascade must stop at the first free ordinal (403 here)
+    // The +1 cascade must stop at the first free ordinal (403 here)
     // instead of walking the whole tail into the 900-999 reserved block.
     const patches = [
       makeMetadata('400-ui-a.patch', 400),
@@ -191,10 +191,10 @@ describe('resolvePlacementPlan reserved-range wiring', () => {
     ).rejects.toThrow(/Positional insert would renumber the reserved range 095-100/);
   });
 
-  // Field report FORGE J8 claimed `export --dry-run -d "…"` drops the
+  // Field report claimed `export --dry-run -d "…"` drops the
   // description and fails its own description-required policy check. The
   // plumbing is intact end-to-end (cannot-reproduce); these pins keep it so.
-  describe('dry-run carries --description into the policy projection (FORGE J8)', () => {
+  describe('dry-run carries --description into the policy projection', () => {
     const stubSpinner = (): SpinnerHandle => ({
       message: () => undefined,
       stop: () => undefined,

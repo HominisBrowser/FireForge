@@ -392,7 +392,7 @@ describe('validateConfig', () => {
       'Config field "patchLint.checkJsCompilerOptions" requires "patchLint.checkJsStrict": true'
     );
 
-    // FORGE G5: checkJsTestFiles/checkJsTestShim cross-field validation.
+    // Cross-field validation of checkJsTestFiles / checkJsTestShim.
     expect(
       validateConfig(
         makeValidConfig({
@@ -559,7 +559,7 @@ describe('validateConfig', () => {
       })
     ).toThrow('Config field "typecheck.extraShim" must be a project-relative path');
 
-    // FORGE F12: the undefinedIdentifiers gate validates like the other
+    // The undefinedIdentifiers gate validates like the other
     // severity gates in both blocks.
     const withGates = validateConfig({
       ...makeValidConfig(),

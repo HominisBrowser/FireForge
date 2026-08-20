@@ -214,6 +214,17 @@ To fix this:
   3. Restart your terminal and try again"
 `;
 
+exports[`userMessage snapshots > InternalInvariantError 1`] = `
+"Internal error: rollback journal registered before first mutation
+
+This is a bug in FireForge itself, not a problem with your project — no configuration change on your side would have prevented it. The operation stopped at the first inconsistency rather than continuing to write.
+
+To report this:
+  1. Keep the full output above, including the stack trace.
+  2. Note the command you ran and what the project looked like at the time.
+  3. Open an issue at https://github.com/HominisBrowser/FireForge/issues"
+`;
+
 exports[`userMessage snapshots > InvalidArgumentError with argument 1`] = `
 "Invalid Argument: must be a number
 

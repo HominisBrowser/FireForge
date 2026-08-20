@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `test --build/--build-only --extend-coverage` (FORGE L1): unions the
+ * `test --build/--build-only --extend-coverage`: unions the
  * requested paths into the recorded `testPackagingCoverage` instead of
  * replacing it, under an anchor guard.
  *

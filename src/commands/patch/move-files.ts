@@ -200,7 +200,7 @@ export async function patchMoveFilesCommand(
   // content right now): the equivalent re-export choreography, in
   // EXECUTABLE order — the shrink must land before the grow, or the
   // projected cross-patch lint refuses the pair with
-  // duplicate-new-file-creation (FORGE F4).
+  // duplicate-new-file-creation.
   const applySource = formatReExportCommand(source.filename, sourceAfter, [
     '--allow-shrink',
     '--yes',

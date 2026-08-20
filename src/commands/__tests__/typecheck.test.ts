@@ -292,3 +292,49 @@ describe('typecheckCommand', () => {
     });
   });
 });
+
+describe('per-patch checkJs findings are reported in the same tally', () => {
+  it('fails a project-clean run when the per-patch pass reports an error', () => {
+    // The exact reported incident: 0 errors across 3 projects, then the
+    // immediately-following export refused on checkjs-type-error.
+    expect(() => {
+      reportResults(
+        '/project',
+        [{ project: '/project/engine/browser/jsconfig.json', issues: [], filesChecked: 12 }],
+        [
+          {
+            file: 'browser/modules/New.sys.mjs',
+            check: 'checkjs-type-error',
+            message: "Parameter 'entry' implicitly has an 'any' type.",
+            severity: 'error',
+          },
+        ]
+      );
+    }).toThrow(/1 error/);
+  });
+
+  it('still passes when the per-patch pass only reports warnings', () => {
+    expect(() => {
+      reportResults(
+        '/project',
+        [{ project: '/project/engine/browser/jsconfig.json', issues: [], filesChecked: 12 }],
+        [
+          {
+            file: 'browser/modules/New.sys.mjs',
+            check: 'checkjs-type-error',
+            message: 'soft finding',
+            severity: 'warning',
+          },
+        ]
+      );
+    }).not.toThrow();
+  });
+
+  it('is a no-op for a project with no per-patch findings', () => {
+    expect(() => {
+      reportResults('/project', [
+        { project: '/project/engine/browser/jsconfig.json', issues: [], filesChecked: 12 },
+      ]);
+    }).not.toThrow();
+  });
+});

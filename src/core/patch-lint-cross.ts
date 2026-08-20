@@ -84,7 +84,7 @@ export interface PatchQueueContext {
    * Optional patchPolicy config. When present, the forward-import rule
    * validates its "Closest legal ordinal" suggestion against the importing
    * patch's category range and suppresses it when no legal ordinal exists
-   * (FORGE F14). Absent = current behavior (hint always printed).
+   *. Absent = current behavior (hint always printed).
    */
   patchPolicy?: PatchPolicyConfig;
 }
@@ -161,7 +161,7 @@ export async function buildPatchQueueContext(
 
 // The creators map (split out of `lintPatchQueueDuplicateCreations` so
 // `status --ownership` can consume the structured data) lives in
-// `patch-lint-creators.ts` with its per-context memoisation (FORGE J1);
+// `patch-lint-creators.ts` with its per-context memoisation;
 // re-exported here so callers keep importing from `patch-lint.ts`.
 export {
   collectNewFileCreatorsByPath,
@@ -376,7 +376,7 @@ export function extractImportSpecifiersWithLines(source: string): ExtractedSpeci
  * `modifiedFileAdditions`: a patch that inserts one property into an
  * existing getter object never carries the `defineESModuleGetters(` opener
  * in its added lines, so the balanced-brace walk in
- * {@link extractImportSpecifiersWithLines} cannot see it (FORGE F3). The
+ * {@link extractImportSpecifiersWithLines} cannot see it. The
  * URL-scheme restriction keeps ordinary object literals
  * (`label: "Foo.sys.mjs"`) out; the leaf-extension filter downstream does
  * the rest.
@@ -653,7 +653,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
     // when the only fix is reordering. When patchPolicy is available and
     // that ordinal falls outside the importing patch's category range,
     // `patch reorder` would refuse it — suppress the hint and point at
-    // the staged-dependency remedy instead (FORGE F14).
+    // the staged-dependency remedy instead.
     const suggestedOrder = Math.max(...laterOwners.map((o) => o.order)) + 1;
     const category = entry.metadata?.category ?? /^\d+-([a-z]+)-/.exec(entry.filename)?.[1];
     let ordinalHint = `Closest legal ordinal that satisfies this dependency: ${suggestedOrder}.`;
@@ -669,7 +669,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
     }
 
     // The exact per-owner invocation turns the refusal into a paste-and-run
-    // remedy instead of a flag-discovery exercise (FORGE F3).
+    // remedy instead of a flag-discovery exercise.
     const stagedCommands = laterOwners
       .map(
         (o) =>

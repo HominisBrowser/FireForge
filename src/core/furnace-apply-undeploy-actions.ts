@@ -2,7 +2,7 @@
 /**
  * Dry-run action builders for files deleted from a component workspace
  * since the last apply. Split out of `furnace-apply.ts` (at the per-file
- * line budget after the FORGE J6 overwrite-warning wiring); the real
+ * line budget after the overwrite-warning wiring); the real
  * undeploy paths stay in `furnace-apply-helpers.ts`.
  */
 

@@ -9,6 +9,7 @@
 
 import { FurnaceError } from '../errors/furnace.js';
 import type { CustomComponentConfig } from '../types/furnace.js';
+import type { JsonObject } from '../types/json.js';
 import { isExplicitAbsolutePath } from '../utils/paths.js';
 import { isBoolean, isString } from '../utils/validation.js';
 import { parseStringArray } from './furnace-config-array-utils.js';
@@ -19,10 +20,7 @@ import { validateSharedFtl } from './shared-ftl.js';
  * @param data - Raw data to validate
  * @param name - Component name for error messages
  */
-export function parseCustomConfig(
-  data: Record<string, unknown>,
-  name: string
-): CustomComponentConfig {
+export function parseCustomConfig(data: JsonObject, name: string): CustomComponentConfig {
   if (!isString(data['description'])) {
     throw new FurnaceError(`Furnace config: custom "${name}.description" must be a string`);
   }

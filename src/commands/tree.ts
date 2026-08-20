@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge tree` — copy-on-write verification clones (FORGE G15).
+ * `fireforge tree` — copy-on-write verification clones.
  *
  * Trees enable concurrent READ-MOSTLY verification (lint, typecheck,
  * status, verify, doctor, export dry-runs) beside a busy primary tree.
@@ -350,7 +350,7 @@ async function treeExecCommand(projectRoot: string, name: string, args: string[]
       resolvePromise(code ?? 1);
     });
   }).finally(() => {
-    // FORGE L2: with `stdio: 'inherit'` the child owned stdout — including
+    // With `stdio: 'inherit'` the child owned stdout — including
     // any FIREFORGE-VERDICT line it emitted as its LAST stdout write. From
     // here on the parent must not write stdout again, or its own refusal
     // text (the GeneralError below rendered by withErrorHandling) would

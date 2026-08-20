@@ -278,7 +278,7 @@ export interface ApplyResult {
   /**
    * Operator-facing warnings, printed by `logApplyResult`. Populated when
    * apply overwrote a deployed, patch-owned file whose engine bytes
-   * differed from the component source (FORGE J6) — the case where a
+   * differed from the component source — the case where a
    * shipped engine-only fix is silently reverted by the copy.
    */
   warnings?: string[];

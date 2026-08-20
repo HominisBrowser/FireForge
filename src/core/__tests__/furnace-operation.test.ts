@@ -220,6 +220,146 @@ describe('runFurnaceMutation', () => {
   });
 });
 
+describe('runFurnaceMutation rollback on a thrown error', () => {
+  it('restores the registered journal and rethrows the original error', async () => {
+    const root = await makeTempProject('fireforge-furnace-op-throw-');
+    const sentinel = join(root, 'engine-file.txt');
+    await writeFile(sentinel, 'pristine');
+
+    const bodyError = new Error('apply blew up after mutating');
+
+    await expect(
+      runFurnaceMutation(root, 'apply-rollback', async (ctx) => {
+        const journal = createRollbackJournal();
+        ctx.registerJournal(journal);
+        await snapshotFile(journal, sentinel);
+        await writeFile(sentinel, 'corrupted');
+        throw bodyError;
+      })
+    ).rejects.toBe(bodyError);
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(sentinel, 'utf8')).toBe('pristine');
+
+    // A clean rollback is not a repairable failure.
+    expect(updateFurnaceStateMock).not.toHaveBeenCalled();
+    // And the lock is gone, so the next command is not blocked.
+    expect(await pathExistsOnDisk(getFurnaceLockPath(root))).toBe(false);
+  });
+
+  it('runs cleanup callbacks before the journal restore', async () => {
+    const root = await makeTempProject('fireforge-furnace-op-throw-order-');
+    const sentinel = join(root, 'engine-file.txt');
+    await writeFile(sentinel, 'pristine');
+
+    const order: string[] = [];
+
+    await expect(
+      runFurnaceMutation(root, 'apply-rollback', async (ctx) => {
+        const journal = createRollbackJournal();
+        ctx.registerJournal(journal);
+        await snapshotFile(journal, sentinel);
+        ctx.registerCleanup(async () => {
+          const { readFile } = await import('node:fs/promises');
+          // The journal restore has not run yet, so the mutation is still visible.
+          order.push(`cleanup:${await readFile(sentinel, 'utf8')}`);
+        });
+        await writeFile(sentinel, 'corrupted');
+        throw new Error('boom');
+      })
+    ).rejects.toThrow('boom');
+
+    expect(order).toEqual(['cleanup:corrupted']);
+  });
+
+  it('writes a pending-repair marker when the throw-path restore fails', async () => {
+    const root = await makeTempProject('fireforge-furnace-op-throw-badrestore-');
+    const nested = join(root, 'sub');
+    await mkdir(nested, { recursive: true });
+    const sentinel = join(nested, 'engine-file.txt');
+    await writeFile(sentinel, 'pristine');
+
+    await expect(
+      runFurnaceMutation(root, 'apply-rollback', async (ctx) => {
+        const journal = createRollbackJournal();
+        ctx.registerJournal(journal);
+        await snapshotFile(journal, sentinel);
+        // Replace the parent directory with a regular file so the restore's
+        // mkdir(dirname) fails with ENOTDIR.
+        await rm(nested, { recursive: true, force: true });
+        await writeFile(nested, 'now a file');
+        throw new Error('boom');
+      })
+    ).rejects.toThrow('boom');
+
+    expect(updateFurnaceStateMock).toHaveBeenCalled();
+  });
+
+  it('does not restore again when the body already rolled back and said so', async () => {
+    const root = await makeTempProject('fireforge-furnace-op-throw-marked-');
+    const sentinel = join(root, 'engine-file.txt');
+    await writeFile(sentinel, 'pristine');
+
+    await expect(
+      runFurnaceMutation(root, 'apply-rollback', async (ctx) => {
+        const journal = createRollbackJournal();
+        ctx.registerJournal(journal);
+        await snapshotFile(journal, sentinel);
+        await writeFile(sentinel, 'body-restored-this-itself');
+        // The body claims the rollback without actually restoring, so the
+        // file content is the observable proof the wrapper kept its hands off.
+        ctx.markRolledBack();
+        throw new Error('boom');
+      })
+    ).rejects.toThrow('boom');
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(sentinel, 'utf8')).toBe('body-restored-this-itself');
+  });
+
+  it('writes no marker when the body threw before registering a journal', async () => {
+    const root = await makeTempProject('fireforge-furnace-op-throw-nojournal-');
+
+    await expect(
+      runFurnaceMutation(root, 'apply-rollback', async () => {
+        throw new Error('refused during pre-flight');
+      })
+    ).rejects.toThrow('refused during pre-flight');
+
+    // Unlike the signal path, a pre-flight refusal must not leave a
+    // pendingRepair marker behind — it would block every later mutation
+    // behind a repair that has nothing to reconcile.
+    expect(updateFurnaceStateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not double-restore when a signal lands during the throw-path rollback', async () => {
+    const root = await makeTempProject('fireforge-furnace-op-throw-signal-');
+    const sentinel = join(root, 'engine-file.txt');
+    await writeFile(sentinel, 'pristine');
+
+    await expect(
+      runFurnaceMutation(root, 'apply-rollback', async (ctx) => {
+        const journal = createRollbackJournal();
+        ctx.registerJournal(journal);
+        await snapshotFile(journal, sentinel);
+        ctx.registerCleanup(async () => {
+          // Cleanups run inside the throw path's rollback, which has already
+          // claimed the operation — so this signal must find nothing to do.
+          await rollbackActiveOperationsForSignal('SIGINT');
+        });
+        await writeFile(sentinel, 'corrupted');
+        throw new Error('boom');
+      })
+    ).rejects.toThrow('boom');
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(sentinel, 'utf8')).toBe('pristine');
+    // The signal path must not have written its "before any state was
+    // captured" marker for an operation the throw path owns.
+    expect(updateFurnaceStateMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('rollbackActiveOperationsForSignal', () => {
   it('restores the registered journal without leaving a pending-repair marker when rollback succeeds cleanly', async () => {
     const root = await makeTempProject('fireforge-furnace-op-signal-');

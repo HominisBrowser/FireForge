@@ -71,7 +71,7 @@ describe('patch move-files', () => {
     await removeTempProject(projectRoot);
   });
 
-  it('--dry-run plans the move without modifying patches.json or patch bodies (FORGE F4)', async () => {
+  it('--dry-run plans the move without modifying patches.json or patch bodies', async () => {
     await initCommittedRepo(join(projectRoot, 'engine'), {
       'browser/a.js': 'a\n',
       'browser/shared.sys.mjs': 'shared\n',
@@ -112,7 +112,7 @@ describe('patch move-files', () => {
     expect(manifest.patches[1]?.filesAffected).toEqual(['browser/b.js']);
   });
 
-  it('moves files into an existing patch as one transaction (FORGE F4)', async () => {
+  it('moves files into an existing patch as one transaction', async () => {
     await initCommittedRepo(join(projectRoot, 'engine'), {
       'browser/a.js': 'a\n',
       'browser/shared.sys.mjs': 'shared\n',
@@ -147,7 +147,7 @@ describe('patch move-files', () => {
     expect(targetBody).toContain('shared patched');
   });
 
-  it('re-points staged-dependency owners at the target patch (FORGE F4)', async () => {
+  it('re-points staged-dependency owners at the target patch', async () => {
     await initCommittedRepo(join(projectRoot, 'engine'), {
       'browser/a.js': 'a\n',
       'browser/b.js': 'b\n',
@@ -299,7 +299,7 @@ describe('patch move-files --create', () => {
     expect(byName.get('001-ui-feature.patch')?.filesAffected).toEqual([FILE_A]);
     expect(byName.get('005-ui-feature-styles.patch')?.filesAffected).toEqual([FILE_B]);
     expect(byName.get('005-ui-feature-styles.patch')?.order).toBe(5);
-    // An already-bare slug is kept verbatim (FORGE H4).
+    // An already-bare slug is kept verbatim.
     expect(byName.get('005-ui-feature-styles.patch')?.name).toBe('feature-styles');
 
     const newBody = await readFile(join(patchesDir, '005-ui-feature-styles.patch'), 'utf-8');
@@ -311,7 +311,7 @@ describe('patch move-files --create', () => {
     expect(sourceBody).not.toContain(FILE_B);
   });
 
-  it('names --description in the description-required refusal (FORGE J11)', async () => {
+  it('names --description in the description-required refusal', async () => {
     await writeFireForgeConfig(projectRoot, {
       patchPolicy: {
         requireDescription: true,
@@ -350,7 +350,7 @@ describe('patch move-files --create', () => {
     ).toBe('Styles split out');
   });
 
-  it('does not double-suffix when the --create target name carries .patch (FORGE F9)', async () => {
+  it('does not double-suffix when the --create target name carries.patch', async () => {
     await seed(patchesDir, [makeMetadata('001-ui-feature.patch', 1, [FILE_A, FILE_B])]);
 
     await patchMoveFilesCommand(
@@ -370,7 +370,7 @@ describe('patch move-files --create', () => {
     const filenames = manifest.patches.map((p) => p.filename);
     expect(filenames).toContain('005-ui-feature-styles.patch');
     expect(filenames).not.toContain('005-ui-feature-styles-patch.patch');
-    // FORGE H4: the manifest display name is the bare slug run through the
+    // The manifest display name is the bare slug run through the
     // G13 normalizer, never the full filename the operator typed — the
     // policy audit's patch-metadata-shape check rejects anything else.
     const created = manifest.patches.find((p) => p.filename === '005-ui-feature-styles.patch');
@@ -480,7 +480,7 @@ describe('patch move-files --create', () => {
   });
 });
 
-describe('patch move-files projection lint runs with the whole-queue context (FORGE I3)', () => {
+describe('patch move-files projection lint runs with the whole-queue context', () => {
   const A_PATH = 'browser/modules/mb/A.sys.mjs';
   const B_PATH = 'browser/modules/mb/B.sys.mjs';
   const KEEP_CSS = 'browser/base/content/keep.css';

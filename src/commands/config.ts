@@ -14,28 +14,26 @@ import {
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { ConfigError } from '../errors/config.js';
 import type { CommandContext } from '../types/cli.js';
+import type { JsonObject, JsonValue } from '../types/json.js';
 import { toError } from '../utils/errors.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
+import { isJsonObject } from '../utils/validation.js';
 
 /**
- * Gets a nested value from an object using dot notation.
- * @param obj - Object to traverse
+ * Gets a nested value from a raw config document using dot notation.
+ * @param doc - Document to traverse
  * @param path - Dot-separated path (e.g., "firefox.version")
  * @returns The value at the path, or undefined if not found
  */
-function getNestedValue(obj: unknown, path: string): unknown {
-  const parts = path.split('.');
-  let current: unknown = obj;
+function getNestedValue(doc: JsonObject, path: string): JsonValue | undefined {
+  let current: JsonValue | undefined = doc;
 
-  for (const part of parts) {
-    if (current === null || current === undefined) {
+  for (const part of path.split('.')) {
+    if (current === null || current === undefined || typeof current !== 'object') {
       return undefined;
     }
-    if (typeof current !== 'object') {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[part];
+    current = Array.isArray(current) ? current[Number(part)] : current[part];
   }
 
   return current;
@@ -61,7 +59,7 @@ const STRING_TYPED_KEYS = new Set([
  * accidental type coercion (e.g. `fireforge config firefox.version 128` would
  * otherwise become the number 128 instead of the string "128").
  */
-function parseValue(value: string, key?: string): unknown {
+function parseValue(value: string, key?: string): JsonValue {
   // For known string-typed keys, always return as string
   if (key && STRING_TYPED_KEYS.has(key)) {
     return value;
@@ -69,7 +67,8 @@ function parseValue(value: string, key?: string): unknown {
 
   // Try to parse as JSON first (handles numbers, booleans, arrays, objects).
   try {
-    const parsed: unknown = JSON.parse(value);
+    // JSON.parse can only ever produce JSON values.
+    const parsed = JSON.parse(value) as JsonValue;
     if (typeof parsed !== 'string') {
       warn(`Value "${value}" was interpreted as ${typeof parsed}. Use '"${value}"' for a string.`);
     }
@@ -84,16 +83,13 @@ function parseValue(value: string, key?: string): unknown {
 /**
  * Formats a value for display.
  */
-function formatValue(value: unknown): string {
+function formatValue(value: JsonValue | undefined): string {
   if (value === undefined) {
     return '(not set)';
   }
   if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+  if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
-  }
-  if (typeof value === 'symbol') {
-    return value.toString();
   }
   return JSON.stringify(value, null, 2);
 }
@@ -246,23 +242,21 @@ export async function configCommand(
  * no-op writes (Finding 11) — when the parsed value matches the current
  * on-disk value, skip the mutate + write step entirely.
  */
-function deepEqual(a: unknown, b: unknown): boolean {
+function deepEqual(a: JsonValue | undefined, b: JsonValue | undefined): boolean {
   if (a === b) return true;
-  if (a === null || b === null) return a === b;
-  if (typeof a !== typeof b) return false;
-  if (typeof a !== 'object') return false;
   if (Array.isArray(a)) {
     if (!Array.isArray(b)) return false;
     if (a.length !== b.length) return false;
     return a.every((v, i) => deepEqual(v, b[i]));
   }
-  if (Array.isArray(b)) return false;
-  const ar = a as Record<string, unknown>;
-  const br = b as Record<string, unknown>;
-  const keysA = Object.keys(ar);
-  const keysB = Object.keys(br);
+  if (!isJsonObject(a) || !isJsonObject(b)) {
+    // Primitives (and null) compare by identity, handled above.
+    return false;
+  }
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
   if (keysA.length !== keysB.length) return false;
-  return keysA.every((k) => deepEqual(ar[k], br[k]));
+  return keysA.every((k) => deepEqual(a[k], b[k]));
 }
 
 /** Registers the config command on the CLI program. */

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
+import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import {
   buildPerPatchLintCacheKey,
   getCachedPerPatchLintIssues,
@@ -77,12 +78,12 @@ interface QueuedPatchResult {
   existingFiles: string[];
   /** Unprefixed issues (from cache or a fresh lint); empty when skipped. */
   rawIssues: PatchLintIssue[];
-  /** Issues dropped by the patch's lintIgnore waivers (FORGE G10). */
+  /** Issues dropped by the patch's lintIgnore waivers. */
   suppressedIssues: PatchLintIssue[];
   /** Non-binary diff line count; 0 when skipped. */
   lineCount: number;
   /** Present only on a fresh lint with the cache enabled. */
-  cacheWrite?: { key: string };
+  cacheWrite?: { key: string; lintIgnore: string[] };
   /** True when this patch was freshly linted with checkJs on (built/used the
    *  queue-wide program), so run-level checkJs errors are emitted once here. */
   usedCheckJs: boolean;
@@ -129,13 +130,13 @@ async function lintQueuedPatch(
       queueContext: ctx,
       ...(engineHeadSha === undefined ? {} : { engineHeadSha }),
     });
-    const cached = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey);
+    const cached = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey, ignore);
     if (cached) {
       // Returning before the empty-diff probe below is safe: the cache key
       // hashes every affected engine file's content plus engineHeadSha, so
       // an engine-side revert that would empty the diff always changes the
       // key and misses the cache (pinned by the "engine-side content
-      // revert invalidates the per-patch cache" test — FORGE F5).
+      // revert invalidates the per-patch cache" test).
       return {
         status: 'cached',
         existingFiles: existing,
@@ -196,7 +197,7 @@ async function lintQueuedPatch(
     usedCheckJs,
   };
   if (cache && cacheKey) {
-    result.cacheWrite = { key: cacheKey };
+    result.cacheWrite = { key: cacheKey, lintIgnore: [...(ignore ?? [])] };
   }
   return result;
 }
@@ -210,7 +211,7 @@ interface PerPatchTotals {
   suppressed: number;
 }
 
-/** Size-rule check IDs whose waived measurement is still reported (FORGE G10). */
+/** Size-rule check IDs whose waived measurement is still reported. */
 const SUPPRESSED_SIZE_CHECKS = new Set([
   'large-patch-lines',
   'large-patch-files',
@@ -255,7 +256,7 @@ async function applyPerPatchResults(
     // Deliberately NOT gated on `result.usedCheckJs`: global findings are
     // run-level, never cached, and an all-cache-hit run previously dropped
     // them entirely, letting a warm run report fewer errors than a cold
-    // one (FORGE F5 hardening). PerRunCheckJs builds its program lazily,
+    // one (hardening). PerRunCheckJs builds its program lazily,
     // so the cost only materialises when checkJs is configured.
     if (checkJs && !globalCheckJsEmitted) {
       globalCheckJsEmitted = true;
@@ -269,7 +270,8 @@ async function applyPerPatchResults(
         result.cacheWrite.key,
         result.rawIssues,
         result.suppressedIssues,
-        result.lineCount
+        result.lineCount,
+        result.cacheWrite.lintIgnore
       );
       totals.cacheDirty = true;
     }
@@ -278,7 +280,7 @@ async function applyPerPatchResults(
       issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
     }
 
-    // A waived size finding still reports its MEASUREMENT (FORGE G10):
+    // A waived size finding still reports its MEASUREMENT:
     // the finding stays suppressed (no exit-code / --max-warnings effect)
     // but the current count is readable from the tool that enforces it,
     // so a waiver's cited size can be calibrated without hand-measuring.
@@ -457,6 +459,18 @@ export async function lintPerPatch(
   paths: ReturnType<typeof getProjectPaths>,
   options: LintCommandOptions = {}
 ): Promise<void> {
+  // Read-only to the operator, an index WRITER to git: the per-patch diffs
+  // run `git diff HEAD` (and, for untracked binaries, a real stage/unstage
+  // pair) against the primary checkout. A private index absorbs all of it
+  // so a concurrent `fireforge test` still gets an evidential verdict.
+  return withPrivateGitIndex(paths.engine, () => lintPerPatchInner(projectRoot, paths, options));
+}
+
+async function lintPerPatchInner(
+  projectRoot: string,
+  paths: ReturnType<typeof getProjectPaths>,
+  options: LintCommandOptions = {}
+): Promise<void> {
   const manifest = await loadPatchesManifest(paths.patches);
   if (!manifest || manifest.patches.length === 0) {
     info('No patches in manifest — nothing to lint per-patch.');
@@ -501,7 +515,7 @@ export async function lintPerPatch(
 
   // With `--patches`, the checkJs program roots at only the subset's owned
   // files — the full queue stays resolvable, so a cold subset run costs the
-  // subset's import closure instead of the whole queue (FORGE J1c).
+  // subset's import closure instead of the whole queue.
   const checkJs = buildPerRunCheckJs(
     projectRoot,
     paths,

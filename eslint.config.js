@@ -76,6 +76,23 @@ export default tseslint.config(
       'fireforge/no-errno-cast': 'error',
       'fireforge/prefer-shared-regex-escape': 'error',
       'fireforge/no-empty-jsdoc': 'error',
+      // Raw JSON documents are typed JsonObject/JsonValue (src/types/json.ts);
+      // this stops the untyped-dictionary contract from re-accreting on
+      // exported functions.
+      'fireforge/no-untyped-json-document': 'error',
+      // `X as unknown as Y` launders any type into any other. The two
+      // sanctioned bridge casts (ast-utils.toPositionedProgram,
+      // furnace-config-order's FurnaceConfig→JsonObject re-entry) carry
+      // targeted disables with their justification.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'TSAsExpression > TSAsExpression.expression',
+          message:
+            'No `as unknown as` chains — parse the value at its boundary, or route through a ' +
+            'documented bridge helper (see toPositionedProgram in src/core/ast-utils.ts).',
+        },
+      ],
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-non-null-assertion': 'error',
       '@typescript-eslint/explicit-function-return-type': [
@@ -151,6 +168,10 @@ export default tseslint.config(
       // `toError` would assert the helper rather than the behaviour.
       'fireforge/no-open-coded-to-error': 'off',
       'fireforge/no-errno-cast': 'off',
+      // Tests deliberately forge malformed inputs (`as unknown as X`) and
+      // untyped fixtures to pin the shapes production code must reject.
+      'fireforge/no-untyped-json-document': 'off',
+      'no-restricted-syntax': 'off',
     },
   },
   {

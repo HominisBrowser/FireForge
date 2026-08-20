@@ -38,7 +38,7 @@ const TEST_HELP_TEXT = [
   '--doctor) ends with exactly one raw stdout line',
   '  FIREFORGE-VERDICT: PASS|FAIL [reason=crash|test-failures|',
   '  no-tests|preflight|inconclusive|lock-timeout] [checks=<n>]',
-  '  [unexpected=<n>] [shards=<p>/<t>]',
+  '  [unexpected=<n>] [shards=<p>/<t>] [(<note>)]',
   'The status follows the harness classifier, not the raw exit code:',
   'a crash-classified run says FAIL reason=crash even at exit 0, and',
   'a green-summary-override pass says PASS despite a non-zero mach',
@@ -50,7 +50,12 @@ const TEST_HELP_TEXT = [
   'engine-mutating command held the lock past the wait budget. A sharded',
   'aggregate reason is the most structural failing shard (crash,',
   'then no-tests, then test-failures). Count keys are omitted when',
-  'the embedded summary did not print them. Key on this line',
+  'the embedded summary did not print them. A trailing parenthetical',
+  'is an advisory note, never part of the status: "(harness teardown',
+  'noise ignored)" marks a clean suite whose only residue was the',
+  'recognized upstream mozsystemmonitor teardown traceback, and',
+  '"(headed run stalled with the display asleep)" marks a no-output',
+  'stall whose display was measured asleep. Key on this line',
   'instead of mach internals.',
 ].join('\n');
 

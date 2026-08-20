@@ -324,7 +324,7 @@ describe('lint integration', () => {
     expect(checks.has('missing-jsdoc')).toBe(true);
   });
 
-  it('reports a waived size measurement as NOTICE and in the --report JSON (FORGE G9/G10)', async () => {
+  it('reports a waived size measurement as NOTICE and in the --report JSON', async () => {
     const { readFile } = await import('node:fs/promises');
     const { writeFile } = await import('node:fs/promises');
     const { info } = await import('../../utils/logger.js');

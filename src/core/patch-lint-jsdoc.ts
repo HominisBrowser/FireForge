@@ -180,9 +180,11 @@ function walkForReturn(node: Node): boolean {
   ) {
     return false;
   }
-  for (const key of Object.keys(node)) {
+  // `entries` erases the node's static shape without asserting a new one;
+  // the `any` from `Object.entries`' fallback overload widens to `unknown`.
+  const entries: [string, unknown][] = Object.entries(node);
+  for (const [key, val] of entries) {
     if (key === 'type') continue;
-    const val = (node as unknown as Record<string, unknown>)[key];
     if (val && typeof val === 'object') {
       if (Array.isArray(val)) {
         for (const child of val) {

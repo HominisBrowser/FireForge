@@ -36,7 +36,7 @@ interface DirectoryEntry {
 /**
  * True for a plain-file directory entry — symlinks and directories are
  * never copy candidates. Exported for the patch-owned overwrite probe
- * (FORGE J6), which walks the same override copy-candidate set as apply.
+ *, which walks the same override copy-candidate set as apply.
  */
 export function isRegularFile(entry: DirectoryEntry): boolean {
   if (!entry.isFile()) return false;

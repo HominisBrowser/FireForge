@@ -11,6 +11,10 @@
 import { join } from 'node:path';
 
 import { type ConflictReport } from '../core/destructive.js';
+import {
+  detectMovedCodeOverlaps,
+  formatAdoptThenSplitRemedy,
+} from '../core/export-moved-code-shape.js';
 import { normalizePatchArtifact } from '../core/patch-artifact-normalize.js';
 import {
   findAllPatchesForFilesWithDetails,
@@ -33,6 +37,7 @@ import {
   resolvePatchIdentifier,
   savePatchesManifest,
 } from '../core/patch-manifest.js';
+import { requirePatchOrder } from '../core/patch-parse.js';
 import {
   applyRenameMapToManifest,
   buildProjectedManifest,
@@ -320,15 +325,23 @@ export async function projectPlacementForLint(
   if (projectedIssues.length === 0) return null;
   // Baseline lint over the UN-renumbered queue: an error present here is
   // pre-existing breakage, not a consequence of this placement — calling
-  // it one would misattribute (FORGE K9). Entries are already in memory,
+  // it one would misattribute. Entries are already in memory,
   // so this second pass costs no additional IO.
   const baselineIssues = lintPatchQueue({
     entries: baseCtx.entries,
     ...policyRest,
   }).filter((i) => i.severity === 'error');
+  // New-file + moved-code slice: when the refusal is caused by
+  // the source patch still carrying lines the new patch would gain, name
+  // the adopt-then-split sequence instead of leaving the operator to
+  // derive it from two individually-correct guards that together dead-end.
+  const movedCode = detectMovedCodeOverlaps(diff, baseCtx.entries);
   return {
     reason: `placement would introduce ${projectedIssues.length} cross-patch lint error(s)`,
-    details: groupProjectedPlacementErrors(projectedIssues, baselineIssues, plan),
+    details: [
+      ...groupProjectedPlacementErrors(projectedIssues, baselineIssues, plan),
+      ...formatAdoptThenSplitRemedy(movedCode, plan.newFilename, plan.insertionOrder),
+    ],
   };
 }
 
@@ -507,7 +520,7 @@ export async function commitPlacementExport(
         // avoids tracking a second map during the forward pass.
         const inverseMap = new Map<string, PatchRenameEntry>();
         for (const [oldFilename, entry] of currentPlan.renameMap) {
-          const oldOrder = parseInt(oldFilename.split('-')[0] ?? '0', 10);
+          const oldOrder = requirePatchOrder(oldFilename);
           inverseMap.set(entry.newFilename, {
             newOrder: oldOrder,
             newFilename: oldFilename,

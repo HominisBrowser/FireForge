@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Patch-owned overwrite detection for `furnace apply` (FORGE J6): a
+ * Patch-owned overwrite detection for `furnace apply`: a
  * deployed engine file whose bytes differ from the component source AND
  * whose path is patch-owned produces a loud warning naming file + owner;
  * unclaimed drift and clean deployments stay silent.

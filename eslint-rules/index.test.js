@@ -132,6 +132,62 @@ js.run('prefer-shared-regex-escape', rules['prefer-shared-regex-escape'], {
   ],
 });
 
+ts.run('no-untyped-json-document', rules['no-untyped-json-document'], {
+  valid: [
+    // The replacement types themselves.
+    'export function f(doc: JsonObject): JsonValue | undefined { return doc["x"]; }',
+    // Non-exported helpers may narrow however they like.
+    'function local(data: Record<string, unknown>): void { void data; }',
+    // A generic bound constrains a caller-supplied shape; it is not a
+    // dictionary contract handed to callers.
+    'export function pick<T extends Record<string, unknown>>(obj: T): T { return obj; }',
+    // Annotations inside the body are local code, not exported surface.
+    'export function g(): void { const x: Record<string, unknown> = {}; void x; }',
+    // A nested helper inside an exported function body is not exported.
+    'export function h(): void { const inner = (d: Record<string, unknown>): void => { void d; }; void inner; }',
+    // Interface members are shapes, not function signatures.
+    'export interface Args { args: Record<string, unknown>; }',
+    // Class methods are exempt (ParsedRecord's constructor pattern).
+    'export class C { constructor(data: Record<string, unknown>) { void data; } }',
+    // Other Record instantiations carry a real value contract.
+    'export function typed(map: Record<string, string[]>): void { void map; }',
+  ],
+  invalid: [
+    {
+      code: 'export function f(data: Record<string, unknown>): void { void data; }',
+      errors: [{ messageId: 'untypedDocument' }],
+    },
+    {
+      code: 'export function g(): Record<string, unknown> { return {}; }',
+      errors: [{ messageId: 'untypedDocument' }],
+    },
+    // Wrapped in a generic — the dictionary still reaches the caller.
+    {
+      code: 'export async function h(): Promise<Record<string, unknown>> { return {}; }',
+      errors: [{ messageId: 'untypedDocument' }],
+    },
+    {
+      code: 'export function r(d: Readonly<Record<string, unknown>>): void { void d; }',
+      errors: [{ messageId: 'untypedDocument' }],
+    },
+    // Arrow spelling of an exported function.
+    {
+      code: 'export const j = (d: Record<string, unknown>): void => { void d; };',
+      errors: [{ messageId: 'untypedDocument' }],
+    },
+    // A callback contract inside an exported signature binds callers too.
+    {
+      code: 'export function k(cb: (d: Record<string, unknown>) => void): void { void cb; }',
+      errors: [{ messageId: 'untypedDocument' }],
+    },
+    // Overload signatures (TSDeclareFunction) are the exported surface.
+    {
+      code: 'export function m(d: Record<string, unknown>): void;',
+      errors: [{ messageId: 'untypedDocument' }],
+    },
+  ],
+});
+
 js.run('no-empty-jsdoc', rules['no-empty-jsdoc'], {
   valid: [
     '/** Does the thing. */\nfunction f() {}',

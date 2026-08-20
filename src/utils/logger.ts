@@ -144,6 +144,34 @@ export function warn(message: string): void {
   p.log.warn(message);
 }
 
+/**
+ * Prefix that marks a line as FireForge's own explanatory output rather
+ * than a defect. Kept greppable so downstream filters can whitelist it.
+ */
+export const NOTICE_PREFIX = '[FireForge] NOTICE:';
+
+/**
+ * Logs one of FireForge's own "why this is happening / why this is slow"
+ * explanations at WARNING severity.
+ *
+ * These lines are not warnings about the operator's code — they explain a
+ * decision FireForge just made (escalating an incremental build to a full
+ * one, sharding a run, skipping a step). Emitted through `info` they were
+ * silently dropped by agent-facing output filters that keep only warnings
+ * and errors, leaving a multi-minute build with no explanation and reading
+ * as a hang. There are very few such lines and they are exactly the ones a
+ * non-interactive operator needs, so they ride the warning channel and
+ * carry {@link NOTICE_PREFIX} so a reader can still tell them apart from a
+ * real warning.
+ */
+export function notice(message: string): void {
+  if (routeToStderr()) {
+    writeDiagnostic('warning: ', `${NOTICE_PREFIX} ${message}`);
+    return;
+  }
+  p.log.warn(`${NOTICE_PREFIX} ${message}`);
+}
+
 /** Logs an error message. */
 export function error(message: string): void {
   if (routeToStderr()) {

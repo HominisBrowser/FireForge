@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Tree store integration (FORGE G15): real tempdir + real git, cloning
+ * Tree store integration: real tempdir + real git, cloning
  * with capability 'none' (plain `cp`) so the suite runs identically on
  * CoW and non-CoW filesystems. The CoW-specific argv layer is covered by
  * `tree-cow.test.ts`; a real clonefile/reflink clone is exercised by the
@@ -12,7 +12,7 @@ import { join, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Passthrough wrapper around the real cloneEntry with a per-test hook, so
-// the FORGE I11 defense-in-depth case can simulate a copy strategy that
+// the defense-in-depth case can simulate a copy strategy that
 // carries a symlink into the tree without touching any other behavior.
 const cloneEntryHook: { after?: ((destinationPath: string) => Promise<void>) | undefined } = {};
 vi.mock('../tree-cow.js', async (importOriginal) => {
@@ -47,7 +47,7 @@ import {
   removeTree,
 } from '../tree-store.js';
 
-describe('tree store (FORGE G15)', () => {
+describe('tree store', () => {
   let projectRoot: string;
 
   beforeEach(async () => {
@@ -220,7 +220,7 @@ describe('tree store (FORGE G15)', () => {
     await expect(pathExists(join(treeRoot, '.fireforge', 'tree.json'))).resolves.toBe(false);
   });
 
-  it('withObjdir refuses a symlinked primary objdir BEFORE any copying and mutates nothing (FORGE I11)', async () => {
+  it('withObjdir refuses a symlinked primary objdir BEFORE any copying and mutates nothing', async () => {
     // An external build linked into engine/: every cp mode preserves the
     // link, so a clone would rewrite the ORIGINAL build through it.
     const externalBuild = join(projectRoot, 'external-build', 'obj-linked');
@@ -241,7 +241,7 @@ describe('tree store (FORGE G15)', () => {
     await expect(pathExists(join(externalBuild, '_virtualenvs'))).resolves.toBe(true);
   });
 
-  it('withObjdir refuses objdir names that are not a single obj-* path segment (FORGE I11)', async () => {
+  it('withObjdir refuses objdir names that are not a single obj-* path segment', async () => {
     for (const objDir of ['../evil', 'obj-x/sub', 'dist', 'obj-..x']) {
       await expect(createTestTree('shard-badname', { withObjdir: { objDir } })).rejects.toThrow(
         /Invalid objdir name/
@@ -250,7 +250,7 @@ describe('tree store (FORGE G15)', () => {
     await expect(pathExists(join(getTreesDir(projectRoot), 'shard-badname'))).resolves.toBe(false);
   });
 
-  it('defense in depth: a symlink that materialises inside the tree after cloning is refused before any write (FORGE I11)', async () => {
+  it('defense in depth: a symlink that materialises inside the tree after cloning is refused before any write', async () => {
     // The primary objdir is a legitimate real directory, but the (hooked)
     // copy carries a symlink into the tree — the cloned-role re-check must
     // refuse before the mozinfo rewrite or the _virtualenvs removal runs.

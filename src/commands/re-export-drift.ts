@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Foreign-drift preview + `--refuse-foreign-drift` gate for `re-export`
- * (FORGE J2).
+ * Foreign-drift preview + `--refuse-foreign-drift` gate for `re-export`.
  *
  * A scan-less re-export rebuilds each patch body as a whole-file
  * `git diff HEAD` over the owned files — so a CONCURRENT session's
@@ -22,6 +21,7 @@
  * context without changing what the patch does.
  */
 
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { DiffSection } from '../core/patch-parse.js';
@@ -34,11 +34,11 @@ import { info, verbose, warn } from '../utils/logger.js';
 /** Why a patch was refused under `--refuse-foreign-drift`. */
 export type ForeignDriftRefusalReason = 'foreign-drift' | 'baseline-unreadable';
 
-/** Per-run context threaded through the re-export loop (mirrors FORGE G2). */
+/** Per-run context threaded through the re-export loop (mirrors). */
 export interface ForeignDriftContext {
   refuseForeignDrift: boolean;
   /**
-   * Engine-relative files whose drift is expected (`--expect`, FORGE L6):
+   * Engine-relative files whose drift is expected (`--expect`):
    * drift confined to these files does not refuse. Files here that never
    * drift are reported after the run as likely typos.
    */
@@ -228,10 +228,11 @@ export function computeForeignDrift(
 export async function reportForeignDrift(args: {
   patch: PatchMetadata;
   patchesDir: string;
+  engineDir: string;
   newDiffContent: string;
   ctx: ForeignDriftContext;
 }): Promise<boolean> {
-  const { patch, patchesDir, newDiffContent, ctx } = args;
+  const { patch, patchesDir, engineDir, newDiffContent, ctx } = args;
   const oldPath = join(patchesDir, patch.filename);
   let oldBody: string;
   try {
@@ -256,6 +257,12 @@ export async function reportForeignDrift(args: {
     if (ctx.expectedDriftFiles.has(entry.file)) ctx.expectedSeen.add(entry.file);
   }
 
+  const recentlyEdited = await findFilesEditedSinceLastExport(
+    engineDir,
+    oldPath,
+    drift.map((d) => d.file)
+  );
+
   const totalLines = drift.reduce((sum, d) => sum + d.addedLines + d.removedLines, 0);
   const lineNoun = totalLines === 1 ? 'line' : 'lines';
   warn(
@@ -263,12 +270,15 @@ export async function reportForeignDrift(args: {
   );
   for (const entry of drift.slice(0, MAX_FILES_REPORTED)) {
     const expectedTag = ctx.expectedDriftFiles.has(entry.file) ? ' (expected via --expect)' : '';
+    const authorshipTag = recentlyEdited.has(entry.file)
+      ? ' [edited since your last export]'
+      : ' [unchanged since your last export — another session may own it]';
     if (entry.binaryChanged) {
-      info(`  ${entry.file}: binary content changed${expectedTag}`);
+      info(`  ${entry.file}: binary content changed${expectedTag}${authorshipTag}`);
       continue;
     }
     info(
-      `  ${entry.file}: +${String(entry.addedLines)}/-${String(entry.removedLines)} newly captured line(s)${expectedTag}`
+      `  ${entry.file}: +${String(entry.addedLines)}/-${String(entry.removedLines)} newly captured line(s)${expectedTag}${authorshipTag}`
     );
     for (const summary of entry.hunkSummaries) {
       info(`    ${summary}`);
@@ -296,14 +306,51 @@ export async function reportForeignDrift(args: {
 
   warn(
     '  If these are intentional engine edits, this is the normal re-export flow. ' +
-      'FireForge cannot infer authorship; if another session owns them, re-run with ' +
-      "--refuse-foreign-drift, or commit/stash that session's edits first."
+      "FireForge cannot PROVE authorship; the per-file tags above compare each file's " +
+      'modification time against this patch\'s last export, so "edited since your last ' +
+      'export" marks lines you most likely wrote yourself. If another session owns them, ' +
+      "re-run with --refuse-foreign-drift, or commit/stash that session's edits first."
   );
   return false;
 }
 
 /**
- * Fail-closed baseline handling (FORGE L6): a missing or unreadable old
+ * Splits the drifting files into "you probably wrote this" and "this
+ * predates your last export". `--refuse-foreign-drift` calls every
+ * absorbed line "foreign" — including the operator's OWN additions
+ * from the same session — and "foreign" reads as "another session's",
+ * which is precisely the case where proceeding would be wrong. Authorship
+ * is unknowable, but RECENCY is not: a file whose mtime is newer than the
+ * patch body this run is refreshing changed after the last export, which
+ * on a single-operator slice is the operator's own edit. Returns the
+ * subset of `files` that qualifies; an unstattable path is reported as
+ * NOT recently edited, so the cautious wording is the fallback.
+ */
+async function findFilesEditedSinceLastExport(
+  engineDir: string,
+  patchBodyPath: string,
+  files: readonly string[]
+): Promise<Set<string>> {
+  const recent = new Set<string>();
+  let patchMtimeMs: number;
+  try {
+    patchMtimeMs = (await stat(patchBodyPath)).mtimeMs;
+  } catch (error: unknown) {
+    verbose(`Could not stat ${patchBodyPath} for drift recency: ${toError(error).message}`);
+    return recent;
+  }
+  for (const file of files) {
+    try {
+      if ((await stat(join(engineDir, file))).mtimeMs > patchMtimeMs) recent.add(file);
+    } catch (error: unknown) {
+      verbose(`Could not stat ${file} for drift recency: ${toError(error).message}`);
+    }
+  }
+  return recent;
+}
+
+/**
+ * Fail-closed baseline handling: a missing or unreadable old
  * patch body means the drift comparison CANNOT run, so under
  * `--refuse-foreign-drift` the patch is refused rather than written on the
  * strength of a check that never happened. Without the flag this stays the

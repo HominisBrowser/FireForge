@@ -32,7 +32,7 @@ import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, outro, success, verbose } from '../utils/logger.js';
+import { info, intro, notice, outro, success, verbose } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { runTestBuildPhase } from './test-build-phase.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
@@ -254,7 +254,7 @@ function appendMarionetteForwardingArgs(
     // Manifest classification says every requested path is xpcshell —
     // xpcshell ignores the browser Marionette path entirely, and the
     // mochitest client flags previously forwarded here made mach reject
-    // the dispatch (FORGE F10).
+    // the dispatch.
     info(
       `--marionette-port=${options.marionettePort} applied to the preflight probe only: the requested paths are xpcshell-only, and xpcshell ignores the browser Marionette port. Not forwarding --setpref=marionette.port or --marionette to mach.`
     );
@@ -295,7 +295,7 @@ async function ensureTestMarionettePortAvailable(
   if (skip.xpcshellOnly && !skip.doctor) {
     // xpcshell does not bind the browser Marionette port, so a developer's
     // interactive browser holding 2828 must not kill an xpcshell run
-    // (FORGE F10). --doctor keeps the preflight: its probe launches a
+    //. --doctor keeps the preflight: its probe launches a
     // Marionette browser regardless of the requested harness.
     const message =
       'Skipping the Marionette stale-port preflight: all requested paths are xpcshell ' +
@@ -582,7 +582,7 @@ async function runTestCommandBody(
   // bug to an upstream headless regression), so a one-line notice states
   // what sharding does and does not exercise.
   if (canaryPath === undefined && dispatchGroups.length > 1 && options.shard !== false) {
-    info(
+    notice(
       `Sharding: running ${dispatchGroups.length} test path arguments in isolated browser instances ` +
         '(one mach invocation per argument; a directory argument keeps its files in one instance). ' +
         'Cross-argument state is NOT exercised — pass --no-shard for a combined single-instance run.'

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Hoisted + cached lint context for `re-export` (FORGE J1).
+ * Hoisted + cached lint context for `re-export`.
  *
  * The per-patch loop used to rebuild the whole patch-queue context AND a
  * fresh queue-wide checkJs TypeScript program for every patch — ~37 s of
@@ -9,7 +9,7 @@
  *
  * - builds the queue context and the {@link PerRunCheckJs} program
  *   controller ONCE per invocation (`buildReExportLintContext`) and slices
- *   per-patch findings out of it (the FORGE I3 shape `move-files`/`split`
+ * per-patch findings out of it (the shape `move-files`/`split`
  *   already use, plus the program-level hoist `lint --per-patch` has);
  * - reuses the existing per-patch lint RESULT cache
  *   (`.fireforge/lint-cache/per-patch-v1.json`) across invocations —
@@ -18,7 +18,7 @@
  *   hashes engine HEAD, per-file content, patch body, config, shims, and
  *   ownership, so a repeat single re-export is a warm hit (~4 s instead
  *   of ~41 s). `--no-cache` opts out; run-level checkJs globals are
- *   never cached (FORGE F5) and are emitted once per invocation;
+ * never cached and are emitted once per invocation;
  * - keeps the in-memory queue context honest after each write
  *   (`refreshQueueCtxEntry`), so later iterations of an `--all` run lint
  *   against the just-refreshed body instead of the stale one.
@@ -59,7 +59,7 @@ export interface ReExportLintContext {
   paths: ReturnType<typeof getProjectPaths>;
   config: FireForgeConfig;
   /** Whole-queue context, built WITH config so the forward-import hints
-   *  match `lint --per-patch` (FORGE F14); undefined when no patches dir. */
+   * match `lint --per-patch`; undefined when no patches dir. */
   patchQueueCtx: PatchQueueContext | undefined;
   /** Queue-wide checkJs controller; undefined when checkJs is off. */
   checkJs: PerRunCheckJs | undefined;
@@ -72,7 +72,7 @@ export interface ReExportLintContext {
   globalsEmitted: boolean;
 }
 
-/** Builds the once-per-invocation lint context (FORGE J1). */
+/** Builds the once-per-invocation lint context. */
 export async function buildReExportLintContext(
   projectRoot: string,
   paths: ReturnType<typeof getProjectPaths>,
@@ -115,6 +115,8 @@ export interface ReExportLintResult {
   issues: PatchLintIssue[];
   suppressed: PatchLintIssue[];
   lineCount: number;
+  /** Waiver ids in force for this lint run. */
+  lintIgnore: string[];
 }
 
 /**
@@ -158,7 +160,7 @@ export async function lintReExportedPatch(args: {
   }
 
   // Run-level checkJs globals surface exactly once per invocation, never
-  // from the cache (FORGE F5). On an all-warm run this is a cheap probe,
+  // from the cache. On an all-warm run this is a cheap probe,
   // not a program build.
   let globalIssues: PatchLintIssue[] = [];
   if (checkJs && !lintCtx.globalsEmitted) {
@@ -177,7 +179,7 @@ export async function lintReExportedPatch(args: {
       queueContext: patchQueueCtx,
       ...(lintCtx.engineHeadSha === undefined ? {} : { engineHeadSha: lintCtx.engineHeadSha }),
     });
-    const cached = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey);
+    const cached = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey, args.ignoreChecks);
     if (cached) {
       lintCtx.reusedCacheEntries++;
       reportPatchLintOutcome([...globalIssues, ...cached.issues], args.skipLint);
@@ -198,7 +200,7 @@ export async function lintReExportedPatch(args: {
     } else {
       // Fresh `--scan` adoption created checkJs-relevant files the hoisted
       // program has never seen — fall back to a per-patch build with the
-      // usual report scope so nothing is silently unchecked (FORGE F5).
+      // usual report scope so nothing is silently unchecked.
       lintOptions.checkJsReportScope = resolvePatchOwnedSysMjs(detectNewFilesInDiff(diffContent));
     }
   } else if (patchQueueCtx) {
@@ -221,6 +223,7 @@ export async function lintReExportedPatch(args: {
     issues,
     suppressed: suppressedIssues,
     lineCount: countNonBinaryDiffLines(diffContent).textLines,
+    lintIgnore: [...(args.ignoreChecks ?? [])],
   };
 }
 
@@ -255,7 +258,8 @@ export async function storeReExportLintResult(
     cacheKey,
     result.issues,
     result.suppressed,
-    result.lineCount
+    result.lineCount,
+    result.lintIgnore
   );
   lintCtx.cacheDirty = true;
 }

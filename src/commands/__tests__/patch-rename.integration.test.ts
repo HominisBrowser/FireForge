@@ -90,7 +90,7 @@ describe('patch rename', () => {
     await removeTempProject(projectRoot);
   });
 
-  describe('--category / --order (FORGE J10)', () => {
+  describe('--category / --order', () => {
     it('recategorises in one transaction: filename prefix + manifest row', async () => {
       await seed(patchesDir, [makeMetadata('010-infra-widget.patch', 10, ['a.js'])]);
 
@@ -415,7 +415,7 @@ describe('patch rename', () => {
     expect(await fileExists(join(patchesDir, '0044-ui-foo.patch'))).toBe(true);
   });
 
-  it('repairs a double-suffixed filename when --to carries a .patch extension (FORGE F9)', async () => {
+  it('repairs a double-suffixed filename when --to carries a.patch extension', async () => {
     await seed(patchesDir, [
       makeMetadata('0348-ui-editor-panels-patch.patch', 348, ['a.js'], {
         name: 'editor-panels-patch',
@@ -434,7 +434,7 @@ describe('patch rename', () => {
     expect(manifest.patches[0]?.filename).toBe('0348-ui-editor-panels.patch');
   });
 
-  it('explains why a rename is a no-op instead of a bare "(no-op)" (FORGE F9)', async () => {
+  it('explains why a rename is a no-op instead of a bare "(no-op)"', async () => {
     await seed(patchesDir, [makeMetadata('0044-ui-foo.patch', 44, ['a.js'], { name: 'foo' })]);
 
     await patchRenameCommand(projectRoot, '0044-ui-foo.patch', { to: 'foo', yes: true });

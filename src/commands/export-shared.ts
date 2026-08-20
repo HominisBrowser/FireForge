@@ -101,7 +101,7 @@ export async function runPatchLint(
 /**
  * Prints a patch-lint issue list with `runPatchLint`'s exact severity
  * buckets and skip-lint semantics, throwing on errors unless `skipLint`.
- * Factored out so `re-export`'s cached-lint path (FORGE J1) can replay
+ * Factored out so `re-export`'s cached-lint path can replay
  * stored issues through the identical reporter without re-linting.
  */
 export function reportPatchLintOutcome(issues: PatchLintIssue[], skipLint?: boolean): void {
@@ -165,7 +165,7 @@ export async function promptExportPatchMetadata(
     config !== undefined ? getPatchPolicyCategories(config) : [...PATCH_CATEGORIES];
   // A filename-shaped `--name foo.patch` must not die on the dot rule —
   // strip the extension before validation so the one-step flow works for
-  // both name shapes (FORGE G13).
+  // both name shapes.
   let patchName = options.name?.trim().replace(/\.patch$/i, '');
 
   if (patchName) {
@@ -242,8 +242,7 @@ export async function promptExportPatchMetadata(
 
   // The filename slug pipeline strips redundant category prefixes; the
   // manifest display name must agree, or every `export --name ui-foo`
-  // needs a follow-up `patch rename` to satisfy bare-slug naming policy
-  // (FORGE G13).
+  // needs a follow-up `patch rename` to satisfy bare-slug naming policy.
   const normalized = normalizePatchDisplayName(patchName, category);
   if (normalized !== patchName) {
     info(
@@ -350,7 +349,7 @@ export async function autoFixLicenseHeaders(
     if (!isAcceptableNewFileHeader(file, content, style, license)) {
       // A recognized third-party permissive banner marks the file as
       // vendored: prepending the project's own license header would break
-      // byte-identity pins and mislicense upstream code (FORGE F15).
+      // byte-identity pins and mislicense upstream code.
       if (hasThirdPartyPermissiveBanner(content)) {
         vendoredFiles.push(file);
       } else {

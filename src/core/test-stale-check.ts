@@ -307,7 +307,7 @@ export function formatStaticComponentsRefusal(changedManifests: string[]): strin
 /**
  * Formats the post-mutation advisory printed by `fireforge reset` /
  * `fireforge import` when `components.conf` diverged from the last full
- * build (FORGE F13). Same probe as {@link formatStaticComponentsRefusal},
+ * build. Same probe as {@link formatStaticComponentsRefusal},
  * different moment: this fires at mutation time so the operator learns a
  * full build is needed BEFORE the next gate run refuses.
  */

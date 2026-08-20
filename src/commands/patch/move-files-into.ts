@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Transactional file-ownership move into an EXISTING patch (FORGE F4).
+ * Transactional file-ownership move into an EXISTING patch.
  *
  * Before 0.39.0, `patch move-files <from> <to>` with an existing target was
  * preview-only: it printed two `re-export --files` commands whose real
@@ -17,7 +17,12 @@
 
 import { join } from 'node:path';
 
-import { appendHistory, confirmDestructive, type ConflictReport } from '../../core/destructive.js';
+import {
+  appendHistory,
+  assertConfirmationAvailable,
+  confirmDestructive,
+  type ConflictReport,
+} from '../../core/destructive.js';
 import { computeProjectedLintRegressions } from '../../core/lint-projection.js';
 import { normalizePatchArtifact } from '../../core/patch-artifact-normalize.js';
 import {
@@ -286,13 +291,16 @@ export async function runMoveFilesInto(args: {
 }): Promise<void> {
   const { enginePath, patchesDir, source, target, files, sourceAfter, targetAfter, options } = args;
 
+  // Refuse a prompt-less run BEFORE the diff/lint work, not after it.
+  assertConfirmationAvailable('patch move-files', options);
+
   const sourceDiff = await buildSplitDiff(enginePath, sourceAfter, 'remaining', source.filename);
   const targetDiff = await buildSplitDiff(enginePath, targetAfter, 'moved', target.filename);
 
   // Per-patch lint both projected bodies with each patch's own waivers.
   // The whole-queue context (built once, with the config for committed-gate
   // parity) resolves cross-patch imports and sibling head.js harness roots
-  // instead of linting each projected body blind (FORGE I3).
+  // instead of linting each projected body blind.
   const patchQueueCtx = await buildPatchQueueContext(patchesDir, args.config);
   await runPatchLint(
     enginePath,

@@ -59,6 +59,30 @@ function isRecognizedTeardownNoise(block: string): boolean {
 }
 
 /**
+ * True when CAPTURED output carries the documented mozsystemmonitor
+ * teardown traceback.
+ *
+ * The echo filter above only affects what a human sees. The CLASSIFIER
+ * reads the raw capture, and it needs the same recognition to tell "the
+ * suite finished clean and then upstream fell over at shutdown" from "the
+ * suite did not finish". Deliberately the same two-signal test the echo
+ * filter applies — a novel attribute or a traceback from anywhere but
+ * `resourcemonitor.py` is NOT this incident and must keep failing the run.
+ *
+ * The shutdown-marker precondition the echo filter adds is intentionally
+ * omitted: the whole point at the classification layer is the case where
+ * the teardown crash prevented the shutdown marker from printing.
+ *
+ * Pure; exported for the classifier and for direct unit testing.
+ *
+ * @param output - Raw captured stdout/stderr
+ * @returns True when the recognized teardown traceback is present
+ */
+export function hasKnownTeardownNoise(output: string): boolean {
+  return isRecognizedTeardownNoise(output);
+}
+
+/**
  * Shared across the stdout and stderr filter instances of ONE mach run:
  * SUITE_END typically arrives on stdout while the teardown traceback lands
  * on stderr, so the shutdown-seen flag must be visible to both. The two

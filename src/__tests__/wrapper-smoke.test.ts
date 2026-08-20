@@ -165,10 +165,10 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     expect(stdout).toContain('Usage: fireforge');
 
     // The packing repo is a git checkout, so the installed CLI reports the
-    // stamped build identity (FORGE K2). Shape only — the dirty flag
+    // stamped build identity. Shape only — the dirty flag
     // varies with the packing tree, and a dirty pack additionally carries
     // the content hash that distinguishes it from another pack at the same
-    // HEAD (FORGE L8). A release packs clean, so CI sees the bare form.
+    // HEAD. A release packs clean, so CI sees the bare form.
     const versionPattern = new RegExp(
       `^${packageVersion.replace(/\./g, '\\.')}\\+g[0-9a-f]{7,40}(\\.dirty(\\.[0-9a-f]{8})?)?$`
     );
@@ -191,7 +191,7 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     expect(installedCliVersion.trim()).toMatch(versionPattern);
 
     // The stamped identity travels in the tarball and records the source
-    // commit of the packing checkout (FORGE K3).
+    // commit of the packing checkout.
     const buildInfoRaw = await readFile(join(installedPkgRoot, 'dist', 'build-info.json'), 'utf8');
     const buildInfo = JSON.parse(buildInfoRaw) as {
       schemaVersion: number;

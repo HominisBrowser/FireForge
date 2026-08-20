@@ -253,7 +253,7 @@ describe('reExportCommand integration', () => {
     expect(patchBody).not.toContain('features/sibling.txt');
   });
 
-  it('--scan-file names the FIRST missing path in argument order when several are missing (FORGE K7)', async () => {
+  it('--scan-file names the FIRST missing path in argument order when several are missing', async () => {
     // The existence probes now run through a bounded pool; the refusal
     // must still deterministically name the first missing file in
     // argument order, exactly as the serial loop did.
@@ -503,8 +503,9 @@ describe('reExportCommand integration', () => {
 });
 
 /**
- * FORGE G2 reproduction. The consumer field report claimed a scan-less
- * re-export "silently ignores brand-new adjacent files"; the same-directory
+ * Adjacent-unmanaged reproduction. The consumer field report claimed a
+ * scan-less re-export "silently ignores brand-new adjacent files"; the
+ * same-directory
  * advisory has in fact shipped since v0.27.2, so that sub-claim is
  * partially REFUTED — the first test pins the advisory firing for the
  * exact reported shape (a new test created beside a patch's owned tests).
@@ -513,7 +514,7 @@ describe('reExportCommand integration', () => {
  * owned file is still not reported (deliberately out of scope — recursive
  * directory scans are too noisy on Firefox-sized trees).
  */
-describe('reExportCommand adjacency advisory (FORGE G2)', () => {
+describe('reExportCommand adjacency advisory', () => {
   let projectRoot: string;
   let restoreTTY: (() => void) | undefined;
 
@@ -612,7 +613,7 @@ describe('reExportCommand adjacency advisory (FORGE G2)', () => {
   });
 });
 
-describe('reExportCommand per-patch lint cache reuse (FORGE J1)', () => {
+describe('reExportCommand per-patch lint cache reuse', () => {
   const OWNED = 'comp/cached.js';
   const BASE = 'a\nb\n';
   const PATCHED = 'a\npatched\nb\n';
@@ -694,7 +695,7 @@ describe('reExportCommand per-patch lint cache reuse (FORGE J1)', () => {
   });
 });
 
-describe('reExportCommand foreign-drift guard (FORGE J2)', () => {
+describe('reExportCommand foreign-drift guard', () => {
   const OWNED = 'comp/mod.js';
   const BASE = 'line1\nline2\nline3\n';
   const PATCHED = 'line1\nline2\npatched line\nline3\n';
@@ -787,12 +788,12 @@ describe('reExportCommand foreign-drift guard (FORGE J2)', () => {
 });
 
 /**
- * FORGE L6: `--expect` scopes `--refuse-foreign-drift` to the files the
+ * `--expect` scopes `--refuse-foreign-drift` to the files the
  * slice intends to export (the content-based detector cannot tell the
  * session's own edits from another session's), and a missing/unreadable old
  * body under the flag refuses fail-closed instead of silently writing.
  */
-describe('reExportCommand --expect and fail-closed drift baseline (FORGE L6)', () => {
+describe('reExportCommand --expect and fail-closed drift baseline', () => {
   const OWNED = 'comp/mod.js';
   const OTHER = 'comp/other.js';
   const BASE = 'line1\nline2\nline3\n';
@@ -957,7 +958,7 @@ describe('reExportCommand --expect and fail-closed drift baseline (FORGE L6)', (
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('patch file is missing on disk'));
   });
 
-  it('a dry-run refusal still exits non-zero and writes nothing (FORGE L7 pin)', async () => {
+  it('a dry-run refusal still exits non-zero and writes nothing (pin)', async () => {
     await writeFiles(join(projectRoot, 'engine'), { [OWNED]: OWNED_DRIFTED });
     const before = await readProjectText(projectRoot, 'patches/001-ui-mod.patch');
 
@@ -970,8 +971,8 @@ describe('reExportCommand --expect and fail-closed drift baseline (FORGE L6)', (
 });
 
 /**
- * FORGE L7: the consumer reported two `--refuse-foreign-drift` refusals that
- * printed "Re-export refused" yet exited 0. Reproduction against the
+ * The consumer reported two `--refuse-foreign-drift` refusals that printed
+ * "Re-export refused" yet exited 0. Reproduction against the
  * consumer's exact build identity showed every refusal variant exits 1 from
  * the CLI itself — the observed 0 was the shell pipeline's exit status
  * (`… | tee`). These pins make the in-process contract explicit: a fully
@@ -979,7 +980,7 @@ describe('reExportCommand --expect and fail-closed drift baseline (FORGE L6)', (
  * outranks the generic all-failed abort. The cross-process exit code is
  * pinned in src/__tests__/re-export-refusal-exit.test.ts.
  */
-describe('reExportCommand fully-refused run exit contract (FORGE L7)', () => {
+describe('reExportCommand fully-refused run exit contract', () => {
   const FILE_A = 'comp/a.js';
   const FILE_B = 'comp/b.js';
   const BASE = 'line1\nline2\nline3\n';
@@ -1076,15 +1077,15 @@ describe('reExportCommand fully-refused run exit contract (FORGE L7)', () => {
 });
 
 /**
- * FORGE H1: the 0.40.0 field incident — a real re-export of patch A followed
- * by a `--dry-run` of unrelated patch B, after which patch A's just-written
+ * The 0.40.0 field incident — a real re-export of patch A followed by a
+ * `--dry-run` of unrelated patch B, after which patch A's just-written
  * export had reverted. The suspected materialize-and-restore mechanism does
  * not exist on the re-export path; these tests pin the exact observed
  * sequence byte-for-byte (patch artifacts, manifest, engine working tree,
  * AND the git index — the one place a dry-run can legally touch state), plus
  * the untracked-binary staging variant and the runtime purity guard itself.
  */
-describe('reExportCommand dry-run purity (FORGE H1)', () => {
+describe('reExportCommand dry-run purity', () => {
   let projectRoot: string;
   let restoreTTY: (() => void) | undefined;
 
@@ -1290,7 +1291,7 @@ describe('reExportCommand dry-run purity (FORGE H1)', () => {
     }
   });
 
-  it('withDryRunPurityGuard names the FIRST unreadable patch in sorted order when several fail (FORGE K4)', async () => {
+  it('withDryRunPurityGuard names the FIRST unreadable patch in sorted order when several fail', async () => {
     // The hashing now runs through a bounded pool; error selection happens
     // in a deterministic post-pool pass, so the refusal must name the
     // first failing file in sorted filename order — not whichever worker

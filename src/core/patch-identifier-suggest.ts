@@ -22,6 +22,12 @@ import type { PatchMetadata } from '../types/commands/index.js';
 /** Maximum Levenshtein distance accepted as a "did you mean" suggestion. */
 const SUGGESTION_DISTANCE_THRESHOLD = 3;
 
+/**
+ * Shortest side accepted for a prefix relation. Below this a prefix match
+ * is noise: a one-character ordinal prefixes almost anything.
+ */
+const MIN_PREFIX_MATCH_LENGTH = 4;
+
 /** Maximum number of suggestions to surface in the error message. */
 const SUGGESTION_LIMIT = 3;
 
@@ -84,10 +90,35 @@ function collectAcceptedIdentifiers(patches: readonly PatchMetadata[]): string[]
  * candidate whose distance exceeds {@link SUGGESTION_DISTANCE_THRESHOLD}.
  */
 function rankSuggestions(identifier: string, candidates: string[]): string[] {
+  const needle = identifier.toLowerCase();
   return candidates
-    .map((candidate) => ({ candidate, distance: levenshtein(identifier, candidate) }))
-    .filter((entry) => entry.distance <= SUGGESTION_DISTANCE_THRESHOLD)
-    .sort((a, b) => a.distance - b.distance || a.candidate.localeCompare(b.candidate))
+    .map((candidate) => {
+      const lower = candidate.toLowerCase();
+      // Prefix relation in EITHER direction is a stronger signal than edit
+      // distance and is not bounded by it: a partial ordinal or
+      // an abbreviated slug ("ui-foo" for "002-ui-foo.patch") is many edits
+      // away from the full identifier yet is obviously the intended target.
+      // `lower.startsWith(needle)`: the operator typed an abbreviation of
+      // a real identifier. The reverse relation is only meaningful when
+      // the candidate is substantial — otherwise the single-character
+      // ordinal "9" would "match" every input starting with a 9.
+      const prefixMatch =
+        needle.length >= MIN_PREFIX_MATCH_LENGTH &&
+        (lower.startsWith(needle) ||
+          (lower.length >= MIN_PREFIX_MATCH_LENGTH && needle.startsWith(lower)));
+      return {
+        candidate,
+        prefixMatch,
+        distance: levenshtein(identifier, candidate),
+      };
+    })
+    .filter((entry) => entry.prefixMatch || entry.distance <= SUGGESTION_DISTANCE_THRESHOLD)
+    .sort(
+      (a, b) =>
+        Number(b.prefixMatch) - Number(a.prefixMatch) ||
+        a.distance - b.distance ||
+        a.candidate.localeCompare(b.candidate)
+    )
     .slice(0, SUGGESTION_LIMIT)
     .map((entry) => entry.candidate);
 }

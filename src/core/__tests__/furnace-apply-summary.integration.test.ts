@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * FORGE H6 investigation: a 0.39.0 field report claimed `furnace apply`
- * printed "No changes since last apply" for a component whose SOURCE had
+ * Investigation: a 0.39.0 field report claimed `furnace apply` printed
+ * "No changes since last apply" for a component whose SOURCE had
  * just been edited, while the copy had actually landed (outcome correct,
  * report wrong). These tests exercise every candidate mechanism by which
  * the skip decision could disagree with the file state, against a real
@@ -31,7 +31,7 @@ vi.mock('../../utils/logger.js', () => ({
   spinner: vi.fn(() => ({ message: vi.fn(), stop: vi.fn(), error: vi.fn() })),
 }));
 
-describe('furnace apply skip-report accuracy (FORGE H6)', () => {
+describe('furnace apply skip-report accuracy', () => {
   let projectRoot: string;
   let overrideDir: string;
   let engineCssPath: string;

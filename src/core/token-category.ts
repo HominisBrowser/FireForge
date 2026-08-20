@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Category banner and token-declaration helpers for the tokens CSS file
- * (FORGE G3). Split out of `token-manager.ts` to stay inside the per-file
+ *. Split out of `token-manager.ts` to stay inside the per-file
  * line budget.
  *
  * Banner matching is EXACT: the text between the `=` runs (single-line

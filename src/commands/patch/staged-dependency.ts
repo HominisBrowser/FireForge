@@ -24,7 +24,7 @@ import { validateStagedDependencyAdd } from './staged-dependency-validate.js';
 type StagedDependencyMode = 'add' | 'remove' | 'clear';
 type StagedDependencyKind = 'import' | 'registration';
 
-/** Joins the names of the missing flags for error attribution (FORGE G12). */
+/** Joins the names of the missing flags for error attribution. */
 function missingFlagList(pairs: readonly (readonly [string, unknown])[]): string {
   return pairs
     .filter(([, value]) => value === undefined || value === '')
@@ -122,7 +122,7 @@ function requireRegistrationOptions(
 }
 
 /**
- * Resolves the `--remove` target for forward-imports (FORGE G12):
+ * Resolves the `--remove` target for forward-imports:
  * `--file` + `--specifier` suffice when they identify at most one staged
  * entry — `--creates` is inferred from a unique match, an ambiguous match
  * refuses with the candidate list, and no match falls through to the
@@ -322,7 +322,7 @@ export async function patchStagedDependencyCommand(
 
   // The patch queue loads BEFORE the declaration fields resolve so
   // `--remove` can infer `--creates` from the target patch's staged
-  // entries (FORGE G12).
+  // entries.
   const { paths, manifest } = await requirePatchQueue(projectRoot);
   const targetPatch = requirePatchTarget(identifier, manifest.patches);
 
@@ -338,7 +338,7 @@ export async function patchStagedDependencyCommand(
       : mode === 'add'
         ? requireRegistrationOptions(options)
         : resolveRegistrationRemovalTarget(options, targetPatch.stagedDependencies);
-  // Shape-check --add declarations against the loaded queue (FORGE K10):
+  // Shape-check --add declarations against the loaded queue:
   // a patch-name-shaped --creates/--file is refused HERE instead of
   // surfacing later as an undischargeable staged-dependency-unused.
   if (mode === 'add') {

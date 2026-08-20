@@ -15,6 +15,7 @@ import {
   buildPerPatchLintCacheKey,
   clearPerPatchLintCache,
   getCachedPerPatchLintIssues,
+  LINT_CACHE_SCHEMA_VERSION,
   loadPerPatchLintCache,
   savePerPatchLintCache,
   setCachedPerPatchLintIssues,
@@ -128,6 +129,15 @@ describe('per-patch lint cache', () => {
     );
   });
 
+  it('invalidates when lintIgnore alone changes', async () => {
+    // Isolated on purpose: the pre-existing metadata test changes four
+    // fields at once, so nothing pinned the waiver field by itself — the
+    // exact input whose omission would replay a pre-waiver verdict.
+    const before = await key();
+    const changed: PatchMetadata = { ...patch, lintIgnore: ['checkjs-type-error'] };
+    await expect(key({ patch: changed })).resolves.not.toBe(before);
+  });
+
   it('invalidates when an affected engine file changes', async () => {
     const before = await key();
     await writeFiles(engineDir, { 'browser/a.js': 'const a = 2;\n' });
@@ -135,7 +145,7 @@ describe('per-patch lint cache', () => {
     await expect(key()).resolves.not.toBe(before);
   });
 
-  it('engine-side content revert invalidates the per-patch cache (FORGE F5)', async () => {
+  it('engine-side content revert invalidates the per-patch cache', async () => {
     // The cache-hit path in lint-per-patch returns BEFORE the empty-diff
     // probe. That is safe only because reverting an affected file (which
     // would empty the diff) always changes the file-content hash in the
@@ -198,7 +208,7 @@ describe('per-patch lint cache', () => {
     await expect(key({ config: withShim })).resolves.not.toBe(before);
   });
 
-  it('invalidates when checkJs test shim content, path, or presence changes (FORGE H2)', async () => {
+  it('invalidates when checkJs test shim content, path, or presence changes', async () => {
     const withTestShim: FireForgeConfig = {
       ...config,
       patchLint: {
@@ -291,7 +301,7 @@ describe('per-patch lint cache', () => {
     const loaded = await loadPerPatchLintCache(projectRoot);
     const cached = getCachedPerPatchLintIssues(loaded, patch.filename, cacheKey);
     expect(cached?.issues).toHaveLength(1);
-    // FORGE G10: the waived measurement round-trips through the cache so a
+    // The waived measurement round-trips through the cache so a
     // warm run reports the same suppressed sizes as a cold one.
     expect(cached?.suppressed).toHaveLength(1);
     expect(cached?.lineCount).toBe(4200);
@@ -299,5 +309,54 @@ describe('per-patch lint cache', () => {
     await clearPerPatchLintCache(projectRoot);
     const cleared = await loadPerPatchLintCache(projectRoot);
     expect(getCachedPerPatchLintIssues(cleared, patch.filename, cacheKey)).toBeUndefined();
+  });
+
+  it('refuses a cache hit whose waiver set differs, even on a matching key', async () => {
+    const cacheKey = await key();
+    const cache = await loadPerPatchLintCache(projectRoot);
+    const issue = {
+      file: 'browser/a.js',
+      check: 'checkjs-type-error',
+      message: 'implicit any',
+      severity: 'error' as const,
+    };
+    // Entry computed with NO waiver in force.
+    setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, [issue], [], 10, []);
+    await savePerPatchLintCache(projectRoot, cache);
+    const loaded = await loadPerPatchLintCache(projectRoot);
+
+    // Same key, same waiver set — replayed.
+    expect(getCachedPerPatchLintIssues(loaded, patch.filename, cacheKey, [])?.issues).toHaveLength(
+      1
+    );
+    // Same key, a waiver written since — must MISS rather than replay the
+    // pre-waiver verdict the operator just waived.
+    expect(
+      getCachedPerPatchLintIssues(loaded, patch.filename, cacheKey, ['checkjs-type-error'])
+    ).toBeUndefined();
+    // Order and duplicates are not significant.
+    setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, [issue], [], 10, ['b', 'a', 'a']);
+    expect(getCachedPerPatchLintIssues(cache, patch.filename, cacheKey, ['a', 'b'])).toBeDefined();
+  });
+
+  it('discards pre-schema-4 entries that carry no recorded waiver set', async () => {
+    const cacheKey = await key();
+    await writeFiles(projectRoot, {
+      '.fireforge/lint-cache/per-patch-v1.json': JSON.stringify({
+        schemaVersion: LINT_CACHE_SCHEMA_VERSION,
+        entries: {
+          [patch.filename]: {
+            key: cacheKey,
+            patchFilename: patch.filename,
+            issues: [],
+            suppressed: [],
+            lineCount: 1,
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      }),
+    });
+    const loaded = await loadPerPatchLintCache(projectRoot);
+    expect(loaded.entries[patch.filename]).toBeUndefined();
   });
 });

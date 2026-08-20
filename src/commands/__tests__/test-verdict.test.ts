@@ -52,7 +52,7 @@ describe('verdict sink exactly-one-line guarantee', () => {
     expect(capture.writes).toEqual(['FIREFORGE-VERDICT: FAIL reason=inconclusive\n']);
   });
 
-  it('emitting seals stdout: later logger output routes to stderr until the sink is re-armed (FORGE I12)', () => {
+  it('emitting seals stdout: later logger output routes to stderr until the sink is re-armed', () => {
     const capture = captureStdout();
     const stderrWrites: string[] = [];
     const stderrSpy = vi

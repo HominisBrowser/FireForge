@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Binary drift classification (FORGE J3): patch-owned binary files settle
+ * Binary drift classification: patch-owned binary files settle
  * to `patch-backed`/`patch-owned-drift` via recorded blob hashes, and
  * bodies without a usable hash classify as `binary-unsupported` instead
  * of drifting forever.

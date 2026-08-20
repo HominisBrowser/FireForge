@@ -24,6 +24,7 @@ import {
   PATCHES_MANIFEST,
   savePatchesManifest,
 } from './patch-manifest.js';
+import { requirePatchOrder } from './patch-parse.js';
 import { allocatePolicyOrder, enforcePatchPolicy } from './patch-policy.js';
 
 export {
@@ -426,7 +427,7 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
 
   const metadata: PatchMetadata = {
     filename: patchFilename,
-    order: parseInt(patchFilename.split('-')[0] ?? '0', 10),
+    order: requirePatchOrder(patchFilename),
     category: input.category,
     name: input.name,
     description: input.description,

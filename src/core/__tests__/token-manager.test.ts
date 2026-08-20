@@ -361,7 +361,7 @@ describe('addToken', () => {
     expect(darkValueIdx).toBeGreaterThan(darkMediaIdx);
   });
 
-  it('mirrors an override into existing :root[data-theme] blocks (FORGE F8)', async () => {
+  it('mirrors an override into existing:root[data-theme] blocks', async () => {
     const cssWithThemeBlocks = `${MOCK_TOKENS_CSS}
 :root[data-theme="dark"] {
   --testbrowser-dark-override: #222;
@@ -407,7 +407,7 @@ describe('addToken', () => {
     );
   });
 
-  it('leaves files without data-theme blocks unchanged in shape (FORGE F8)', async () => {
+  it('leaves files without data-theme blocks unchanged in shape', async () => {
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
     await addToken('/project', {
@@ -752,7 +752,7 @@ describe('addToken --variant', () => {
   });
 });
 
-describe('addToken missing-category bypasses (FORGE G3)', () => {
+describe('addToken missing-category bypasses', () => {
   it('a TOC comment merely mentioning the category no longer satisfies the banner lookup', async () => {
     // Bypass 1 of the 2026-07-30 silent-no-op incident: a `/* ====`-opened
     // comment containing "Colors — Terminal" as a substring satisfied the

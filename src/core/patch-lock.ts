@@ -7,10 +7,11 @@ import { join } from 'node:path';
 
 import { FireForgeError } from '../errors/base.js';
 import { PatchError } from '../errors/patch.js';
+import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { info } from '../utils/logger.js';
 import type { LockHolder } from './file-lock.js';
-import { withFileLock } from './file-lock.js';
+import { readLockStatus, withFileLock } from './file-lock.js';
 
 const PATCH_DIRECTORY_LOCK = '.fireforge-patches.lock';
 
@@ -45,6 +46,40 @@ function formatWaitProgressLine(
 }
 
 /**
+ * Asserts that this process is inside {@link withPatchDirectoryLock} for the
+ * given patches directory.
+ *
+ * The manifest mutators document "under the caller's lock" and are reached
+ * from six different command bodies, none of which the mutator can see. This
+ * turns that comment into a check at the point it matters: filename
+ * allocation and manifest read-modify-writes are only atomic while the lock
+ * is held, so an unlocked caller silently reintroduces the interleaving the
+ * lock exists to prevent.
+ *
+ * Fail-open on an unreadable owner record, deliberately: `withFileLock`
+ * treats writing that record as non-fatal, so a live holder can legitimately
+ * have no readable PID and asserting on its presence would fire on a lock we
+ * really do hold.
+ *
+ * @param patchesDir - The patches directory whose lock must be held
+ * @param context - What is about to be done, for the failure message
+ * @throws {@link InternalInvariantError} when the lock is not held by us.
+ */
+export async function assertPatchDirectoryLockHeld(
+  patchesDir: string,
+  context: string
+): Promise<void> {
+  const status = await readLockStatus(join(patchesDir, PATCH_DIRECTORY_LOCK));
+  assert(status.held, () => `patch directory lock is held before ${context}`);
+  assert(
+    status.holder === undefined || status.holder.pid === process.pid,
+    () =>
+      `patch directory lock is owned by this process before ${context} ` +
+      `(held by PID ${String(status.holder?.pid)}, we are ${String(process.pid)})`
+  );
+}
+
+/**
  * Runs a patch directory mutation while holding an exclusive filesystem lock.
  * This serializes filename allocation and manifest writes across parallel exports.
  */
@@ -70,7 +105,7 @@ export async function withPatchDirectoryLock<T>(
     ...(command !== undefined
       ? { ownerMetadata: [`command=${command}`, `started=${new Date().toISOString()}`] }
       : {}),
-    // Reason first, remedy second (FORGE H5). The remedy is waiting, not
+    // Reason first, remedy second. The remedy is waiting, not
     // deleting: bulk exports/re-exports legitimately hold this lock for
     // minutes, FireForge reaps genuinely stale locks on its own, and the
     // old advice ("rm -rf" while a holder was alive) destroyed a live

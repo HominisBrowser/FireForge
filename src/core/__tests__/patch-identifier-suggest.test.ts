@@ -92,3 +92,25 @@ describe('formatPatchNotFoundError (Finding 12)', () => {
     expect(message).toContain('001-ui-workbench');
   });
 });
+
+describe('prefix-based suggestions', () => {
+  it('suggests the full identifier from a typed abbreviation, beyond edit distance', () => {
+    const patches = [
+      makePatch('001-ui-tab-strip-overhaul.patch', 'tab-strip-overhaul', 1),
+      makePatch('002-infra-storage.patch', 'storage', 2),
+    ];
+    // Nine edits away from the filename — pure edit distance would miss it.
+    const message = formatPatchNotFoundError('001-ui-tab', patches);
+    expect(message).toContain('Did you mean');
+    expect(message).toContain('001-ui-tab-strip-overhaul');
+    expect(message).not.toContain('002-infra-storage');
+  });
+
+  it('does not let a one-character ordinal prefix-match everything', () => {
+    const patches = Array.from({ length: 9 }, (_, i) =>
+      makePatch(`00${String(i + 1)}-foo-${String(i)}.patch`, `foo-${String(i)}`, i + 1)
+    );
+    const message = formatPatchNotFoundError('9zz-nonsense', patches);
+    expect(message).toContain('No close match');
+  });
+});

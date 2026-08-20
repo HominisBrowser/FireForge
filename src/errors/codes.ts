@@ -27,6 +27,16 @@ export const ExitCode = {
   /** Patch conflict resolution error */
   RESOLUTION_ERROR: 10,
   /**
+   * An internal invariant did not hold — a bug in FireForge itself, not a
+   * user or environment failure. Distinct from GENERAL_ERROR because the
+   * two call for opposite responses: a GENERAL_ERROR usually means the
+   * operator must change something (fix a config, free a lock, retry), and
+   * an INTERNAL_ERROR means nothing the operator can change would have
+   * helped and the run should be reported instead. Scripts and CI that
+   * retry on failure want to retry the former and escalate the latter.
+   */
+  INTERNAL_ERROR: 11,
+  /**
    * `fireforge run --smoke-exit` observed one or more unallowed console
    * error lines inside the smoke window. Distinct from BUILD_ERROR so CI
    * can route smoke regressions separately from compile/config failures.

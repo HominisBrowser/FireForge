@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
   readText: vi.fn(),
-  writeText: vi.fn(),
+  writeTextIfChanged: vi.fn(),
 }));
 
 vi.mock('../../utils/platform.js', () => ({
@@ -17,7 +17,7 @@ vi.mock('../../errors/build.js', async (importOriginal) => {
 });
 
 import type { FireForgeConfig } from '../../types/config.js';
-import { pathExists, readText, writeText } from '../../utils/fs.js';
+import { pathExists, readText, writeTextIfChanged } from '../../utils/fs.js';
 import { BrandingMozconfigMismatchError } from '../branding.js';
 import {
   assertBrandingMozconfigAgreement,
@@ -27,7 +27,7 @@ import {
 
 const mockPathExists = vi.mocked(pathExists);
 const mockReadText = vi.mocked(readText);
-const mockWriteText = vi.mocked(writeText);
+const mockWriteText = vi.mocked(writeTextIfChanged);
 
 const config = {
   name: 'TestBrowser',
@@ -58,7 +58,7 @@ function mockBrandingMozBuildExists(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockWriteText.mockResolvedValue(undefined);
+  mockWriteText.mockResolvedValue(true);
 });
 
 describe('extractWithBrandingPath', () => {
@@ -149,7 +149,7 @@ describe('assertBrandingMozconfigAgreement', () => {
  * Drives readText by routing on path: common.mozconfig / platform.mozconfig
  * templates are served from the caller's strings, and any other path (the
  * preflight re-reads the written mozconfig) echoes back the last
- * `writeText` call's content. Routing on path instead of call-count keeps
+ * `writeTextIfChanged` call's content. Routing on path instead of call-count keeps
  * the helper honest when the generator skips common because
  * `pathExists(common)` returned false.
  */
@@ -165,7 +165,7 @@ function stubReadTemplates(common: string, platform: string): void {
       return Promise.resolve(platform);
     }
     // Fallback path — the preflight re-reads the written mozconfig;
-    // echo whatever writeText last saw.
+    // echo whatever writeTextIfChanged last saw.
     const lastWrite = mockWriteText.mock.calls.at(-1)?.[1];
     return Promise.resolve(lastWrite ?? '');
   });

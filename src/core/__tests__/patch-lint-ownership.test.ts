@@ -174,7 +174,7 @@ describe('resolvePatchOwnedChromeScripts', () => {
   });
 });
 
-describe('isTestScriptFile / resolvePatchOwnedTestScripts (FORGE G5)', () => {
+describe('isTestScriptFile / resolvePatchOwnedTestScripts', () => {
   it('matches test-shaped .js files and rejects modules and non-tests', () => {
     expect(isTestScriptFile('browser/components/x/test/browser/browser_a.js')).toBe(true);
     // /tests/ (plural) is not the /test/ path marker, but the test_ basename matches.

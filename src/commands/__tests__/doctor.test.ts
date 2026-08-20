@@ -141,6 +141,7 @@ vi.mock('../../core/furnace-operation.js', () => ({
       body({
         registerJournal: vi.fn(),
         registerCleanup: vi.fn(),
+        markRolledBack: vi.fn(),
       })
   ),
   // Required by the new `furnaceStaleLockCheck` in doctor-furnace.ts; returns

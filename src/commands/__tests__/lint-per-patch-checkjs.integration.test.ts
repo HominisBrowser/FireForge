@@ -141,7 +141,7 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
     expect(groupedSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('roots the program at the --patches subset with full-queue resolution and identical findings (FORGE J1c)', async () => {
+  it('roots the program at the --patches subset with full-queue resolution and identical findings', async () => {
     const groupedSpy = vi.spyOn(checkjs, 'invokePatchLintCheckJsGrouped');
 
     // Subset run over the bad patch: same finding as a full run.
@@ -168,7 +168,7 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
     expect(checkJsLines()).toHaveLength(0);
   });
 
-  it('an all-warm run does not build the checkJs program at all (FORGE J1b)', async () => {
+  it('an all-warm run does not build the checkJs program at all', async () => {
     // Cold run populates the cache.
     await lintCommand(projectRoot, [], { perPatch: true }).catch(() => undefined);
 
@@ -189,7 +189,7 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
     expect(lines[0]).toContain('Bad.sys.mjs');
   });
 
-  it('a warm (all-cache-hit) run still surfaces run-level checkJs errors (FORGE F5)', async () => {
+  it('a warm (all-cache-hit) run still surfaces run-level checkJs errors', async () => {
     // A broken extra shim produces a GLOBAL checkJs error (no owning file).
     // Global findings are never cached, so before the fix an all-cache-hit
     // run dropped them entirely and reported fewer errors than a cold run.
@@ -219,12 +219,12 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
 });
 
 /**
- * FORGE G5: per-patch checkJs never included patch-adopted test `.js`
- * files, so a call to a harness member the consumer's shim does not
+ * Per-patch checkJs never included patch-adopted test `.js` files, so a
+ * call to a harness member the consumer's shim does not
  * declare (the TS2339 on `TestUtils.waitForCondition`) was invisible at
  * the patch boundary and surfaced only in the downstream composed gate.
  */
-describe('lint --per-patch checkJs over patch-owned test files (FORGE G5)', () => {
+describe('lint --per-patch checkJs over patch-owned test files', () => {
   let projectRoot: string;
   let engineDir: string;
   let restoreTTY: (() => void) | undefined;

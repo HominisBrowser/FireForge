@@ -116,12 +116,12 @@ describe('runTestsWithRetries suite dispatch (item E1)', () => {
 });
 
 /**
- * FORGE G15b: Firefox's xpcshell harness defaults its profile dir to a
+ * Firefox's xpcshell harness defaults its profile dir to a
  * FIXED $TMPDIR path, so concurrent invocations collided. Every harness
  * invocation that can dispatch xpcshell now exports a fresh per-invocation
  * XPCSHELL_TEST_PROFILE_DIR; pure mochitest dispatches stay untouched.
  */
-describe('per-invocation xpcshell profile dir (FORGE G15b)', () => {
+describe('per-invocation xpcshell profile dir', () => {
   function capturedEnv(mock: typeof xpcshellTestWithOutput, call = 0): Record<string, string> {
     return vi.mocked(mock).mock.calls[call]?.[3] ?? {};
   }

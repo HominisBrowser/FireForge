@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Patch-aware restore planning for `fireforge discard` (FORGE F1, P0).
+ * Patch-aware restore planning for `fireforge discard` (P0).
  *
  * The engine convention is: HEAD = pristine upstream Firefox, and the
  * applied patch queue lives as UNCOMMITTED worktree changes on top of it

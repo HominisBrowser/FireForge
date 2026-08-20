@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Unit coverage for the bounded stdio drain (FORGE I1): the waiter must
+ * Unit coverage for the bounded stdio drain: the waiter must
  * release the exit as soon as the stream is safe (drained, destroyed, or
  * errored) and never later than the timeout — a hang here would turn every
  * failed `status --json | slow-consumer` into a wedged process.

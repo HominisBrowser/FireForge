@@ -23,7 +23,11 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import { appendHistory, confirmDestructive } from '../../core/destructive.js';
+import {
+  appendHistory,
+  assertConfirmationAvailable,
+  confirmDestructive,
+} from '../../core/destructive.js';
 import { normalizePatchArtifact } from '../../core/patch-artifact-normalize.js';
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import { buildPatchQueueContext } from '../../core/patch-lint.js';
@@ -232,6 +236,9 @@ export async function patchSplitCommand(
 ): Promise<void> {
   intro(options.dryRun ? 'FireForge patch split (dry run)' : 'FireForge patch split');
 
+  // Refuse a prompt-less run BEFORE the diff/lint work, not after it.
+  assertConfirmationAvailable('patch split', options);
+
   const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
   const manifest = await loadPatchesManifest(paths.patches);
@@ -287,7 +294,7 @@ export async function patchSplitCommand(
 
   // The filename slug pipeline strips redundant category prefixes; the
   // manifest display name must agree with the bare-slug naming policy,
-  // exactly as `export --name` already does (FORGE G13/H4).
+  // exactly as `export --name` already does.
   const displayName = normalizePatchDisplayName(options.name, category);
   if (displayName !== options.name) {
     info(
@@ -315,7 +322,7 @@ export async function patchSplitCommand(
   // tier/lintIgnore so an intentional-advisory patch can still split.
   // The whole-queue context (built once, with the config for committed-gate
   // parity) resolves cross-patch imports and sibling head.js harness roots
-  // instead of linting each projected body blind (FORGE I3).
+  // instead of linting each projected body blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
   await runPatchLint(

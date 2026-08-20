@@ -29,7 +29,7 @@ function verdictOf(
   };
 }
 
-describe('tree guard verdict table (FORGE G15)', () => {
+describe('tree guard verdict table', () => {
   it('classifies EVERY manifest command explicitly (drift gate: new commands default-deny until classified)', () => {
     const unclassified = COMMAND_MANIFEST.map((entry) => entry.name).filter(
       (name) => TREE_COMMAND_VERDICTS[name] === undefined
@@ -78,7 +78,7 @@ describe('tree guard verdict table (FORGE G15)', () => {
     expect(verdictOf('export-all', [], { dryRun: false })).toThrow(/must run in the primary tree/);
   });
 
-  it('re-export is allowed only with --dry-run (FORGE H3, gated on the H1 purity proof)', () => {
+  it('re-export is allowed only with --dry-run (gated on the H1 purity proof)', () => {
     expect(verdictOf('re-export', [], { dryRun: true })).not.toThrow();
     expect(verdictOf('re-export', [], {})).toThrow(/must run in the primary tree/);
     expect(verdictOf('re-export', [], { dryRun: false })).toThrow(/must run in the primary tree/);

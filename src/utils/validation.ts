@@ -5,6 +5,7 @@
  */
 import { InvalidArgumentError } from '../errors/base.js';
 import type { FirefoxProduct } from '../types/config.js';
+import type { JsonObject, JsonValue } from '../types/json.js';
 import { escapeRegex } from './regex.js';
 
 /**
@@ -89,6 +90,19 @@ export function isObject(value: unknown): value is Record<string, unknown> {
  */
 export function isArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
+}
+
+/**
+ * Narrows a JSON value to a JSON object node (excludes arrays and `null`).
+ *
+ * Unlike {@link isObject} this accepts only values already known to be JSON
+ * data, so the narrowed `JsonObject` keeps its concrete value contract —
+ * use it when walking a `JsonValue` tree rather than at `unknown` boundaries.
+ * @param value - JSON value to check
+ * @returns True if value is a JSON object node
+ */
+export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -331,7 +345,7 @@ export function normalizeTokenName(name: string): string {
 }
 
 /**
- * Normalizes a patch display name against its category (FORGE G13):
+ * Normalizes a patch display name against its category:
  * strips a trailing `.patch` and any redundant `NNN-<category>-` /
  * `<category>-` prefixes, case-insensitively and repeatedly, mirroring
  * the filename slug pipeline's require-the-category-token rule — a bare

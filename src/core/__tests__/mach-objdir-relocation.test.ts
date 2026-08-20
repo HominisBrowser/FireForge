@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Unit tests for the post-`mach configure` relocation check (FORGE I10,
+ * Unit tests for the post-`mach configure` relocation check (
  * I13):
  * every violation class the pure checker reports, and the clean shapes it
  * must accept — including the substring non-collision property that makes

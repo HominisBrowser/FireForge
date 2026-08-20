@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { LockContentionError } from '../errors/base.js';
@@ -34,6 +34,22 @@ export interface LockHolder {
   metadata: string[];
 }
 
+/**
+ * Live queue state around a contended lock.
+ *
+ * Under several concurrent sessions the lock itself behaved correctly; the
+ * gap was VISIBILITY — operators inferred queue state from `ps` and their
+ * own wait lines. Waiters advertise themselves in a sibling directory so
+ * both the wait output and `fireforge status --lock` can say how many are
+ * queued and how many are ahead of you.
+ */
+export interface LockQueueState {
+  /** Live waiters currently queued for the lock, including this process. */
+  depth: number;
+  /** Live waiters that started waiting BEFORE this process. */
+  ahead: number;
+}
+
 export interface FileLockOptions {
   timeoutMs?: number;
   pollMs?: number;
@@ -65,6 +81,8 @@ export interface FileLockOptions {
     waitedMs: number;
     timeoutMs: number;
     holder: LockHolder | undefined;
+    /** Queue state at this poll, when the waiter registry is available. */
+    queue?: LockQueueState | undefined;
   }) => void;
   onTimeoutMessage?: string;
   onStaleLockMessage?: (ageMs: number) => string | undefined;
@@ -132,6 +150,108 @@ async function readLockOwner(lockPath: string): Promise<LockOwner> {
   return { present: false };
 }
 
+/** Sibling directory in which waiters advertise themselves. */
+function lockWaitersDir(lockPath: string): string {
+  return `${lockPath}.waiters`;
+}
+
+/** Parsed waiter-file name: `<startedAtMs>-<pid>-<uuid>`. */
+function parseWaiterFileName(name: string): { startedAt: number; pid: number } | undefined {
+  const match = /^(\d+)-(\d+)-/.exec(name);
+  const startedAt = match?.[1];
+  const pid = match?.[2];
+  if (startedAt === undefined || pid === undefined) return undefined;
+  return { startedAt: Number.parseInt(startedAt, 10), pid: Number.parseInt(pid, 10) };
+}
+
+/**
+ * Reads the live waiter queue around `lockPath`, dropping entries whose
+ * process is gone (a killed waiter must not inflate the depth forever).
+ *
+ * Advisory and fail-open: an unreadable registry reports an empty queue
+ * rather than failing whatever asked.
+ *
+ * @param lockPath - The lock directory whose queue to inspect
+ * @param selfStartedAt - This process's wait start, to compute `ahead`
+ */
+export async function readLockQueue(
+  lockPath: string,
+  selfStartedAt?: number
+): Promise<LockQueueState> {
+  let names: string[];
+  try {
+    names = await readdir(lockWaitersDir(lockPath));
+  } catch {
+    return { depth: 0, ahead: 0 };
+  }
+  const live = names
+    .map(parseWaiterFileName)
+    .filter((entry): entry is { startedAt: number; pid: number } => entry !== undefined)
+    .filter((entry) => isProcessAlive(entry.pid));
+  const ahead =
+    selfStartedAt === undefined
+      ? 0
+      : live.filter((entry) => entry.startedAt < selfStartedAt).length;
+  return { depth: live.length, ahead };
+}
+
+/**
+ * Snapshot of a lock for `fireforge status --lock`: who holds
+ * it, for how long, and how deep the queue behind it is.
+ */
+export interface LockStatusSnapshot {
+  held: boolean;
+  holder?: LockHolder | undefined;
+  /** Milliseconds since the lock directory was created, when held. */
+  heldForMs?: number | undefined;
+  queueDepth: number;
+}
+
+/**
+ * Inspects a lock without acquiring it. Read-only and fail-open: a missing
+ * lock is reported as free, never as an error.
+ */
+export async function readLockStatus(lockPath: string): Promise<LockStatusSnapshot> {
+  const queue = await readLockQueue(lockPath);
+  let heldForMs: number | undefined;
+  try {
+    // Clamped: filesystem mtime resolution can round a just-created lock
+    // fractionally ahead of `Date.now()`, and a negative age is nonsense
+    // in a status report.
+    heldForMs = Math.max(0, Date.now() - (await stat(lockPath)).mtimeMs);
+  } catch {
+    return { held: false, queueDepth: queue.depth };
+  }
+  const owner = await readLockOwner(lockPath);
+  const holder: LockHolder | undefined = owner.present
+    ? { pid: owner.pid, alive: isProcessAlive(owner.pid), metadata: owner.metadata }
+    : undefined;
+  return { held: true, holder, heldForMs, queueDepth: queue.depth };
+}
+
+/**
+ * Registers this process in the lock's waiter queue. Returns a
+ * deregistration function that is always safe to call (including when
+ * registration itself failed).
+ */
+async function registerWaiter(lockPath: string, startedAt: number): Promise<() => Promise<void>> {
+  const dir = lockWaitersDir(lockPath);
+  const file = join(dir, `${String(startedAt)}-${String(process.pid)}-${randomUUID()}`);
+  try {
+    await ensureDir(dir);
+    await writeFile(file, `${String(process.pid)}\n`, 'utf-8');
+  } catch (error: unknown) {
+    // Advisory only — never fail a lock acquisition over the queue display.
+    verbose(`Could not register lock waiter for ${lockPath}: ${toError(error).message}`);
+    return async (): Promise<void> => {
+      /* nothing to remove */
+    };
+  }
+  return async (): Promise<void> => {
+    await rm(file, { force: true });
+  };
+}
+
 /**
  * Reads the contended lock's owner and reports wait progress to the caller's
  * `onWaitProgress` callback. Failure to read the owner degrades to
@@ -141,13 +261,19 @@ async function reportWaitProgress(
   lockPath: string,
   waitedMs: number,
   timeoutMs: number,
+  startedAt: number,
   onWaitProgress: NonNullable<FileLockOptions['onWaitProgress']>
 ): Promise<void> {
   const owner = await readLockOwner(lockPath);
   const holder: LockHolder | undefined = owner.present
     ? { pid: owner.pid, alive: isProcessAlive(owner.pid), metadata: owner.metadata }
     : undefined;
-  onWaitProgress({ waitedMs, timeoutMs, holder });
+  onWaitProgress({
+    waitedMs,
+    timeoutMs,
+    holder,
+    queue: await readLockQueue(lockPath, startedAt),
+  });
 }
 
 /**
@@ -310,6 +436,43 @@ async function releaseLock(
   await rm(lockPath, { recursive: true, force: true });
 }
 
+/**
+ * Builds the contention refusal thrown when the wait budget expires.
+ *
+ * Typed as {@link LockContentionError} (a `FireForgeError`) so the CLI
+ * boundary prints the refusal as one clean line instead of an "Unexpected
+ * error" stack. Callers supplying `onTimeoutMessage` still get
+ * the holder identification appended — the reason-first copy stays theirs,
+ * the "who holds it" is ours.
+ */
+async function buildLockTimeoutError(
+  lockPath: string,
+  onTimeoutMessage: string | undefined,
+  cause: unknown
+): Promise<LockContentionError> {
+  const owner = await readLockOwner(lockPath);
+  const liveHolder = owner.present && isProcessAlive(owner.pid) ? owner : undefined;
+  const details =
+    liveHolder !== undefined && liveHolder.metadata.length > 0
+      ? ` (${liveHolder.metadata.join(', ')})`
+      : '';
+  if (onTimeoutMessage !== undefined) {
+    const identifiedHolder =
+      liveHolder !== undefined
+        ? ` The lock is held by PID ${String(liveHolder.pid)}${details}.`
+        : '';
+    return new LockContentionError(`${onTimeoutMessage}${identifiedHolder}`, cause);
+  }
+  const holderHint =
+    liveHolder !== undefined
+      ? ` It is held by running process ${String(liveHolder.pid)}${details} — wait for it to finish, or stop it and retry.`
+      : ' If no other FireForge process is running, remove the lock directory and retry.';
+  return new LockContentionError(
+    `Timed out waiting for file lock ${lockPath}.${holderHint}`,
+    cause
+  );
+}
+
 /** Runs an async operation while holding a directory lock, with stale-lock recovery. */
 export async function withFileLock<T>(
   lockPath: string,
@@ -325,67 +488,62 @@ export async function withFileLock<T>(
   let lastStaleProbeAt: number | undefined;
   let currentPollMs = pollMs;
   let lastProgressAt = startedAt;
+  /** Set on first contention so an uncontended acquire costs nothing. */
+  let deregisterWaiter: (() => Promise<void>) | undefined;
 
   await ensureDir(dirname(lockPath));
 
-  for (;;) {
-    try {
-      await mkdir(lockPath);
-      break;
-    } catch (error: unknown) {
-      if (getNodeErrorCode(error) !== 'EEXIST') {
-        throw error;
-      }
+  try {
+    for (;;) {
+      try {
+        await mkdir(lockPath);
+        break;
+      } catch (error: unknown) {
+        if (getNodeErrorCode(error) !== 'EEXIST') {
+          throw error;
+        }
 
-      if (lastStaleProbeAt === undefined || Date.now() - lastStaleProbeAt >= staleReprobeMs) {
-        lastStaleProbeAt = Date.now();
-        if (await removeIfStaleLock(lockPath, staleMs, options.onStaleLockMessage)) {
-          continue;
+        // Advertise this waiter so the queue is visible to the wait output
+        // and to `fireforge status --lock`. Registered lazily:
+        // an uncontended acquisition never touches the registry.
+        deregisterWaiter ??= await registerWaiter(lockPath, startedAt);
+
+        if (lastStaleProbeAt === undefined || Date.now() - lastStaleProbeAt >= staleReprobeMs) {
+          lastStaleProbeAt = Date.now();
+          if (await removeIfStaleLock(lockPath, staleMs, options.onStaleLockMessage)) {
+            continue;
+          }
+        }
+
+        if (Date.now() >= deadline) {
+          throw await buildLockTimeoutError(lockPath, options.onTimeoutMessage, error);
+        }
+
+        if (
+          options.onWaitProgress !== undefined &&
+          options.waitProgressMs !== undefined &&
+          Date.now() - lastProgressAt >= options.waitProgressMs
+        ) {
+          lastProgressAt = Date.now();
+          await reportWaitProgress(
+            lockPath,
+            Date.now() - startedAt,
+            timeoutMs,
+            startedAt,
+            options.onWaitProgress
+          );
+        }
+
+        await sleep(currentPollMs);
+        if (options.pollMaxMs !== undefined) {
+          currentPollMs = Math.min(currentPollMs * 2, options.pollMaxMs);
         }
       }
-
-      if (Date.now() >= deadline) {
-        const owner = await readLockOwner(lockPath);
-        const holderHint =
-          owner.present && isProcessAlive(owner.pid)
-            ? ` It is held by running process ${String(owner.pid)}${owner.metadata.length > 0 ? ` (${owner.metadata.join(', ')})` : ''} — wait for it to finish, or stop it and retry.`
-            : ' If no other FireForge process is running, remove the lock directory and retry.';
-        // Typed as LockContentionError (a FireForgeError) so the CLI
-        // boundary prints the refusal as one clean line instead of an
-        // "Unexpected error" stack (FORGE H5). Callers supplying
-        // onTimeoutMessage still get the holder identification appended —
-        // the reason-first copy stays theirs, the "who holds it" is ours.
-        const identifiedHolder =
-          options.onTimeoutMessage !== undefined && owner.present && isProcessAlive(owner.pid)
-            ? ` The lock is held by PID ${String(owner.pid)}${owner.metadata.length > 0 ? ` (${owner.metadata.join(', ')})` : ''}.`
-            : '';
-        throw new LockContentionError(
-          options.onTimeoutMessage !== undefined
-            ? `${options.onTimeoutMessage}${identifiedHolder}`
-            : `Timed out waiting for file lock ${lockPath}.${holderHint}`,
-          error
-        );
-      }
-
-      if (
-        options.onWaitProgress !== undefined &&
-        options.waitProgressMs !== undefined &&
-        Date.now() - lastProgressAt >= options.waitProgressMs
-      ) {
-        lastProgressAt = Date.now();
-        await reportWaitProgress(
-          lockPath,
-          Date.now() - startedAt,
-          timeoutMs,
-          options.onWaitProgress
-        );
-      }
-
-      await sleep(currentPollMs);
-      if (options.pollMaxMs !== undefined) {
-        currentPollMs = Math.min(currentPollMs * 2, options.pollMaxMs);
-      }
     }
+  } finally {
+    // Leaving the queue happens the moment we stop waiting — whether we
+    // acquired the lock or timed out.
+    await deregisterWaiter?.();
   }
 
   // Stamp ownership (PID + per-acquisition token) into the lock directory so

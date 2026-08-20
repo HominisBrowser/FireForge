@@ -33,7 +33,7 @@ vi.mock('../../core/file-lock.js', () => ({
 }));
 
 // The dry-run purity guard fingerprints the engine generation and fails
-// closed on an `unavailable:` token (FORGE I9). This suite's fake
+// closed on an `unavailable:` token. This suite's fake
 // `/project/engine` has no git checkout, so the probe is stubbed to a
 // stable measurable token; the fail-closed behavior itself is pinned in
 // re-export.integration.test.ts against a real repository.
@@ -230,7 +230,7 @@ describe('reExportCommand - --scan flag', () => {
     expect(spinner).not.toHaveBeenCalled();
   });
 
-  it('rejects unknown patch identifiers with the available manifest entries', async () => {
+  it('rejects an unknown patch identifier by SUGGESTING, never dumping the queue', async () => {
     vi.mocked(loadPatchesManifest).mockResolvedValue(
       makeManifest([
         makePatch('001-ui-test.patch', ['a.js']),
@@ -238,8 +238,24 @@ describe('reExportCommand - --scan flag', () => {
       ])
     );
 
-    await expect(reExportCommand('/fake/root', ['999'], {})).rejects.toThrow(
-      'Patch "999" not found in manifest.'
+    // A wrong guess used to print every manifest filename inline, burying
+    // the error it was reporting under a ~300-entry list.
+    const rejection = reExportCommand('/fake/root', ['999'], {});
+    await expect(rejection).rejects.toThrow('Patch "999" not found.');
+    await expect(rejection).rejects.toThrow('fireforge patch list');
+    await expect(rejection).rejects.not.toThrow('001-ui-test.patch, 002-ui-other.patch');
+  });
+
+  it('suggests the near miss for a mistyped patch filename', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValue(
+      makeManifest([
+        makePatch('001-ui-test.patch', ['a.js']),
+        makePatch('002-ui-other.patch', ['b.js']),
+      ])
+    );
+
+    await expect(reExportCommand('/fake/root', ['001-ui-tes'], {})).rejects.toThrow(
+      /Did you mean:.*001-ui-test/
     );
   });
 
@@ -304,7 +320,7 @@ describe('reExportCommand - --scan flag', () => {
       return Promise.resolve(true);
     });
 
-    // FORGE H8: partial re-export throws AFTER the summary prints, so the
+    // Partial re-export throws AFTER the summary prints, so the
     // honest "N of M" accounting stays visible but the exit code is non-zero.
     await expect(reExportCommand('/fake/root', ['001', '002'], {})).rejects.toThrow(
       /Re-exported only 1 of 2 selected patch\(es\)\. Skipped: 1 patch\(es\)/
@@ -316,7 +332,7 @@ describe('reExportCommand - --scan flag', () => {
     expect(outro).toHaveBeenCalledWith('Re-export complete');
   });
 
-  it('a partial dry-run also exits non-zero, after printing the preview summary (FORGE H8)', async () => {
+  it('a partial dry-run also exits non-zero, after printing the preview summary', async () => {
     const existingPatch = makePatch('001-ui-keep.patch', ['a.js']);
     const missingPatch = makePatch('002-ui-missing.patch', ['missing.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([existingPatch, missingPatch]));
@@ -355,7 +371,7 @@ describe('reExportCommand - --scan flag', () => {
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
   });
 
-  it('adjacency notice excludes tool-managed branding and furnace paths (FORGE G2)', async () => {
+  it('adjacency notice excludes tool-managed branding and furnace paths', async () => {
     // Config binaryName is "testbrowser": a MODIFIED generated file under
     // browser/branding/testbrowser is branding-managed; a furnace-prefixed
     // path is furnace-managed; the plain unmanaged sibling stays listed.
@@ -387,7 +403,7 @@ describe('reExportCommand - --scan flag', () => {
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
   });
 
-  it('--refuse-adjacent-unmanaged skips the offending patch and fails the run (FORGE G2)', async () => {
+  it('--refuse-adjacent-unmanaged skips the offending patch and fails the run', async () => {
     const offending = makePatch('001-ui-offending.patch', ['dir/a.js']);
     const clean = makePatch('002-ui-clean.patch', ['other/b.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([offending, clean]));
@@ -424,7 +440,7 @@ describe('reExportCommand - --scan flag', () => {
     ).rejects.toThrow('--refuse-foreign-drift applies to the scan-less path only');
   });
 
-  it('--expect is refused without --refuse-foreign-drift (FORGE L6)', async () => {
+  it('--expect is refused without --refuse-foreign-drift', async () => {
     await expect(
       reExportCommand('/fake/root', ['001'], { expect: ['comp/mod.js'] })
     ).rejects.toThrow('--expect names files whose drift is expected under --refuse-foreign-drift');
@@ -1422,7 +1438,7 @@ describe('reExportCommand - --scan flag', () => {
     );
   });
 
-  describe('transient git index.lock retry (FORGE G7)', () => {
+  describe('transient git index.lock retry', () => {
     const indexLockError = (): GitError =>
       new GitError(
         "fatal: Unable to create '/fake/engine/.git/index.lock': File exists.\n" +
@@ -1527,7 +1543,7 @@ describe('reExportCommand - --scan flag', () => {
         return Promise.resolve(true);
       });
 
-      // The stamp refusal warn prints before the FORGE H8 partial-run throw.
+      // The stamp refusal warn prints before the partial-run throw.
       await expect(reExportCommand('/fake/root', [], { all: true, stamp: true })).rejects.toThrow(
         /Re-exported only 1 of 2 selected patch\(es\)/
       );

@@ -228,11 +228,91 @@ const noEmptyJsdoc = {
   },
 };
 
+/** Reports `Record<string, unknown>` in exported function signatures. */
+const noUntypedJsonDocument = {
+  meta: {
+    type: 'suggestion',
+    docs: {
+      description:
+        'Use JsonObject/JsonValue (src/types/json.ts), ParsedRecord (src/utils/parse.ts), or a named ' +
+        'domain type instead of Record<string, unknown> in exported function signatures.',
+    },
+    schema: [],
+    messages: {
+      untypedDocument:
+        'Untyped dictionary in an exported signature. `Record<string, unknown>` gives callers no value ' +
+        'contract, which is how piecemeal `typeof`-and-cast narrowing accretes downstream. ' +
+        'Use `JsonObject`/`JsonValue` (src/types/json.ts) for raw JSON documents, ' +
+        '`ParsedRecord` (src/utils/parse.ts) for boundary parsing, or a named domain type.',
+    },
+  },
+  create(context) {
+    const filename = (context.filename ?? context.getFilename()).replace(/\\/g, '/');
+    // `isObject` in validation.ts IS the sanctioned unknown→object bridge;
+    // its type predicate necessarily names Record<string, unknown>.
+    if (filename.endsWith('src/utils/validation.ts')) return {};
+    const functionTypes = new Set([
+      'FunctionDeclaration',
+      'FunctionExpression',
+      'ArrowFunctionExpression',
+      'TSDeclareFunction',
+    ]);
+    // Only functions attached straight to an export declaration count:
+    // `export function f`, `export default function`, `export const f = () => …`.
+    // Class methods stay exempt — ParsedRecord's constructor legitimately
+    // takes the Record its factory just narrowed.
+    const isDirectlyExported = (fn) => {
+      const parent = fn.parent;
+      if (!parent) return false;
+      if (parent.type === 'ExportNamedDeclaration' || parent.type === 'ExportDefaultDeclaration') {
+        return true;
+      }
+      return (
+        parent.type === 'VariableDeclarator' &&
+        parent.parent?.type === 'VariableDeclaration' &&
+        parent.parent.parent?.type === 'ExportNamedDeclaration'
+      );
+    };
+    return {
+      TSTypeReference(node) {
+        if (node.typeName.type !== 'Identifier' || node.typeName.name !== 'Record') return;
+        const args = (node.typeArguments ?? node.typeParameters)?.params ?? [];
+        if (
+          args.length !== 2 ||
+          args[0].type !== 'TSStringKeyword' ||
+          args[1].type !== 'TSUnknownKeyword'
+        ) {
+          return;
+        }
+        // Ascend to the function whose signature holds this annotation. The
+        // walk stops at the INNERMOST function-like node, so annotations in
+        // nested helpers inside an exported function's body never report.
+        let child = node;
+        let parent = node.parent;
+        while (parent) {
+          // A generic bound (`<T extends Record<string, unknown>>`) constrains
+          // a caller-supplied shape; it is not a dictionary handed to callers.
+          if (parent.type === 'TSTypeParameter') return;
+          if (functionTypes.has(parent.type)) {
+            if (child !== parent.body && isDirectlyExported(parent)) {
+              context.report({ node, messageId: 'untypedDocument' });
+            }
+            return;
+          }
+          child = parent;
+          parent = parent.parent;
+        }
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     'no-open-coded-to-error': noOpenCodedToError,
     'no-errno-cast': noErrnoCast,
     'prefer-shared-regex-escape': preferSharedRegexEscape,
     'no-empty-jsdoc': noEmptyJsdoc,
+    'no-untyped-json-document': noUntypedJsonDocument,
   },
 };

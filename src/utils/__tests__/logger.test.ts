@@ -31,6 +31,8 @@ import {
   isMachineOutputMode,
   message,
   note,
+  notice,
+  NOTICE_PREFIX,
   outro,
   setMachineOutputMode,
   setStdoutSealed,
@@ -126,7 +128,7 @@ describe('logger machine-output mode', () => {
   });
 });
 
-describe('logger stdout seal (FORGE I12)', () => {
+describe('logger stdout seal', () => {
   let stderrLines: string[];
   let stderrSpy: { mockRestore: () => void };
 
@@ -278,5 +280,51 @@ describe('logger human mode', () => {
       if (stdoutDesc) Object.defineProperty(process.stdout, 'isTTY', stdoutDesc);
       if (stderrDesc) Object.defineProperty(process.stderr, 'isTTY', stderrDesc);
     }
+  });
+});
+
+describe('notice', () => {
+  afterEach(() => {
+    setMachineOutputMode(false);
+    setStdoutSealed(false);
+  });
+
+  it('rides the WARNING channel so an agent output filter cannot drop it', () => {
+    vi.clearAllMocks();
+    notice('escalating this pre-test build to a full mach build');
+
+    // Warning severity is the whole point: filters that keep only
+    // warnings and errors were dropping FireForge's own explanations,
+    // leaving a multi-minute build unexplained.
+    expect(clack.log.warn).toHaveBeenCalledWith(
+      `${NOTICE_PREFIX} escalating this pre-test build to a full mach build`
+    );
+    expect(clack.log.info).not.toHaveBeenCalled();
+  });
+
+  it('keeps the warning prefix and the notice marker in machine mode', () => {
+    const stderrLines: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrLines.push(String(chunk));
+      return true;
+    });
+    setMachineOutputMode(true);
+    try {
+      notice('backend regeneration');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+
+    expect(stderrLines).toEqual([`warning: ${NOTICE_PREFIX} backend regeneration\n`]);
+  });
+
+  it('is distinguishable from a real warning by its prefix', () => {
+    vi.clearAllMocks();
+    warn('a genuine warning');
+    notice('an explanation');
+
+    const calls = vi.mocked(clack.log.warn).mock.calls;
+    expect(calls[0]?.[0]).not.toContain(NOTICE_PREFIX);
+    expect(calls[1]?.[0]).toContain(NOTICE_PREFIX);
   });
 });

@@ -12,7 +12,7 @@
  */
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import { confirmDestructive } from '../../core/destructive.js';
+import { assertConfirmationAvailable, confirmDestructive } from '../../core/destructive.js';
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import { buildPatchQueueContext } from '../../core/patch-lint.js';
 import { loadPatchesManifest, resolvePatchIdentifier } from '../../core/patch-manifest.js';
@@ -50,6 +50,9 @@ export async function patchMoveFilesCreateCommand(
       ? 'FireForge patch move-files --create (dry run)'
       : 'FireForge patch move-files --create'
   );
+
+  // Refuse a prompt-less run BEFORE the diff/lint work, not after it.
+  assertConfirmationAvailable('patch move-files --create', options);
 
   const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
@@ -108,7 +111,7 @@ export async function patchMoveFilesCreateCommand(
 
   // The filename slug pipeline (resolvePlacementPlan above) strips redundant
   // category prefixes; the manifest display name must agree with the bare-slug
-  // naming policy, exactly as `export --name` already does (FORGE G13/H4).
+  // naming policy, exactly as `export --name` already does.
   const displayName = normalizePatchDisplayName(newPatchName, category);
   if (displayName !== newPatchName) {
     info(
@@ -138,7 +141,7 @@ export async function patchMoveFilesCreateCommand(
   // same patch-policy shape as the committed `lint --per-patch` gate) makes
   // cross-patch `resource:///` imports and sibling head.js harness roots
   // resolve exactly as they will after the move lands — without it the
-  // projection lint was blind (FORGE I3).
+  // projection lint was blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
   await runPatchLint(

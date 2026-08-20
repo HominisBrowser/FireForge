@@ -69,6 +69,7 @@ jobs:
       # so they run on every OS in the matrix, not just the Ubuntu quality gate.
       - run: >-
           npm test --
+          src/utils/__tests__/assert.test.ts
           src/utils/__tests__/fs.test.ts
           src/utils/__tests__/paths.test.ts
           src/utils/__tests__/process.test.ts

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Per-invocation xpcshell profile directory (FORGE G15b).
+ * Per-invocation xpcshell profile directory.
  *
  * Firefox's xpcshell harness defaults `XPCSHELL_TEST_PROFILE_DIR` to a
  * FIXED path (`$TMPDIR/firefox/xpcshellprofile`), so two overlapping

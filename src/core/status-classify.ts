@@ -81,7 +81,7 @@ export interface ClassifiedFile extends StatusFile {
    * (patch-backed, patch-owned-drift, and single-owner furnace entries).
    * Unset for unowned, branding-generated, unowned-furnace, and conflict
    * entries — conflicts carry `claimedBy` instead. Exposed through
-   * `status --json` as the `patch` field (FORGE G11).
+   * `status --json` as the `patch` field.
    */
   owner?: string;
 }
@@ -162,7 +162,7 @@ async function classifySingleOwnerFile(
   // Binary comparisons cannot go through the utf-8 content path below —
   // binary patch bodies parse to zero hunks, so the patched-content
   // computation returned HEAD content unchanged and the comparison
-  // reported `patch-owned-drift` forever (FORGE J3). Settle by blob hash,
+  // reported `patch-owned-drift` forever. Settle by blob hash,
   // or classify explicitly as `binary-unsupported` when no hash exists.
   const binaryResult = await classifyBinaryOwnedFile({
     entry,
@@ -230,7 +230,7 @@ export async function classifyFiles(
   // One manifest load + patch discovery + memoized body reads for the
   // whole batch — the previous per-file computation re-ran all three for
   // every dirty file (O(dirtyFiles × patches) redundant IO on a broad
-  // engine edit session, FORGE K1).
+  // engine edit session).
   const ctx = await createPatchedContentContext(patchesDir, engineDir);
 
   // Build a multimap from file path → list of claiming patch

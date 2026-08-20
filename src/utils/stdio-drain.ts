@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Bounded stdio drain for delayed process exits (FORGE I1).
+ * Bounded stdio drain for delayed process exits.
  *
  * `process.exit()` discards whatever is still queued in an async writable —
  * and stdout IS async when it is a pipe, with a 64 KiB kernel buffer on

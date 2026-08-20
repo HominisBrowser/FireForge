@@ -6,7 +6,12 @@ import { Command, Help } from 'commander';
 
 import { COMMAND_MANIFEST, type CommandManifestEntry } from './commands/manifest.js';
 import { runTreeGuardHook } from './core/tree-guard.js';
-import { CancellationError, CommandError, FireForgeError } from './errors/base.js';
+import {
+  CancellationError,
+  CommandError,
+  FireForgeError,
+  InternalInvariantError,
+} from './errors/base.js';
 import { ExitCode } from './errors/codes.js';
 import { ConfigNotFoundError } from './errors/config.js';
 import type { CommandContext } from './types/cli.js';
@@ -19,6 +24,7 @@ import {
   setStdoutSealed,
   setVerbose,
 } from './utils/logger.js';
+import { ensureWaitLockOptionEverywhere } from './utils/options.js';
 
 const brokenPipeInstalledKey = Symbol.for('fireforge.cli.brokenPipeHandlerInstalled');
 const brokenPipeListenerKey = Symbol.for('fireforge.cli.brokenPipeHandlerListener');
@@ -145,6 +151,18 @@ export function withErrorHandling<T extends unknown[]>(
         // scripts/CI can distinguish a deliberate prompt cancellation from
         // a real failure (which exits 1).
         throw new CommandError(ExitCode.USER_CANCELLED);
+      }
+
+      // An invariant failure is the one FireForgeError whose stack is part
+      // of the report: the userMessage asks the operator to file the run,
+      // and without the stack there is nothing in it that locates the bug.
+      // console.error keeps it on stderr, so a --json payload stays intact.
+      if (error instanceof InternalInvariantError) {
+        logError(error.userMessage);
+        if (error.stack) {
+          console.error(error.stack);
+        }
+        throw new CommandError(error.code);
       }
 
       if (error instanceof FireForgeError) {
@@ -337,7 +355,7 @@ export function createProgram(): Command {
         setVerbose(true);
       }
     })
-    // Verification-tree guard (FORGE G15): when the cwd resolves into a
+    // Verification-tree guard: when the cwd resolves into a
     // tree snapshot, refuse mutating commands before their action runs —
     // one hook covers every command regardless of how the cwd got there.
     .hook('preAction', async (thisCommand, actionCommand) => {
@@ -354,6 +372,14 @@ export function createProgram(): Command {
   for (const entry of COMMAND_MANIFEST) {
     entry.register(program, ctx);
   }
+
+  // Uniform `--wait-lock`: scripted sequences blanket-append the flag, and
+  // a subcommand that rejects it with "unknown option" kills the sequence
+  // with a usage error instead of a lock message. Applied after
+  // registration so it covers every subcommand at every depth without each
+  // registrar having to remember; commands that already declare the
+  // honoring flag keep it untouched.
+  ensureWaitLockOptionEverywhere(program);
 
   return program;
 }

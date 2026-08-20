@@ -13,23 +13,24 @@ import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { SourceSetOptions } from '../types/commands/index.js';
 import type { FirefoxProduct } from '../types/config.js';
+import type { JsonObject } from '../types/json.js';
 import { info, intro, outro, success } from '../utils/logger.js';
 import {
   FIREFOX_PRODUCTS,
+  isJsonObject,
+  isObject,
   isValidFirefoxCandidate,
   isValidFirefoxProduct,
 } from '../utils/validation.js';
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function cloneRawConfig(raw: Record<string, unknown>): Record<string, unknown> {
+function cloneRawConfig(raw: JsonObject): JsonObject {
   const cloned: unknown = structuredClone(raw);
-  if (!isRecord(cloned)) {
+  if (!isObject(cloned)) {
     throw new GeneralError('Cannot update fireforge.json: config clone was not an object.');
   }
-  return cloned;
+  // A structured clone of a JSON document is itself a JSON document; the
+  // object check above is the only invariant left to establish.
+  return cloned as JsonObject;
 }
 
 function parseSourceProduct(product: string): FirefoxProduct {
@@ -77,7 +78,8 @@ export async function sourceSetCommand(
   const written = await withConfigFileLock(projectRoot, async () => {
     const raw = await loadRawConfigDocument(projectRoot);
     const updated = cloneRawConfig(raw);
-    const firefox = isRecord(updated['firefox']) ? { ...updated['firefox'] } : {};
+    const existingFirefox = updated['firefox'];
+    const firefox: JsonObject = isJsonObject(existingFirefox) ? { ...existingFirefox } : {};
 
     firefox['version'] = options.version;
     firefox['product'] = options.product;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Build identity (FORGE K2/K3/L8): `--version` reports
+ * Build identity: `--version` reports
  * `<semver>+g<short-sha>[.dirty[.<content-hash>]]` from live git in a
  * checkout or from the stamped dist/build-info.json in an installed
  * package — and must degrade to the plain semver (never throw) on any
@@ -44,7 +44,7 @@ describe('readBuildInfoFile', () => {
     expect(readBuildInfoFile(root)).toEqual({ shortCommit: 'abc123def456', dirty: true });
   });
 
-  it('carries the dirty content hash when the stamp recorded one (FORGE L8)', async () => {
+  it('carries the dirty content hash when the stamp recorded one', async () => {
     await stamp(
       JSON.stringify({
         schemaVersion: 1,
@@ -142,7 +142,7 @@ describe('formatVersionWithIdentity', () => {
     expect(formatVersionWithIdentity('0.41.0', null)).toBe('0.41.0');
   });
 
-  it('appends the content hash so two dirty packs from one HEAD differ (FORGE L8)', () => {
+  it('appends the content hash so two dirty packs from one HEAD differ', () => {
     const base = { shortCommit: 'abc123def456', dirty: true };
     expect(formatVersionWithIdentity('0.41.0', { ...base, dirtyHash: '85e595d7' })).toBe(
       '0.41.0+gabc123def456.dirty.85e595d7'

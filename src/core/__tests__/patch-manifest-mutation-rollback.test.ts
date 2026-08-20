@@ -14,9 +14,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { ensureDir, removeFile, writeJson } from '../../utils/fs.js';
+import { withPatchDirectoryLock } from '../patch-lock.js';
 import {
   loadPatchesManifest,
   PatchDeleteRollbackError,
+  type PatchRenameEntry,
   removePatchFileAndManifest,
   renumberPatchesInManifest,
   savePatchesManifest,
@@ -61,6 +63,19 @@ async function seed(patchesDir: string): Promise<void> {
   await savePatchesManifest(patchesDir, { version: 1, patches });
 }
 
+/**
+ * The manifest mutators assert that the patch-directory lock is held, which
+ * every production caller does via `withPatchDirectoryLock`. These wrappers
+ * let the tests exercise the same contract instead of calling in unlocked.
+ */
+function renumberUnderLock(dir: string, renameMap: Map<string, PatchRenameEntry>): Promise<void> {
+  return withPatchDirectoryLock(dir, () => renumberPatchesInManifest(dir, renameMap));
+}
+
+function removeUnderLock(dir: string, filename: string): Promise<void> {
+  return withPatchDirectoryLock(dir, () => removePatchFileAndManifest(dir, filename));
+}
+
 describe('removePatchFileAndManifest rollback', () => {
   let projectRoot: string;
   let patchesDir: string;
@@ -84,7 +99,7 @@ describe('removePatchFileAndManifest rollback', () => {
       return Promise.resolve();
     });
 
-    await expect(removePatchFileAndManifest(patchesDir, '001-infra-a.patch')).rejects.toThrow(
+    await expect(removeUnderLock(patchesDir, '001-infra-a.patch')).rejects.toThrow(
       'simulated delete failure'
     );
 
@@ -134,9 +149,7 @@ describe('removePatchFileAndManifest rollback', () => {
       throw new Error('simulated manifest rollback failure');
     });
 
-    const error = await removePatchFileAndManifest(patchesDir, '001-infra-a.patch').catch(
-      (e: unknown) => e
-    );
+    const error = await removeUnderLock(patchesDir, '001-infra-a.patch').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(PatchDeleteRollbackError);
     if (error instanceof PatchDeleteRollbackError) {
       expect(error.filename).toBe('001-infra-a.patch');
@@ -190,7 +203,7 @@ describe('renumberPatchesInManifest phase-3 rollback', () => {
     });
 
     await expect(
-      renumberPatchesInManifest(
+      renumberUnderLock(
         patchesDir,
         new Map([
           ['001-infra-a.patch', { newFilename: '005-infra-a.patch', newOrder: 5 }],

@@ -189,7 +189,7 @@ describe('patch policy evaluation', () => {
     expect(isCategoryAllowedByConfig(cfg, 'ui')).toBe(false);
   });
 
-  describe('enforcePatchPolicy hints (FORGE J11)', () => {
+  describe('enforcePatchPolicy hints', () => {
     it('appends a caller-supplied remediation hint to matching issue details', () => {
       expect(() => {
         enforcePatchPolicy({

@@ -283,7 +283,7 @@ export function containsUpstreamLicenseText(content: string, maxLines = 10): boo
  * permissive license banner (MIT / ISC / BSD-2 / BSD-3 / Apache-2.0), in any
  * comment style. Used by `export` to treat such files as vendored: offering
  * to prepend the project's own license header onto a byte-identity-pinned
- * upstream bundle would mislicense third-party code (FORGE F15).
+ * upstream bundle would mislicense third-party code.
  *
  * @param content  - File content to check
  * @param maxLines - Number of leading lines to inspect (default 30 — full

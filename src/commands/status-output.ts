@@ -248,7 +248,7 @@ export async function renderDefaultStatus(
 }
 
 /**
- * Renders `fireforge status --test-coverage` (FORGE F11): a READ-ONLY view
+ * Renders `fireforge status --test-coverage`: a READ-ONLY view
  * of the last build baseline's test-packaging coverage. Before this
  * existed, the only way to learn the recorded coverage scope — which
  * concurrent sessions sharing one engine tree overwrite constantly — was

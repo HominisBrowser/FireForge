@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Pins the `mozbuild-unsorted-list` per-patch check (FORGE F2): an unsorted
+ * Pins the `mozbuild-unsorted-list` per-patch check: an unsorted
  * `EXTRA_JS_MODULES` insertion previously surfaced only as
  * `mozbuild.util.UnsortedError` at configure time, after a multi-minute
  * build had already been dispatched.

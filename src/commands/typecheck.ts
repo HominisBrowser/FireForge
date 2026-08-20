@@ -21,12 +21,17 @@ import { Command } from 'commander';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
 import { findJsconfigPathsDrift, syncFurnaceJsconfigPaths } from '../core/furnace-jsconfig.js';
+import { withPrivateGitIndex } from '../core/git-readonly-index.js';
+import { buildPatchQueueContext } from '../core/patch-lint.js';
 import { relativeForDisplay, runTypecheck } from '../core/typecheck.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
+import type { PatchLintIssue } from '../types/commands/index.js';
 import type { TypecheckConfig } from '../types/config.js';
 import type { TypecheckIssue, TypecheckProjectResult } from '../types/typecheck.js';
+import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
+import { buildPerRunCheckJs } from './lint-per-run-checkjs.js';
 
 /** Command-line options Commander forwards from `fireforge typecheck`. */
 export interface TypecheckCommandOptions {
@@ -93,6 +98,19 @@ export async function typecheckCommand(
 ): Promise<void> {
   intro('FireForge typecheck');
 
+  // Read-only to the operator, an index WRITER to git without this scope
+  //: the Furnace jsconfig reconciler and the project resolution
+  // below touch `engine/`, and any git plumbing they reach would refresh
+  // the primary checkout's index under a concurrent `fireforge test`.
+  return withPrivateGitIndex(getProjectPaths(projectRoot).engine, () =>
+    runTypecheckCommandBody(projectRoot, options)
+  );
+}
+
+async function runTypecheckCommandBody(
+  projectRoot: string,
+  options: TypecheckCommandOptions
+): Promise<void> {
   // Validate project is initialised. `loadConfig` throws on missing
   // fireforge.json — withErrorHandling at the CLI layer renders the
   // resulting `ConfigNotFoundError` cleanly, so we don't need to
@@ -115,7 +133,38 @@ export async function typecheckCommand(
   );
 
   const results = await runTypecheck(projectRoot, cfg);
-  reportResults(projectRoot, results);
+  // Fold the EXPORT-TIME authority into this pass. Per-patch lint runs
+  // checkJs over the queue's patch-owned modules in relative isolation and
+  // resolves imported typedefs differently from the whole-project pass, so
+  // `typecheck` could report 0 errors across every
+  // project while the very next `export` failed per-patch lint with
+  // `checkjs-type-error` findings. Two authorities that disagree, with the
+  // stricter one speaking only at export time, is not a usable CI gate:
+  // running both here makes `typecheck` green MEAN export-clean types.
+  const patchIssues = await collectPatchLintCheckJsIssues(projectRoot);
+  reportResults(projectRoot, results, patchIssues);
+}
+
+/**
+ * Runs the per-patch-lint checkJs pass — the same program `export` and
+ * `lint --per-patch` use — and returns its findings.
+ *
+ * Returns an empty list when `patchLint.checkJs` is off or the project has
+ * no patch queue: there is no second authority to reconcile then.
+ */
+async function collectPatchLintCheckJsIssues(projectRoot: string): Promise<PatchLintIssue[]> {
+  const paths = getProjectPaths(projectRoot);
+  const config = await loadConfig(projectRoot);
+  if (config.patchLint?.checkJs !== true) return [];
+  if (!(await pathExists(paths.patches))) return [];
+
+  const ctx = await buildPatchQueueContext(paths.patches, config);
+  const checkJs = buildPerRunCheckJs(projectRoot, paths, config, ctx);
+  if (checkJs === undefined) return [];
+
+  info('Also running the per-patch checkJs pass (the authority `export` enforces).');
+  const grouped = await checkJs.getGrouped();
+  return [...grouped.global, ...[...grouped.byFile.values()].flat()];
 }
 
 /**
@@ -148,10 +197,19 @@ async function regenerateStaleGeneratedJsconfig(projectRoot: string): Promise<vo
  */
 export function reportResults(
   projectRoot: string,
-  results: ReadonlyArray<TypecheckProjectResult>
+  results: ReadonlyArray<TypecheckProjectResult>,
+  patchLintIssues: ReadonlyArray<PatchLintIssue> = []
 ): void {
   let totalErrors = 0;
   let totalWarnings = 0;
+  // Per-patch checkJs findings are reported in the SAME tally:
+  // a split report would let an operator read "0 errors" off the project
+  // summary and still be refused at export.
+  for (const issue of patchLintIssues) {
+    if (issue.severity === 'error') totalErrors += 1;
+    else totalWarnings += 1;
+    warn(`[per-patch ${issue.check}] ${issue.file}: ${issue.message}`);
+  }
   for (const result of results) {
     const errors = result.issues.filter((i) => i.category === 'error');
     const warnings = result.issues.filter((i) => i.category === 'warning');
@@ -162,7 +220,12 @@ export function reportResults(
     for (const issue of errors) warn(formatIssue(projectRoot, issue));
   }
 
-  const summary = `Typecheck: ${String(totalErrors)} error(s), ${String(totalWarnings)} warning(s) across ${String(results.length)} project(s)`;
+  const summary =
+    `Typecheck: ${String(totalErrors)} error(s), ${String(totalWarnings)} warning(s) across ` +
+    `${String(results.length)} project(s)` +
+    (patchLintIssues.length > 0
+      ? ` (including ${String(patchLintIssues.length)} per-patch checkJs finding(s))`
+      : '');
   if (totalErrors === 0) {
     success(summary);
     outro(totalWarnings > 0 ? 'Typecheck passed with warnings' : 'Typecheck passed');

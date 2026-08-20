@@ -15,6 +15,19 @@ export type AcornESTreeNode<T extends estree.Node = estree.Node> = T & {
 };
 
 /**
+ * Bridges acorn's return type to the positioned ESTree program type.
+ * `acorn.parse` produces nodes that carry both the ESTree shape and
+ * `start`/`end` offsets at runtime, but its static `acorn.Program` type is
+ * nominally distinct from `estree.Program`, so the compiler cannot verify
+ * the conversion structurally — hence the double assertion. This helper is
+ * the single sanctioned crossing point between the two type worlds.
+ */
+function toPositionedProgram(program: acorn.Program): AcornESTreeNode<estree.Program> {
+  // eslint-disable-next-line no-restricted-syntax -- the sanctioned acorn→estree bridge this rule's message points at
+  return program as unknown as AcornESTreeNode<estree.Program>;
+}
+
+/**
  * Parse JavaScript source as a **script** (not an ES module).
  * All Mozilla chrome JS files (`browser-main.js`, `browser-init.js`,
  * `customElements.js`, etc.) are scripts that run in a privileged scope.
@@ -32,7 +45,7 @@ export function parseScript(
     ecmaVersion: 'latest',
   };
   if (onComment) opts.onComment = onComment;
-  return acorn.parse(content, opts) as unknown as AcornESTreeNode<estree.Program>;
+  return toPositionedProgram(acorn.parse(content, opts));
 }
 
 /**
@@ -53,7 +66,7 @@ export function parseModule(
     locations: true,
   };
   if (onComment) opts.onComment = onComment;
-  return acorn.parse(content, opts) as unknown as AcornESTreeNode<estree.Program>;
+  return toPositionedProgram(acorn.parse(content, opts));
 }
 
 /**

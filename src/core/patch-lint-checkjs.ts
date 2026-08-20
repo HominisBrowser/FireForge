@@ -157,7 +157,7 @@ export interface CheckJsMode {
   compilerOptions?: PatchLintCheckJsCompilerOptions;
   /**
    * How to report undefined free identifiers (TS2304/TS2552). Default
-   * 'warning' — see `patchLint.undefinedIdentifiers` (FORGE F12).
+   * 'warning' — see `patchLint.undefinedIdentifiers`.
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
 }
@@ -195,7 +195,7 @@ export interface GroupedCheckJsResult {
  *   against the real owning sources while unrelated owned files are never
  *   parsed. `.mjs` files are module-scoped, so a root's diagnostics are
  *   identical whether other owned files are roots or mere resolution
- *   targets (pinned by the rootScope parity test — FORGE J1c).
+ * targets (pinned by the rootScope parity test).
  * @returns Diagnostics grouped per owning file plus run-level errors
  */
 export async function runCheckJsGrouped(
@@ -256,7 +256,7 @@ export async function runCheckJsGrouped(
   let shimSource: string;
   try {
     const composed = await composeShimSource(projectRoot ?? repoDir, extraShimPath);
-    // The suffix (e.g. the loose test-harness baseline, FORGE G5) goes
+    // The suffix (e.g. the loose test-harness baseline) goes
     // AFTER the consumer's extra shim: TypeScript resolves conflicting
     // `declare var` redeclarations to the FIRST declaration, so a typed
     // consumer declaration must precede the loose fallback to win.
@@ -515,7 +515,7 @@ export async function invokePatchLintCheckJs(
 }
 
 /**
- * Runs the checkJs pass over patch-owned test `.js` files (FORGE G5,
+ * Runs the checkJs pass over patch-owned test `.js` files (
  * `patchLint.checkJsTestFiles`). Each test file gets its OWN small
  * program — mochitest scripts share top-level scope only with their
  * directory's `head*.js` helpers, so one multi-script program would emit
@@ -547,7 +547,7 @@ export async function runCheckJsTestFilesGrouped(
   for (const file of files) {
     // Under a rootScope only the scoped files get their own program, but
     // head.js helper discovery still spans the full owned set so a scoped
-    // test keeps its cross-patch harness globals (FORGE J1c).
+    // test keeps its cross-patch harness globals.
     if (rootScope !== undefined && !rootScope.has(file)) continue;
     const dir = file.slice(0, file.lastIndexOf('/') + 1);
     const roots = new Set([file]);
@@ -605,7 +605,7 @@ function modeFromPatchLintConfig(patchLint: PatchLintConfig): CheckJsMode {
  * @param patchLint - The resolved `patchLint` config block
  * @param projectRoot - FireForge project root for shim resolution
  * @param rootScope - Optional subset of files to use as program roots
- *   (`--patches`); resolution still spans the whole queue (FORGE J1c)
+ * (`--patches`); resolution still spans the whole queue
  */
 export async function invokePatchLintCheckJsGrouped(
   repoDir: string,
@@ -632,7 +632,7 @@ export async function invokePatchLintCheckJsGrouped(
  * when `checkJsTestFiles` is on). The built program itself never
  * contributes globals (see {@link runCheckJsGrouped}), so a warm
  * all-cache-hit run can satisfy the "warm never reports less than cold"
- * invariant (FORGE F5) with this probe instead of building the whole
+ * invariant with this probe instead of building the whole
  * TypeScript program. Issue objects are byte-identical to the build
  * path's, deduplicated by message like {@link runCheckJsTestFilesGrouped}.
  */

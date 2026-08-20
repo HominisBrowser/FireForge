@@ -109,7 +109,7 @@ describe('lintPatchedCss', () => {
     expect(issues).toEqual([]);
   });
 
-  describe('comments spanning the context/added boundary (FORGE G4)', () => {
+  describe('comments spanning the context/added boundary', () => {
     it('does not flag a hex inside a comment whose opener sits on a context line', async () => {
       mockPathExists.mockResolvedValue(true);
       mockReadText.mockResolvedValue(
@@ -634,8 +634,8 @@ describe('lintNewFileHeaders', () => {
   });
 
   it('accepts the verbatim upstream MPL block header on a new JS file regardless of project license', async () => {
-    // Recorded 2026-07-04 in the consumer FORGE.md: the MPL block-header
-    // carve-out was gated on `license === 'MPL-2.0'`, making it dead code
+    // The MPL block-header carve-out was gated on
+    // `license === 'MPL-2.0'`, making it dead code
     // for an EUPL-1.2 project — a file legitimately copied from upstream
     // Firefox (verbatim Mozilla header, anywhere in the tree, not just
     // browser/branding/) had no sanctioned path.
@@ -2159,7 +2159,7 @@ describe('lintExportedPatch', () => {
     expect(issues.some((i) => i.check === 'raw-color-value')).toBe(true);
   });
 
-  it('surfaces mozbuild-unsorted-list and honours its lintIgnore (FORGE F2)', async () => {
+  it('surfaces mozbuild-unsorted-list and honours its lintIgnore', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockImplementation((path: string) => {
       if (path.endsWith('moz.build')) {

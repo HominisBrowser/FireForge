@@ -53,7 +53,7 @@ export function extractAddedLinesPerFile(diffContent: string): Map<string, strin
  * unified diff. Walking each hunk with a new-file line counter (`+` and
  * context lines advance it, `-` lines do not) lets rules that need
  * full-file context — e.g. comment masking across the context/added
- * boundary (FORGE G4) — map the patch's additions onto the applied file.
+ * boundary — map the patch's additions onto the applied file.
  */
 export function extractAddedLineNumbersPerFile(diffContent: string): Map<string, number[]> {
   const result = new Map<string, number[]>();

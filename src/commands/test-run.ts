@@ -12,6 +12,7 @@
  * combined invocation stays available via `--no-shard`.
  */
 
+import { type DisplaySleepState, probeDisplaySleepState } from '../core/display-state.js';
 import {
   type MachCommandResult,
   mochitestWithOutput,
@@ -21,7 +22,9 @@ import {
 import {
   buildHarnessCrashMessage,
   classifyHarnessRun,
+  type HarnessCrashSignature,
   type HarnessRunVerdict,
+  headedDisplayAsleepVerdictNote,
   headedNoOutputTimeoutHint,
 } from '../core/test-harness-crash.js';
 import { retryAfterXpcshellSymlinkRepair, type TestDispatch } from '../core/test-xpcshell-retry.js';
@@ -75,6 +78,11 @@ export interface TestRunOutcome {
   attempts: number;
   /** Whether xpcshell appdir injection was attempted for this invocation. */
   appdirInjectionAttempted: boolean;
+  /**
+   * Display power state measured for a HEADED no-output stall;
+   * undefined when the shape did not apply and no probe ran.
+   */
+  displayState?: DisplaySleepState | undefined;
 }
 
 /**
@@ -87,7 +95,7 @@ export async function runTestsWithRetries(
   paths: string[]
 ): Promise<TestRunOutcome> {
   // Pure mochitest dispatches keep their env byte-identical — the profile
-  // variable is xpcshell-harness-specific (FORGE G15b). Generic `mach
+  // variable is xpcshell-harness-specific. Generic `mach
   // test` runs may include xpcshell paths, so they get the isolation too.
   if (ctx.suite === 'mochitest') {
     return runTestsWithRetriesInner(ctx, paths, ctx.env);
@@ -144,7 +152,35 @@ async function runTestsWithRetriesInner(
     );
   }
 
-  return { result, verdict, attempts, appdirInjectionAttempted };
+  const displayState = await probeDisplayStateForStall(verdict, ctx.headless);
+  if (displayState !== undefined) {
+    const note = headedDisplayAsleepVerdictNote(verdict.signature as HarnessCrashSignature, {
+      headless: ctx.headless,
+      platform: getPlatform(),
+      displayState,
+    });
+    if (note !== undefined) verdict = { ...verdict, note };
+  }
+
+  return { result, verdict, attempts, appdirInjectionAttempted, displayState };
+}
+
+/**
+ * Probes the display's power state for a HEADED no-output stall, and only
+ * for that shape. Every other outcome — a passing run, a real
+ * test failure, a headless run, any other crash shape — skips the probe
+ * entirely, so the common paths spawn nothing.
+ *
+ * @returns The measured state, or undefined when the shape does not apply
+ */
+async function probeDisplayStateForStall(
+  verdict: HarnessRunVerdict,
+  headless: boolean
+): Promise<DisplaySleepState | undefined> {
+  if (headless) return undefined;
+  if (verdict.kind !== 'harness-crash') return undefined;
+  if (!verdict.signature?.reason.includes('no-output timeout')) return undefined;
+  return probeDisplaySleepState(getPlatform());
 }
 
 /**
@@ -227,6 +263,7 @@ export async function runShardedTests(
       const hint = headedNoOutputTimeoutHint(outcome.verdict.signature, {
         headless: ctx.headless,
         platform: getPlatform(),
+        ...(outcome.displayState !== undefined ? { displayState: outcome.displayState } : {}),
       });
       warn(hint ? `${base}\n\n${hint}` : base);
     } else if (outcome.verdict.kind !== 'tests-ran-ok') {

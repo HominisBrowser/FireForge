@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Copy-on-write cloning for `fireforge tree` (FORGE G15).
+ * Copy-on-write cloning for `fireforge tree`.
  *
  * Capability is probed BY DOING — a tiny `cp -c` (APFS clonefile) or
  * `cp --reflink=always` (btrfs/XFS) in the actual destination directory —

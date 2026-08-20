@@ -153,7 +153,7 @@ describe('registerTest', () => {
     });
   });
 
-  describe('verdict emission when the engine lock fails (FORGE J5)', () => {
+  describe('verdict emission when the engine lock fails', () => {
     // The lock is acquired outside testCommand's exactly-one-verdict
     // guarantee, so the registration layer must emit for lock failures or
     // verdict-keyed callers see nothing at all.

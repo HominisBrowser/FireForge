@@ -244,7 +244,7 @@ describe('patch lint-ignore', () => {
     await removeTempProject(projectRoot);
   });
 
-  it('--add warns that the waiver is subject to the review gate (FORGE F6)', async () => {
+  it('--add warns that the waiver is subject to the review gate', async () => {
     await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
@@ -255,7 +255,7 @@ describe('patch lint-ignore', () => {
     expect(sawReviewWarning()).toBe(true);
   });
 
-  it('--add --dry-run also surfaces the review-gate warning (FORGE F6)', async () => {
+  it('--add --dry-run also surfaces the review-gate warning', async () => {
     await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
 
     await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
@@ -266,7 +266,7 @@ describe('patch lint-ignore', () => {
     expect(sawReviewWarning()).toBe(true);
   });
 
-  it('no review-gate warning on --remove, --clear, or a no-op --add (FORGE F6)', async () => {
+  it('no review-gate warning on --remove, --clear, or a no-op --add', async () => {
     await seed(patchesDir, [
       makeMetadata('001-branding-a.patch', 1, ['a.js'], {
         lintIgnore: ['large-patch-lines', 'large-patch-files'],
@@ -504,7 +504,7 @@ describe('patch staged-dependency', () => {
     await removeTempProject(projectRoot);
   });
 
-  it('--remove infers --creates when file+specifier match exactly one entry (FORGE G12)', async () => {
+  it('--remove infers --creates when file+specifier match exactly one entry', async () => {
     await seed(patchesDir, [
       makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
         stagedDependencies: {
@@ -529,7 +529,7 @@ describe('patch staged-dependency', () => {
     expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
   });
 
-  it('--remove refuses with a candidate list when file+specifier are ambiguous (FORGE G12)', async () => {
+  it('--remove refuses with a candidate list when file+specifier are ambiguous', async () => {
     await seed(patchesDir, [
       makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
         stagedDependencies: {
@@ -561,7 +561,7 @@ describe('patch staged-dependency', () => {
     expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(2);
   });
 
-  it('--remove with no matching file+specifier keeps the honest no-match summary (FORGE G12)', async () => {
+  it('--remove with no matching file+specifier keeps the honest no-match summary', async () => {
     await seed(patchesDir, [
       makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
         stagedDependencies: {
@@ -586,7 +586,7 @@ describe('patch staged-dependency', () => {
     expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(1);
   });
 
-  it('missing-flag errors name the actually-missing flags, not the command (FORGE G12)', async () => {
+  it('missing-flag errors name the actually-missing flags, not the command', async () => {
     await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
 
     try {
@@ -729,9 +729,9 @@ describe('patch staged-dependency', () => {
     ).rejects.toBeInstanceOf(InvalidArgumentError);
   });
 
-  // ── FORGE K10: --add refuses patch-name-shaped path values ──
+  // ──: --add refuses patch-name-shaped path values ──
 
-  it('--add refuses a --creates naming a queue patch, pointing at --owner (FORGE K10)', async () => {
+  it('--add refuses a --creates naming a queue patch, pointing at --owner', async () => {
     await seed(patchesDir, [
       makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs']),
       makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn']),
@@ -754,7 +754,7 @@ describe('patch staged-dependency', () => {
     expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
   });
 
-  it('--add refuses a --creates naming a queue patch by stem or any .patch-suffixed value (FORGE K10)', async () => {
+  it('--add refuses a --creates naming a queue patch by stem or any.patch-suffixed value', async () => {
     await seed(patchesDir, [
       makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs']),
       makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn']),
@@ -780,7 +780,7 @@ describe('patch staged-dependency', () => {
     ).rejects.toThrow(/looks like a patch filename/);
   });
 
-  it('--add accepts slash paths and non-patch suffixes that merely resemble patch names (FORGE K10)', async () => {
+  it('--add accepts slash paths and non-patch suffixes that merely resemble patch names', async () => {
     await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
 
     // A deep engine path always contains '/', so it can never trip the
@@ -804,7 +804,7 @@ describe('patch staged-dependency', () => {
     expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(2);
   });
 
-  it('--add refuses a malformed --owner and warns on an owner absent from the queue (FORGE K10)', async () => {
+  it('--add refuses a malformed --owner and warns on an owner absent from the queue', async () => {
     await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
     const base = {
       add: true,
@@ -841,7 +841,7 @@ describe('patch staged-dependency', () => {
     );
   });
 
-  it('--add --kind registration gets the same --creates refusal (FORGE K10)', async () => {
+  it('--add --kind registration gets the same --creates refusal', async () => {
     await seed(patchesDir, [
       makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn']),
       makeMetadata('300-ui-widget.patch', 300, ['browser/widget/W.sys.mjs']),

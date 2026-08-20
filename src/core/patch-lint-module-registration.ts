@@ -19,8 +19,12 @@ interface ModuleRegistrationQueueContext {
 
 const IMPORTABLE_EXTENSIONS = ['.mjs', '.sys.mjs', '.js', '.jsm'];
 
-/** Maps Firefox's common system-module resource URLs to their source suffix. */
-function moduleSourceSuffix(specifier: string): string | undefined {
+/**
+ * Maps Firefox's common system-module resource URLs to their source
+ * suffix. Exported alongside {@link extractResourceModuleSpecifiers} so
+ * the resolution preflight resolves specifiers identically.
+ */
+export function moduleSourceSuffix(specifier: string): string | undefined {
   const cleaned = specifier.split(/[?#]/)[0] ?? specifier;
   for (const prefix of ['resource:///modules/', 'resource://gre/modules/']) {
     if (cleaned.startsWith(prefix)) return `/modules/${cleaned.slice(prefix.length)}`;
@@ -28,8 +32,13 @@ function moduleSourceSuffix(specifier: string): string | undefined {
   return undefined;
 }
 
-/** Resource-module strings in actual code (comments removed), de-duplicated. */
-function extractResourceModuleSpecifiers(content: string): string[] {
+/**
+ * Resource-module strings in actual code (comments removed), de-duplicated.
+ * Exported for the engine-aware resolution preflight, which must recognise
+ * exactly the same specifier shapes this queue-level rule does — two
+ * extractors would drift.
+ */
+export function extractResourceModuleSpecifiers(content: string): string[] {
   const stripped = stripJsComments(content);
   const found = new Set<string>();
   const pattern = /["'](resource:\/\/(?:\/|gre\/)modules\/[^"']+\.sys\.mjs(?:[?#][^"']*)?)["']/g;

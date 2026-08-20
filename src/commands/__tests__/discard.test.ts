@@ -34,7 +34,7 @@ vi.mock('../../core/git-file-ops.js', () => ({
 // planner so unit tests drive the legacy (unmanaged) restore path without
 // a patches directory on disk. The patch-aware planning itself is covered
 // by src/core/__tests__/discard-baseline.test.ts and the
-// discard-patch-baseline integration suite (FORGE F1).
+// discard-patch-baseline integration suite.
 vi.mock('../../core/discard-baseline.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../core/discard-baseline.js')>();
   return {

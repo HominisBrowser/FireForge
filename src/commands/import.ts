@@ -559,7 +559,7 @@ export async function importCommand(
 
     // The re-applied queue may have moved components.conf away from what
     // the last full build compiled in — surface that now instead of at the
-    // next test refusal (FORGE F13).
+    // next test refusal.
     await warnIfStaticComponentsStale(projectRoot, paths.engine);
 
     outro('All patches applied successfully!');

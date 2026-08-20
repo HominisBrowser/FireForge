@@ -13,6 +13,7 @@ import { basename } from 'node:path';
 
 import { ConfigError, ConfigNotFoundError } from '../errors/config.js';
 import type { FireForgeConfig } from '../types/config.js';
+import type { JsonObject } from '../types/json.js';
 import { toError } from '../utils/errors.js';
 import * as fsUtils from '../utils/fs.js';
 import { isObject } from '../utils/validation.js';
@@ -104,7 +105,7 @@ export async function loadConfig(root: string): Promise<FireForgeConfig> {
  * @throws ConfigNotFoundError when fireforge.json is missing
  * @throws ConfigError when the file is not valid JSON
  */
-export async function loadRawConfigDocument(root: string): Promise<Record<string, unknown>> {
+export async function loadRawConfigDocument(root: string): Promise<JsonObject> {
   const paths = getProjectPaths(root);
 
   if (!(await configPathExists(paths.config))) {
@@ -116,7 +117,9 @@ export async function loadRawConfigDocument(root: string): Promise<Record<string
     if (!isObject(data)) {
       throw new ConfigError(`Invalid fireforge.json at ${paths.config}: expected an object`);
     }
-    return data;
+    // `data` came out of JSON.parse, which can only ever produce JSON
+    // values, so with the object check above the JsonObject contract holds.
+    return data as JsonObject;
   } catch (error: unknown) {
     if (error instanceof ConfigError || error instanceof ConfigNotFoundError) {
       throw error;
@@ -150,7 +153,7 @@ export async function writeConfig(root: string, config: FireForgeConfig): Promis
  */
 export async function writeConfigDocument(
   root: string,
-  config: FireForgeConfig | Record<string, unknown>
+  config: FireForgeConfig | JsonObject
 ): Promise<void> {
   const paths = getProjectPaths(root);
   await fsUtils.writeJson(paths.config, config);

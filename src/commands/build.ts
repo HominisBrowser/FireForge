@@ -302,7 +302,12 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   const previousBaseline = await readBuildBaseline(projectRoot);
 
   // Shared pre-flight: branding, Furnace, mozconfig, auto-configure
-  await prepareBuildEnvironment(projectRoot, paths, config, { previousBaseline });
+  await prepareBuildEnvironment(projectRoot, paths, config, {
+    previousBaseline,
+    ...(options.refuseUnexportedDrift !== undefined
+      ? { refuseUnexportedDrift: options.refuseUnexportedDrift }
+      : {}),
+  });
 
   const jobs = resolveJobCount(options, config.build?.jobs);
 
@@ -447,6 +452,10 @@ export function registerBuild(
       '--rewrite-mozinfo',
       'On a mozinfo path mismatch, patch mozinfo.json paths in place and run mach configure instead of aborting with a clean-rebuild instruction. Refuses anything that is not a pure prefix-move.'
     )
+    .option(
+      '--refuse-unexported-drift',
+      'Refuse (instead of warning) when the build would overwrite engine content recorded in neither a patch body nor the pristine baseline — the multi-session hazard where an unexported edit is silently reverted and a later re-export captures a hybrid'
+    )
     .addHelpText(
       'after',
       [
@@ -475,6 +484,7 @@ export function registerBuild(
         jobs?: number;
         brand?: string;
         rewriteMozinfo?: boolean;
+        refuseUnexportedDrift?: boolean;
         waitLock?: number | boolean;
       }) => {
         const projectRoot = getProjectRoot();

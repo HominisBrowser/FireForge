@@ -55,7 +55,7 @@ async function loadCssTokenContext(repoDir: string): Promise<CssTokenContext | u
 /**
  * Masks CSS block comments with spaces, preserving newlines so line
  * numbers stay stable. An unclosed trailing `/*` is masked to EOF —
- * matching how a CSS parser treats it (FORGE G4).
+ * matching how a CSS parser treats it.
  */
 function maskCssComments(source: string): string {
   const masked = source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));

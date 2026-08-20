@@ -33,11 +33,16 @@ vi.mock('../../core/furnace-operation.js', () => ({
     async (
       _root: string,
       _kind: string,
-      body: (ctx: { registerJournal: () => void; registerCleanup: () => void }) => Promise<unknown>
+      body: (ctx: {
+        registerJournal: () => void;
+        registerCleanup: () => void;
+        markRolledBack: () => void;
+      }) => Promise<unknown>
     ) =>
       body({
         registerJournal: () => undefined,
         registerCleanup: () => undefined,
+        markRolledBack: () => undefined,
       })
   ),
   recordFurnaceRollbackFailure: vi.fn(),

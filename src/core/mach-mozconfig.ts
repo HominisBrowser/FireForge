@@ -3,7 +3,8 @@ import { join } from 'node:path';
 
 import { MozconfigError } from '../errors/build.js';
 import type { FireForgeConfig } from '../types/config.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
+import { pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
+import { verbose } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { BrandingMozconfigMismatchError, splitAppId } from './branding.js';
 
@@ -153,7 +154,16 @@ export async function generateMozconfig(
   const platformContent = await readText(platformPath);
   content += `# Platform configuration (${platform})\n${replaceVariables(platformContent, variables)}`;
 
-  await writeText(outputPath, content);
+  // Write-if-changed: `mozconfig` is a mach CONFIGURE INPUT, so
+  // its mtime — not its content — is what `config.status` compares against.
+  // Rewriting a byte-identical file on every build-capable invocation made
+  // mach re-run `configure` plus backend regeneration ("Backend config
+  // changed; N files touched") on EVERY run, each run re-arming the next.
+  // Only touch the file when the rendered content actually differs.
+  const wrote = await writeTextIfChanged(outputPath, content);
+  if (!wrote) {
+    verbose(`mozconfig already up to date (content unchanged): ${outputPath}`);
+  }
 
   // Preflight: the mozconfig we just wrote must reference the branding
   // directory FireForge actually set up. Catching the drift here (after the

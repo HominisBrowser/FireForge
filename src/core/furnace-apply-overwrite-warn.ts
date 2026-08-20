@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Patch-owned overwrite warnings for `furnace apply` (FORGE J6).
+ * Patch-owned overwrite warnings for `furnace apply`.
  *
  * For Furnace-managed components, apply OVERWRITES the deployed engine
  * copies with the `components/` sources. A fix made directly in `engine/`
@@ -46,7 +46,7 @@ export interface PatchOwnedOverwriteWarning {
 }
 
 /**
- * Loads the file → owning-patch map for the overwrite warning (FORGE J6).
+ * Loads the file → owning-patch map for the overwrite warning.
  * A missing or unreadable patches manifest degrades to an empty map — the
  * warning is advisory and must never block an apply.
  */

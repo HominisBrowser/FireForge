@@ -106,8 +106,10 @@ vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
+  notice: vi.fn(),
   warn: vi.fn(),
   success: vi.fn(),
+  verbose: vi.fn(),
 }));
 
 import type { Stats } from 'node:fs';
@@ -509,29 +511,37 @@ describe('lintCommand — branch coverage', () => {
     beforeEach(() => {
       // Literal (not the imported constant): this module is fully vi.mock'd,
       // so the real LINT_CACHE_SCHEMA_VERSION value is unavailable at runtime.
-      memoryCache = { schemaVersion: 3, entries: {} };
+      memoryCache = { schemaVersion: 4, entries: {} };
       vi.mocked(loadPerPatchLintCache).mockResolvedValue(memoryCache);
       vi.mocked(getPerPatchLintCacheHeadSha).mockResolvedValue('test-head-sha');
       vi.mocked(buildPerPatchLintCacheKey).mockImplementation((input) =>
         Promise.resolve(`key:${input.patch.filename}`)
       );
-      vi.mocked(getCachedPerPatchLintIssues).mockImplementation((cache, filename, key) => {
-        const entry = cache.entries[filename];
-        if (!entry || entry.key !== key) return undefined;
-        return {
-          issues: entry.issues.map((issue) => ({ ...issue })),
-          suppressed: entry.suppressed.map((issue) => ({ ...issue })),
-          lineCount: entry.lineCount,
-        };
-      });
+      vi.mocked(getCachedPerPatchLintIssues).mockImplementation(
+        (cache, filename, key, lintIgnore) => {
+          const entry = cache.entries[filename];
+          if (!entry || entry.key !== key) return undefined;
+          const expected = [...new Set(lintIgnore ?? [])].sort();
+          const stored = [...new Set(entry.lintIgnore)].sort();
+          if (expected.length !== stored.length || expected.some((id, i) => id !== stored[i])) {
+            return undefined;
+          }
+          return {
+            issues: entry.issues.map((issue) => ({ ...issue })),
+            suppressed: entry.suppressed.map((issue) => ({ ...issue })),
+            lineCount: entry.lineCount,
+          };
+        }
+      );
       vi.mocked(setCachedPerPatchLintIssues).mockImplementation(
-        (cache, filename, key, issues, suppressed, lineCount) => {
+        (cache, filename, key, issues, suppressed, lineCount, lintIgnore) => {
           cache.entries[filename] = {
             key,
             patchFilename: filename,
             issues: issues.map((issue) => ({ ...issue })),
             suppressed: suppressed.map((issue) => ({ ...issue })),
             lineCount,
+            lintIgnore: [...new Set(lintIgnore ?? [])].sort(),
             updatedAt: '2026-01-01T00:00:00.000Z',
           };
         }
@@ -540,7 +550,7 @@ describe('lintCommand — branch coverage', () => {
       vi.mocked(clearPerPatchLintCache).mockResolvedValue();
     });
 
-    it('positional patch names select the per-patch subset like --patches (FORGE G14)', async () => {
+    it('positional patch names select the per-patch subset like --patches', async () => {
       const a = makePatch('001-ui-a.patch', ['a.ts']);
       const b = makePatch('002-ui-b.patch', ['b.ts']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a, b]));
@@ -554,7 +564,7 @@ describe('lintCommand — branch coverage', () => {
       expect(lintExportedPatch).toHaveBeenCalledTimes(1);
     });
 
-    it('a non-matching positional in per-patch mode fails loud naming the selection rules (FORGE G14)', async () => {
+    it('a non-matching positional in per-patch mode fails loud naming the selection rules', async () => {
       const a = makePatch('001-ui-a.patch', ['a.ts']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a]));
       vi.mocked(pathExists).mockResolvedValue(true);
@@ -673,7 +683,8 @@ describe('lintCommand — branch coverage', () => {
         'key:001-ui-test.patch',
         [],
         [],
-        42
+        42,
+        []
       );
       expect(savePerPatchLintCache).toHaveBeenCalledWith('/project', memoryCache);
     });
@@ -742,6 +753,7 @@ describe('lintCommand — branch coverage', () => {
         ],
         suppressed: [],
         lineCount: 42,
+        lintIgnore: [],
         updatedAt: '2026-01-01T00:00:00.000Z',
       };
 
@@ -860,6 +872,7 @@ describe('lintCommand — branch coverage', () => {
         issues: [],
         suppressed: [],
         lineCount: 42,
+        lintIgnore: [],
         updatedAt: '2026-01-01T00:00:00.000Z',
       };
 

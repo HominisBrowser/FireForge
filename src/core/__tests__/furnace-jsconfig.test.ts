@@ -176,7 +176,7 @@ describe('syncFurnaceJsconfigPaths', () => {
     ]);
   });
 
-  it('maps unregistered components too — their files deploy under the elements chrome URL (FORGE I4)', async () => {
+  it('maps unregistered components too — their files deploy under the elements chrome URL', async () => {
     // Deploy copies files and writes jar.mn `content/global/elements/…`
     // entries regardless of `register` (only the customElements.js
     // registration is gated), so an unregistered component's imports are

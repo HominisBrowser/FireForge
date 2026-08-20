@@ -16,10 +16,13 @@ import { FireForgeError } from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
 import { PatchManifestCorruptError } from '../errors/patch.js';
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
+import type { JsonObject } from '../types/json.js';
+import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { pathExistsStrict, readJson, removeFile, writeJson } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { isArray, isObject } from '../utils/validation.js';
+import { assertPatchDirectoryLockHeld } from './patch-lock.js';
 import { validatePatchesManifest } from './patch-manifest-validate.js';
 
 /** Filename for the patches manifest */
@@ -133,7 +136,7 @@ export async function mutatePatchRowsInManifest(
   filenames: readonly string[],
   mutator: (
     existing: PatchMetadata,
-    rawExisting: Readonly<Record<string, unknown>>
+    rawExisting: Readonly<JsonObject>
   ) => PatchManifestRowMutation | null
 ): Promise<PatchManifestRowMutationResult[] | null> {
   const manifestPath = join(patchesDir, PATCHES_MANIFEST);
@@ -163,7 +166,12 @@ export async function mutatePatchRowsInManifest(
     const existing = beforeManifest.patches[index];
     if (!existing) continue;
 
-    const mutation = mutator(existing, rawPatch);
+    // Manifest rows come out of JSON.parse and were object-checked above,
+    // so the JsonObject contract holds. The row stays a plain record
+    // internally because `mutation.set` values carry interface types
+    // (`Partial<PatchMetadata>`) that the compiler cannot relate to
+    // `JsonValue` structurally.
+    const mutation = mutator(existing, rawPatch as JsonObject);
     if (!mutation) continue;
 
     for (const [field, value] of Object.entries(mutation.set ?? {})) {
@@ -266,6 +274,53 @@ export interface PatchRenameEntry {
 }
 
 /**
+ * Checks the shape a renumbered manifest is supposed to have, immediately
+ * before it becomes durable.
+ *
+ * Three properties, each of which the queue silently depends on: `order` is
+ * unique (two patches claiming one slot make apply order arbitrary),
+ * `order` matches the numeric prefix of `filename` (the prefix is what an
+ * operator reads and what `patch` commands parse back out), and the rows are
+ * sorted ascending (readers take manifest order as apply order without
+ * re-sorting).
+ *
+ * Contiguity itself is deliberately NOT checked: `patchPolicy.ranges`
+ * reserves gaps on purpose, so a hole is a legitimate queue shape.
+ *
+ * @param patches - The manifest rows about to be written
+ */
+function assertRenumberedOrderIsWellFormed(patches: readonly PatchMetadata[]): void {
+  const seenOrders = new Set<number>();
+  let previousOrder = Number.NEGATIVE_INFINITY;
+
+  for (const patch of patches) {
+    assert(
+      !seenOrders.has(patch.order),
+      () => `renumbered patch orders are unique (order ${patch.order} appears twice)`
+    );
+    seenOrders.add(patch.order);
+
+    assert(
+      patch.order >= previousOrder,
+      () => `renumbered manifest rows are sorted by order (${patch.filename} is out of place)`
+    );
+    previousOrder = patch.order;
+
+    const prefixMatch = /^(\d+)-/.exec(patch.filename);
+    assert(
+      prefixMatch !== null,
+      () => `renumbered patch filename carries a numeric prefix (got "${patch.filename}")`
+    );
+    assert(
+      Number(prefixMatch[1]) === patch.order,
+      () =>
+        `renumbered patch filename prefix matches its order ` +
+        `("${patch.filename}" carries order ${patch.order})`
+    );
+  }
+}
+
+/**
  * Rewrites `stagedDependencies.forwardImports[].owner` and
  * `stagedDependencies.registrations[].owner` references on one patch
  * through a rename lookup. Owners embed exact patch filenames, so any
@@ -354,6 +409,8 @@ export async function renumberPatchesInManifest(
   renameMap: Map<string, PatchRenameEntry>
 ): Promise<void> {
   if (renameMap.size === 0) return;
+
+  await assertPatchDirectoryLockHeld(patchesDir, 'renumbering the patch manifest');
 
   const manifest = await loadPatchesManifestForWrite(patchesDir);
   if (!manifest) {
@@ -486,6 +543,17 @@ export async function renumberPatchesInManifest(
   updatedPatches.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
 
   try {
+    // Phase 3 is the one write that makes the renumber visible. Every file
+    // has already moved on disk, so a manifest that disagrees with the new
+    // filenames is the worst outcome available here — the queue would apply
+    // in an order nothing on disk reflects. The callers compute the rename
+    // map (compact, reorder, export placement) and each maintains contiguity
+    // on its own; this checks the property they are all supposed to produce,
+    // at the single point where it becomes durable. Inside the try, so a
+    // violation unwinds through the Phase 3 rollback that puts the filenames
+    // back.
+    assertRenumberedOrderIsWellFormed(updatedPatches);
+
     await savePatchesManifest(patchesDir, {
       ...manifest,
       patches: updatedPatches,
@@ -565,6 +633,8 @@ export async function removePatchFileAndManifest(
   patchesDir: string,
   filename: string
 ): Promise<void> {
+  await assertPatchDirectoryLockHeld(patchesDir, 'deleting a patch and its manifest row');
+
   const patchPath = join(patchesDir, filename);
   // ForWrite: deleting the patch FILE while a corrupt manifest still
   // references it would strand the queue; abort on corruption instead.

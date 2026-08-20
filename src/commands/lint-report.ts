@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Machine-readable per-patch lint report (`lint --per-patch --report
- * <path>`, FORGE G9 + G10). One mechanism serves both observability
+ * <path>`, + G10). One mechanism serves both observability
  * gaps: consumers get each patch's size metrics against the SAME
  * thresholds the size rules fire on (no more mirroring
  * `countNonBinaryDiffLines`), and lintIgnore-suppressed issues stay

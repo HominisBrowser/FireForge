@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Read-only guard for verification trees (FORGE G15).
+ * Read-only guard for verification trees.
  *
  * A tree is a snapshot: its `patches/` and `components/` are copies with
  * no merge-back model, so any command that mutates project or engine
@@ -89,7 +89,7 @@ const TREE_CONDITIONAL_CHECKS: Readonly<
   'export-all': ({ options }) => options['dryRun'] === true,
   // Same rule for refreshing existing patches: the dry-run projection is a
   // read (proven side-effect free and runtime-enforced by
-  // withDryRunPurityGuard — FORGE H1/H3); a real re-export writes patches/.
+  // withDryRunPurityGuard); a real re-export writes patches/.
   're-export': ({ options }) => options['dryRun'] === true,
   // `config` with no positional value prints; with a value it writes.
   config: ({ args }) => args.filter((a) => typeof a === 'string').length <= 1,
@@ -155,6 +155,7 @@ export async function runTreeGuardHook(
   rootCommandName: string | undefined,
   actionCommand: {
     name: () => string;
+    // eslint-disable-next-line fireforge/no-untyped-json-document -- structural slice of commander's `Command`; its `optsWithGlobals()` returns the untyped OptionValues bag, mirrored here rather than invented
     optsWithGlobals: () => Record<string, unknown>;
     args: unknown[];
     parent: { name: () => string; parent: unknown } | null;

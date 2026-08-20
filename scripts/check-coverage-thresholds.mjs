@@ -6,14 +6,14 @@ const COVERAGE_SUMMARY_PATH = resolve('coverage/coverage-summary.json');
 
 const MODULE_THRESHOLDS = {
   'src/core/mach.ts': { lines: 95, branches: 88 },
-  // 0.41.0 K-wave modules (FORGE K1/K2/K8/K9/K10) — pinned just below
+  // 0.41.0 K-wave modules — pinned just below
   // their landing coverage.
   'src/utils/concurrency.ts': { lines: 100, branches: 90, functions: 100 },
   // Identity must degrade to the plain semver, never throw — the guarded
   // fallbacks are the point of the module.
   'src/utils/build-info.ts': { lines: 90, branches: 80, functions: 100 },
   'src/commands/status-json.ts': { lines: 95, branches: 80 },
-  // 0.41.0 L-wave modules (FORGE L1/L3) — pinned just below landing
+  // 0.41.0 L-wave modules — pinned just below landing
   // coverage. The extend anchor is the fail-closed guard for a coverage
   // claim, so every refusal branch must stay exercised.
   'src/core/coverage-extend.ts': { lines: 95, branches: 85 },
@@ -102,11 +102,11 @@ const MODULE_THRESHOLDS = {
   'src/core/mach-build-artifacts.ts': { lines: 90, branches: 80 },
   // Build baseline marker — tiny file, easy to hit high coverage.
   'src/core/build-baseline.ts': { lines: 95, branches: 85 },
-  // Patch-aware discard planner (FORGE F1, P0 data loss): the restore-target
+  // Patch-aware discard planner (P0 data loss): the restore-target
   // decision must stay exhaustively covered — a misclassified plan reverts a
   // patch-backed file past its owning patch.
   'src/core/discard-baseline.ts': { lines: 90, branches: 80, functions: 90 },
-  // Per-patch moz.build sorted-list check (FORGE F2) — pure parser. The
+  // Per-patch moz.build sorted-list check — pure parser. The
   // uncovered branches are defensive nullish fallbacks on regex captures.
   'src/core/patch-lint-mozbuild.ts': { lines: 95, branches: 78 },
   // Stale-build preflight for `fireforge test`. Pure git + path-filter
@@ -161,6 +161,11 @@ const MODULE_THRESHOLDS = {
   // ALIVE — two copies read it as "dead" before 0.41.0 and both gated an
   // `rm -rf`. Kept at 100 because the module is tiny and pure.
   'src/utils/errors.ts': { lines: 100, branches: 95, functions: 100 },
+  // 0.43.0: the assertion primitive. Every internal invariant check in the
+  // codebase funnels through this one module precisely so the failure branch
+  // is covered once here instead of uncovered at ~40 call sites — which only
+  // works while this file itself stays fully exercised.
+  'src/utils/assert.ts': { lines: 100, branches: 100, functions: 100 },
   // Tree clone removal: `inspectTreeLock` gates `rm -rf` of a full project
   // clone in `removeTree`.
   'src/core/tree-store.ts': { lines: 92, branches: 84 },

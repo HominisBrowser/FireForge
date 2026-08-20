@@ -104,7 +104,7 @@ import {
 import { info, setStdoutSealed, success, warn } from '../../utils/logger.js';
 import { registerTree, treeCreateCommand, treeListCommand, treeRemoveCommand } from '../tree.js';
 
-describe('tree create CoW gating (FORGE G15)', () => {
+describe('tree create CoW gating', () => {
   let root: string;
 
   beforeEach(async () => {
@@ -265,7 +265,7 @@ describe('tree create CoW gating (FORGE G15)', () => {
       /mach configure failed in the cloned tree/
     );
 
-    // Exit 0 with a failed postcondition is NOT trusted (FORGE I10).
+    // Exit 0 with a failed postcondition is NOT trusted.
     vi.mocked(findObjdirRelocationViolation).mockResolvedValueOnce(
       'obj-x86_64/config.status still contains the primary engine path /primary/engine'
     );
@@ -286,7 +286,7 @@ describe('tree create CoW gating (FORGE G15)', () => {
     expect(cloneArgs?.withObjdir).toBeUndefined();
   });
 
-  it('an objdir-less create pays no mach configure and no venv rebootstrap (FORGE L5)', async () => {
+  it('an objdir-less create pays no mach configure and no venv rebootstrap', async () => {
     // The consumer asked whether a gate paying tree machinery twice could
     // skip configure/venv work on the objdir-less verify tree. It already
     // does: `mach configure` and the `_virtualenvs` scrub live behind the
@@ -591,7 +591,7 @@ describe('tree exec', () => {
     await expect(exec('lint')).rejects.toThrow(/ENOENT/);
   });
 
-  it('seals stdout once the child settles, so a failure refusal cannot print after the verdict (FORGE L2)', async () => {
+  it('seals stdout once the child settles, so a failure refusal cannot print after the verdict', async () => {
     // The child owned stdout via `stdio: 'inherit'` — its FIREFORGE-VERDICT
     // line must stay the run's last stdout write. The parent seals before
     // its own GeneralError renders, routing the refusal to stderr.

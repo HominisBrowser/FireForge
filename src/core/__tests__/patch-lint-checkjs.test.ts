@@ -65,7 +65,7 @@ describe('runCheckJs', () => {
     }
   });
 
-  it('reports undefined free identifiers as warnings by default (FORGE F12)', async () => {
+  it('reports undefined free identifiers as warnings by default', async () => {
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
 

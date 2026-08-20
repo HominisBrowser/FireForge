@@ -107,6 +107,7 @@ vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   info: vi.fn(),
   note: vi.fn(),
+  notice: vi.fn(),
   outro: vi.fn(),
   success: vi.fn(),
   verbose: vi.fn(),
@@ -121,7 +122,7 @@ vi.mock('../../utils/logger.js', () => ({
 vi.mock('../../utils/platform.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../utils/platform.js')>()),
   // Pin the platform so the headed no-output-timeout hint (darwin-only,
-  // FORGE F17) is deterministic regardless of the CI host.
+  //) is deterministic regardless of the CI host.
   getPlatform: vi.fn(() => 'darwin'),
 }));
 
@@ -226,7 +227,7 @@ import {
 import { GeneralError } from '../../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
-import { info, note, outro, success, warn } from '../../utils/logger.js';
+import { info, note, notice, outro, success, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 
 describe('testCommand', () => {
@@ -589,7 +590,7 @@ describe('testCommand', () => {
         expect.arrayContaining(['--timeout=12'])
       );
       expect(success).toHaveBeenCalledWith('Canary: green');
-      // FORGE I5: the canary path ends with the machine-readable verdict.
+      // The canary path ends with the machine-readable verdict.
       const rawWrites = writeSpy.mock.calls
         .map((args) => args[0])
         .filter((chunk): chunk is string => typeof chunk === 'string');
@@ -614,7 +615,7 @@ describe('testCommand', () => {
         })
       ).rejects.toThrow(/Canary: hang/);
 
-      // FORGE I5: the FAIL verdict line is emitted before the throw
+      // The FAIL verdict line is emitted before the throw
       // propagates, so it is the canary run's last stdout write.
       const rawWrites = writeSpy.mock.calls
         .map((args) => args[0])
@@ -817,10 +818,13 @@ describe('testCommand', () => {
       'browser/components/tests/unit/test_two.js',
     ]);
 
-    expect(info).toHaveBeenCalledWith(
+    // The sharding notice is emitted at warning severity so an agent
+    // output filter cannot drop the line that says what the default did
+    // and did not exercise.
+    expect(notice).toHaveBeenCalledWith(
       expect.stringContaining('Cross-argument state is NOT exercised — pass --no-shard')
     );
-    expect(info).toHaveBeenCalledWith(expect.stringContaining('running 2 test path arguments'));
+    expect(notice).toHaveBeenCalledWith(expect.stringContaining('running 2 test path arguments'));
   });
 
   it('does not announce sharding for a single path or under --no-shard', async () => {
@@ -1045,7 +1049,7 @@ describe('testCommand', () => {
           )
         )
       ).toBe(true);
-      // FORGE I5: doctor-only runs end with the machine-readable verdict.
+      // Doctor-only runs end with the machine-readable verdict.
       expect(rawWrites).toContain('FIREFORGE-VERDICT: PASS\n');
     } finally {
       writeSpy.mockRestore();
@@ -1806,7 +1810,7 @@ describe('testCommand', () => {
     expect(testWithOutput).not.toHaveBeenCalled();
   });
 
-  it('refuses a mixed request before dispatching the pre-test build (FORGE F7)', async () => {
+  it('refuses a mixed request before dispatching the pre-test build', async () => {
     vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
       Promise.resolve(path.includes('/xpcshell/') ? '/project/engine/foo/xpcshell.toml' : null)
     );
@@ -1842,7 +1846,7 @@ describe('testCommand', () => {
     };
   }
 
-  describe('--build-only union build (FORGE J9)', () => {
+  describe('--build-only union build', () => {
     const MIXED_PATHS = [
       'browser/base/content/test/xpcshell/test_tile.js',
       'browser/base/content/test/browser/browser_tile.js',
@@ -1897,7 +1901,7 @@ describe('testCommand', () => {
     });
   });
 
-  describe('--extend-coverage union claim (FORGE L1)', () => {
+  describe('--extend-coverage union claim', () => {
     const SLICE_A = 'browser/base/content/test/a/browser_a.js';
     const SLICE_B = 'browser/base/content/test/b/browser_b.js';
 
@@ -2053,7 +2057,7 @@ describe('testCommand', () => {
     });
   });
 
-  it('skips the Marionette preflight and client flags for xpcshell-only runs (FORGE F10)', async () => {
+  it('skips the Marionette preflight and client flags for xpcshell-only runs', async () => {
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
     );
@@ -2084,7 +2088,7 @@ describe('testCommand', () => {
     );
   });
 
-  it('xpcshell-only + --kill-stale-marionette does not touch the port (FORGE F10)', async () => {
+  it('xpcshell-only + --kill-stale-marionette does not touch the port', async () => {
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
     );
@@ -2105,7 +2109,7 @@ describe('testCommand', () => {
     expect(ensureLaunchableBrowserNotRunning).not.toHaveBeenCalled();
   });
 
-  it('keeps the Marionette preflight for xpcshell-only --doctor runs (FORGE F10)', async () => {
+  it('keeps the Marionette preflight for xpcshell-only --doctor runs', async () => {
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
     );
@@ -2594,7 +2598,11 @@ describe('testCommand harness resilience (C1-C4)', () => {
     expect(testWithOutput).toHaveBeenCalledTimes(1);
   });
 
-  it('appends the caffeinate hint to a headed no-output timeout on macOS (FORGE F17)', async () => {
+  // The hint used to recommend `caffeinate`, which PREVENTS sleep and
+  // cannot WAKE an already-sleeping display — it could not have cured the
+  // incident it was recommended for. It now prints the three-cause triage
+  // list for this exact signature.
+  it('appends the no-output-stall triage list to a headed timeout on macOS', async () => {
     vi.mocked(testWithOutput).mockResolvedValue({
       exitCode: 1,
       stdout: 'Timed out after 370 seconds with no output',
@@ -2605,10 +2613,10 @@ describe('testCommand harness resilience (C1-C4)', () => {
       testCommand('/project', ['browser/components/foo/test/browser_foo.js'], {
         harnessRetries: 0,
       })
-    ).rejects.toThrow(/caffeinate -dimsu/);
+    ).rejects.toThrow(/sleeping or locked display/);
   });
 
-  it('omits the caffeinate hint when the run was headless (FORGE F17)', async () => {
+  it('omits the caffeinate hint when the run was headless', async () => {
     vi.mocked(testWithOutput).mockResolvedValue({
       exitCode: 1,
       stdout: 'Timed out after 370 seconds with no output',
@@ -2681,7 +2689,7 @@ describe('testCommand harness resilience (C1-C4)', () => {
         expect.stringContaining('2/2 shard(s) passed'),
         'Sharded Test Summary'
       );
-      // FORGE I5: the sharded aggregate ends with the machine-readable verdict.
+      // The sharded aggregate ends with the machine-readable verdict.
       expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
         'FIREFORGE-VERDICT: PASS shards=2/2\n'
       );
@@ -2704,7 +2712,7 @@ describe('testCommand harness resilience (C1-C4)', () => {
 
       expect(testWithOutput).toHaveBeenCalledTimes(2);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('Tests failed with exit code 1'));
-      // FORGE I5: the FAIL aggregate verdict is emitted before the throw.
+      // The FAIL aggregate verdict is emitted before the throw.
       expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
         'FIREFORGE-VERDICT: FAIL reason=test-failures shards=1/2\n'
       );
@@ -2746,7 +2754,7 @@ describe('testCommand harness resilience (C1-C4)', () => {
     });
   });
 
-  it('appends the caffeinate hint to a headed sharded no-output timeout (FORGE F17)', async () => {
+  it('appends the no-output-stall triage list to a headed sharded timeout', async () => {
     const TIMEOUT_CRASH = {
       exitCode: 1,
       stdout: 'Timed out after 370 seconds with no output',
@@ -2762,7 +2770,7 @@ describe('testCommand harness resilience (C1-C4)', () => {
       )
     ).rejects.toThrow(/sharded test run\(s\) did not pass/);
 
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('caffeinate -dimsu'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('sleeping or locked display'));
   });
 
   it('retries shards independently and reports attempts in the summary', async () => {
@@ -2878,7 +2886,7 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
     expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=preflight\n']);
   });
 
-  it('a crashed shard classifies the aggregate as reason=crash, not test-failures (FORGE I7)', async () => {
+  it('a crashed shard classifies the aggregate as reason=crash, not test-failures', async () => {
     vi.mocked(testWithOutput).mockResolvedValueOnce(GREEN).mockResolvedValueOnce(CRASH);
 
     const capture = captureVerdictLines();

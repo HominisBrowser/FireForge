@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Attribution of projected placement lint errors (FORGE K9), split out of
+ * Attribution of projected placement lint errors, split out of
  * export-flow.ts for the line budget. A placement projection lints one
  * merged queue — the renumbered existing patches plus a synthetic entry
  * for the pending patch — so its errors used to render as one flat list

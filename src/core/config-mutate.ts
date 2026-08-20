@@ -5,20 +5,22 @@
 
 import { ConfigError } from '../errors/config.js';
 import type { FireForgeConfig } from '../types/config.js';
+import type { JsonObject, JsonValue } from '../types/json.js';
 import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
-import { isObject } from '../utils/validation.js';
+import { isJsonObject, isObject } from '../utils/validation.js';
 import { validateConfig } from './config-validate.js';
 
-function cloneConfigDocument(
-  config: FireForgeConfig | Record<string, unknown>
-): Record<string, unknown> {
+function cloneConfigDocument(config: FireForgeConfig | JsonObject): JsonObject {
   const cloned: unknown = structuredClone(config);
   if (!isObject(cloned)) {
     throw new ConfigError('Config clone unexpectedly produced a non-object value');
   }
 
-  return cloned;
+  // Both input shapes hold only JSON data (`FireForgeConfig` is plain
+  // parsed-config data), and `structuredClone` preserves that, so the
+  // object check above is the only invariant left to establish.
+  return cloned as JsonObject;
 }
 
 /**
@@ -42,16 +44,13 @@ function assertNoSentinelSegments(key: string, parts: string[]): void {
   }
 }
 
-function getOrCreateChildRecord(
-  parent: Record<string, unknown>,
-  key: string
-): Record<string, unknown> {
+function getOrCreateChildRecord(parent: JsonObject, key: string): JsonObject {
   const existing = parent[key];
-  if (isObject(existing)) {
+  if (isJsonObject(existing)) {
     return existing;
   }
 
-  const child: Record<string, unknown> = {};
+  const child: JsonObject = {};
   parent[key] = child;
   return child;
 }
@@ -68,21 +67,21 @@ function getOrCreateChildRecord(
 export function mutateConfig(
   config: FireForgeConfig,
   key: string,
-  value: unknown,
+  value: JsonValue,
   skipValidation?: false
 ): FireForgeConfig;
 export function mutateConfig(
-  config: FireForgeConfig | Record<string, unknown>,
+  config: FireForgeConfig | JsonObject,
   key: string,
-  value: unknown,
+  value: JsonValue,
   skipValidation: true
-): Record<string, unknown>;
+): JsonObject;
 export function mutateConfig(
-  config: FireForgeConfig | Record<string, unknown>,
+  config: FireForgeConfig | JsonObject,
   key: string,
-  value: unknown,
+  value: JsonValue,
   skipValidation = false
-): FireForgeConfig | Record<string, unknown> {
+): FireForgeConfig | JsonObject {
   const parts = key.split('.');
   // Reject prototype-chain sentinel segments before any write so
   // `--force` cannot be used to mutate Object.prototype. This guard must
@@ -92,7 +91,7 @@ export function mutateConfig(
 
   const raw = cloneConfigDocument(config);
 
-  let current: Record<string, unknown> = raw;
+  let current: JsonObject = raw;
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i];
     if (part === undefined) continue;

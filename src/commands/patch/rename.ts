@@ -348,7 +348,7 @@ function resolveRenamePlan(
  * Pre-flight refusals: order collision (with a pointer to the verb that
  * renumbers siblings — `--order` means "this exact unused sparse slot",
  * mirroring `export --order`), projected cross-patch lint on an order
- * change (forward imports resolve by queue position, FORGE J10), and the
+ * change (forward imports resolve by queue position), and the
  * filename collision. The authoritative collision checks run again inside
  * the lock to close the TOCTOU window.
  */

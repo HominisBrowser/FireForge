@@ -251,7 +251,7 @@ describe('containsUpstreamLicenseText', () => {
   });
 });
 
-describe('hasThirdPartyPermissiveBanner (FORGE F15)', () => {
+describe('hasThirdPartyPermissiveBanner', () => {
   it('recognizes an MIT banner in a JS block comment', () => {
     const content =
       '/**\n' +

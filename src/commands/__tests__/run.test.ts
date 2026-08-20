@@ -524,7 +524,7 @@ describe('runCommand', () => {
       expect(readFile).toHaveBeenCalledWith('/tmp/allow.txt', 'utf8');
     });
 
-    it('summarizes per-entry allowlist attribution with zero-hit entries flagged (FORGE G8)', async () => {
+    it('summarizes per-entry allowlist attribution with zero-hit entries flagged', async () => {
       vi.mocked(readFile).mockResolvedValue('# comment\nknown-flake\nnever-matches\n');
       vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
         opts.onStderrLine?.('JavaScript error: known-flake tripped');

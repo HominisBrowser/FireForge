@@ -6,7 +6,7 @@
  *
  * Two shapes share one counting pass:
  * - the full payload (`renderJsonStatus`) with the per-file `files[]` list;
- * - the `--summary` gate payload (`renderJsonSummaryStatus`, FORGE K8),
+ * - the `--summary` gate payload (`renderJsonSummaryStatus`),
  *   which omits `files[]` entirely — engine-clean gates need the verdict,
  *   per-class counts, and offender names, not a payload that grows with
  *   the queue (175 KB+ observed on a 290-patch consumer).
@@ -39,7 +39,7 @@ function countByClassification(
 
 /**
  * Full `--json` payload: summary plus the per-file `files[]` list, and —
- * under `--include-ownership` (FORGE L3) — the additive `ownership` block.
+ * under `--include-ownership` — the additive `ownership` block.
  * Additive within schemaVersion 1: a consumer that does not ask for the
  * block never sees the key.
  */
@@ -52,7 +52,7 @@ export function renderJsonStatus(
       file: string;
       status: string;
       classification: FileClassification;
-      /** Owning patch filename; null when unowned (FORGE G11, additive to schemaVersion 1). */
+      /** Owning patch filename; null when unowned (additive to schemaVersion 1). */
       patch: string | null;
       claimedBy?: string[];
     } = {

@@ -98,6 +98,51 @@ export function resolveWaitLockSeconds(
 }
 
 /**
+ * Registers `--wait-lock [seconds]` on a command that takes NO lock, so a
+ * scripted sequence can blanket-append the flag without hitting a usage
+ * error.
+ *
+ * `export` / `re-export` / `build` / `test` / `patch move-files` all
+ * accept the flag; `status` and `patch staged-dependency` used to reject
+ * it with "unknown option", which killed the whole sequence with a usage
+ * error instead of a lock message. The flag is accepted and ignored here —
+ * never silently repurposed — and the help text says so, so nobody reads
+ * its presence as evidence that this command waits for anything.
+ *
+ * The value is parsed and validated exactly as the honoring variant does:
+ * `--wait-lock nonsense` must still be a usage error everywhere, or the
+ * uniformity would be a lie.
+ */
+function addAcceptedWaitLockOption(command: Command): Command {
+  return command.option(
+    '--wait-lock [seconds]',
+    'Accepted for scripting uniformity and ignored: this command takes no FireForge lock',
+    commanderArgParser((raw: string) => resolveWaitLockSeconds(raw))
+  );
+}
+
+/**
+ * True when `command` already declares `--wait-lock` itself. Used by the
+ * CLI wiring to add the accept-and-ignore variant only where the honoring
+ * one is absent.
+ */
+export function hasWaitLockOption(command: Command): boolean {
+  return command.options.some((option) => option.long === '--wait-lock');
+}
+
+/**
+ * Recursively gives every command in the tree a `--wait-lock` flag: the
+ * honoring registration where one already exists, the accept-and-ignore
+ * one everywhere else.
+ */
+export function ensureWaitLockOptionEverywhere(command: Command): void {
+  for (const sub of command.commands) {
+    if (!hasWaitLockOption(sub)) addAcceptedWaitLockOption(sub);
+    ensureWaitLockOptionEverywhere(sub);
+  }
+}
+
+/**
  * Registers the shared `--wait-lock [seconds]` flag on a lock-taking
  * command (the engine session lock for engine-mutating commands, the patch
  * directory lock for queue-mutating ones). The parsed option value is `true`

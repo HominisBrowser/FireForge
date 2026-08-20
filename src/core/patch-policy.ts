@@ -95,7 +95,7 @@ function rangeLabel(range: { from: number; to: number }): string {
 
 /**
  * Human-readable label for a category's configured ranges, e.g. `300-399`.
- * Exported for the forward-import hint (FORGE F14), which must render the
+ * Exported for the forward-import hint, which must render the
  * range it found no legal ordinal in.
  */
 export function categoryRangeLabel(ranges: readonly PatchPolicyRange[], category: string): string {
@@ -114,7 +114,7 @@ function reservedRangeForOrder(
 /**
  * Returns the configured range that contains `order` for `category`, or
  * null when no such range exists. Exported for the forward-import hint
- * (FORGE F14), which suppresses ordinal suggestions the reorder policy
+ *, which suppresses ordinal suggestions the reorder policy
  * would refuse.
  */
 export function categoryRangeForOrder(

@@ -106,6 +106,56 @@ function printConflicts(conflicts: ConflictReport): void {
 }
 
 /**
+ * True when BOTH standard handles are real TTYs, i.e. a `confirm()` prompt
+ * can actually be answered.
+ *
+ * Node types `isTTY` as `boolean`, but at runtime it is `true | undefined`
+ * (absent when the handle is not a TTY). Unusual harnesses (vitest stdio
+ * capture, CI spawners, mocked pipes) can also leave it unset on only one
+ * handle, so every falsy variant — false, undefined, a null-patched mock —
+ * must route to the non-interactive path.
+ */
+function confirmationIsAnswerable(): boolean {
+  const stdinIsTTY = process.stdin.isTTY as boolean | undefined;
+  const stdoutIsTTY = process.stdout.isTTY as boolean | undefined;
+  return stdinIsTTY === true && stdoutIsTTY === true;
+}
+
+/**
+ * UP-FRONT non-interactive refusal for a command that will end at
+ * {@link confirmDestructive}.
+ *
+ * `confirmDestructive` already refuses a prompt-less run rather than
+ * proceeding silently — but it does so at the END, after the command has
+ * built diffs and run projected per-patch lint. On `patch move-files
+ * --create` that is minutes of work before a scripted run learns it needed
+ * `--yes`, and the failure reads as an obscure late error rather than a
+ * usage problem. Calling this at command entry turns it into a usage
+ * refusal that names the flag, in the same shape as the 0.41.0
+ * `move-files --create` / `--description` refusal.
+ *
+ * A `--yes` or `--dry-run` run never prompts, so neither is refused.
+ *
+ * @param operation - Stable operation id, e.g. `patch-move-files-create`
+ * @param options - The run's `--yes` / `--dry-run` state
+ * @throws InvalidArgumentError when the run would prompt but cannot
+ */
+export function assertConfirmationAvailable(
+  operation: string,
+  options: { yes?: boolean | undefined; dryRun?: boolean | undefined }
+): void {
+  if (options.yes === true || options.dryRun === true) return;
+  if (confirmationIsAnswerable()) return;
+  throw new InvalidArgumentError(
+    `"${operation}" ends in an interactive confirmation, but this run has no TTY to answer it ` +
+      '(stdin/stdout are not both terminals). Re-run with --yes to confirm non-interactively ' +
+      '(required for CI and agent-driven runs), or with --dry-run to preview without ' +
+      'confirming. Refusing up front rather than after the planning and lint work.',
+    '--yes'
+  );
+}
+
+/**
  * Executes the destructive-operation contract: summary → conflict refusal →
  * dry-run / force / prompt / non-TTY refusal.
  *
@@ -167,10 +217,7 @@ export async function confirmDestructive(input: DestructiveOpInput): Promise<Des
   // one handle. We cast to the real runtime type and compare against
   // literal `true` so any falsy variant — false, undefined, or a
   // null-patched mock — routes to the non-interactive path.
-  const stdinIsTTY = process.stdin.isTTY as boolean | undefined;
-  const stdoutIsTTY = process.stdout.isTTY as boolean | undefined;
-  const isInteractive = stdinIsTTY === true && stdoutIsTTY === true;
-  if (!isInteractive) {
+  if (!confirmationIsAnswerable()) {
     printSummary(title, summary);
     throw new InvalidArgumentError(
       `Interactive confirmation not available for "${operation}". ` +

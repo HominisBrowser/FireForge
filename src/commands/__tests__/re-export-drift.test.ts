@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Pure-function tests for the re-export foreign-drift comparison
- * (FORGE J2): offset shifts are not drift, new payload lines are, scan
+ *: offset shifts are not drift, new payload lines are, scan
  * adoptions are excluded, and binary sections compare by recorded hash.
  */
 import { describe, expect, it } from 'vitest';

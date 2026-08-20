@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Binary-aware drift classification for patch-owned files (FORGE J3).
+ * Binary-aware drift classification for patch-owned files.
  *
  * The text classifier compares utf-8 decoded content against
  * `computePatchedContent`, which cannot apply `GIT binary patch` bodies —

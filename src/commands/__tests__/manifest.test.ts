@@ -46,42 +46,42 @@ const COMMANDS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HELPER_FILES: ReadonlySet<string> = new Set([
   'manifest.ts',
   'export-flow.ts',
-  // Scan-less re-export adjacency advisory (FORGE G2) split out of
+  // Scan-less re-export adjacency advisory split out of
   // re-export.ts to stay inside the line budget. Exports
   // reportAdjacentUnmanagedFiles/findMissingFiles consumed by
   // re-export.ts; no top-level registrar is exported and none is wanted.
   're-export-adjacent.ts',
-  // Foreign-drift preview + --refuse-foreign-drift (FORGE J2), same split
+  // Foreign-drift preview + --refuse-foreign-drift, same split
   // shape as the adjacency advisory. Consumed by re-export.ts; no registrar.
   're-export-drift.ts',
   // Single-patch refresh core, split out of re-export.ts for the line
-  // budget (FORGE J1/J2). Consumed by re-export.ts; no registrar.
+  // budget. Consumed by re-export.ts; no registrar.
   're-export-single.ts',
-  // Pre-test build phase incl. the --build-only union build (FORGE J9),
+  // Pre-test build phase incl. the --build-only union build,
   // split out of test.ts for the line budget. Consumed by test.ts.
   'test-build-phase.ts',
-  // Hoisted + cached re-export lint context (FORGE J1). Consumed by
+  // Hoisted + cached re-export lint context. Consumed by
   // re-export.ts; no registrar.
   're-export-lint.ts',
   // Per-run checkJs program controller shared by lint --per-patch and
-  // re-export (FORGE J1). No registrar.
+  // re-export. No registrar.
   'lint-per-run-checkjs.ts',
-  // status --check / --fail-on enforcement policy (FORGE G1) split out of
+  // Status --check / --fail-on enforcement policy split out of
   // status.ts (at the max-lines budget). Exports resolveStatusCheckPolicy
   // and runStatusCheck consumed by status.ts; no registrar is wanted.
   'status-check.ts',
   // status --json payload rendering incl. the --summary gate shape
-  // (FORGE K8), split out of status.ts for the line budget. Exports
+  //, split out of status.ts for the line budget. Exports
   // renderJsonStatus/renderJsonSummaryStatus consumed by status.ts;
   // no registrar is wanted.
   'status-json.ts',
   // Ownership-table assembly shared by the human --ownership mode and the
-  // --include-ownership JSON block (FORGE L3), so both build the same rows
+  // --include-ownership JSON block, so both build the same rows
   // from one scan. Exports collectOwnershipRows/summarizeOwnership/
   // buildOwnershipJsonBlock consumed by status.ts and status-json.ts;
   // no registrar is wanted.
   'status-ownership.ts',
-  // Machine-readable per-patch lint report (FORGE G9/G10). Exports
+  // Machine-readable per-patch lint report. Exports
   // writePerPatchLintReport consumed by lint-per-patch.ts; no registrar.
   'lint-report.ts',
   // Placement-flag gating split out of export.ts so the command body
@@ -89,7 +89,7 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // `gatePlacementPlan` / `patchMetadataExtras` consumed by export.ts;
   // no top-level register* is exported and none is wanted.
   'export-placement-gate.ts',
-  // Attribution of projected placement lint errors (FORGE K9), split out
+  // Attribution of projected placement lint errors, split out
   // of export-flow.ts for the line budget. Exports
   // groupProjectedPlacementErrors consumed by export-flow.ts; no registrar.
   'export-placement-conflicts.ts',
@@ -161,7 +161,7 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // test.ts so it stays under the max-lines threshold. Consumed by
   // test.ts; no top-level registrar.
   'test-stale-gate.ts',
-  // The FIREFORGE-VERDICT sink (FORGE I8): first-write-wins emission shared
+  // The FIREFORGE-VERDICT sink: first-write-wins emission shared
   // by test.ts / test-run.ts / test-diagnose.ts / test-modes.ts; no
   // top-level registrar.
   'test-verdict.ts',

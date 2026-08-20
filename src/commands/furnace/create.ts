@@ -317,6 +317,9 @@ async function performCreateMutations(args: {
       testFiles.push(...mochikitFiles);
     }
   } catch (error: unknown) {
+    // This body owns its rollback end to end, so tell the lifecycle wrapper
+    // not to restore the same journal again on the way out.
+    args.operationContext?.markRolledBack();
     try {
       await restoreRollbackJournalOrThrow(
         journal,

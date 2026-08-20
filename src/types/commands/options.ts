@@ -73,6 +73,14 @@ export interface BuildOptions {
    */
   rewriteMozinfo?: boolean;
   /**
+   * Refuse the build (rather than warn) when it would overwrite engine
+   * content recorded in neither a patch body nor the pristine baseline
+   *. The default is a loud warning, because an interactive
+   * operator often means to discard the drift; a scripted gate on a
+   * multi-session checkout wants the hard stop.
+   */
+  refuseUnexportedDrift?: boolean;
+  /**
    * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
    * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
    * the command implementation ignores it.
@@ -172,7 +180,7 @@ export interface DiscardOptions {
   /**
    * Restore to pristine upstream (HEAD) instead of the patch-applied
    * baseline; deletes patch-created files (the pre-0.39.0 semantics —
-   * FORGE F1).
+   *).
    */
   toUpstream?: boolean;
   /** Show what would be discarded without doing it */
@@ -305,7 +313,7 @@ export interface ReExportOptions {
    * Bypass per-patch lint result cache reads AND writes for this
    * invocation (`--no-cache`). The cache is what makes a repeat
    * re-export of an unchanged patch skip the checkJs program build
-   * entirely (FORGE J1).
+   * entirely.
    */
   noCache?: boolean;
   /**
@@ -321,7 +329,7 @@ export interface ReExportOptions {
    * Engine-relative files whose drift is EXPECTED (`--expect`, repeatable;
    * requires `--refuse-foreign-drift`). The content-based drift detector
    * cannot tell the exporting session's own slice edits from another
-   * session's (FORGE L6), so a real slice export under the refusal flag
+   * session's, so a real slice export under the refusal flag
    * names its intended files here: drift confined to expected files
    * proceeds, drift anywhere else still refuses.
    */
@@ -538,12 +546,12 @@ export interface TestOptions {
    * MIXED harnesses allowed) and exit without dispatching tests. One
    * ~10-minute build then covers both an xpcshell and a browser-chrome
    * half of a slice; run each harness afterwards without `--build`
-   * (FORGE J9). Emits `FIREFORGE-VERDICT: PASS` on success.
+   *. Emits `FIREFORGE-VERDICT: PASS` on success.
    */
   buildOnly?: boolean;
   /**
    * Union the paths this build packages onto the recorded coverage claim
-   * instead of REPLACING it (FORGE L1), so successive scoped builds
+   * instead of REPLACING it, so successive scoped builds
    * accumulate and an earlier slice's build-less runs stay covered. Valid
    * only with `--build`/`--build-only` and explicit paths. Refused
    * fail-closed unless the build anchor is unchanged: same engine HEAD,
@@ -907,6 +915,14 @@ export interface PatchCompactOptions {
  */
 export interface StatusOptions {
   raw?: boolean;
+  /**
+   * Report the engine-session lock instead of file status:
+   * holder pid, the command it is running, how long it has held the lock,
+   * and how many waiters are queued behind it. Read-only — it never
+   * acquires the lock, so it is safe to run while a build or test holds
+   * it, which is exactly when an operator asks.
+   */
+  lock?: boolean;
   unmanaged?: boolean;
   /**
    * Render a flat file→owning-patch ownership table instead of the three-
@@ -918,7 +934,7 @@ export interface StatusOptions {
   /**
    * Print the recorded test-packaging coverage of the last build baseline
    * (scope, timestamp, recording invocation) and exit. Read-only — the
-   * counterpart to the out-of-coverage test refusal (FORGE F11).
+   * counterpart to the out-of-coverage test refusal.
    */
   testCoverage?: boolean;
   /** Output machine-readable JSON instead of human-readable text. */
@@ -927,7 +943,7 @@ export interface StatusOptions {
    * With `--json`: emit only the summary counts (plus the offending
    * files per fail-set classification when the `--check`/`--fail-on`
    * policy is active), omitting the per-file `files[]` payload that
-   * grows with the queue (FORGE K8). Refused without `--json`.
+   * grows with the queue. Refused without `--json`.
    */
   summary?: boolean;
   /**
@@ -935,7 +951,7 @@ export interface StatusOptions {
    * `ownership` block — the flat path→owning-patch rows plus
    * managed/unmanaged/conflict counts — so a gate reads ownership,
    * classification, and the check verdict from ONE scan instead of three
-   * back-to-back `status` invocations (FORGE L3). A modifier, not a mode:
+   * back-to-back `status` invocations. A modifier, not a mode:
    * exit semantics are unchanged, so ownership conflicts still fail only
    * the human `--ownership` mode. Refused without `--json`.
    */
@@ -944,7 +960,7 @@ export interface StatusOptions {
    * Exit non-zero when any classification in the fail policy is
    * non-empty (default policy: unmanaged, patch-owned-drift, conflict).
    * Composes with the default view and `--json`; refused alongside
-   * `--raw`/`--unmanaged`/`--ownership`/`--test-coverage` (FORGE G1).
+   * `--raw`/`--unmanaged`/`--ownership`/`--test-coverage`.
    */
   check?: boolean;
   /**
@@ -1050,7 +1066,7 @@ export interface LintCommandOptions {
    *
    * Positional file arguments change meaning under this flag: they are
    * PATCH selectors resolved like {@link patches} entries, not engine
-   * file paths (FORGE G14).
+   * file paths.
    */
   perPatch?: boolean;
   /**
@@ -1075,7 +1091,7 @@ export interface LintCommandOptions {
   /**
    * With `--per-patch`, write a machine-readable JSON report (schemaVersion
    * 1: per-patch lineCount, filesAffected, tier, thresholds, issues, and
-   * lintIgnore-suppressed issues) to this path (FORGE G9/G10). Requires
+   * lintIgnore-suppressed issues) to this path. Requires
    * {@link perPatch}.
    */
   report?: string;

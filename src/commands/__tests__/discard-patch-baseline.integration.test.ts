@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * FORGE F1 (P0 data loss): `fireforge discard` on a patch-claimed path must
+ * (P0 data loss): `fireforge discard` on a patch-claimed path must
  * restore the PATCH-APPLIED baseline, not pristine upstream HEAD — and must
  * re-materialize (not delete) patch-created files. The pre-0.39.0 command
  * was purely git-mechanical: it printed "File restored to original state"
@@ -100,7 +100,7 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-describe('discard restores the patch-applied baseline (FORGE F1)', () => {
+describe('discard restores the patch-applied baseline', () => {
   let projectRoot: string;
   let engineDir: string;
   let patchesDir: string;

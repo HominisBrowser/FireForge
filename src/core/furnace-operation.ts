@@ -4,10 +4,11 @@ import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
 import type { FurnacePendingRepairOperation } from '../types/furnace.js';
+import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { verbose, warn } from '../utils/logger.js';
 import { FIREFORGE_DIR } from './config-paths.js';
-import { withFileLock } from './file-lock.js';
+import { readLockStatus, withFileLock } from './file-lock.js';
 import { loadFurnaceState, updateFurnaceState } from './furnace-config.js';
 import { restoreRollbackJournal, type RollbackJournal } from './furnace-rollback.js';
 
@@ -44,6 +45,18 @@ export interface FurnaceOperationContext {
    * collected, not re-thrown.
    */
   registerCleanup(cleanup: () => Promise<void>): void;
+  /**
+   * Declares that the body has already restored its own journal, so the
+   * wrapper's throw-path rollback must not restore it a second time.
+   *
+   * Bodies that catch-and-restore on their own (the `furnace/*` command
+   * bodies, `furnace-apply`) call this from their catch block after the
+   * restore, then re-throw. Without it the wrapper would restore the same
+   * journal again on the way out — harmless for the file writes, which are
+   * rename-based and converge, but it would race a second `pendingRepair`
+   * write against the state-file lock.
+   */
+  markRolledBack(): void;
 }
 
 /** Options for `runFurnaceMutation`. */
@@ -87,6 +100,38 @@ interface ActiveFurnaceOperation {
    *  checks this flag so it doesn't roll back an already-committed mutation if
    *  a signal arrives during the finally-block cleanup window. */
   completed?: boolean;
+  /**
+   * Which path, if any, has claimed this operation's rollback.
+   *
+   * Both the throw path (`runFurnaceMutation`'s catch) and the signal path
+   * (`rollbackActiveOperationsForSignal`) can reach the same journal: a
+   * SIGINT landing mid-throw-path-restore finds the operation still in
+   * `activeOperations` with `completed !== true`, because `completed` is
+   * only set in the finally that runs after the catch. This field is the
+   * interlock — whichever path gets there first claims it synchronously,
+   * before its first await, and the other skips. It is per-operation
+   * rather than module-scoped because the registry is keyed to allow
+   * concurrent operations.
+   */
+  rollbackState?: 'in-flight' | 'done';
+}
+
+/**
+ * Claims the rollback for one operation, or reports that another path
+ * already has it.
+ *
+ * Must stay synchronous and must be called before the caller's first
+ * await — that is what makes the claim atomic against the signal handler.
+ *
+ * @param operation - The in-flight operation to claim
+ * @returns True when the caller now owns the rollback
+ */
+function claimRollback(operation: ActiveFurnaceOperation): boolean {
+  if (operation.rollbackState !== undefined) {
+    return false;
+  }
+  operation.rollbackState = 'in-flight';
+  return true;
 }
 
 const activeOperations = new Map<number, ActiveFurnaceOperation>();
@@ -160,6 +205,14 @@ export async function rollbackActiveOperationsForSignal(
   warn(`Received ${signal}; rolling back in-flight furnace mutations…`);
 
   for (const op of snapshot) {
+    // The body may already be rolling back on its own throw path. Claim the
+    // operation (or skip it) before the first await so the two paths cannot
+    // both restore the same journal.
+    if (!claimRollback(op)) {
+      verbose(`Rollback for ${op.kind} already in progress; leaving it to the throw path.`);
+      continue;
+    }
+
     const cleanupErrors: string[] = [];
 
     // Run extra cleanup callbacks first (e.g. preview's cleanStories), so the
@@ -199,6 +252,7 @@ export async function rollbackActiveOperationsForSignal(
     } catch (error: unknown) {
       rollbackError = toError(error).message;
     }
+    op.rollbackState = 'done';
 
     // A clean signal-driven rollback is not itself a repairable problem:
     // preview/apply/deploy/remove were interrupted, but the engine was restored
@@ -221,6 +275,88 @@ export async function rollbackActiveOperationsForSignal(
       );
     }
   }
+}
+
+/**
+ * Rolls back one operation whose body threw, mirroring the signal path.
+ *
+ * Never throws: the body's own error is what the operator needs to see, so
+ * a rollback failure becomes a `pendingRepair` marker plus a warning
+ * rather than replacing it. Skips entirely when the body already restored
+ * its own journal and said so via `ctx.markRolledBack()`.
+ *
+ * @param operation - The in-flight operation whose body threw
+ */
+async function rollbackOperationForThrow(operation: ActiveFurnaceOperation): Promise<void> {
+  if (!claimRollback(operation)) {
+    return;
+  }
+
+  const cleanupErrors: string[] = [];
+
+  // Cleanups before the journal restore, for the same reason the signal path
+  // does it in that order: the restore writes original contents back, and it
+  // should do so over the tidiest possible tree.
+  for (const cleanup of operation.cleanups) {
+    try {
+      await withTimeout(cleanup(), SIGNAL_ROLLBACK_TIMEOUT_MS, 'Cleanup callback');
+    } catch (error: unknown) {
+      cleanupErrors.push(toError(error).message);
+    }
+  }
+
+  if (!operation.journal) {
+    // Nothing was captured, so there is nothing to restore. Unlike the signal
+    // path we do NOT write a pendingRepair marker here: a body that threw
+    // before registering a journal is overwhelmingly a refusal raised during
+    // pre-flight (a validation failure, a missing file), and marking the root
+    // as needing repair would block every later furnace mutation behind a
+    // `doctor --repair-furnace` that has nothing to reconcile. Bodies that
+    // genuinely mutate before registering a journal are the ones the
+    // journal-before-mutation assertions catch.
+    operation.rollbackState = 'done';
+    if (cleanupErrors.length > 0) {
+      warn(`Cleanup after a failed ${operation.kind} reported: ${cleanupErrors.join('; ')}`);
+    }
+    return;
+  }
+
+  let rollbackError: string | undefined;
+  try {
+    await withTimeout(
+      restoreRollbackJournal(operation.journal),
+      SIGNAL_ROLLBACK_TIMEOUT_MS,
+      'Rollback journal restore'
+    );
+  } catch (error: unknown) {
+    rollbackError = toError(error).message;
+  }
+  operation.rollbackState = 'done';
+
+  if (!rollbackError && cleanupErrors.length === 0) {
+    verbose(`Rolled back ${operation.kind} after a failure; engine restored.`);
+    return;
+  }
+
+  const reasonParts: string[] = [`${operation.kind} failed`];
+  if (rollbackError) {
+    reasonParts.push(`automatic rollback failed: ${rollbackError}`);
+    warn(
+      `Automatic rollback after a failed ${operation.kind} did not complete: ${rollbackError}. ` +
+        'Run "fireforge doctor --repair-furnace" to reconcile.'
+    );
+  } else {
+    reasonParts.push('automatic rollback succeeded');
+  }
+  if (cleanupErrors.length > 0) {
+    reasonParts.push(`cleanup errors: ${cleanupErrors.join('; ')}`);
+  }
+
+  await persistPendingRepair(operation.root, operation.kind, reasonParts.join('; ')).catch(
+    (error: unknown) => {
+      warn(`Could not persist pending-repair marker: ${toError(error).message}`);
+    }
+  );
 }
 
 async function persistPendingRepair(
@@ -306,6 +442,7 @@ export async function runFurnaceMutation<T>(
     return body({
       registerJournal: () => undefined,
       registerCleanup: () => undefined,
+      markRolledBack: () => undefined,
     });
   }
 
@@ -341,6 +478,21 @@ export async function runFurnaceMutation<T>(
   return withFileLock(
     lockPath,
     async () => {
+      // Everything the body does from here is serialized only by the furnace
+      // lock, so confirm we are actually inside it before registering as a
+      // live mutation. The owner record is deliberately best-effort in
+      // `withFileLock` (a live holder can legitimately have no readable PID),
+      // so the PID half only tightens the check when a record is present —
+      // asserting on its existence would fire on a lock we really do hold.
+      const lockStatus = await readLockStatus(lockPath);
+      assert(lockStatus.held, 'furnace lock held before the mutation body runs');
+      assert(
+        lockStatus.holder === undefined || lockStatus.holder.pid === process.pid,
+        () =>
+          `furnace lock is owned by this process ` +
+          `(held by PID ${String(lockStatus.holder?.pid)}, we are ${String(process.pid)})`
+      );
+
       activeOperations.set(token, operation);
       try {
         return await body({
@@ -350,7 +502,24 @@ export async function runFurnaceMutation<T>(
           registerCleanup: (cleanup) => {
             operation.cleanups.push(cleanup);
           },
+          markRolledBack: () => {
+            operation.rollbackState = 'done';
+          },
         });
+      } catch (error: unknown) {
+        // A thrown error leaves the engine mutated exactly as a signal does,
+        // so it gets the same treatment. Before 0.43.0 this was a bare
+        // finally: the throw path deregistered the operation and marked it
+        // completed, which removed it from the signal handler's view too, so
+        // a body that threw outside its own catch (notably anywhere in
+        // `applyAllComponents` outside its two per-component try blocks) left
+        // the checkout torn with no marker.
+        //
+        // This runs inside the withFileLock callback, so the furnace lock is
+        // still held for the duration of the restore — a competing process
+        // cannot start mutating half-way through it.
+        await rollbackOperationForThrow(operation);
+        throw error;
       } finally {
         operation.completed = true;
         activeOperations.delete(token);

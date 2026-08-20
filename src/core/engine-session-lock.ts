@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { info, warn } from '../utils/logger.js';
-import type { LockHolder } from './file-lock.js';
-import { withFileLock } from './file-lock.js';
+import type { LockHolder, LockQueueState } from './file-lock.js';
+import { type LockStatusSnapshot, readLockStatus, withFileLock } from './file-lock.js';
 import { git } from './git-base.js';
 
 const ENGINE_SESSION_LOCK_PATH = join('.fireforge', 'engine-session.lock');
@@ -29,14 +29,23 @@ export interface EngineSessionLockOptions {
 function formatWaitProgressLine(
   waitedMs: number,
   timeoutMs: number,
-  holder: LockHolder | undefined
+  holder: LockHolder | undefined,
+  queue?: LockQueueState
 ): string {
   const progress = `${String(Math.round(waitedMs / 1000))}s of up to ${String(Math.round(timeoutMs / 1000))}s`;
+  // Queue position: under several concurrent sessions the wait
+  // line alone left operators inferring their place from `ps`.
+  const position =
+    queue === undefined || queue.depth === 0
+      ? ''
+      : queue.ahead === 0
+        ? ` You are next in a queue of ${String(queue.depth)}.`
+        : ` ${String(queue.ahead)} ahead of you (queue of ${String(queue.depth)}).`;
   if (holder === undefined) {
-    return `Waiting for the FireForge engine lock — ${progress}.`;
+    return `Waiting for the FireForge engine lock — ${progress}.${position}`;
   }
   const details = holder.metadata.length > 0 ? ` (${holder.metadata.join(', ')})` : '';
-  return `Waiting for the FireForge engine lock held by PID ${String(holder.pid)}${details} — ${progress}.`;
+  return `Waiting for the FireForge engine lock held by PID ${String(holder.pid)}${details} — ${progress}.${position}`;
 }
 
 /**
@@ -69,13 +78,13 @@ export async function withEngineSessionLock<T>(
           pollMs: 100,
           pollMaxMs: 2000,
           waitProgressMs: 5000,
-          onWaitProgress: ({ waitedMs, timeoutMs, holder }): void => {
-            info(formatWaitProgressLine(waitedMs, timeoutMs, holder));
+          onWaitProgress: ({ waitedMs, timeoutMs, holder, queue }): void => {
+            info(formatWaitProgressLine(waitedMs, timeoutMs, holder, queue));
           },
         }
       : {}),
     ownerMetadata: [`command=${command}`, `started=${new Date().toISOString()}`],
-    // Reason first, remedy second (FORGE H5) — the no-flag default waits
+    // Reason first, remedy second — the no-flag default waits
     // only ~1 s, so contention is the common case and `--wait-lock` is the
     // genuine remedy. withFileLock appends the holder identification from
     // the lock's owner metadata. The leading sentence is a message contract
@@ -87,6 +96,43 @@ export async function withEngineSessionLock<T>(
     onStaleLockMessage: (ageMs) =>
       `Removed stale FireForge engine session lock (${Math.round(ageMs / 1000)}s old).`,
   });
+}
+
+/**
+ * Inspects the project's engine-session lock without acquiring it —
+ * backing `fireforge status --lock`.
+ *
+ * @param projectRoot - Project root containing `.fireforge/`
+ * @returns Holder identity, hold duration, and queue depth
+ */
+export async function readEngineSessionLockStatus(
+  projectRoot: string
+): Promise<LockStatusSnapshot> {
+  return readLockStatus(join(projectRoot, ENGINE_SESSION_LOCK_PATH));
+}
+
+/**
+ * Renders the engine-session lock snapshot as operator-facing lines.
+ * Pure, so the wording is unit-testable without a lock on disk.
+ */
+export function formatEngineSessionLockStatus(snapshot: LockStatusSnapshot): string[] {
+  if (!snapshot.held) {
+    return ['Engine session lock: free (no FireForge engine-mutating command is running).'];
+  }
+  const elapsed =
+    snapshot.heldForMs === undefined
+      ? 'unknown duration'
+      : `${String(Math.round(snapshot.heldForMs / 1000))}s`;
+  const holder = snapshot.holder;
+  const identity =
+    holder === undefined
+      ? 'held by an unidentified process (no readable owner record)'
+      : `held by PID ${String(holder.pid)}${holder.alive ? '' : ' (NOT RUNNING — stale lock)'}` +
+        (holder.metadata.length > 0 ? ` (${holder.metadata.join(', ')})` : '');
+  return [
+    `Engine session lock: ${identity}, for ${elapsed}.`,
+    `Queue depth: ${String(snapshot.queueDepth)} waiter(s).`,
+  ];
 }
 
 /** Prefix marking a generation token whose probe failed. */
@@ -101,13 +147,48 @@ const UNAVAILABLE_PREFIX = 'unavailable:';
  * because a probe failure means "nothing was measured", not "nothing changed".
  */
 export async function snapshotEngineGeneration(engineDir: string): Promise<string> {
-  try {
-    const head = (await git(['rev-parse', 'HEAD'], engineDir)).trim();
-    const status = await git(['status', '--porcelain=v1', '-z'], engineDir);
-    return `${head}\0${status}`;
-  } catch (error: unknown) {
-    return `${UNAVAILABLE_PREFIX}${toError(error).message}`;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < GENERATION_PROBE_ATTEMPTS; attempt += 1) {
+    try {
+      const head = (await git(['rev-parse', 'HEAD'], engineDir)).trim();
+      const status = await git(['status', '--porcelain=v1', '-z'], engineDir);
+      return `${head}\0${status}`;
+    } catch (error: unknown) {
+      lastError = error;
+      // A contended `.git/index.lock` is TRANSIENT, not a state: some
+      // other writer held the index for the instant we looked.
+      // Treating it as "unmeasurable" turns a perfectly good suite into
+      // `FAIL reason=inconclusive` on a one-sided probe failure, which is
+      // exactly the false alarm this guard must not raise. Anything else
+      // — an unreadable `.git`, a non-git `engine/` — is a real state and
+      // is reported immediately.
+      if (!isIndexLockError(error) || attempt === GENERATION_PROBE_ATTEMPTS - 1) break;
+      await delay(GENERATION_PROBE_RETRY_MS);
+    }
   }
+  return `${UNAVAILABLE_PREFIX}${toError(lastError).message}`;
+}
+
+/** Probe attempts before an engine generation is declared unmeasurable. */
+const GENERATION_PROBE_ATTEMPTS = 3;
+
+/** Pause between generation-probe attempts. */
+const GENERATION_PROBE_RETRY_MS = 250;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => {
+    setTimeout(resolveDelay, ms);
+  });
+}
+
+/**
+ * True when a git failure is the transient index-lock contention shape
+ * (`Unable to create '…/.git/index.lock': File exists`) rather than a
+ * durable problem with the checkout. Exported for direct unit testing.
+ */
+export function isIndexLockError(error: unknown): boolean {
+  const message = toError(error).message;
+  return /index\.lock/i.test(message);
 }
 
 /**

@@ -165,8 +165,7 @@ function renameMapsEqual(
 /**
  * Applies a rename map to a {@link PatchQueueContext} so cross-patch lint
  * can run against the projected state without touching disk. Exported for
- * `patch rename --order`, which projects the same single-row move shape
- * (FORGE J10).
+ * `patch rename --order`, which projects the same single-row move shape.
  */
 export function projectReorder(
   base: PatchQueueContext,

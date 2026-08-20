@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Spawned-CLI regression for the `status --json --fail-on` refusal path
- * (FORGE I1). Both halves of the defect are only visible across a real
+ *. Both halves of the defect are only visible across a real
  * process boundary with a real pipe:
  *
  * - a >64 KiB JSON payload written to a PIPED stdout was truncated at
@@ -38,7 +38,7 @@ const binEntry = join(repoRoot, 'bin', 'fireforge.ts');
 /** Enough unmanaged files that the JSON payload clears 64 KiB comfortably. */
 const UNMANAGED_FILE_COUNT = 600;
 
-describe('status --json --fail-on refusal through a real pipe (FORGE I1)', () => {
+describe('status --json --fail-on refusal through a real pipe', () => {
   let projectRoot: string;
 
   beforeEach(async () => {

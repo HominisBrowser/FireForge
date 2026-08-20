@@ -132,6 +132,9 @@ async function persistStockComponents(projectRoot: string, names: string[]): Pro
       config.stock.push(...toAdd);
       await writeFurnaceConfig(projectRoot, config);
     } catch (error: unknown) {
+      // This body owns its rollback end to end, so tell the lifecycle wrapper
+      // not to restore the same journal again on the way out.
+      ctx.markRolledBack();
       try {
         await restoreRollbackJournalOrThrow(journal, 'Failed to update furnace.json during scan');
       } catch (rollbackError) {

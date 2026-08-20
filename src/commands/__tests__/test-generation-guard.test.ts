@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Command-level tests for the engine-generation guard's verdict ordering
- * (FORGE I6): a run invalidated by a concurrent `engine/` mutation must
+ *: a run invalidated by a concurrent `engine/` mutation must
  * emit `FAIL reason=inconclusive` as its single verdict line — the sharded
  * aggregate `PASS shards=N/N` must never print first, and single runs must
  * not end verdict-less. Kept separate from `test.test.ts`, which
@@ -87,6 +87,7 @@ vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   info: vi.fn(),
   note: vi.fn(),
+  notice: vi.fn(),
   outro: vi.fn(),
   success: vi.fn(),
   verbose: vi.fn(),
@@ -165,7 +166,7 @@ function captureVerdictLines(): { verdicts: () => string[]; restore: () => void 
   };
 }
 
-describe('engine-generation guard verdict ordering (FORGE I6)', () => {
+describe('engine-generation guard verdict ordering', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertEngineGenerationUnchanged).mockResolvedValue();

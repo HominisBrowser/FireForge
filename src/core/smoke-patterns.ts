@@ -50,7 +50,7 @@ export function matchesSmokeError(line: string): boolean {
 
 /**
  * One compiled allowlist entry with its provenance retained so the smoke
- * summary can attribute hits per entry (FORGE G8) — an entry that silently
+ * summary can attribute hits per entry — an entry that silently
  * stops matching (its suppressed shape changed upstream) is only
  * detectable when zero-hit entries are visible.
  */

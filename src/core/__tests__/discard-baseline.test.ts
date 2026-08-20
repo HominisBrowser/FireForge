@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Unit coverage for the FORGE F1 discard planner: plan kinds, refusals,
+ * Unit coverage for the discard planner: plan kinds, refusals,
  * and the human-facing describe/summarize strings. The end-to-end restore
  * mechanics live in discard-patch-baseline.integration.test.ts.
  */

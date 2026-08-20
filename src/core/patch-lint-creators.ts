@@ -4,7 +4,7 @@
  * `patch-lint-cross.ts` (at the per-file line budget). Re-exported from
  * there so callers keep importing from `patch-lint.ts` unchanged.
  *
- * Memoised per context object (FORGE J1): ownership resolution and
+ * Memoised per context object: ownership resolution and
  * cache-key fingerprints call this 2-3× per linted patch, and each call
  * used to re-run `detectNewFilesInDiff` over EVERY queue entry's diff.
  * Keyed weakly so a discarded context frees its map; a caller that

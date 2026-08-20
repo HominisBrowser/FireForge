@@ -285,7 +285,7 @@ describe('importCommand drift handling', () => {
     );
   });
 
-  it('runs the components.conf staleness advisory after a successful import (FORGE F13)', async () => {
+  it('runs the components.conf staleness advisory after a successful import', async () => {
     vi.mocked(getHead).mockResolvedValue('base-commit');
 
     await importCommand('/fake/root');
@@ -294,7 +294,7 @@ describe('importCommand drift handling', () => {
     expect(warnIfStaticComponentsStale).toHaveBeenCalledWith('/fake/root', '/fake/engine');
   });
 
-  it('skips the staleness advisory on --dry-run (FORGE F13)', async () => {
+  it('skips the staleness advisory on --dry-run', async () => {
     vi.mocked(getHead).mockResolvedValue('base-commit');
 
     await importCommand('/fake/root', { dryRun: true });

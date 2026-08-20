@@ -8,31 +8,33 @@ HEAD (every applied patch summed). Use --per-patch for per-patch scope, or pass
 explicit file paths to narrow to those.
 
 Options:
-  --since <git-rev>     Tag issues as [introduced] or [cumulative] based on
-                        whether the file changed since <git-rev> (e.g. HEAD, a
-                        branch, a SHA)
-  --only-introduced     Fail only on issues tagged [introduced] (requires
-                        --since). Cumulative errors still print but do not set a
-                        non-zero exit.
-  --per-patch           Lint each patch in the queue as its own isolated diff.
-                        Rescopes patch-size rules so they fire against
-                        individual patches rather than the aggregate. Honours
-                        each patch's \`lintIgnore\` entries.
-  --patches <names...>  With --per-patch, lint only the named patches. Accepts
-                        repeated flags, comma lists, full filenames/stems,
-                        manifest names, category-prefixed slugs, or bare slugs.
-                        Positional arguments after --per-patch are treated the
-                        same way.
-  --max-warnings <n>    Fail when lint reports more than <n> warning(s); use 0
-                        for warning-clean release gates.
-  --no-cache            Bypass per-patch lint result cache reads and writes.
-  --report <path>       With --per-patch, write a machine-readable JSON report
-                        (per-patch size metrics, tier, thresholds, issues, and
-                        lintIgnore-suppressed issues) to <path>.
-  -h, --help            display help for command
+  --since <git-rev>      Tag issues as [introduced] or [cumulative] based on
+                         whether the file changed since <git-rev> (e.g. HEAD, a
+                         branch, a SHA)
+  --only-introduced      Fail only on issues tagged [introduced] (requires
+                         --since). Cumulative errors still print but do not set
+                         a non-zero exit.
+  --per-patch            Lint each patch in the queue as its own isolated diff.
+                         Rescopes patch-size rules so they fire against
+                         individual patches rather than the aggregate. Honours
+                         each patch's \`lintIgnore\` entries.
+  --patches <names...>   With --per-patch, lint only the named patches. Accepts
+                         repeated flags, comma lists, full filenames/stems,
+                         manifest names, category-prefixed slugs, or bare slugs.
+                         Positional arguments after --per-patch are treated the
+                         same way.
+  --max-warnings <n>     Fail when lint reports more than <n> warning(s); use 0
+                         for warning-clean release gates.
+  --no-cache             Bypass per-patch lint result cache reads and writes.
+  --report <path>        With --per-patch, write a machine-readable JSON report
+                         (per-patch size metrics, tier, thresholds, issues, and
+                         lintIgnore-suppressed issues) to <path>.
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 
 Commands:
-  cache                 Manage the per-patch lint result cache
+  cache [options]        Manage the per-patch lint result cache
 "
 `;
 
@@ -42,7 +44,9 @@ exports[`CLI help output > documents kebab-case setup flags and configurable cat
 Clear cached per-patch lint results
 
 Options:
-  -h, --help  display help for command
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 "
 `;
 
@@ -63,12 +67,12 @@ Options:
 
 Project:
   setup [options]                   Initialize a new FireForge project
-  source                            Manage Firefox source configuration
+  source [options]                  Manage Firefox source configuration
   config [options] <key> [value]    Get or set configuration values
 
 Engine:
   download [options]                Download Firefox source
-  bootstrap                         Install Firefox build dependencies
+  bootstrap [options]               Install Firefox build dependencies
 
 Workflow:
   import [options]                  Apply patches from the patches directory
@@ -96,16 +100,16 @@ Workflow:
                                     sourceVersion/sourceProduct by default — use
                                     --stamp or run rebase for source metadata
                                     stamping.
-  patch                             Manage individual patches in the queue
+  patch [options]                   Manage individual patches in the queue
                                     (compact, delete, lint-ignore, move-files,
                                     rename, reorder, staged-dependency, tier)
   rebase [options]                  Semi-automated Firefox source version
                                     upgrade — apply patches with drift tolerance
                                     and re-export
   package [options]                 Create distribution package
-  watch                             Watch for changes and auto-rebuild
+  watch [options]                   Watch for changes and auto-rebuild
   test [options] [paths...]         Run tests via mach test
-  tree                              Manage copy-on-write verification clones of
+  tree [options]                    Manage copy-on-write verification clones of
                                     this project for concurrent read-mostly work
                                     (lint, typecheck, status, verify,
                                     export/re-export --dry-run; build-less test
@@ -116,8 +120,8 @@ Workflow:
   wire [options] <name>             Wire a chrome subscript into the browser
 
 Components:
-  token                             Design token management
-  furnace                           Component management — create, override,
+  token [options]                   Design token management
+  furnace [options]                 Component management — create, override,
                                     apply, deploy, diff, validate, sync (run
                                     furnace --help for all subcommands)
 
@@ -131,7 +135,7 @@ Diagnostics:
   typecheck [options]               Run TypeScript type checking against
                                     project-owned jsconfig.json files (CI-grade,
                                     whole-project)
-  verify                            Read-only fsck for the patch queue (manifest
+  verify [options]                  Read-only fsck for the patch queue (manifest
                                     + cross-patch lint)
 
   help [command]                    display help for command
@@ -161,6 +165,8 @@ exports[`CLI help output > exposes stable help text for every furnace subcommand
 Scaffold top-level chrome documents (xhtml + js + css + ftl + jar.mn)
 
 Options:
+  --wait-lock [seconds]    Accepted for scripting uniformity and ignored: this
+                           command takes no FireForge lock
   -h, --help               display help for command
 
 Commands:
@@ -210,6 +216,8 @@ Options:
                             start with the configured \`componentPrefix\` in
                             furnace.json. Without this flag the command refuses
                             to write anything on a prefix mismatch.
+  --wait-lock [seconds]     Accepted for scripting uniformity and ignored: this
+                            command takes no FireForge lock
   -h, --help                display help for command
 "
 `;
@@ -238,7 +246,9 @@ Show changes vs baseline (overrides: vs Firefox original, custom: vs engine).
 Shows all components when name is omitted.
 
 Options:
-  -h, --help  display help for command
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 "
 `;
 
@@ -251,6 +261,8 @@ Options:
   -p, --prefix <prefix>   Component prefix (e.g. "moz-", "ff-")
   --ftl-base-path <path>  Fluent l10n base path
   --force                 Overwrite existing furnace.json
+  --wait-lock [seconds]   Accepted for scripting uniformity and ignored: this
+                          command takes no FireForge lock
   -h, --help              display help for command
 "
 `;
@@ -261,9 +273,11 @@ exports[`CLI help output > exposes stable help text for every furnace subcommand
 List all registered components
 
 Options:
-  -v, --verbose  Show per-component health indicators (clean/modified/not
-                 applied)
-  -h, --help     display help for command
+  -v, --verbose          Show per-component health indicators
+                         (clean/modified/not applied)
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 "
 `;
 
@@ -275,6 +289,8 @@ Fork one or more existing components for modification
 Options:
   -t, --type <type>         Override type (choices: "css-only", "full")
   -d, --description <desc>  Description
+  --wait-lock [seconds]     Accepted for scripting uniformity and ignored: this
+                            command takes no FireForge lock
   -h, --help                display help for command
 "
 `;
@@ -285,8 +301,10 @@ exports[`CLI help output > exposes stable help text for every furnace subcommand
 Start component preview (Storybook)
 
 Options:
-  --install   Force reinstall Storybook dependencies
-  -h, --help  display help for command
+  --install              Force reinstall Storybook dependencies
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 "
 `;
 
@@ -302,6 +320,8 @@ Options:
                              accept upstream) (choices: "ours", "theirs")
   --reset-base               Reset baseline to current engine HEAD (skips
                              three-way merge, recovers from missing baseCommit)
+  --wait-lock [seconds]      Accepted for scripting uniformity and ignored: this
+                             command takes no FireForge lock
   -h, --help                 display help for command
 "
 `;
@@ -312,8 +332,10 @@ exports[`CLI help output > exposes stable help text for every furnace subcommand
 Remove a component from the workspace
 
 Options:
-  -y, --yes   Skip confirmation
-  -h, --help  display help for command
+  -y, --yes              Skip confirmation
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 "
 `;
 
@@ -323,7 +345,9 @@ exports[`CLI help output > exposes stable help text for every furnace subcommand
 Rename a component (updates files, config, and registrations)
 
 Options:
-  -h, --help  display help for command
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 "
 `;
 
@@ -335,11 +359,13 @@ discovered inventory into the stock section of furnace.json with --track (or the
 interactive prompt); deploy/validate consume the inventory from there.
 
 Options:
-  --deep      Search additional Firefox directories beyond the default widgets
-              path
-  --track     Persist every discovered untracked component into the stock
-              section of furnace.json (non-interactive)
-  -h, --help  display help for command
+  --deep                 Search additional Firefox directories beyond the
+                         default widgets path
+  --track                Persist every discovered untracked component into the
+                         stock section of furnace.json (non-interactive)
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 "
 `;
 
@@ -349,7 +375,9 @@ exports[`CLI help output > exposes stable help text for every furnace subcommand
 Show component status and registration details
 
 Options:
-  -h, --help  display help for command
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 "
 `;
 
@@ -378,9 +406,11 @@ exports[`CLI help output > exposes stable help text for every furnace subcommand
 Run accessibility and compatibility checks
 
 Options:
-  --fix       Auto-fix registration issues (missing jar.mn entries,
-              customElements.js)
-  -h, --help  display help for command
+  --fix                  Auto-fix registration issues (missing jar.mn entries,
+                         customElements.js)
+  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
+                         command takes no FireForge lock
+  -h, --help             display help for command
 "
 `;
 
@@ -438,6 +468,8 @@ Options:
   -y, --yes                Record scripted consent in the destructive-operation
                            history log. This command never prompts; the flag
                            exists for workflow uniformity with commands that do.
+  --wait-lock [seconds]    Accepted for scripting uniformity and ignored: this
+                           command takes no FireForge lock
   -h, --help               display help for command
 "
 `;

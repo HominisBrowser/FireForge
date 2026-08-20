@@ -141,6 +141,9 @@ async function performChromeDocRemoveMutations(args: {
       journal
     );
   } catch (error: unknown) {
+    // This body owns its rollback end to end, so tell the lifecycle wrapper
+    // not to restore the same journal again on the way out.
+    args.operationContext.markRolledBack();
     try {
       await restoreRollbackJournalOrThrow(journal, `Failed to remove chrome-doc "${args.name}"`);
     } catch (rollbackError) {

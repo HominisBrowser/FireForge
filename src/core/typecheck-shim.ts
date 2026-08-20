@@ -138,7 +138,7 @@ declare module 'chrome:*';
  * Loose declarations for Firefox test-harness globals (mochitest
  * browser-chrome and xpcshell), appended AFTER the composed
  * Firefox-globals + consumer shim when `patchLint.checkJsTestFiles`
- * extends the checkJs pass to patch-adopted test scripts (FORGE G5).
+ * extends the checkJs pass to patch-adopted test scripts.
  * Deliberately `any`-typed — the pragmatic posture matches the main
  * shim. A consumer that wants TYPED harness members (so e.g. a call to
  * a method the harness does not declare fails at the patch boundary)
@@ -196,7 +196,7 @@ export const SUPPRESSED_DIAGNOSTIC_CODES: ReadonlySet<number> = new Set([
 
 /**
  * Undefined-free-identifier codes, split out of
- * {@link SUPPRESSED_DIAGNOSTIC_CODES} (FORGE F12). Unconditional
+ * {@link SUPPRESSED_DIAGNOSTIC_CODES}. Unconditional
  * suppression let a module reference a name with no import or declaration
  * anywhere and still typecheck with 0 errors — the failure then surfaced
  * as a runtime `ReferenceError`. Both flows now report these at a

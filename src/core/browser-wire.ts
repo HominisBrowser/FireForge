@@ -6,7 +6,12 @@ import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { toRootRelativePath } from '../utils/paths.js';
 import { getProjectPaths, loadConfig } from './config.js';
-import { createRollbackJournal, restoreRollbackJournal, snapshotFile } from './furnace-rollback.js';
+import {
+  assertSnapshotted,
+  createRollbackJournal,
+  restoreRollbackJournal,
+  snapshotFile,
+} from './furnace-rollback.js';
 import type { RegisterResult } from './manifest-register.js';
 import { registerBrowserContent } from './manifest-register.js';
 import { DEFAULT_DOM_TARGET } from './wire-dom-fragment.js';
@@ -147,17 +152,36 @@ export async function wireSubscript(
 
   try {
     // 1. Add subscript to browser-main.js
+    assertSnapshotted(
+      journal,
+      join(engineDir, 'browser/base/content/browser-main.js'),
+      'browser wire'
+    );
     const subscriptAdded = await addSubscriptToBrowserMain(engineDir, name, marker);
 
     // 2. Add init expression to browser-init.js (if provided)
     let initAdded = false;
     if (options.init) {
+      // The snapshot above is taken when init or destroy is `!== undefined`
+      // while these writes fire on truthiness — close, but two separate
+      // conditions over the same file, which is exactly the pairing that
+      // drifts when a third writer is added later.
+      assertSnapshotted(
+        journal,
+        join(engineDir, 'browser/base/content/browser-init.js'),
+        'browser wire init'
+      );
       initAdded = await addInitToBrowserInit(engineDir, options.init, options.after, marker);
     }
 
     // 3. Add destroy expression to browser-init.js onUnload() (if provided)
     let destroyAdded = false;
     if (options.destroy) {
+      assertSnapshotted(
+        journal,
+        join(engineDir, 'browser/base/content/browser-init.js'),
+        'browser wire destroy'
+      );
       destroyAdded = await addDestroyToBrowserInit(engineDir, options.destroy, marker);
     }
 
@@ -172,6 +196,7 @@ export async function wireSubscript(
     }
 
     // 5. Register in jar.mn
+    assertSnapshotted(journal, join(engineDir, 'browser/base/jar.mn'), 'browser wire jar.mn');
     const jarMnResult = await registerBrowserContent(
       engineDir,
       `${name}.js`,

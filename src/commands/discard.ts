@@ -51,7 +51,7 @@ async function confirmDiscard(
 
 /**
  * Plans the restore baseline for `entries`: the patch-applied baseline for
- * patch-claimed paths (FORGE F1), or pristine HEAD when `--to-upstream`
+ * patch-claimed paths, or pristine HEAD when `--to-upstream`
  * explicitly requests the legacy semantics.
  */
 async function planDiscards(

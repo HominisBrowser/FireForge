@@ -98,7 +98,7 @@ describe('concurrent furnace mutations', () => {
     expect(error.status).toBe('rejected');
     if (error.status === 'rejected') {
       // The caller's copy leads; withFileLock appends the holder
-      // identification from the lock's owner metadata (FORGE H5).
+      // identification from the lock's owner metadata.
       expect((error.reason as Error).message).toMatch(
         /^Another furnace operation is running( The lock is held by PID \d+.*)?$/
       );

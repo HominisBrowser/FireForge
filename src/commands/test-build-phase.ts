@@ -2,7 +2,7 @@
 /**
  * Pre-test build phase for `fireforge test`, split out of `test.ts` (at
  * the per-file line budget): the incremental protected mach build with
- * its baseline write, and the FORGE J9 `--build-only` union-build shape.
+ * its baseline write, and the `--build-only` union-build shape.
  */
 
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
@@ -21,7 +21,7 @@ import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { info, spinner, verbose } from '../utils/logger.js';
+import { info, notice, spinner, verbose } from '../utils/logger.js';
 import type { HarnessClassification } from './test-modes.js';
 import { reportBuildOnlyCompletion } from './test-modes.js';
 import { enforceStaleBuildGate, enforceStaticComponentsGate } from './test-stale-gate.js';
@@ -47,7 +47,7 @@ async function runPreTestBuild(
       previousBaseline,
     });
 
-    // The mozconfig half of the --extend-coverage anchor (FORGE L1) can
+    // The mozconfig half of the --extend-coverage anchor can
     // only be checked once prepareBuildEnvironment has regenerated
     // engine/mozconfig — that is the file this build will configure with —
     // and must still be checked before mach, so a refusal costs no build.
@@ -60,7 +60,10 @@ async function runPreTestBuild(
 
     const buildKind = preparation.fullBuildRequired ? 'full' : 'faster';
     if (preparation.fullBuildRequired) {
-      info(
+      // Warning severity, not info: agent-facing output filters
+      // keep warnings and errors only, and this is the line that explains an
+      // otherwise unexplained multi-minute build.
+      notice(
         'A jar.mn registration changed since the last successful build; escalating this pre-test build to a full mach build so new install-manifest destinations are created.'
       );
     }
@@ -169,7 +172,7 @@ function describeBuildInvocation(extending: boolean, coverage: TestPackagingCove
 /**
  * Runs the pre-test build (or the stale-build gate when no build was
  * requested). Returns `true` when the run is COMPLETE — the `--build-only`
- * union-build shape (FORGE J9), which packages every requested path
+ * union-build shape, which packages every requested path
  * (mixed harnesses legal, nothing dispatches), prints the per-harness
  * next steps, and emits the run's single `PASS` verdict.
  */
@@ -215,7 +218,7 @@ export async function runTestBuildPhase(
     );
     info('');
     if (options.buildOnly) {
-      // Union build for mixed harnesses (FORGE J9): the coverage claim
+      // Union build for mixed harnesses: the coverage claim
       // above lists every requested path, so each harness half can run
       // build-less against this packaging. Nothing dispatches here; the
       // run still ends with exactly one verdict line.

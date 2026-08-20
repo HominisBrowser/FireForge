@@ -16,6 +16,7 @@ vi.mock('../../utils/logger.js', async (importOriginal) => ({
 import { info, warn } from '../../utils/logger.js';
 import {
   assertEngineGenerationUnchanged,
+  isIndexLockError,
   isUnavailableGenerationToken,
   snapshotEngineGeneration,
   unavailableGenerationReason,
@@ -122,13 +123,15 @@ describe('withEngineSessionLock', () => {
       const lines = vi.mocked(info).mock.calls.map(([message]) => message);
       const waitLinePattern = new RegExp(
         `^Waiting for the FireForge engine lock held by PID ${String(process.pid)} ` +
-          `\\(command=build, started=\\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z\\) — \\d+s of up to 12s\\.$`
+          `\\(command=build, started=\\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z\\) — \\d+s of up to 12s\\.` +
+          // The line also states this waiter's queue position.
+          ` You are next in a queue of 1\\.$`
       );
       expect(lines.some((line) => waitLinePattern.test(line))).toBe(true);
     }
   );
 
-  it('fails with the reason-first, remedy-second refusal once the --wait-lock budget expires (FORGE H5)', async () => {
+  it('fails with the reason-first, remedy-second refusal once the --wait-lock budget expires', async () => {
     const release = deferred();
     const first = withEngineSessionLock(projectRoot, 'build', () => release.promise);
     await waitForPath(join(projectRoot, '.fireforge', 'engine-session.lock', 'pid'));
@@ -145,7 +148,7 @@ describe('withEngineSessionLock', () => {
     await expect(first).resolves.toBeUndefined();
 
     // Typed as a FireForgeError so the CLI boundary prints ONE line, no
-    // stack — the raw five-frame trace was the FORGE H5 field report.
+    // stack — the raw five-frame trace was the field report.
     expect(rejection).toBeInstanceOf(LockContentionError);
     expect(rejection).toBeInstanceOf(FireForgeError);
     const message = (rejection as Error).message;
@@ -256,6 +259,26 @@ describe('engine generation guard', () => {
     await expect(
       assertEngineGenerationUnchanged(dir, 'unavailable:no baseline was captured')
     ).rejects.toThrow(/no baseline to compare against/);
+  });
+});
+
+describe('transient index-lock probe failures', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'ff-engine-lockprobe-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('classifies index-lock contention as transient and everything else as durable', () => {
+    expect(
+      isIndexLockError(new Error("Unable to create '/x/engine/.git/index.lock': File exists."))
+    ).toBe(true);
+    expect(isIndexLockError(new Error('not a git repository'))).toBe(false);
+    expect(isIndexLockError(new Error('fatal: bad object HEAD'))).toBe(false);
   });
 });
 

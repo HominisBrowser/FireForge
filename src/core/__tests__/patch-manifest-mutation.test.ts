@@ -18,6 +18,7 @@ import { withPatchDirectoryLock } from '../patch-lock.js';
 import {
   addPatchToManifest,
   loadPatchesManifest,
+  type PatchRenameEntry,
   removePatchFileAndManifest,
   removePatchFromManifest,
   renumberPatchesInManifest,
@@ -25,6 +26,19 @@ import {
   savePatchesManifest,
 } from '../patch-manifest-io.js';
 import { stampPatchVersions } from '../patch-manifest-query.js';
+
+/**
+ * The manifest mutators assert that the patch-directory lock is held, which
+ * every production caller does via `withPatchDirectoryLock`. These wrappers
+ * let the tests exercise the same contract instead of calling in unlocked.
+ */
+function renumberUnderLock(dir: string, renameMap: Map<string, PatchRenameEntry>): Promise<void> {
+  return withPatchDirectoryLock(dir, () => renumberPatchesInManifest(dir, renameMap));
+}
+
+function removeUnderLock(dir: string, filename: string): Promise<void> {
+  return withPatchDirectoryLock(dir, () => removePatchFileAndManifest(dir, filename));
+}
 
 interface PatchSetup {
   filename: string;
@@ -159,7 +173,7 @@ describe('renumberPatchesInManifest', () => {
       { filename: '002-infra-b.patch', order: 2, body: 'b' },
     ]);
 
-    await renumberPatchesInManifest(
+    await renumberUnderLock(
       patchesDir,
       new Map([
         ['001-infra-a.patch', { newFilename: '002-infra-a.patch', newOrder: 2 }],
@@ -192,7 +206,7 @@ describe('renumberPatchesInManifest', () => {
       { filename: '005-infra-e.patch', order: 5, body: 'E' },
     ]);
 
-    await renumberPatchesInManifest(
+    await renumberUnderLock(
       patchesDir,
       new Map([
         ['003-infra-c.patch', { newFilename: '005-infra-c.patch', newOrder: 5 }],
@@ -212,7 +226,7 @@ describe('renumberPatchesInManifest', () => {
 
   it('no-op when rename map is empty', async () => {
     await seed(patchesDir, [{ filename: '001-infra-a.patch', order: 1, body: 'a' }]);
-    await renumberPatchesInManifest(patchesDir, new Map());
+    await renumberUnderLock(patchesDir, new Map());
     const manifest = await loadPatchesManifest(patchesDir);
     expect(manifest?.patches).toHaveLength(1);
   });
@@ -240,7 +254,7 @@ describe('renumberPatchesInManifest', () => {
     };
     await savePatchesManifest(patchesDir, manifest);
 
-    await renumberPatchesInManifest(
+    await renumberUnderLock(
       patchesDir,
       new Map([['003-infra-c.patch', { newFilename: '002-infra-c.patch', newOrder: 2 }]])
     );
@@ -274,7 +288,7 @@ describe('renumberPatchesInManifest', () => {
     await writeFile(join(patchesDir, '006-infra-b.patch'), 'PLANTED');
 
     await expect(
-      renumberPatchesInManifest(
+      renumberUnderLock(
         patchesDir,
         new Map([
           ['003-infra-a.patch', { newFilename: '005-infra-a.patch', newOrder: 5 }],
@@ -327,7 +341,7 @@ describe('removePatchFileAndManifest', () => {
       { filename: '001-infra-a.patch', order: 1, body: 'a' },
       { filename: '002-infra-b.patch', order: 2, body: 'b' },
     ]);
-    await removePatchFileAndManifest(patchesDir, '001-infra-a.patch');
+    await removeUnderLock(patchesDir, '001-infra-a.patch');
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch'));
     expect(entries).toEqual(['002-infra-b.patch']);
     const manifest = await loadPatchesManifest(patchesDir);

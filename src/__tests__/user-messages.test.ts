@@ -7,6 +7,7 @@ import { BrandingError } from '../core/branding.js';
 import {
   CancellationError,
   GeneralError,
+  InternalInvariantError,
   InvalidArgumentError,
   ResolutionError,
 } from '../errors/base.js';
@@ -52,6 +53,12 @@ describe('userMessage snapshots', () => {
   // -- Base errors --
   it('GeneralError', () => {
     expect(new GeneralError('unexpected failure').userMessage).toMatchSnapshot();
+  });
+
+  it('InternalInvariantError', () => {
+    expect(
+      new InternalInvariantError('rollback journal registered before first mutation').userMessage
+    ).toMatchSnapshot();
   });
 
   it('InvalidArgumentError with argument', () => {

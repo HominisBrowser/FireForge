@@ -391,7 +391,7 @@ function reportSmokeSummary(args: {
   info(`  Allowlisted lines total: ${String(args.allowlistedTotalHits)}`);
   info(`  Child exit code:  ${String(args.exitCode)}`);
 
-  // Per-entry attribution (FORGE G8): first-match credit per line, with
+  // Per-entry attribution: first-match credit per line, with
   // zero-hit entries always visible — an allowlist entry whose suppressed
   // shape changed upstream is only detectable as a 0× row.
   if (args.allowlist.length > 0) {

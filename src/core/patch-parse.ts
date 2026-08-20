@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { assert } from '../utils/assert.js';
 /**
  * Pure parsing functions for extracting information from patch files.
  * All functions are synchronous and operate on string content.
@@ -25,6 +26,32 @@ export function extractOrder(filename: string): number {
     return parseInt(match[1], 10);
   }
   return Infinity;
+}
+
+/**
+ * Extracts the order number from a patch filename that is about to be
+ * written into the manifest.
+ *
+ * The write-side counterpart to {@link extractOrder}. That one answers
+ * `Infinity` for a prefix-less filename, which sorts such a patch last and
+ * is the right answer for a read: an unparseable name should not crash a
+ * status listing. Persisting `Infinity` (or the `0` some call sites used to
+ * fall back to) is a different matter — it puts an order in the manifest
+ * that no filename on disk agrees with, and the queue then applies in an
+ * order the operator cannot see. Callers here have always just built or
+ * looked up a real prefixed filename, so absence is a bug, not input.
+ *
+ * @param filename - Patch filename carrying a numeric order prefix
+ * @returns The parsed order
+ * @throws {@link InternalInvariantError} when `filename` has no numeric prefix.
+ */
+export function requirePatchOrder(filename: string): number {
+  const match = /^(\d+)-/.exec(filename);
+  assert(
+    match?.[1] !== undefined,
+    () => `patch filename carries a numeric order prefix (got "${filename}")`
+  );
+  return parseInt(match[1], 10);
 }
 
 /**
@@ -226,7 +253,7 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
       // `git diff --binary` always records full blob hashes here (git
       // apply requires them); text sections carry abbreviated ones. The
       // hashes let binary sections be compared by identity when their
-      // payload cannot be applied as text (FORGE J3).
+      // payload cannot be applied as text.
       const indexMatch = /^index ([0-9a-f]{7,64})\.\.([0-9a-f]{7,64})(?: \d{6})?$/.exec(line);
       if (indexMatch?.[1] !== undefined && indexMatch[2] !== undefined) {
         current.indexOldHash = indexMatch[1];

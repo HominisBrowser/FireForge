@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Spawned-CLI pin for the FORGE L2 contract: the consumer's composed gate
+ * Spawned-CLI pin for the contract: the consumer's composed gate
  * keys its steps on the `FIREFORGE-VERDICT:` line of a build-less in-tree
  * run reached through `tree exec <name> -- test …`. Two subsystems that
  * were only ever tested in isolation meet here:
@@ -81,7 +81,7 @@ function lastNonEmptyLine(stdout: string): string {
   return lines.at(-1) ?? '';
 }
 
-describe('FIREFORGE-VERDICT through tree exec (FORGE L2)', () => {
+describe('FIREFORGE-VERDICT through tree exec', () => {
   let projectRoot: string;
 
   /**

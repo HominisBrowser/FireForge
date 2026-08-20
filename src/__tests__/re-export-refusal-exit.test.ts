@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Spawned-CLI pin for the FORGE L7 report: a `re-export` in which every
+ * Spawned-CLI pin for the report: a `re-export` in which every
  * selected patch is refused under `--refuse-foreign-drift` printed
  * "Re-export refused" at the consumer yet their gate observed exit 0.
  * Reproduction against the consumer's exact build identity
@@ -59,7 +59,7 @@ function runFireforge(cwd: string, args: string[]): Promise<CliResult> {
   });
 }
 
-describe('re-export full-refusal exit code across the process boundary (FORGE L7)', () => {
+describe('re-export full-refusal exit code across the process boundary', () => {
   let projectRoot: string;
 
   beforeEach(async () => {

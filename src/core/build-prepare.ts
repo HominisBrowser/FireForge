@@ -6,14 +6,19 @@
 
 import { constants as osConstants } from 'node:os';
 
+import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import { FurnaceError } from '../errors/furnace.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info, spinner, verbose, warn } from '../utils/logger.js';
+import { info, notice, spinner, verbose, warn } from '../utils/logger.js';
 import { isBrandingSetup, setupBranding } from './branding.js';
 import type { BuildBaseline } from './build-baseline-types.js';
+import {
+  findUnexportedDriftAtRisk,
+  formatUnexportedDriftWarning,
+} from './build-overwrite-guard.js';
 import { collectChangedEnginePaths } from './engine-changes.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from './furnace-apply.js';
 import {
@@ -50,6 +55,11 @@ export interface PrepareBuildOptions {
    * means.
    */
   previousBaseline?: BuildBaseline | undefined;
+  /**
+   * Turn the unexported-drift warning into a hard refusal.
+   * Scripted gates want the stop; an interactive build wants the warning.
+   */
+  refuseUnexportedDrift?: boolean | undefined;
 }
 
 /** Path fragments of files whose edits invalidate the recursive-make backend. */
@@ -79,7 +89,7 @@ function extractMachConfigureError(result: MachCommandResult): string {
  * configure/build logs with a signal-shaped exit (e.g. 144 = 128+16, SIGURG
  * on macOS) are environmental interruptions, not compiler failures — naming
  * that in the failure text saves the operator a fruitless log hunt
- * (FORGE F16). Returns undefined for codes <= 128 (regular failures) and
+ *. Returns undefined for codes <= 128 (regular failures) and
  * for codes past the conventional signal range, so callers append nothing.
  */
 export function describeSignalShapedExit(exitCode: number): string | undefined {
@@ -130,15 +140,47 @@ export function isBackendInvalidatingFile(path: string): boolean {
 }
 
 /**
+ * Loud before the overwrite, not silent after it.
+ *
+ * Every write `prepareBuildEnvironment` performs — branding, Furnace
+ * components, `mozconfig` — rewrites engine files from a FireForge-owned
+ * source. Content recorded in neither a patch body nor the pristine
+ * baseline is destroyed by that, and on a multi-session checkout the
+ * destruction is what lets a later re-export capture a half-reverted
+ * hybrid that every gate then passes.
+ *
+ * @param projectRoot - Project root
+ * @param config - Loaded FireForge config
+ * @param options - Build-prepare options (reads `refuseUnexportedDrift`)
+ * @throws GeneralError under `--refuse-unexported-drift`
+ */
+async function reportUnexportedDriftBeforeOverwrite(
+  projectRoot: string,
+  config: FireForgeConfig,
+  options: PrepareBuildOptions
+): Promise<void> {
+  const atRisk = await findUnexportedDriftAtRisk(projectRoot, config);
+  if (atRisk.length === 0) return;
+  const message = formatUnexportedDriftWarning(atRisk);
+  if (options.refuseUnexportedDrift === true) {
+    throw new GeneralError(message);
+  }
+  notice(message);
+}
+
+/**
  * Runs the shared pre-flight steps for build and package commands:
- * 1. Cleans Furnace stories from engine (prevents leaking into production)
- * 2. Sets up branding directory if not already done
- * 3. Applies Furnace components if furnace.json exists
- * 4. Generates mozconfig
+ * 1. Warns (or refuses) about unexported engine drift the writes below
+ * would destroy
+ * 2. Cleans Furnace stories from engine (prevents leaking into production)
+ * 3. Sets up branding directory if not already done
+ * 4. Applies Furnace components if furnace.json exists
+ * 5. Generates mozconfig
  *
  * @param projectRoot - Root directory of the project
  * @param paths - Resolved project paths
  * @param config - Loaded FireForge configuration
+ * @param options - Baseline and drift-refusal options
  * @returns Preparation results
  */
 export async function prepareBuildEnvironment(
@@ -161,6 +203,8 @@ export async function prepareBuildEnvironment(
     }
   }
 
+  await reportUnexportedDriftBeforeOverwrite(projectRoot, config, options);
+
   // Auto-configure: if any backend-invalidating file (moz.build, moz.configure,
   // Makefile.in) changed since the last successful build, run `mach configure`
   // before the build step. Prevents incremental builds from silently skipping
@@ -176,10 +220,12 @@ export async function prepareBuildEnvironment(
     const invalidating = changed.filter(isBackendInvalidatingFile);
     fullBuildRequired = changed.some(requiresFullBuildForIncrementalTest);
     if (invalidating.length > 0) {
-      info(
-        `Backend config changed; running backend regeneration first (${invalidating.length} file${invalidating.length === 1 ? '' : 's'} touched).`
+      // Warning severity: this is the "why is this run slow" explanation,
+      // and an info-level line does not survive an agent output filter that
+      // keeps only warnings and errors.
+      notice(
+        `Backend config changed; running backend regeneration first (${invalidating.length} file${invalidating.length === 1 ? '' : 's'} touched). Backend command: mach configure.`
       );
-      info(`Backend command: mach configure`);
       const configureSpinner = spinner('Running mach configure...');
       try {
         const captured = await runMachCapture(['configure'], paths.engine);
@@ -292,7 +338,7 @@ export async function prepareBuildEnvironment(
         // Loud banner: the build operator needs to see that engine/ was
         // updated before this build, otherwise a silent re-apply is
         // indistinguishable from a build that shipped stale components.
-        info(
+        notice(
           `Furnace: source → engine sync wrote ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'} before build (${appliedNames}). engine/ now matches components/.`
         );
       } else {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Machine-output stream routing through error propagation (FORGE I1).
+ * Machine-output stream routing through error propagation.
  *
  * `status --json --fail-on` (and every other machine-mode command) promises
  * that stdout belongs exclusively to the machine payload and diagnostics
@@ -29,7 +29,7 @@ vi.mock('../core/tree-store.js', () => ({
   listTrees: vi.fn(() => Promise.resolve([])),
 }));
 
-describe('machine-output error routing (FORGE I1)', () => {
+describe('machine-output error routing', () => {
   afterEach(() => {
     setMachineOutputMode(false);
     setStdoutSealed(false);
@@ -70,7 +70,7 @@ describe('machine-output error routing (FORGE I1)', () => {
     expect(isMachineOutputMode()).toBe(false);
   });
 
-  describe('verdict-line stdout seal (FORGE I12)', () => {
+  describe('verdict-line stdout seal', () => {
     it('an error thrown after the verdict line routes to stderr; the verdict stays the last stdout write', async () => {
       const stdoutWrite = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
       const stderrWrite = vi.spyOn(process.stderr, 'write').mockReturnValue(true);

@@ -97,7 +97,7 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
  *   static-components anchor whenever the coverage claim is `'full'` or
  *   absent. `'refresh'` records it even for a scoped coverage claim whose
  *   implementation escalated to a full build. `'carry-forward'` always keeps the previous anchor: needed by
- *   `--extend-coverage` (FORGE L1), whose union can EVALUATE to `'full'`
+ * `--extend-coverage`, whose union can EVALUATE to `'full'`
  *   while the build that produced it was still a scoped `mach build
  *   faster` that did not rebake the compiled table.
  */

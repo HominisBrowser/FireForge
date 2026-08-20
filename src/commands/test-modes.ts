@@ -143,13 +143,13 @@ function buildMixedHarnessMessage(classification: HarnessClassification): string
  * Harness classification is a pure path→manifest lookup and must precede
  * the build dispatch: a mixed xpcshell+mochitest request can never
  * dispatch, so refusing it before spending minutes in a pre-test build
- * is strictly better (FORGE F7). A nonexistent path classifies as
+ * is strictly better. A nonexistent path classifies as
  * nonXpcshell (findNearestXpcshellManifest returns null), so classifying
  * before assertTestPathsExist is harmless — existence is still asserted
  * after the stale/coverage gates, preserving their precedence over
  * missing-path errors. `xpcshellOnly` (non-empty request, zero
  * nonXpcshell paths) gates the Marionette preflight and the mochitest
- * client flags (FORGE F10); pathless runs keep the full-suite behavior.
+ * client flags; pathless runs keep the full-suite behavior.
  */
 export async function classifyBeforeDispatch(
   engineDir: string,
@@ -159,7 +159,7 @@ export async function classifyBeforeDispatch(
   const classification = await classifyTestHarnesses(engineDir, normalizedPaths);
   if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {
     // `--build-only` never dispatches, so a mixed request is legal there —
-    // packaging the union is the whole point (FORGE J9).
+    // packaging the union is the whole point.
     if (options?.allowMixed !== true) {
       throw new GeneralError(buildMixedHarnessMessage(classification));
     }

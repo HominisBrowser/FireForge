@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Build identity for `--version` (FORGE K2/K3/L8). Three distinct builds
+ * Build identity for `--version`. Three distinct builds
  * shipped as plain "0.41.0" — consumers had to fingerprint tarballs by
  * sha256 to know which build a claim was verified against. `--version`
  * now reports `<semver>+g<short-sha>[.dirty[.<content-hash>]]`:
@@ -29,7 +29,7 @@ export interface BuildIdentity {
   dirty: boolean;
   /**
    * Content hash of the uncommitted diff, present only for a DIRTY
-   * installed build (FORGE L8). Two packs from the same HEAD with
+   * installed build. Two packs from the same HEAD with
    * different uncommitted content share `shortCommit` and the `.dirty`
    * marker, so without this they report byte-identical `--version`
    * strings — which is what made a field report against

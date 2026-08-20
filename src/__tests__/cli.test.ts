@@ -16,7 +16,7 @@ vi.mock('node:path', async (importOriginal) => {
 });
 
 // Deterministic build identity: the real reader consults live git, whose
-// clean/dirty state varies by checkout (FORGE K2).
+// clean/dirty state varies by checkout.
 vi.mock('../utils/build-info.js', () => ({
   getCliVersion: vi.fn(() => '0.41.0+gtestsha12345.dirty'),
 }));

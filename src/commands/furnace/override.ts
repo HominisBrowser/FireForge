@@ -235,6 +235,9 @@ async function performOverrideMutations(args: {
 
         return filesCopied;
       } catch (error: unknown) {
+        // This body owns its rollback end to end, so tell the lifecycle
+        // wrapper not to restore the same journal again on the way out.
+        ctx.markRolledBack();
         try {
           await restoreRollbackJournalOrThrow(
             journal,

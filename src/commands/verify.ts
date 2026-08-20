@@ -22,7 +22,12 @@ import { Command } from 'commander';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { isGitRepository } from '../core/git.js';
+import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
+import {
+  findUnresolvedSystemModuleImports,
+  formatUnresolvedSystemModuleImports,
+} from '../core/module-resolution-preflight.js';
 import {
   buildPatchQueueContext,
   formatPatchLintIssue,
@@ -235,6 +240,28 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
       warningCount += policyWarnings;
     }
 
+    // Engine-aware module-resolution preflight. The queue-level
+    // `unregistered-system-module` rule only sees modules a patch NEWLY
+    // CREATES; this asks the same question of the engine, so an import
+    // ADDED to an existing module — the shape that recurred and cost a
+    // rebuild cycle — is named as text instead of surfacing later as a
+    // bare `xpcshell return code: -11` with zero output.
+    if (await pathExists(paths.engine)) {
+      const unresolved = await findUnresolvedSystemModuleImports(
+        paths.engine,
+        manifest.patches.flatMap((patch) => patch.filesAffected)
+      );
+      if (unresolved.length > 0) {
+        groups.push({
+          title: `Unresolvable system-module imports (${unresolved.length})`,
+          issues: formatUnresolvedSystemModuleImports(unresolved),
+          errorCount: unresolved.length,
+          warningCount: 0,
+        });
+        errorCount += unresolved.length;
+      }
+    }
+
     const crossClaims = detectCrossPatchFileClaims(manifest.patches);
     if (crossClaims.length > 0) {
       groups.push({
@@ -337,7 +364,14 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
 export async function verifyCommand(projectRoot: string): Promise<void> {
   intro('FireForge Verify');
 
-  const health = await collectPatchQueueHealth(projectRoot);
+  // `verify` is read-only to the OPERATOR but not to git: the working-tree
+  // status probe refreshes (and rewrites) `engine/.git/index`, making this
+  // command a second writer of the primary checkout and invalidating a
+  // concurrent `fireforge test`'s engine fingerprint. A private index keeps
+  // every refresh off the primary checkout.
+  const health = await withPrivateGitIndex(getProjectPaths(projectRoot).engine, () =>
+    collectPatchQueueHealth(projectRoot)
+  );
   if (!health.hasPatchesDirectory) {
     info('No patches directory. Nothing to verify.');
     outro('Verify clean');

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Per-patch lint check for moz.build sorted-list violations (FORGE F2).
+ * Per-patch lint check for moz.build sorted-list violations.
  *
  * mozbuild enforces alphabetical ordering on `StrictOrderingOnAppendList`
  * variables and raises `mozbuild.util.UnsortedError: … expected "X" but got

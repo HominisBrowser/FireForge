@@ -103,7 +103,7 @@ describe('file-lock', () => {
     ).rejects.toThrow('lock still held');
   });
 
-  it('rejects a timeout with LockContentionError so the CLI renders one line, not a stack (FORGE H5)', async () => {
+  it('rejects a timeout with LockContentionError so the CLI renders one line, not a stack', async () => {
     const tempDir = await makeTempDir('fireforge-typed-timeout-');
     const lockPath = join(tempDir, 'state.json.fireforge.lock');
     await mkdir(lockPath);

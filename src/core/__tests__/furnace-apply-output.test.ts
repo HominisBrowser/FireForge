@@ -144,7 +144,7 @@ describe('logApplyResult — component errors', () => {
   });
 });
 
-describe('logApplyResult — patch-owned overwrite warnings (FORGE J6)', () => {
+describe('logApplyResult — patch-owned overwrite warnings', () => {
   it('warns each recorded overwrite line on a non-dry-run apply', () => {
     const result: ApplyResult = {
       applied: [{ name: 'moz-card', type: 'override', filesAffected: ['moz-card.css'] }],

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Shape validation for `patch staged-dependency --add` (FORGE K10).
+ * Shape validation for `patch staged-dependency --add`.
  *
  * `--creates`/`--file` take engine-relative FILE paths and `--owner`
  * takes a patch FILENAME, but all three were accepted as arbitrary

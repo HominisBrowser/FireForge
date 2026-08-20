@@ -847,13 +847,13 @@ describe('statusCommand', () => {
   describe('flag validation', () => {
     it('throws when both --raw and --unmanaged are provided', async () => {
       await expect(statusCommand(projectRoot, { raw: true, unmanaged: true })).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together'
+        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
       );
     });
 
     it('throws when --raw and --ownership are combined', async () => {
       await expect(statusCommand(projectRoot, { raw: true, ownership: true })).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together'
+        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
       );
     });
 
@@ -861,12 +861,12 @@ describe('statusCommand', () => {
       await expect(
         statusCommand(projectRoot, { unmanaged: true, ownership: true })
       ).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together'
+        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
       );
     });
   });
 
-  describe('--test-coverage mode (FORGE F11)', () => {
+  describe('--test-coverage mode', () => {
     it('reports when no baseline is recorded, without touching the engine', async () => {
       vi.mocked(readBuildBaseline).mockResolvedValue(undefined);
       vi.mocked(pathExists).mockResolvedValue(false);
@@ -931,7 +931,7 @@ describe('statusCommand', () => {
 
     it('is mutually exclusive with --json', async () => {
       await expect(statusCommand(projectRoot, { testCoverage: true, json: true })).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together'
+        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
       );
     });
   });
@@ -1472,7 +1472,7 @@ describe('statusCommand', () => {
     });
   });
 
-  describe('--check enforcement mode (FORGE G1)', () => {
+  describe('--check enforcement mode', () => {
     function seedSingleOwnerManifest(): void {
       vi.mocked(loadPatchesManifest).mockResolvedValue({
         version: 1,
@@ -1587,7 +1587,7 @@ describe('statusCommand', () => {
     });
   });
 
-  describe('--json --summary gate payload (FORGE K8)', () => {
+  describe('--json --summary gate payload', () => {
     function captureStdout(): { writes: string[]; restore: () => void } {
       const writes: string[] = [];
       const stdoutSpy = vi
@@ -1710,7 +1710,7 @@ describe('statusCommand', () => {
     });
   });
 
-  describe('--include-ownership JSON block (FORGE L3)', () => {
+  describe('--include-ownership JSON block', () => {
     interface OwnershipPayload {
       files?: unknown;
       ownership?: {
@@ -1857,7 +1857,7 @@ describe('statusCommand', () => {
     });
   });
 
-  describe('--json names the owning patch (FORGE G11)', () => {
+  describe('--json names the owning patch', () => {
     function spyStdout(): { writes: string[]; restore: () => void } {
       const writes: string[] = [];
       const stdoutSpy = vi

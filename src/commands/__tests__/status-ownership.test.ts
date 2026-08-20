@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Unit tests for the ownership-table assembly shared by `status
- * --ownership` and the `--include-ownership` JSON block (FORGE L3). The
+ * --ownership` and the `--include-ownership` JSON block. The
  * command-level wiring is covered by status.test.ts; what matters here is
  * that the module builds identical rows for both callers and degrades
  * cleanly when the queue directory does not exist yet.

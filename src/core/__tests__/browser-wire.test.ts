@@ -55,11 +55,21 @@ vi.mock('../manifest-register.js', () => ({
 // keep asserting their own behaviour without interference. The rollback
 // itself is exercised end-to-end by
 // `browser-wire-rollback.integration.test.ts`.
-vi.mock('../furnace-rollback.js', () => ({
-  createRollbackJournal: vi.fn(() => ({ files: new Map(), createdDirs: new Set() })),
-  snapshotFile: vi.fn(() => Promise.resolve()),
-  restoreRollbackJournal: vi.fn(() => Promise.resolve()),
-}));
+vi.mock('../furnace-rollback.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../furnace-rollback.js')>();
+  return {
+    createRollbackJournal: vi.fn(() => ({ files: new Map(), createdDirs: new Set() })),
+    // Records into the journal rather than no-op'ing, so the real
+    // `assertSnapshotted` below still checks the snapshot/mutation pairing
+    // the wire depends on instead of failing on an always-empty map.
+    snapshotFile: vi.fn((journal: { files: Map<string, unknown> }, filePath: string) => {
+      journal.files.set(filePath, { existed: false });
+      return Promise.resolve();
+    }),
+    restoreRollbackJournal: vi.fn(() => Promise.resolve()),
+    assertSnapshotted: actual.assertSnapshotted,
+  };
+});
 
 vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),

@@ -45,7 +45,7 @@ describe('runTypecheck', () => {
     expect(errors.some((i) => i.code === 2322)).toBe(true);
 
     // None of the suppressed module-resolution codes should leak into
-    // the output. (2304/2552 are no longer in this set — FORGE F12 —
+    // the output. (2304/2552 are no longer in this set —
     // but the basic fixture has no undefined identifiers.)
     const suppressed = [2304, 2305, 2306, 2307, 2552, 2580, 2792, 7016];
     for (const code of suppressed) {
@@ -53,7 +53,7 @@ describe('runTypecheck', () => {
     }
   });
 
-  it('reports undefined free identifiers as warnings by default (FORGE F12)', async () => {
+  it('reports undefined free identifiers as warnings by default', async () => {
     const results = await runTypecheck(FIXTURES, {
       projects: ['undefined-identifier/jsconfig.json'],
     });
@@ -70,7 +70,7 @@ describe('runTypecheck', () => {
     expect(result.issues.filter((i) => i.category === 'error')).toHaveLength(0);
   });
 
-  it('escalates undefined identifiers to errors when configured (FORGE F12)', async () => {
+  it('escalates undefined identifiers to errors when configured', async () => {
     const results = await runTypecheck(FIXTURES, {
       projects: ['undefined-identifier/jsconfig.json'],
       undefinedIdentifiers: 'error',
@@ -81,7 +81,7 @@ describe('runTypecheck', () => {
     expect(undefinedIssues[0]?.category).toBe('error');
   });
 
-  it("restores the historical suppression with 'off' (FORGE F12)", async () => {
+  it("restores the historical suppression with 'off'", async () => {
     const results = await runTypecheck(FIXTURES, {
       projects: ['undefined-identifier/jsconfig.json'],
       undefinedIdentifiers: 'off',

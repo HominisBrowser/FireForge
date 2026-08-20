@@ -265,7 +265,7 @@ export function applyAggregateLintIgnoreSuppression(
  * without `--since` and non-integer `--max-warnings` — each a
  * misconfiguration that should fail loud rather than silently narrow the
  * result. Positional arguments in per-patch mode are patch selectors
- * (FORGE G14) and are validated downstream by `selectPatchSubset`.
+ * and are validated downstream by `selectPatchSubset`.
  */
 function validateLintFlags(options: LintCommandOptions): void {
   // `--only-introduced` scopes the exit code to `--since`-tagged issues, so
@@ -531,7 +531,7 @@ export async function lintCommand(
 
   if (options.perPatch) {
     // Positional arguments in per-patch mode select PATCHES through the
-    // same alias resolution as --patches (FORGE G14) — a non-matching
+    // same alias resolution as --patches — a non-matching
     // positional fails loud against the queue listing, so an engine path
     // can never silently lint. Explicit --patches entries come first.
     const perPatchOptions =

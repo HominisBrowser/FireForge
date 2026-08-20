@@ -67,8 +67,13 @@ export async function enforceStaleBuildGate(
 
   const staleMessage = stale.stale
     ? `${formatStaleBuildWarning(stale)}\n\n` +
-      'Run `fireforge test --build` to refresh the packaged runtime first, or pass ' +
-      '`--allow-stale-build` if you intentionally rebuilt out-of-band and accept the risk.'
+      'Run `fireforge test --build` to refresh the packaged runtime first — that is almost ' +
+      'always the right move, because the usual cause is your own edit landing between the ' +
+      'last build and this run.\n\n' +
+      '`--allow-stale-build` is NOT the general escape hatch: it accepts a packaging that ' +
+      'predates the edit under test, so the run tests the OLD code. Pass it only when you ' +
+      'rebuilt out-of-band (outside FireForge) and know the packaged runtime already contains ' +
+      'the change.'
     : undefined;
   if (staleMessage !== undefined) {
     if (options.allowStaleBuild === true) {

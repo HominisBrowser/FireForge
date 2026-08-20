@@ -41,7 +41,7 @@ function makeOutcome(overrides: {
 
 const PATHS = ['browser/base/content/test/hominis/browser_hominis_first.js'];
 
-describe('finalizeSingleRunOutcome FIREFORGE-VERDICT line (FORGE I5)', () => {
+describe('finalizeSingleRunOutcome FIREFORGE-VERDICT line', () => {
   function captureStdout(): { writes: string[]; restore: () => void } {
     const writes: string[] = [];
     const spy = vi

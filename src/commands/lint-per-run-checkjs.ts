@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Per-run checkJs program controller, shared by `lint --per-patch` and
- * `re-export` (FORGE J1).
+ * `re-export`.
  *
  * The dominant fixed cost of patch lint is one `ts.createProgram` over the
  * queue's patch-owned `.sys.mjs` files (~37 s on a 290-patch consumer
@@ -14,11 +14,11 @@
  * - **Root scoping** (`rootScopePatches`): with `--patches <subset>` the
  *   program's roots are only the subset's owned files; the full queue
  *   stays resolvable, so cross-patch imports type-check identically while
- *   unrelated files are never parsed (FORGE J1c).
+ * unrelated files are never parsed.
  * - **Warm-run probe**: run-level ("global") checkJs findings come only
  *   from a missing `typescript` package or an unreadable shim — never
  *   from the built program — so an all-cache-hit run satisfies "warm
- *   never reports less than cold" (FORGE F5) via
+ * never reports less than cold" via
  *   `probeCheckJsGlobalIssues` instead of building anything.
  */
 
@@ -56,7 +56,7 @@ export interface PerRunCheckJs {
   getGrouped: () => Promise<GroupedCheckJsResult>;
   /** Run-level checkJs errors (e.g. TypeScript missing). When the program
    *  was never built (all-warm run) this probes the two global failure
-   *  sources directly instead of building it — FORGE F5 holds because the
+   * sources directly instead of building it holds because the
    *  built program never contributes globals of its own. */
   getGlobal: () => Promise<PatchLintIssue[]>;
   /** The byFile slices for `files` (globals deliberately EXCLUDED — they
@@ -112,7 +112,7 @@ export function buildPerRunCheckJs(
   }
 
   // One build for the whole run: the queue-wide `.sys.mjs` program plus —
-  // when `patchLint.checkJsTestFiles` is on (FORGE G5) — one small
+  // when `patchLint.checkJsTestFiles` is on — one small
   // script-scope program per patch-owned test file, merged by file.
   const buildAll = async (): Promise<GroupedCheckJsResult> => {
     const sys = await invokePatchLintCheckJsGrouped(

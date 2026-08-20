@@ -4,6 +4,7 @@ import { multiselect } from '@clack/prompts';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { isGitRepository } from '../core/git.js';
+import { formatPatchNotFoundError } from '../core/patch-identifier-suggest.js';
 import {
   loadPatchesManifest,
   resolvePatchIdentifier,
@@ -46,9 +47,10 @@ async function resolveSelectedPatches(
     for (const identifier of patches) {
       const match = resolvePatchIdentifier(identifier, manifest.patches);
       if (!match) {
-        const available = manifest.patches.map((p) => p.filename).join(', ');
+        // Suggest, never dump: a wrong guess used to print the
+        // whole ~300-entry manifest, burying the error it was reporting.
         throw new InvalidArgumentError(
-          `Patch "${identifier}" not found in manifest.\n\nAvailable patches: ${available}`,
+          formatPatchNotFoundError(identifier, manifest.patches),
           identifier
         );
       }
@@ -182,7 +184,7 @@ export async function reExportCommand(
   const config = await loadConfig(projectRoot);
 
   // Classification inputs for the scan-less adjacency advisory, computed
-  // once for the whole run (FORGE G2).
+  // once for the whole run.
   const adjacentCtx: AdjacentUnmanagedContext = {
     binaryName: config.binaryName,
     furnacePrefixes: await collectFurnaceManagedPrefixes(paths.root),
@@ -192,7 +194,7 @@ export async function reExportCommand(
 
   const driftCtx = buildForeignDriftContext(options);
 
-  // Hoisted lint context, one per run (FORGE J1): queue context + checkJs
+  // Hoisted lint context, one per run: queue context + checkJs
   // program + per-patch result cache, shared across every loop iteration.
   const lintCtx = await buildReExportLintContext(
     projectRoot,
@@ -283,8 +285,8 @@ export async function reExportCommand(
 }
 
 /**
- * Foreign-drift guard context, one per run (FORGE J2). `--expect` paths
- * (FORGE L6) are normalized once here so the per-patch comparison matches
+ * Foreign-drift guard context, one per run. `--expect` paths
+ * are normalized once here so the per-patch comparison matches
  * them against engine-relative diff-section paths.
  */
 function buildForeignDriftContext(options: ReExportOptions): ForeignDriftContext {
@@ -300,7 +302,7 @@ function buildForeignDriftContext(options: ReExportOptions): ForeignDriftContext
 }
 
 /**
- * Names `--expect` paths that never drifted this run (FORGE L6). A typo'd
+ * Names `--expect` paths that never drifted this run. A typo'd
  * `--expect` path silently degrades the flag back to refusing the slice it
  * was meant to admit, so surface the mismatch — but only as a warning: an
  * expected file legitimately shows no drift when the slice was already
@@ -318,13 +320,18 @@ function warnUnseenExpectedDrift(driftCtx: ForeignDriftContext): void {
     return;
   }
   warn(
-    `--expect path(s) showed no drift this run (typo, or already captured?): ${unseen.join(', ')}`
+    '--expect path(s) showed no drift this run: ' +
+      `${unseen.join(', ')}. ` +
+      'Causes, in rough order of likelihood: a typo in the path; the slice was already ' +
+      'captured by an earlier export in this session; or the engine content already matches ' +
+      'the patch body — a concurrent session may have exported the same change, so the drift ' +
+      'converged before this run looked.'
   );
 }
 
 /**
- * Turns the run's collected `--refuse-adjacent-unmanaged` (FORGE G2) and
- * `--refuse-foreign-drift` (FORGE J2) refusals into the non-zero exit,
+ * Turns the run's collected `--refuse-adjacent-unmanaged` and
+ * `--refuse-foreign-drift` refusals into the non-zero exit,
  * naming every refused patch and the remedy.
  */
 function throwRunLevelRefusals(
@@ -352,15 +359,20 @@ function throwRunLevelRefusals(
         : '';
     throw new GeneralError(
       `Refused ${String(driftCtx.refusals.length)} patch(es) whose refreshed body would absorb ` +
-        `engine edits not present in the old patch body (--refuse-foreign-drift): ${names}.${unreadablePart} ` +
-        `Commit or stash the foreign edits (another session may own them), name the slice's ` +
-        `intended files with --expect <path>, or re-run without the flag to capture them intentionally.`
+        `engine edits not present in the old patch body (--refuse-foreign-drift): ${names}.${unreadablePart}\n\n` +
+        'The flag cannot tell WHO wrote those lines, and the two populations have opposite ' +
+        'remedies:\n' +
+        '  - Lines you added yourself since the last export (the per-file report tags these ' +
+        '"edited since your last export"): name them with --expect <path> so this run captures ' +
+        'them, or re-run without the flag to capture every drifting file.\n' +
+        "  - Lines another session owns: do NOT proceed — commit or stash that session's work " +
+        'first, then re-run.'
     );
   }
 }
 
 /**
- * Prints the end-of-run summary and enforces the FORGE H8 exit contract:
+ * Prints the end-of-run summary and enforces the exit contract:
  * a partial run exits non-zero BY DEFAULT (adjudicated for 0.41.0, per the
  * follow-up 0.40.0's G7 recorded). "Re-exported 2 of 3" used to print and
  * exit 0, letting a partial refresh ride an `&&` chain as success. The

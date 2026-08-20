@@ -8,7 +8,8 @@
 
 import { FurnaceError } from '../errors/furnace.js';
 import type { FurnaceConfig, OverrideComponentConfig } from '../types/furnace.js';
-import { isObject, isString } from '../utils/validation.js';
+import type { JsonObject, JsonValue } from '../types/json.js';
+import { isJsonObject, isString } from '../utils/validation.js';
 import { parseStringArray } from './furnace-config-array-utils.js';
 
 /**
@@ -16,10 +17,7 @@ import { parseStringArray } from './furnace-config-array-utils.js';
  * @param data - Raw data to validate
  * @param name - Component name for error messages
  */
-export function parseOverrideConfig(
-  data: Record<string, unknown>,
-  name: string
-): OverrideComponentConfig {
+export function parseOverrideConfig(data: JsonObject, name: string): OverrideComponentConfig {
   const validTypes = ['css-only', 'full'];
   if (!isString(data['type']) || !validTypes.includes(data['type'])) {
     throw new FurnaceError(
@@ -77,12 +75,12 @@ export function parseStockList(raw: unknown): string[] {
  * object handed to the kind-specific parser.
  */
 export function parseNamedComponentMap<T>(
-  raw: unknown,
+  raw: JsonValue | undefined,
   kind: 'override' | 'custom',
   key: 'overrides' | 'custom',
-  parse: (value: Record<string, unknown>, name: string) => T
+  parse: (value: JsonObject, name: string) => T
 ): Record<string, T> {
-  if (!isObject(raw)) {
+  if (!isJsonObject(raw)) {
     throw new FurnaceError(`Furnace config: "${key}" must be an object`);
   }
   const out: Record<string, T> = {};
@@ -92,7 +90,7 @@ export function parseNamedComponentMap<T>(
         `Furnace config: ${kind} name "${name}" must match /^[a-z][a-z0-9-]*$/ (lowercase, no path separators)`
       );
     }
-    if (!isObject(value)) {
+    if (!isJsonObject(value)) {
       throw new FurnaceError(`Furnace config: ${kind} "${name}" must be an object`);
     }
     out[name] = parse(value, name);
@@ -106,10 +104,7 @@ export function parseNamedComponentMap<T>(
  * the typed config, re-validating the path-shaped ones against
  * traversal.
  */
-export function applyOptionalFurnaceFields(
-  migrated: Record<string, unknown>,
-  config: FurnaceConfig
-): void {
+export function applyOptionalFurnaceFields(migrated: JsonObject, config: FurnaceConfig): void {
   if (migrated['tokenPrefix'] !== undefined && isString(migrated['tokenPrefix'])) {
     config.tokenPrefix = migrated['tokenPrefix'];
   }

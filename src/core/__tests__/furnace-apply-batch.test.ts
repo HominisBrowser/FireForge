@@ -342,7 +342,7 @@ describe('applyAllComponents', () => {
     );
   });
 
-  it('records patch-owned overwrite warnings even when the component source changed (FORGE J6)', async () => {
+  it('records patch-owned overwrite warnings even when the component source changed', async () => {
     // The changed === true path used to skip drift detection entirely —
     // exactly the case where a deployed engine-only fix gets replaced.
     vi.mocked(hasComponentChanged).mockResolvedValue(true);

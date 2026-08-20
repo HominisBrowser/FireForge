@@ -9,6 +9,7 @@ import {
   unavailableGenerationReason,
 } from '../core/engine-session-lock.js';
 import { createSiblingLockPath, withFileLock } from '../core/file-lock.js';
+import { formatPatchNotFoundError } from '../core/patch-identifier-suggest.js';
 import { resolvePatchIdentifier } from '../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { PatchesManifest } from '../types/commands/index.js';
@@ -101,9 +102,9 @@ export async function loadScanFilesAssignments(
   for (const assignment of parsed.assignments) {
     const patch = resolvePatchIdentifier(assignment.patch, manifest.patches);
     if (!patch) {
-      const available = manifest.patches.map((entry) => entry.filename).join(', ');
+      // Suggest, never dump.
       throw new InvalidArgumentError(
-        `--scan-files patch "${assignment.patch}" not found in manifest.\n\nAvailable patches: ${available}`,
+        `--scan-files: ${formatPatchNotFoundError(assignment.patch, manifest.patches)}`,
         '--scan-files'
       );
     }
@@ -134,7 +135,7 @@ export async function loadScanFilesAssignments(
  * disturb: the engine's commit + working-tree status (via the same generation
  * token `fireforge test` uses) and the byte content of every regular file
  * under `patches/` — ALL of them, not just the selected patches, because the
- * FORGE H1 field incident was a dry-run of patch B reverting a just-written
+ * field incident was a dry-run of patch B reverting a just-written
  * export of patch A. A missing patches directory (ENOENT/ENOTDIR) fingerprints
  * as empty — there is nothing there to protect — but any other listing failure
  * (EACCES, EIO, …) throws: an unreadable directory is not evidence it is
@@ -181,7 +182,7 @@ async function fingerprintDryRunState(
       );
     }
   }
-  // Bounded pool over the per-file hashing (FORGE K4: 28 MB of patch
+  // Bounded pool over the per-file hashing (28 MB of patch
   // bodies were read strictly serially, twice per dry run). Workers never
   // throw — each returns a discriminated result, and error selection
   // happens in the ordered pass below so the refusal deterministically
@@ -228,7 +229,7 @@ async function fingerprintDryRunState(
 }
 
 /**
- * Runtime enforcement of the dry-run purity contract (FORGE H1): fingerprints
+ * Runtime enforcement of the dry-run purity contract: fingerprints
  * the engine tree and every patch artifact before and after `operation`, and
  * throws when a dry-run changed anything it promised only to inspect. This
  * turns any recurrence of the 0.40.0 "dry-run reverted a just-written export"

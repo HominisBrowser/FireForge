@@ -9,6 +9,7 @@ import {
   isArray,
   isBoolean,
   isDefined,
+  isJsonObject,
   isNumber,
   isObject,
   isString,
@@ -41,6 +42,16 @@ describe('type guards', () => {
     expect(isDefined('value')).toBe(true);
     expect(isDefined(null)).toBe(false);
     expect(isDefined(undefined)).toBe(false);
+  });
+
+  it('narrows JSON values to JSON object nodes', () => {
+    expect(isJsonObject({ key: 'value' })).toBe(true);
+    expect(isJsonObject({})).toBe(true);
+    expect(isJsonObject(null)).toBe(false);
+    expect(isJsonObject(['array'])).toBe(false);
+    expect(isJsonObject('string')).toBe(false);
+    expect(isJsonObject(42)).toBe(false);
+    expect(isJsonObject(undefined)).toBe(false);
   });
 });
 
@@ -244,7 +255,7 @@ describe('normalizeTokenName with validation', () => {
   });
 });
 
-describe('normalizePatchDisplayName (FORGE G13)', () => {
+describe('normalizePatchDisplayName', () => {
   it('strips a single category prefix', () => {
     expect(normalizePatchDisplayName('ui-foo', 'ui')).toBe('foo');
   });

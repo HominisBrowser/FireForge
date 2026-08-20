@@ -630,7 +630,7 @@ describe('generateBinaryFilePatch', () => {
     });
   });
 
-  it('restores a pre-existing stage-0 index entry instead of resetting to HEAD (FORGE H1)', async () => {
+  it('restores a pre-existing stage-0 index entry instead of resetting to HEAD', async () => {
     mockExec
       // Tracked diff returns empty (the race shape: the entry appeared after,
       // or the staged path's worktree file is gone so `diff HEAD` sees nothing)

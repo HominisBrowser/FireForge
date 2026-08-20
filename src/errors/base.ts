@@ -46,6 +46,41 @@ export class GeneralError extends FireForgeError {
 }
 
 /**
+ * Raised when one of FireForge's own internal invariants did not hold —
+ * the failure of a runtime assertion from `src/utils/assert.ts`.
+ *
+ * Dedicated subclass (rather than raw GeneralError) because an invariant
+ * failure is categorically different from every other error the CLI
+ * raises: it is a bug in FireForge, not something the operator did or can
+ * fix. That difference is worth carrying all the way to the exit status
+ * (see {@link ExitCode.INTERNAL_ERROR}) so a CI job can escalate it
+ * instead of retrying it, and it is the one error class the CLI boundary
+ * prints a stack trace for — the stack is the report.
+ *
+ * Assertions exist so that a violated invariant stops the run at the
+ * first inconsistency instead of continuing to write. In the mutating
+ * paths that means the surrounding rollback journal restores the engine
+ * before this reaches the operator; see `docs/lifecycle-invariants.md`.
+ */
+export class InternalInvariantError extends FireForgeError {
+  readonly code = ExitCode.INTERNAL_ERROR;
+
+  override get userMessage(): string {
+    return (
+      `Internal error: ${this.message}\n\n` +
+      'This is a bug in FireForge itself, not a problem with your project — ' +
+      'no configuration change on your side would have prevented it. The ' +
+      'operation stopped at the first inconsistency rather than continuing ' +
+      'to write.\n\n' +
+      'To report this:\n' +
+      '  1. Keep the full output above, including the stack trace.\n' +
+      '  2. Note the command you ran and what the project looked like at the time.\n' +
+      '  3. Open an issue at https://github.com/HominisBrowser/FireForge/issues'
+    );
+  }
+}
+
+/**
  * Raised when a legacy regex/brace-depth fallback parser decides it
  * cannot safely perform its mutation — e.g. because a block it expected
  * to walk never closes, because the inserted result fails a round-trip
@@ -139,7 +174,7 @@ export class ExecTimeoutError extends FireForgeError {
 
 /**
  * Error thrown when a file-lock wait times out because another process
- * holds the lock (FORGE H5).
+ * holds the lock.
  *
  * Dedicated subclass so the CLI boundary renders lock contention as the
  * one-line reason-first/remedy-second refusal it is — before this, the

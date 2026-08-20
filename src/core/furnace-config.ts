@@ -8,6 +8,7 @@ import type {
   FurnacePendingRepairOperation,
   FurnaceState,
 } from '../types/furnace.js';
+import type { JsonObject } from '../types/json.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
@@ -110,7 +111,7 @@ const CURRENT_CONFIG_VERSION = 1;
  *   break;
  * ```
  */
-function migrateFurnaceConfig(data: Record<string, unknown>): Record<string, unknown> {
+function migrateFurnaceConfig(data: JsonObject): JsonObject {
   const version = data['version'];
 
   if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
@@ -143,8 +144,11 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
     throw new FurnaceError('Furnace config must be an object');
   }
 
+  // Furnace config documents arrive from JSON.parse (loadFurnaceConfig /
+  // writeFurnaceConfig round-trips), which can only produce JSON values,
+  // so the object check above is the only invariant left to establish.
   // Run migration before validation so older configs are transparently upgraded.
-  const migrated = migrateFurnaceConfig(data);
+  const migrated = migrateFurnaceConfig(data as JsonObject);
 
   if (migrated['version'] !== CURRENT_CONFIG_VERSION) {
     throw new FurnaceError(
@@ -469,11 +473,13 @@ export async function clearAppliedFurnaceState(root: string): Promise<void> {
  */
 export async function writeFurnaceConfig(root: string, config: FurnaceConfig): Promise<void> {
   const paths = getFurnacePaths(root);
-  let existing: Record<string, unknown> | undefined;
+  let existing: JsonObject | undefined;
   if (await pathExists(paths.furnaceConfig)) {
     try {
       const raw = await readJson<unknown>(paths.furnaceConfig);
-      if (isObject(raw)) existing = raw;
+      // JSON.parse output is JSON data by construction, so the object
+      // check is the only invariant left for the JsonObject contract.
+      if (isObject(raw)) existing = raw as JsonObject;
     } catch {
       // A missing or corrupt furnace.json means there is no prior document to
       // preserve key order from; the writer falls back to canonical ordering.

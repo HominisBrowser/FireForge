@@ -67,7 +67,7 @@ export interface BuildBaseline {
    * earlier scope's edited fixtures while `obj-*`/`_tests/` still holds its
    * stale staging; coverage therefore REPLACES by default.
    *
-   * The one exception is `test --build --extend-coverage` (FORGE L1), which
+   * The one exception is `test --build --extend-coverage`, which
    * unions only after proving the previous record's anchor still holds:
    * same engine HEAD, same {@link BuildBaseline.mozconfigHash}, and every
    * previously fingerprinted path byte-identical — i.e. the wholesale

@@ -221,6 +221,9 @@ async function refreshSingleOverride(
         return fileResults;
       } catch (error: unknown) {
         if (!dryRun) {
+          // This body owns its rollback end to end, so tell the lifecycle
+          // wrapper not to restore the same journal again on the way out.
+          ctx.markRolledBack();
           try {
             await restoreRollbackJournalOrThrow(journal, `Failed to refresh override "${name}"`);
           } catch (rollbackError) {

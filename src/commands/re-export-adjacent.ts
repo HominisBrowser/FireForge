@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Scan-less re-export adjacency advisory (FORGE G2). A plain `re-export`
+ * Scan-less re-export adjacency advisory. A plain `re-export`
  * keeps the manifest's filesAffected unchanged, so a brand-new file an
  * author just created beside a patch's owned files is silently left out
  * of the refreshed body. This module detects such adjacent files, filters

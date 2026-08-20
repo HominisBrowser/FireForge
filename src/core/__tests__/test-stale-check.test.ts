@@ -520,7 +520,7 @@ describe('checkStaticComponentsStale', () => {
   });
 });
 
-describe('warnIfStaticComponentsStale (FORGE F13)', () => {
+describe('warnIfStaticComponentsStale', () => {
   const staleBaseline = (): BuildBaseline => ({
     engineHeadSha: 'scoped-sha',
     builtAt: new Date().toISOString(),
@@ -576,7 +576,7 @@ describe('warnIfStaticComponentsStale (FORGE F13)', () => {
   });
 });
 
-describe('formatPostMutationStaticComponentsWarning (FORGE F13)', () => {
+describe('formatPostMutationStaticComponentsWarning', () => {
   it('names the manifests and the full-build requirement', () => {
     const message = formatPostMutationStaticComponentsWarning([
       'browser/components/mybrowser/components.conf',

@@ -86,7 +86,7 @@ describe('lintPatchQueueDuplicateCreations', () => {
     expect(issue?.message).toContain('001-infra-a.patch');
     expect(issue?.message).toContain('002-infra-b.patch');
     expect(issue?.severity).toBe('error');
-    // Structured attribution for the export placement gate (FORGE K9):
+    // Structured attribution for the export placement gate:
     // every creator is implicated.
     expect(issue?.patches).toEqual(['001-infra-a.patch', '002-infra-b.patch']);
   });
@@ -147,11 +147,11 @@ describe('lintPatchQueueForwardImports', () => {
     expect(issue?.file).toBe('foo/A.sys.mjs');
     expect(issue?.message).toContain('002-infra-b.patch');
     expect(issue?.severity).toBe('error');
-    // Structured attribution (FORGE K9): the IMPORTING entry is implicated.
+    // Structured attribution: the IMPORTING entry is implicated.
     expect(issue?.patches).toEqual(['001-infra-a.patch']);
   });
 
-  it('flags a bare getter-property line added to an existing defineESModuleGetters map (FORGE F3)', () => {
+  it('flags a bare getter-property line added to an existing defineESModuleGetters map', () => {
     // The patch adds ONE line inside a pre-existing defineESModuleGetters
     // object literal, so the added-lines-only content never contains the
     // `defineESModuleGetters(` opener the balanced walk keys on.
@@ -176,7 +176,7 @@ describe('lintPatchQueueForwardImports', () => {
     expect(issues[0]?.message).toContain('002-infra-b.patch');
   });
 
-  it('flags a quoted-key getter-property line and lazy-style additions (FORGE F3)', () => {
+  it('flags a quoted-key getter-property line and lazy-style additions', () => {
     const ctx: PatchQueueContext = {
       entries: [
         makeEntry(
@@ -194,7 +194,7 @@ describe('lintPatchQueueForwardImports', () => {
     expect(lintPatchQueueForwardImports(ctx)).toHaveLength(1);
   });
 
-  it('does not flag ordinary object-literal string properties (FORGE F3)', () => {
+  it('does not flag ordinary object-literal string properties', () => {
     const ctx: PatchQueueContext = {
       entries: [
         makeEntry(
@@ -215,7 +215,7 @@ describe('lintPatchQueueForwardImports', () => {
     expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
   });
 
-  it('does not double-report when the patch adds the whole getter call (FORGE F3)', () => {
+  it('does not double-report when the patch adds the whole getter call', () => {
     const added = [
       'ChromeUtils.defineESModuleGetters(lazy, {',
       '  Foo: "resource://gre/modules/Foo.sys.mjs",',
@@ -238,7 +238,7 @@ describe('lintPatchQueueForwardImports', () => {
     expect(lintPatchQueueForwardImports(ctx)).toHaveLength(1);
   });
 
-  it('honours the ignore marker on a bare getter-property line (FORGE F3)', () => {
+  it('honours the ignore marker on a bare getter-property line', () => {
     const added = [
       `  // ${FORWARD_IMPORT_IGNORE_MARKER}`,
       '  Foo: "resource://gre/modules/Foo.sys.mjs",',
@@ -260,7 +260,7 @@ describe('lintPatchQueueForwardImports', () => {
     expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
   });
 
-  it('enumerates every forward-import site in one pass, not just the first (FORGE F3)', () => {
+  it('enumerates every forward-import site in one pass, not just the first', () => {
     const ctx: PatchQueueContext = {
       entries: [
         makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
@@ -276,7 +276,7 @@ describe('lintPatchQueueForwardImports', () => {
     expect(issues.filter((i) => i.check === 'forward-import')).toHaveLength(2);
   });
 
-  it('names the exact staged-dependency invocation per later owner (FORGE F3)', () => {
+  it('names the exact staged-dependency invocation per later owner', () => {
     const ctx: PatchQueueContext = {
       entries: [
         makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
@@ -295,7 +295,7 @@ describe('lintPatchQueueForwardImports', () => {
     );
   });
 
-  it('keeps the ordinal hint without patchPolicy, and when a legal ordinal exists (FORGE F14)', () => {
+  it('keeps the ordinal hint without patchPolicy, and when a legal ordinal exists', () => {
     const entries = [
       makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
         'foo/A.sys.mjs': 'import { B } from "resource:///modules/B.sys.mjs";\n',
@@ -319,7 +319,7 @@ describe('lintPatchQueueForwardImports', () => {
     );
   });
 
-  it('suppresses an impossible ordinal hint and recommends the staged dependency (FORGE F14)', () => {
+  it('suppresses an impossible ordinal hint and recommends the staged dependency', () => {
     const entries = [
       makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
         'foo/A.sys.mjs': 'import { B } from "resource:///modules/B.sys.mjs";\n',
@@ -342,7 +342,7 @@ describe('lintPatchQueueForwardImports', () => {
     );
   });
 
-  it('keeps the fingerprint stable across ordinal-hint variants (FORGE F14)', () => {
+  it('keeps the fingerprint stable across ordinal-hint variants', () => {
     const entries = [
       makeEntry('001-infra-a.patch', 1, CREATE_A_DIFF, {
         'foo/A.sys.mjs': 'import { B } from "resource:///modules/B.sys.mjs";\n',

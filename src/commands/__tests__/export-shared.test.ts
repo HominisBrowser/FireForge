@@ -164,7 +164,7 @@ describe('promptExportPatchMetadata', () => {
     });
   });
 
-  it('normalizes a category-prefixed name to the bare slug in one step (FORGE G13)', async () => {
+  it('normalizes a category-prefixed name to the bare slug in one step', async () => {
     await expect(
       promptExportPatchMetadata({ name: 'ui-foo', category: 'ui' }, false, 'export')
     ).resolves.toMatchObject({ patchName: 'foo' });
@@ -176,13 +176,13 @@ describe('promptExportPatchMetadata', () => {
     ).resolves.toMatchObject({ patchName: 'Foo' });
   });
 
-  it('accepts a filename-shaped --name by stripping the .patch extension (FORGE G13)', async () => {
+  it('accepts a filename-shaped --name by stripping the.patch extension', async () => {
     await expect(
       promptExportPatchMetadata({ name: 'ui-foo.patch', category: 'ui' }, false, 'export')
     ).resolves.toMatchObject({ patchName: 'foo' });
   });
 
-  it('never strips a bare leading number or a non-category prefix (FORGE G13)', async () => {
+  it('never strips a bare leading number or a non-category prefix', async () => {
     await expect(
       promptExportPatchMetadata({ name: '2-step-verification', category: 'ui' }, false, 'export')
     ).resolves.toMatchObject({ patchName: '2-step-verification' });
@@ -418,7 +418,7 @@ describe('autoFixLicenseHeaders', () => {
     expect(addLicenseHeaderToFile).not.toHaveBeenCalled();
   });
 
-  it('never offers a project header on a vendored MIT-bannered file (FORGE F15)', async () => {
+  it('never offers a project header on a vendored MIT-bannered file', async () => {
     const mitBundle =
       '/**\n' +
       ' * Copyright (c) 2019 The xterm.js authors. All rights reserved.\n' +
@@ -443,7 +443,7 @@ describe('autoFixLicenseHeaders', () => {
     );
   });
 
-  it('reports vendored files separately from fixable ones under dry-run (FORGE F15)', async () => {
+  it('reports vendored files separately from fixable ones under dry-run', async () => {
     vi.mocked(detectNewFilesInDiff).mockReturnValueOnce(new Set(['vendored/d3.js', 'new.js']));
     vi.mocked(readText).mockImplementation((path: string) =>
       Promise.resolve(

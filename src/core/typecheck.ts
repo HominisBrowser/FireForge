@@ -262,8 +262,18 @@ async function runTypecheckForProject(
     noEmit: true,
     allowJs: parsed.options.allowJs ?? true,
     checkJs: parsed.options.checkJs ?? true,
+    // No incremental sidecar, ever. A user jsconfig under `engine/` that
+    // sets `incremental` (or names a `tsBuildInfoFile`)
+    // would have this command drop a `.tsbuildinfo` inside the primary
+    // engine checkout — a second writer that invalidates a concurrent
+    // `fireforge test`'s engine fingerprint. This command emits nothing,
+    // so the sidecar buys nothing either.
+    incremental: false,
     // skipLibCheck is not forced; the user owns it via their jsconfig.
   };
+  // `exactOptionalPropertyTypes` forbids assigning `undefined` to an
+  // optional `string`, so the sidecar path is dropped rather than unset.
+  delete options.tsBuildInfoFile;
 
   // 5) The synthetic shim file. Use a project-rooted path with a
   // hidden-style prefix so it is unlikely to collide with any real

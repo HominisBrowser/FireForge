@@ -265,7 +265,7 @@ describe('sparse export placement with patchPolicy reserved ranges', () => {
     expect((await readManifestPatches()).map((patch) => patch.filename)).toEqual(entries);
   });
 
-  it('leaves a reserved exact exception untouched when the insert lands on a free ordinal (FORGE G6)', async () => {
+  it('leaves a reserved exact exception untouched when the insert lands on a free ordinal', async () => {
     const patches = await seedSparseQueue();
     const plan = await resolvePlacementPlan(
       patchesDir,
@@ -455,7 +455,7 @@ describe('projectPlacementForLint', () => {
     expect(await readdir(patchesDir)).not.toContain('001-infra-new.patch');
   });
 
-  it('names the projected lint errors in the under-lock refusal, not just a count (FORGE J7)', async () => {
+  it('names the projected lint errors in the under-lock refusal, not just a count', async () => {
     // The refusal used to report only "would introduce N cross-patch lint
     // error(s)" and discard the per-issue details, forcing operators to
     // re-derive the errors with a separate lint run.
@@ -492,7 +492,7 @@ describe('projectPlacementForLint', () => {
     expect(await readdir(patchesDir)).not.toContain('001-infra-a.patch');
   });
 
-  it('labels errors already present in the queue as pre-existing, not renumbering consequences (FORGE K9)', async () => {
+  it('labels errors already present in the queue as pre-existing, not renumbering consequences', async () => {
     // The base queue is ALREADY broken: 001 imports a module that 005
     // creates later (forward-import fires today, before any placement).
     // Placing a new, clean patch re-detects the same error in the
@@ -535,7 +535,7 @@ describe('projectPlacementForLint', () => {
     expect(details.join('\n')).not.toContain('consequences of renumbering');
   });
 
-  it('classifies an error introduced between existing patches by the renumber as a renumbering consequence (FORGE K9)', async () => {
+  it('classifies an error introduced between existing patches by the renumber as a renumbering consequence', async () => {
     // A uniform ordinal shift preserves relative order, so a renumbering
     // casualty needs policy interplay (e.g. a category-range violation on
     // a shifted patch) that is expensive to stage end-to-end. Pin the

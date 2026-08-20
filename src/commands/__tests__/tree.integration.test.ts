@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * End-to-end coverage for `fireforge tree` (FORGE G15): real tempdir +
+ * End-to-end coverage for `fireforge tree`: real tempdir +
  * git, real clone (CoW when the filesystem supports it — the create path
  * probes and uses clonefile/reflink on APFS/btrfs; `--force-copy` keeps
  * the same path green on ext4 CI runners), and the read-only guard
@@ -57,7 +57,7 @@ import { info } from '../../utils/logger.js';
 
 const describePosix = process.platform === 'win32' ? describe.skip : describe;
 
-describePosix('fireforge tree end to end (FORGE G15)', () => {
+describePosix('fireforge tree end to end', () => {
   let projectRoot: string;
   let restoreTTY: (() => void) | undefined;
 
@@ -206,7 +206,7 @@ describePosix('fireforge tree end to end (FORGE G15)', () => {
     );
   });
 
-  it('--with-objdir refuses a symlinked primary objdir and leaves no partial tree behind (FORGE I11)', async () => {
+  it('--with-objdir refuses a symlinked primary objdir and leaves no partial tree behind', async () => {
     // An external build symlinked into engine/ passes the symlink-agnostic
     // artifact detection (its mozinfo names the engine paths), but the
     // clone guard must refuse before any copying — the clone would carry
@@ -237,7 +237,7 @@ describePosix('fireforge tree end to end (FORGE G15)', () => {
     await expect(pathExists(join(externalRoot, 'obj-e2e', '_virtualenvs'))).resolves.toBe(true);
   });
 
-  it('a configure that exits 0 but leaves the primary path in config.status fails the create (FORGE I10)', async () => {
+  it('a configure that exits 0 but leaves the primary path in config.status fails the create', async () => {
     const engineDir = join(projectRoot, 'engine');
     await writeSyntheticObjdir(engineDir, 'obj-e2e');
     // Exit 0 while writing nothing: the cloned config.status still embeds
@@ -329,7 +329,7 @@ describePosix('fireforge tree end to end (FORGE G15)', () => {
     }
   });
 
-  it('the guard admits re-export --dry-run inside a tree and the tree state stays byte-identical (FORGE H1/H3)', async () => {
+  it('the guard admits re-export --dry-run inside a tree and the tree state stays byte-identical', async () => {
     const { readFile } = await import('node:fs/promises');
     await writeFiles(projectRoot, {
       'patches/patches.json': `${JSON.stringify({

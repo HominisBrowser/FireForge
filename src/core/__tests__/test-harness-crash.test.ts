@@ -10,6 +10,7 @@ import {
   buildGreenSummaryRejectedMessage,
   buildHarnessCrashMessage,
   buildNoTestsRanMessage,
+  buildSilentSegfaultMessage,
   classifyHarnessRun,
   collectUnexpectedFailureBlocks,
   detectHarnessCrashSignature,
@@ -17,7 +18,9 @@ import {
   findCrashMarkerLine,
   formatFireforgeVerdictLine,
   hasCompletedGreenSummary,
+  headedDisplayAsleepVerdictNote,
   headedNoOutputTimeoutHint,
+  isSilentSegfault,
   stripNonSignalNoise,
 } from '../test-harness-crash.js';
 
@@ -220,7 +223,7 @@ const GREEN_XPCSHELL_WITH_DEGRADATION_NOISE = [
 
 const XPCSHELL_DIR_PATHS = ['toolkit/components/foo/test/unit'];
 
-describe('extractSummaryCounts (FORGE I5)', () => {
+describe('extractSummaryCounts', () => {
   it('parses checks and unexpected from an xpcshell result summary', () => {
     expect(extractSummaryCounts(XPCSHELL_PASS_RUN)).toEqual({ checks: 16, unexpected: 0 });
   });
@@ -249,7 +252,7 @@ describe('extractSummaryCounts (FORGE I5)', () => {
   });
 });
 
-describe('formatFireforgeVerdictLine (FORGE I5)', () => {
+describe('formatFireforgeVerdictLine', () => {
   it('formats a pass with counts', () => {
     expect(formatFireforgeVerdictLine({ kind: 'tests-ran-ok', checks: 16, unexpected: 0 })).toBe(
       'FIREFORGE-VERDICT: PASS checks=16 unexpected=0'
@@ -796,19 +799,198 @@ describe('messages', () => {
   });
 });
 
-describe('headedNoOutputTimeoutHint (FORGE F17)', () => {
+describe('silent SIGSEGV diagnosis', () => {
+  it('recognizes a signal-killed harness that printed nothing, in both exit-code shapes', () => {
+    expect(isSilentSegfault(-11, '')).toBe(true);
+    expect(isSilentSegfault(139, '   \n  ')).toBe(true);
+  });
+
+  it('does not claim the shape when the run actually printed something', () => {
+    const realOutput = [
+      'TEST_START: browser/base/test_a.js',
+      'TEST-UNEXPECTED-FAIL | test_a.js | boom',
+      'Ran 12 checks',
+      'Unexpected results: 1',
+      'SUITE_END',
+      'Main app process: killed by SIGSEGV',
+    ].join('\n');
+    expect(isSilentSegfault(-11, realOutput)).toBe(false);
+  });
+
+  it('does not claim the shape for a non-SIGSEGV exit', () => {
+    expect(isSilentSegfault(1, '')).toBe(false);
+    expect(isSilentSegfault(-9, '')).toBe(false);
+  });
+
+  it('names moz.build registration as the first thing to check', () => {
+    const message = buildSilentSegfaultMessage(-11, ['browser/base/test_a.js']);
+    expect(message).toContain('EXTRA_JS_MODULES');
+    expect(message).toContain('check this FIRST');
+    // The recurring shape — an import added to an EXISTING module — is
+    // called out explicitly, because the new-file lint cannot see it.
+    expect(message).toContain('added to an EXISTING module');
+    expect(message).toContain('fireforge verify');
+    expect(message).toContain('browser/base/test_a.js');
+  });
+});
+
+describe('known teardown noise on a clean suite', () => {
+  const TEARDOWN_TRACEBACK = [
+    'Traceback (most recent call last):',
+    '  File "/x/mozsystemmonitor/resourcemonitor.py", line 442, in __exit__',
+    '    self.stop()',
+    '  File "/x/mozsystemmonitor/resourcemonitor.py", line 460, in stop',
+    '    duration = self.stop_time - self.start_time',
+    "AttributeError: 'SystemResourceMonitor' object has no attribute 'stop_time'",
+  ].join('\n');
+
+  /** A substantively green xpcshell suite, with no SUITE_END marker. */
+  const greenSuiteWithoutSuiteEnd = [
+    'TEST_START: browser/base/content/test/test_a.js',
+    'TEST_END: Test PASS',
+    'Ran 894 checks (894 subtests, 0 errors)',
+    'Unexpected results: 0',
+    'OK',
+  ].join('\n');
+
+  it('passes a clean suite whose only residue is the recognized teardown noise', () => {
+    const verdict = classifyHarnessRun(1, `${greenSuiteWithoutSuiteEnd}\n${TEARDOWN_TRACEBACK}`, [
+      'browser/base/content/test/test_a.js',
+    ]);
+    expect(verdict.kind).toBe('tests-ran-ok');
+    expect(verdict.note).toBe('harness teardown noise ignored');
+    expect(formatFireforgeVerdictLine(verdict)).toBe(
+      'FIREFORGE-VERDICT: PASS checks=894 unexpected=0 (harness teardown noise ignored)'
+    );
+  });
+
+  it('still fails the same suite when a real unexpected line is present', () => {
+    const output = [
+      greenSuiteWithoutSuiteEnd,
+      'TEST-UNEXPECTED-FAIL | test_a.js | boom',
+      TEARDOWN_TRACEBACK,
+    ].join('\n');
+    expect(classifyHarnessRun(1, output, ['browser/base/content/test/test_a.js']).kind).not.toBe(
+      'tests-ran-ok'
+    );
+  });
+
+  it('still fails the same suite when a crash marker is present', () => {
+    const output = [
+      greenSuiteWithoutSuiteEnd,
+      'Main app process: killed by SIGSEGV',
+      TEARDOWN_TRACEBACK,
+    ].join('\n');
+    expect(classifyHarnessRun(1, output, ['browser/base/content/test/test_a.js']).kind).not.toBe(
+      'tests-ran-ok'
+    );
+  });
+
+  it('still fails when a requested test file never started', () => {
+    const output = `${greenSuiteWithoutSuiteEnd}\n${TEARDOWN_TRACEBACK}`;
+    expect(
+      classifyHarnessRun(1, output, [
+        'browser/base/content/test/test_a.js',
+        'browser/base/content/test/test_never_ran.js',
+      ]).kind
+    ).not.toBe('tests-ran-ok');
+  });
+
+  it('does not forgive an UNRECOGNIZED teardown traceback', () => {
+    const novel = TEARDOWN_TRACEBACK.replace(
+      "no attribute 'stop_time'",
+      "no attribute 'brand_new_attribute'"
+    );
+    expect(
+      classifyHarnessRun(1, `${greenSuiteWithoutSuiteEnd}\n${novel}`, [
+        'browser/base/content/test/test_a.js',
+      ]).kind
+    ).not.toBe('tests-ran-ok');
+  });
+
+  it('does not forgive a suite whose summary never printed a zero unexpected count', () => {
+    const noSummary = [
+      'TEST_START: browser/base/content/test/test_a.js',
+      'TEST_END: Test PASS',
+    ].join('\n');
+    expect(
+      classifyHarnessRun(1, `${noSummary}\n${TEARDOWN_TRACEBACK}`, [
+        'browser/base/content/test/test_a.js',
+      ]).kind
+    ).not.toBe('tests-ran-ok');
+  });
+});
+
+describe('headedNoOutputTimeoutHint', () => {
   const timeoutSignature = {
     reason: 'no-output timeout before any test started',
     line: 'Timed out after 370 seconds with no output',
   };
 
-  it('suggests caffeinate for a headed no-output timeout on darwin', () => {
+  it('prints the three-cause triage list for a headed no-output timeout on darwin', () => {
     const hint = headedNoOutputTimeoutHint(timeoutSignature, {
       headless: false,
       platform: 'darwin',
     });
-    expect(hint).toContain('caffeinate -dimsu');
-    expect(hint).toContain('display going to sleep');
+    // The pre-0.43.0 wording sent operators to `caffeinate`, which
+    // PREVENTS sleep and cannot WAKE an already-sleeping display — it
+    // could not have cured the incident it was recommended for. The hint
+    // now says so and lists all three recorded causes of the shape.
+    expect(hint).toContain('sleeping or locked display');
+    expect(hint).toContain('SWGL compositor');
+    expect(hint).toContain('chrome://');
+    expect(hint).toContain('cannot WAKE a display that is already asleep');
+  });
+
+  it('states a MEASURED asleep display as fact', () => {
+    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
+      headless: false,
+      platform: 'darwin',
+      displayState: 'asleep',
+    });
+    expect(hint).toContain('MEASURED ASLEEP');
+    expect(hint).toContain('environmental');
+  });
+
+  it('rules the sleeping display out when it was measured awake', () => {
+    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
+      headless: false,
+      platform: 'darwin',
+      displayState: 'awake',
+    });
+    expect(hint).toContain('measured AWAKE');
+    expect(hint).toContain('ruled out');
+  });
+
+  it('notes a measured-asleep headed stall on the verdict line', () => {
+    expect(
+      headedDisplayAsleepVerdictNote(timeoutSignature, {
+        headless: false,
+        platform: 'darwin',
+        displayState: 'asleep',
+      })
+    ).toBe('headed run stalled with the display asleep');
+    // Never asserted without a measurement, and never for other shapes.
+    expect(
+      headedDisplayAsleepVerdictNote(timeoutSignature, {
+        headless: false,
+        platform: 'darwin',
+        displayState: 'unknown',
+      })
+    ).toBeUndefined();
+    expect(
+      headedDisplayAsleepVerdictNote(
+        { reason: 'resource monitor traceback', line: 'Traceback' },
+        { headless: false, platform: 'darwin', displayState: 'asleep' }
+      )
+    ).toBeUndefined();
+    expect(
+      headedDisplayAsleepVerdictNote(timeoutSignature, {
+        headless: true,
+        platform: 'darwin',
+        displayState: 'asleep',
+      })
+    ).toBeUndefined();
   });
 
   it('returns undefined for headless runs', () => {

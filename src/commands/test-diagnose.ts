@@ -12,7 +12,9 @@ import {
   buildGreenSummaryRejectedMessage,
   buildHarnessCrashMessage,
   buildNoTestsRanMessage,
+  buildSilentSegfaultMessage,
   headedNoOutputTimeoutHint,
+  isSilentSegfault,
 } from '../core/test-harness-crash.js';
 import {
   buildHarnessEarlyExitMessage,
@@ -194,6 +196,12 @@ function handleNonZeroTestExit(
   const throwGeneral = (message: string): never => {
     throw new GeneralError(withContext(message));
   };
+  // First, because there is nothing else to go on: a SIGSEGV with zero
+  // output has exactly one known cause and no other evidence.
+  // Every branch below keys on output text this shape does not have.
+  if (isSilentSegfault(result.exitCode, combinedOutput)) {
+    throwGeneral(buildSilentSegfaultMessage(result.exitCode, normalizedPaths));
+  }
   if (/UNKNOWN TEST\b/i.test(combinedOutput)) {
     throwGeneral(buildUnknownTestMessage(normalizedPaths));
   }
@@ -286,6 +294,7 @@ function applySingleRunOutcome(
     const hint = headedNoOutputTimeoutHint(outcome.verdict.signature, {
       headless,
       platform: getPlatform(),
+      ...(outcome.displayState !== undefined ? { displayState: outcome.displayState } : {}),
     });
     throw new GeneralError(hint ? `${base}\n\n${hint}` : base);
   }

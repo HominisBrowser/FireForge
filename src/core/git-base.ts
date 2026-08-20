@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { GitError, GitNotFoundError } from '../errors/git.js';
 import { exec, executableExists } from '../utils/process.js';
+import { readOnlyGitIndexEnv } from './git-readonly-index.js';
 
 /**
  * Environment variable that overrides the monolithic `git add -A` timeout
@@ -102,8 +103,12 @@ export async function git(
   if (options?.timeout !== undefined) {
     execOptions.timeout = options.timeout;
   }
-  if (options?.env !== undefined) {
-    execOptions.env = options.env;
+  // A read-only command's private-index scope overlays GIT_INDEX_FILE so
+  // index refreshes never touch the primary checkout.
+  // Merged UNDER the caller's own env so an explicit override still wins.
+  const readOnlyIndexEnv = readOnlyGitIndexEnv(cwd);
+  if (options?.env !== undefined || readOnlyIndexEnv !== undefined) {
+    execOptions.env = { ...readOnlyIndexEnv, ...options?.env };
   }
   const result = await exec('git', args, execOptions);
 

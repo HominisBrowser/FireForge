@@ -3,6 +3,10 @@ import { Command } from 'commander';
 
 import { readBuildBaseline } from '../core/build-baseline.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import {
+  formatEngineSessionLockStatus,
+  readEngineSessionLockStatus,
+} from '../core/engine-session-lock.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { getUntrackedFilesInDir, resolveMaxUntrackedFilesPerDir } from '../core/git-status.js';
@@ -148,7 +152,7 @@ async function classifyStatusFiles(
  * The one worktree scan every classifying mode shares: porcelain status,
  * collapsed-directory expansion, atomic-temp-file filtering, and the
  * truncation banner. `--ownership` used to carry its own copy of this
- * block (FORGE L3); a non-git engine degrades to an empty list there,
+ * block; a non-git engine degrades to an empty list there,
  * which is why the git probe is a parameter rather than a hard guard.
  * @param engineDir - Path to the engine directory
  * @param requireGitRepository - When false, a non-git engine yields `[]`
@@ -173,7 +177,7 @@ async function scanEngineStatusFiles(
  * Emits the `--json` payload (full or `--summary`) and applies the
  * `--check` policy, which stays the SOLE exit driver on this path.
  *
- * `--include-ownership` (FORGE L3) is a MODIFIER, not a mode: it appends an
+ * `--include-ownership` is a MODIFIER, not a mode: it appends an
  * ownership block without touching exit semantics, so an ownership conflict
  * still fails only the human `--ownership` mode.
  * @param classified - Classified worktree entries
@@ -285,14 +289,15 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
     options.ownership,
     options.testCoverage,
     options.json,
+    options.lock,
   ].filter((v) => v === true).length;
   if (modeCount > 1) {
     throw new GeneralError(
-      'Cannot use --raw, --unmanaged, --ownership, --test-coverage, and --json together. Pick at most one.'
+      'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together. Pick at most one.'
     );
   }
 
-  // --summary elides the files[] payload for gate consumers (FORGE K8);
+  // --summary elides the files[] payload for gate consumers;
   // it only makes sense on the JSON shape.
   if (options.summary === true && options.json !== true) {
     throw new InvalidArgumentError('--summary requires --json.', '--summary');
@@ -300,7 +305,7 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
 
   // --include-ownership adds a block to the JSON payload; it is meaningless
   // on the human views, where --ownership is the mode that renders the
-  // table (FORGE L3).
+  // table.
   if (options.includeOwnership === true && options.json !== true) {
     throw new InvalidArgumentError(
       '--include-ownership requires --json. Use --ownership for the human table.',
@@ -308,12 +313,26 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
     );
   }
 
-  // --check / --fail-on enforcement policy (FORGE G1). Applies only
+  // --check / --fail-on enforcement policy. Applies only
   // where classification runs (the default view and --json).
   const checkPolicy = resolveStatusCheckPolicy(options);
 
   if (!options.raw && !options.json) {
     intro('FireForge Status');
+  }
+
+  // Lock visibility. Placed before every engine/git guard: the
+  // whole point is to answer "who is holding this?" on a checkout that a
+  // concurrent command is busy with, and that answer must not depend on
+  // engine/ being readable.
+  if (options.lock === true) {
+    for (const line of formatEngineSessionLockStatus(
+      await readEngineSessionLockStatus(projectRoot)
+    )) {
+      info(line);
+    }
+    outro('Lock status');
+    return;
   }
 
   // Test-coverage mode needs only the project root (the baseline lives
@@ -344,7 +363,7 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
     }
     const manifest = await loadPatchesManifest(paths.patches);
     // Same scan and the SAME classification pass as every other mode
-    // (FORGE L3). This branch keeps its historical guard shape on purpose:
+    //. This branch keeps its historical guard shape on purpose:
     // no baseline-commit assertion, and a non-git engine degrades to an
     // empty table rather than the recovery banner.
     const rawFilesOwnership = await scanEngineStatusFiles(paths.engine, false);
@@ -461,6 +480,10 @@ export function registerStatus(
     .command('status')
     .description('Show modified files in engine/')
     .option('--raw', 'Show raw worktree status without patch classification')
+    .option(
+      '--lock',
+      'Report the engine session lock instead of file status: holder pid, its command, how long it has held the lock, and how many waiters are queued behind it (read-only; never acquires it)'
+    )
     .option('--unmanaged', 'Show only unmanaged changes (not covered by patches or tools)')
     .option(
       '--ownership',
@@ -491,6 +514,7 @@ export function registerStatus(
       withErrorHandling(
         async (options: {
           raw?: boolean;
+          lock?: boolean;
           unmanaged?: boolean;
           ownership?: boolean;
           testCoverage?: boolean;

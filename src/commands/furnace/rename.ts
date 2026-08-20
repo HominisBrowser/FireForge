@@ -440,6 +440,9 @@ async function performRenameMutations(args: {
 
       info(`Renamed ${componentType} component: ${oldName} → ${newName}`);
     } catch (error: unknown) {
+      // This body owns its rollback end to end, so tell the lifecycle wrapper
+      // not to restore the same journal again on the way out.
+      ctx.markRolledBack();
       try {
         if (await pathExists(newDir)) {
           await removeDir(newDir);

@@ -150,7 +150,7 @@ describe('patch split integration', () => {
     expect(lintPatchQueue(ctx).filter((i) => i.severity === 'error')).toEqual([]);
   });
 
-  it('normalizes a filename-shaped --name to the bare slug in the manifest (FORGE H4)', async () => {
+  it('normalizes a filename-shaped --name to the bare slug in the manifest', async () => {
     await seedManifest(patchesDir, [
       { metadata: makeMetadata('001-infra-feature.patch', 1, [FILE_A, FILE_B]), body: '(stale)' },
     ]);
@@ -431,7 +431,7 @@ describe('patch split integration', () => {
   });
 });
 
-describe('patch split projection lint runs with the whole-queue context (FORGE I3)', () => {
+describe('patch split projection lint runs with the whole-queue context', () => {
   const A_PATH = 'browser/modules/mb/A.sys.mjs';
   const B_PATH = 'browser/modules/mb/B.sys.mjs';
   const KEEP_CSS = 'browser/base/content/keep.css';

@@ -419,6 +419,9 @@ async function performChromeDocMutations(args: {
       written.push(`browser/base/content/test/${testParentDir}/${args.name}/xpcshell.toml`);
     }
   } catch (error: unknown) {
+    // This body owns its rollback end to end, so tell the lifecycle wrapper
+    // not to restore the same journal again on the way out.
+    args.operationContext.markRolledBack();
     try {
       await restoreRollbackJournalOrThrow(journal, `Failed to scaffold chrome-doc "${args.name}"`);
     } catch (rollbackError) {

@@ -175,7 +175,7 @@ const PATCH_FILES_THRESHOLDS = {
 } as const;
 
 /**
- * Shared remedy sentence for the over-budget findings (FORGE H4): the two
+ * Shared remedy sentence for the over-budget findings: the two
  * places an operator stands when a patch outgrows its budget must name the
  * sanctioned one-transaction way out, or they reach for the wrong tools
  * first (the field report tried two before finding it). One constant, four
@@ -647,7 +647,7 @@ export function resolvePatchSizeTier(
 }
 
 /**
- * Read-only view of the size thresholds a tier enforces (FORGE G9).
+ * Read-only view of the size thresholds a tier enforces.
  * Public-API companion to {@link resolvePatchSizeTier} /
  * {@link countNonBinaryDiffLines} so consumers can build waiver-freshness
  * checks against the SAME numbers `large-patch-lines` /
@@ -823,7 +823,7 @@ export interface LintExportedPatchOptions {
   precomputedCheckJs?: readonly PatchLintIssue[];
   /**
    * Invoked with the issues DROPPED by the `ignoreChecks` waiver filter,
-   * when any were (FORGE G10). Suppression semantics are unchanged — the
+   * when any were. Suppression semantics are unchanged — the
    * returned issue list still excludes them — but the caller can report
    * the measurement a waived size finding carried (per-patch NOTICE lines
    * and the `--report` JSON) instead of losing it entirely.
@@ -914,7 +914,7 @@ export async function lintExportedPatch(
         options?.checkJsReportScope
       ))
     );
-    // Export-time twin of per-patch lint's test-file pass (FORGE G5), so
+    // Export-time twin of per-patch lint's test-file pass, so
     // export/re-export and `lint --per-patch` agree on the checked surface.
     if (config.patchLint.checkJsTestFiles === true) {
       const testGrouped = await runCheckJsTestFilesGrouped(

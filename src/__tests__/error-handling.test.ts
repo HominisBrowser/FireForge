@@ -10,7 +10,12 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { withErrorHandling } from '../cli.js';
-import { CancellationError, CommandError, GeneralError } from '../errors/base.js';
+import {
+  CancellationError,
+  CommandError,
+  GeneralError,
+  InternalInvariantError,
+} from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
 import { cancel, error as logError } from '../utils/logger.js';
 
@@ -37,6 +42,34 @@ describe('withErrorHandling', () => {
 
     expect(logError).toHaveBeenCalledWith('something went wrong');
     expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('prints the stack for an InternalInvariantError and exits INTERNAL_ERROR', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handler = withErrorHandling(() =>
+      Promise.reject(new InternalInvariantError('furnace lock held before the body runs'))
+    );
+
+    try {
+      await handler();
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(CommandError);
+      expect((err as CommandError).exitCode).toBe(ExitCode.INTERNAL_ERROR);
+    }
+
+    // The userMessage explains it is a bug; the stack is what makes the
+    // report actionable, and it must go to stderr so a --json payload on
+    // stdout stays parseable.
+    expect(logError).toHaveBeenCalledWith(
+      expect.stringContaining('furnace lock held before the body runs')
+    );
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('InternalInvariantError: furnace lock held before the body runs')
+    );
+    expect(cancel).not.toHaveBeenCalled();
+
+    consoleError.mockRestore();
   });
 
   it('throws CommandError with the correct exit code', async () => {

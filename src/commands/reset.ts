@@ -97,7 +97,7 @@ export async function resetCommand(projectRoot: string, options: ResetOptions): 
 
     // The reset may have moved components.conf away from what the last full
     // build compiled in — surface that now instead of at the next test
-    // refusal (FORGE F13).
+    // refusal.
     await warnIfStaticComponentsStale(projectRoot, paths.engine);
 
     outro('Working tree restored to clean state');

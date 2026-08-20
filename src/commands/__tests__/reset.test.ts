@@ -194,13 +194,13 @@ describe('resetCommand', () => {
     expect(resetChanges).toHaveBeenCalledWith('/project/engine');
   });
 
-  it('runs the components.conf staleness advisory after a successful reset (FORGE F13)', async () => {
+  it('runs the components.conf staleness advisory after a successful reset', async () => {
     await expect(resetCommand('/project', { yes: true })).resolves.toBeUndefined();
 
     expect(warnIfStaticComponentsStale).toHaveBeenCalledWith('/project', '/project/engine');
   });
 
-  it('skips the staleness advisory on dry-run and clean-tree paths (FORGE F13)', async () => {
+  it('skips the staleness advisory on dry-run and clean-tree paths', async () => {
     vi.mocked(getWorkingTreeStatus).mockResolvedValue([makeGitStatusEntry({ file: 'foo.txt' })]);
     await resetCommand('/project', { dryRun: true });
 

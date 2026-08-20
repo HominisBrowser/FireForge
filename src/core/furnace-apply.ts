@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
 import type { ApplyResult, CustomComponentConfig, DryRunAction } from '../types/furnace.js';
+import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
@@ -506,6 +507,14 @@ export async function applyAllComponents(
     operationContext.registerJournal(rollbackJournal);
   }
 
+  // Everything below this line can write to the engine. A real apply that
+  // reached it without a journal would have no way back — neither the
+  // lifecycle wrapper's throw path nor the signal handler can restore what
+  // was never captured. `operationContext` is legitimately absent for the
+  // few callers that drive apply outside the wrapper, so the invariant is on
+  // the journal itself.
+  assert(dryRun || rollbackJournal !== undefined, 'rollback journal created before a real apply');
+
   const result: ApplyAccumulator = {
     applied: [],
     skipped: [],
@@ -528,7 +537,7 @@ export async function applyAllComponents(
     }
   }
 
-  // Patch-claim map for the overwrite warning (FORGE J6): loaded once per
+  // Patch-claim map for the overwrite warning: loaded once per
   // apply. A missing/unreadable manifest degrades to an empty map — the
   // warning is advisory and must never block the apply.
   const patchClaims = await loadPatchClaimsForApply(root);
@@ -575,6 +584,10 @@ export async function applyAllComponents(
   if (!dryRun) {
     if (result.errors.length > 0 || hasStepErrors) {
       if (rollbackJournal) {
+        // This branch owns the rollback for the collected-errors case, so the
+        // lifecycle wrapper must not restore the same journal again if the
+        // restore below throws on its way out.
+        operationContext?.markRolledBack();
         try {
           await restoreRollbackJournalOrThrow(rollbackJournal, 'Furnace apply failed');
           result.rolledBack = true;
@@ -632,6 +645,6 @@ interface ApplyBatchContext {
   newChecksums: Record<string, string>;
   rollbackJournal?: RollbackJournal | undefined;
   componentName?: string | undefined;
-  /** File → owning patch filenames, for the overwrite warning (FORGE J6). */
+  /** File → owning patch filenames, for the overwrite warning. */
   patchClaims: ReadonlyMap<string, readonly string[]>;
 }

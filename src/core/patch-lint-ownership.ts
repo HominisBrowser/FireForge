@@ -91,7 +91,7 @@ export function resolvePatchOwnedChromeScripts(
 }
 
 /**
- * Test-script predicate for the `checkJsTestFiles` pass (FORGE G5):
+ * Test-script predicate for the `checkJsTestFiles` pass:
  * plain `.js` files (not `.sys.mjs` modules) that live under a `/test/`
  * path or carry a `browser_` / `test_` / `xpcshell_` basename. Duplicates
  * `patch-lint.ts`'s `isTestFile` shape rather than importing it —
@@ -107,7 +107,7 @@ export function isTestScriptFile(file: string): boolean {
 }
 
 /**
- * Returns the set of patch-owned test `.js` files (FORGE G5). Same
+ * Returns the set of patch-owned test `.js` files. Same
  * ownership semantics as {@link resolvePatchOwnedSysMjs}; consumed by the
  * `patchLint.checkJsTestFiles` pass, which checks each as its own small
  * script-scope program.

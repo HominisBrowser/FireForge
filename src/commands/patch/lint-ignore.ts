@@ -39,7 +39,7 @@ type LintIgnoreMode = 'add' | 'remove' | 'clear';
  * writes turns per-patch lint green immediately, but consumer projects
  * commonly audit lintIgnore lists against a reviewed allow-map — the
  * discovery that the map also needs updating otherwise costs a full
- * downstream gate run (FORGE F6).
+ * downstream gate run.
  */
 const LINT_IGNORE_REVIEW_WARNING =
   "This lint waiver is subject to the project's patch-policy review process. " +

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Single-patch refresh core for `fireforge re-export`, split out of
- * `re-export.ts` (at the per-file line budget after the FORGE J1/J2
+ * `re-export.ts` (at the per-file line budget after the
  * hoisted-lint and foreign-drift wiring). The orchestrator loop calls
  * {@link reExportSinglePatchWithIndexLockRetry} per selected patch.
  */
@@ -205,7 +205,7 @@ async function reExportSinglePatch(
     return false;
   }
 
-  // Foreign-drift preview + optional hard stop (FORGE J2): show which
+  // Foreign-drift preview + optional hard stop: show which
   // payload lines are about to enter the body that the old body did not
   // carry — the case where a concurrent session's uncommitted edits in
   // OWNED files would be silently absorbed. Always previews (including
@@ -214,6 +214,7 @@ async function reExportSinglePatch(
     await reportForeignDrift({
       patch,
       patchesDir: paths.patches,
+      engineDir: paths.engine,
       newDiffContent: diffContent,
       ctx: driftCtx,
     })
@@ -238,7 +239,7 @@ async function reExportSinglePatch(
 
   // Lint against the ONCE-per-invocation hoisted context (queue context +
   // queue-wide checkJs program + per-patch result cache) instead of
-  // rebuilding ~37 s of setup for every patch in the loop (FORGE J1).
+  // rebuilding ~37 s of setup for every patch in the loop.
   const projectedMetadata = { ...patch, ...updates };
   const lintResult = await lintReExportedPatch({
     lintCtx,
@@ -284,7 +285,7 @@ async function reExportSinglePatch(
  * leave body and `filesAffected` disagreeing), then keeps the run's
  * in-memory state honest: the queue context entry is refreshed and the
  * fresh lint result is stored keyed against the just-written body — the
- * state a repeat invocation will observe (FORGE J1) — and the in-memory
+ * state a repeat invocation will observe — and the in-memory
  * manifest row mirrors the on-disk write for later loop iterations
  * (notably `--all --scan`, where `getClaimedFiles` reads this manifest).
  */

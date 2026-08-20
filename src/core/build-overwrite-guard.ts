@@ -29,7 +29,8 @@ import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { getProjectPaths } from './config.js';
 import { collectFurnaceManagedPrefixes } from './furnace-config.js';
-import { getWorkingTreeStatus } from './git-status.js';
+import type { GitStatusEntry } from './git-base.js';
+import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from './git-status.js';
 import { type ClassifiedFile, classifyFiles } from './status-classify.js';
 
 /**
@@ -51,6 +52,18 @@ export interface UnexportedDriftAtRisk {
 }
 
 /**
+ * Every path prefix build-prepare rewrites from a FireForge-owned source:
+ * the branding tree plus every Furnace-managed prefix. (`mozconfig` is a
+ * single file, not a prefix, and is tested separately.)
+ */
+function buildPrepareOwnedPrefixes(
+  binaryName: string,
+  furnacePrefixes: ReadonlySet<string>
+): string[] {
+  return [`browser/branding/${binaryName}/`, ...furnacePrefixes];
+}
+
+/**
  * True when `file` sits under a path build-prepare rewrites from a
  * FireForge-owned source: the branding tree, a Furnace-managed prefix, or
  * the generated `mozconfig`.
@@ -61,11 +74,67 @@ function isOverwrittenByBuildPrepare(
   furnacePrefixes: ReadonlySet<string>
 ): boolean {
   if (file === 'mozconfig') return true;
-  if (file.startsWith(`browser/branding/${binaryName}/`)) return true;
-  for (const prefix of furnacePrefixes) {
+  for (const prefix of buildPrepareOwnedPrefixes(binaryName, furnacePrefixes)) {
     if (file === prefix || file.startsWith(prefix)) return true;
   }
   return false;
+}
+
+/**
+ * Narrows the status entries to the ones build-prepare can overwrite,
+ * expanding collapsed untracked directories on the way.
+ *
+ * Git reports a WHOLLY untracked directory as a single `?? dir/` entry
+ * rather than listing the files under it. A directory entry has no
+ * content to compare, so `classifyFiles` matched it against neither a
+ * patch body nor the pristine baseline and bucketed it `unmanaged` — an
+ * at-risk classification. 0.43.0 shipped the guard on the raw status and
+ * so warned about every untracked branding subdirectory on every build,
+ * while `status --unmanaged` (which expands) reported the same tree
+ * clean. Expanding here is what makes the two agree by construction.
+ *
+ * Expansion is scoped to build-prepare-owned prefixes on both sides of
+ * the walk: a collapsed directory that merely CONTAINS an owned prefix
+ * (`components/` when `components/custom/` is Furnace-managed) is
+ * rewritten to the owned prefixes beneath it, so the enumeration never
+ * walks an unrelated subtree — and never trips the per-directory
+ * expansion cap on a tree whose owned prefixes are small.
+ */
+async function collectOverwrittenEntries(
+  engineDir: string,
+  status: readonly GitStatusEntry[],
+  binaryName: string,
+  furnacePrefixes: ReadonlySet<string>
+): Promise<GitStatusEntry[]> {
+  const ownedPrefixes = buildPrepareOwnedPrefixes(binaryName, furnacePrefixes);
+  const candidates: GitStatusEntry[] = [];
+
+  for (const entry of status) {
+    if (isOverwrittenByBuildPrepare(entry.file, binaryName, furnacePrefixes)) {
+      candidates.push(entry);
+      continue;
+    }
+    if (!entry.isUntracked || !entry.file.endsWith('/')) continue;
+    // A collapsed untracked ancestor of an owned prefix: walk only the
+    // owned subtrees under it, never the whole directory.
+    for (const prefix of ownedPrefixes) {
+      if (prefix.startsWith(entry.file)) {
+        candidates.push({ ...entry, file: prefix });
+      }
+    }
+  }
+
+  if (candidates.length === 0) return [];
+
+  const expanded = await expandUntrackedDirectoryEntries(engineDir, candidates);
+  // Re-test after expansion: an ancestor rewrite can only widen, and a
+  // directory that survived expansion (nothing untracked under it any
+  // more) carries no content to classify.
+  return expanded.filter(
+    (entry) =>
+      !entry.file.endsWith('/') &&
+      isOverwrittenByBuildPrepare(entry.file, binaryName, furnacePrefixes)
+  );
 }
 
 /**
@@ -88,8 +157,11 @@ export async function findUnexportedDriftAtRisk(
     const status = await getWorkingTreeStatus(paths.engine);
     if (status.length === 0) return [];
     const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
-    const candidates = status.filter((entry) =>
-      isOverwrittenByBuildPrepare(entry.file, config.binaryName, furnacePrefixes)
+    const candidates = await collectOverwrittenEntries(
+      paths.engine,
+      status,
+      config.binaryName,
+      furnacePrefixes
     );
     if (candidates.length === 0) return [];
 

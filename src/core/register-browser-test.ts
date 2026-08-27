@@ -7,9 +7,7 @@ import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
-import { findAlphabeticalMozBuildPosition, findAlphabeticalPosition } from './manifest-helpers.js';
-import { tokenizeMozBuildList } from './manifest-tokenizers.js';
-import { withParserFallback } from './parser-fallback.js';
+import { insertMozBuildListEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
 /**
@@ -20,64 +18,11 @@ function registerTestManifestTokenized(
   testDir: string,
   entry: string
 ): { result: string; previousEntry: string | undefined } {
-  const lines = content.split('\n');
-  const listResult = tokenizeMozBuildList(lines, /BROWSER_CHROME_MANIFESTS/);
-
-  if (!listResult) {
-    throw new GeneralError('Could not find BROWSER_CHROME_MANIFESTS in browser/base/moz.build');
-  }
-
-  const { insertIndex, previousEntry } = findAlphabeticalMozBuildPosition(
-    listResult.tokens,
-    `content/test/${testDir}/browser.toml`
-  );
-
-  lines.splice(insertIndex, 0, entry);
-  return { result: lines.join('\n'), previousEntry };
-}
-
-/**
- * Legacy line-based implementation preserved as fallback.
- */
-function legacyRegisterTestManifest(
-  content: string,
-  testDir: string,
-  entry: string
-): { result: string; previousEntry: string | undefined } {
-  const lines = content.split('\n');
-
-  const extractKey = (line: string): string | undefined => {
-    // Nested manifests (`content/test/a/b/browser.toml`) are supported —
-    // capture the whole directory chain, not just one segment.
-    const match = /"content\/test\/(.+)\/browser\.toml"/.exec(line);
-    return match?.[1];
-  };
-
-  let sectionStart = -1;
-  let sectionEnd = lines.length;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === undefined) continue;
-    if (/^\s+"content\/test\/.*browser\.toml"/.test(line)) {
-      if (sectionStart === -1) sectionStart = i;
-      sectionEnd = i + 1;
-    }
-  }
-
-  if (sectionStart === -1) {
-    throw new GeneralError('Could not find test manifest section in browser/base/moz.build');
-  }
-
-  const { insertIndex, previousEntry } = findAlphabeticalPosition(
-    lines,
-    sectionStart,
-    sectionEnd,
-    testDir,
-    extractKey
-  );
-
-  lines.splice(insertIndex, 0, entry);
-  return { result: lines.join('\n'), previousEntry };
+  return insertMozBuildListEntry(content, entry, {
+    listPattern: /BROWSER_CHROME_MANIFESTS/,
+    sortKey: `content/test/${testDir}/browser.toml`,
+    missingListMessage: 'Could not find BROWSER_CHROME_MANIFESTS in browser/base/moz.build',
+  });
 }
 
 /**
@@ -107,11 +52,7 @@ export async function registerTestManifest(
     return { manifest, entry, skipped: true };
   }
 
-  const { value } = withParserFallback(
-    () => registerTestManifestTokenized(content, testDir, entry),
-    () => legacyRegisterTestManifest(content, testDir, entry),
-    manifest
-  );
+  const value = registerTestManifestTokenized(content, testDir, entry);
 
   if (!dryRun) {
     await writeText(manifestPath, value.result);

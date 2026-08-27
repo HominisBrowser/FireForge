@@ -2,12 +2,10 @@
 /**
  * Engine-side and workspace-side mutation bodies for `furnace remove`.
  *
- * Split out of `remove.ts` in 0.41.0. The two `perform*RemovalMutations`
- * functions were the only large inline blocks in the furnace subsystem never
- * wrapped in a helper, and together they held `remove.ts` at 496/500 file
- * lines with `furnaceRemoveCommand` at 149/150 — one line from a build
- * failure. Extracting them inside the same file traded a function-length
- * problem for a file-length one, so they live here instead.
+ * Split out of `remove.ts`, where the two `perform*RemovalMutations`
+ * functions held the file at the per-file line cap with
+ * `furnaceRemoveCommand` at the per-function cap. Extracting them inside the
+ * same file would trade a function-length problem for a file-length one.
  *
  * Both run inside the CALLER's rollback journal rather than opening their
  * own, so a failure anywhere in the remove still restores the whole
@@ -104,12 +102,9 @@ async function restoreOverrideEngineFiles(
 /**
  * Engine-side and workspace-side removal for an OVERRIDE component.
  *
- * Extracted in 0.41.0: this and its custom-component sibling were the only
- * large inline blocks in the furnace subsystem never wrapped in a
- * `perform*Mutations` helper, and together they held `remove.ts` at 496/500
- * file lines with `furnaceRemoveCommand` at 149/150 — one line from a build
- * failure. Both run inside the caller's rollback journal rather than opening
- * their own, so a failure anywhere still restores the whole operation.
+ * Runs inside the caller's rollback journal rather than opening its own, so
+ * a failure anywhere in the remove still restores the whole operation as a
+ * single unit.
  */
 export async function performOverrideRemovalMutations(args: {
   name: string;
@@ -224,10 +219,8 @@ export async function performCustomRemovalMutations(args: {
     }
     // Drop the locale jar.mn chrome registration that `applyCustomFtlFile`
     // wrote during deploy — otherwise the engine is left with a
-    // `locale/.../${name}.ftl` entry pointing at a file we just
-    // deleted. 2026-04-21 eval (Finding #1): `furnace remove` left
-    // `browser/locales/jar.mn` referencing the missing FTL, which
-    // would break the next package-manifest validation.
+    // `locale/.../${name}.ftl` entry pointing at a file just deleted, which
+    // breaks the next package-manifest validation.
     await removeCustomFtlJarMnEntry(paths.engine, `${name}.ftl`, ftlDir, customConfig, journal);
   }
 }

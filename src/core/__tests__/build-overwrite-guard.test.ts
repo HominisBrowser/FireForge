@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * A build-prepare overwrite that destroys unexported engine drift must be
- * LOUD. Silence is what let a later re-export capture a half-reverted
- * hybrid that every gate then passed.
+ * LOUD. Silence is what lets a later re-export capture a half-reverted
+ * hybrid that every gate then passes.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 

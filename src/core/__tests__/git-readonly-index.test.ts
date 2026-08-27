@@ -8,14 +8,18 @@
  * `.git/index`), so nothing short of observing the real index file proves
  * the fix.
  */
-import { stat, utimes, writeFile } from 'node:fs/promises';
+import { access, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createTempProject, initCommittedRepo, removeTempProject } from '../../test-utils/index.js';
 import { getAllDiff } from '../git-diff.js';
-import { hasReadOnlyGitIndexScope, withPrivateGitIndex } from '../git-readonly-index.js';
+import {
+  hasReadOnlyGitIndexScope,
+  mintDisposableGitIndex,
+  withPrivateGitIndex,
+} from '../git-readonly-index.js';
 import { getWorkingTreeStatus } from '../git-status.js';
 
 /**
@@ -67,6 +71,12 @@ describe('withPrivateGitIndex', () => {
 
   it('still reports the same working-tree facts through the private index', async () => {
     await writeFile(join(repoDir, 'browser/b.js'), 'const b = 3;\n');
+    // `const b = 2;` -> `const b = 3;` is the SAME SIZE, written within the
+    // same second as the index entry. Git's racy-clean heuristic can then
+    // treat the file as unmodified without reading its content, so the scoped
+    // and unscoped probes could disagree. The sibling test above already
+    // invalidates for this reason.
+    await invalidateStatCache(repoDir, 'browser/b.js');
     await writeFile(join(repoDir, 'browser/new.js'), 'const n = 1;\n');
 
     const scoped = await withPrivateGitIndex(repoDir, async () => ({
@@ -97,5 +107,51 @@ describe('withPrivateGitIndex', () => {
     await writeFile(join(projectRoot, 'plain.txt'), 'x\n');
     await expect(withPrivateGitIndex(notARepo, () => Promise.resolve('ran'))).resolves.toBe('ran');
     expect(hasReadOnlyGitIndexScope()).toBe(false);
+  });
+});
+
+describe('mintDisposableGitIndex', () => {
+  let projectRoot: string;
+  let repoDir: string;
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-disposable-index-');
+    repoDir = join(projectRoot, 'engine');
+    await initCommittedRepo(repoDir, { 'a.txt': 'a\n' });
+  });
+
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it('hands back an index overlay that is a real file, and disposes it', async () => {
+    const minted = await mintDisposableGitIndex(repoDir);
+
+    expect(minted).toBeDefined();
+    const indexFile = minted?.env['GIT_INDEX_FILE'];
+    expect(indexFile).toBeDefined();
+    // Seeded from the repo's own index — an empty one would make a tracked,
+    // unmodified file look like a fresh add.
+    await expect(access(indexFile ?? '')).resolves.toBeUndefined();
+
+    await minted?.dispose();
+    await expect(access(indexFile ?? '')).rejects.toThrow();
+  });
+
+  it('gives each caller its own index, so two concurrent callers cannot collide', async () => {
+    const [first, second] = await Promise.all([
+      mintDisposableGitIndex(repoDir),
+      mintDisposableGitIndex(repoDir),
+    ]);
+
+    expect(first?.env['GIT_INDEX_FILE']).not.toBe(second?.env['GIT_INDEX_FILE']);
+
+    await first?.dispose();
+    await second?.dispose();
+  });
+
+  it('returns undefined for a directory that is not a git checkout', async () => {
+    // The caller's fallback depends on this being a value, not a throw.
+    await expect(mintDisposableGitIndex(join(projectRoot, 'nowhere'))).resolves.toBeUndefined();
   });
 });

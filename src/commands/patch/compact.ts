@@ -179,7 +179,7 @@ export async function patchCompactCommand(
     outro('Dry run complete — no changes made');
     return;
   }
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Compact cancelled');
     return;
   }

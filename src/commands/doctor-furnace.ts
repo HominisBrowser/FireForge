@@ -10,7 +10,12 @@ import {
   loadFurnaceState,
   updateFurnaceState,
 } from '../core/furnace-config.js';
-import { CUSTOM_ELEMENTS_JS, JAR_MN, resolveFtlDir } from '../core/furnace-constants.js';
+import {
+  CUSTOM_ELEMENTS_JS,
+  JAR_MN,
+  resolveFtlDir,
+  WIDGETS_DIR,
+} from '../core/furnace-constants.js';
 import { getFurnaceLockPath, runFurnaceMutation } from '../core/furnace-operation.js';
 import { hasBlockingStepErrors } from '../core/furnace-step-errors.js';
 import { validateAllComponents } from '../core/furnace-validate.js';
@@ -23,8 +28,8 @@ import { isProcessAlive, toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import type { CheckResult, DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, warning } from './doctor-check-core.js';
+import { furnaceConfigSyncCheck } from './doctor-furnace-config-sync.js';
 import { furnaceStaleJarRegistrationCheck } from './doctor-furnace-jar.js';
-import { furnaceManifestSyncCheck } from './doctor-furnace-manifest-sync.js';
 
 const ENGINE_REPAIRABLE_OPERATIONS: readonly FurnacePendingRepairOperation[] = [
   'preview-teardown',
@@ -134,7 +139,7 @@ async function collectFurnaceDrift(
       continue;
     }
     try {
-      if (await hasOverrideEngineDrift(engineDir, componentDir, overrideConfig, ftlDir)) {
+      if (await hasOverrideEngineDrift({ engineDir, componentDir, ftlDir }, overrideConfig)) {
         drifted.push(name);
       }
     } catch {
@@ -151,7 +156,9 @@ async function collectFurnaceDrift(
       continue;
     }
     try {
-      if (await hasCustomEngineDrift(projectRoot, name, componentDir, customConfig, ftlDir)) {
+      if (
+        await hasCustomEngineDrift({ root: projectRoot, name, componentDir, ftlDir }, customConfig)
+      ) {
         drifted.push(name);
       }
     } catch {
@@ -442,7 +449,7 @@ const furnaceEnginePathsCheck: DoctorCheckDefinition = {
     const expectedPaths: readonly string[] = [
       CUSTOM_ELEMENTS_JS,
       JAR_MN,
-      'toolkit/content/widgets',
+      WIDGETS_DIR,
       resolveFtlDir(ctx.furnaceConfig?.ftlBasePath),
       ...hostDocs,
     ];
@@ -573,18 +580,17 @@ async function readFurnaceLockPid(lockPath: string): Promise<number | null> {
 }
 
 /**
- * "Furnace stale lock" check: detect and (under `--repair-furnace`)
- * remove a `.fireforge/furnace.lock` directory whose owner process is no
- * longer alive.
+ * "Furnace stale lock" check: detect and (under `--repair-furnace`) remove a
+ * `.fireforge/furnace.lock` directory whose owner process is no longer
+ * alive.
  *
  * This is the recovery path when the signal-handler sweep
  * (`forceReleaseFurnaceLocksForActiveOperations` in `bin/fireforge.ts`)
- * misses — e.g. a SIGKILL'd process that never got to run the handler, or
- * a lock created by an older FireForge release without a PID file. The
- * motivating eval scenario: SIGINT'ing `furnace preview` left the lock
- * behind, and the next `fireforge test --build` timed out waiting for it.
- * `doctor --repair-furnace` now clears the lock explicitly so the next
- * command runs immediately.
+ * misses — a SIGKILL'd process that never ran the handler, or a lock created
+ * by an older FireForge release without a PID file. SIGINT'ing `furnace
+ * preview` leaves the lock behind, and the next `fireforge test --build`
+ * then times out waiting for it; `doctor --repair-furnace` clears it so the
+ * next command runs immediately.
  */
 const furnaceStaleLockCheck: DoctorCheckDefinition = {
   name: 'Furnace lock',
@@ -604,16 +610,14 @@ const furnaceStaleLockCheck: DoctorCheckDefinition = {
     // Two signals mark a lock as stale:
     //   1. PID file says owner is dead → unambiguous, remove immediately.
     //   2. PID file absent AND lock is older than 60s → older FireForge
-    //      releases (or an externally-created lock directory) fall into
-    //      this bucket; the age gate avoids false positives on a lock
-    //      that was just acquired by a concurrent process that hadn't
-    //      written its PID yet.
+    //      releases (or an externally-created lock directory) fall into this
+    //      bucket; the age gate avoids false positives on a lock just
+    //      acquired by a concurrent process that has not written its PID yet.
     //
-    // `isProcessAlive` treats EPERM as ALIVE. The local copy it replaced
-    // returned false for EPERM, so a furnace lock held by a live process
-    // owned by another uid was reported as "owner is no longer running"
-    // and deleted by --repair-furnace, dropping mutual exclusion under a
-    // concurrent furnace operation.
+    // `isProcessAlive` treats EPERM as ALIVE. Returning false for EPERM
+    // reports a furnace lock held by a live process owned by another uid as
+    // "owner is no longer running", and --repair-furnace then deletes it,
+    // dropping mutual exclusion under a concurrent furnace operation.
     const ownerDead = pid !== null && !isProcessAlive(pid);
     const pidMissingAndOld = pid === null && (ageMs ?? 0) > 60_000;
     const isStale = ownerDead || pidMissingAndOld;
@@ -663,5 +667,5 @@ export const FURNACE_DOCTOR_CHECKS: readonly DoctorCheckDefinition[] = [
   furnaceStaleLockCheck,
   furnaceEngineStateCheck,
   furnaceComponentValidationCheck,
-  furnaceManifestSyncCheck,
+  furnaceConfigSyncCheck,
 ];

@@ -465,7 +465,7 @@ describe('findExecutable', () => {
   });
 });
 
-describe('process-group reaping (0.37.0 item 9a)', () => {
+describe('process-group reaping', () => {
   const ORPHAN_LINE =
     '4243 /usr/bin/python3 -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=12)';
 

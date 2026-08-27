@@ -81,6 +81,7 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
  * engine HEAD SHA (or an empty string when the engine has no HEAD yet) and
  * the current binaryName. Caller is responsible for only invoking this
  * after the build exit code was zero.
+ *
  * @param projectRoot - Root directory of the project
  * @param engineDir - Path to the engine directory
  * @param binaryName - Current `binaryName` from fireforge.json
@@ -96,10 +97,10 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
  * @param staticComponentsHandling - `'auto'` (default) refreshes the
  *   static-components anchor whenever the coverage claim is `'full'` or
  *   absent. `'refresh'` records it even for a scoped coverage claim whose
- *   implementation escalated to a full build. `'carry-forward'` always keeps the previous anchor: needed by
- * `--extend-coverage`, whose union can EVALUATE to `'full'`
- *   while the build that produced it was still a scoped `mach build
- *   faster` that did not rebake the compiled table.
+ *   implementation escalated to a full build. `'carry-forward'` always
+ *   keeps the previous anchor: needed by `--extend-coverage`, whose union
+ *   can EVALUATE to `'full'` while the build that produced it was still a
+ *   scoped `mach build faster` that did not rebake the compiled table.
  */
 export async function writeBuildBaseline(
   projectRoot: string,
@@ -152,17 +153,16 @@ export async function writeBuildBaseline(
 }
 
 /**
- * Reads the current engine workdir and computes a SHA-256 fingerprint
- * for every packageable path that is either modified against HEAD or
- * untracked. The stale-build preflight (`checkStaleBuildForTest`)
- * compares the live fingerprint for each packageable-dirty file to
- * the baseline's entry — paths where the hash matches are "the build
- * already saw this exact content", paths where it differs (or that
- * are new since the baseline) are genuinely stale.
+ * Reads the current engine workdir and computes a SHA-256 fingerprint for
+ * every packageable path that is either modified against HEAD or untracked.
+ * The stale-build preflight (`checkStaleBuildForTest`) compares the live
+ * fingerprint for each packageable-dirty file to the baseline's entry: a
+ * matching hash means the build already saw this exact content, a differing
+ * or new one means the file is genuinely stale.
  *
- * Returns `undefined` on any git failure so a broken probe never
- * corrupts the on-disk baseline with `{}`; the stale-check then falls
- * back to the pre-0.16.0 "path-only" behavior on the next test run.
+ * Returns `undefined` on any git failure so a broken probe never corrupts
+ * the on-disk baseline with `{}`; the stale-check then falls back to a
+ * path-only comparison.
  */
 async function collectPackageableFingerprints(
   engineDir: string

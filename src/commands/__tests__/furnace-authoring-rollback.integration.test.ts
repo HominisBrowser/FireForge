@@ -110,8 +110,8 @@ describe('Furnace authoring rollback integration', () => {
 
   describe('validation runs before furnace.json is auto-created', () => {
     it('create rejects an invalid name without writing furnace.json', async () => {
-      // Regression: previously ensureFurnaceConfig() ran before validation, so
-      // a typo at the CLI left a fresh furnace.json behind in any directory.
+      // Running ensureFurnaceConfig() before validation leaves a fresh
+      // furnace.json behind in any directory after a CLI typo.
       await expect(
         furnaceCreateCommand(projectRoot, 'NoHyphen', { description: 'Bad name' })
       ).rejects.toThrow(InvalidArgumentError);

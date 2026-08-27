@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
 import {
   applyCustomComponent,
   applyOverrideComponent,
@@ -10,13 +11,7 @@ import {
 } from '../furnace-apply-helpers.js';
 import { createRollbackJournal } from '../furnace-rollback.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  copyFile: vi.fn(),
-  ensureDir: vi.fn(),
-  removeFile: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../furnace-registration.js', () => ({
   addCustomElementRegistration: vi.fn(),
@@ -85,16 +80,18 @@ describe('FTL localization lifecycle', () => {
       mockPathExists.mockResolvedValue(true);
 
       const result = await applyCustomComponent(
-        '/engine',
-        'my-widget',
-        '/comp/my-widget',
+        {
+          engineDir: '/engine',
+          name: 'my-widget',
+          componentDir: '/comp/my-widget',
+          ftlDir: FTL_DIR,
+        },
         {
           description: 'Widget',
           targetPath: 'toolkit/content/widgets/my-widget',
           register: false,
           localized: true,
-        },
-        FTL_DIR
+        }
       );
 
       // The .ftl file should be copied to the FTL_DIR location
@@ -110,16 +107,18 @@ describe('FTL localization lifecycle', () => {
       mockPathExists.mockResolvedValue(true);
 
       await applyCustomComponent(
-        '/engine',
-        'my-widget',
-        '/comp/my-widget',
+        {
+          engineDir: '/engine',
+          name: 'my-widget',
+          componentDir: '/comp/my-widget',
+          ftlDir: FTL_DIR,
+        },
         {
           description: 'Widget',
           targetPath: 'toolkit/content/widgets/my-widget',
           register: false,
           localized: false,
-        },
-        FTL_DIR
+        }
       );
 
       // Only the .mjs file should be copied, no FTL copy
@@ -135,16 +134,18 @@ describe('FTL localization lifecycle', () => {
       mockPathExists.mockResolvedValue(false);
 
       await applyCustomComponent(
-        '/engine',
-        'my-widget',
-        '/comp/my-widget',
+        {
+          engineDir: '/engine',
+          name: 'my-widget',
+          componentDir: '/comp/my-widget',
+          ftlDir: FTL_DIR,
+        },
         {
           description: 'Widget',
           targetPath: 'toolkit/content/widgets/my-widget',
           register: false,
           localized: true,
-        },
-        FTL_DIR
+        }
       );
 
       const ftlCalls = mockCopyFile.mock.calls.filter((call) => call[1].endsWith('.ftl'));
@@ -164,17 +165,19 @@ describe('FTL localization lifecycle', () => {
       mockPathExists.mockResolvedValue(true);
 
       await applyCustomComponent(
-        '/engine',
-        'mybrowser-dock-button',
-        '/comp/mybrowser-dock-button',
+        {
+          engineDir: '/engine',
+          name: 'mybrowser-dock-button',
+          componentDir: '/comp/mybrowser-dock-button',
+          ftlDir: FTL_DIR,
+        },
         {
           description: 'Dock button',
           targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
           register: false,
           localized: true,
           sharedFtl: 'browser/mybrowser-dock.ftl',
-        },
-        FTL_DIR
+        }
       );
 
       const ftlCalls = mockCopyFile.mock.calls.filter((call) => call[1].endsWith('.ftl'));
@@ -182,7 +185,7 @@ describe('FTL localization lifecycle', () => {
     });
 
     it('prunes a dangling per-widget locale jar.mn entry for a sharedFtl widget', async () => {
-      // Field report: a localized sharedFtl widget (moz-hominis-settings) had
+      // A localized sharedFtl widget can have
       // a stale `locale/@AB_CD@/toolkit/global/<name>.ftl` line — written by an
       // older FireForge — pointing at a .ftl that does not exist, so
       // `mach build` failed hard. Apply must drop that per-widget line while
@@ -200,17 +203,19 @@ describe('FTL localization lifecycle', () => {
       const { removeLocaleFtlJarMnEntry } = await import('../furnace-registration.js');
 
       const result = await applyCustomComponent(
-        '/engine',
-        'mybrowser-dock-button',
-        '/comp/mybrowser-dock-button',
+        {
+          engineDir: '/engine',
+          name: 'mybrowser-dock-button',
+          componentDir: '/comp/mybrowser-dock-button',
+          ftlDir: FTL_DIR,
+        },
         {
           description: 'Dock button',
           targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
           register: false,
           localized: true,
           sharedFtl: 'browser/mybrowser-dock.ftl',
-        },
-        FTL_DIR
+        }
       );
 
       // The per-widget toolkit/global entry is pruned via removeLocaleFtlJarMnEntry;
@@ -236,17 +241,19 @@ describe('FTL localization lifecycle', () => {
       const { removeLocaleFtlJarMnEntry } = await import('../furnace-registration.js');
 
       await applyCustomComponent(
-        '/engine',
-        'mybrowser-dock-button',
-        '/comp/mybrowser-dock-button',
+        {
+          engineDir: '/engine',
+          name: 'mybrowser-dock-button',
+          componentDir: '/comp/mybrowser-dock-button',
+          ftlDir: FTL_DIR,
+        },
         {
           description: 'Dock button',
           targetPath: 'toolkit/content/widgets/mybrowser-dock-button',
           register: false,
           localized: true,
           sharedFtl: 'browser/mybrowser-dock.ftl',
-        },
-        FTL_DIR
+        }
       );
 
       expect(removeLocaleFtlJarMnEntry).not.toHaveBeenCalled();
@@ -267,16 +274,13 @@ describe('FTL localization lifecycle', () => {
       ] as never);
 
       const result = await applyOverrideComponent(
-        '/engine',
-        'moz-card',
-        '/comp/moz-card',
+        { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
         {
           type: 'full',
           description: 'Full card override',
           basePath: 'toolkit/content/widgets/moz-card',
           baseVersion: '145.0',
-        },
-        FTL_DIR
+        }
       );
 
       expect(mockCopyFile).toHaveBeenCalledWith(
@@ -294,16 +298,13 @@ describe('FTL localization lifecycle', () => {
       ] as never);
 
       const result = await applyOverrideComponent(
-        '/engine',
-        'moz-card',
-        '/comp/moz-card',
+        { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
         {
           type: 'css-only',
           description: 'CSS-only card override',
           basePath: 'toolkit/content/widgets/moz-card',
           baseVersion: '145.0',
-        },
-        FTL_DIR
+        }
       );
 
       // css-only overrides only copy .css files — .ftl should not appear

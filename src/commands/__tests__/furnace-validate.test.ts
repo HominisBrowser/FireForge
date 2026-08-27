@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(() => Promise.resolve([])),
 }));
@@ -26,6 +28,10 @@ vi.mock('../../core/furnace-registration.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
   getFurnacePaths: vi.fn(() => ({
     furnaceConfig: '/project/furnace.json',
@@ -64,19 +70,9 @@ vi.mock('../../core/furnace-validate.js', () => ({
   validateComponent: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  error: vi.fn(),
-  info: vi.fn(),
-  intro: vi.fn(),
-  note: vi.fn(),
-  outro: vi.fn(),
-  success: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { readdir } from 'node:fs/promises';
 
@@ -189,8 +185,23 @@ describe('furnaceValidateCommand', () => {
     expect(validateComponent).not.toHaveBeenCalled();
   });
 
-  it('throws when a named component directory does not exist on disk', async () => {
+  it('refuses when the engine checkout is missing (the rung validate lacked)', async () => {
+    // `furnace validate` was the one command in the family that checked
+    // furnace.json alone. Against a missing engine it produced downstream
+    // noise instead of the family's shared precondition refusal.
     vi.mocked(pathExists).mockResolvedValue(false);
+
+    await expect(furnaceValidateCommand('/project', 'moz-card')).rejects.toThrow(
+      /Engine directory not found/i
+    );
+
+    expect(validateComponent).not.toHaveBeenCalled();
+  });
+
+  it('throws when a named component directory does not exist on disk', async () => {
+    // Engine present (first pathExists call, from the shared furnace
+    // precondition), component directory absent.
+    vi.mocked(pathExists).mockResolvedValueOnce(true).mockResolvedValue(false);
 
     await expect(furnaceValidateCommand('/project', 'moz-card')).rejects.toThrow(
       /Component directory not found/i
@@ -363,7 +374,7 @@ describe('furnaceValidateCommand', () => {
       message: `jar.mn registers old-helper.mjs for ${component}, but the source file no longer exists`,
     });
 
-    it('prunes stale jar.mn registrations with --fix (0.34.0)', async () => {
+    it('prunes stale jar.mn registrations with --fix', async () => {
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
         .mockResolvedValueOnce([]);
@@ -389,7 +400,7 @@ describe('furnaceValidateCommand', () => {
       );
     });
 
-    it('warns when pruning stale jar.mn lines fails (0.34.0)', async () => {
+    it('warns when pruning stale jar.mn lines fails', async () => {
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')]);
@@ -404,7 +415,7 @@ describe('furnaceValidateCommand', () => {
       );
     });
 
-    it('stringifies a non-Error prune failure (0.34.0)', async () => {
+    it('stringifies a non-Error prune failure', async () => {
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')]);
@@ -604,11 +615,11 @@ describe('furnaceValidateCommand', () => {
       );
     });
 
-    it('does not register components absent from the issue list (0.41.0)', async () => {
-      // Until 0.41.0 this loop iterated every entry in `config.custom`, so
-      // `furnace validate <one> --fix` wrote customElements.js registrations
-      // for EVERY custom component — outside the issue list it was handed,
-      // and invisibly, since `fixed` was never incremented in that block.
+    it('does not register components absent from the issue list', async () => {
+      // Iterating every entry in `config.custom` makes
+      // `furnace validate <one> --fix` write customElements.js
+      // registrations for EVERY custom component — outside the issue list it
+      // was handed, and invisibly, since `fixed` is never incremented there.
       vi.mocked(loadFurnaceConfig).mockResolvedValue({
         version: 1,
         componentPrefix: 'moz-',
@@ -643,7 +654,7 @@ describe('furnaceValidateCommand', () => {
       );
     });
 
-    it('repairs a registration-only defect via missing-custom-element-registration (0.41.0)', async () => {
+    it('repairs a registration-only defect via missing-custom-element-registration', async () => {
       // The defect the scoped repair loop exists for: a component whose ONLY
       // issue is that customElements.js never mentions it. Scoping --fix to
       // the issue list removed the old (over-broad) path that repaired this;
@@ -704,9 +715,13 @@ describe('furnaceValidateCommand', () => {
 
     it('skips customElements registration when component directory does not exist', async () => {
       vi.mocked(validateComponent).mockResolvedValue([mjsIssue('moz-sidebar')]);
-      // First call: component dir check in main command (true)
-      // Second call: component dir check in autoFixIssues (false)
-      vi.mocked(pathExists).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      // First call: engine check in the shared furnace precondition (true)
+      // Second call: component dir check in main command (true)
+      // Third call: component dir check in autoFixIssues (false)
+      vi.mocked(pathExists)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false);
 
       await expect(
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })

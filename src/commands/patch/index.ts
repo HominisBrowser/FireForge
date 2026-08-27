@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge patch <verb>` parent command. Groups single-patch
- * mutations and planners (`compact`, `delete`, `lint-ignore`, `move-files`,
- * `rename`, `reorder`, `staged-dependency`, `tier`) so they do not clutter the top-level command
- * list.
- * Queue-level verbs like `lint`, `export`, `verify`, and `status` stay
- * flat.
+ * `fireforge patch <verb>` parent command. Groups single-patch mutations and
+ * planners (`compact`, `delete`, `lint-ignore`, `move-files`, `rename`,
+ * `reorder`, `staged-dependency`, `tier`) so they do not clutter the
+ * top-level command list. Queue-level verbs like `lint`, `export`, `verify`,
+ * and `status` stay flat.
  */
 
 import { Command } from 'commander';
@@ -33,12 +32,11 @@ export function registerPatch(program: Command, context: CommandContext): void {
     .description(
       'Manage individual patches in the queue (compact, delete, lint-ignore, move-files, rename, reorder, staged-dependency, tier)'
     )
-    // Match `fireforge furnace`'s no-args contract: print the group's help and
-    // exit 0. Without this default action, commander routes `fireforge patch`
-    // (no subcommand) through its own help-then-exit-1 path, so scripts that
-    // probe the CLI surface see a misleading non-zero exit for a purely
-    // informational invocation. The action prints the exact same help commander
-    // would otherwise print, but returns successfully.
+    // Match `fireforge furnace`'s no-args contract: print the group's help
+    // and exit 0. Without this default action, commander routes
+    // `fireforge patch` (no subcommand) through its own help-then-exit-1
+    // path, so scripts probing the CLI surface see a misleading non-zero
+    // exit for a purely informational invocation.
     .action(() => {
       patch.outputHelp();
     });

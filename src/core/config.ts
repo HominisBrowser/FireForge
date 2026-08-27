@@ -41,14 +41,8 @@ export { validateConfig } from './config-validate.js';
  * Config-file existence probe.
  *
  * Uses {@link pathExistsStrict} deliberately: a permission error probing
- * `fireforge.json` must propagate rather than read as "no config here", which
- * is what plain `pathExists` would report.
- *
- * The `fsUtils as typeof fsUtils & { pathExistsStrict?: … }` cast this
- * replaced re-declared a real, non-optional export as optional so a partial
- * `vi.mock` of `utils/fs.js` would fall back to `pathExists` — production code
- * shaped around a test double, and shaped around the *wrong* function, since
- * the two differ precisely on whether EACCES propagates.
+ * `fireforge.json` must propagate rather than read as "no config here",
+ * which is what plain `pathExists` would report.
  */
 async function configPathExists(path: string): Promise<boolean> {
   return fsUtils.pathExistsStrict(path);
@@ -162,13 +156,10 @@ export async function writeConfigDocument(
 /**
  * Runs an operation while holding a sidecar lock on `fireforge.json`.
  *
- * Motivating case (2026-04-21 eval): two concurrent `fireforge config
- * <key> <value>` invocations each ran load → mutate → writeJson against
- * the same on-disk fireforge.json. The second rename landed after the
- * first, silently dropping the first writer's key — both commands exited
- * `0`, but only one change survived. This helper turns the same
- * read-modify-write sequence into a serialised operation so a concurrent
- * writer now waits for the lock rather than racing on the document.
+ * Two concurrent `fireforge config <key> <value>` invocations each run
+ * load → mutate → writeJson against the same document; without this lock the
+ * second rename lands after the first and silently drops the first writer's
+ * key, with both commands exiting 0.
  *
  * Reads (`loadConfig`, `loadRawConfigDocument`) stay lock-free: writers
  * always use `writeJson`'s atomic temp-file + rename, so a reader observes
@@ -177,7 +168,7 @@ export async function writeConfigDocument(
  *
  * The lock is a sidecar directory `${config}.fireforge-config.lock`, and
  * `withFileLock` handles stale-lock recovery (PID-alive probe, age-based
- * fallback) — a crashed writer does not permanently block future writes.
+ * fallback), so a crashed writer does not permanently block future writes.
  *
  * @param root - Root directory of the project
  * @param operation - Async function to run while holding the lock

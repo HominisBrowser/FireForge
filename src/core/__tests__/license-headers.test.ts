@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
 import {
   addLicenseHeaderToFile,
   containsUpstreamLicenseText,
@@ -11,10 +12,7 @@ import {
   hasUpstreamMplBlockHeader,
 } from '../license-headers.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 import { readText, writeText } from '../../utils/fs.js';
 

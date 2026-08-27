@@ -66,12 +66,11 @@ describe('tagLintIssues', () => {
     expect(result).toBe(issues);
   });
 
-  // 2026-04-24 eval Finding 4: aggregate patch-size findings have the
-  // synthetic `(patch)` file which never appeared in a real diff set, so
-  // they were always tagged `[cumulative]` under `--only-introduced` even
-  // when the aggregate IS the diff the operator asked about. Tagging now
-  // promotes the aggregate finding to `introduced` whenever the diff set
-  // is non-empty.
+  // Aggregate patch-size findings carry the synthetic `(patch)` file, which
+  // never appears in a real diff set, so they are always tagged
+  // `[cumulative]` under `--only-introduced` even when the aggregate IS the
+  // diff the operator asked about. Tagging promotes the aggregate finding to
+  // `introduced` whenever the diff set is non-empty.
   it('tags aggregate patch-size findings as introduced when diff set is non-empty', () => {
     const issues: PatchLintIssue[] = [
       {

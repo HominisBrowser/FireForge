@@ -7,7 +7,7 @@ import {
   hasComponentChanged,
   hasCustomEngineDrift,
   hasOverrideEngineDrift,
-} from '../../core/furnace-apply.js';
+} from '../../core/furnace-apply-helpers.js';
 import {
   furnaceConfigExists,
   getFurnacePaths,
@@ -28,7 +28,11 @@ import { info, intro, note, outro, warn } from '../../utils/logger.js';
  * Displays detailed status for a single Furnace component, including registration drift.
  * @param name - Component tag name to inspect
  * @param config - Loaded Furnace configuration
+ * @param state - Loaded furnace state, for applied/engine checksums
  * @param projectRoot - Root directory of the project
+ * @param paths - Resolved project paths
+ * @param furnacePaths - Resolved Furnace-specific paths
+ * @param ftlDir - Engine-relative directory localized components deploy their `.ftl` into
  */
 async function showDetailedComponentStatus(
   name: string,
@@ -87,10 +91,8 @@ async function showDetailedComponentStatus(
     }
 
     const engineDrifted = await hasOverrideEngineDrift(
-      paths.engine,
-      overrideDir,
-      overrideConfig,
-      ftlDir
+      { engineDir: paths.engine, componentDir: overrideDir, ftlDir },
+      overrideConfig
     );
     lines.push(`${engineDrifted ? '\u2717' : '\u2713'} Engine matches override workspace`);
 
@@ -241,11 +243,10 @@ export async function furnaceStatusCommand(projectRoot: string, name?: string): 
      *
      * The engine probe sits behind `else if` deliberately: a component whose
      * workspace already changed does not need an engine comparison to decide
-     * what `status` reports, and the probe is the expensive half (it re-hashes
-     * deployed files). The consequence is that engine drift can go UNREPORTED
-     * for a component that also has workspace changes — the summary says
-     * "workspace changed", not both. Preserved verbatim from the two
-     * hand-written copies this replaced.
+     * what `status` reports, and the probe is the expensive half (it
+     * re-hashes deployed files). The consequence is that engine drift can go
+     * UNREPORTED for a component that also has workspace changes — the
+     * summary says "workspace changed", not both.
      */
     const scanFamily = async <TConfig>(
       entries: [string, TConfig][],
@@ -274,14 +275,15 @@ export async function furnaceStatusCommand(projectRoot: string, name?: string): 
       Object.entries(config.overrides),
       furnacePaths.overridesDir,
       'override',
-      (_name, componentDir, cfg) => hasOverrideEngineDrift(paths.engine, componentDir, cfg, ftlDir)
+      (_name, componentDir, cfg) =>
+        hasOverrideEngineDrift({ engineDir: paths.engine, componentDir, ftlDir }, cfg)
     );
     await scanFamily(
       Object.entries(config.custom),
       furnacePaths.customDir,
       'custom',
       (name, componentDir, cfg) =>
-        hasCustomEngineDrift(projectRoot, name, componentDir, cfg, ftlDir)
+        hasCustomEngineDrift({ root: projectRoot, name, componentDir, ftlDir }, cfg)
     );
 
     if (drift.workspaceChanged) {

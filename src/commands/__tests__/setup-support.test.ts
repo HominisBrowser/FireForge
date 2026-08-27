@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 const promptMocks = vi.hoisted(() => ({
   group: vi.fn(),
   text: vi.fn(),
@@ -41,9 +43,7 @@ vi.mock('../../utils/fs.js', () => ({
   writeJson: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  cancel: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../../utils/package-root.js', () => ({
   getPackageRoot: vi.fn(() => '/pkg'),
@@ -469,11 +469,11 @@ describe('setup-support', () => {
   });
 
   it('updates only the license field on an existing root package.json and preserves deps', async () => {
-    // Eval regression: `fireforge setup --force` that picked a new license
-    // rewrote fireforge.json but left the root package.json untouched. The
-    // two files then disagreed about the project license. The fix syncs the
-    // package.json `license` field while preserving every other author-
-    // editorial field (dependencies, scripts, name, description, …).
+    // A `fireforge setup --force` that picks a new license must not rewrite
+    // fireforge.json while leaving the root package.json untouched — the two
+    // files then disagree about the project license. The sync updates the
+    // package.json `license` field while preserving every other
+    // author-editorial field (dependencies, scripts, name, description, …).
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(filePath === '/project/package.json')
     );

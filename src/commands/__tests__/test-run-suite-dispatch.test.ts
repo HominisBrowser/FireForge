@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Regression coverage for item E1 (0.32.0): a single-suite `fireforge test`
- * run dispatches to the suite-specific mach command (`mach xpcshell-test` /
- * `mach mochitest`) — which skips the mozlog resource monitor that crashes
- * generic `mach test` on a broken host — and reaches a passing test instead
- * of exhausting the harness-crash retry budget. `--generic-mach-test` opts
- * back into the generic command.
+ * A single-suite `fireforge test` run dispatches to the suite-specific mach
+ * command (`mach xpcshell-test` / `mach mochitest`) — which skips the mozlog
+ * resource monitor that crashes generic `mach test` on a broken host — and
+ * reaches a passing test instead of exhausting the harness-crash retry
+ * budget. `--generic-mach-test` opts back into the generic command.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { mochitestWithOutput, testWithOutput, xpcshellTestWithOutput } from '../../core/mach.js';
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import { runTestsWithRetries, type TestRunContext, type TestSuite } from '../test-run.js';
 
 vi.mock('../../core/mach.js', () => ({
@@ -23,11 +23,7 @@ vi.mock('../test-appdir.js', () => ({
   maybeInjectAppdirArg: vi.fn(() => Promise.resolve(false)),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  note: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 const GREEN = { exitCode: 0, stdout: 'TEST-START | t\nTEST-PASS | t\n', stderr: '' };
 // The exact macOS mozlog resource-monitor startup traceback that aborts
@@ -116,9 +112,9 @@ describe('runTestsWithRetries suite dispatch (item E1)', () => {
 });
 
 /**
- * Firefox's xpcshell harness defaults its profile dir to a
- * FIXED $TMPDIR path, so concurrent invocations collided. Every harness
- * invocation that can dispatch xpcshell now exports a fresh per-invocation
+ * Firefox's xpcshell harness defaults its profile dir to a FIXED $TMPDIR
+ * path, so concurrent invocations collide. Every harness invocation that can
+ * dispatch xpcshell exports a fresh per-invocation
  * XPCSHELL_TEST_PROFILE_DIR; pure mochitest dispatches stay untouched.
  */
 describe('per-invocation xpcshell profile dir', () => {

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Regression coverage for item A (0.32.0): the ad-hoc explicit-file-list
- * lint path (`fireforge lint <files>`) must resolve each file's owning
- * patch for the patch-size rules, so it agrees with `lint --per-patch` and
- * `re-export --dry-run` instead of synthesising a phantom oversized patch
- * from the operator's cross-patch file selection.
+ * The ad-hoc explicit-file-list lint path (`fireforge lint <files>`) must
+ * resolve each file's owning patch for the patch-size rules, so it agrees
+ * with `lint --per-patch` and `re-export --dry-run` instead of synthesising a
+ * phantom oversized patch from the operator's cross-patch file selection.
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -26,6 +25,12 @@ import { warn } from '../../utils/logger.js';
 import { lintCommand } from '../lint.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),

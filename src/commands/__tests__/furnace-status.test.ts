@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
@@ -25,6 +27,10 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -52,7 +58,7 @@ vi.mock('../../core/furnace-config.js', () => ({
   })),
 }));
 
-vi.mock('../../core/furnace-apply.js', () => ({
+vi.mock('../../core/furnace-apply-helpers.js', () => ({
   extractComponentChecksums: vi.fn(() => ({})),
   hasComponentChanged: vi.fn(() => Promise.resolve(false)),
   hasOverrideEngineDrift: vi.fn(() => Promise.resolve(false)),
@@ -67,19 +73,13 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  note: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import {
   hasComponentChanged,
   hasCustomEngineDrift,
   hasOverrideEngineDrift,
-} from '../../core/furnace-apply.js';
+} from '../../core/furnace-apply-helpers.js';
 import {
   furnaceConfigExists,
   loadFurnaceConfig,

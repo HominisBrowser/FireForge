@@ -4,6 +4,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   createDefaultFurnaceConfig: vi.fn(
     (options: { binaryName?: string } = {}): Record<string, unknown> => {
       const config: Record<string, unknown> = {
@@ -24,6 +28,12 @@ vi.mock('../../core/furnace-config.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -96,7 +106,10 @@ vi.mock('../../utils/fs.js', () => ({
   writeText: vi.fn(),
 }));
 
-vi.mock('../../core/token-manager.js', () => ({
+vi.mock('../../core/token-manager.js', async (importOriginal) => ({
+  // TOKEN_MODES and its `isTokenMode` guard are pure data and a pure
+  // predicate; the command's validation is what these tests exercise.
+  ...(await importOriginal<typeof import('../../core/token-manager.js')>()),
   getTokensCssPath: vi.fn((binaryName: string) => `browser/themes/shared/${binaryName}-tokens.css`),
 }));
 
@@ -212,12 +225,10 @@ describe('furnaceInitCommand', () => {
   });
 
   it('rejects file-shaped --ftl-base-path values ending in .ftl', async () => {
-    // 2026-04-21 eval (Finding #6): passing a file-like path to
-    // --ftl-base-path was accepted, and the subsequent localized
-    // `furnace create` wrote an `.mjs` importing `<name>.ftl` but never
-    // registered the component in furnace.json, stranding the scaffold.
-    // The shape check now refuses the file-like path up-front so no
-    // partial state is written.
+    // Passing a file-like path to --ftl-base-path must be refused up-front:
+    // accepting it makes the subsequent localized `furnace create` write an
+    // `.mjs` importing `<name>.ftl` while never registering the component in
+    // furnace.json, stranding the scaffold.
     await expect(
       furnaceInitCommand('/project', { ftlBasePath: 'browser/forgefresh.ftl' })
     ).rejects.toThrow(/looks like a file/);
@@ -294,10 +305,9 @@ describe('furnaceInitCommand', () => {
   });
 
   it('derives tokenPrefix from fireforge.json binaryName by default', async () => {
-    // 2026-04-21 eval (Finding #8): `furnace init` left `tokenPrefix`
-    // unset, which made `token coverage` report 0 tokens / all unknown
-    // even with real tokens in the CSS. Deriving the default from
-    // `binaryName` gives coverage a prefix to key off immediately.
+    // Leaving `tokenPrefix` unset makes `token coverage` report 0 tokens /
+    // all unknown even with real tokens in the CSS. Deriving the default
+    // from `binaryName` gives coverage a prefix to key off immediately.
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
     try {
       await furnaceInitCommand('/project');
@@ -318,15 +328,14 @@ describe('furnaceInitCommand', () => {
     );
   });
 
-  it('registers the scaffolded tokens CSS in jar.inc.mn (Finding 2)', async () => {
-    // Pre-fix: `furnace init` scaffolded the tokens CSS file and added
-    // it to `patchLint.rawColorAllowlist`, but did not register it in
-    // `browser/themes/shared/jar.inc.mn`. The next `fireforge status`
-    // therefore correctly flagged the file as unmanaged + unregistered,
-    // and `furnace deploy --dry-run` reported "No components to
-    // deploy" — a documented init command turned a clean project into
-    // an unclean one. The fix calls `registerSharedCSS` so the file is
-    // owned end-to-end.
+  it('registers the scaffolded tokens CSS in jar.inc.mn', async () => {
+    // Scaffolding the tokens CSS and adding it to
+    // `patchLint.rawColorAllowlist` without registering it in
+    // `browser/themes/shared/jar.inc.mn` leaves the next `fireforge status`
+    // correctly flagging the file as unmanaged + unregistered, and
+    // `furnace deploy --dry-run` reporting "No components to deploy" — a
+    // documented init command turning a clean project unclean.
+    // `registerSharedCSS` makes the file owned end-to-end.
     vi.mocked(pathExists).mockImplementation((path: string) => {
       // engine/ exists; tokens CSS does not yet exist (so we exercise
       // the scaffold + register path).

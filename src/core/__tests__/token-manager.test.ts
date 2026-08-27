@@ -1,18 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { addToken } from '../token-manager.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -424,12 +418,10 @@ describe('addToken', () => {
   });
 
   it('inserts dark value inside the nested :root { } of the dark @media block', async () => {
-    // 2026-04-21 eval: `token add --mode override --dark-value ...` inserted
-    // the dark declaration after the nested `:root { }` had already closed,
-    // producing a declaration outside any rule block. This test pins the
-    // post-fix invariant: the dark declaration must live between the inner
-    // `:root {` and its matching `}`, not between the inner `}` and the
-    // outer `@media {` close.
+    // `token add --mode override --dark-value ...` must not insert the dark
+    // declaration after the nested `:root { }` has already closed, which
+    // produces a declaration outside any rule block. The declaration must
+    // live between the inner `:root {` and its matching `}`.
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
     await addToken('/project', {
@@ -754,9 +746,8 @@ describe('addToken --variant', () => {
 
 describe('addToken missing-category bypasses', () => {
   it('a TOC comment merely mentioning the category no longer satisfies the banner lookup', async () => {
-    // Bypass 1 of the 2026-07-30 silent-no-op incident: a `/* ====`-opened
-    // comment containing "Colors — Terminal" as a substring satisfied the
-    // loose lookup even though no such section exists.
+    // A `/* ====`-opened comment containing "Colors — Terminal" as a
+    // substring satisfies a loose lookup even though no such section exists.
     const cssWithToc =
       ':root {\n' +
       '  /* ================================================================\n' +

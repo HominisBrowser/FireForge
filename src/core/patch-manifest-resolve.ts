@@ -9,19 +9,16 @@ import type { PatchMetadata } from '../types/commands/index.js';
  *      matches `PatchMetadata.filename`.
  *   3. A filename without the `.patch` suffix — the command appends it
  *      before matching (e.g. `002-ui-foo`).
- *   4. The manifest `name` field (e.g. `eval-furnace-token-override`) —
- *      matches `PatchMetadata.name`. This is the short logical handle
- *      the export workflow stamps onto the patch and the natural
- *      identifier an operator keeps in their notes. 2026-04-21 eval
- *      (Finding #6): `patch reorder`/`delete` rejected the `name`
- *      even though the CLI help said `<name>`, forcing the operator
- *      to copy the full filename from `patches.json` before every
- *      queue mutation.
+ *   4. The manifest `name` field (e.g. `furnace-token-override`) — the short
+ *      logical handle the export workflow stamps onto the patch and the
+ *      natural identifier an operator keeps in their notes. The CLI help
+ *      says `<name>`, so rejecting it forces the operator to copy the full
+ *      filename out of `patches.json` before every queue mutation.
  *
- * Resolution order is strict: numeric ordinals first, then filename
- * lookup (with + without `.patch` suffix), then name-field lookup.
- * The filename lookup beats the name lookup when the two happen to
- * collide so legacy scripts that pass filenames keep working.
+ * Resolution order is strict: numeric ordinals first, then filename lookup
+ * (with and without the `.patch` suffix), then name-field lookup. The
+ * filename lookup beats the name lookup when the two collide, so scripts
+ * that pass filenames keep working.
  */
 export function resolvePatchIdentifier(
   identifier: string,

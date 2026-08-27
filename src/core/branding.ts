@@ -27,12 +27,10 @@ export class BrandingError extends FireForgeError {
  * fails deep inside moz.build resolution with a confusing "path does not
  * exist" message. Surface it as an actionable preflight instead.
  *
- * The root cause is that setup renders templates under `configs/` with
- * `${binaryName}` baked in at setup time; a subsequent edit to
- * `fireforge.json`'s `binaryName` (or a re-setup without re-templating)
- * leaves those baked-in names stale while `setupBranding` continues to use
- * the current `config.binaryName`. Both directions (mozconfig ahead of
- * config, config ahead of mozconfig) produce the same class of build break.
+ * Setup renders templates under `configs/` with `${binaryName}` baked in; a
+ * later edit to `fireforge.json`'s `binaryName` (or a re-setup without
+ * re-templating) leaves those names stale while `setupBranding` keeps using
+ * the current value. Both directions produce the same class of build break.
  */
 export class BrandingMozconfigMismatchError extends FireForgeError {
   readonly code = ExitCode.PATCH_ERROR;
@@ -81,9 +79,8 @@ export interface BrandingConfig {
    * Project license (from fireforge.json). Used to stamp the generated
    * `configure.sh`, `brand.properties`, and `brand.ftl` files with the
    * matching header so `patch-lint` does not flag them for
-   * `missing-license-header` when the project is not MPL-2.0. Optional for
-   * backwards compatibility with pre-0.16 callers that did not thread the
-   * license through — falls back to {@link DEFAULT_LICENSE}.
+   * `missing-license-header` when the project is not MPL-2.0. Optional;
+   * falls back to {@link DEFAULT_LICENSE}.
    */
   license?: ProjectLicense;
 }
@@ -94,12 +91,10 @@ type VendorPlacement = 'branding-configure' | 'moz-configure';
  * Splits the reverse-domain `appId` for macOS bundle identity. Upstream
  * `toolkit/moz.configure` composes `CFBundleIdentifier` as
  * `<--with-distribution-id>.<MOZ_MACBUNDLE_ID>` (the distribution id
- * defaults to `org.mozilla`), so branding `configure.sh` must carry only
- * the LEAF segment while the generated mozconfig carries the remainder as
+ * defaults to `org.mozilla`), so branding `configure.sh` must carry only the
+ * LEAF segment while the generated mozconfig carries the remainder as
  * `--with-distribution-id`. Writing the full appId into `MOZ_MACBUNDLE_ID`
- * double-prefixes the shipped bundle id (observed:
- * `org.mozilla.org.hominis.browser`, and with a distribution-id flag,
- * `org.hominis.org.hominis.browser`). Config validation guarantees a
+ * double-prefixes the shipped bundle id. Config validation guarantees a
  * reverse-domain id, so the split always has both halves.
  */
 export function splitAppId(appId: string): { distributionId: string; leaf: string } {

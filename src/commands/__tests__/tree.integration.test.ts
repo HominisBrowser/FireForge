@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * End-to-end coverage for `fireforge tree`: real tempdir +
- * git, real clone (CoW when the filesystem supports it — the create path
- * probes and uses clonefile/reflink on APFS/btrfs; `--force-copy` keeps
- * the same path green on ext4 CI runners), and the read-only guard
- * enforced through the real commander program.
+ * End-to-end coverage for `fireforge tree`: real tempdir + git, real clone
+ * (CoW when the filesystem supports it — the create path probes and uses
+ * clonefile/reflink on APFS/btrfs; `--force-copy` keeps the same path green
+ * on ext4 CI runners), and the read-only guard enforced through the real
+ * commander program.
  */
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { readTreeMarker } from '../../core/tree-store.js';
+import { tryReadTreeMarker } from '../../core/tree-store.js';
 import {
   createTempProject,
   initCommittedRepo,
@@ -23,19 +23,24 @@ import {
 import { pathExists } from '../../utils/fs.js';
 import { treeCreateCommand, treeListCommand, treeRemoveCommand } from '../tree.js';
 
-// `tree create --with-objdir` now runs `mach configure` inside the clone;
-// the synthetic objdir has no real mach, so only that call is stubbed —
+// `tree create --with-objdir` runs `mach configure` inside the clone; the
+// synthetic objdir has no real mach, so only that call is stubbed —
 // everything else in core/mach.js stays real. The default implementation
-// (set in beforeEach) simulates a RELOCATING configure — it rewrites the
-// cloned config.status/backend.mk to the tree's paths — because the
-// post-configure relocation check verifies exactly that; the failure-case
-// tests override it per case with mockImplementationOnce.
+// (set in beforeEach) simulates a RELOCATING configure, rewriting the cloned
+// config.status/backend.mk to the tree's paths, because the post-configure
+// relocation check verifies exactly that; the failure-case tests override it
+// per case with mockImplementationOnce.
 vi.mock('../../core/mach.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../core/mach.js')>();
   return { ...actual, runMach: vi.fn(() => Promise.resolve(0)) };
 });
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+
   setStdoutSealed: vi.fn(),
   intro: vi.fn(),
   outro: vi.fn(),
@@ -95,7 +100,7 @@ describePosix('fireforge tree end to end', () => {
 
     const treeRoot = join(projectRoot, '.fireforge', 'trees', 'shard-a');
     await expect(pathExists(join(treeRoot, 'fireforge.json'))).resolves.toBe(true);
-    await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({ name: 'shard-a' });
+    await expect(tryReadTreeMarker(treeRoot)).resolves.toMatchObject({ name: 'shard-a' });
 
     await treeListCommand(projectRoot);
     expect(vi.mocked(info)).toHaveBeenCalledWith(expect.stringContaining('shard-a'));
@@ -148,7 +153,7 @@ describePosix('fireforge tree end to end', () => {
     await treeCreateCommand(projectRoot, 'shard-obj', { forceCopy: true, withObjdir: true });
 
     const treeRoot = join(projectRoot, '.fireforge', 'trees', 'shard-obj');
-    await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({ clonedObjdir: 'obj-e2e' });
+    await expect(tryReadTreeMarker(treeRoot)).resolves.toMatchObject({ clonedObjdir: 'obj-e2e' });
     // The clone was reconfigured IN THE TREE before the marker vouched for it.
     expect(vi.mocked(runMach)).toHaveBeenCalledWith(['configure'], join(treeRoot, 'engine'));
     const { readFile } = await import('node:fs/promises');

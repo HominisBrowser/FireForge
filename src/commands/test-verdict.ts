@@ -10,13 +10,25 @@ import { setStdoutSealed } from '../utils/logger.js';
  * invalid paths, port conflicts, config errors, spawn failures),
  * `inconclusive` marks a run whose harness result exists but cannot be
  * trusted because `engine/` changed (or became unprobeable one-sidedly)
- * while the tests ran, and `lock-timeout` marks a run that never started
- * because the engine session lock stayed contended past the wait budget.
+ * while the tests ran, `lock-timeout` marks a run that never started
+ * because the engine session lock stayed contended past the wait budget,
+ * and `killed` marks a run terminated by a signal before it could reach any
+ * of the others.
  */
 export type FireforgeVerdictReason =
-  'crash' | 'no-tests' | 'test-failures' | 'preflight' | 'inconclusive' | 'lock-timeout';
+  'crash' | 'no-tests' | 'test-failures' | 'preflight' | 'inconclusive' | 'lock-timeout' | 'killed';
 
 let emitted = false;
+
+/**
+ * True once a test run has begun in this process.
+ *
+ * The signal path needs it: a `FIREFORGE-VERDICT` line claims a test run
+ * happened, and a Ctrl+C during `fireforge status` must not print one. Set
+ * by {@link resetVerdictEmission}, which `testCommand` already calls at
+ * entry, so nothing else has to remember to arm it.
+ */
+let armed = false;
 
 /**
  * Re-arms the verdict sink for a new run. Called at `testCommand` entry so
@@ -25,6 +37,7 @@ let emitted = false;
  */
 export function resetVerdictEmission(): void {
   emitted = false;
+  armed = true;
   setStdoutSealed(false);
 }
 
@@ -69,4 +82,24 @@ export function emitPassVerdict(): void {
 /** Emits a FAIL verdict carrying an emission-layer reason code. */
 export function emitFailVerdict(reason: FireforgeVerdictReason): void {
   writeVerdictLine(`FIREFORGE-VERDICT: FAIL reason=${reason}`);
+}
+
+/**
+ * Emits the terminal verdict for a run killed by a signal.
+ *
+ * Without it a killed run wrote NO terminal line, so a log tail could not
+ * distinguish "killed" from "still running" from "never started" — recovery
+ * meant checking `ps` and the lock file by hand, at the exact moment (a
+ * mass kill under a usage limit, mid-drain) when the tree's state most
+ * needs to be readable. A no-op unless a run was actually in flight: the
+ * line asserts a test run happened, and an interrupted `status` did not
+ * have one.
+ *
+ * @param signal - The signal that terminated the run
+ * @returns True when a line was written
+ */
+export function emitKilledVerdict(signal: NodeJS.Signals): boolean {
+  if (!armed || emitted) return false;
+  writeVerdictLine(`FIREFORGE-VERDICT: FAIL reason=killed signal=${signal}`);
+  return true;
 }

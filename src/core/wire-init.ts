@@ -19,7 +19,7 @@ import {
   getNodeSource,
   parseScript,
 } from './ast-utils.js';
-import { withParserFallback } from './parser-fallback.js';
+import { isInternalInvariantFailure, withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,
   coerceToCall,
@@ -45,10 +45,9 @@ const DEFAULT_MARKER = 'FIREFORGE:';
  * the top of the method body when there is none.
  *
  * Both callers below — the `--after`-target-not-found fallthrough and the
- * no-`--after` default — ran a character-for-character copy of this ladder,
- * including both throw guards. `browser-init.js` is written through those two
- * independent paths and they MUST emit identical blocks, so having one
- * implementation enforces the invariant rather than merely tidying.
+ * no-`--after` default — must emit identical blocks, since `browser-init.js`
+ * is written through both paths. One implementation enforces that invariant
+ * rather than merely tidying.
  */
 function resolveDefaultInsertion(
   content: string,
@@ -75,9 +74,8 @@ function resolveDefaultInsertion(
  *
  * `marker` is prepended (uppercased) to the generated comment line so the
  * emitted block carries the patch-lint `// <MARKER>:` signature that
- * `lintModificationComments` looks for. Otherwise the first export after
- * `wire` trips `missing-modification-comment` on wire-generated edits —
- * exactly the eval 1 Finding #9 regression.
+ * `lintModificationComments` looks for; otherwise the first export after
+ * `wire` trips `missing-modification-comment` on wire-generated edits.
  */
 export function addInitAST(
   content: string,
@@ -265,8 +263,7 @@ export async function addInitToBrowserInit(
 
   // Idempotency check — look for the coerced (call) form because that is
   // what the emitter writes. Matching against the raw input would miss a
-  // previous `EvalStartup.init` invocation that the 0.16.0 coercion
-  // already persisted as `EvalStartup.init()`.
+  // bare `X.init` invocation that coercion already persisted as `X.init()`.
   const callExpression = coerceToCall(expression);
   const initPattern = new RegExp(`(?:^|\\W)${escapeRegex(callExpression)}\\s*;?\\s*$`, 'm');
   if (initPattern.test(content)) {
@@ -277,14 +274,7 @@ export async function addInitToBrowserInit(
     () => addInitAST(content, expression, after, marker),
     () => legacyAddInit(content, expression, after, marker),
     BROWSER_INIT_JS,
-    // Rethrow only the internal-invariant GeneralErrors ("Unexpected empty
-    // …array"): those are programming bugs, and retrying the legacy scanner
-    // cannot fix a broken invariant — it just buries the stack. Everything
-    // else still falls back, which is load-bearing: the AST path raises a raw
-    // acorn SyntaxError on chrome sources acorn cannot parse (preprocessor
-    // directives), and BuildError when the file's shape is unexpected. Both
-    // are exactly what the legacy scanner is here to handle.
-    (error) => error instanceof GeneralError
+    isInternalInvariantFailure
   );
 
   if (usedFallback) {

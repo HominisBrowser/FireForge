@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import { furnaceCreateCommand } from '../furnace/create.js';
 
 vi.mock('@clack/prompts', () => ({
@@ -40,6 +41,10 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
   detectComposesCycles: vi.fn(),
   loadFurnaceConfig: vi.fn(() =>
@@ -84,7 +89,11 @@ vi.mock('../../core/furnace-rollback.js', () => ({
   restoreRollbackJournalOrThrow: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -109,7 +118,7 @@ vi.mock('../../core/furnace-scanner.js', () => ({
   scanWidgetsDirectory: vi.fn(() => Promise.resolve([])),
 }));
 
-vi.mock('../../core/manifest-register.js', () => ({
+vi.mock('../../core/moz-manifest-register.js', () => ({
   registerTestManifest: vi.fn(() => ({
     manifest: 'browser/base/moz.build',
     entry: '    "content/test/moz-test-widget/browser.toml",',
@@ -117,15 +126,7 @@ vi.mock('../../core/manifest-register.js', () => ({
   })),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  cancel: vi.fn(),
-  isCancel: vi.fn(() => false),
-  warn: vi.fn(),
-  note: vi.fn(),
-  success: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import {
   createDefaultFurnaceConfig,
@@ -134,7 +135,7 @@ import {
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { isComponentInEngine, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
-import { registerTestManifest } from '../../core/manifest-register.js';
+import { registerTestManifest } from '../../core/moz-manifest-register.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { success, warn } from '../../utils/logger.js';
 
@@ -154,14 +155,13 @@ const mockWarn = vi.mocked(warn);
 beforeEach(() => {
   vi.clearAllMocks();
   mockFurnaceConfigExists.mockResolvedValue(false);
-  // 0.16.0 added a defensive read-back after `writeFurnaceConfig` in
-  // `performCreateMutations` so the command fails loudly if the write did
-  // not persist. To keep the unit-test flow realistic, mirror writes into
-  // subsequent reads: the first `loadFurnaceConfig` observes the initial
-  // config, and after the command calls `writeFurnaceConfig(..., config)`
-  // a later read returns exactly that written config. Without this, every
-  // `--with-tests` / `--localized` / composes case would fail the readback
-  // guard even though the real code path is correct.
+  // `performCreateMutations` runs a defensive read-back after
+  // `writeFurnaceConfig` so the command fails loudly if the write did not
+  // persist. Mirror writes into subsequent reads: the first
+  // `loadFurnaceConfig` observes the initial config, and after the command
+  // calls `writeFurnaceConfig(..., config)` a later read returns exactly
+  // that. Without this, every `--with-tests` / `--localized` / composes case
+  // fails the readback guard even though the real code path is correct.
   mockLoadFurnaceConfig.mockResolvedValue({
     version: 1,
     componentPrefix: 'moz-',
@@ -280,9 +280,9 @@ describe('furnaceCreateCommand --with-tests', () => {
   });
 
   it('throws when --with-tests is set and the engine directory does not exist', async () => {
-    // Regression guard: previously the command would unconditionally
-    // ensureDir under engine/browser/base/content/test/..., fabricating a
-    // partial engine tree. It now refuses.
+    // The command must refuse rather than unconditionally ensureDir under
+    // engine/browser/base/content/test/..., fabricating a partial engine
+    // tree.
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
 
@@ -599,14 +599,13 @@ describe('furnaceCreateCommand --xpcshell', () => {
       c[0].includes('test_moz_storage_widget_packaged.js')
     );
     const testContent = testCall?.[1] ?? '';
-    // The scaffold probes the packaged tree rather than loading the
-    // module. `ChromeUtils.importESModule` pulls in Lit, which references
-    // `window` at module-load — xpcshell has no `window` global, so the
-    // old module-load path reliably failed with
-    // `ReferenceError: window is not defined` for every Lit-based
-    // component. Assert there is no `await ChromeUtils.importESModule(`
-    // CALL (the explanatory header comment can still name the
-    // now-avoided API).
+    // The scaffold probes the packaged tree rather than loading the module.
+    // `ChromeUtils.importESModule` pulls in Lit, which references `window`
+    // at module-load — xpcshell has no `window` global, so a module-load
+    // path reliably fails with `ReferenceError: window is not defined` for
+    // every Lit-based component. Assert there is no
+    // `await ChromeUtils.importESModule(` CALL; the explanatory header
+    // comment may still name the now-avoided API.
     expect(testContent).not.toMatch(/await\s+ChromeUtils\.importESModule\(/);
     expect(testContent).toContain('Services.dirsvc.get("XCurProcD"');
     // Both the primary (dist/bin/browser) and fallback (app-bundle)
@@ -778,13 +777,12 @@ describe('furnaceCreateCommand validation', () => {
     }
   });
 
-  it('refuses when name does not match componentPrefix (post-0.16.0 hard refusal)', async () => {
-    // Pre-0.16.0 this was a warn + continue, which could land a
-    // partially-scaffolded component that follow-up commands (list,
-    // rename, status) then failed to recognise. The post-0.16.0
+  it('refuses when name does not match componentPrefix', async () => {
+    // A warn-and-continue here lands a partially-scaffolded component that
+    // follow-up commands (list, rename, status) then fail to recognise. The
     // contract is an up-front `InvalidArgumentError` that leaves the
-    // workspace untouched. `--allow-prefix-mismatch` is the escape
-    // hatch for intentional mismatches.
+    // workspace untouched, with `--allow-prefix-mismatch` as the escape
+    // hatch.
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
 

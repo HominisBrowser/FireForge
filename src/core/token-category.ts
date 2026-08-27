@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Category banner and token-declaration helpers for the tokens CSS file
- *. Split out of `token-manager.ts` to stay inside the per-file
- * line budget.
+ * Category banner and token-declaration helpers for the tokens CSS file.
+ * Split out of `token-manager.ts` to stay inside the per-file line budget.
  *
  * Banner matching is EXACT: the text between the `=` runs (single-line
  * shape) or on the block line (multi-line shape) must equal the category
- * after trimming. The pre-0.40.0 substring match let a TOC comment or a
- * longer banner (`Colors — Canvas` for `Colors`) satisfy the lookup, so
- * `token add` wrote into the wrong section — or no-oped for 19
- * consecutive calls — with exit 0.
+ * after trimming. A substring match lets a TOC comment or a longer banner
+ * (`Colors — Canvas` for `Colors`) satisfy the lookup, so `token add` writes
+ * into the wrong section — or no-ops — with exit 0.
  */
 import { join } from 'node:path';
 

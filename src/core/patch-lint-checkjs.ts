@@ -176,10 +176,10 @@ export interface GroupedCheckJsResult {
 /**
  * Builds the checkJs program **once** over `resolutionOwned` and returns its
  * diagnostics grouped by originating file. Callers slice the result by their
- * own report scope — per-patch lint attributes each file to its owning
- * patch, export/re-export keeps only the patch under export. Resolution
- * always spans every file in `resolutionOwned`, so cross-patch
- * `resource:///`/`chrome://` imports resolve to real sources.
+ * own report scope — per-patch lint attributes each file to its owning patch,
+ * export/re-export keeps only the patch under export. Resolution always spans
+ * every file in `resolutionOwned`, so cross-patch `resource:///`/`chrome://`
+ * imports resolve to real sources.
  *
  * @param repoDir - Absolute engine (repository) directory
  * @param resolutionOwned - Patch-owned `.sys.mjs` paths (relative to repoDir)
@@ -188,14 +188,14 @@ export interface GroupedCheckJsResult {
  *   the built-in Firefox-globals shim (from `patchLint.checkJsExtraShim`)
  * @param projectRoot - Absolute project root for resolving `extraShimPath`
  * @param mode - Strictness preset plus allowlisted compiler-option overrides
- * @param builtinShimSuffix - Optional shim text appended AFTER the consumer shim
+ * @param builtinShimSuffix - Optional shim text appended AFTER the consumer
+ *   shim
  * @param rootScope - When set, only these repo-relative files become program
  *   ROOTS; resolution (and the host allowlist) still spans all of
  *   `resolutionOwned`, so a subset root's cross-patch imports type-check
  *   against the real owning sources while unrelated owned files are never
  *   parsed. `.mjs` files are module-scoped, so a root's diagnostics are
- *   identical whether other owned files are roots or mere resolution
- * targets (pinned by the rootScope parity test).
+ *   identical whether other owned files are roots or mere resolution targets.
  * @returns Diagnostics grouped per owning file plus run-level errors
  */
 export async function runCheckJsGrouped(
@@ -626,15 +626,15 @@ export async function invokePatchLintCheckJsGrouped(
 }
 
 /**
- * Cheap probe reproducing the only run-level ("global") checkJs findings
- * the build path can produce — a missing `typescript` package and an
- * unreadable consumer shim (`checkJsExtraShim`, and `checkJsTestShim`
- * when `checkJsTestFiles` is on). The built program itself never
- * contributes globals (see {@link runCheckJsGrouped}), so a warm
- * all-cache-hit run can satisfy the "warm never reports less than cold"
- * invariant with this probe instead of building the whole
- * TypeScript program. Issue objects are byte-identical to the build
- * path's, deduplicated by message like {@link runCheckJsTestFilesGrouped}.
+ * Cheap probe reproducing the only run-level ("global") checkJs findings the
+ * build path can produce — a missing `typescript` package and an unreadable
+ * consumer shim (`checkJsExtraShim`, and `checkJsTestShim` when
+ * `checkJsTestFiles` is on). The built program itself never contributes
+ * globals (see {@link runCheckJsGrouped}), so a warm all-cache-hit run can
+ * satisfy the "warm never reports less than cold" invariant with this probe
+ * instead of building the whole TypeScript program. Issue objects are
+ * byte-identical to the build path's, deduplicated by message like
+ * {@link runCheckJsTestFilesGrouped}.
  */
 export async function probeCheckJsGlobalIssues(
   patchLint: PatchLintConfig,

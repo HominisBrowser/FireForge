@@ -6,7 +6,8 @@ import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.j
 import {
   addToken,
   getTokensCssPath,
-  type TokenMode,
+  isTokenMode,
+  TOKEN_MODES,
   validateTokenAdd,
 } from '../core/token-manager.js';
 import { InvalidArgumentError } from '../errors/base.js';
@@ -69,13 +70,12 @@ export async function tokenAddCommand(
 ): Promise<void> {
   intro('Token Add');
 
-  // Finding #15: a fresh project without furnace.json failed deep inside
-  // the token-manager's `assertTokenCategoryExists` with "Token CSS file
-  // not found: browser/themes/shared/<binary>-tokens.css" — technically
-  // correct, but the operator's actual next step is to initialize
-  // Furnace (which scaffolds the tokens CSS file among other things).
-  // Catching the uninitialized case here gives the right guidance up-
-  // front before the generic "file not found" error fires.
+  // A fresh project without furnace.json otherwise fails deep inside the
+  // token-manager's `assertTokenCategoryExists` with "Token CSS file not
+  // found: browser/themes/shared/<binary>-tokens.css" — technically correct,
+  // but the operator's actual next step is to initialize Furnace, which
+  // scaffolds the tokens CSS file. Catching the uninitialized case here
+  // gives the right guidance before the generic "file not found" error.
   if (!(await furnaceConfigExists(projectRoot))) {
     throw new FurnaceError(
       'Token management requires Furnace to be initialized. ' +
@@ -88,11 +88,11 @@ export async function tokenAddCommand(
   // user supplied a bare token name like "canvas-gap".
   tokenName = await normalizeTokenNameForProject(projectRoot, tokenName);
 
-  // Validate mode
-  const validModes: TokenMode[] = ['auto', 'static', 'override'];
-  if (!validModes.includes(options.mode as TokenMode)) {
+  // Validate mode. The guard IS the runtime proof, so the three `as
+  // TokenMode` casts this replaced are gone with it.
+  if (!isTokenMode(options.mode)) {
     throw new InvalidArgumentError(
-      `Invalid mode "${options.mode}". Must be one of: ${validModes.join(', ')}`,
+      `Invalid mode "${options.mode}". Must be one of: ${TOKEN_MODES.join(', ')}`,
       'mode'
     );
   }
@@ -102,7 +102,7 @@ export async function tokenAddCommand(
       tokenName,
       value,
       category: options.category,
-      mode: options.mode as TokenMode,
+      mode: options.mode,
       ...(options.description !== undefined ? { description: options.description } : {}),
       ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
       ...(options.createCategory === true ? { createCategory: true } : {}),
@@ -131,7 +131,7 @@ export async function tokenAddCommand(
     tokenName,
     value,
     category: options.category,
-    mode: options.mode as TokenMode,
+    mode: options.mode,
     ...(options.description !== undefined ? { description: options.description } : {}),
     ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
     ...(options.createCategory === true ? { createCategory: true } : {}),
@@ -164,12 +164,11 @@ export function registerToken(
   const token = program
     .command('token')
     .description('Design token management')
-    // Match `fireforge furnace`'s no-args contract: print the group's help and
-    // exit 0. Without this default action, commander routes `fireforge token`
-    // (no subcommand) through its own help-then-exit-1 path, so scripts that
-    // probe the CLI surface see a misleading non-zero exit for a purely
-    // informational invocation. The action prints the exact same help commander
-    // would otherwise print, but returns successfully.
+    // Match `fireforge furnace`'s no-args contract: print the group's help
+    // and exit 0. Without this default action, commander routes
+    // `fireforge token` (no subcommand) through its own help-then-exit-1
+    // path, so scripts probing the CLI surface see a misleading non-zero
+    // exit for a purely informational invocation.
     .action(() => {
       token.outputHelp();
     });

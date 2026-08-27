@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Pins the 0.34.0 `--files` argument-shape fix: export-style
- * space-separated paths after `re-export <patch> --files` are folded into
- * the file list instead of erroring with a message that blames the patch
- * argument.
+ * Pins the `--files` argument shape: export-style space-separated paths
+ * after `re-export <patch> --files` are folded into the file list instead of
+ * erroring with a message that blames the patch argument.
  */
 import { describe, expect, it } from 'vitest';
 

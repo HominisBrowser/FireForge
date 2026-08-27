@@ -3,9 +3,10 @@ import { Command, Option } from 'commander';
 
 import { withEngineSessionLock } from '../../core/engine-session-lock.js';
 import type { CommandContext } from '../../types/cli.js';
+import type { FurnaceCreateOptions, FurnaceRefreshOptions } from '../../types/commands/index.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
 import { furnaceApplyCommand } from './apply.js';
-import { furnaceChromeDocCreateCommand } from './chrome-doc.js';
+import { furnaceChromeDocCreateCommand, type FurnaceChromeDocCreateOptions } from './chrome-doc.js';
 import { furnaceChromeDocRemoveCommand } from './chrome-doc-remove.js';
 import { furnaceCreateCommand } from './create.js';
 import { furnaceDeployCommand } from './deploy.js';
@@ -256,26 +257,9 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
       'Create the component even when its name does not start with the configured `componentPrefix` in furnace.json. Without this flag the command refuses to write anything on a prefix mismatch.'
     )
     .action(
-      withErrorHandling(
-        async (
-          name: string | undefined,
-          options: {
-            description?: string;
-            localized?: boolean;
-            register?: boolean;
-            withTests?: boolean;
-            xpcshell?: boolean;
-            testStyle?: 'mochikit' | 'browser-chrome' | 'xpcshell';
-            testDir?: string;
-            compose?: string[];
-            sharedFtl?: string;
-            dryRun?: boolean;
-            allowPrefixMismatch?: boolean;
-          }
-        ) => {
-          await furnaceCreateCommand(getProjectRoot(), name, options);
-        }
-      )
+      withErrorHandling(async (name: string | undefined, options: FurnaceCreateOptions) => {
+        await furnaceCreateCommand(getProjectRoot(), name, options);
+      })
     );
 
   registerChromeDocCommands(furnace, context);
@@ -302,19 +286,9 @@ function registerChromeDocCommands(furnace: Command, context: CommandContext): v
     )
     .option('--dry-run', 'Show the chrome-doc scaffold plan without writing')
     .action(
-      withErrorHandling(
-        async (
-          name: string,
-          options: {
-            titlebar?: boolean;
-            withTests?: boolean;
-            dryRun?: boolean;
-            browserWindow?: boolean;
-          }
-        ) => {
-          await furnaceChromeDocCreateCommand(getProjectRoot(), name, pickDefined(options));
-        }
-      )
+      withErrorHandling(async (name: string, options: FurnaceChromeDocCreateOptions) => {
+        await furnaceChromeDocCreateCommand(getProjectRoot(), name, pickDefined(options));
+      })
     );
 
   chromeDoc
@@ -422,19 +396,9 @@ function registerFurnaceModifyCommands(furnace: Command, context: CommandContext
       'Reset baseline to current engine HEAD (skips three-way merge, recovers from missing baseCommit)'
     )
     .action(
-      withErrorHandling(
-        async (
-          name: string | undefined,
-          options: {
-            dryRun?: boolean;
-            all?: boolean;
-            strategy?: 'ours' | 'theirs';
-            resetBase?: boolean;
-          }
-        ) => {
-          await furnaceRefreshCommand(getProjectRoot(), name, pickDefined(options));
-        }
-      )
+      withErrorHandling(async (name: string | undefined, options: FurnaceRefreshOptions) => {
+        await furnaceRefreshCommand(getProjectRoot(), name, pickDefined(options));
+      })
     );
 
   furnace

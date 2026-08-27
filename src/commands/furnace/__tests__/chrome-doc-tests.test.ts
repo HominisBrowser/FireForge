@@ -21,9 +21,9 @@ describe('generateChromeDocPackagingTest', () => {
     const test = generateChromeDocPackagingTest('mybrowser', '// LICENSE');
     expect(test).toContain('// LICENSE');
     // Probes the filesystem, not a chrome:// URI — the chrome-URI path is
-    // the one the generated test is specifically avoiding. The helper
-    // name is `probeEither` after 0.16.0 to reflect that we try both a
-    // primary and a fallback packaged-tree layout before failing.
+    // exactly what the generated test avoids. `probeEither` reflects that it
+    // tries both a primary and a fallback packaged-tree layout before
+    // failing.
     expect(test).toContain('Services.dirsvc.get("XCurProcD"');
     expect(test).toMatch(/primaryFile\.exists\(\)|fallbackFile\.exists\(\)/);
     // The assertion chain must not go through NetUtil / newChannel — that
@@ -53,13 +53,11 @@ describe('generateChromeDocPackagingTest', () => {
     //   <AppDir>/chrome/browser/content/browser/<name>-chrome.css
     //
     // The scoped CSS is registered through `jar.inc.mn` at
-    // `content/browser/<name>-chrome.css` (see
-    // `chromeDocJarIncMnCssEntry` in `chrome-doc-templates.ts`), so the
-    // packaged file lands under `content/browser/`, not under
-    // `skin/classic/browser/`. The 2026-04-21 eval's first
-    // `fireforge test --build` run against a scaffolded chrome-doc
-    // reported a false failure because the probe had been pinned to the
-    // skin layout from an earlier draft of the jar entry.
+    // `content/browser/<name>-chrome.css` (see `chromeDocJarIncMnCssEntry`
+    // in `chrome-doc-templates.ts`), so the packaged file lands under
+    // `content/browser/`, not under `skin/classic/browser/`. Pinning the
+    // probe to the skin layout reports a false failure on the first
+    // `fireforge test --build` after a scaffold.
     expect(test).toContain('"chrome", "browser", "content", "browser", "mybrowser.xhtml"');
     expect(test).toContain('"chrome", "browser", "content", "browser", "mybrowser-chrome.css"');
     // Fallback (macOS app bundle and some ESR layouts where XCurProcD
@@ -72,8 +70,7 @@ describe('generateChromeDocPackagingTest', () => {
     expect(test).toContain(
       '"browser", "chrome", "browser", "content", "browser", "mybrowser-chrome.css"'
     );
-    // The CSS probe must not point at the skin layout any more — a
-    // regression guard for the 0.16.0 path fix.
+    // The CSS probe must not point at the skin layout.
     expect(test).not.toContain('skin", "classic", "browser", "mybrowser-chrome.css"');
     // `probeEither` is the helper name that checks both candidates.
     expect(test).toContain('probeEither');

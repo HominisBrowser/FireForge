@@ -6,29 +6,27 @@ const COVERAGE_SUMMARY_PATH = resolve('coverage/coverage-summary.json');
 
 const MODULE_THRESHOLDS = {
   'src/core/mach.ts': { lines: 95, branches: 88 },
-  // 0.41.0 K-wave modules — pinned just below
-  // their landing coverage.
+  // Pinned just below their landing coverage.
   'src/utils/concurrency.ts': { lines: 100, branches: 90, functions: 100 },
   // Identity must degrade to the plain semver, never throw — the guarded
   // fallbacks are the point of the module.
   'src/utils/build-info.ts': { lines: 90, branches: 80, functions: 100 },
   'src/commands/status-json.ts': { lines: 95, branches: 80 },
-  // 0.41.0 L-wave modules — pinned just below landing
-  // coverage. The extend anchor is the fail-closed guard for a coverage
-  // claim, so every refusal branch must stay exercised.
+  // Pinned just below landing coverage. The extend anchor is the fail-closed
+  // guard for a coverage claim, so every refusal branch must stay exercised.
   'src/core/coverage-extend.ts': { lines: 95, branches: 85 },
   'src/commands/status-ownership.ts': { lines: 95, branches: 85 },
   'src/commands/export-placement-conflicts.ts': { lines: 95, branches: 80 },
   'src/commands/patch/staged-dependency-validate.ts': { lines: 95, branches: 85 },
-  // 0.31.0 modules — pinned just below their landing coverage so
-  // regressions surface without blocking unrelated refactors.
+  // Pinned just below their landing coverage so regressions surface without
+  // blocking unrelated refactors.
   'src/core/test-harness-crash.ts': { lines: 98, branches: 90 },
   'src/core/furnace-css-fragments.ts': { lines: 96, branches: 78 },
   'src/core/furnace-jsconfig.ts': { lines: 89, branches: 78 },
   'src/core/patch-lint-observer.ts': { lines: 94, branches: 85 },
   'src/commands/test-run.ts': { lines: 94, branches: 75 },
   'src/commands/test-diagnose.ts': { lines: 92, branches: 85 },
-  // 0.41.0: the verdict sink is tiny and fully unit-tested; hold it there.
+  // The verdict sink is tiny and fully unit-tested; hold it there.
   'src/commands/test-verdict.ts': { lines: 100, branches: 100 },
   // The command body's uncovered ranges are the under-lock rollback warns
   // and the commander registration block; the planning logic carries the
@@ -56,8 +54,8 @@ const MODULE_THRESHOLDS = {
   'src/core/wire-subscript.ts': { lines: 98, branches: 80 },
   'src/core/patch-export.ts': { lines: 93, branches: 75 },
   'src/utils/logger.ts': { lines: 95, branches: 76, functions: 95 },
-  // 2026-07-05 review remediation: the fuzz path is now exercised against a
-  // REAL git binary (the mocked tests had validated impossible behavior),
+  // The fuzz path is exercised against a REAL git binary (a mocked test can
+  // validate behaviour real git cannot produce),
   // and the two furnace state/step-error modules own the invariants whose
   // divergence caused the named-apply state wipe and the rollback-contract
   // drift. Pins keep those regression nets from silently thinning.
@@ -68,7 +66,7 @@ const MODULE_THRESHOLDS = {
   'src/utils/platform.ts': { lines: 100, branches: 100, functions: 100 },
   'src/core/register-browser-content.ts': { lines: 98, branches: 94 },
   'src/core/register-shared-css.ts': { lines: 98, branches: 94 },
-  'src/core/manifest-rules.ts': { lines: 98, branches: 98 },
+  'src/core/moz-manifest-rules.ts': { lines: 98, branches: 98 },
   'src/commands/run.ts': { lines: 95, branches: 86 },
   'src/core/wire-dom-fragment.ts': { lines: 93, branches: 82 },
   'src/commands/furnace/override.ts': { lines: 98, branches: 98 },
@@ -139,7 +137,7 @@ const MODULE_THRESHOLDS = {
   'src/commands/patch/compact.ts': { lines: 88, branches: 75, functions: 85 },
   // xpcshell scaffold rename — filesystem rewrite helper for component rename.
   'src/commands/furnace/rename-xpcshell.ts': { lines: 100, branches: 80, functions: 100 },
-  // 0.35.0 edge modules — previously masked by the global threshold.
+  // Edge modules that the global threshold alone would mask.
   // Signal-deferred critical sections: the SIGINT/SIGTERM exit path
   // depends on this registry behaving exactly as specified.
   'src/core/signal-critical.ts': { lines: 98, branches: 95, functions: 80 },
@@ -152,16 +150,16 @@ const MODULE_THRESHOLDS = {
   'src/core/furnace-validate-compatibility.ts': { lines: 94, branches: 88, functions: 95 },
   // Tar extraction preflight — rejects traversal names and escaping links.
   'src/core/firefox-extract.ts': { lines: 90, branches: 85, functions: 85 },
-  // 0.41.0 quality-survey remediation. These four sit on destructive or
+  // These four sit on destructive or
   // verdict-blessing paths and had NO pin at all: with 314 files diluting the
   // global aggregate, a refactor could drop any of them 15 points and
   // `release:check` would still pass. Pinned just below landing coverage.
   //
   // Process-liveness primitives. `isProcessAlive` must keep treating EPERM as
-  // ALIVE — two copies read it as "dead" before 0.41.0 and both gated an
-  // `rm -rf`. Kept at 100 because the module is tiny and pure.
+  // ALIVE: reading it as "dead" in a predicate that gates an `rm -rf` deletes
+  // live state. Kept at 100 because the module is tiny and pure.
   'src/utils/errors.ts': { lines: 100, branches: 95, functions: 100 },
-  // 0.43.0: the assertion primitive. Every internal invariant check in the
+  // The assertion primitive. Every internal invariant check in the
   // codebase funnels through this one module precisely so the failure branch
   // is covered once here instead of uncovered at ~40 call sites — which only
   // works while this file itself stays fully exercised.
@@ -169,47 +167,43 @@ const MODULE_THRESHOLDS = {
   // Tree clone removal: `inspectTreeLock` gates `rm -rf` of a full project
   // clone in `removeTree`.
   'src/core/tree-store.ts': { lines: 92, branches: 84 },
-  // `doctor --repair-furnace` deletes the furnace lock directory. Had no test
-  // file whatsoever before 0.41.0 (measured 78.9/69.9 → 83.9/74.0).
+  // `doctor --repair-furnace` deletes the furnace lock directory.
   'src/commands/doctor-furnace.ts': { lines: 82, branches: 72 },
   // Engine generation guard: decides whether a test verdict is trustworthy.
   // The suite bypasses the lock by default, so its own tests are the only
   // exercise this module gets (measured 75.0/72.2 → 92.3/81.8).
   'src/core/engine-session-lock.ts': { lines: 90, branches: 80 },
   // Severity resolution for every doctor check — one resolver shared by
-  // `doctor.ts` and `bootstrap.ts`, which disagreed before 0.41.0.
+  // `doctor.ts` and `bootstrap.ts`, which are easy to drift apart.
   'src/commands/doctor-check-core.ts': { lines: 100, branches: 95, functions: 100 },
-  // 0.41.0 quality-survey backfill. Each of these was a coverage outlier with
-  // no pin, so the global aggregate could not see a regression in it.
+  // Each of these was a coverage outlier with no pin, so the global aggregate
+  // could not see a regression in it.
   //
-  // Pure config validator with zero I/O that runs on EVERY config load, and
-  // had no test file importing it at all (was 10.5% line / 4.5% branch).
+  // Pure config validator with zero I/O that runs on EVERY config load.
   'src/core/config-validate-test-toolchains.ts': { lines: 98, branches: 95, functions: 100 },
-  // Commander wiring for `fireforge test`. Was 13.3% line / 0% branch: the
-  // registration ran during help tests but no argParser callback or action
-  // body was ever invoked. The two numeric flags must keep rejecting
-  // out-of-range input through commander's invalid-argument channel.
+  // Commander wiring for `fireforge test`. Registration alone runs during
+  // help tests without invoking any argParser callback or the action body,
+  // so the pin is what keeps them exercised: the two numeric flags must keep
+  // rejecting out-of-range input through commander's invalid-argument
+  // channel.
   'src/commands/test-register.ts': { lines: 95, branches: 90, functions: 100 },
-  // Stale jar.mn registration check (0.34.0 field report: --repair-furnace
-  // reported success without pruning). Was 56.3 / 33.3.
+  // Stale jar.mn registration check — `--repair-furnace` must actually prune,
+  // not report success without touching the lines.
   'src/commands/doctor-furnace-jar.ts': { lines: 95, branches: 90, functions: 100 },
-  // Deletes engine sources and rewrites three jar manifests. Had the worst
-  // branch coverage in the repo (86.1 / 51.2) because the only tests were
-  // happy-path round trips; the refusal, cancel, idempotent-re-remove and
-  // rollback arms were all dark.
+  // Deletes engine sources and rewrites three jar manifests. Happy-path round
+  // trips alone leave the refusal, cancel, idempotent-re-remove and rollback
+  // arms dark.
   'src/commands/furnace/chrome-doc-remove.ts': { lines: 95, branches: 85, functions: 100 },
-  // The two furnace mutators the survey called "the clearest risk
-  // concentration in the corpus": both delete engine files, and both were the
-  // weakest-tested commands in their own subsystem. Pinned so the §6 cap
-  // extractions cannot silently thin the nets that now guard them.
-  // remove.ts was 75.9 / 73.6; refresh.ts was 79.9 / 70.9.
+  // The two furnace mutators that concentrate the most risk: both delete
+  // engine files. Pinned so a future line-budget extraction cannot silently
+  // thin the nets guarding them.
   'src/commands/furnace/remove.ts': { lines: 96, branches: 84, functions: 100 },
   'src/commands/furnace/refresh.ts': { lines: 94, branches: 88, functions: 100 },
   // `tree remove --all` deletes whole cloned trees and `tree exec` spawns the
-  // CLI inside one; `treeExecCommand` was entirely untested (was 61.7 / 60.5).
+  // CLI inside one.
   'src/commands/tree.ts': { lines: 94, branches: 92 },
-  // The ftlBasePath shape probe was unreachable in the all-mocked suite
-  // because it only runs when engine/ exists (was 73.5 / 74.6).
+  // The ftlBasePath shape probe only runs when engine/ exists, so an
+  // all-mocked suite never reaches it.
   'src/commands/furnace/init.ts': { lines: 90, branches: 90 },
 };
 
@@ -251,6 +245,44 @@ function checkMetric(failures, modulePath, entry, metric, minimum) {
   }
 }
 
+/**
+ * Floor for every covered module that carries no explicit pin.
+ *
+ * The pin list is a ratchet for modules whose coverage someone deliberately
+ * raised; it says nothing about the rest. Without a floor, every unpinned
+ * module is governed only by the global aggregate — which sits in the low 90s
+ * and absorbs a lot — so a module can sit well below the global line
+ * threshold with nothing to notice, and a new module arrives completely
+ * unguarded.
+ *
+ * Deliberately modest: this is a floor against rot, not a target. Raising a
+ * module above it is what MODULE_THRESHOLDS is for.
+ */
+const UNPINNED_FLOOR = { lines: 70, branches: 55 };
+
+/**
+ * Modules exempted from {@link UNPINNED_FLOOR}, with the reason.
+ *
+ * Seeded from the modules already below the floor when it was introduced, so
+ * the gate starts green and catches REGRESSIONS rather than demanding a
+ * coverage push as the price of adding the check. Each is a candidate for
+ * removal once its coverage comes up.
+ */
+const UNPINNED_FLOOR_EXEMPT = new Map([
+  // Branch-heavy toolchain probing whose arms need real external binaries.
+  ['src/commands/doctor-external-toolchains.ts', 'external toolchain probes'],
+  ['src/commands/export-placement-gate.ts', 'placement gating covered through export flows'],
+  ['src/commands/furnace/create-readback.ts', 'readback verification covered end-to-end'],
+  ['src/commands/furnace/list.ts', 'display-only listing'],
+  ['src/commands/patch/move-files-into.ts', 'covered by patch-move-files integration tests'],
+  ['src/commands/re-export-register.ts', 'registration covered through re-export flows'],
+  ['src/core/config.ts', 'thin facade; the validators it delegates to are pinned'],
+  ['src/core/furnace-apply-ftl.ts', 'localized-component paths need FTL fixtures'],
+  ['src/errors/config.ts', 'message-only error classes'],
+  ['src/errors/run.ts', 'message-only error classes'],
+  ['src/utils/elapsed.ts', 'formatting helper, 6 lines'],
+]);
+
 function main() {
   const summary = loadCoverageSummary();
   const failures = [];
@@ -268,6 +300,20 @@ function main() {
     checkMetric(failures, modulePath, entry, 'functions', thresholds.functions);
   }
 
+  // Floor for everything else with executable statements.
+  for (const [entryPath, entry] of Object.entries(summary)) {
+    if (entryPath === 'total') continue;
+    if (!entry.statements || entry.statements.total === 0) continue;
+    const normalized = entryPath.replace(/\\/g, '/');
+    const index = normalized.indexOf('src/');
+    if (index === -1) continue;
+    const modulePath = normalized.slice(index);
+    if (MODULE_THRESHOLDS[modulePath] !== undefined) continue;
+    if (UNPINNED_FLOOR_EXEMPT.has(modulePath)) continue;
+    checkMetric(failures, modulePath, entry, 'lines', UNPINNED_FLOOR.lines);
+    checkMetric(failures, modulePath, entry, 'branches', UNPINNED_FLOOR.branches);
+  }
+
   if (failures.length > 0) {
     console.error('Critical module coverage checks failed:');
     for (const failure of failures) {
@@ -277,7 +323,11 @@ function main() {
     return;
   }
 
-  console.log('Critical module coverage checks passed.');
+  console.log(
+    `Coverage checks passed (${Object.keys(MODULE_THRESHOLDS).length} pinned modules, ` +
+      `floor ${UNPINNED_FLOOR.lines}/${UNPINNED_FLOOR.branches} elsewhere with ` +
+      `${UNPINNED_FLOOR_EXEMPT.size} exemptions).`
+  );
 }
 
 main();

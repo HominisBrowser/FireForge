@@ -2,8 +2,9 @@
 import { multiselect } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { stdioIsInteractive } from '../core/destructive.js';
+import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
-import { isGitRepository } from '../core/git.js';
 import { formatPatchNotFoundError } from '../core/patch-identifier-suggest.js';
 import {
   loadPatchesManifest,
@@ -15,7 +16,6 @@ import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/c
 import type { FireForgeConfig } from '../types/config.js';
 import { elapsedSince } from '../utils/elapsed.js';
 import { toError } from '../utils/errors.js';
-import { pathExists } from '../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '../utils/logger.js';
 import type { AdjacentUnmanagedContext } from './re-export-adjacent.js';
 import {
@@ -47,7 +47,7 @@ async function resolveSelectedPatches(
     for (const identifier of patches) {
       const match = resolvePatchIdentifier(identifier, manifest.patches);
       if (!match) {
-        // Suggest, never dump: a wrong guess used to print the
+        // Suggest, never dump: a wrong guess would otherwise print the
         // whole ~300-entry manifest, burying the error it was reporting.
         throw new InvalidArgumentError(
           formatPatchNotFoundError(identifier, manifest.patches),
@@ -60,7 +60,7 @@ async function resolveSelectedPatches(
   }
 
   // No patches specified — prompt or error
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
 
   if (!isInteractive) {
     throw new InvalidArgumentError(
@@ -111,24 +111,14 @@ export async function reExportCommand(
   intro(isDryRun ? 'FireForge Re-export (dry run)' : 'FireForge Re-export');
 
   // Accept export-style space-separated paths after --files by folding
-  // path-shaped extra positionals into the file list (0.34.0 field report).
+  // path-shaped extra positionals into the file list.
   ({ patches, options } = applyReExportFilesPositionalFolding(patches, options));
 
   validateReExportOptionCombinations(patches, options);
 
   const paths = getProjectPaths(projectRoot);
 
-  // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
-
-  // Check if it's a git repository
-  if (!(await isGitRepository(paths.engine))) {
-    throw new GeneralError(
-      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
-    );
-  }
+  await assertEngineGitReady(paths.engine);
 
   // Load the manifest
   const manifest = await loadPatchesManifest(paths.patches);
@@ -372,14 +362,13 @@ function throwRunLevelRefusals(
 }
 
 /**
- * Prints the end-of-run summary and enforces the exit contract:
- * a partial run exits non-zero BY DEFAULT (adjudicated for 0.41.0, per the
- * follow-up 0.40.0's G7 recorded). "Re-exported 2 of 3" used to print and
- * exit 0, letting a partial refresh ride an `&&` chain as success. The
- * summary still prints first so the honest "N of M" accounting stays
- * visible; the throw then carries the failed/skipped breakdown. Dry-run
- * included: a preview reporting that the real run would partially fail
- * must not read as a passing preview in scripts.
+ * Prints the end-of-run summary and enforces the exit contract: a partial run
+ * exits non-zero by default. "Re-exported 2 of 3" printing with exit 0 lets a
+ * partial refresh ride an `&&` chain as success. The summary still prints
+ * first so the honest "N of M" accounting stays visible; the throw then
+ * carries the failed/skipped breakdown. Dry-run included: a preview
+ * reporting that the real run would partially fail must not read as a passing
+ * preview in scripts.
  */
 function reportReExportOutcome(args: {
   isDryRun: boolean;

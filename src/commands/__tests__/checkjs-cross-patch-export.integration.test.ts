@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Regression coverage for item C (0.32.0): the export/re-export lint path
- * resolves cross-patch `resource:///` imports against the whole queue (no
- * hand-generated ambient stub shim), while reporting only the patch under
- * export. `runPatchLint` is the shared helper export/export-all/re-export(
- * --files) all call; passing the whole-queue context (as they now do) makes
- * patch B's import of patch A's module type-check against A's real source.
+ * The export/re-export lint path resolves cross-patch `resource:///` imports
+ * against the whole queue (no hand-generated ambient stub shim), while
+ * reporting only the patch under export. `runPatchLint` is the shared helper
+ * export/export-all/re-export(--files) all call; passing the whole-queue
+ * context makes patch B's import of patch A's module type-check against A's
+ * real source.
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -30,6 +30,12 @@ import { warn } from '../../utils/logger.js';
 import { runPatchLint } from '../export-shared.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -156,7 +162,7 @@ describe('export/re-export cross-patch checkJs resolution (item C)', () => {
     expect(lines.every((l) => l.includes(B_PATH))).toBe(true);
   });
 
-  it('without the queue context the isolated patch cannot resolve the import (pre-0.32.0 behaviour)', async () => {
+  it('without the queue context the isolated patch cannot resolve the import', async () => {
     const config = await loadConfig(projectRoot);
     const diff = await getDiffForFilesAgainstHead(engineDir, [B_PATH]);
 

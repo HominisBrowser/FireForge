@@ -43,8 +43,8 @@ import {
   getTreesDir,
   listTrees,
   readTreeMarker,
-  readTreeMarkerState,
   removeTree,
+  tryReadTreeMarker,
 } from '../tree-store.js';
 
 describe('tree store', () => {
@@ -115,7 +115,7 @@ describe('tree store', () => {
     await expect(readFile(join(treeRoot, '.fireforge', 'state.json'), 'utf8')).resolves.toContain(
       '"brand"'
     );
-    const marker = await readTreeMarker(treeRoot);
+    const marker = await tryReadTreeMarker(treeRoot);
     expect(marker).toMatchObject({ schemaVersion: 1, name: 'shard-a', primaryRoot: projectRoot });
     expect(marker?.engineHead).toMatch(/^[0-9a-f]{40}$/);
     expect(marker?.patchesFingerprint).toMatch(/^[0-9a-f]{64}$/);
@@ -148,7 +148,7 @@ describe('tree store', () => {
     await expect(
       readFile(join(treeRoot, '.fireforge', 'last-build.json'), 'utf8')
     ).resolves.toContain('"mybrowser"');
-    await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({
+    await expect(tryReadTreeMarker(treeRoot)).resolves.toMatchObject({
       schemaVersion: 1,
       clonedObjdir: 'obj-x86_64',
     });
@@ -201,7 +201,9 @@ describe('tree store', () => {
     expect(observed.engineDir).toBe(join(treeRoot, 'engine'));
     expect(observed.mozinfoTopsrcdir).toBe(join(treeRoot, 'engine'));
     expect(observed.markerExists).toBe(false);
-    await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({ clonedObjdir: 'obj-x86_64' });
+    await expect(tryReadTreeMarker(treeRoot)).resolves.toMatchObject({
+      clonedObjdir: 'obj-x86_64',
+    });
   });
 
   it('withObjdir stays fail-closed when the reconfigure hook throws: no marker is written', async () => {
@@ -281,7 +283,7 @@ describe('tree store', () => {
     });
     const treeRoot = await createTestTree('shard-plain');
     await expect(pathExists(join(treeRoot, '.fireforge', 'last-build.json'))).resolves.toBe(false);
-    const marker = await readTreeMarker(treeRoot);
+    const marker = await tryReadTreeMarker(treeRoot);
     expect(marker).toBeDefined();
     expect(marker?.clonedObjdir).toBeUndefined();
   });
@@ -368,11 +370,10 @@ describe('tree store', () => {
   });
 
   it('removeTree treats an EPERM liveness probe as a live holder and refuses', async () => {
-    // A build lock held by a process running under a different uid (root-owned
-    // build, sudo, shared CI runner, container UID mismatch) answers
-    // `kill(pid, 0)` with EPERM, not ESRCH. The pre-0.41.0 local
-    // `isProcessAlive` copy read that as "dead" and `rm -rf`'d the whole tree
-    // clone out from under the running build.
+    // A build lock held by a process running under a different uid
+    // (root-owned build, sudo, shared CI runner, container UID mismatch)
+    // answers `kill(pid, 0)` with EPERM, not ESRCH. Reading that as "dead"
+    // `rm -rf`s the whole tree clone out from under the running build.
     const treeRoot = await createTestTree('shard-a');
     const lockDir = join(treeRoot, '.fireforge-build.lock');
     await mkdir(lockDir, { recursive: true });
@@ -430,18 +431,17 @@ describe('tree store', () => {
   });
 
   it('rejects a malformed tree marker field by field', async () => {
-    // Before 0.41.0 only `schemaVersion` and `name` were checked and the rest
-    // were asserted, but `primaryRoot` reaches a user-facing refusal message
-    // and `engineHead`/`patchesFingerprint` feed the staleness compare, where
-    // an `undefined` reports every tree as stale.
+    // Checking only `schemaVersion` and `name` and asserting the rest is not
+    // enough: `primaryRoot` reaches a user-facing refusal message, and
+    // `engineHead`/`patchesFingerprint` feed the staleness compare, where an
+    // `undefined` reports every tree as stale.
     const treeRoot = await createTestTree('shard-a');
     const markerPath = join(treeRoot, '.fireforge', 'tree.json');
-    const valid = await readTreeMarker(treeRoot);
+    const valid = await tryReadTreeMarker(treeRoot);
     expect(valid).toBeDefined();
 
     const { writeFile } = await import('node:fs/promises');
     const mutations: Array<[string, unknown]> = [
-      ['wrong schemaVersion', { ...valid, schemaVersion: 2 }],
       ['missing name', { ...valid, name: undefined }],
       ['missing primaryRoot', { ...valid, primaryRoot: undefined }],
       ['non-string createdAt', { ...valid, createdAt: 12345 }],
@@ -450,17 +450,31 @@ describe('tree store', () => {
       ['non-string, non-null patchesFingerprint', { ...valid, patchesFingerprint: {} }],
       ['non-string clonedObjdir', { ...valid, clonedObjdir: 7 }],
       ['not an object', []],
+      // A version below 1 or a non-integer is malformed, not "newer".
+      ['zero schemaVersion', { ...valid, schemaVersion: 0 }],
+      ['non-integer schemaVersion', { ...valid, schemaVersion: 1.5 }],
     ];
 
     for (const [label, body] of mutations) {
       await writeFile(markerPath, JSON.stringify(body), 'utf-8');
-      await expect(readTreeMarker(treeRoot), label).resolves.toBeUndefined();
+      await expect(tryReadTreeMarker(treeRoot), label).resolves.toBeUndefined();
       // A rejected marker must report as CORRUPT, not absent: the guard grants
       // the full mutating command set on 'absent'.
-      await expect(readTreeMarkerState(treeRoot), label).resolves.toMatchObject({
+      await expect(readTreeMarker(treeRoot), label).resolves.toMatchObject({
         kind: 'corrupt',
       });
     }
+
+    // A marker from a NEWER FireForge is reported as `unsupported`, not
+    // `corrupt`. The distinction is load-bearing: tree-guard is default-deny
+    // on corrupt AND offers "recreate the tree / delete the stray marker" —
+    // destructive advice for a file that is merely newer, which would have
+    // locked the operator out of their own tree.
+    await writeFile(markerPath, JSON.stringify({ ...valid, schemaVersion: 2 }), 'utf-8');
+    const newer = await readTreeMarker(treeRoot);
+    expect(newer.kind).toBe('unsupported');
+    expect(newer.kind === 'unsupported' ? newer.reason : '').toContain('newer FireForge');
+    expect(newer.kind === 'unsupported' ? newer.reason : '').toContain('do not delete');
 
     // Explicit nulls remain legal for the two nullable fields.
     await writeFile(
@@ -468,25 +482,27 @@ describe('tree store', () => {
       JSON.stringify({ ...valid, engineHead: null, patchesFingerprint: null }),
       'utf-8'
     );
-    await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({ engineHead: null });
+    await expect(tryReadTreeMarker(treeRoot)).resolves.toMatchObject({ engineHead: null });
 
     // A string clonedObjdir is the legal shape of the optional field.
     await writeFile(markerPath, JSON.stringify({ ...valid, clonedObjdir: 'obj-x86_64' }), 'utf-8');
-    await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({ clonedObjdir: 'obj-x86_64' });
+    await expect(tryReadTreeMarker(treeRoot)).resolves.toMatchObject({
+      clonedObjdir: 'obj-x86_64',
+    });
   });
 
   it('returns undefined for an unreadable marker rather than throwing', async () => {
     const treeRoot = await createTestTree('shard-a');
     const { writeFile } = await import('node:fs/promises');
     await writeFile(join(treeRoot, '.fireforge', 'tree.json'), '{ not json', 'utf-8');
-    await expect(readTreeMarker(treeRoot)).resolves.toBeUndefined();
-    await expect(readTreeMarkerState(treeRoot)).resolves.toMatchObject({ kind: 'corrupt' });
+    await expect(tryReadTreeMarker(treeRoot)).resolves.toBeUndefined();
+    await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({ kind: 'corrupt' });
   });
 
   it('distinguishes an absent marker from an unreadable one', async () => {
     const bareRoot = await createTempProject('ff-tree-nomarker-');
     try {
-      await expect(readTreeMarkerState(bareRoot)).resolves.toEqual({ kind: 'absent' });
+      await expect(readTreeMarker(bareRoot)).resolves.toEqual({ kind: 'absent' });
     } finally {
       await removeTempProject(bareRoot);
     }
@@ -503,7 +519,7 @@ describe('tree store', () => {
       const { chmod } = await import('node:fs/promises');
       await chmod(stateDir, 0o000);
       try {
-        await expect(readTreeMarkerState(treeRoot)).resolves.toMatchObject({ kind: 'corrupt' });
+        await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({ kind: 'corrupt' });
       } finally {
         await chmod(stateDir, 0o755);
       }
@@ -514,7 +530,7 @@ describe('tree store', () => {
     const bareRoot = await createTempProject('ff-tree-notdir-');
     try {
       await writeFile(join(bareRoot, '.fireforge'), 'not a directory\n');
-      await expect(readTreeMarkerState(bareRoot)).resolves.toEqual({ kind: 'absent' });
+      await expect(readTreeMarker(bareRoot)).resolves.toEqual({ kind: 'absent' });
     } finally {
       await removeTempProject(bareRoot);
     }

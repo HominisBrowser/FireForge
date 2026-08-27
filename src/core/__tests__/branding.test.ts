@@ -1,19 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { isBrandingSetup, setupBranding, splitAppId } from '../branding.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  readText: vi.fn(),
-  writeText: vi.fn(),
-  writeTextIfChanged: vi.fn(),
-  pathExists: vi.fn(),
-  copyDir: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { pathExists, readText, writeTextIfChanged } from '../../utils/fs.js';
 

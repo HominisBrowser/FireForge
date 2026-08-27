@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('@clack/prompts', () => ({
   text: vi.fn(),
   select: vi.fn(),
@@ -50,12 +52,7 @@ vi.mock('../../utils/fs.js', () => ({
   readText: vi.fn(() => Promise.resolve('const x = 1;\n')),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  cancel: vi.fn(),
-  isCancel: vi.fn(() => false),
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import * as clack from '@clack/prompts';
 
@@ -471,9 +468,9 @@ describe('autoFixLicenseHeaders', () => {
   });
 
   it('never prompts or writes under dry-run — reports the missing headers instead', async () => {
-    // Dry-run purity regression: an interactive `export --dry-run` used to
-    // prompt (default Yes) and write license headers into engine/, then
-    // close with "no changes made".
+    // Dry-run purity: an interactive `export --dry-run` must not prompt
+    // (default Yes) and write license headers into engine/, then close with
+    // "no changes made".
     vi.mocked(detectNewFilesInDiff).mockReturnValueOnce(new Set(['new.js']));
 
     const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true, true);
@@ -486,9 +483,9 @@ describe('autoFixLicenseHeaders', () => {
 });
 
 describe('findPartialOwnershipOverlap', () => {
-  // Finding #12: eval showed two exports both claiming
-  // `browser/themes/shared/jar.inc.mn`. `findAllPatchesForFiles` only
-  // catches FULL supersedes; partial overlap needs its own detector.
+  // Two exports can both claim `browser/themes/shared/jar.inc.mn`.
+  // `findAllPatchesForFiles` only catches FULL supersedes; partial overlap
+  // needs its own detector.
   it('returns an empty map when nothing overlaps', () => {
     const manifest = {
       version: 1 as const,

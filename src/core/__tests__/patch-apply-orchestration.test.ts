@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../../utils/process.js', () => ({
   exec: vi.fn(),
@@ -56,12 +54,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { readdir } from 'node:fs/promises';
 
-import { pathExists, readText, writeText } from '../../utils/fs.js';
-import { exec } from '../../utils/process.js';
+import { pathExists, readText } from '../../utils/fs.js';
 import { applyPatchIdempotent, reversePatch } from '../git.js';
 import { getFileContentFromHead } from '../git-file-ops.js';
 import {
-  applyPatches,
   applyPatchesWithContinue,
   countPatches,
   createPatchedContentContext,
@@ -69,7 +65,6 @@ import {
   getAllTargetFilesFromPatch,
   getTargetFileFromPatch,
   isNewFilePatch,
-  validatePatches,
 } from '../patch-apply.js';
 import { loadPatchesManifest } from '../patch-manifest.js';
 import { extractAffectedFiles, extractConflictingFiles } from '../patch-parse.js';
@@ -139,206 +134,6 @@ describe('patch orchestration helpers', () => {
       'foo.js',
       'bar.css',
     ]);
-  });
-
-  it('aggregates git apply check failures during validation', async () => {
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(readdir).mockResolvedValue([
-      { name: '001-alpha.patch', isFile: () => true },
-      { name: '002-beta.patch', isFile: () => true },
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
-    vi.mocked(exec)
-      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' })
-      .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: 'patch does not apply' });
-
-    const result = await validatePatches('/patches', '/engine');
-
-    expect(exec).toHaveBeenNthCalledWith(
-      1,
-      'git',
-      ['apply', '--check', '--', '/patches/001-alpha.patch'],
-      {
-        cwd: '/engine',
-      }
-    );
-    expect(exec).toHaveBeenNthCalledWith(
-      2,
-      'git',
-      ['apply', '--check', '--', '/patches/002-beta.patch'],
-      {
-        cwd: '/engine',
-      }
-    );
-    expect(result).toEqual({
-      valid: false,
-      errors: ['002-beta.patch: patch does not apply'],
-    });
-  });
-
-  it('returns a valid result when all patches pass git apply check', async () => {
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(readdir).mockResolvedValue([
-      { name: '001-alpha.patch', isFile: () => true },
-      { name: '002-beta.patch', isFile: () => true },
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
-    vi.mocked(exec)
-      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' });
-
-    await expect(validatePatches('/patches', '/engine')).resolves.toEqual({
-      valid: true,
-      errors: [],
-    });
-  });
-
-  it('rejects patch paths that escape engine/ during validation', async () => {
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(readdir).mockResolvedValue([
-      { name: '001-alpha.patch', isFile: () => true },
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
-    vi.mocked(readText).mockResolvedValue(
-      [
-        'diff --git a/../../etc/passwd b/../../etc/passwd',
-        '--- a/../../etc/passwd',
-        '+++ b/../../etc/passwd',
-      ].join('\n')
-    );
-    vi.mocked(extractAffectedFiles).mockReturnValue(['../../etc/passwd']);
-
-    await expect(validatePatches('/patches', '/engine')).resolves.toEqual({
-      valid: false,
-      errors: ['001-alpha.patch: Patch targets a path outside engine/: ../../etc/passwd'],
-    });
-    expect(exec).not.toHaveBeenCalled();
-  });
-
-  it('auto-resolves new-file conflicts during applyPatches', async () => {
-    const patchContent = [
-      'diff --git a/browser/new.js b/browser/new.js',
-      'new file mode 100644',
-      '--- /dev/null',
-      '+++ b/browser/new.js',
-      '@@ -0,0 +1 @@',
-      '+created',
-      '',
-    ].join('\n');
-
-    vi.mocked(pathExists).mockImplementation((filePath) =>
-      Promise.resolve(filePath === '/patches' || filePath === '/engine/browser/new.js')
-    );
-    vi.mocked(readdir).mockResolvedValue([
-      { name: '001-alpha.patch', isFile: () => true },
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
-    vi.mocked(readText).mockImplementation((filePath) => {
-      if (filePath === '/patches/001-alpha.patch' || filePath === '/patches/001-alpha.patch') {
-        return Promise.resolve(patchContent);
-      }
-      if (filePath === '/engine/browser/new.js') {
-        return Promise.resolve('existing file\n');
-      }
-      throw new Error(`Unexpected file read: ${filePath}`);
-    });
-    vi.mocked(extractAffectedFiles).mockReturnValue(['browser/new.js']);
-    vi.mocked(applyPatchIdempotent)
-      .mockRejectedValueOnce(new Error('new file already exists'))
-      .mockResolvedValueOnce(undefined);
-
-    const results = await applyPatches('/patches', '/engine');
-
-    expect(results).toEqual([
-      {
-        patch: { filename: '001-alpha.patch', path: '/patches/001-alpha.patch', order: 1 },
-        success: true,
-        autoResolved: true,
-        // Originals survive the run so rollbackPatches can restore the
-        // pre-existing file if a later patch fails.
-        autoResolvedOriginals: new Map([['browser/new.js', 'existing file\n']]),
-      },
-    ]);
-    expect(writeText).toHaveBeenCalledWith('/engine/browser/new.js', 'created\n');
-    expect(applyPatchIdempotent).toHaveBeenCalledTimes(2);
-  });
-
-  it('restores original content and stops applyPatches after the first failed patch', async () => {
-    const patchContent = [
-      'diff --git a/browser/new.js b/browser/new.js',
-      'new file mode 100644',
-      '--- /dev/null',
-      '+++ b/browser/new.js',
-      '@@ -0,0 +1 @@',
-      '+created',
-      '',
-    ].join('\n');
-
-    vi.mocked(pathExists).mockImplementation((filePath) =>
-      Promise.resolve(filePath === '/patches' || filePath === '/engine/browser/new.js')
-    );
-    vi.mocked(readdir).mockResolvedValue([
-      { name: '001-alpha.patch', isFile: () => true },
-      { name: '002-beta.patch', isFile: () => true },
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
-    vi.mocked(readText).mockImplementation((filePath) => {
-      if (filePath === '/patches/001-alpha.patch') {
-        return Promise.resolve(patchContent);
-      }
-      if (filePath === '/engine/browser/new.js') {
-        return Promise.resolve('existing file\n');
-      }
-      if (filePath === '/patches/002-beta.patch') {
-        return Promise.resolve(
-          'diff --git a/browser/unused.js b/browser/unused.js\n+++ b/browser/unused.js\n'
-        );
-      }
-      throw new Error(`Unexpected file read: ${filePath}`);
-    });
-    vi.mocked(extractAffectedFiles).mockReturnValue(['browser/new.js']);
-    vi.mocked(applyPatchIdempotent)
-      .mockRejectedValueOnce(new Error('initial failure'))
-      .mockRejectedValueOnce(new Error('retry failure'))
-      .mockResolvedValueOnce(undefined);
-
-    const results = await applyPatches('/patches', '/engine');
-
-    expect(results).toEqual([
-      {
-        patch: { filename: '001-alpha.patch', path: '/patches/001-alpha.patch', order: 1 },
-        success: false,
-        error: 'initial failure',
-      },
-    ]);
-    expect(writeText).toHaveBeenNthCalledWith(1, '/engine/browser/new.js', 'created\n');
-    expect(writeText).toHaveBeenNthCalledWith(2, '/engine/browser/new.js', 'existing file\n');
-    expect(applyPatchIdempotent).toHaveBeenNthCalledWith(3, '/patches/001-alpha.patch', '/engine', {
-      reject: true,
-      // First patch in the run — nothing applied yet, so nothing protected.
-      protectedFiles: new Set(),
-    });
-    expect(applyPatchIdempotent).toHaveBeenCalledTimes(3);
-  });
-
-  it('rejects patch paths that escape engine/ before applying writes', async () => {
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(readdir).mockResolvedValue([
-      { name: '001-alpha.patch', isFile: () => true },
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
-    vi.mocked(readText).mockResolvedValue(
-      [
-        'diff --git a/../../etc/passwd b/../../etc/passwd',
-        '--- a/../../etc/passwd',
-        '+++ b/../../etc/passwd',
-      ].join('\n')
-    );
-    vi.mocked(extractAffectedFiles).mockReturnValue(['../../etc/passwd']);
-
-    await expect(applyPatches('/patches', '/engine')).resolves.toEqual([
-      {
-        patch: { filename: '001-alpha.patch', path: '/patches/001-alpha.patch', order: 1 },
-        success: false,
-        error: 'Patch targets a path outside engine/: ../../etc/passwd',
-      },
-    ]);
-    expect(applyPatchIdempotent).not.toHaveBeenCalled();
-    expect(writeText).not.toHaveBeenCalled();
   });
 
   it('stops on the first failed patch when continue mode is disabled', async () => {
@@ -473,51 +268,6 @@ describe('patch orchestration helpers', () => {
     const readsAfterFirst = vi.mocked(readText).mock.calls.length;
     await ctx.computePatched('browser/app.css');
     expect(vi.mocked(readText).mock.calls.length).toBe(readsAfterFirst);
-  });
-
-  it('rolls back succeeded patches in applyPatches when a later patch fails', async () => {
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(readdir).mockResolvedValue([
-      { name: '001-alpha.patch', isFile: () => true },
-      { name: '002-beta.patch', isFile: () => true },
-      { name: '003-gamma.patch', isFile: () => true },
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
-    vi.mocked(readText).mockResolvedValue('diff --git a/a.js b/a.js\n+++ b/a.js\n');
-    vi.mocked(extractAffectedFiles).mockReturnValue([]);
-    vi.mocked(applyPatchIdempotent)
-      .mockResolvedValueOnce(undefined) // 001 succeeds
-      .mockResolvedValueOnce(undefined) // 002 succeeds
-      .mockRejectedValueOnce(new Error('context mismatch')) // 003 fails
-      .mockRejectedValueOnce(new Error('reject also fails')); // 003 --reject pass
-
-    const results = await applyPatches('/patches', '/engine');
-
-    // 003 failed, 001 and 002 succeeded then got rolled back
-    expect(results).toHaveLength(3);
-    expect(results[0]?.success).toBe(true);
-    expect(results[1]?.success).toBe(true);
-    expect(results[2]?.success).toBe(false);
-
-    // reversePatch called for both succeeded patches in reverse order
-    expect(reversePatch).toHaveBeenCalledTimes(2);
-    expect(reversePatch).toHaveBeenNthCalledWith(1, '/patches/002-beta.patch', '/engine');
-    expect(reversePatch).toHaveBeenNthCalledWith(2, '/patches/001-alpha.patch', '/engine');
-  });
-
-  it('does not call reversePatch when the first patch fails in applyPatches', async () => {
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(readdir).mockResolvedValue([
-      { name: '001-alpha.patch', isFile: () => true },
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
-    vi.mocked(readText).mockResolvedValue('diff --git a/a.js b/a.js\n+++ b/a.js\n');
-    vi.mocked(extractAffectedFiles).mockReturnValue([]);
-    vi.mocked(applyPatchIdempotent)
-      .mockRejectedValueOnce(new Error('fails immediately'))
-      .mockRejectedValueOnce(new Error('reject also fails'));
-
-    await applyPatches('/patches', '/engine');
-
-    expect(reversePatch).not.toHaveBeenCalled();
   });
 
   it('rolls back succeeded patches in applyPatchesWithContinue when continue is false', async () => {
@@ -668,34 +418,5 @@ describe('patch orchestration helpers', () => {
     await expect(
       applyPatchesWithContinue('/patches', '/engine', { untilFilename: '999' })
     ).rejects.toThrow(/does not match any patch/);
-  });
-
-  it('continues rolling back even if one reversePatch fails', async () => {
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(readdir).mockResolvedValue([
-      { name: '001-alpha.patch', isFile: () => true },
-      { name: '002-beta.patch', isFile: () => true },
-      { name: '003-gamma.patch', isFile: () => true },
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
-    vi.mocked(readText).mockResolvedValue('diff --git a/a.js b/a.js\n+++ b/a.js\n');
-    vi.mocked(extractAffectedFiles).mockReturnValue([]);
-    vi.mocked(applyPatchIdempotent)
-      .mockResolvedValueOnce(undefined) // 001 succeeds
-      .mockResolvedValueOnce(undefined) // 002 succeeds
-      .mockRejectedValueOnce(new Error('003 fails')) // 003 fails
-      .mockRejectedValueOnce(new Error('reject')); // 003 --reject pass
-
-    // reversePatch fails for 002 but continues to 001
-    vi.mocked(reversePatch)
-      .mockRejectedValueOnce(new Error('reverse failed for 002'))
-      .mockResolvedValueOnce(undefined);
-
-    const results = await applyPatches('/patches', '/engine');
-
-    expect(results[2]?.success).toBe(false);
-    // Both reverse attempts were made even though one failed
-    expect(reversePatch).toHaveBeenCalledTimes(2);
-    expect(reversePatch).toHaveBeenNthCalledWith(1, '/patches/002-beta.patch', '/engine');
-    expect(reversePatch).toHaveBeenNthCalledWith(2, '/patches/001-alpha.patch', '/engine');
   });
 });

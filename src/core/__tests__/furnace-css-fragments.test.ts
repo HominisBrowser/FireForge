@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Unit tests for shared CSS fragment expansion (field report D2).
+ * Unit tests for shared CSS fragment expansion.
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';

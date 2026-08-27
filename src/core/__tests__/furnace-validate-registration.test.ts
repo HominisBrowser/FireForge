@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, readdir: vi.fn() };
 });
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({ engine: '/engine' })),
@@ -40,6 +37,7 @@ import {
   validateJarMnEntries,
   validateRegistrationPatterns,
   validateTokenLink,
+  withRegistrationValidationCache,
 } from '../furnace-validate-registration.js';
 
 const COMPONENT_CONFIG: CustomComponentConfig = {
@@ -526,7 +524,7 @@ describe('furnace registration validation helpers', () => {
       expect(mjsError?.severity).toBe('error');
     });
 
-    it('flags stale registrations pointing at removed component files (0.34.0)', async () => {
+    it('flags stale registrations pointing at removed component files', async () => {
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
         if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
         if (filePath === '/project/components/custom/moz-dock/moz-dock.mjs') {
@@ -608,7 +606,7 @@ describe('furnace registration validation helpers', () => {
       expect(issues).toEqual([]);
     });
 
-    it('reports a registered component that the file never mentions (0.41.0)', async () => {
+    it('reports a registered component that the file never mentions', async () => {
       // This used to expect [] — which is exactly the blind spot that made a
       // registration-only defect invisible to validate and unreachable for
       // the scoped `--fix`.
@@ -803,5 +801,53 @@ describe('furnace registration validation helpers', () => {
       'Could not resolve token CSS link target for moz-dock during validation: broken config'
     );
     await expect(validateTokenLink('/component', 'moz-dock', '/project')).resolves.toEqual([]);
+  });
+
+  describe('per-batch caching', () => {
+    /** Minimal fixture: a token-using component plus one chrome document. */
+    function stubTokenLinkFixture(): void {
+      vi.mocked(readdir).mockResolvedValue(['mybrowser.xhtml'] as never);
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockImplementation((filePath: string) => {
+        // The component CSS must reference the prefix, or validateTokenLink
+        // returns before it ever looks at a chrome document.
+        if (filePath.endsWith('.css')) {
+          return Promise.resolve('.x { color: var(--ff-token-fg); }');
+        }
+        return Promise.resolve(
+          '<window><link rel="stylesheet" href="nightlyfox.css" /><moz-dock></moz-dock></window>'
+        );
+      });
+    }
+
+    it('scans the chrome-document directory once per batch, not once per component', async () => {
+      // `validateAllComponents` walks every component, and each token-using one
+      // used to re-scan `browser/base/content/*.xhtml` and re-parse
+      // fireforge.json — work that depends on the project and engine, never on
+      // the component.
+      stubTokenLinkFixture();
+      const before = vi.mocked(readdir).mock.calls.length;
+
+      await withRegistrationValidationCache(async () => {
+        await validateTokenLink('/component', 'moz-dock', '/project', '--ff-token');
+        await validateTokenLink('/component', 'moz-panel', '/project', '--ff-token');
+        await validateTokenLink('/component', 'moz-card', '/project', '--ff-token');
+      });
+
+      expect(vi.mocked(readdir).mock.calls.length - before).toBe(1);
+    });
+
+    it('reads fresh outside a batch, so a direct caller never sees a stale scan', async () => {
+      // The window is explicit precisely so `furnace status` and apply's
+      // consistency check — which call validateComponent directly, possibly
+      // after mutating the engine — are not served a cached document map.
+      stubTokenLinkFixture();
+      const before = vi.mocked(readdir).mock.calls.length;
+
+      await validateTokenLink('/component', 'moz-dock', '/project', '--ff-token');
+      await validateTokenLink('/component', 'moz-dock', '/project', '--ff-token');
+
+      expect(vi.mocked(readdir).mock.calls.length - before).toBe(2);
+    });
   });
 });

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Command-level tests for the engine-generation guard's verdict ordering
- *: a run invalidated by a concurrent `engine/` mutation must
- * emit `FAIL reason=inconclusive` as its single verdict line — the sharded
+ * Command-level tests for the engine-generation guard's verdict ordering: a
+ * run invalidated by a concurrent `engine/` mutation must emit
+ * `FAIL reason=inconclusive` as its single verdict line — the sharded
  * aggregate `PASS shards=N/N` must never print first, and single runs must
  * not end verdict-less. Kept separate from `test.test.ts`, which
  * deliberately leaves `engine-session-lock.js` unmocked (its probes fail
@@ -83,6 +83,11 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+
   setStdoutSealed: vi.fn(),
   intro: vi.fn(),
   info: vi.fn(),

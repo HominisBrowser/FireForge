@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Scan-less re-export adjacency advisory. A plain `re-export`
- * keeps the manifest's filesAffected unchanged, so a brand-new file an
- * author just created beside a patch's owned files is silently left out
- * of the refreshed body. This module detects such adjacent files, filters
- * out tool-managed paths (branding, furnace) so the notice names only
- * genuinely unmanaged candidates, and — under
+ * Scan-less re-export adjacency advisory.
+ *
+ * A plain `re-export` keeps the manifest's filesAffected unchanged, so a
+ * brand-new file an author just created beside a patch's owned files is
+ * silently left out of the refreshed body. This module detects such adjacent
+ * files, filters out tool-managed paths (branding, furnace) so the notice
+ * names only genuinely unmanaged candidates, and — under
  * `--refuse-adjacent-unmanaged` — lets the caller turn the notice into a
  * non-zero refusal.
  *
- * Split out of re-export.ts to keep that file inside the max-lines
- * budget; exports helpers consumed by re-export.ts, no registrar.
+ * Split out of re-export.ts to keep that file inside the max-lines budget;
+ * exports helpers consumed by re-export.ts, no registrar.
  */
 import { dirname, join } from 'node:path';
 

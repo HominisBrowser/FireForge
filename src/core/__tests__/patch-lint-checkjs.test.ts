@@ -3,16 +3,12 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { runCheckJs, runCheckJsGrouped } from '../patch-lint-checkjs.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { pathExists, readText } from '../../utils/fs.js';
 
@@ -207,7 +203,7 @@ describe('runCheckJs', () => {
   });
 
   it('carries JSDoc type-guard predicates across owned chrome:// module boundaries', async () => {
-    // Field report B1: per-patch lint used to type all cross-module imports
+    // Per-patch lint must not type all cross-module imports
     // as `any` (noResolve + wildcard ambient modules), so `value is Element`
     // guards lost their narrowing and call sites accumulated false
     // checkjs-type-errors. Owned imports now resolve to real sources.
@@ -486,7 +482,7 @@ describe('runCheckJs', () => {
   });
 
   it('accepts ChromeUtils.getClassName, defineLazyGetter, and Localization under strict checkJs', async () => {
-    // Field report B3: these are stable chrome globals; the shim's closed
+    // These are stable chrome globals; the shim's closed
     // ChromeUtils member list rejected the two methods (TS2339 is not in
     // the suppressed-code set) and Localization was undeclared.
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
@@ -636,13 +632,13 @@ describe('runCheckJs', () => {
   });
 
   it('lets an extra shim ADD members to shim globals via interface merging', async () => {
-    // The drill's second half: `ChromeUtilsShim` is a mergeable global
-    // interface, so a project extra shim can extend `ChromeUtils` without
-    // the duplicate-identifier error a second `declare var ChromeUtils`
-    // produces. The fixture adds a novel member; the correct use must
-    // pass (proving no duplicate-identifier / missing-member diagnostics)
-    // and a misuse must still be flagged (proving the member is TYPED by
-    // the merge, not swallowed by a suppressed cannot-find-name code).
+    // `ChromeUtilsShim` is a mergeable global interface, so a project extra
+    // shim can extend `ChromeUtils` without the duplicate-identifier error a
+    // second `declare var ChromeUtils` produces. The fixture adds a novel
+    // member; the correct use must pass (proving no duplicate-identifier /
+    // missing-member diagnostics) and a misuse must still be flagged
+    // (proving the member is TYPED by the merge, not swallowed by a
+    // suppressed cannot-find-name code).
     const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
 
@@ -781,7 +777,7 @@ describe('runCheckJs', () => {
     }
   });
 
-  // ── Item B2 / C (0.32.0): scope split — one program, per-file attribution ──
+  // Scope split: one program, per-file attribution.
 
   it('runCheckJsGrouped attributes each diagnostic to its originating file', async () => {
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');

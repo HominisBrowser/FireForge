@@ -285,12 +285,11 @@ export async function removeJarMnEntries(engineDir: string, tagName: string): Pr
   const lines = content.split('\n');
   // Match by the SOURCE MAPPING segment `(widgets/<tagName>/...)` so every
   // line the component registered is removed regardless of the target
-  // basename — a helper `.mjs` whose name does not start with the tag
-  // (e.g. a renamed `foo-utils.mjs`) used to survive the remove pass and
-  // leave a stale registration that broke packaging (0.34.0 field
-  // report). The legacy target-path match is kept as an OR for lines
-  // written by older FireForge versions without a source mapping. Word
-  // boundaries keep "moz-card" from matching "moz-card-group".
+  // basename — a helper `.mjs` whose name does not start with the tag (e.g.
+  // a renamed `foo-utils.mjs`) otherwise survives the remove pass and leaves
+  // a stale registration that breaks packaging. The legacy target-path match
+  // is kept as an OR for lines written before the source mapping existed.
+  // Word boundaries keep "moz-card" from matching "moz-card-group".
   const sourcePattern = new RegExp(`\\(widgets/${escapeRegex(tagName)}/`);
   const legacyTargetPattern = new RegExp(`content/global/elements/${escapeRegex(tagName)}\\.`);
 
@@ -317,12 +316,11 @@ export interface StaleJarMnEntry {
 const WIDGET_SOURCE_MAPPING_PATTERN = /\(widgets\/([^/)]+)\/([^)]+)\)/;
 
 /**
- * Scans jar.mn for widget registration lines `(widgets/<tag>/<file>)`
- * whose workspace source file no longer exists (0.34.0 field report: a
- * renamed component helper left the old line pointing at a deleted file,
- * and every build failed at packaging). Only tags in `managedTags`
- * (furnace-managed custom components) are inspected so upstream lines are
- * never touched.
+ * Scans jar.mn for widget registration lines `(widgets/<tag>/<file>)` whose
+ * workspace source file no longer exists — a renamed component helper
+ * otherwise leaves the old line pointing at a deleted file and every build
+ * fails at packaging. Only tags in `managedTags` (furnace-managed custom
+ * components) are inspected, so upstream lines are never touched.
  */
 export async function findStaleJarMnEntries(
   engineDir: string,

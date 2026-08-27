@@ -2,19 +2,19 @@
 /**
  * Extracts furnace-shaped registration references from a patch body.
  *
- * 2026-04-24 eval Finding 1: `export-all --exclude-furnace` can land a
- * patch that registers a furnace component (via edits to
- * `toolkit/content/customElements.js`, `toolkit/content/jar.mn`, or
- * `toolkit/locales/jar.mn`) without including the component's source
- * files in the patch. `fireforge verify` then reports "Verify clean" for
- * the broken queue. This module provides a pattern-scoped scan so
+ * `export-all --exclude-furnace` can land a patch that registers a furnace
+ * component (via edits to `toolkit/content/customElements.js`,
+ * `toolkit/content/jar.mn`, or `toolkit/locales/jar.mn`) without including
+ * the component's source files, and `fireforge verify` then reports "Verify
+ * clean" for the broken queue. This module provides a pattern-scoped scan so
  * `verify` can cross-check registrations against available file bodies.
  *
  * The scan is deliberately narrow: it only matches component-shaped
- * references (widget tag names, locale fluent names). Unrelated jar.mn
- * or customElements.js edits pass through without spurious warnings.
+ * references (widget tag names, locale fluent names). Unrelated jar.mn or
+ * customElements.js edits pass through without spurious warnings.
  */
 
+import { WIDGETS_DIR } from './furnace-constants.js';
 import { parseDiffSections } from './patch-parse.js';
 
 /** Canonical file paths that registration-shaped diffs touch. */
@@ -125,7 +125,7 @@ function extractTargetPathsFromRegistrationLine(sourceFile: string, added: strin
     if (elementMatch?.[1] && elementMatch[2]) {
       const tag = elementMatch[1];
       const fileStem = elementMatch[2];
-      return [`toolkit/content/widgets/${tag}/${fileStem}.mjs`];
+      return [`${WIDGETS_DIR}/${tag}/${fileStem}.mjs`];
     }
     return [];
   }

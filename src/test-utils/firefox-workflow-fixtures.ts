@@ -797,10 +797,10 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
   },
 
   /**
-   * Observer topic regex edge case: notifyObservers with a variable (not string literal)
-   * argument followed by an object literal. The regex's [^)]* greedily consumes the
-   * multi-line object, then matches a distant quote and captures a huge false-positive.
-   * Models a real observer-topic parsing bug.
+   * Observer topic regex edge case: notifyObservers with a variable (not a
+   * string literal) argument followed by an object literal. The regex's
+   * `[^)]*` greedily consumes the multi-line object, then matches a distant
+   * quote and captures a large false positive.
    */
   observerRegexEdgeCase: {
     exportPath: 'browser/modules/mybrowser/EventBus.sys.mjs',

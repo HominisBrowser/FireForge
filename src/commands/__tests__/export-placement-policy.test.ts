@@ -191,7 +191,7 @@ describe('resolvePlacementPlan reserved-range wiring', () => {
     ).rejects.toThrow(/Positional insert would renumber the reserved range 095-100/);
   });
 
-  // Field report claimed `export --dry-run -d "…"` drops the
+  // `export --dry-run -d "…"` must not drop the
   // description and fails its own description-required policy check. The
   // plumbing is intact end-to-end (cannot-reproduce); these pins keep it so.
   describe('dry-run carries --description into the policy projection', () => {

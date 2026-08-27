@@ -7,6 +7,7 @@ import { stat } from 'node:fs/promises';
 
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
 import { discoverPatches, getAllTargetFilesFromPatch } from './patch-files.js';
+import type { PatchDirectoryLockOptions } from './patch-lock.js';
 import { withPatchDirectoryLock } from './patch-lock.js';
 import {
   type LoadedManifestState,
@@ -146,15 +147,18 @@ export interface RebuildPatchesManifestResult {
  */
 export async function rebuildPatchesManifest(
   patchesDir: string,
-  fallbackSourceEsrVersion: string
+  fallbackSourceEsrVersion: string,
+  lockOptions: PatchDirectoryLockOptions = {}
 ): Promise<RebuildPatchesManifestResult> {
   // The whole read → discover → rebuild → save cycle runs under the shared
   // patch-directory lock (invariant 2, docs/lifecycle-invariants.md):
-  // manifest writes serialize on this lock, and a repair racing a
-  // concurrent export/reorder used to be able to clobber the other
-  // writer's manifest. Not reentrant — callers must not already hold it.
-  return withPatchDirectoryLock(patchesDir, () =>
-    rebuildPatchesManifestUnderLock(patchesDir, fallbackSourceEsrVersion)
+  // manifest writes serialize on this lock, so without it a repair racing a
+  // concurrent export/reorder can clobber the other writer's manifest. Not
+  // reentrant — callers must not already hold it.
+  return withPatchDirectoryLock(
+    patchesDir,
+    () => rebuildPatchesManifestUnderLock(patchesDir, fallbackSourceEsrVersion),
+    lockOptions
   );
 }
 
@@ -180,11 +184,10 @@ async function rebuildPatchesManifestUnderLock(
   let nextRecoveredOrder = highestFiniteOrder + 1;
 
   // Prefetch the two independent per-patch reads concurrently. This runs
-  // while the patch-directory lock is held, and it was two serialised awaits
-  // per patch across the whole queue — 58 round-trips on a 29-patch queue.
-  // The fold below stays sequential because `nextRecoveredOrder` is
-  // loop-carried: parallelising the assignment would scramble the recovered
-  // ordinals.
+  // while the patch-directory lock is held, and as two serialised awaits per
+  // patch it costs 58 round-trips on a 29-patch queue. The fold below stays
+  // sequential because `nextRecoveredOrder` is loop-carried: parallelising
+  // the assignment would scramble the recovered ordinals.
   const prefetched = await Promise.all(
     patches.map(async (patch) => ({
       filesAffected: normalizeFiles(await getAllTargetFilesFromPatch(patch.path)),
@@ -201,26 +204,25 @@ async function rebuildPatchesManifestUnderLock(
     const recoveredOrder = Number.isFinite(patch.order) ? patch.order : nextRecoveredOrder++;
 
     if (!existing) {
-      // Track every filename that had no pre-existing manifest entry
-      // so callers can warn the operator per-patch. A missing entry
-      // means every descriptive field (`description`, `createdAt`,
-      // `category`) was invented rather than preserved. FireForge
-      // patch files carry no header metadata that could carry a
-      // human description forward, so full fidelity is impossible —
-      // visibility is the best we can offer. 2026-04-21 eval
-      // (Finding #17) tripped over silent overwrites of useful
-      // human-written descriptions during a recovery run.
+      // Track every filename that had no pre-existing manifest entry so
+      // callers can warn the operator per-patch. A missing entry means every
+      // descriptive field (`description`, `createdAt`, `category`) was
+      // invented rather than preserved, and FireForge patch files carry no
+      // header metadata that could carry a human description forward — so
+      // visibility is the best available, and silent overwrites of
+      // human-written descriptions during a recovery run are the failure to
+      // avoid.
       recoveredFilenames.push(patch.filename);
     }
 
-    // Preserve optional fields the operator declared on the existing
-    // entry — `lintIgnore` (per-patch lint suppression) and `tier`
-    // (explicit branding-threshold override). Without this, a
-    // `doctor --repair-patches-manifest` run silently strips both
-    // fields from every entry that had them, and the next `lint`
-    // or `re-export` pass fires rules the operator had intentionally
-    // quieted. Mirrors how other descriptive fields fall back to
-    // existing values when the entry is known.
+    // Preserve optional fields the operator declared on the existing entry —
+    // `lintIgnore` (per-patch lint suppression) and `tier` (explicit
+    // branding-threshold override). Without this, a
+    // `doctor --repair-patches-manifest` run silently strips both from every
+    // entry that had them, and the next `lint` or `re-export` pass fires
+    // rules the operator had intentionally quieted. Mirrors how other
+    // descriptive fields fall back to existing values when the entry is
+    // known.
     const rebuilt: PatchMetadata = {
       filename: patch.filename,
       order: recoveredOrder,

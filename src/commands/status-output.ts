@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import type { BuildBaseline } from '../core/build-baseline-types.js';
-import { isFileRegistered, matchesRegistrablePattern } from '../core/manifest-rules.js';
+import { isFileRegistered, matchesRegistrablePattern } from '../core/moz-manifest-rules.js';
 import type { ClassifiedFile, StatusFile } from '../core/status-classify.js';
 import { getPrimaryStatusCode } from '../core/status-classify.js';
 import { GeneralError } from '../errors/base.js';
@@ -248,11 +248,11 @@ export async function renderDefaultStatus(
 }
 
 /**
- * Renders `fireforge status --test-coverage`: a READ-ONLY view
- * of the last build baseline's test-packaging coverage. Before this
- * existed, the only way to learn the recorded coverage scope — which
- * concurrent sessions sharing one engine tree overwrite constantly — was
- * to trip the out-of-coverage refusal on a real test run.
+ * Renders `fireforge status --test-coverage`: a READ-ONLY view of the last
+ * build baseline's test-packaging coverage. Without it, the only way to
+ * learn the recorded coverage scope — which concurrent sessions sharing one
+ * engine tree overwrite constantly — is to trip the out-of-coverage refusal
+ * on a real test run.
  */
 export function renderTestCoverageStatus(baseline: BuildBaseline | undefined): void {
   if (baseline === undefined) {

@@ -32,12 +32,11 @@ import {
 // Cross-patch lint re-exports
 // ---------------------------------------------------------------------------
 //
-// The cross-patch lint infrastructure (queue context builder, duplicate-
-// creation and forward-import rules, ignore marker) lives in
-// `patch-lint-cross.ts` so the per-patch and cross-patch rule bodies can
-// each stay within the project's per-file line budget. Re-export the
-// public surface from `patch-lint-reexports.ts` so callers continue to
-// import from a single module.
+// The cross-patch lint infrastructure (queue context builder,
+// duplicate-creation and forward-import rules, ignore marker) lives in
+// `patch-lint-cross.ts` so the per-patch and cross-patch rule bodies each
+// stay within the per-file line budget. The public surface is re-exported
+// from `patch-lint-reexports.ts` so callers keep importing from one module.
 
 export * from './patch-lint-reexports.js';
 
@@ -59,10 +58,10 @@ const FILE_SIZE_THRESHOLDS = {
 
 /**
  * Counts the lines of `content` the way `wc -l` reports them: a trailing
- * newline terminates the last line rather than starting an empty extra
- * one. A naive `split('\n').length` over-counts by one for any content
- * ending in `\n` (the common case), which made the size rules fire one
- * line early against the operator's own `wc -l` measurement.
+ * newline terminates the last line rather than starting an empty extra one.
+ * A naive `split('\n').length` over-counts by one for any content ending in
+ * `\n` (the common case), making the size rules fire one line early against
+ * the operator's own `wc -l` measurement.
  */
 function countContentLines(content: string): number {
   const lines = content.split('\n');
@@ -122,51 +121,40 @@ const PATCH_LINE_THRESHOLDS = {
    * Branding patches have a legitimate reason to be large: they include
    * every locale's `brand.ftl`, copied upstream CSS/PNG assets, and the
    * fork-specific `configure.sh` / `brand.properties` under a single
-   * `browser/branding/<name>/` subtree. Calibrated against:
+   * `browser/branding/<name>/` subtree.
    *
-   * - The 2026-04-21 eval baseline: a fresh-fork branding export landed
-   *   at 15904 lines (localized brand.ftl across many locales + SVG path
-   *   data + copied upstream CSS).
-   * - The 2026-04-25 operator data point: a freshly setup branding patch
-   *   (post-binary-exclusion, after Phase 1+2 patch splits) landed at
-   *   15650 lines — within 2% of the eval baseline.
-   *
-   * Both data points need to surface as a soft `notice` rather than a
-   * `warning`, since they represent the *minimum* branding diff. The
-   * pre-2026-04-25 calibration {3000/8000/20000} put 15904 firmly in the
-   * `warning` band, contradicting the docstring's "loud but not
-   * actionable" intent. The current calibration moves the warning band
-   * above the eval baseline (with ~13% headroom) and the error band to
-   * roughly 2× the baseline — reaching `error` strongly suggests
-   * non-branding work is bundled in.
+   * Calibrated against a fresh-fork branding export, which lands around
+   * 15–16k lines (localized brand.ftl across many locales + SVG path data +
+   * copied upstream CSS). That is the MINIMUM branding diff, so it must
+   * surface as a soft `notice` rather than a `warning`: the warning band
+   * sits above it with ~13% headroom, and the error band at roughly 2× the
+   * baseline, where non-branding work is probably bundled in.
    *
    * Permissive thresholds are safe because the *gate* into this tier is
-   * narrow (auto-detect requires every file under `browser/branding/`
-   * plus a tight registration allowlist, or an explicit
-   * `PatchMetadata.tier: "branding"` opt-in). A non-branding patch
-   * cannot accidentally land here.
+   * narrow: auto-detect requires every file under `browser/branding/` plus a
+   * tight registration allowlist, or an explicit `PatchMetadata.tier:
+   * "branding"` opt-in. A non-branding patch cannot accidentally land here.
    */
   branding: { notice: 8000, warning: 18000, error: 30000 },
 } as const;
 
 /**
- * File-count thresholds for the `large-patch-files` rule, mirroring the
- * tier shape of {@link PATCH_LINE_THRESHOLDS}. A single warning-only
- * threshold per tier is intentional — file count expresses scope, not
- * blast radius, and there is no error band that would block export.
+ * File-count thresholds for the `large-patch-files` rule, mirroring the tier
+ * shape of {@link PATCH_LINE_THRESHOLDS}. A single warning-only threshold
+ * per tier is intentional — file count expresses scope, not blast radius,
+ * and there is no error band that would block export.
  *
  * The branding tier sits well above the typical floor because branding
- * patches inherently span many files: PNG/ICO icon assets in 7+ sizes,
- * MSIX manifests, channel-specific configs, locale `.ftl` files,
- * Windows/macOS launcher resources. The 2026-04-25 operator data point
- * reported a 56-file fresh-fork branding bundle as the minimum shape;
- * 60 leaves headroom for additional channels/locales while still firing
- * on a genuinely bloated patch.
+ * patches inherently span many files: PNG/ICO icon assets in 7+ sizes, MSIX
+ * manifests, channel-specific configs, locale `.ftl` files, Windows/macOS
+ * launcher resources. A fresh-fork branding bundle is around 56 files, so 60
+ * leaves headroom for additional channels/locales while still firing on a
+ * genuinely bloated patch.
  *
- * Test tier matches general because a test-only patch rarely touches
- * many files (a single regression test usually adds 1–3 fixtures); the
- * elevation in {@link PATCH_LINE_THRESHOLDS.test} addresses big
- * table-driven test bodies, not file fan-out.
+ * Test tier matches general because a test-only patch rarely touches many
+ * files (a single regression test usually adds 1–3 fixtures); the elevation
+ * in {@link PATCH_LINE_THRESHOLDS.test} addresses big table-driven test
+ * bodies, not file fan-out.
  */
 const PATCH_FILES_THRESHOLDS = {
   general: 5,
@@ -175,11 +163,10 @@ const PATCH_FILES_THRESHOLDS = {
 } as const;
 
 /**
- * Shared remedy sentence for the over-budget findings: the two
- * places an operator stands when a patch outgrows its budget must name the
- * sanctioned one-transaction way out, or they reach for the wrong tools
- * first (the field report tried two before finding it). One constant, four
- * emission sites — the wording cannot drift.
+ * Shared remedy sentence for the over-budget findings. Both places an
+ * operator stands when a patch outgrows its budget must name the sanctioned
+ * one-transaction way out, or they reach for the wrong tools first. One
+ * constant, four emission sites, so the wording cannot drift.
  */
 const SPLIT_HINT =
   'Consider splitting into smaller, focused patches — ' +
@@ -188,18 +175,15 @@ const SPLIT_HINT =
 
 /**
  * Fixed allowlist of non-branding sibling paths that real-world Firefox
- * branding patches legitimately need to touch to register the new
- * branding flavor with the top-level configure. The 2026-04-21
- * external eval showed that a branding patch which also touches
- * `browser/moz.configure` (the canonical registration point) fell
- * through to the general lint tier because the original predicate
- * required every file to live under `browser/branding/`. This
- * allowlist stays intentionally narrow — additions require a real
- * operator data point, not a speculative expansion. Add new entries
- * only when a genuine branding patch cannot be expressed without a
- * specific registration sibling.
+ * branding patches legitimately need to touch to register the new branding
+ * flavor with the top-level configure. A predicate requiring every file to
+ * live under `browser/branding/` drops a branding patch that also touches
+ * `browser/moz.configure` — the canonical registration point — into the
+ * general lint tier.
  *
- * Pinned against ESR 140.x conventions at time of writing.
+ * Intentionally narrow: add entries only when a genuine branding patch
+ * cannot be expressed without a specific registration sibling. Pinned
+ * against ESR 140.x conventions at time of writing.
  */
 const BRANDING_REGISTRATION_FILES: ReadonlySet<string> = new Set([
   'browser/moz.configure',
@@ -266,33 +250,31 @@ function isBrowserChromeTestFile(file: string): boolean {
 /**
  * Bare assertion-call detection for the `test-needs-assertion` floor.
  *
- * Each alternative must sit at a call boundary: preceded by something that is
- * not an identifier character, `.`, `#`, or `-`. Until 0.41.0 this was a plain
- * `strippedContent.includes(tok)` over the tokens `Assert.`, `ok(`, `is(`,
- * `isnot(`, `isDeeply(`, so any identifier merely *ending* in one satisfied
- * the gate — `this.axis(3)` contains `is(`, `book(` contains `ok(`,
- * `promiseIsDeeply(` contains `isDeeply(`. An assertion-free smoke test using
- * any such call passed the floor, which is exactly what the rule exists to
- * catch.
+ * Each alternative must sit at a call boundary: preceded by something that
+ * is not an identifier character, `.`, `#`, or `-`. A plain
+ * `strippedContent.includes(tok)` over `Assert.`, `ok(`, `is(`, `isnot(`,
+ * `isDeeply(` lets any identifier merely *ending* in one satisfy the gate —
+ * `this.axis(3)` contains `is(`, `book(` contains `ok(`,
+ * `promiseIsDeeply(` contains `isDeeply(` — so an assertion-free smoke test
+ * using any such call clears the floor.
  *
- * The namespaced arm must name a member and a call. Matching the namespace and
- * its dot alone — as `(?:Assert|SimpleTest)\.` did — re-opened the same hole
- * from the other side: `SimpleTest` is mostly *harness* API, so
- * `SimpleTest.finish()`, `SimpleTest.waitForExplicitFinish()` and
- * `SimpleTest.requestCompleteLog()` each cleared the floor on their own. Those
- * are the exact calls an assertion-free smoke test contains. The enumeration
- * below is the mochitest/xpcshell assertion surface both namespaces share, and
- * it is what the user-facing message already names.
+ * The namespaced arm must name a member AND a call. Matching the namespace
+ * and its dot alone re-opens the same hole from the other side:
+ * `SimpleTest` is mostly *harness* API, so `SimpleTest.finish()`,
+ * `SimpleTest.waitForExplicitFinish()` and `SimpleTest.requestCompleteLog()`
+ * would each clear the floor on their own — the exact calls an
+ * assertion-free smoke test contains. The enumeration below is the
+ * mochitest/xpcshell assertion surface both namespaces share, and it is what
+ * the user-facing message names.
  *
- * Two qualified spellings of the bare four still count: `window.ok(...)` (the
- * globals ARE window properties) and an optional-chained `win?.ok(...)`.
- * Blocking those flagged tests whose only assertions are real as
+ * Two qualified spellings of the bare four also count: `window.ok(...)` (the
+ * globals ARE window properties) and an optional-chained `win?.ok(...)`;
+ * blocking those flags tests whose only assertions are real as
  * assertion-free. `SpecialPowers.ok(` stays excluded — that is API surface,
  * not an assertion.
  *
- * Deliberately still textual, not AST-based: this runs over patch bodies
- * rather than resolvable sources, and the surrounding rule is a floor, not a
- * proof.
+ * Deliberately textual, not AST-based: this runs over patch bodies rather
+ * than resolvable sources, and the surrounding rule is a floor, not a proof.
  */
 const ASSERTION_MEMBERS = [
   'ok',
@@ -353,22 +335,18 @@ export function commentStyleForFile(file: string): CommentStyle | null {
  * Accepted shapes, in order:
  *  - the project's own header for the file's comment style;
  *  - under `browser/branding/`, ANY recognised license header in the
- *    matching style: the setup-generated branding directory is copied
- *    from Firefox's `unofficial` template and arrives with Mozilla
- *    MPL-2.0 headers — legitimate for copyright purposes (the assets are
- *    Mozilla's) even when the fork's own code is 0BSD / EUPL-1.2 /
- *    GPL-2.0-or-later;
+ *    matching style: the setup-generated branding directory is copied from
+ *    Firefox's `unofficial` template and arrives with Mozilla MPL-2.0
+ *    headers — legitimate for copyright purposes (the assets are Mozilla's)
+ *    even when the fork's own code is 0BSD / EUPL-1.2 / GPL-2.0-or-later;
  *  - on an MPL-2.0 project, any recognised header in the matching style;
  *  - the verbatim upstream MPL-2.0 block header (`/* … *\/`, optionally
- *    behind a leading editor-directive comment) REGARDLESS of the
- *    project license, on any file whose comment syntax is the block form
- *    (JS and CSS): a file copied from the Firefox tree legitimately
- *    keeps Mozilla's header for provenance in an EUPL/GPL/0BSD project
- *    too. 0.35.0 accepted this on JS only; field verification showed a
- *    derived CSS file carrying the identical three-line block header
- *    still needed a patch-level lintIgnore. Only the block form is
- *    accepted — the `// `-style MPL header is FireForge-generated, not
- *    upstream provenance — and `hash`-style files (FTL) stay excluded
+ *    behind a leading editor-directive comment) REGARDLESS of the project
+ *    license, on any file whose comment syntax is the block form (JS and
+ *    CSS): a file copied from the Firefox tree legitimately keeps Mozilla's
+ *    header for provenance in an EUPL/GPL/0BSD project too. Only the block
+ *    form is accepted — the `// `-style MPL header is FireForge-generated,
+ *    not upstream provenance — and `hash`-style files (FTL) stay excluded
  *    because `/* … *\/` is not a comment there.
  *
  * @param file - Engine-relative path of the new file
@@ -684,16 +662,15 @@ export function lintPatchSize(
 
   // Tier selection: test > branding > general. Tests keep their elevated
   // thresholds because a big regression test is legitimate (table-driven
-  // harnesses run into the thousands of lines). Branding patches get
-  // their own tier so a first-export of setup-generated branding doesn't
-  // fire the general hard limit — see `PATCH_LINE_THRESHOLDS.branding`
-  // and `PATCH_FILES_THRESHOLDS.branding` above for the eval data
-  // motivating this tier. An explicit `patchTier` opt-in forces branding
-  // even when `isBrandingOnlyPatch` cannot reach the patch's actual
-  // shape (a branding patch that also touches a non-allowlisted sibling
-  // like a vendor-specific icon resource). Both checks read off the
-  // same decision so the file-count and line-count rules cannot
-  // disagree about which tier applies.
+  // harnesses run into the thousands of lines). Branding patches get their
+  // own tier so a first export of setup-generated branding does not fire the
+  // general hard limit — see `PATCH_LINE_THRESHOLDS.branding` and
+  // `PATCH_FILES_THRESHOLDS.branding` above. An explicit `patchTier` opt-in
+  // forces branding even when `isBrandingOnlyPatch` cannot reach the patch's
+  // actual shape (a branding patch that also touches a non-allowlisted
+  // sibling like a vendor-specific icon resource). Both checks read off the
+  // same decision so the file-count and line-count rules cannot disagree
+  // about which tier applies.
   const decision = resolvePatchSizeTier(filesAffected, patchTier);
   const fileThreshold =
     decision.tier === 'test'
@@ -798,6 +775,29 @@ export async function lintModifiedFileHeaders(
  */
 export interface LintExportedPatchOptions {
   /**
+   * Cross-patch context for ownership resolution. Present whenever the
+   * caller has a loaded patch queue; absent for the ad-hoc single-diff
+   * paths that have no queue to resolve against.
+   */
+  patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext;
+  /**
+   * Per-patch `check` IDs to drop from the returned issues. Threaded from
+   * `PatchMetadata.lintIgnore` so a patch that is advisory-noisy by nature
+   * (a cohesive branding bundle, auto-generated manifest, etc.) can opt out
+   * of a specific rule without reaching for the blunt `--skip-lint` hammer.
+   * Not mutated.
+   */
+  ignoreChecks?: ReadonlySet<string>;
+  /**
+   * Explicit tier override, threaded from `PatchMetadata.tier`. When
+   * `"branding"` forces the branding thresholds on the
+   * `large-patch-lines` rule. Callers with a per-patch manifest context
+   * (re-export, per-patch lint) should pass this; aggregate-mode callers
+   * without a specific patch context omit it and fall through to
+   * auto-detection.
+   */
+  patchTier?: 'branding';
+  /**
    * Skip the patch-size rules (`large-patch-files` / `large-patch-lines`).
    * The ad-hoc `fireforge lint <files>` path passes a cross-patch file
    * list that does not correspond to a single patch, so it suppresses the
@@ -838,20 +838,10 @@ export interface LintExportedPatchOptions {
  * @param affectedFiles - File paths (relative to repoDir) affected by the patch
  * @param diffContent - Raw unified diff string
  * @param config - Project configuration
- * @param patchQueueCtx - Optional cross-patch context for ownership resolution
- * @param ignoreChecks - Optional set of per-patch `check` IDs to drop from the
- *   returned issues. Threaded from `PatchMetadata.lintIgnore` so a patch that
- *   is advisory-noisy by nature (a cohesive branding bundle, auto-generated
- *   manifest, etc.) can opt out of a specific rule without reaching for the
- *   blunt `--skip-lint` hammer. Not mutated by this function.
- * @param patchTier - Optional explicit tier override, threaded from
- *   `PatchMetadata.tier`. When `"branding"` forces the branding
- *   thresholds on the `large-patch-lines` rule. Callers with a
- *   per-patch manifest context (re-export, per-patch lint) should
- *   pass this; aggregate-mode callers without a specific patch
- *   context skip it and fall through to auto-detection.
- * @param options - Optional behaviour switches; see
- *   {@link LintExportedPatchOptions}.
+ * @param options - Optional context and behaviour switches; see
+ *   {@link LintExportedPatchOptions}. Every optional input lives here
+ *   rather than in a positional tail: four of the five call sites had to
+ *   pass `undefined` placeholders to reach the one member they wanted.
  * @returns Array of all lint issues found
  */
 export async function lintExportedPatch(
@@ -859,11 +849,9 @@ export async function lintExportedPatch(
   affectedFiles: string[],
   diffContent: string,
   config: FireForgeConfig,
-  patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext,
-  ignoreChecks?: ReadonlySet<string>,
-  patchTier?: 'branding',
   options?: LintExportedPatchOptions
 ): Promise<PatchLintIssue[]> {
+  const { patchQueueCtx, ignoreChecks, patchTier } = options ?? {};
   const newFiles = detectNewFilesInDiff(diffContent);
   const { textLines: lineCount } = countNonBinaryDiffLines(diffContent);
   const patchOwnedFiles = resolvePatchOwnedSysMjs(newFiles, patchQueueCtx);

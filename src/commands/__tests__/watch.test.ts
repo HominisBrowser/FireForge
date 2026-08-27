@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeProjectPaths } from '../../test-utils/index.js';
+import { createFsMock } from '../../test-utils/module-mocks.js';
 
 const loggerState = vi.hoisted(() => ({
   spinnerStop: vi.fn(),
@@ -26,9 +27,7 @@ vi.mock('../../core/mach.js', () => ({
   watchWithOutput: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../../utils/process.js', () => ({
   findExecutable: vi.fn(),
@@ -36,6 +35,12 @@ vi.mock('../../utils/process.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -146,10 +151,10 @@ describe('watchCommand', () => {
       '/project/engine',
       expect.anything()
     );
-    // Watch now threads a subprocess env into mach so the resolved
-    // watchman directory is visible on PATH (2026-04-24 eval Finding
-    // 12). Assert the call happened and inspect the env directly rather
-    // than via matchers so the types stay concrete for the compiler.
+    // Watch threads a subprocess env into mach so the resolved watchman
+    // directory is visible on PATH. Assert the call happened and inspect the
+    // env directly rather than via matchers so the types stay concrete for
+    // the compiler.
     const call = vi.mocked(watchWithOutput).mock.calls[0];
     expect(call?.[0]).toBe('/project/engine');
     const envPath = call?.[1]?.env?.['PATH'];
@@ -158,14 +163,11 @@ describe('watchCommand', () => {
     expect(outro).toHaveBeenCalledWith('Watch mode stopped');
   });
 
-  // 2026-04-24 eval Finding 12: on macOS `which watchman` from the
-  // interactive shell returns `/opt/homebrew/bin/watchman`, but the
-  // subprocess PATH inherited by `mach watch` frequently omits
-  // `/opt/homebrew/bin`. Without forwarding the resolved watchman
-  // directory, `mach watch` failed at the `watch-project` subscription
-  // step with a `FasterBuildException: timed out`. The fix prepends the
-  // resolved directory to the subprocess PATH so mach sees the same
-  // binary the probe just validated.
+  // On macOS `which watchman` from an interactive shell returns
+  // `/opt/homebrew/bin/watchman`, but the subprocess PATH inherited by
+  // `mach watch` frequently omits `/opt/homebrew/bin`. Without forwarding
+  // the resolved directory, `mach watch` fails at the `watch-project`
+  // subscription step with a `FasterBuildException: timed out`.
   it('forwards the resolved watchman directory to the mach subprocess PATH', async () => {
     const originalPath = process.env['PATH'];
     process.env['PATH'] = '/usr/bin:/bin';
@@ -245,7 +247,7 @@ describe('watchCommand', () => {
     expect(watchWithOutput).not.toHaveBeenCalled();
   });
 
-  it('appends `(bundle: runnable)` when the executable is already built (Finding #13)', async () => {
+  it('appends `(bundle: runnable)` when the executable is already built', async () => {
     await watchCommand('/project');
 
     expect(info).toHaveBeenCalledWith(

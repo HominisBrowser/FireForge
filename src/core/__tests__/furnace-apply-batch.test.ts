@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -417,10 +417,12 @@ describe('applyAllComponents', () => {
     const result = await applyAllComponents('/project');
 
     expect(hasOverrideEngineDrift).toHaveBeenCalledWith(
-      '/project/engine',
-      '/project/components/overrides/moz-card',
+      {
+        engineDir: '/project/engine',
+        componentDir: '/project/components/overrides/moz-card',
+        ftlDir: 'toolkit/locales/en-US/toolkit/global',
+      },
       expect.objectContaining({ type: 'css-only' }),
-      'toolkit/locales/en-US/toolkit/global',
       expect.any(Object)
     );
     expect(result.applied).toContainEqual(
@@ -447,11 +449,13 @@ describe('applyAllComponents', () => {
     const result = await applyAllComponents('/project');
 
     expect(hasCustomEngineDrift).toHaveBeenCalledWith(
-      '/project',
-      'moz-panel',
-      '/project/components/custom/moz-panel',
-      expect.objectContaining({ register: true }),
-      'toolkit/locales/en-US/toolkit/global'
+      {
+        root: '/project',
+        name: 'moz-panel',
+        componentDir: '/project/components/custom/moz-panel',
+        ftlDir: 'toolkit/locales/en-US/toolkit/global',
+      },
+      expect.objectContaining({ register: true })
     );
     expect(result.applied).toContainEqual(
       expect.objectContaining({ name: 'moz-panel', type: 'custom' })
@@ -526,7 +530,7 @@ describe('applyAllComponents', () => {
   });
 
   it('prunes renamed helper files and stale jar.mn lines in named (componentName) mode', async () => {
-    // Field report D1: `furnace deploy <name>` used to bypass the batch
+    // `furnace deploy <name>` must not bypass the batch
     // deletion path entirely, so renaming a multi-file helper left the old
     // deployed file and its jar.mn line in the engine. Named deploys now
     // run this same pipeline with a componentName filter.
@@ -798,16 +802,14 @@ describe('applyAllComponents', () => {
     expect(applyCustomComponent).toHaveBeenCalled();
   });
 
-  describe('markerComment defaulting (Finding 6)', () => {
+  describe('markerComment defaulting', () => {
     it('defaults markerComment to binaryName.toUpperCase() when fireforge.json omits it', async () => {
-      // Pre-fix: when an operator's `fireforge.json` did not set
-      // `markerComment`, the furnace apply phase passed `undefined`
-      // through to `addCustomElementRegistration`, so the inserted
-      // lines in `customElements.js` carried no `// FRESHFORGE:`
-      // marker. The patch-lint rule `lintModificationComments` keys on
-      // `${binaryName.toUpperCase()}:` and therefore flagged every
-      // furnace-emitted edit as missing the marker on the next
-      // `lint`/`export` round-trip.
+      // When an operator's `fireforge.json` does not set `markerComment`,
+      // passing `undefined` through to `addCustomElementRegistration` leaves
+      // the inserted lines in `customElements.js` without a
+      // `// <BINARY>:` marker. `lintModificationComments` keys on
+      // `${binaryName.toUpperCase()}:` and flags every furnace-emitted edit
+      // as missing the marker on the next `lint`/`export` round-trip.
       vi.mocked(loadConfig).mockResolvedValueOnce({
         binaryName: 'freshforge',
       } as unknown as Awaited<ReturnType<typeof loadConfig>>);
@@ -834,10 +836,7 @@ describe('applyAllComponents', () => {
       await applyAllComponents('/project');
 
       expect(applyCustomComponent).toHaveBeenCalledWith(
-        expect.anything(),
-        'ff-panel',
-        expect.anything(),
-        expect.anything(),
+        expect.objectContaining({ name: 'ff-panel' }),
         expect.anything(),
         expect.anything(),
         expect.anything(),
@@ -876,10 +875,7 @@ describe('applyAllComponents', () => {
       await applyAllComponents('/project');
 
       expect(applyCustomComponent).toHaveBeenCalledWith(
-        expect.anything(),
-        'ff-panel',
-        expect.anything(),
-        expect.anything(),
+        expect.objectContaining({ name: 'ff-panel' }),
         expect.anything(),
         expect.anything(),
         expect.anything(),
@@ -889,10 +885,9 @@ describe('applyAllComponents', () => {
   });
 
   it('rolls back when a POST-APPLY consistency check flags a blocking step error', async () => {
-    // Ordering regression (2026-07-05 review, finding F3): hasStepErrors
-    // was snapshotted BEFORE runPostApplyConsistencyChecks mutated
-    // entry.stepErrors, so post-apply inconsistencies persisted state for
-    // a component known to be broken while the CLI reported failure.
+    // Ordering regression: hasStepErrors snapshotted BEFORE
+    // runPostApplyConsistencyChecks mutates entry.stepErrors persists state
+    // for a component known to be broken while the CLI reports failure.
     vi.mocked(hasComponentChanged).mockResolvedValue(true);
     vi.mocked(applyOverrideComponent).mockResolvedValue({ affectedPaths: ['moz-card.css'] });
     vi.mocked(applyCustomComponent).mockResolvedValue({

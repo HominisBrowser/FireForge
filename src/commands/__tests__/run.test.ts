@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
@@ -14,8 +16,8 @@ vi.mock('../../core/config.js', () => ({
     componentsDir: '/project/components',
   })),
   // The run command resolves `config.binaryName` to probe the runnable
-  // bundle (Finding #13). Stub a fixed binary name so hasRunnableBundle
-  // has a stable probe target.
+  // bundle. Stub a fixed binary name so hasRunnableBundle has a stable probe
+  // target.
   loadConfig: vi.fn(() =>
     Promise.resolve({
       binaryName: 'mybrowser',
@@ -50,20 +52,15 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  removeDir: vi.fn(),
-  removeFile: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  info: vi.fn(),
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(),
   loadFurnaceConfig: vi.fn(),
   loadFurnaceState: vi.fn(),
@@ -140,7 +137,7 @@ describe('runCommand', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it('fails with a bundle-specific message when obj-*/dist exists but the binary does not (Finding #13)', async () => {
+  it('fails with a bundle-specific message when obj-*/dist exists but the binary does not', async () => {
     vi.mocked(hasRunnableBundle).mockResolvedValue({
       runnable: false,
       expectedPath: 'obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser',
@@ -453,12 +450,11 @@ describe('runCommand', () => {
     });
 
     it('reports non-error allowlist matches in the "total allowlisted lines" counter', async () => {
-      // Finding #15: pre-0.16.0, `--console-allow RSLoader:` matching a
-      // `console.warn: RSLoader:...` line still reported 0 hits because
-      // the allowlist was only consulted AFTER `matchesSmokeError`. The
-      // summary now distinguishes suppressed errors from total allowlist
-      // matches, so the operator sees both numbers and can tell whether
-      // the allowlist pattern actually matched anything.
+      // `--console-allow RSLoader:` matching a `console.warn: RSLoader:...`
+      // line reports 0 hits when the allowlist is only consulted AFTER
+      // `matchesSmokeError`. The summary distinguishes suppressed errors
+      // from total allowlist matches, so the operator sees both numbers and
+      // can tell whether the pattern matched anything.
       const infoCalls: string[] = [];
       vi.mocked(info).mockImplementation((msg: string) => {
         infoCalls.push(msg);
@@ -669,10 +665,9 @@ describe('runCommand', () => {
     });
 
     it('warns about input contamination when a headed smoke window launches on a non-CI host', async () => {
-      // Drill finding: a human interacted with a headed --smoke-exit
-      // window mid-run; the resulting console errors failed the run and
-      // initially read as a product regression. The launch must say so
-      // up front on interactive hosts.
+      // A human interacting with a headed --smoke-exit window mid-run
+      // produces console errors that fail the run and read as a product
+      // regression. The launch says so up front on interactive hosts.
       const { warn } = await import('../../utils/logger.js');
       vi.stubEnv('CI', undefined);
       vi.mocked(runMachSmoke).mockResolvedValue({

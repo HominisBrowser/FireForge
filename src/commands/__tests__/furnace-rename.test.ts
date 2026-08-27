@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(),
 }));
@@ -48,7 +50,10 @@ vi.mock('../../core/furnace-config.js', () => ({
   updateFurnaceState: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-constants.js', () => ({
+vi.mock('../../core/furnace-constants.js', async (importOriginal) => ({
+  // A leaf of pure constants and pure functions; only the behaviours this
+  // suite pins need overriding.
+  ...(await importOriginal<typeof import('../../core/furnace-constants.js')>()),
   isComponentSourceFile: vi.fn(
     (name: string) => name.endsWith('.mjs') || name.endsWith('.css') || name.endsWith('.ftl')
   ),
@@ -66,7 +71,11 @@ vi.mock('../../core/furnace-constants.js', () => ({
   ),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -112,13 +121,7 @@ vi.mock('../../core/furnace-rollback.js', () => ({
   snapshotFile: vi.fn(),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  note: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { readdir } from 'node:fs/promises';
 
@@ -127,7 +130,6 @@ import {
   updateFurnaceState,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
 import {
   addCustomElementRegistration,
   addJarMnEntries,
@@ -167,7 +169,6 @@ const mockRemoveCustomElementRegistration = vi.mocked(removeCustomElementRegistr
 const mockRemoveJarMnEntries = vi.mocked(removeJarMnEntries);
 const mockRestoreRollbackJournalOrThrow = vi.mocked(restoreRollbackJournalOrThrow);
 const mockSnapshotFile = vi.mocked(snapshotFile);
-const mockRecordFurnaceRollbackFailure = vi.mocked(recordFurnaceRollbackFailure);
 
 function fakeEntry(name: string, isFile = true): import('node:fs').Dirent {
   return {
@@ -319,11 +320,9 @@ describe('furnaceRenameCommand validation', () => {
       return Promise.resolve(false);
     });
 
-    // Finding #8: the message used to read `components/customs/` (plural
-    // `customs` built by appending `s` to the furnace-state key
-    // `custom`). The directory label has to match the on-disk layout —
-    // custom components live under `components/custom/` — so the
-    // guidance names the real path.
+    // The message must read `components/custom/`, not `components/customs/`
+    // (plural built by appending `s` to the furnace-state key `custom`) —
+    // the directory label has to match the on-disk layout.
     await expect(furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav')).rejects.toThrow(
       /Component directory not found: components\/custom\/moz-sidebar/
     );
@@ -626,11 +625,11 @@ describe('furnaceRenameCommand engine registrations', () => {
   });
 
   it('rewires the locale jar.mn chrome registration on localized renames', async () => {
-    // Eval 1 Finding #15: after `furnace rename` on a localized custom
-    // component, the engine's `toolkit/locales/jar.mn` still carried the
-    // old-name FTL registration while the deploy-side rename wrote the
-    // new .ftl file. `furnace validate` passed regardless, hiding the
-    // drift until a later packaging step tripped over the dead entry.
+    // After `furnace rename` on a localized custom component, the engine's
+    // `toolkit/locales/jar.mn` must not keep the old-name FTL registration
+    // while the deploy-side rename writes the new .ftl file.
+    // `furnace validate` passes regardless, hiding the drift until a later
+    // packaging step trips over the dead entry.
     mockLoadFurnaceConfig.mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
@@ -743,33 +742,37 @@ describe('furnaceRenameCommand rollback', () => {
       'Rollback failed'
     );
 
-    expect(mockRecordFurnaceRollbackFailure).toHaveBeenCalledWith(
-      '/project',
-      'rename-rollback',
-      'rename "moz-sidebar" → "moz-nav": Rollback failed'
-    );
+    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
+    // state — rather than the internal call. The rollback sequence now lives
+    // in `completeJournalRollback`, whose call to the recorder is
+    // intra-module and so invisible to a module-level spy.
+    const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1] as
+      | ((state: Record<string, unknown>) => {
+          pendingRepair?: { operation: string; reason: string };
+        })
+      | undefined;
+    expect(updater).toBeTypeOf('function');
+    const pendingRepair = updater?.({}).pendingRepair;
+    expect(pendingRepair?.operation).toBe('rename-rollback');
+    expect(pendingRepair?.reason).toBe('rename "moz-sidebar" → "moz-nav": Rollback failed');
   });
 });
 
-describe('furnaceRenameCommand path-label messaging (Finding #8)', () => {
+describe('furnaceRenameCommand path-label messaging', () => {
   beforeEach(() => {
     // The preceding rollback describe leaves `writeText` rejecting with
-    // "Disk full" and (sometimes) `restoreRollbackJournalOrThrow`
-    // rejecting too. vi.clearAllMocks() inside the top-level beforeEach
-    // clears call history but does NOT reset mockRejectedValue
-    // implementations, so we restore them explicitly here before each
-    // of these tests runs. Without this, every path-label case trips
+    // "Disk full" and sometimes `restoreRollbackJournalOrThrow` rejecting
+    // too. `vi.clearAllMocks()` in the top-level beforeEach clears call
+    // history but does NOT reset mockRejectedValue implementations, so they
+    // are restored explicitly here — otherwise every path-label case trips
     // the rollback path and never reaches the note assertions.
     mockWriteText.mockResolvedValue(undefined);
     mockRestoreRollbackJournalOrThrow.mockResolvedValue(undefined);
   });
 
   it('renders the success note with the correct `components/custom/` directory label', async () => {
-    // The note used to say `components/customs/moz-nav/` because the code
-    // appended `s` to the furnace-state key `custom`. The real directory
-    // is `components/custom/` (singular), so the guidance must use that.
-    // This test pins the fix against a future refactor that might
-    // re-introduce the pluralising logic.
+    // The directory is `components/custom/` (singular); the furnace-state key
+    // is `custom` too, so nothing may pluralise it on the way into the note.
     await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
 
     const noteCall = vi
@@ -783,10 +786,10 @@ describe('furnaceRenameCommand path-label messaging (Finding #8)', () => {
   });
 
   it('renders the success note with `components/overrides/` for override renames', async () => {
-    // Overrides were always plural on disk (`components/overrides/`), so
-    // the pre-fix code produced the correct `overrides` label by
-    // coincidence. Pin that branch too so a unified singular/plural
-    // helper can never swap them.
+    // Overrides are always plural on disk (`components/overrides/`), so an
+    // append-`s` implementation produces the correct `overrides` label by
+    // coincidence. Pin that branch too so a unified singular/plural helper
+    // can never swap them.
     mockLoadFurnaceConfig.mockResolvedValue(defaultOverrideConfig());
     mockPathExists.mockImplementation((path: string) => {
       if (path === '/project/engine') return Promise.resolve(true);
@@ -807,16 +810,15 @@ describe('furnaceRenameCommand path-label messaging (Finding #8)', () => {
   });
 });
 
-describe('furnaceRenameCommand engine-tree cleanup (Finding #9)', () => {
-  // 2026-04-21 eval reproduced two distinct bugs on a rename:
-  //   - the deployed widget directory at `engine/<oldTargetPath>/`
-  //     survived, so subsequent packaging could pick up both the old
-  //     and new widget copies.
+describe('furnaceRenameCommand engine-tree cleanup', () => {
+  // A rename must clean up two things a naive implementation leaves behind:
+  //   - the deployed widget directory at `engine/<oldTargetPath>/`, which
+  //     otherwise survives and lets packaging pick up both the old and new
+  //     widget copies;
   //   - the mochikit scaffold at
   //     `engine/toolkit/content/tests/widgets/test_<old>.html` and its
-  //     chrome.toml entry were untouched, so the generated test still
-  //     imported and asserted against the old component name.
-  // These tests pin the 0.16.0 behaviour: rename must clean both.
+  //     chrome.toml entry, which otherwise still import and assert against
+  //     the old component name.
 
   beforeEach(() => {
     mockWriteText.mockResolvedValue(undefined);

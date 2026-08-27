@@ -85,9 +85,8 @@ export interface ExecOptions {
    * POSIX: spawn the child as a process-group leader and route every kill
    * (parent-signal forwarding, abort, escalation) to the whole GROUP, then
    * sweep the group for survivors after close — so a harness that dies at
-   * startup cannot strand spinning `multiprocessing` workers (field
-   * incident: an orphaned Python spawn worker reparented to launchd and
-   * busy-spun at 100% CPU for ~26 days). Win32: tree-kill via
+   * startup cannot strand spinning `multiprocessing` workers, which reparent
+   * to launchd and busy-spin at 100% CPU indefinitely. Win32: tree-kill via
    * `taskkill /T /F` on abort/signals only, no post-run sweep
    * (best-effort). Default false — non-mach consumers are unaffected.
    *
@@ -239,6 +238,13 @@ export async function execStream(
           })
         : undefined;
 
+    // Closure tracking: this was the one wrapper that omitted it, so the bin
+    // signal handler did not wait for `runMachStream`'s children on Ctrl+C
+    // and the forwarder's SIGTERM → grace → SIGKILL escalation above could
+    // not finish before the parent exited — the exact failure the tracking
+    // set was introduced to fix, left unwired here.
+    const closure = trackChildClosure();
+
     child.on('error', (error) => {
       // Abort/startup failure: make sure a partially-started tree does not
       // outlive the dispatch (a mach dying at startup used to strand
@@ -247,12 +253,14 @@ export async function execStream(
         killProcessTree(child, 'SIGKILL', usesProcessGroup);
       }
       forwarder?.dispose();
+      closure.settle();
       reject(toExecRejection(error, command, args, options.timeout));
     });
 
     child.on('close', (code, signal) => {
       forwarder?.dispose();
       const finish = (): void => {
+        closure.settle();
         resolve(exitCodeFromClose(code, signal));
       };
       if (groupPid !== undefined) {
@@ -266,16 +274,35 @@ export async function execStream(
 
 /**
  * Close-promises of children whose shutdown the CLI must wait for when a
- * termination signal arrives. The bin signal handler used to `process.exit`
- * within a microtask of the first Ctrl+C, which made `execInherit`'s
- * documented SIGTERM → grace → SIGKILL escalation unreachable: the parent
- * was gone before the 1500 ms grace timer could fire, so a hung Firefox
- * was orphaned forever instead of being SIGKILLed and a healthy one lost
- * its AsyncShutdown flush window.
+ * termination signal arrives. A bin signal handler that calls `process.exit`
+ * within a microtask of the first Ctrl+C makes `execInherit`'s documented
+ * SIGTERM → grace → SIGKILL escalation unreachable: the parent is gone
+ * before the 1500 ms grace timer can fire, so a hung Firefox is orphaned
+ * forever instead of being SIGKILLed and a healthy one loses its
+ * AsyncShutdown flush window.
  */
 const activeChildClosures = new Set<Promise<void>>();
 
-function trackChildClosure(): { settle: () => void } {
+/**
+ * Registers a child with {@link waitForActiveChildShutdown}.
+ *
+ * Exported for the one legitimate spawn outside this module:
+ * `core/marionette-preflight.ts` keeps its own `spawn` because it needs the
+ * live `ChildProcess` mid-run, returns while the child is still running, and
+ * aborts on a TCP byte rather than a deadline — none of which any wrapper
+ * here can express. It still needs the shutdown contract, and a second
+ * hand-rolled copy is what lets a Ctrl+C orphan the whole mach → Firefox
+ * tree.
+ */
+
+/**
+ * Registers a child whose shutdown {@link waitForActiveChildShutdown} must
+ * wait for, and returns the handle that deregisters it.
+ *
+ * @returns `settle()` — call from both the child's `close` and `error`
+ *   handlers so a dead child never holds the shutdown wait open
+ */
+export function trackChildClosure(): { settle: () => void } {
   let resolveClosed: (() => void) | undefined;
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
@@ -382,7 +409,7 @@ export async function execInherit(
  * `close` and `error` handlers so the process does not accumulate signal
  * listeners across repeated spawns.
  */
-function installGracefulShutdownForwarder(
+export function installGracefulShutdownForwarder(
   child: ReturnType<typeof spawn>,
   graceMs: number,
   killTarget?: (signal: NodeJS.Signals) => void
@@ -524,11 +551,14 @@ export type SmokeLineCallback = (line: string) => void;
  *
  * Deliberately omits `ExecOptions.timeout`: the smoke run's only deadline is
  * {@link SmokeRunOptions.smokeTimeoutMs}, which signals the whole process
- * group. Inheriting `timeout` used to be a leaky trap — it was accepted by
- * the type but silently ignored, so a caller setting it got no deadline at
- * all.
+ * group. Inheriting `timeout` is a leaky trap — accepted by the type but
+ * silently ignored, so a caller setting it gets no deadline at all.
+ *
+ * `processGroup` is omitted for the same reason: a smoke run is ALWAYS
+ * detached on POSIX (`usesProcessGroup` is derived from `process.platform`
+ * alone), so the field would be accepted and never read.
  */
-export interface SmokeRunOptions extends Omit<ExecOptions, 'timeout'> {
+export interface SmokeRunOptions extends Omit<ExecOptions, 'processGroup' | 'timeout'> {
   /**
    * Hard deadline in milliseconds. When it elapses the child process
    * group is sent SIGTERM and, after `killGraceMs`, SIGKILL. The returned
@@ -702,6 +732,8 @@ export async function execSmokeRun(
         stdout: out.getText(),
         stderr: err.getText(),
         exitCode: exitCodeFromClose(code, signal),
+        stdoutTruncated: out.wasTruncated(),
+        stderrTruncated: err.wasTruncated(),
         timedOut,
       });
     });
@@ -711,10 +743,10 @@ export async function execSmokeRun(
 /**
  * Cap on the partial-line tail kept between chunks. A child emitting one
  * enormous line with no terminator (minified JS dumped to stderr, a raw
- * binary blob) previously grew the buffer without bound — the 50 MB cap
- * only guarded the collector, not these line buffers. When the tail
- * exceeds the cap it is dispatched as a synthetic (oversized) line so the
- * matchers still get to see its content, then the buffer resets.
+ * binary blob) would otherwise grow the buffer without bound — the 50 MB cap
+ * guards the collector, not these line buffers. When the tail exceeds the
+ * cap it is dispatched as a synthetic (oversized) line so the matchers still
+ * see its content, then the buffer resets.
  */
 const MAX_PARTIAL_LINE_SIZE = 1024 * 1024;
 
@@ -722,11 +754,10 @@ const MAX_PARTIAL_LINE_SIZE = 1024 * 1024;
  * Drains complete lines from `buffer`, dispatching each to `cb`. Treats
  * `\n`, `\r\n`, and lone `\r` as line terminators — the lone-`\r` case
  * matters for progress-bar style output (mach, cargo) that repaints a line
- * with carriage returns and never sends a newline; before `\r` counted as a
- * terminator those updates accumulated indefinitely. A single trailing `\r`
- * is held back since it may be the first half of a `\r\n` pair split across
- * chunks. Returns the remaining partial line — callers keep accumulating
- * into it.
+ * with carriage returns and never sends a newline, which otherwise
+ * accumulates indefinitely. A single trailing `\r` is held back since it may
+ * be the first half of a `\r\n` pair split across chunks. Returns the
+ * remaining partial line — callers keep accumulating into it.
  */
 function dispatchCompleteLines(buffer: string, cb: SmokeLineCallback | undefined): string {
   let searchFrom = 0;

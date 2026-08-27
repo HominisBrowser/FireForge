@@ -16,7 +16,11 @@ import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import { loadPatchesManifest, stampPatchVersions } from '../../core/patch-manifest.js';
 import { extractConflictingFiles } from '../../core/patch-parse.js';
 import type { RebaseSession } from '../../core/rebase-session.js';
-import { clearRebaseSession, saveRebaseSession } from '../../core/rebase-session.js';
+import {
+  clearRebaseSession,
+  type RebasePatchEntry,
+  saveRebaseSession,
+} from '../../core/rebase-session.js';
 import { runInSignalCriticalSection } from '../../core/signal-critical.js';
 import { RebaseError } from '../../errors/rebase.js';
 import { elapsedSince } from '../../utils/elapsed.js';
@@ -28,13 +32,50 @@ import { buildRebaseConflictSummary } from './conflict-summary.js';
 import { printSummary } from './summary.js';
 
 /**
+ * Builds the session entry for a patch-apply outcome.
+ *
+ * Constructing a whole entry rather than assigning fields is what the
+ * discriminated union buys: a status can never be flipped while the previous
+ * status's payload stays behind, which is how
+ * `{ status: 'resolved', error, conflictingFiles }` reaches the session file.
+ *
+ * @param filename - Patch filename the entry describes
+ * @param applyResult - Outcome from `applyPatchWithFuzz`
+ * @returns The entry to store at this patch's index
+ */
+function entryForApplyResult(
+  filename: string,
+  applyResult: { success: boolean; fuzzFactor?: number; error?: string }
+): RebasePatchEntry {
+  if (!applyResult.success) {
+    return {
+      filename,
+      status: 'failed',
+      ...(applyResult.error !== undefined ? { error: applyResult.error } : {}),
+      conflictingFiles: extractConflictingFiles(applyResult.error),
+    };
+  }
+  if (applyResult.fuzzFactor === 0 || applyResult.fuzzFactor === undefined) {
+    return { filename, status: 'applied-clean' };
+  }
+  return { filename, status: 'applied-fuzz', fuzzFactor: applyResult.fuzzFactor };
+}
+
+/**
  * Runs the patch application loop, re-exports applied patches, and stamps versions.
+ *
+ * @param projectRoot - Project root directory
+ * @param session - The active rebase session, mutated and persisted as it runs
+ * @param paths - Resolved project paths
+ * @param maxFuzz - Maximum context-reduction steps for `git apply -C<n>`
+ * @param waitLockSeconds - `--wait-lock` budget for the patch-directory lock
  */
 export async function runPatchLoop(
   projectRoot: string,
   session: RebaseSession,
   paths: ReturnType<typeof getProjectPaths>,
-  maxFuzz: number
+  maxFuzz: number,
+  waitLockSeconds?: number
 ): Promise<void> {
   const allPatches = await discoverPatches(paths.patches);
 
@@ -47,7 +88,10 @@ export async function runPatchLoop(
 
     if (!patchFile) {
       warn(`Patch file not found for ${entry.filename}, skipping.`);
-      entry.status = 'skipped';
+      // Replaced, not mutated: the entry is a discriminated union, so a status
+      // change is a new value rather than a field assignment. That is what
+      // stops a status flip stranding the previous status's payload.
+      session.patches[i] = { filename: entry.filename, status: 'skipped' };
       session.currentIndex = i + 1;
       await saveRebaseSession(projectRoot, session);
       continue;
@@ -64,26 +108,9 @@ export async function runPatchLoop(
     // divergent results).
     const result = await runInSignalCriticalSection(`rebase-apply:${entry.filename}`, async () => {
       const applyResult = await applyPatchWithFuzz(patchFile.path, paths.engine, maxFuzz);
-
-      if (applyResult.success) {
-        if (applyResult.fuzzFactor === 0) {
-          entry.status = 'applied-clean';
-        } else {
-          entry.status = 'applied-fuzz';
-          entry.fuzzFactor = applyResult.fuzzFactor;
-        }
-        session.currentIndex = i + 1;
-        await saveRebaseSession(projectRoot, session);
-      } else {
-        entry.status = 'failed';
-        if (applyResult.error) {
-          entry.error = applyResult.error;
-        }
-        entry.conflictingFiles = extractConflictingFiles(applyResult.error);
-        session.currentIndex = i;
-        await saveRebaseSession(projectRoot, session);
-      }
-
+      session.patches[i] = entryForApplyResult(entry.filename, applyResult);
+      session.currentIndex = applyResult.success ? i + 1 : i;
+      await saveRebaseSession(projectRoot, session);
       return applyResult;
     });
 
@@ -148,7 +175,8 @@ export async function runPatchLoop(
   // `fireforge rebase --continue` after fixing the underlying cause.
   const { failures: reExportFailures, overlapSkipped } = await reExportAppliedPatches(
     session,
-    paths
+    paths,
+    waitLockSeconds
   );
   if (reExportFailures.length > 0) {
     for (const f of reExportFailures) {
@@ -186,21 +214,21 @@ export async function runPatchLoop(
   }
 
   // Stamp every Furnace override's `baseVersion` to match the rebased
-  // Firefox source version. Before this stamp, a successful source bump left
-  // overrides in a doctor-failing drift state (each override still
-  // claimed the pre-rebase source as its baseline) and every subsequent
-  // `fireforge doctor` failed `Furnace component validation`. The
-  // stamp is unconditional per the helper's contract: rebase already
-  // succeeded on the patch side, so the operator is committing to the
-  // new source baseline; per-component health checking stays with
+  // Firefox source version. Without it, a successful source bump leaves
+  // overrides in a doctor-failing drift state — each still claiming the
+  // pre-rebase source as its baseline — and every subsequent
+  // `fireforge doctor` fails `Furnace component validation`. The stamp is
+  // unconditional per the helper's contract: rebase already succeeded on
+  // the patch side, so the operator is committing to the new source
+  // baseline; per-component health checking stays with
   // `fireforge furnace validate` / `doctor --repair-furnace`.
   //
-  // "Unconditional" means unconditional on component health, not on the value:
-  // `stampFurnaceOverrideBaseVersions` assigns and persists whatever string it
-  // is handed, so a session whose `toVersion` is not a real Firefox version
-  // would rewrite every override's baseline to that value. `isValidSession`
-  // now rejects such a session at read time; this refuses to persist it even
-  // if a future caller reaches here another way.
+  // "Unconditional" means unconditional on component health, not on the
+  // value: `stampFurnaceOverrideBaseVersions` assigns and persists whatever
+  // string it is handed, so a session whose `toVersion` is not a real
+  // Firefox version would rewrite every override's baseline to that value.
+  // `isValidSession` rejects such a session at read time; this refuses to
+  // persist it even if a future caller reaches here another way.
   if (!isValidFirefoxVersion(session.toVersion)) {
     throw new RebaseError(
       `Refusing to stamp Furnace override baseVersion(s): the rebase session's target version ` +
@@ -238,7 +266,8 @@ export async function runPatchLoop(
 
 async function reExportAppliedPatches(
   session: RebaseSession,
-  paths: ReturnType<typeof getProjectPaths>
+  paths: ReturnType<typeof getProjectPaths>,
+  waitLockSeconds: number | undefined
 ): Promise<{
   failures: Array<{ filename: string; error: string }>;
   overlapSkipped: string[];
@@ -306,7 +335,10 @@ async function reExportAppliedPatches(
         // Rebase sessions are serialized against each other by
         // `rebase-session.ts`, so this lock is only defending against other
         // command classes, not peer rebases.
-        await withPatchDirectoryLock(paths.patches, () => updatePatch(patchPath, diffContent));
+        await withPatchDirectoryLock(paths.patches, () => updatePatch(patchPath, diffContent), {
+          waitLockSeconds,
+          command: 'rebase',
+        });
       }
     } catch (err: unknown) {
       const message = toError(err).message;

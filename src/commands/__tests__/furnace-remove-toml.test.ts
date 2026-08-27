@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Targeted tests for the removeTomlSection helper used by furnace remove.
- * Since removeTomlSection is a private function, we test it indirectly through
- * the module's internal behavior. This file duplicates the logic for unit
- * testing the TOML removal in isolation.
+ * Targeted tests for the TOML section removal used by furnace remove. The
+ * helper is module-private, so this file re-implements the logic to unit-test
+ * the removal in isolation.
  */
 import { describe, expect, it } from 'vitest';
 

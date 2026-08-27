@@ -2,14 +2,13 @@
 /**
  * Registration-layer tests for `fireforge test`.
  *
- * `test-register.ts` sat at 13.3% line / **0% branch**: `createProgram()` in
- * the help/CLI suites registers the command, which marks the option-builder
- * lines executed, but nothing ever invoked an argParser callback or the action
- * body. Both numeric flags reject out-of-range input through
- * `commanderArgParser`, whose whole purpose (see `utils/options.ts`) is making
- * those failures surface through commander's invalid-argument channel instead
- * of escaping `withErrorHandling` as an unformatted crash — so the rejection
- * arms are exactly the behaviour worth pinning.
+ * `createProgram()` in the help/CLI suites registers the command, which
+ * marks the option-builder lines executed, but never invokes an argParser
+ * callback or the action body. Both numeric flags reject out-of-range input
+ * through `commanderArgParser`, whose whole purpose (see `utils/options.ts`)
+ * is making those failures surface through commander's invalid-argument
+ * channel instead of escaping `withErrorHandling` as an unformatted crash —
+ * so the rejection arms are exactly the behaviour worth pinning.
  */
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

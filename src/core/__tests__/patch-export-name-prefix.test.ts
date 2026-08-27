@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Pins the 0.34.0 `--name` double-prefix fix: `export --name 203-ui-foo
- * --category ui` produced `203-ui-203-ui-foo.patch` because the filename
- * builders prepended order+category to a name that already carried them.
+ * Pins the `--name` double-prefix fix: `export --name 203-ui-foo
+ * --category ui` produces `203-ui-203-ui-foo.patch` when the filename
+ * builders prepend order+category to a name that already carries them.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

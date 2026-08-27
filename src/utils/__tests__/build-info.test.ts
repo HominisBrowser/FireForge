@@ -2,9 +2,8 @@
 /**
  * Build identity: `--version` reports
  * `<semver>+g<short-sha>[.dirty[.<content-hash>]]` from live git in a
- * checkout or from the stamped dist/build-info.json in an installed
- * package — and must degrade to the plain semver (never throw) on any
- * misread.
+ * checkout or from the stamped dist/build-info.json in an installed package
+ * — and must degrade to the plain semver (never throw) on any misread.
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

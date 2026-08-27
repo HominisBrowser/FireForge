@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
@@ -42,12 +44,7 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  intro: vi.fn(),
-  outro: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { loadConfig } from '../../core/config.js';
 import { appendHistory, confirmDestructive } from '../../core/destructive.js';
@@ -255,9 +252,9 @@ describe('patchCompactCommand', () => {
   });
 
   it('treats a range-compliant queue as already compact under patchPolicy ranges', async () => {
-    // Pre-0.31.0 behaviour renumbered the whole queue from 1, projecting
-    // the ui patch into the branding range and refusing. Range-aware
-    // compaction recognises this layout as gapless per range.
+    // Renumbering the whole queue from 1 projects the ui patch into the
+    // branding range and refuses. Range-aware compaction recognises this
+    // layout as gapless per range.
     vi.mocked(loadConfig).mockResolvedValue(policyConfig());
     vi.mocked(loadPatchesManifest).mockResolvedValue(policyManifest());
 

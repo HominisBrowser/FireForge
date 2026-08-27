@@ -106,8 +106,8 @@ export async function runTypecheck(
   // override (a path, or `null` to opt out) when present, else the shared
   // top-level extraShim. A project that narrows `lib`/`types` can opt out of
   // a Gecko-lib shim hub that another project needs, so the composed shim is
-  // no longer injected identically everywhere. Compositions are cached by the
-  // resolved extraShim path so projects sharing a shim don't recompose it.
+  // not injected identically everywhere. Compositions are cached by the
+  // resolved extraShim path so projects sharing a shim do not recompose it.
   const shimCache = new Map<string, string>();
   const composeForProject = async (extraShim: string | undefined): Promise<string> => {
     const key = extraShim ?? '';
@@ -262,12 +262,12 @@ async function runTypecheckForProject(
     noEmit: true,
     allowJs: parsed.options.allowJs ?? true,
     checkJs: parsed.options.checkJs ?? true,
-    // No incremental sidecar, ever. A user jsconfig under `engine/` that
-    // sets `incremental` (or names a `tsBuildInfoFile`)
-    // would have this command drop a `.tsbuildinfo` inside the primary
-    // engine checkout — a second writer that invalidates a concurrent
-    // `fireforge test`'s engine fingerprint. This command emits nothing,
-    // so the sidecar buys nothing either.
+    // No incremental sidecar, ever. A user jsconfig under `engine/` that sets
+    // `incremental` (or names a `tsBuildInfoFile`) would have this command
+    // drop a `.tsbuildinfo` inside the primary engine checkout — a second
+    // writer that invalidates a concurrent `fireforge test`'s engine
+    // fingerprint. This command emits nothing, so the sidecar buys nothing
+    // either.
     incremental: false,
     // skipLibCheck is not forced; the user owns it via their jsconfig.
   };

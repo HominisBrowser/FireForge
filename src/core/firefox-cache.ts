@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { rename } from 'node:fs/promises';
+import { readdir, rename, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
@@ -135,7 +135,6 @@ async function validateCachedArchive(
     }
 
     if (metadata.contentLength !== undefined) {
-      const { stat } = await import('node:fs/promises');
       const archiveStats = await stat(tarballPath);
       if (archiveStats.size !== metadata.contentLength) {
         return false;
@@ -257,7 +256,6 @@ export async function invalidateArchiveCache(
 async function removeArchivePartFiles(archive: ResolvedArchive, cacheDir: string): Promise<void> {
   const partPrefix = `${archive.filename}.part`;
   try {
-    const { readdir } = await import('node:fs/promises');
     const entries = await readdir(cacheDir);
     await Promise.all(
       entries

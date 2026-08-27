@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { loadConfig } from '../../core/config.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
-import {
-  furnaceConfigExists,
-  getFurnacePaths,
-  loadFurnaceConfig,
-} from '../../core/furnace-config.js';
+import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import { type FurnaceOperationContext, runFurnaceMutation } from '../../core/furnace-operation.js';
+import { assertFurnaceReady } from '../../core/furnace-precondition.js';
 import {
   getPersistableAppliedEntry,
   getStepFailureCount,
@@ -23,7 +20,6 @@ import {
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceDeployOptions } from '../../types/commands/index.js';
-import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, spinner, warn } from '../../utils/logger.js';
 import { runDeployValidation } from './validation-output.js';
 
@@ -65,28 +61,29 @@ function getFailedComponentNames(result: ApplyAllComponentsResult): Set<string> 
 }
 
 /**
- * Applies a single named override or custom component in targeted deploy mode.
+ * Applies a single named override or custom component in targeted deploy
+ * mode.
  *
  * Delegates to {@link applyAllComponents} with a `componentName` filter so
  * targeted deploys run the exact same pipeline as deploy-all — including
  * workspace-deletion detection, engine orphan undeploy, and jar.mn /
- * customElements.js re-sync. The previous implementation called the
- * per-component apply helpers directly and never pruned: renaming a helper
- * file in the workspace left the old deployed file and its stale jar.mn
- * line in the engine (field report D1).
+ * customElements.js re-sync. Calling the per-component apply helpers
+ * directly never prunes: renaming a helper file in the workspace then leaves
+ * the old deployed file and its stale jar.mn line in the engine.
  *
  * `persistState: false` is load-bearing: the batch persist path *replaces*
  * `appliedChecksums` wholesale with only this run's entries, which for a
  * named deploy would wipe every other component's state. Named deploy keeps
  * its per-component state merge ({@link persistSingleComponentState}) and
- * its atomicity gate ({@link shouldPersistNamedDeployState}) at the call
- * site. Rollback on failure happens inside `applyAllComponents`; the
- * journal returned on success is ignored (the deploy keeps its files).
+ * its atomicity gate ({@link shouldPersistSingleComponentState}) at the call
+ * site. Rollback on failure happens inside `applyAllComponents`; the journal
+ * returned on success is ignored (the deploy keeps its files).
  *
  * @param name - Component name to apply
  * @param config - Loaded Furnace configuration
  * @param isDryRun - Whether file writes should be skipped
- * @returns Apply result for the named component, or `stock` for stock-only entries
+ * @returns Apply result for the named component, or `stock` for stock-only
+ *   entries
  */
 async function applyNamedComponent(
   name: string,
@@ -193,20 +190,7 @@ export async function furnaceDeployCommand(
 
   intro(isDryRun ? 'Furnace Deploy (dry run)' : 'Furnace Deploy');
 
-  // Verify engine exists
-  const paths = getProjectPaths(projectRoot);
-  if (!(await pathExists(paths.engine))) {
-    throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
-  }
-
-  // Load furnace config
-  if (!(await furnaceConfigExists(projectRoot))) {
-    throw new FurnaceError(
-      'No furnace.json found. Run "fireforge furnace create" or "fireforge furnace override" to get started.'
-    );
-  }
-
-  const config = await loadFurnaceConfig(projectRoot);
+  const { config } = await assertFurnaceReady(projectRoot);
   const furnacePaths = getFurnacePaths(projectRoot);
   const overrideCount = Object.keys(config.overrides).length;
   const customCount = Object.keys(config.custom).length;
@@ -293,8 +277,8 @@ export async function furnaceDeployCommand(
   logApplyResult(result, isDryRun);
 
   // Keep the consumer jsconfig's chrome-module `paths` in step with the
-  // deployed module set (field report D3). Only after a clean apply —
-  // a rolled-back deploy must not advance the typecheck mapping either.
+  // deployed module set. Only after a clean apply — a rolled-back deploy
+  // must not advance the typecheck mapping either.
   if (result.errors.length === 0 && getStepFailureCount(result) === 0) {
     await reportJsconfigPathsSync(projectRoot, config, isDryRun);
   }

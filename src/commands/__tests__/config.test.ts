@@ -8,6 +8,7 @@ import {
   removeTempProject,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import { configCommand, registerConfig } from '../config.js';
 
 /**
@@ -27,14 +28,7 @@ vi.mock('../../core/config.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  info: vi.fn(),
-  success: vi.fn(),
-  warn: vi.fn(),
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { info, warn } from '../../utils/logger.js';
 
@@ -75,11 +69,10 @@ describe('configCommand', () => {
   });
 
   it('preserves --force-written keys when a known key is set afterwards', async () => {
-    // Finding H4 (2026-07-05 review): the ordinary set branch round-tripped
-    // through loadConfig → validateConfig, whose typed clone contains only
-    // known schema fields — so ANY normal `config <key> <value>` silently
-    // deleted every previously --force-written key. Both branches now
-    // mutate the raw document.
+    // Round-tripping the ordinary set branch through loadConfig →
+    // validateConfig, whose typed clone contains only known schema fields,
+    // makes ANY normal `config <key> <value>` silently delete every
+    // previously --force-written key. Both branches mutate the raw document.
     await configCommand(projectRoot, 'myext.flag', 'true', { force: true });
     await configCommand(projectRoot, 'build.jobs', '8');
 
@@ -211,12 +204,11 @@ describe('configCommand', () => {
   });
 
   it('reads keys that were persisted via --force (raw-document fallback)', async () => {
-    // Regression against the 0.16.0 finding: a value written with
-    // `fireforge config foo bar --force` was readable on disk but the
-    // read path (which previously consulted the validated config) threw
-    // `Unknown config key` because `validateConfig` stripped the key
-    // from the typed result. `configCommand` now reads the raw JSON
-    // document on the get branch so forced keys round-trip.
+    // A value written with `fireforge config foo bar --force` is readable on
+    // disk, but a read path that consults the validated config throws
+    // `Unknown config key` because `validateConfig` strips it from the typed
+    // result. The get branch reads the raw JSON document so forced keys
+    // round-trip.
     await configCommand(projectRoot, 'totallyUnknown', 'forced-value', { force: true });
 
     vi.mocked(info).mockClear();
@@ -252,15 +244,13 @@ describe('configCommand', () => {
     Reflect.deleteProperty(Object.prototype, pollutionProbeKey);
   });
 
-  it('skips the file rewrite when the value is unchanged (Finding 11)', async () => {
-    // 2026-04-26 eval Finding 11: pre-fix, `fireforge config <key>
-    // <current-value>` always ran loadConfig → mutateConfig →
-    // writeConfig, which round-trips the file through
-    // `JSON.stringify` and reorders top-level keys (license,
-    // markerComment, …) on every harmless re-set. Operators saw diff
-    // churn on what should have been a no-op. The new short-circuit
-    // keeps the file untouched (mtime stays equal) and surfaces an
-    // explicit "(unchanged)" marker in the success log.
+  it('skips the file rewrite when the value is unchanged', async () => {
+    // `fireforge config <key> <current-value>` must not run loadConfig →
+    // mutateConfig → writeConfig, which round-trips the file through
+    // `JSON.stringify` and reorders top-level keys (license, markerComment,
+    // …) on every harmless re-set, producing diff churn on a no-op. The
+    // short-circuit keeps the file untouched (mtime stays equal) and
+    // surfaces an explicit "(unchanged)" marker in the success log.
     const { stat } = await import('node:fs/promises');
     await configCommand(projectRoot, 'firefox.version', '140.9.0esr');
     const beforeStat = await stat(`${projectRoot}/fireforge.json`);
@@ -294,10 +284,10 @@ describe('configCommand', () => {
   });
 
   it('preserves earlier forced keys when subsequent --force writes land', async () => {
-    // Pre-0.16.0 the `--force` write path seeded mutation from
-    // `loadConfig` (which strips unknowns), so writing a second forced
-    // key silently dropped every earlier forced key. The fix seeds
-    // from the raw document when the key is unknown.
+    // Seeding the `--force` write path from `loadConfig`, which strips
+    // unknowns, makes writing a second forced key silently drop every
+    // earlier forced key. The mutation is seeded from the raw document when
+    // the key is unknown.
     await configCommand(projectRoot, 'firstUnknown', 'one', { force: true });
     await configCommand(projectRoot, 'secondUnknown', 'two', { force: true });
 

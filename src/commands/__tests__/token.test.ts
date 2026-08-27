@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidArgumentError } from '../../errors/base.js';
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn(() =>
@@ -13,18 +14,25 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
       tokenPrefix: '--mybrowser-',
     })
   ),
-  // Finding #15: tokenAddCommand now gates on furnace.json existence
-  // before delegating to token-manager. Default to "initialized" so
-  // existing tests keep exercising the add path.
+  // tokenAddCommand gates on furnace.json existence before delegating to
+  // token-manager. Default to "initialized" so the other tests keep
+  // exercising the add path.
   furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
 }));
 
-vi.mock('../../core/token-manager.js', () => ({
+vi.mock('../../core/token-manager.js', async (importOriginal) => ({
+  // TOKEN_MODES and its `isTokenMode` guard are pure data and a pure
+  // predicate; the command's validation is what these tests exercise.
+  ...(await importOriginal<typeof import('../../core/token-manager.js')>()),
   addToken: vi.fn(() =>
     Promise.resolve({
       cssAdded: true,
@@ -38,14 +46,7 @@ vi.mock('../../core/token-manager.js', () => ({
   getTokensCssPath: vi.fn(() => 'browser/themes/shared/mybrowser-tokens.css'),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  success: vi.fn(),
-  info: vi.fn(),
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../token-coverage.js', () => ({
   tokenCoverageCommand: vi.fn(() => Promise.resolve()),
@@ -147,7 +148,7 @@ describe('tokenAddCommand', () => {
   });
 
   it('treats a bare name already starting with the prefix text as fully qualified', async () => {
-    // Field report E1: "token add mybrowser-shadow-low" with tokenPrefix
+    // "token add mybrowser-shadow-low" with tokenPrefix
     // "--mybrowser-" used to produce "--mybrowser-mybrowser-shadow-low".
     await tokenAddCommand('/project', 'mybrowser-shadow-low', '0 1px 2px #000', {
       category: 'Shadows',
@@ -340,13 +341,13 @@ describe('tokenAddCommand', () => {
     expect(mockedLoadConfig).not.toHaveBeenCalled();
   });
 
-  it('guides the operator to `furnace init` when furnace.json is missing (Finding #15)', async () => {
-    // Pre-0.16.0 this path surfaced `Token CSS file not found:
+  it('guides the operator to `furnace init` when furnace.json is missing', async () => {
+    // Without the guard this path surfaces `Token CSS file not found:
     // browser/themes/shared/<binary>-tokens.css` from
-    // `assertTokenCategoryExists` — technically correct, but the
-    // missing tokens CSS file is a downstream artefact of Furnace not
-    // being initialized. The new guard short-circuits with the
-    // actionable recovery step.
+    // `assertTokenCategoryExists` — technically correct, but the missing
+    // tokens CSS file is a downstream artefact of Furnace not being
+    // initialized. The guard short-circuits with the actionable recovery
+    // step.
     mockedFurnaceConfigExists.mockResolvedValue(false);
 
     await expect(
@@ -425,13 +426,11 @@ describe('registerToken', () => {
   });
 
   it('prints help and exits cleanly when invoked without a subcommand', async () => {
-    // Finding #1: pre-0.16.0 `fireforge token` with no subcommand fell
-    // through to commander's default help-then-exit-1 path, while
-    // `fireforge furnace` printed a friendly status and exited 0. Scripts
-    // probing the CLI surface saw an inconsistent exit contract. The
-    // default action now prints help via `outputHelp()` and returns
-    // successfully. Capturing stdout verifies both the exit contract
-    // (no throw) AND that the help content is rendered.
+    // `fireforge token` with no subcommand must print help and exit 0, like
+    // `fireforge furnace` — falling through to commander's default
+    // help-then-exit-1 path gives scripts probing the CLI surface an
+    // inconsistent exit contract. Capturing stdout verifies both the exit
+    // contract (no throw) and that the help content is rendered.
     const program = createProgram();
     const originalWrite = process.stdout.write.bind(process.stdout);
     let captured = '';

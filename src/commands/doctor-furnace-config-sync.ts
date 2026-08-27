@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * "Furnace manifest sync" doctor check.
+ * "Furnace config sync" doctor check.
  *
  * Surfaces orphaned component directories on disk whose names are missing
- * from `furnace.json`. The motivating eval case is the concurrent-override
- * race (eval 2) where two parallel `furnace override` commands both left
- * their directory on disk but only the second reached
- * `writeFurnaceConfig`. Under `--repair-furnace`, override orphans are
- * re-registered from the `override.json` sidecar the command wrote during
- * the copy phase; custom orphans are listed for the operator to either
- * re-run `furnace create` against or delete manually, because custom
- * components have no similar persisted metadata.
+ * from `furnace.json` — typically the concurrent-override race, where two
+ * parallel `furnace override` commands both leave their directory on disk
+ * but only the second reaches `writeFurnaceConfig`. Under
+ * `--repair-furnace`, override orphans are re-registered from the
+ * `override.json` sidecar the command wrote during the copy phase; custom
+ * orphans are listed for the operator to either re-run `furnace create`
+ * against or delete manually, because custom components have no similar
+ * persisted metadata.
  *
- * Lives in a sibling module to keep `doctor-furnace.ts` under the
- * per-file LOC budget.
+ * Lives in a sibling module to keep `doctor-furnace.ts` under the per-file
+ * LOC budget.
  */
 
 import type { Dirent } from 'node:fs';
@@ -57,12 +57,13 @@ async function recoverOverrideConfig(
   name: string
 ): Promise<OverrideComponentConfig | undefined> {
   // `furnace override` writes `override.json` alongside the copied files.
-  // That sidecar is enough to reconstruct the furnace.json entry lost to
-  // a concurrent-write race (eval 2: second override wrote back the
-  // outer-snapshot config, dropping the sibling write's addition).
-  // No `pathExists` precheck: it collapses "absent" and "unreadable" into the
-  // same `false`, and both outcomes lead here anyway — a missing file lands in
-  // the catch below with the same `undefined` result.
+  // That sidecar is enough to reconstruct the furnace.json entry lost to a
+  // concurrent-write race, where the second override writes back the
+  // outer-snapshot config and drops the sibling write's addition.
+  //
+  // No `pathExists` precheck: it collapses "absent" and "unreadable" into
+  // the same `false`, and both outcomes lead here anyway — a missing file
+  // lands in the catch below with the same `undefined` result.
   const sidecarPath = join(overrideDir, name, 'override.json');
   try {
     const raw = await readJson<{
@@ -200,12 +201,12 @@ async function repairOrphans(
 
   const lockPath = getFurnaceLockPath(projectRoot);
   // One catch covers four distinct phases; naming the one that failed keeps
-  // the report honest — a lock timeout used to render as "failed while
+  // the report honest — a lock timeout otherwise renders as "failed while
   // writing furnace.json", the phase least likely to have been reached.
   // Held in an object rather than two `let`s: the lock callback mutates them
   // from inside a closure, and TS's control-flow analysis does not propagate
-  // that through the call — it would narrow both to their initial literals in
-  // the catch below.
+  // that through the call — it would narrow both to their initial literals
+  // in the catch below.
   const progress = { phase: 'waiting for the furnace lock', persisted: false };
   try {
     await withFileLock(
@@ -311,8 +312,8 @@ async function deleteEmptyCustomOrphans(
   }
 }
 
-export const furnaceManifestSyncCheck: DoctorCheckDefinition = {
-  name: 'Furnace manifest sync',
+export const furnaceConfigSyncCheck: DoctorCheckDefinition = {
+  name: 'Furnace config sync',
   dependsOn: ['Furnace configuration'],
   skipIf: (ctx) => !ctx.furnaceConfigExists || !ctx.furnaceConfig,
   run: async (ctx): Promise<CheckResult> => {
@@ -323,13 +324,13 @@ export const furnaceManifestSyncCheck: DoctorCheckDefinition = {
     const overrideCount = orphans.overrides.length;
     const customCount = orphans.customNames.length;
     if (overrideCount === 0 && customCount === 0) {
-      return ok('Furnace manifest sync');
+      return ok('Furnace config sync');
     }
 
     const summary = formatOrphanSummary(orphans);
     if (!ctx.options.repairFurnace) {
       return warning(
-        'Furnace manifest sync',
+        'Furnace config sync',
         summary,
         'Run "fireforge doctor --repair-furnace" to re-register override orphans from their override.json sidecars (custom orphans are listed for manual follow-up).'
       );
@@ -338,7 +339,7 @@ export const furnaceManifestSyncCheck: DoctorCheckDefinition = {
     const repairResult = await repairOrphans(ctx.projectRoot, orphans);
     if (repairResult.repairError) {
       return failure(
-        'Furnace manifest sync',
+        'Furnace config sync',
         `Repair failed ${repairResult.repairError}`,
         'Fix the underlying error and retry the doctor command.'
       );
@@ -371,7 +372,7 @@ export const furnaceManifestSyncCheck: DoctorCheckDefinition = {
         ? ` Could not inspect or delete ${customRepair.errors.length} custom orphan ${customRepair.errors.length === 1 ? 'directory' : 'directories'} (${customRepair.errors.join('; ')}).`
         : '';
     return warning(
-      'Furnace manifest sync',
+      'Furnace config sync',
       `${restoreDetail}${unrecoverableDetail}${customDetail}${retainedCustomDetail}${customErrorDetail}${reconciledDetail}`.trim() ||
         'Nothing to repair (orphans surfaced but all were already recoverable).'
     );

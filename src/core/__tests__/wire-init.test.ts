@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 const parserFallbackMock = vi.hoisted(() =>
   vi.fn((primary: () => string, ...rest: unknown[]) => {
     void rest;
@@ -8,13 +10,12 @@ const parserFallbackMock = vi.hoisted(() =>
   })
 );
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../parser-fallback.js', () => ({
+vi.mock('../parser-fallback.js', async (importOriginal) => ({
+  // Pure logic with no side effects; only `withParserFallback` needs
+  // controlling here.
+  ...(await importOriginal<typeof import('../parser-fallback.js')>()),
   withParserFallback: parserFallbackMock,
 }));
 
@@ -58,7 +59,7 @@ describe('wire-init', () => {
     expect(updated).toContain('// FIREFORGE: wire-init DockController');
   });
 
-  it('uses the caller-supplied marker so patch-lint recognises wire-generated edits (Eval 1 Finding #9)', () => {
+  it('uses the caller-supplied marker so patch-lint recognises wire-generated edits', () => {
     // A fork whose `binaryName` is `freshforge` expects the marker to
     // be `FRESHFORGE:`; the emitted comment must include the
     // project-specific token so `lintModificationComments` does not
@@ -293,11 +294,10 @@ const gBrowserInit = {
   });
 
   it('coerces a bare property chain into a function call (AST path)', () => {
-    // Finding #8: pre-0.16.0 passing `EvalStartup.init` (no parens) emitted
-    // `EvalStartup.init;` — a plain property reference, not a function call.
-    // The validator accepted both shapes but the template interpolated the
-    // expression verbatim. `coerceToCall` inside `addInitAST` now appends
-    // `()` when missing so the emitted block invokes the hook.
+    // Passing `X.init` (no parens) emits `X.init;` — a plain property
+    // reference, not a function call. The validator accepts both shapes but
+    // the template interpolates the expression verbatim, so `coerceToCall`
+    // inside `addInitAST` appends `()` when missing.
     const updated = addInitAST(BASE_BROWSER_INIT, 'EvalStartup.init');
     expect(updated).toContain('EvalStartup.init();');
     expect(updated).not.toMatch(/EvalStartup\.init;[^(]/);

@@ -145,7 +145,7 @@ describe('findNearestXpcshellManifest', () => {
     expect(found).toBeNull();
   });
 
-  it('finds the manifest inside a DIRECTORY argument (0.34.0 field report)', async () => {
+  it('finds the manifest inside a DIRECTORY argument', async () => {
     // `fireforge test <dir>` where <dir> itself holds the xpcshell.toml:
     // the walk must start at the directory, not its parent, or the run is
     // misdispatched to the mochitest runner.
@@ -244,13 +244,12 @@ describe('resolveAbsoluteAppPath', () => {
     expect(await resolveAbsoluteAppPath(workspace, 'browser')).toBe(macTarget);
   });
 
-  // 2026-04-24 eval Finding 8: on macOS, preferring `dist/bin/browser`
-  // resolved to `<App>.app/Contents/MacOS/browser/` via the convenience
-  // symlink — that is the *binaries* directory, not the Resources tree
-  // where `resource:///modules/` is rooted. The probe must prefer the
-  // `.app/Contents/Resources/<value>` path on macOS so the injected
-  // appdir matches where modules actually live. Non-macOS hosts keep the
-  // historical `dist/bin`-first order.
+  // On macOS, preferring `dist/bin/browser` resolves to
+  // `<App>.app/Contents/MacOS/browser/` via the convenience symlink — the
+  // *binaries* directory, not the Resources tree where `resource:///modules/`
+  // is rooted. The probe must prefer `.app/Contents/Resources/<value>` on
+  // macOS so the injected appdir matches where modules actually live.
+  // Non-macOS hosts keep the `dist/bin`-first order.
   it('prefers the platform-correct layout when both dist/bin and a .app bundle exist', async () => {
     const linuxTarget = join(workspace, 'dist/bin/browser');
     const macTarget = join(workspace, 'dist/MyBrowser.app/Contents/Resources/browser');

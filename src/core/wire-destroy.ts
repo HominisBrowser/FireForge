@@ -13,7 +13,7 @@ import { BuildError } from '../errors/build.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { escapeRegex } from '../utils/regex.js';
 import { asEstree, detectIndent, parseScript } from './ast-utils.js';
-import { withParserFallback } from './parser-fallback.js';
+import { isInternalInvariantFailure, withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,
   coerceToCall,
@@ -31,9 +31,9 @@ const DEFAULT_MARKER = 'FIREFORGE:';
  * AST-based implementation: finds onUnload()/uninit() method body and
  * inserts the destroy block at the top (LIFO ordering).
  *
- * `marker` is prefixed to the generated comment so wire-generated
- * edits carry the patch-lint `// <MARKER>:` signature
- * `lintModificationComments` looks for (eval 1 Finding #9).
+ * `marker` is prefixed to the generated comment so wire-generated edits
+ * carry the patch-lint `// <MARKER>:` signature `lintModificationComments`
+ * looks for.
  */
 export function addDestroyAST(
   content: string,
@@ -152,8 +152,8 @@ export async function addDestroyToBrowserInit(
 
   // Idempotency check — look for the coerced (call) form because that is
   // what the emitter writes. Matching against the raw input would miss a
-  // previous `EvalStartup.destroy` invocation that the 0.16.0 coercion
-  // already persisted as `EvalStartup.destroy()`.
+  // bare `X.destroy` invocation that coercion already persisted as
+  // `X.destroy()`.
   const callExpression = coerceToCall(expression);
   const destroyPattern = new RegExp(`(?:^|\\W)${escapeRegex(callExpression)}\\s*;?\\s*$`, 'm');
   if (destroyPattern.test(content)) {
@@ -164,14 +164,7 @@ export async function addDestroyToBrowserInit(
     () => addDestroyAST(content, expression, marker),
     () => legacyAddDestroy(content, expression, marker),
     BROWSER_INIT_JS,
-    // Rethrow only the internal-invariant GeneralErrors ("Unexpected empty
-    // …array"): those are programming bugs, and retrying the legacy scanner
-    // cannot fix a broken invariant — it just buries the stack. Everything
-    // else still falls back, which is load-bearing: the AST path raises a raw
-    // acorn SyntaxError on chrome sources acorn cannot parse (preprocessor
-    // directives), and BuildError when the file's shape is unexpected. Both
-    // are exactly what the legacy scanner is here to handle.
-    (error) => error instanceof GeneralError
+    isInternalInvariantFailure
   );
 
   if (usedFallback) {

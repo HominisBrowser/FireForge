@@ -5,7 +5,7 @@ import type { DoctorCheck } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { exec, findExecutable } from '../utils/process.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
-import { failure, warning } from './doctor-check-core.js';
+import { failure, ok, warning } from './doctor-check-core.js';
 
 async function resolveDeclaredTool(
   projectRoot: string,
@@ -39,7 +39,7 @@ async function runExternalToolchainChecks(ctx: DoctorCheckContext): Promise<Doct
       const label = `External toolchain: ${toolchain.name}/${tool.name}`;
       const found = await resolveDeclaredTool(ctx.projectRoot, tool);
       if (found !== undefined) {
-        rows.push({ name: label, passed: true, severity: 'ok', message: `OK (${found})` });
+        rows.push(ok(label, `OK (${found})`));
         continue;
       }
       const required = tool.required !== false;

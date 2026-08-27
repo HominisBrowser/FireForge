@@ -74,49 +74,39 @@ export interface PatchMetadata {
   /** Array of file paths affected by this patch */
   filesAffected: string[];
   /**
-   * Optional per-patch list of lint check IDs to suppress when this patch
-   * is the target of `export`, `export-all`, or `re-export`. Exists for
-   * the class of patch that is advisory-noisy by nature — a cohesive
-   * branding bundle, a localised-resource pack, an auto-generated
-   * manifest — where the generic `large-patch-lines` / `large-patch-files`
-   * thresholds do not apply but `--skip-lint` (which silences *all*
-   * errors, not just the one that does not apply) is too coarse a hammer.
+   * Optional per-patch list of lint check IDs to suppress when this patch is
+   * the target of `export`, `export-all`, or `re-export`. Exists for the
+   * class of patch that is advisory-noisy by nature — a cohesive branding
+   * bundle, a localised-resource pack, an auto-generated manifest — where
+   * the generic `large-patch-lines` / `large-patch-files` thresholds do not
+   * apply but `--skip-lint`, which silences every error rather than the one
+   * that does not apply, is too coarse.
    *
-   * Previously the only escape hatches were `--skip-lint` (blunt) or the
-   * full `rebase` flow (refreshes the same patch through a code path that
-   * silently skips `runPatchLint` — an asymmetry that forced operators
-   * through a multi-minute Firefox source re-download just to refresh
-   * one patch body).
-   *
-   * Values are free-form check IDs (e.g. `"large-patch-lines"`,
-   * `"large-patch-files"`). Checks not listed here still run normally.
-   * An entry for an unknown check ID is a no-op — the patch metadata
-   * documents the *intent* to suppress even if the check is later
-   * renamed or removed.
+   * Values are free-form check IDs (e.g. `"large-patch-lines"`). Checks not
+   * listed here still run normally. An entry for an unknown check ID is a
+   * no-op — the metadata documents the intent to suppress even if the check
+   * is later renamed or removed.
    */
   lintIgnore?: string[];
   /**
    * Optional per-patch threshold-tier override for the `large-patch-lines`
    * rule. Exists for branding patches that must touch a small number of
    * cross-cutting registration files alongside `browser/branding/<name>/`
-   * (notably `browser/moz.configure` to register the new branding flavor
-   * with the top-level configure). The narrow auto-detect allowlist in
-   * `isBrandingOnlyPatch` covers the canonical shape, but a fork whose
-   * branding patch also touches an unlisted sibling (for example a
-   * `browser/themes/<name>/` override or a vendor-specific icon
-   * resource) falls through to the general tier and trips the hard
-   * limit on what is legitimately one branding diff.
+   * (notably `browser/moz.configure`, which registers the new branding
+   * flavor with the top-level configure). The narrow auto-detect allowlist
+   * in `isBrandingOnlyPatch` covers the canonical shape; a fork whose
+   * branding patch also touches an unlisted sibling falls through to the
+   * general tier and trips the hard limit on what is legitimately one
+   * branding diff.
    *
-   * Declaring `tier: "branding"` here forces the branding thresholds
-   * (notice 8000 / warning 18000 / error 30000 lines, ≤60 files)
-   * regardless of `filesAffected`. The tier is the weaker claim than
-   * test — a patch of all-tests still lands in the test tier even if
-   * this field is set, because the test-tier thresholds are already
-   * more permissive and a test that is also branding-shaped is
-   * vanishingly rare.
+   * Declaring `tier: "branding"` forces the branding thresholds (notice
+   * 8000 / warning 18000 / error 30000 lines, ≤60 files) regardless of
+   * `filesAffected`. It is the weaker claim than test: an all-tests patch
+   * stays in the test tier even with this set, because those thresholds are
+   * already more permissive.
    *
-   * Only `"branding"` is currently recognised. Unknown values are
-   * rejected by the manifest validator, not silently stripped.
+   * Only `"branding"` is recognised. Unknown values are rejected by the
+   * manifest validator, not silently stripped.
    */
   tier?: 'branding';
   /**

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('@clack/prompts', () => ({
   confirm: vi.fn(() => Promise.resolve(true)),
 }));
@@ -35,6 +37,11 @@ vi.mock('../../core/furnace-config.js', () => ({
 }));
 
 vi.mock('../../core/git.js', () => ({
+  // Engine-precondition ladder (assertEngineGitReady). Stubbed to the
+  // healthy-engine answers so these suites test their own subject.
+  getHead: vi.fn(() => Promise.resolve('0'.repeat(40))),
+  isMissingHeadError: vi.fn(() => false),
+
   isGitRepository: vi.fn(() => Promise.resolve(true)),
 }));
 
@@ -60,7 +67,11 @@ vi.mock('../../core/furnace-rollback.js', () => ({
   restoreRollbackJournal: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -99,7 +110,7 @@ vi.mock('../../core/config.js', () => ({
   ),
 }));
 
-vi.mock('../../core/manifest-register.js', () => ({
+vi.mock('../../core/moz-manifest-register.js', () => ({
   deregisterTestManifest: vi.fn(() => Promise.resolve(false)),
 }));
 
@@ -125,14 +136,7 @@ vi.mock('../../utils/fs.js', () => ({
   writeText: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  cancel: vi.fn(),
-  isCancel: vi.fn(() => false),
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { readdir, unlink } from 'node:fs/promises';
 
@@ -154,7 +158,7 @@ import {
 import { restoreRollbackJournalOrThrow, snapshotFile } from '../../core/furnace-rollback.js';
 import { isGitRepository } from '../../core/git.js';
 import { fileExistsInHead, restoreTrackedPath } from '../../core/git-file-ops.js';
-import { deregisterTestManifest } from '../../core/manifest-register.js';
+import { deregisterTestManifest } from '../../core/moz-manifest-register.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceConfig, FurnaceState } from '../../types/furnace.js';
 import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
@@ -397,11 +401,10 @@ describe('furnaceRemoveCommand', () => {
   });
 
   it('restores orphaned engine files recorded only in state, not the workspace', async () => {
-    // Regression for the audit's release-blocker: a developer deleted
-    // moz-card-partial.css from the workspace and ran apply (which
-    // historically did not undeploy). The state file still records the
-    // orphaned engine copy. furnace remove must consult the state file
-    // to find and restore that copy, even though the workspace no
+    // A developer can delete a component CSS file from the workspace and run
+    // apply (which historically did not undeploy), leaving the state file
+    // recording the orphaned engine copy. furnace remove must consult the
+    // state file to find and restore that copy even though the workspace no
     // longer has the file.
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
@@ -717,9 +720,9 @@ describe('furnaceRemoveCommand', () => {
   });
 
   it('drops the locale jar.mn registration for localized custom components', async () => {
-    // Eval 1 Finding #1: `furnace remove --yes` deleted the .ftl but left
-    // `browser/locales/jar.mn` referencing the now-missing file. Fix plumbs
-    // the existing removeCustomFtlJarMnEntry helper through the remove
+    // `furnace remove --yes` must not delete the .ftl while leaving
+    // `browser/locales/jar.mn` referencing the now-missing file. The
+    // `removeCustomFtlJarMnEntry` helper is plumbed through the remove
     // pipeline so the locale registration and the file delete travel
     // together inside the rollback journal.
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
@@ -843,12 +846,20 @@ describe('furnaceRemoveCommand — rollback failure', () => {
       furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true })
     ).rejects.toThrow(/could not restore moz-audit-widget\.mjs/);
 
-    expect(recordFurnaceRollbackFailure).toHaveBeenCalledWith(
-      '/project',
-      'remove-rollback',
-      expect.stringContaining(
-        'component "moz-audit-widget": could not restore moz-audit-widget.mjs'
-      )
+    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
+    // state — rather than the internal call. The rollback sequence now lives
+    // in `completeJournalRollback`, whose call to the recorder is
+    // intra-module and so invisible to a module-level spy.
+    const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1] as
+      | ((state: Record<string, unknown>) => {
+          pendingRepair?: { operation: string; reason: string };
+        })
+      | undefined;
+    expect(updater).toBeTypeOf('function');
+    const pendingRepair = updater?.({}).pendingRepair;
+    expect(pendingRepair?.operation).toBe('remove-rollback');
+    expect(pendingRepair?.reason).toContain(
+      'component "moz-audit-widget": could not restore moz-audit-widget.mjs'
     );
   });
 

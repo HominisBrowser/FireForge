@@ -2,11 +2,10 @@
 /**
  * "Furnace jar.mn registrations" doctor-check tests.
  *
- * The check exists because of a 0.34.0 field report: a component rename left
- * the old toolkit jar.mn line pointing at a deleted file, every build failed
- * at packaging, and `doctor --repair-furnace` reported success without
- * pruning. It sat at 56.3% line / 33.3% branch — the reporting and repair arms
- * it was written to provide were themselves untested.
+ * The check exists because a component rename can leave the old toolkit
+ * jar.mn line pointing at a deleted file, failing every build at packaging
+ * while `doctor --repair-furnace` reports success without pruning. These
+ * cover the reporting and repair arms it was written to provide.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 

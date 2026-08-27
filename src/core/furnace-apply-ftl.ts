@@ -7,16 +7,19 @@
  * Every helper here degrades gracefully: if the locale jar.mn is missing or
  * the FTL tree is non-standard, apply logs an ADVISORY `stepError`
  * (`advisory: true`) rather than aborting the whole command. Advisory step
- * errors are reported as warnings and never trigger rollback — missing
- * jar.mn on a fork without a locale package should not block a working
- * `.mjs`/`.css` from shipping (the blocking/advisory split exists because
- * this contract used to be contradicted: any FTL step error rolled back
- * the whole apply).
+ * errors are reported as warnings and never trigger rollback — a missing
+ * jar.mn on a fork without a locale package must not block a working
+ * `.mjs`/`.css` from shipping.
  */
 
 import { join, relative } from 'node:path';
 
-import type { CustomComponentConfig, DryRunAction, StepError } from '../types/furnace.js';
+import type {
+  ComponentApplyContext,
+  CustomComponentConfig,
+  DryRunAction,
+  StepError,
+} from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { copyFile, pathExists, readText } from '../utils/fs.js';
 import { escapeRegex } from '../utils/regex.js';
@@ -57,10 +60,9 @@ function resolveSharedFtlPruneTarget(
  * A `localized: true` widget that opts into a feature-scoped `sharedFtl`
  * bundle (its strings live under `browser/...` and load via
  * `insertFTLIfNeeded`) must NOT carry a per-widget
- * `locale/@AB_CD@/<chromeSubPath>/<name>.ftl` line. Such a line — written by
- * an older FireForge before the sharedFtl apply guard, or by a layout
- * migration — points at a `.ftl` that does not exist, so `mach build` fails
- * hard (`Cannot find <chromeSubPath>/<name>.ftl`) and blocks every build.
+ * `locale/@AB_CD@/<chromeSubPath>/<name>.ftl` line. Such a line points at a
+ * `.ftl` that does not exist, so `mach build` fails hard (`Cannot find
+ * <chromeSubPath>/<name>.ftl`) and blocks every build.
  *
  * The pruned line is the per-widget toolkit entry only; the shared bundle's
  * own line (a different chrome sub-path / base name) is never matched, so
@@ -100,14 +102,13 @@ async function pruneSharedFtlPerWidgetLocaleEntry(
  * {@link applyCustomFtlFile}'s contract so the main apply helper stays terse.
  */
 export async function applySharedFtlPrune(
-  engineDir: string,
-  name: string,
-  ftlDir: string,
+  ctx: Pick<ComponentApplyContext, 'engineDir' | 'name' | 'ftlDir'>,
   config: CustomComponentConfig,
   affectedPaths: string[],
   stepErrors: StepError[],
   rollbackJournal?: RollbackJournal
 ): Promise<void> {
+  const { engineDir, name, ftlDir } = ctx;
   try {
     const prunedPath = await pruneSharedFtlPerWidgetLocaleEntry(
       engineDir,
@@ -128,11 +129,10 @@ export async function applySharedFtlPrune(
  * `sharedFtl` widget, else `undefined`.
  */
 export async function describeSharedFtlPrune(
-  engineDir: string,
-  name: string,
-  ftlDir: string,
+  ctx: Pick<ComponentApplyContext, 'engineDir' | 'name' | 'ftlDir'>,
   config: CustomComponentConfig
 ): Promise<DryRunAction | undefined> {
+  const { engineDir, name, ftlDir } = ctx;
   if (!config.sharedFtl) return undefined;
   const target = resolveSharedFtlPruneTarget(name, ftlDir);
   if (!target) return undefined;
@@ -157,14 +157,12 @@ export async function describeSharedFtlPrune(
  * blocked by a broken locale path.
  */
 export async function applyCustomFtlFile(
-  engineDir: string,
-  name: string,
-  componentDir: string,
-  ftlDir: string,
+  ctx: Pick<ComponentApplyContext, 'engineDir' | 'name' | 'componentDir' | 'ftlDir'>,
   affectedPaths: string[],
   stepErrors: StepError[],
   rollbackJournal?: RollbackJournal
 ): Promise<void> {
+  const { engineDir, name, componentDir, ftlDir } = ctx;
   const ftlFile = `${name}.ftl`;
   const ftlSrc = join(componentDir, ftlFile);
   if (!(await pathExists(ftlSrc))) return;

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * `fireforge patch move-files <from> <to> --create --order <n>` — creates
- * the target patch at the requested sparse order and moves the files into
- * it as one transaction. This is the transactional bootstrap of a split:
- * without it, moving files into a not-yet-existing patch required a manual
+ * the target patch at the requested sparse order and moves the files into it
+ * as one transaction. This is the transactional bootstrap of a split:
+ * without it, moving files into a not-yet-existing patch requires a manual
  * shrink-then-export dance with hand-repointed staged-dependency owners.
  *
- * Mirrors `patch split` end-to-end (same planning, projection lint,
- * policy enforcement, and locked commit); the `<to>` argument becomes the
- * new patch's name/slug the way `split --name` does.
+ * Mirrors `patch split` end-to-end (same planning, projection lint, policy
+ * enforcement, and locked commit); the `<to>` argument becomes the new
+ * patch's name/slug the way `split --name` does.
  */
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
@@ -141,7 +141,7 @@ export async function patchMoveFilesCreateCommand(
   // same patch-policy shape as the committed `lint --per-patch` gate) makes
   // cross-patch `resource:///` imports and sibling head.js harness roots
   // resolve exactly as they will after the move lands — without it the
-  // projection lint was blind.
+  // projection lint is blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
   await runPatchLint(
@@ -192,7 +192,7 @@ export async function patchMoveFilesCreateCommand(
     outro('Dry run complete — no changes made');
     return;
   }
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Move cancelled');
     return;
   }

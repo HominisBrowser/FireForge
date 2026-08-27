@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../patch-apply.js', () => ({
   discoverPatches: vi.fn(),
   isNewFilePatch: vi.fn(),
@@ -19,16 +21,9 @@ vi.mock('../patch-manifest.js', () => ({
   findPatchesAffectingFile: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-  removeFile: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -505,7 +500,7 @@ describe('patch-export threshold coverage', () => {
 
     await expect(
       updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'updated' })
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
 
     expect(writeText).toHaveBeenCalledWith('/patches/001-ui-old.patch', 'new body');
     expect(mutatePatchRowsInManifest).toHaveBeenCalledWith(

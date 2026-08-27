@@ -5,6 +5,7 @@
 
 import type { PatchMetadata } from '../types/commands/index.js';
 import { withPatchDirectoryLock } from './patch-apply.js';
+import type { PatchDirectoryLockOptions } from './patch-lock.js';
 import { mutatePatchRowsInManifest } from './patch-manifest.js';
 
 /**
@@ -19,19 +20,27 @@ export type ClearablePatchMetadataField = 'tier' | 'lintIgnore' | 'stagedDepende
  * @param filename - Patch filename
  * @param updates - Field values to set
  * @param unsetFields - Optional fields to remove from the entry
+ * @param lockOptions - `--wait-lock` budget and the command name recorded in
+ *   the lock's owner metadata. Threaded from the CLI so a caller that waits
+ *   is not silently given the default 30s budget.
  */
 export async function updatePatchMetadata(
   patchesDir: string,
   filename: string,
   updates: Partial<PatchMetadata>,
-  unsetFields: ReadonlyArray<ClearablePatchMetadataField> = []
+  unsetFields: ReadonlyArray<ClearablePatchMetadataField> = [],
+  lockOptions: PatchDirectoryLockOptions = {}
 ): Promise<void> {
-  await withPatchDirectoryLock(patchesDir, async () => {
-    await mutatePatchRowsInManifest(patchesDir, [filename], () => ({
-      set: updates,
-      unset: unsetFields,
-    }));
-  });
+  await withPatchDirectoryLock(
+    patchesDir,
+    async () => {
+      await mutatePatchRowsInManifest(patchesDir, [filename], () => ({
+        set: updates,
+        unset: unsetFields,
+      }));
+    },
+    lockOptions
+  );
 }
 
 /** Return shape from a `mutatePatchMetadata` mutator. */
@@ -53,19 +62,30 @@ export interface PatchMetadataMutationResult {
 /**
  * Reads a patch's metadata under the directory lock, applies a mutator
  * function to compute the update, and writes the result back.
+ *
+ * @param patchesDir - Path to the patches directory
+ * @param filename - Patch filename
+ * @param mutator - Computes the update from the existing metadata
+ * @param lockOptions - `--wait-lock` budget and owner-metadata command name
+ * @returns Before/after metadata, or null when the patch was not found
  */
 export async function mutatePatchMetadata(
   patchesDir: string,
   filename: string,
-  mutator: (existing: PatchMetadata) => PatchMetadataMutation
+  mutator: (existing: PatchMetadata) => PatchMetadataMutation,
+  lockOptions: PatchDirectoryLockOptions = {}
 ): Promise<PatchMetadataMutationResult | null> {
-  return await withPatchDirectoryLock(patchesDir, async () => {
-    const result = await mutatePatchRowsInManifest(patchesDir, [filename], (existing) => {
-      const { set = {}, unset = [] } = mutator(existing);
-      return { set, unset };
-    });
-    const changed = result?.[0];
-    if (!changed) return null;
-    return { before: changed.before, after: changed.after };
-  });
+  return await withPatchDirectoryLock(
+    patchesDir,
+    async () => {
+      const result = await mutatePatchRowsInManifest(patchesDir, [filename], (existing) => {
+        const { set = {}, unset = [] } = mutator(existing);
+        return { set, unset };
+      });
+      const changed = result?.[0];
+      if (!changed) return null;
+      return { before: changed.before, after: changed.after };
+    },
+    lockOptions
+  );
 }

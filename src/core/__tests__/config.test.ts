@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  pathExistsStrict: vi.fn(),
-  readJson: vi.fn(),
-  writeJson: vi.fn(),
-}));
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../state-file.js', () => ({
   withStateFileLock: vi.fn(async (_path: string, operation: () => Promise<unknown>) => operation()),

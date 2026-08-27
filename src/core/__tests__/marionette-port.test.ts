@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Unit tests for the Marionette port probe (Finding #20).
+ * Unit tests for the Marionette port probe.
  *
- * The probe runs `lsof` (macOS/Linux) or PowerShell (Windows) to
- * detect listeners on the Marionette control port. We mock the exec
- * helper + platform selector so the tests are deterministic and do
- * not depend on the host having a real listener.
+ * The probe runs `lsof` (macOS/Linux) or PowerShell (Windows) to detect
+ * listeners on the Marionette control port. The exec helper and platform
+ * selector are mocked so the tests are deterministic and do not depend on
+ * the host having a real listener.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -23,6 +23,7 @@ import { exec } from '../../utils/process.js';
 import {
   assertMarionettePortAvailable,
   DEFAULT_MARIONETTE_PORT,
+  describeRunningBundleRefusal,
   ensureLaunchableBrowserNotRunning,
   ensureMarionettePortAvailable,
   extractForwardedMarionettePort,
@@ -53,12 +54,60 @@ describe('objdir browser process preflight', () => {
 
   it('matches only the exact built binary and ignores the current process', () => {
     const output =
-      `  41 ${binary} -marionette -profile /tmp/test\n` +
-      '  42 /Applications/Firefox.app/Contents/MacOS/firefox -marionette\n' +
-      `  ${process.pid} ${binary} --synthetic-current-process\n`;
+      `  41 12:30 ${binary} -marionette -profile /tmp/test\n` +
+      '  42 01:02 /Applications/Firefox.app/Contents/MacOS/firefox -marionette\n' +
+      `  ${process.pid} 00:01 ${binary} --synthetic-current-process\n`;
     expect(parseProcessList(output, binary)).toEqual([
-      { pid: 41, commandLine: `${binary} -marionette -profile /tmp/test` },
+      {
+        pid: 41,
+        commandLine: `${binary} -marionette -profile /tmp/test`,
+        elapsedSeconds: 750,
+      },
     ]);
+  });
+
+  it('degrades to an unknown age when the listing carries no etime column', () => {
+    // A caller that lost the column must still see the process, with the
+    // whole field folded back into the command line rather than swallowed.
+    const output = `  41 ${binary} -marionette -profile /tmp/test\n`;
+    const [row] = parseProcessList(output, binary);
+    expect(row?.pid).toBe(41);
+    expect(row?.commandLine).toBe(`${binary} -marionette -profile /tmp/test`);
+    expect(row?.elapsedSeconds).toBeNaN();
+  });
+
+  it('offers --kill-stale-marionette for a harness-driven browser', () => {
+    const message = describeRunningBundleRefusal({
+      pid: 41,
+      commandLine: `${binary} -marionette -profile /tmp/test`,
+      elapsedSeconds: 750,
+    });
+    expect(message).toContain('PID 41 running for 12m30s');
+    expect(message).toContain('-marionette -profile /tmp/test');
+    expect(message).toContain('--kill-stale-marionette');
+  });
+
+  it('never offers --kill-stale-marionette for a BARE launch it cannot attribute', () => {
+    // The downstream hazard: on a shared checkout the matched PID can be a
+    // peer session's live browser, and the flag would kill their run.
+    const message = describeRunningBundleRefusal({
+      pid: 54000,
+      commandLine: binary,
+      elapsedSeconds: 4,
+    });
+    expect(message).toContain('PID 54000 running for 4s');
+    expect(message).toContain('NO harness arguments');
+    expect(message).not.toContain('retry with "--kill-stale-marionette"');
+  });
+
+  it('omits the age clause entirely when the elapsed time is unknown', () => {
+    const message = describeRunningBundleRefusal({
+      pid: 41,
+      commandLine: `${binary} -marionette`,
+      elapsedSeconds: NaN,
+    });
+    expect(message).toContain('(PID 41)');
+    expect(message).not.toContain('running for');
   });
 
   it('refuses a surviving app even when no Marionette port is listening', async () => {

@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Tests for engine-side orphan detection (field report D1): files a
- * previous deploy left in the engine whose workspace source was renamed
- * or removed must surface as `orphaned-engine-file` drift.
+ * Tests for engine-side orphan detection: files a previous deploy left in
+ * the engine whose workspace source was renamed or removed must surface as
+ * `orphaned-engine-file` drift.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -27,7 +26,7 @@ vi.mock('../config.js', () => ({
 
 import type { FurnaceConfig } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
-import { findOrphanedEngineFiles } from '../furnace-validate-helpers.js';
+import { findOrphanedEngineFiles } from '../furnace-validate.js';
 
 const FTL_DIR = 'toolkit/locales/en-US/toolkit/global';
 

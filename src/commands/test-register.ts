@@ -77,6 +77,10 @@ export function registerTest(
       '--extend-coverage',
       'With --build/--build-only and explicit paths, union those paths into the recorded test-packaging coverage instead of replacing it, so an earlier scoped build stays covered. Refused when the build anchor moved (engine HEAD, mozconfig, or a previously fingerprinted packageable file changed).'
     )
+    .option(
+      '--refuse-unexported-drift',
+      'With --build/--build-only, refuse (instead of warning) when the pre-test build would overwrite engine content recorded in neither a patch body nor the pristine baseline — the same belt as "fireforge build --refuse-unexported-drift", armable from the scripted "test --build" shape the hazard actually shows up in'
+    )
     .option('--auto', 'Forward mach test --auto. Valid only when no explicit paths are provided.')
     .option(
       '--allow-stale-build',
@@ -147,6 +151,7 @@ export function registerTest(
           build?: boolean;
           buildOnly?: boolean;
           extendCoverage?: boolean;
+          refuseUnexportedDrift?: boolean;
           auto?: boolean;
           allowStaleBuild?: boolean;
           allowStaleComponents?: boolean;

@@ -41,10 +41,9 @@ function printWireDryRun(
   info(`  source: ${subscriptDir}/${name}.js`);
   info(`  browser-main.js: loadSubScript("chrome://browser/content/${name}.js")`);
   if (options.init) {
-    // Show the coerced form so the preview matches the emitted block.
-    // Before 0.16.0 the preview echoed the raw input ("EvalStartup.init"),
-    // which did not reflect that the real run writes `EvalStartup.init();`
-    // to browser-init.js.
+    // Show the coerced form so the preview matches the emitted block —
+    // echoing the raw input ("X.init") does not reflect that the real run
+    // writes `X.init();` to browser-init.js.
     info(`  browser-init.js: ${coerceToCall(options.init)}`);
   }
   if (options.destroy) {
@@ -121,14 +120,13 @@ function validateWireName(name: string): void {
 }
 
 /**
- * Asserts that the resolved chrome document both exists on disk AND
- * exposes an insertion anchor (`#include browser-sets.inc` or
- * `<html:body>`) that `addDomFragment` can splice into. Fires the same
- * check in dry-run and real-run mode, so the preview and execution
- * agree on whether the target is wireable before any disk mutations
- * happen. Before 0.16.0 this check only ran on the real branch, which
- * let the dry-run produce a plausible-looking plan that the real run
- * then refused with `Could not find insertion point in chrome document`.
+ * Asserts that the resolved chrome document both exists on disk AND exposes
+ * an insertion anchor (`#include browser-sets.inc` or `<html:body>`) that
+ * `addDomFragment` can splice into. Fires in dry-run and real-run mode
+ * alike, so the preview and execution agree on whether the target is
+ * wireable before any disk mutations happen. Running it only on the real
+ * branch lets the dry-run produce a plausible-looking plan the real run then
+ * refuses with `Could not find insertion point in chrome document`.
  */
 async function assertDomTargetIsWireable(
   projectRoot: string,
@@ -215,36 +213,34 @@ async function resolveDomFragmentPath(
   projectRoot: string,
   dom: string | undefined
 ): Promise<string | undefined> {
-  // Validate DOM fragment file exists and compute path relative to engine root.
-  //
-  // Accepts three shapes:
+  // Validate the DOM fragment file exists and compute its path relative to
+  // the engine root. Accepts three shapes:
   //  - Absolute paths (`/project/engine/browser/base/content/foo.inc.xhtml`)
   //  - Repo-root-relative forms (`engine/browser/base/content/foo.inc.xhtml`)
   //  - Engine-relative forms (`browser/base/content/foo.inc.xhtml`)
   //
-  // Before the engine-prefix normalization, passing an `engine/…`-prefixed
-  // relative path from the repo root double-rooted through
-  // `toRootRelativePath(engineDir, …)` — `resolve(engineDir, 'engine/…')`
-  // landed at `engineDir/engine/…`, which is still "inside" engineDir but
-  // named as a second-level `engine/…` entry. The computed `#include`
-  // then read `../../../engine/browser/base/content/foo.inc.xhtml`,
-  // packaging-breaking nonsense. For absolute inputs this pre-existing
-  // contract was fine — `toRootRelativePath` handles absolute candidates
-  // correctly — so we only strip the prefix when the input is relative.
+  // Without the engine-prefix normalization, an `engine/…`-prefixed relative
+  // path from the repo root double-roots through
+  // `toRootRelativePath(engineDir, …)`: `resolve(engineDir, 'engine/…')`
+  // lands at `engineDir/engine/…`, still "inside" engineDir but named as a
+  // second-level `engine/…` entry, and the computed `#include` then reads
+  // `../../../engine/browser/base/content/foo.inc.xhtml`. Absolute inputs are
+  // already handled correctly by `toRootRelativePath`, so the prefix is only
+  // stripped when the input is relative.
   if (!dom) return undefined;
   {
     const paths = getProjectPaths(projectRoot);
     const domCandidate = isExplicitAbsolutePath(dom) ? dom : stripEnginePrefix(dom);
-    // `pathExists` resolves relative paths against CWD, so an engine-
-    // relative `domCandidate` (e.g. `browser/base/content/foo.inc.xhtml`)
-    // would be probed inside the operator's shell directory rather than
-    // the engine root and fail "DOM fragment file not found" even when
-    // the file is sitting at engine/<path>. Mirror `register.ts`: probe
-    // the absolute path as-is, otherwise join with `paths.engine` first.
-    // The `isPathInsideRoot` / `toRootRelativePath` calls below keep
-    // operating on `domCandidate` because they internally resolve
-    // relative candidates against the engine root, which matches the
-    // probe path we just built.
+    // `pathExists` resolves relative paths against CWD, so an
+    // engine-relative `domCandidate` (e.g.
+    // `browser/base/content/foo.inc.xhtml`) would be probed inside the
+    // operator's shell directory rather than the engine root and fail "DOM
+    // fragment file not found" even when the file is sitting at
+    // engine/<path>. Mirror `register.ts`: probe the absolute path as-is,
+    // otherwise join with `paths.engine` first. The `isPathInsideRoot` /
+    // `toRootRelativePath` calls below keep operating on `domCandidate`
+    // because they internally resolve relative candidates against the engine
+    // root, matching the probe path built here.
     const domProbePath = isExplicitAbsolutePath(domCandidate)
       ? domCandidate
       : join(paths.engine, domCandidate);
@@ -365,15 +361,11 @@ export async function wireCommand(
     validateWireName(options.after);
   }
 
-  // Validate init/destroy expressions BEFORE the dry-run/real fork so
-  // both paths enforce the same contract. Pre-0.16.0, validation only
-  // ran inside `addInitToBrowserInit`/`addDestroyToBrowserInit` (the
-  // real-execution path), so `--dry-run --init 'void 0'` succeeded and
-  // rendered a plausible-looking preview even though the real run would
-  // reject the same arguments. Dropping `void 0` into the template
-  // silently (or breaking out of the string literal) was already
-  // prevented downstream — this hoist just makes the failure surface
-  // identical in preview mode.
+  // Validate init/destroy expressions BEFORE the dry-run/real fork so both
+  // paths enforce the same contract. Validating only inside
+  // `addInitToBrowserInit`/`addDestroyToBrowserInit` — the real-execution
+  // path — lets `--dry-run --init 'void 0'` succeed and render a plausible
+  // preview even though the real run rejects the same arguments.
   if (options.init !== undefined) {
     validateWireExpression(options.init, 'init expression');
   }
@@ -387,14 +379,15 @@ export async function wireCommand(
 
   const domFilePath = await resolveDomFragmentPath(projectRoot, options.dom);
 
-  // Resolve the chrome document the `#include` directive will land in.
-  // Only consulted when `--dom` is supplied — we still resolve it here so
-  // the dry-run plan can print the target accurately.
+  // Resolve the chrome document the `#include` directive will land in. Only
+  // consulted when `--dom` is supplied — resolved here anyway so the dry-run
+  // plan can print the target accurately.
   //
-  // `stripEnginePrefix` is applied so `--target engine/browser/base/browser.xhtml`
-  // and `--target browser/base/browser.xhtml` are treated identically,
-  // matching the `--dom` normalization above. Absolute `--target` paths
-  // stay absolute (the containment check downstream rejects them).
+  // `stripEnginePrefix` is applied so
+  // `--target engine/browser/base/browser.xhtml` and
+  // `--target browser/base/browser.xhtml` are treated identically, matching
+  // the `--dom` normalization above. Absolute `--target` paths stay absolute
+  // (the containment check downstream rejects them).
   const normalizedTarget =
     options.target !== undefined && !isExplicitAbsolutePath(options.target)
       ? stripEnginePrefix(options.target)
@@ -410,19 +403,16 @@ export async function wireCommand(
     await assertDomTargetIsWireable(projectRoot, domFilePath, domTargetPath);
   }
 
-  // Verify the subscript file exists in engine/ (skip for dry-run:
-  // dry-run is meant to preview the mutation plan without requiring
-  // the subscript to already exist, matching the "plan before write"
-  // pattern operators rely on for setup scripts).
+  // Verify the subscript file exists in engine/, skipping for dry-run:
+  // preview is meant to show the mutation plan without requiring the
+  // subscript to already exist, matching the "plan before write" pattern
+  // setup scripts rely on.
   //
-  // Dry-run keeps the existence check advisory rather than fatal: the
-  // "wire first, create file after" workflow is a legitimate use of
-  // preview, but operators who run dry-run over a typo were surprised
-  // when the real command then refused with `Subscript file not
-  // found`. 2026-04-23 eval (Finding in eval 2): dry-run produced a
-  // plausible plan and the non-dry-run invocation then errored. The
-  // info line surfaces the mismatch in preview mode so the operator
-  // can act on the warning before re-running without --dry-run.
+  // The check stays advisory rather than fatal in dry-run because
+  // "wire first, create file after" is a legitimate use of preview — but a
+  // dry-run over a typo would otherwise produce a plausible plan and the
+  // real command then refuse with `Subscript file not found`. The info line
+  // surfaces the mismatch in preview mode.
   await ensureSubscriptSourceExists(projectRoot, subscriptDir, name, options.dryRun ?? false);
 
   if (options.dryRun) {
@@ -472,21 +462,8 @@ export function registerWire(
         '(default: first entry of furnace.json tokenHostDocuments, else browser/base/content/browser.xhtml)'
     )
     .action(
-      withErrorHandling(
-        async (
-          name: string,
-          options: {
-            init?: string;
-            destroy?: string;
-            dom?: string;
-            dryRun?: boolean;
-            after?: string;
-            subscriptDir?: string;
-            target?: string;
-          }
-        ) => {
-          await wireCommand(getProjectRoot(), name, pickDefined(options));
-        }
-      )
+      withErrorHandling(async (name: string, options: WireOptions) => {
+        await wireCommand(getProjectRoot(), name, pickDefined(options));
+      })
     );
 }

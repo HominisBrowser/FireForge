@@ -5,7 +5,6 @@ import { confirm } from '@clack/prompts';
 
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
-import { computeProjectedLintRegressions } from '../core/lint-projection.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import {
   buildModifiedFileAdditionsFromDiff,
@@ -13,6 +12,7 @@ import {
   detectNewFilesInDiff,
   lintPatchQueue,
 } from '../core/patch-lint.js';
+import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { getClaimedFiles } from '../core/patch-manifest.js';
 import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';

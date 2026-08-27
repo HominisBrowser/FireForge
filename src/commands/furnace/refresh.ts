@@ -11,12 +11,12 @@ import {
 } from '../../core/furnace-config.js';
 import { resolveFtlDir } from '../../core/furnace-constants.js';
 import { isComponentSourceFile } from '../../core/furnace-constants.js';
-import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
+import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
+import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import { type RefreshFileResult, refreshOverrideFile } from '../../core/furnace-refresh.js';
 import {
   createRollbackJournal,
   restoreRollbackJournal,
-  restoreRollbackJournalOrThrow,
   snapshotDir,
   snapshotFile,
 } from '../../core/furnace-rollback.js';
@@ -220,20 +220,15 @@ async function refreshSingleOverride(
 
         return fileResults;
       } catch (error: unknown) {
+        // A dry run wrote nothing, so there is no journal to restore — it
+        // rethrows without touching the lifecycle wrapper.
         if (!dryRun) {
-          // This body owns its rollback end to end, so tell the lifecycle
-          // wrapper not to restore the same journal again on the way out.
-          ctx.markRolledBack();
-          try {
-            await restoreRollbackJournalOrThrow(journal, `Failed to refresh override "${name}"`);
-          } catch (rollbackError) {
-            await recordFurnaceRollbackFailure(
-              projectRoot,
-              'refresh-rollback',
-              `override "${name}": ${toError(rollbackError).message}`
-            );
-            throw rollbackError;
-          }
+          return await completeJournalRollback(ctx, journal, error, {
+            projectRoot,
+            operation: 'refresh-rollback',
+            failureMessage: `Failed to refresh override "${name}"`,
+            subject: `override "${name}"`,
+          });
         }
         throw error;
       }
@@ -330,10 +325,7 @@ export async function furnaceRefreshCommand(
   // Verify engine exists — refresh reads engine files for three-way merge
   // and --reset-base reads engine HEAD. Without this check, the user gets
   // an obscure git error instead of a clear precondition message.
-  const paths = getProjectPaths(projectRoot);
-  if (!(await pathExists(paths.engine))) {
-    throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
-  }
+  await assertFurnaceEngineReady(projectRoot);
 
   const dryRun = options.dryRun ?? false;
 

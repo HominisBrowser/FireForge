@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { assertEngineExists } from '../core/engine-precondition.js';
 import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
 import { hasBuildArtifacts, hasRunnableBundle, run, runMachSmoke } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
@@ -98,9 +99,7 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
   const paths = getProjectPaths(projectRoot);
 
   // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
+  await assertEngineExists(paths.engine);
 
   const buildCheck = await hasBuildArtifacts(paths.engine);
   assertBuildArtifacts(paths.engine, buildCheck, {
@@ -110,16 +109,14 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
     requireExisting: true,
   });
 
-  // `hasBuildArtifacts` only checks for an `obj-*/dist/` directory; a
-  // build that configured but hasn't yet produced the launchable binary
-  // (common in a long real Firefox compile that the operator stopped
-  // and restarted) passes that check, and `mach run` then fails on the
-  // missing binary path. `hasRunnableBundle` narrows the probe to the
-  // actual executable so `fireforge run` refuses with a targeted
-  // message before handing control to mach. `fireforge watch` stays
-  // permissive and instead surfaces the same information as a banner
-  // suffix; watch is supposed to drive rebuilds of partially-built
-  // trees, so blocking there would defeat the feature.
+  // `hasBuildArtifacts` only checks for an `obj-*/dist/` directory; a build
+  // that configured but has not yet produced the launchable binary passes
+  // that check, and `mach run` then fails on the missing binary path.
+  // `hasRunnableBundle` narrows the probe to the actual executable so
+  // `fireforge run` refuses with a targeted message before handing control
+  // to mach. `fireforge watch` stays permissive and surfaces the same
+  // information as a banner suffix; watch exists to drive rebuilds of
+  // partially-built trees, so blocking there would defeat it.
   if (buildCheck.objDir) {
     const config = await loadConfig(projectRoot);
     const bundleCheck = await hasRunnableBundle(paths.engine, config.binaryName, buildCheck.objDir);
@@ -179,7 +176,7 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   // SIGTERM the whole mach → python → firefox tree. Running through anyway
   // would only kill the top-level wrapper and orphan Firefox content
   // processes, so reject the flag up front to match the documented contract
-  // in CHANGELOG.md / README.md.
+  // in the README.
   if (process.platform === 'win32') {
     throw new InvalidArgumentError(
       '--smoke-exit is POSIX-only; process-group semantics do not map cleanly onto Windows.',
@@ -238,14 +235,13 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     sink.write(`${line}\n`);
 
     // Count allowlist hits up-front, regardless of error-pattern match.
-    // Pre-0.16.0 the counter only incremented when the line ALSO matched
-    // an error pattern — so an allowlist regex that visibly matched
-    // `console.warn: RSLoader:` still reported 0 hits because
-    // `console.warn:` is not a smoke error class, confusing operators
-    // who were tuning their allowlist. We now surface two numbers: the
-    // total set of allowlisted lines (what the operator sees in the
-    // console) and the subset that were error-class (what the smoke
-    // exit contract cares about). The exit contract itself is unchanged.
+    // Incrementing only when the line ALSO matches an error pattern makes an
+    // allowlist regex that visibly matches `console.warn: RSLoader:` report 0
+    // hits, because `console.warn:` is not a smoke error class — confusing
+    // for operators tuning their allowlist. Two numbers are surfaced: the
+    // total set of allowlisted lines (what the operator sees in the console)
+    // and the subset that were error-class (what the smoke exit contract
+    // cares about). The exit contract itself is unchanged.
     const matchIndex = allowlist.length > 0 ? matchAllowlist(line, allowlist) : -1;
     const isAllowlisted = matchIndex !== -1;
     if (isAllowlisted) {
@@ -260,12 +256,12 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     findings.push({ stream, line });
   };
 
-  // A headed smoke window on a developer desktop absorbs live input:
-  // during the drill a human interacted with the window mid-run, the
-  // password-manager import scan probed an unreadable Chrome profile
-  // dir, and the resulting console errors failed the smoke run looking
-  // like a product regression. CI hosts (CI env var set) are assumed
-  // display-free/unattended, so the notice stays quiet there.
+  // A headed smoke window on a developer desktop absorbs live input: a human
+  // interacting with the window mid-run can trigger console errors — a
+  // password-manager import scan probing an unreadable profile dir, say —
+  // that fail the smoke run looking like a product regression. CI hosts (CI
+  // env var set) are assumed display-free and unattended, so the notice
+  // stays quiet there.
   if (!options.headless && !process.env['CI']) {
     warn(
       'Headed smoke window: keyboard/mouse input during the window will contaminate the ' +
@@ -381,12 +377,11 @@ function reportSmokeSummary(args: {
   info('');
   info(`Smoke run complete: ${seconds}s elapsed of ${windowSeconds}s window${suffix}`);
   info(`  Unallowed errors: ${String(args.findings.length)}`);
-  // The "suppressed errors" count is what the exit contract cares about —
-  // it is the subset of allowlisted hits that would otherwise have been
-  // tallied as findings. The "all allowlisted lines" count answers the
-  // operator's mental model ("my --console-allow pattern matched N
-  // console lines"), which pre-0.16.0 was missing and led to 0-hit
-  // reports on visibly matching regexes.
+  // The "suppressed errors" count is what the exit contract cares about — the
+  // subset of allowlisted hits that would otherwise have been tallied as
+  // findings. The "all allowlisted lines" count answers the operator's mental
+  // model ("my --console-allow pattern matched N console lines"), without
+  // which a visibly matching regex reports 0 hits.
   info(`  Allowlisted error hits (suppressed): ${String(args.allowlistedErrorHits)}`);
   info(`  Allowlisted lines total: ${String(args.allowlistedTotalHits)}`);
   info(`  Child exit code:  ${String(args.exitCode)}`);
@@ -456,13 +451,9 @@ export function registerRun(
     )
     .action(
       withErrorHandling(
-        async (options: {
-          smokeExit?: number;
-          consoleAllow?: string[];
-          consoleAllowFile?: string;
-          captureConsole?: string;
-          headless?: boolean;
-        }) => {
+        // `args` is the variadic positional, not a Commander flag, so it
+        // never appears in this object.
+        async (options: Omit<RunOptions, 'args'>) => {
           await runCommand(getProjectRoot(), pickDefined(options));
         }
       )

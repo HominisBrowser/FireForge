@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * `engine/mozconfig` is a mach CONFIGURE INPUT, so its MTIME — not its
- * content — is what `config.status` is compared against. These
- * tests run against a real filesystem on purpose: the property under test
- * ("an unchanged render does not touch the file") is invisible to a mocked
- * writer, which is exactly how the regression survived.
+ * content — is what `config.status` is compared against. These tests run
+ * against a real filesystem on purpose: the property under test ("an
+ * unchanged render does not touch the file") is invisible to a mocked
+ * writer.
  */
 import { stat, utimes } from 'node:fs/promises';
 import { join } from 'node:path';

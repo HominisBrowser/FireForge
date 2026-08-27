@@ -94,58 +94,31 @@ export interface DoctorCheckDefinition {
 }
 
 /**
- * Resolves a {@link DoctorCheck} to its effective severity, implementing the
- * field-precedence contract documented on the interface
- * (`src/types/commands/project.ts`):
- *
- *   1. `severity`, when present, is authoritative — regardless of `passed`.
- *   2. Without `severity`, `passed: false` is an error unless `warning: true`
- *      downgrades it to a warning.
- *
- * This is the single implementation on purpose. Before 0.41.0 there were two
- * and they disagreed on exactly one cell: `reportDoctorResults` consulted
- * `warning` only inside the `passed === true` branch, so the documented
- * downgrade produced an error and a non-zero doctor exit, while
- * `bootstrap.ts` — reading the same array one line earlier — classified it as
- * a warning. No in-tree producer emitted that combination (`failure()` always
- * sets `severity: 'error'`), so the contradiction was latent rather than
- * observable; the interface is exported, so the next hand-rolled check would
- * have hit it.
+ * Resolves a {@link DoctorCheck} to its effective severity. `severity` is the
+ * single source of truth; this exists so every consumer of a
+ * `DoctorCheck[]` reads it the same way.
  */
 export function resolveDoctorSeverity(check: DoctorCheck): 'ok' | 'warning' | 'error' {
-  if (check.severity !== undefined) {
-    return check.severity;
-  }
-  if (check.warning) {
-    return 'warning';
-  }
-  return check.passed ? 'ok' : 'error';
+  return check.severity;
 }
 
 /**
  * Builds a DoctorCheck object representing a successful "OK" check.
  */
-export function ok(name: string): DoctorCheck {
-  return { name, passed: true, severity: 'ok', message: 'OK' };
+export function ok(name: string, message = 'OK'): DoctorCheck {
+  return { name, severity: 'ok', message };
 }
 
 /**
  * Builds a DoctorCheck object representing a warning result.
  */
 export function warning(name: string, message: string, fix?: string): DoctorCheck {
-  return {
-    name,
-    passed: true,
-    severity: 'warning',
-    warning: true,
-    message,
-    ...(fix ? { fix } : {}),
-  };
+  return { name, severity: 'warning', message, ...(fix ? { fix } : {}) };
 }
 
 /**
  * Builds a DoctorCheck object representing a failure result.
  */
 export function failure(name: string, message: string, fix?: string): DoctorCheck {
-  return { name, passed: false, severity: 'error', message, ...(fix ? { fix } : {}) };
+  return { name, severity: 'error', message, ...(fix ? { fix } : {}) };
 }

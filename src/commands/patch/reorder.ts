@@ -344,14 +344,13 @@ async function commitReorderPlan(
 
       await renumberPatchesInManifest(patchesDir, currentRenameMap);
 
-      // Append the history record inside the lock so two concurrent
-      // reorders cannot interleave mutation and history writes, and so a
-      // crash between the rename and the history write cannot orphan a
-      // committed reorder with no audit trail. If the append itself
-      // fails (disk full, permissions), we warn but do not re-throw:
-      // the mutation has already succeeded and is not reversible, so
-      // surfacing the history failure as a command failure would
-      // mislead the caller.
+      // Append the history record inside the lock so two concurrent reorders
+      // cannot interleave mutation and history writes, and so a crash
+      // between the rename and the history write cannot orphan a committed
+      // reorder with no audit trail. An append failure (disk full,
+      // permissions) is warned but not re-thrown: the mutation has already
+      // succeeded and is not reversible, so surfacing it as a command
+      // failure would mislead.
       try {
         await appendHistory(patchesDir, buildHistoryEntry(currentRenameMap));
       } catch (historyError: unknown) {
@@ -466,7 +465,7 @@ export async function patchReorderCommand(
     outro('Dry run complete — no changes made');
     return;
   }
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Reorder cancelled');
     return;
   }
@@ -533,21 +532,8 @@ export function registerPatchReorder(parent: Command, context: CommandContext): 
       'Bypass the refusal when the projected order introduces a lint error'
     );
   addWaitLockOption(command).action(
-    withErrorHandling(
-      async (
-        name: string,
-        options: {
-          to?: number;
-          before?: string;
-          after?: string;
-          dryRun?: boolean;
-          yes?: boolean;
-          forceUnsafe?: boolean;
-          waitLock?: number | boolean;
-        }
-      ) => {
-        await patchReorderCommand(getProjectRoot(), name, pickDefined(options));
-      }
-    )
+    withErrorHandling(async (name: string, options: PatchReorderOptions) => {
+      await patchReorderCommand(getProjectRoot(), name, pickDefined(options));
+    })
   );
 }

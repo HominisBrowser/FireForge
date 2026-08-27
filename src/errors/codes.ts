@@ -50,6 +50,22 @@ export const ExitCode = {
    */
   SMOKE_LAUNCH_FAILURE: 13,
   /**
+   * A `fireforge test` run produced a harness result that cannot be trusted
+   * — `engine/` moved (or became unprobeable) while the tests ran. Distinct
+   * from BUILD_ERROR because the two are opposites: a 5 is a suite that
+   * FAILED, a 14 is a suite whose result was THROWN AWAY. A consumer should
+   * re-run a 14 (after settling the writers) and must not report it as red.
+   */
+  INCONCLUSIVE: 14,
+  /**
+   * A lock wait expired: the run never started, because another FireForge
+   * process held the lock for the whole budget. Distinct from GENERAL_ERROR
+   * because nothing about the request was wrong — a consumer should re-queue
+   * it, with a larger `--wait-lock` budget, rather than treat it as a
+   * failure of the work it asked for.
+   */
+  LOCK_TIMEOUT: 15,
+  /**
    * The user cancelled an interactive prompt. 130 = 128 + SIGINT, the
    * conventional "interrupted by the user" code — scripts and CI can tell
    * a deliberate cancellation apart from a real failure (GENERAL_ERROR).

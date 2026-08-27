@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Spawned-CLI pin for the report: a `re-export` in which every
- * selected patch is refused under `--refuse-foreign-drift` printed
- * "Re-export refused" at the consumer yet their gate observed exit 0.
- * Reproduction against the consumer's exact build identity
- * (0.41.0+gf15f35ffbb79.dirty) showed the CLI itself exits 1 in every
- * refusal variant (plain, --dry-run, --skip-lint); the observed 0 was the
- * shell PIPELINE's exit status (`… | tee` reports tee's 0 without
- * `pipefail`). This test pins the process-boundary contract the report
- * depends on — refusal text visible, exit code 1 from the fireforge
- * process — so a future regression cannot hide behind in-process
- * assertions.
+ * Spawned-CLI pin for the refusal exit code: a `re-export` in which every
+ * selected patch is refused under `--refuse-foreign-drift` must print
+ * "Re-export refused" AND exit 1, in every variant (plain, --dry-run,
+ * --skip-lint). A consumer gate observing exit 0 is reading the shell
+ * PIPELINE's status (`… | tee` reports tee's 0 without `pipefail`), so this
+ * pins the process-boundary contract that gate depends on rather than
+ * leaving it to in-process assertions.
  */
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';

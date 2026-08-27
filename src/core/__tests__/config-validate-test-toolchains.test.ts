@@ -2,10 +2,9 @@
 /**
  * Direct unit tests for the `test` and `externalToolchains` config blocks.
  *
- * This validator runs on EVERY config load and sat at 10.5% line / 4.5% branch
- * with no test file importing it at all — it was reached only transitively
- * through `validateConfig`, and no existing fixture supplied either block. It
- * is pure and does no I/O, so every rejection arm is cheap to pin.
+ * This validator runs on EVERY config load but is otherwise reached only
+ * transitively through `validateConfig`, with no fixture supplying either
+ * block. It is pure and does no I/O, so every rejection arm is cheap to pin.
  */
 import { describe, expect, it } from 'vitest';
 

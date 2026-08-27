@@ -2,16 +2,13 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { loadConfig } from '../../core/config.js';
 import { applyAllComponents } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
-import {
-  furnaceConfigExists,
-  getFurnacePaths,
-  loadFurnaceConfig,
-} from '../../core/furnace-config.js';
+import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
+import { assertFurnaceReady } from '../../core/furnace-precondition.js';
 import { countEntriesWithBlockingStepErrors } from '../../core/furnace-step-errors.js';
 import { containsMergeConflictMarkers } from '../../core/furnace-validate-structure.js';
 import {
@@ -84,19 +81,7 @@ export async function furnaceSyncCommand(
 ): Promise<void> {
   intro('Furnace Sync');
 
-  // Pre-flight checks
-  const paths = getProjectPaths(projectRoot);
-  if (!(await pathExists(paths.engine))) {
-    throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
-  }
-
-  if (!(await furnaceConfigExists(projectRoot))) {
-    throw new FurnaceError(
-      'No furnace.json found. Run "fireforge furnace create" or "fireforge furnace override" to get started.'
-    );
-  }
-
-  const config = await loadFurnaceConfig(projectRoot);
+  const { config } = await assertFurnaceReady(projectRoot);
   const forgeConfig = await loadConfig(projectRoot);
 
   const overrideCount = Object.keys(config.overrides).length;
@@ -129,11 +114,11 @@ export async function furnaceSyncCommand(
 
   // Phase 2.5: post-refresh gates. Refresh deliberately leaves conflict
   // markers in workspace files and does NOT bump baseVersion on conflict —
-  // so before this gate existed, sync would warn about conflicts and then
-  // copy the marker-laden files straight into the engine via Phase 3,
-  // producing a broken build from the one command whose whole purpose is a
-  // safe upgrade. Apply/deploy both enforce a drift gate; sync must not be
-  // the back door around it.
+  // so without this gate sync warns about conflicts and then copies the
+  // marker-laden files straight into the engine via Phase 3, producing a
+  // broken build from the one command whose whole purpose is a safe upgrade.
+  // Apply and deploy both enforce a drift gate; sync must not be the back
+  // door around it.
   if (!options.dryRun) {
     const refreshedConfig = await loadFurnaceConfig(projectRoot);
     const furnacePaths = getFurnacePaths(projectRoot);

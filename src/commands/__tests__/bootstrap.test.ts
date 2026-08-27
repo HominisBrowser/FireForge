@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
@@ -16,6 +18,12 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/git.js', () => ({
+  // Engine-precondition ladder (assertEngineGitReady). Stubbed to the
+  // healthy-engine answers so these suites test their own subject.
+  isGitRepository: vi.fn(() => Promise.resolve(true)),
+  getHead: vi.fn(() => Promise.resolve('0'.repeat(40))),
+  isMissingHeadError: vi.fn(() => false),
+
   ensureOriginRemote: vi.fn(() => Promise.resolve()),
 }));
 
@@ -27,14 +35,7 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  info: vi.fn(),
-  error: vi.fn(),
-  warn: vi.fn(),
-  success: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../bootstrap-checks.js', () => ({
   detectBootstrapIssues: vi.fn(() => []),
@@ -82,14 +83,8 @@ describe('bootstrapCommand', () => {
 
     vi.mocked(detectBootstrapIssues).mockReturnValue(['sdk-fetch-403', 'missing-origin-remote']);
     vi.mocked(runPostBootstrapChecks).mockResolvedValue([
-      {
-        name: 'macOS SDK download',
-        passed: true,
-        severity: 'warning',
-        warning: true,
-        message: 'safe to ignore',
-      },
-      { name: 'Git remote', passed: false, severity: 'error', message: 'missing origin' },
+      { name: 'macOS SDK download', severity: 'warning', message: 'safe to ignore' },
+      { name: 'Git remote', severity: 'error', message: 'missing origin' },
     ]);
 
     await expect(bootstrapCommand('/project')).resolves.toBe(ExitCode.SUCCESS);
@@ -106,13 +101,7 @@ describe('bootstrapCommand', () => {
 
     vi.mocked(detectBootstrapIssues).mockReturnValue(['sdk-fetch-403']);
     vi.mocked(runPostBootstrapChecks).mockResolvedValue([
-      {
-        name: 'macOS SDK download',
-        passed: true,
-        severity: 'warning',
-        warning: true,
-        message: 'safe to ignore',
-      },
+      { name: 'macOS SDK download', severity: 'warning', message: 'safe to ignore' },
     ]);
 
     await expect(bootstrapCommand('/project')).resolves.toBe(ExitCode.SUCCESS);
@@ -134,6 +123,11 @@ describe('bootstrapCommand', () => {
   });
 
   it('throws a plain BootstrapError when exit code is non-zero but output has no known patterns', async () => {
+    // Explicit: `mockReturnValue` from an earlier test survives
+    // `clearAllMocks` (only `resetAllMocks` clears implementations), and the
+    // failure-message builder now consults this scanner rather than keeping
+    // its own copy of the regexes.
+    vi.mocked(detectBootstrapIssues).mockReturnValue([]);
     vi.mocked(bootstrapWithOutput).mockResolvedValue({
       stdout: 'some random noise\n',
       stderr: 'unknown failure\n',

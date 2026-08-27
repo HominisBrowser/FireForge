@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, normalize } from 'node:path';
 import { text } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig, mutateConfig, writeConfig } from '../../core/config.js';
+import { stdioIsInteractive } from '../../core/destructive.js';
 import {
   createDefaultFurnaceConfig,
   furnaceConfigExists,
@@ -23,17 +24,15 @@ import { cancel, info, intro, isCancel, note, outro, success, warn } from '../..
 /**
  * File extensions that are definitely FTL resources (not locale
  * directories). A value ending in one of these is almost certainly the
- * result of the operator pointing at a single FTL file instead of the
- * locale directory that contains it.
+ * result of the operator pointing at a single FTL file instead of the locale
+ * directory that contains it.
  *
- * 2026-04-21 eval: `furnace init --ftl-base-path browser/forgefresh.ftl`
- * produced a misleading success path — the subsequent
- * `furnace create --localized` scaffolded an `.mjs` referencing
- * `insertFTLIfNeeded("<name>.ftl")` while furnace.json had no component
- * entry, leaving the scaffold orphaned. Switching to a locale directory
- * (`toolkit/locales/en-US/toolkit/global`) fixed the downstream path.
- * Rejecting file-shaped values up-front keeps the operator on the
- * correct path before any partial state is written.
+ * `furnace init --ftl-base-path browser/<name>.ftl` otherwise produces a
+ * misleading success path: the subsequent `furnace create --localized`
+ * scaffolds an `.mjs` referencing `insertFTLIfNeeded("<name>.ftl")` while
+ * furnace.json has no component entry, leaving the scaffold orphaned.
+ * Rejecting file-shaped values up-front keeps the operator on the correct
+ * path before any partial state is written.
  */
 const FTL_FILE_EXTENSIONS = new Set(['.ftl', '.properties', '.dtd']);
 
@@ -138,13 +137,13 @@ export async function furnaceInitCommand(
   const paths = getProjectPaths(projectRoot);
 
   // Seed the default furnace config with a tokenPrefix derived from
-  // fireforge.json's binaryName so `token coverage` sees real tokens on
-  // the very first run. The 2026-04-21 eval initialised Furnace, added
-  // tokens, ran coverage, and got `0 tokens / N unknown` — the prefix
-  // default was absent and the scan had nothing to key off. Loading
-  // fireforge.json here is best-effort: a project without one (e.g.
-  // mid-setup) falls through to the prefix-less default, and
-  // `token coverage` emits the existing "no tokenPrefix" warning.
+  // fireforge.json's binaryName so `token coverage` sees real tokens on the
+  // very first run — without the prefix default, a fresh init → token add →
+  // coverage sequence reports `0 tokens / N unknown` because the scan has
+  // nothing to key off. Loading fireforge.json here is best-effort: a
+  // project without one (mid-setup) falls through to the prefix-less
+  // default, and `token coverage` emits its existing "no tokenPrefix"
+  // warning.
   let derivedBinaryName: string | undefined;
   try {
     const fireForgeConfig = await loadConfig(projectRoot);
@@ -157,7 +156,7 @@ export async function furnaceInitCommand(
   const config: FurnaceConfig = createDefaultFurnaceConfig(
     derivedBinaryName ? { binaryName: derivedBinaryName } : {}
   );
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
   const engineForValidation = (await pathExists(paths.engine)) ? paths.engine : undefined;
 
   // Resolve componentPrefix
@@ -276,12 +275,11 @@ async function scaffoldTokensCss(projectRoot: string): Promise<{ tokensCssPath?:
   }
 
   // Registering the tokens file in `patchLint.rawColorAllowlist` is the
-  // complement to the scaffold itself: the file exists specifically to
-  // carry raw color literals, and without the allowlist entry the very
-  // first `fireforge lint` run against a post-`token add` workspace
-  // fails on raw-color-value issues for tokens the operator just
-  // created. The add is idempotent, so re-running `furnace init --force`
-  // does not duplicate the entry.
+  // complement to the scaffold itself: the file exists specifically to carry
+  // raw color literals, and without the allowlist entry the first
+  // `fireforge lint` after a `token add` fails on raw-color-value issues for
+  // tokens the operator just created. The add is idempotent, so re-running
+  // `furnace init --force` does not duplicate the entry.
   try {
     const existingAllowlist = forgeConfig.patchLint?.rawColorAllowlist ?? [];
     if (!existingAllowlist.includes(tokensCssPath)) {
@@ -299,18 +297,17 @@ async function scaffoldTokensCss(projectRoot: string): Promise<{ tokensCssPath?:
     );
   }
 
-  // 2026-04-26 eval Finding 2: register the tokens CSS in
-  // browser/themes/shared/jar.inc.mn so the file is owned end-to-end by
-  // tooling. Pre-fix, `furnace init` only scaffolded + allowlisted the
-  // file, so the very next `fireforge status` correctly flagged it as
-  // unmanaged + unregistered and `furnace deploy --dry-run` reported
-  // nothing to deploy — a documented init command turned a clean
-  // project into an unclean one. The CSS lives at the canonical
-  // `browser/themes/shared/<binaryName>-tokens.css` path that the
-  // shared-CSS rule already targets, so the tokens file gets the same
-  // `skin/classic/browser/<name>.css (../shared/<name>.css)` jar.inc.mn
-  // entry as any other shared CSS. Idempotent — running
-  // `furnace init --force` against a registered tree is a no-op.
+  // Register the tokens CSS in browser/themes/shared/jar.inc.mn so the file
+  // is owned end-to-end by tooling. Scaffolding and allowlisting it without
+  // registering leaves the very next `fireforge status` correctly flagging
+  // it as unmanaged + unregistered while `furnace deploy --dry-run` reports
+  // nothing to deploy — a documented init command turning a clean project
+  // unclean. The CSS lives at the canonical
+  // `browser/themes/shared/<binaryName>-tokens.css` path the shared-CSS rule
+  // already targets, so it gets the same
+  // `skin/classic/browser/<name>.css (../shared/<name>.css)` entry as any
+  // other shared CSS. Idempotent — `furnace init --force` against a
+  // registered tree is a no-op.
   try {
     const fileBase = `${forgeConfig.binaryName}-tokens.css`;
     const result = await registerSharedCSS(paths.engine, fileBase, undefined, false);

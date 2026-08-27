@@ -32,17 +32,16 @@ export function hasRawCssColors(content: string): boolean {
 /**
  * Strips JS single-line and multi-line comments from source code, replacing
  * comment bytes with spaces (newlines inside block comments are kept) so
- * both character offsets AND line numbers are preserved. String literals
- * are preserved intact.
+ * both character offsets AND line numbers are preserved. String literals are
+ * preserved intact.
  *
- * Uses acorn's tokenizer, which understands regex literals — the previous
- * pure-regex implementation did not model them, so two adjacent slashes
- * inside a regex (e.g. the tail of `/https?:\/\//`) were treated as a `//`
- * line comment and the rest of the line was blanked, corrupting whatever
- * lint pass consumed the stripped text. Firefox chrome sources contain
- * preprocessor directives (`#ifdef`) and other constructs acorn cannot
- * tokenize; those fall back to the legacy regex strip, which handles
- * strings but NOT regex literals (documented limitation of the fallback).
+ * Uses acorn's tokenizer, which understands regex literals — a pure-regex
+ * implementation does not model them, so two adjacent slashes inside a regex
+ * (the tail of `/https?:\/\//`) read as a `//` line comment and the rest of
+ * the line is blanked, corrupting whatever lint pass consumes the stripped
+ * text. Firefox chrome sources contain preprocessor directives (`#ifdef`)
+ * and other constructs acorn cannot tokenize; those fall back to the legacy
+ * regex strip, which handles strings but NOT regex literals.
  */
 export function stripJsComments(source: string): string {
   const comments: Array<{ start: number; end: number }> = [];

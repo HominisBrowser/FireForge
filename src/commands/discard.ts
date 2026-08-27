@@ -3,6 +3,7 @@ import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
+import { stdioIsInteractive } from '../core/destructive.js';
 import {
   applyDiscardBaseline,
   describeConflictWarning,
@@ -34,7 +35,7 @@ async function confirmDiscard(
   options: DiscardOptions
 ): Promise<boolean> {
   if (options.yes || options.dryRun) return true;
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
   if (!isInteractive) {
     throw new InvalidArgumentError(
       'Interactive confirmation not available. Use --yes flag to discard without confirmation.',
@@ -193,14 +194,12 @@ export async function discardCommand(
   );
 
   // Directory recursion fallback: when the explicit path does not match a
-  // single status entry but DOES correspond to one or more entries below
-  // it, treat the input as a directory and discard everything inside.
-  // 2026-04-25 eval Finding 20: `discard browser/components/storybook/
-  // stories/furnace --yes` failed with "no changes to discard" even
-  // though `status --unmanaged` listed 23 files under that directory —
-  // operators were forced to discard each file individually or fall
-  // back to non-FireForge cleanup commands. Match against the
-  // directory-with-trailing-slash form so a path like `foo/bar` doesn't
+  // single status entry but DOES correspond to one or more entries below it,
+  // treat the input as a directory and discard everything inside. Otherwise
+  // `discard <dir> --yes` fails with "no changes to discard" even though
+  // `status --unmanaged` lists files under that directory, forcing the
+  // operator to discard each file individually. Match against the
+  // directory-with-trailing-slash form so a path like `foo/bar` does not
   // accidentally match `foo/bar2/file`.
   if (!statusEntry) {
     // Normalize the operator's input once: `discard foo/` (or `foo//`) must

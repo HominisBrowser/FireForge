@@ -2,17 +2,15 @@
 /**
  * Dark-mode insertion helpers for the tokens CSS scaffold.
  *
- * The 2026-04-21 eval reproduced a bug where `fireforge token add
- * --mode override --dark-value ...` landed the dark declaration
- * AFTER the nested `:root { }` inside the
- * `@media (prefers-color-scheme: dark)` block had already closed,
- * producing a declaration outside any rule block. The helpers here
- * scan the comment-stripped source lines to find the *inner* `:root`
- * block's closing `}` and return a line index the caller can splice
- * into. When the inner `:root` is missing (a scaffold that drifted
- * from the default), the fallback helper returns the outer `@media`
- * block's close so the caller can materialise a fresh `:root` wrapper
- * rather than dropping the dark value.
+ * `fireforge token add --mode override --dark-value ...` must land the dark
+ * declaration INSIDE the nested `:root { }` of the
+ * `@media (prefers-color-scheme: dark)` block; landing after that block has
+ * closed produces a declaration outside any rule. The helpers here scan the
+ * comment-stripped source lines to find the *inner* `:root` block's closing
+ * `}` and return a line index the caller can splice into. When the inner
+ * `:root` is missing (a scaffold that drifted from the default), the
+ * fallback helper returns the outer `@media` block's close so the caller can
+ * materialise a fresh `:root` wrapper rather than dropping the dark value.
  */
 
 /**

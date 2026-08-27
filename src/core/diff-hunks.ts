@@ -46,12 +46,11 @@ export interface RenderedDiffLine {
 }
 
 /**
- * Maximum combined LCS table side-length before we bail out of the exact
- * O(m·n) diff and fall back to the simpler single-region coalesce. Chosen so
- * the worst-case Int32Array allocation stays under ~16 MB. Typical Firefox
- * widget files are a few hundred lines, so the fast path handles the
- * everyday case; the fallback exists purely to keep the command usable if
- * someone overrides a very large file.
+ * Maximum combined LCS table side-length before bailing out of the exact
+ * O(m·n) diff and falling back to the simpler single-region coalesce. Chosen
+ * so the worst-case Int32Array allocation stays under ~16 MB. Typical
+ * Firefox widget files are a few hundred lines, so the fast path handles the
+ * everyday case; the fallback keeps the command usable on a very large file.
  */
 const LCS_LINE_LIMIT = 2000;
 
@@ -281,12 +280,11 @@ function coalescedHunk(
   for (let k = firstDiff; k <= lastNewDiff; k++) {
     hunkLines.push({ marker: '+', content: expectDefined(newLines[k], () => `new line ${k}`) });
   }
-  // Trailing context comes from the common suffix, which lives at
-  // DIFFERENT indices on each side (lastOldDiff+1… vs lastNewDiff+1…).
-  // The previous mixed-coordinate loop (max() of both sides indexing
-  // newLines) emitted wrong context on asymmetric edits, and the trailing
-  // lines were excluded from the @@ header lengths entirely — so on
-  // >LCS_LINE_LIMIT files the rendered header disagreed with the body.
+  // Trailing context comes from the common suffix, which lives at DIFFERENT
+  // indices on each side (lastOldDiff+1… vs lastNewDiff+1…). Mixing the two
+  // coordinate spaces emits wrong context on asymmetric edits and drops the
+  // trailing lines from the @@ header lengths, so the rendered header
+  // disagrees with the body.
   for (let k = lastNewDiff + 1; k <= contextEndNew; k++) {
     hunkLines.push({ marker: ' ', content: expectDefined(newLines[k], () => `new line ${k}`) });
   }

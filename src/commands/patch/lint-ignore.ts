@@ -29,7 +29,11 @@ import type { CommandContext } from '../../types/cli.js';
 import type { PatchLintIgnoreOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
-import { stringListOption } from '../../utils/options.js';
+import {
+  addWaitLockOption,
+  resolveWaitLockSeconds,
+  stringListOption,
+} from '../../utils/options.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 type LintIgnoreMode = 'add' | 'remove' | 'clear';
@@ -37,9 +41,9 @@ type LintIgnoreMode = 'add' | 'remove' | 'clear';
 /**
  * Printed whenever `--add` lands a new check id. The waiver this command
  * writes turns per-patch lint green immediately, but consumer projects
- * commonly audit lintIgnore lists against a reviewed allow-map — the
- * discovery that the map also needs updating otherwise costs a full
- * downstream gate run.
+ * commonly audit lintIgnore lists against a reviewed allow-map — discovering
+ * that the map also needs updating otherwise costs a full downstream gate
+ * run.
  */
 const LINT_IGNORE_REVIEW_WARNING =
   "This lint waiver is subject to the project's patch-policy review process. " +
@@ -157,10 +161,9 @@ export async function patchLintIgnoreCommand(
 
   // Destructive-operation contract (docs/lifecycle-invariants.md): manifest
   // metadata mutations get summary + dry-run + confirmation/--yes + history
-  // uniformly. This command used to accept --yes without ever prompting, so
-  // the flag only appeared in the history record — and suppressing lint
-  // findings is precisely the mutation an operator should consciously
-  // approve.
+  // uniformly. Accepting --yes without ever prompting makes the flag appear
+  // only in the history record — and suppressing lint findings is precisely
+  // the mutation an operator should consciously approve.
   const currentList = target.lintIgnore ?? [];
   const projectedList = applyMode(currentList, mode, values) ?? [];
   const addsNewIds = mode === 'add' && projectedList.length > currentList.length;
@@ -179,20 +182,25 @@ export async function patchLintIgnoreCommand(
     outro('Dry run complete — no changes made');
     return;
   }
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Cancelled — no changes made');
     return;
   }
 
-  const result = await mutatePatchMetadata(paths.patches, target.filename, (existing) => {
-    const next = applyMode(existing.lintIgnore ?? [], mode, values);
-    // Either set the new list when non-empty or unset the field
-    // entirely. The mutation API splits these to keep the
-    // exactOptionalPropertyTypes contract clean — only set values land
-    // in the typed `Partial<PatchMetadata>`, and the unset list is
-    // applied via `delete` after spread.
-    return next !== undefined ? { set: { lintIgnore: next } } : { unset: ['lintIgnore'] };
-  });
+  const result = await mutatePatchMetadata(
+    paths.patches,
+    target.filename,
+    (existing) => {
+      const next = applyMode(existing.lintIgnore ?? [], mode, values);
+      // Either set the new list when non-empty or unset the field
+      // entirely. The mutation API splits these to keep the
+      // exactOptionalPropertyTypes contract clean — only set values land
+      // in the typed `Partial<PatchMetadata>`, and the unset list is
+      // applied via `delete` after spread.
+      return next !== undefined ? { set: { lintIgnore: next } } : { unset: ['lintIgnore'] };
+    },
+    { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch lint-ignore' }
+  );
 
   if (!result) {
     // Race: target vanished between the manifest read above and the
@@ -240,7 +248,7 @@ export async function patchLintIgnoreCommand(
  */
 export function registerPatchLintIgnore(parent: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  parent
+  const command = parent
     .command('lint-ignore <name>')
     .description(
       'Edit PatchMetadata.lintIgnore on a single patch (no .patch body rewrite). One mode per invocation.'
@@ -257,32 +265,34 @@ export function registerPatchLintIgnore(parent: Command, context: CommandContext
     )
     .option('--clear', 'Drop the lintIgnore field entirely')
     .option('--dry-run', 'Show what would change without writing')
-    .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
-    .action(
-      withErrorHandling(
-        async (
-          name: string,
-          options: {
-            add?: string[];
-            remove?: string[];
-            clear?: boolean;
-            dryRun?: boolean;
-            yes?: boolean;
-          }
-        ) => {
-          // Commander defaults `--add`/`--remove` to `[]` so they appear in
-          // the options object even when unused. Strip empty arrays so
-          // `pickDefined` sees them as absent — otherwise the mode-count
-          // mutex would treat zero-length arrays as a present mode.
-          const normalized: PatchLintIgnoreOptions = {};
-          if (options.add !== undefined && options.add.length > 0) normalized.add = options.add;
-          if (options.remove !== undefined && options.remove.length > 0)
-            normalized.remove = options.remove;
-          if (options.clear === true) normalized.clear = true;
-          if (options.dryRun === true) normalized.dryRun = true;
-          if (options.yes === true) normalized.yes = true;
-          await patchLintIgnoreCommand(getProjectRoot(), name, normalized);
+    .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (
+        name: string,
+        options: {
+          add?: string[];
+          remove?: string[];
+          clear?: boolean;
+          dryRun?: boolean;
+          yes?: boolean;
+          waitLock?: boolean | number;
         }
-      )
-    );
+      ) => {
+        // Commander defaults `--add`/`--remove` to `[]` so they appear in
+        // the options object even when unused. Strip empty arrays so
+        // `pickDefined` sees them as absent — otherwise the mode-count
+        // mutex would treat zero-length arrays as a present mode.
+        const normalized: PatchLintIgnoreOptions = {};
+        if (options.add !== undefined && options.add.length > 0) normalized.add = options.add;
+        if (options.remove !== undefined && options.remove.length > 0)
+          normalized.remove = options.remove;
+        if (options.clear === true) normalized.clear = true;
+        if (options.dryRun === true) normalized.dryRun = true;
+        if (options.yes === true) normalized.yes = true;
+        if (options.waitLock !== undefined) normalized.waitLock = options.waitLock;
+        await patchLintIgnoreCommand(getProjectRoot(), name, normalized);
+      }
+    )
+  );
 }

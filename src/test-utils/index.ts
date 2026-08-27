@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { GitStatusEntry } from '../core/git-base.js';
+import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import type { ProjectPaths } from '../types/config.js';
 
@@ -105,6 +106,37 @@ export async function writeSyntheticObjdir(
 export async function runGit(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', args, { cwd });
   return stdout;
+}
+
+/**
+ * Builds a `PatchMetadata` fixture.
+ *
+ * @param filename - Patch filename, e.g. `001-ui-toolbar.patch`
+ * @param overrides - Fields to override on the default metadata
+ * @returns A complete `PatchMetadata`
+ */
+export function makePatch(filename: string, overrides: Partial<PatchMetadata> = {}): PatchMetadata {
+  return {
+    filename,
+    order: Number.parseInt(filename.split('-')[0] ?? '0', 10) || 1,
+    category: 'infra',
+    name: 'p',
+    description: '',
+    createdAt: '2025-01-01T00:00:00.000Z',
+    sourceEsrVersion: '140.9.0esr',
+    filesAffected: [],
+    ...overrides,
+  };
+}
+
+/**
+ * Builds a `PatchesManifest` fixture around the supplied entries.
+ *
+ * @param patches - Patch metadata entries, in queue order
+ * @returns A version-1 manifest
+ */
+export function makeManifest(patches: PatchMetadata[] = []): PatchesManifest {
+  return { version: 1, patches };
 }
 
 /** Builds a synthetic ProjectPaths object rooted at the supplied directory. */

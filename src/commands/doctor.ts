@@ -24,13 +24,14 @@ import type { DoctorCheck, DoctorOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, success, warn } from '../utils/logger.js';
+import { addWaitLockOption, resolveWaitLockSeconds } from '../utils/options.js';
 import { findExecutable } from '../utils/process.js';
-import { POST_REBASE_AUDIT_CHECK } from './doctor/post-rebase-audit.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, resolveDoctorSeverity, warning } from './doctor-check-core.js';
 import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { ORPHANED_HARNESS_DOCTOR_CHECK } from './doctor-orphaned-harness.js';
+import { POST_REBASE_AUDIT_CHECK } from './doctor-post-rebase-audit.js';
 import { inspectEngineWorkingTree } from './doctor-working-tree.js';
 import { collectPatchQueueHealth } from './verify.js';
 
@@ -308,31 +309,21 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
     fix: 'Firefox source may be corrupted. Re-download with "fireforge download --force"',
   },
   {
-    // `fireforge watch` has an undeclared hard dependency on watchman —
-    // neither `bootstrap` nor `doctor` used to surface it, so operators
-    // got through setup → download → build → and only discovered the gap
-    // when they tried to start watch mode. A warning-severity doctor row
-    // is the right shape: most projects never run watch, so a missing
-    // watchman should not fail `doctor` outright, but the information
-    // needs to be visible ahead of time rather than at the watch-mode
-    // failure site.
+    // `fireforge watch` has an undeclared hard dependency on watchman, and
+    // without a doctor row operators only discover the gap when they try to
+    // start watch mode. Warning severity is the right shape: most projects
+    // never run watch, so a missing watchman should not fail `doctor`
+    // outright, but the information needs to be visible ahead of time.
     name: 'Watchman available',
     run: async () => {
       // Resolve the absolute path so the OK row names what doctor actually
-      // found. The 2026-04-25 eval flagged a confusing case where the
-      // operator's interactive shell returned no result for `which
-      // watchman` but doctor still printed "OK" — the cause was a
-      // PATH-export discrepancy between the shell and the spawned
-      // subprocess, and surfacing the resolved path makes the discrepancy
-      // visible without users having to re-run with a verbose flag.
+      // found. A PATH-export discrepancy between the operator's interactive
+      // shell and the spawned subprocess otherwise reads as doctor printing
+      // "OK" for a binary `which watchman` cannot find; surfacing the
+      // resolved path makes the discrepancy visible without a verbose flag.
       const path = await findExecutable('watchman');
       if (path) {
-        return {
-          name: 'Watchman available',
-          passed: true,
-          severity: 'ok',
-          message: `OK (${path})`,
-        };
+        return ok('Watchman available', `OK (${path})`);
       }
       return warning(
         'Watchman available',
@@ -346,12 +337,10 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
     name: 'Patches directory exists',
     run: async (ctx) => {
       const patchesExist = await pathExists(ctx.paths.patches);
-      return {
-        name: 'Patches directory exists',
-        passed: true,
-        severity: 'ok',
-        message: patchesExist ? 'OK' : 'No patches/ directory (optional)',
-      };
+      return ok(
+        'Patches directory exists',
+        patchesExist ? 'OK' : 'No patches/ directory (optional)'
+      );
     },
   },
   {
@@ -361,12 +350,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
         return [];
       }
       const patchCount = await countPatches(ctx.paths.patches);
-      return {
-        name: 'Patches found',
-        passed: true,
-        severity: 'ok',
-        message: `${patchCount} patch${patchCount === 1 ? '' : 'es'} found`,
-      };
+      return ok('Patches found', `${patchCount} patch${patchCount === 1 ? '' : 'es'} found`);
     },
   },
   {
@@ -406,26 +390,28 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
       try {
         const repaired = await rebuildPatchesManifest(
           ctx.paths.patches,
-          ctx.config.firefox.version
+          ctx.config.firefox.version,
+          {
+            waitLockSeconds: resolveWaitLockSeconds(ctx.options.waitLock),
+            command: 'doctor --repair-patches-manifest',
+          }
         );
-        // 2026-04-21 eval (Finding #17): the repair path silently
-        // overwrote useful human-written descriptions on recovered
-        // entries, leaving the queue less trustworthy as an audit
-        // trail. The rebuilder now returns the list of filenames
-        // whose metadata was entirely invented, and we name them
-        // explicitly here so the operator knows exactly which
-        // patches to review. Names that DID have a preserved entry
-        // (only `filesAffected` / ordering drifted) are not flagged.
+        // The repair path must not silently overwrite human-written
+        // descriptions on recovered entries, which leaves the queue less
+        // trustworthy as an audit trail. The rebuilder returns the list of
+        // filenames whose metadata was entirely invented, named explicitly
+        // here so the operator knows which patches to review. Entries that
+        // WERE preserved (only `filesAffected` / ordering drifted) are not
+        // flagged.
         if (repaired.recoveredFilenames.length > 0) {
           for (const filename of repaired.recoveredFilenames) {
-            // 2026-04-24 eval Finding 6: the repair path used to tell the
-            // operator to hand-edit patches.json, which contradicts the
-            // README + downstream docs that treat the manifest as
-            // FireForge-owned. Point at the existing `re-export` /
-            // `export` workflow instead so the fix stays inside the tool:
-            // re-exporting the same files with an explicit `--description`
-            // overwrites the recovered entry with operator-supplied
-            // metadata and supersedes the mtime-based createdAt stamp.
+            // Telling the operator to hand-edit patches.json contradicts the
+            // README and downstream docs, which treat the manifest as
+            // FireForge-owned. Point at the existing `re-export` / `export`
+            // workflow so the fix stays inside the tool: re-exporting the
+            // same files with an explicit `--description` overwrites the
+            // recovered entry with operator-supplied metadata and supersedes
+            // the mtime-based createdAt stamp.
             warn(
               `Recovered manifest entry for ${filename} with generic description and mtime-based createdAt. ` +
                 'Re-export the affected files with `fireforge re-export <filename> --description "<your description>"` ' +
@@ -597,7 +583,7 @@ export function registerDoctor(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const command = program
     .command('doctor')
     .description('Diagnose project issues')
     .option(
@@ -615,13 +601,13 @@ export function registerDoctor(
     .option(
       '--post-rebase-audit',
       'Check common registration surfaces after a Firefox source rebase'
-    )
-    .action(
-      withErrorHandling(async (options: DoctorOptions) => {
-        const result = await doctorCommand(getProjectRoot(), options);
-        if (result.exitCode !== 0) {
-          process.exitCode = result.exitCode;
-        }
-      })
     );
+  addWaitLockOption(command).action(
+    withErrorHandling(async (options: DoctorOptions) => {
+      const result = await doctorCommand(getProjectRoot(), options);
+      if (result.exitCode !== 0) {
+        process.exitCode = result.exitCode;
+      }
+    })
+  );
 }

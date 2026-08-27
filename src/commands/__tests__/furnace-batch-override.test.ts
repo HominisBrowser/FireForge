@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
@@ -26,6 +28,10 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   createDefaultFurnaceConfig: vi.fn(() => ({
     version: 1,
     componentPrefix: 'moz-',
@@ -59,7 +65,11 @@ vi.mock('../../core/furnace-scanner.js', () => ({
   scanWidgetsDirectory: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -97,15 +107,7 @@ vi.mock('../../utils/fs.js', () => ({
   writeJson: vi.fn(),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  note: vi.fn(),
-  cancel: vi.fn(),
-  isCancel: vi.fn(() => false),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('@clack/prompts', () => ({
   select: vi.fn(),
@@ -194,31 +196,26 @@ describe('furnace batch override', () => {
   });
 
   it('promotes stock components out of the stock bucket instead of rejecting', async () => {
-    // The pre-0.16.0 batch path rejected any name already present in the
-    // stock bucket, which forced operators to hand-edit furnace.json
-    // before overriding a stock-discovered widget. The new contract
-    // matches single-override: splice the name out of `stock` and let
-    // the mutation phase persist the promotion alongside the new
-    // override entries via `writeFurnaceConfig`. This test is the
-    // batch-flavoured counterpart to the single-override promotion test
-    // in `furnace-override.test.ts`.
+    // Rejecting any name already present in the stock bucket forces
+    // operators to hand-edit furnace.json before overriding a
+    // stock-discovered widget. The contract matches single-override:
+    // splice the name out of `stock` and let the mutation phase persist the
+    // promotion alongside the new override entries via
+    // `writeFurnaceConfig`.
     //
-    // Path-routing on pathExists: engine tree and source component
-    // directories are "present" (needed for the copy phase to proceed),
-    // but the override destination directories must be absent so the
-    // command doesn't refuse with "directory already exists". This
-    // mirrors the routed-pathExists scheme used in
-    // `furnace-override.test.ts` for the single-override happy paths.
+    // Path-routing on pathExists: the engine tree and source component
+    // directories are "present" so the copy phase proceeds, but the override
+    // destination directories must be absent so the command does not refuse
+    // with "directory already exists".
     vi.mocked(pathExists).mockImplementation((probedPath: string) => {
       if (probedPath.includes('components/overrides/')) return Promise.resolve(false);
       return Promise.resolve(true);
     });
-    // Post-0.17 `saveOverrideConfig` re-reads fresh furnace state
-    // inside the operation lock to survive concurrent-writer races
-    // (eval 2). The test therefore has to persist each write so the
-    // next re-read sees the prior write instead of resetting to the
-    // empty default. `sharedState` replays the mutations between
-    // loader calls in the same way the filesystem would.
+    // `saveOverrideConfig` re-reads fresh furnace state inside the
+    // operation lock to survive concurrent-writer races, so the test has to
+    // persist each write for the next re-read to see it instead of resetting
+    // to the empty default. `sharedState` replays the mutations between
+    // loader calls the way the filesystem would.
     const { createDefaultFurnaceConfig, furnaceConfigExists, loadFurnaceConfig } =
       await import('../../core/furnace-config.js');
     let sharedState = {

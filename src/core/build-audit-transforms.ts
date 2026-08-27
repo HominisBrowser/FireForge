@@ -2,31 +2,30 @@
 /*
  * Known source→packaging path transforms for the post-build dist-tree audit.
  *
- * Motivating case: a source at `engine/browser/base/content/foo.js` ships
- * under `chrome/browser/content/browser/foo.js`. If an unrelated patch
- * registers a different `foo.js` elsewhere in the tree (e.g. a pref file
- * under `browser/defaults/preferences/foo.js`), the basename walker
- * surfaces both candidates, `scoreCandidate` awards them an identical
- * trailing-overlap score (basename only; every intermediate segment is
- * in the generic list), and whichever the directory walk hits first wins.
- * The heuristic then declares the chosen candidate "not structurally
- * related" and reports the correctly-packaged chrome resource as missing.
+ * A source at `engine/browser/base/content/foo.js` ships under
+ * `chrome/browser/content/browser/foo.js`. If an unrelated patch registers a
+ * different `foo.js` elsewhere (say a pref file under
+ * `browser/defaults/preferences/`), the basename walker surfaces both, and
+ * `scoreCandidate` awards them an identical trailing-overlap score because
+ * every intermediate segment is in the generic list. The heuristic then
+ * declares the winner "not structurally related" and reports the
+ * correctly-packaged chrome resource as missing.
  *
- * The transforms below anchor resolution to the well-known subtree→chrome
- * conventions used by upstream mozilla-central jar.mn. When a source
- * matches one of these prefixes, a candidate whose absolute path ends
- * with the implied chrome suffix is treated as a confident match — the
- * scorer never runs and the structural-relation check is bypassed.
+ * The transforms below anchor resolution to the subtree→chrome conventions
+ * upstream mozilla-central jar.mn uses. A candidate whose path ends with the
+ * implied chrome suffix is a confident match: the scorer never runs and the
+ * structural-relation check is bypassed.
  *
- * Scope is intentionally narrow: only subtrees whose packaging target is
- * stable across every fork we know about. A fork that reroutes a known
- * subtree can still win by adding `(source)` annotations in its own
- * `jar.mn`, which `resolveArtifactByRegistration` consults first.
+ * Scope is intentionally narrow — only subtrees whose packaging target is
+ * stable across forks. A fork that reroutes a known subtree can still win by
+ * adding `(source)` annotations in its own `jar.mn`, which
+ * `resolveArtifactByRegistration` consults first.
  */
 
 import { basename, sep } from 'node:path';
 
 import { findAllByBasename } from './build-audit-resolve.js';
+import { WIDGETS_DIR } from './furnace-constants.js';
 
 /**
  * Table of `prefix → chrome-suffix` transforms. Each rule names an
@@ -44,7 +43,7 @@ const KNOWN_TRANSFORMS: ReadonlyArray<{
     build: (rest) => `chrome/browser/content/browser/${rest}`,
   },
   {
-    prefix: 'toolkit/content/widgets/',
+    prefix: `${WIDGETS_DIR}/`,
     build: (rest) => `chrome/toolkit/content/global/elements/${rest}`,
   },
   {

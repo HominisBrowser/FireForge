@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Pure-function tests for the re-export foreign-drift comparison
- *: offset shifts are not drift, new payload lines are, scan
- * adoptions are excluded, and binary sections compare by recorded hash.
+ * Pure-function tests for the re-export foreign-drift comparison: offset
+ * shifts are not drift, new payload lines are, scan adoptions are excluded,
+ * and binary sections compare by recorded hash.
  */
 import { describe, expect, it } from 'vitest';
 

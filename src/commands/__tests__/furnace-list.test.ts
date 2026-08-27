@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -28,12 +34,7 @@ vi.mock('../../core/furnace-config.js', () => ({
   ),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  intro: vi.fn(),
-  note: vi.fn(),
-  outro: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { info, intro, note, outro } from '../../utils/logger.js';

@@ -30,6 +30,10 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   getFurnacePaths: vi.fn(() => ({
     furnaceConfig: '/project/furnace.json',
     componentsDir: '/project/components',
@@ -69,7 +73,11 @@ vi.mock('../../core/furnace-refresh.js', () => ({
   refreshOverrideFile: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -102,6 +110,11 @@ vi.mock('../../core/furnace-rollback.js', () => ({
 }));
 
 vi.mock('../../core/git.js', () => ({
+  // Engine-precondition ladder (assertEngineGitReady). Stubbed to the
+  // healthy-engine answers so these suites test their own subject.
+  isGitRepository: vi.fn(() => Promise.resolve(true)),
+  isMissingHeadError: vi.fn(() => false),
+
   getHead: vi.fn(() => Promise.resolve('engine-head-sha999')),
 }));
 
@@ -110,6 +123,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -130,7 +149,11 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 import { loadState } from '../../core/config.js';
-import { loadFurnaceConfig, writeFurnaceConfig } from '../../core/furnace-config.js';
+import {
+  loadFurnaceConfig,
+  updateFurnaceState,
+  writeFurnaceConfig,
+} from '../../core/furnace-config.js';
 import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
 import { refreshOverrideFile } from '../../core/furnace-refresh.js';
 import { restoreRollbackJournalOrThrow } from '../../core/furnace-rollback.js';
@@ -544,10 +567,20 @@ describe('furnace refresh — rollback failure', () => {
       /could not restore moz-button\.mjs/
     );
 
-    expect(recordFurnaceRollbackFailure).toHaveBeenCalledWith(
-      '/project',
-      'refresh-rollback',
-      expect.stringContaining('override "moz-button": could not restore moz-button.mjs')
+    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
+    // state — rather than the internal call. The rollback sequence now lives
+    // in `completeJournalRollback`, whose call to the recorder is
+    // intra-module and so invisible to a module-level spy.
+    const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1] as
+      | ((state: Record<string, unknown>) => {
+          pendingRepair?: { operation: string; reason: string };
+        })
+      | undefined;
+    expect(updater).toBeTypeOf('function');
+    const pendingRepair = updater?.({}).pendingRepair;
+    expect(pendingRepair?.operation).toBe('refresh-rollback');
+    expect(pendingRepair?.reason).toContain(
+      'override "moz-button": could not restore moz-button.mjs'
     );
   });
 

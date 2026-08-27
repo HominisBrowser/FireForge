@@ -42,15 +42,15 @@ export function isPositiveInteger(value: unknown): value is number {
  * Parses a CLI flag value as a positive integer. Throws
  * {@link InvalidArgumentError} on NaN, non-integer, or non-positive input.
  *
- * Intended for use inside Commander `argParser` bodies where the raw
- * input arrives as a string. Without this wrapper the default pattern
- * (`parseInt(v, 10)`) silently hands NaN to downstream planners, which
- * then embed it into filenames / orders instead of failing fast.
+ * Intended for use inside Commander `argParser` bodies where the raw input
+ * arrives as a string. The default pattern (`parseInt(v, 10)`) silently
+ * hands NaN to downstream planners, which then embed it into filenames and
+ * orders instead of failing fast.
  *
  * Rejects leading-zero forms ("01"), decimals ("1.5"), whitespace, and
- * non-numeric garbage via a strict regex — we only accept the canonical
- * representation so there is no ambiguity between what the user typed
- * and what the value becomes on disk.
+ * non-numeric garbage via a strict regex — only the canonical
+ * representation is accepted, so there is no ambiguity between what the user
+ * typed and what the value becomes on disk.
  *
  * @param flagName - Flag name to include in the error (e.g. `--order`)
  * @param rawValue - Raw string value from Commander
@@ -124,19 +124,33 @@ export function isValidFirefoxCandidate(candidate: string): boolean {
 }
 
 /**
+ * Naming contract for this module's checks.
+ *
+ * `validate*` is easy to spread across incompatible return contracts — some
+ * throwing and returning void, some returning an issue list, some a parsed
+ * value, some a boolean, some an error MESSAGE — and a caller cannot tell
+ * which from the name. Passing a THROWING `validate*` to a clack `validate`
+ * callback, which expects a returned message, kills the prompt instead of
+ * re-prompting.
+ *
+ * The two dominant contracts keep the prefix:
+ *   - `validate*` — throws on failure, or returns an issue list.
+ *   - `is*` / `has*` — a type predicate or boolean.
+ * The message-returning minority is `describe*Problem`, which reads as what
+ * it is: a description of what is wrong, or `undefined`.
+ *
+ * `assert*` is uniform throughout: throw-or-continue.
+ */
+
+/**
  * Valid Firefox product identifiers.
  *
- * `satisfies readonly FirefoxProduct[]` links the runtime list to the union at
- * `types/config.ts:5` in ONE direction: it rejects an entry here that the union
- * does not declare. It cannot see a union member missing from this list —
- * widening a `readonly T[]` check never fails for being short. The reverse
- * direction is covered by the exhaustive switch in
- * `utils/__tests__/validation.test.ts`, which fails to compile when the union
- * grows.
- *
- * Two further copies of this list existed before 0.41.0 — an inline literal
- * inside the validator below and `SOURCE_PRODUCTS` in `commands/source.ts` —
- * neither linked to the union.
+ * `satisfies readonly FirefoxProduct[]` links the runtime list to the union
+ * in ONE direction: it rejects an entry here that the union does not
+ * declare. It cannot see a union member missing from this list — widening a
+ * `readonly T[]` check never fails for being short. The reverse direction is
+ * covered by the exhaustive switch in `utils/__tests__/validation.test.ts`,
+ * which fails to compile when the union grows.
  */
 export const FIREFOX_PRODUCTS = [
   'firefox',
@@ -149,12 +163,33 @@ export const FIREFOX_PRODUCTS = [
  * Validates a Firefox product string.
  *
  * A type predicate, matching its siblings {@link isValidPatchCategory} and
- * {@link isValidProjectLicense}. It returned plain `boolean` until 0.41.0,
- * which forced `as FirefoxProduct` casts at both call sites even though the
- * `.includes` check IS the runtime proof.
+ * {@link isValidProjectLicense}. Returning plain `boolean` would force
+ * `as FirefoxProduct` casts at the call sites even though the `.includes`
+ * check IS the runtime proof.
  */
-export function isValidFirefoxProduct(product: string): product is FirefoxProduct {
-  return (FIREFOX_PRODUCTS as readonly string[]).includes(product);
+export const isValidFirefoxProduct = makeEnumGuard(FIREFOX_PRODUCTS);
+
+/**
+ * Builds a type predicate from a `readonly` tuple of allowed values.
+ *
+ * Deriving the type from the list — rather than declaring a union and
+ * hand-maintaining a matching array — removes a whole class of drift: a
+ * union can otherwise accept a stale allowlist with no compile error, and a
+ * copy of the member list on the `fireforge.json` read path can silently
+ * reject a newly added value.
+ *
+ * Returning a predicate rather than a boolean is what removes the `as`
+ * casts: `.includes` IS the runtime proof, so the caller should not have to
+ * re-assert it. `ParsedRecord.stringEnum` (src/utils/parse.ts) consumes
+ * exactly this shape.
+ *
+ * @param values - The allowed values, as a `readonly` tuple
+ * @returns A type predicate narrowing a string to one of `values`
+ */
+export function makeEnumGuard<const T extends readonly string[]>(
+  values: T
+): (value: string) => value is T[number] {
+  return (value: string): value is T[number] => (values as readonly string[]).includes(value);
 }
 
 /**
@@ -165,11 +200,7 @@ export const PROJECT_LICENSES = ['EUPL-1.2', 'MPL-2.0', '0BSD', 'GPL-2.0-or-late
 /**
  * Validates a project license string.
  */
-export function isValidProjectLicense(
-  license: string
-): license is (typeof PROJECT_LICENSES)[number] {
-  return PROJECT_LICENSES.includes(license as (typeof PROJECT_LICENSES)[number]);
-}
+export const isValidProjectLicense = makeEnumGuard(PROJECT_LICENSES);
 
 /**
  * Valid patch categories.
@@ -179,11 +210,7 @@ export const PATCH_CATEGORIES = ['branding', 'ui', 'privacy', 'security', 'infra
 /**
  * Validates a patch category string.
  */
-export function isValidPatchCategory(
-  category: string
-): category is (typeof PATCH_CATEGORIES)[number] {
-  return PATCH_CATEGORIES.includes(category as (typeof PATCH_CATEGORIES)[number]);
-}
+export const isValidPatchCategory = makeEnumGuard(PATCH_CATEGORIES);
 
 /**
  * Checks whether a Firefox version string has an ESR suffix.
@@ -225,7 +252,7 @@ export function inferProductFromVersion(
  *
  * @returns An error message if incompatible, or undefined if valid.
  */
-export function validateFirefoxProductVersionCompatibility(
+export function describeProductVersionIncompatibility(
   version: string,
   product: string
 ): string | undefined {
@@ -294,7 +321,7 @@ export function isDefined<T>(value: T | undefined | null): value is T {
  *
  * @returns An error message if invalid, or undefined if valid.
  */
-export function validateTokenName(name: string): string | undefined {
+export function describeTokenNameProblem(name: string): string | undefined {
   // Strip leading -- for validation (callers may pass with or without)
   const ident = name.replace(/^--/, '');
 
@@ -336,7 +363,7 @@ export function validateTokenName(name: string): string | undefined {
  * @throws InvalidArgumentError if the resulting name is not a valid CSS custom property.
  */
 export function normalizeTokenName(name: string): string {
-  const error = validateTokenName(name);
+  const error = describeTokenNameProblem(name);
   if (error) {
     throw new InvalidArgumentError(error, 'tokenName');
   }
@@ -379,7 +406,7 @@ export function normalizePatchDisplayName(name: string, category: string): strin
  * @param name - The patch name to validate
  * @returns Error message if invalid, undefined if valid
  */
-export function validatePatchName(name: string): string | undefined {
+export function describePatchNameProblem(name: string): string | undefined {
   if (!name.trim()) return 'Name is required';
   if (name.length > 50) return 'Name must be 50 characters or less';
   if (!/^[a-zA-Z0-9\-_ ]+$/.test(name))

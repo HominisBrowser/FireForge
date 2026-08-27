@@ -102,8 +102,8 @@ describe('build-baseline', () => {
   });
 
   it('omits testPackagingCoverage from the marker when not provided', async () => {
-    // Legacy-shape preservation: callers that never pass a coverage claim
-    // must keep producing pre-0.37.0-shaped markers.
+    // Callers that never pass a coverage claim must keep producing markers
+    // without the field.
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
     await writeBuildBaseline(projectRoot, '/engine', 'mybrowser');
     const raw = await readFile(getBuildBaselinePath(projectRoot), 'utf8');
@@ -245,13 +245,12 @@ describe('build-baseline', () => {
   });
 
   it('records packageableFingerprints when the engine workdir has dirty packageable paths', async () => {
-    // Finding #18: without per-file fingerprints, a project with
-    // persistently-applied patches + furnace-applied components always
-    // shows those files as "changed since last build" on the stale
-    // check, even immediately after a successful build. `writeBuildBaseline`
-    // now captures a sha256 per dirty packageable path so the stale
-    // check can distinguish "same content as build time" from "edited
-    // since build".
+    // Without per-file fingerprints, a project with persistently-applied
+    // patches plus furnace-applied components always shows those files as
+    // "changed since last build" on the stale check, even immediately after
+    // a successful build. `writeBuildBaseline` captures a sha256 per dirty
+    // packageable path so the stale check can distinguish "same content as
+    // build time" from "edited since build".
     const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
     try {
       // Emulate a dirty-but-committed-against-HEAD packageable file by

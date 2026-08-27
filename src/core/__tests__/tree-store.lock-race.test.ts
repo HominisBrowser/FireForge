@@ -9,6 +9,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import { removeTree } from '../tree-store.js';
 
 const existsSyncMock = vi.hoisted(() => vi.fn());
@@ -31,10 +32,7 @@ vi.mock('../../utils/fs.js', async (importOriginal) => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 describe('removeTree lock-release race', () => {
   beforeEach(() => {

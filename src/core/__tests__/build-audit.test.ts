@@ -5,11 +5,9 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-  verbose: vi.fn(),
-}));
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { ensureDir, writeText } from '../../utils/fs.js';
 import { info, verbose, warn } from '../../utils/logger.js';
@@ -45,13 +43,10 @@ describe('isPackageablePath', () => {
     ['browser/moz.build', false],
     ['browser/app/Makefile.in', false],
     ['build/moz.configure', false],
-    // `.inc.xhtml` fragments are consumed via `#include` from a
-    // registered chrome document; they never ship as a standalone
-    // packaged artifact. 2026-04-21 eval (Finding #11): `wire --dom`
-    // generated a `.inc.xhtml`, the build audit then flagged it as
-    // "missing packaged artifact" on the next UI build. The carve-out
-    // keeps the two sibling checks (`register` + `build audit`)
-    // consistent about this file type.
+    // `.inc.xhtml` fragments are consumed via `#include` from a registered
+    // chrome document; they never ship as a standalone packaged artifact.
+    // The carve-out keeps the two sibling checks (`register` + `build
+    // audit`) consistent about this file type.
     ['browser/base/content/freshforge-sidebar.inc.xhtml', false],
   ])('returns false for non-packaged path %s', (path, expected) => {
     expect(isPackageablePath(path)).toBe(expected);
@@ -390,12 +385,12 @@ describe('auditBuildArtifacts', () => {
   });
 
   it('skips test sources when `_tests/all-tests.json` is not present', async () => {
-    // Plain `mach build` populates a partial `_tests/` subtree but does
-    // NOT run `mach package-tests`, so registered tests are absent even
-    // when moz.build entries are correct. Without the marker we would
-    // warn on every registered test every build — pure noise. The audit
-    // now defers to `fireforge test` / `mach package-tests` for the
-    // packaged-tests check and silently skips test-path sources.
+    // Plain `mach build` populates a partial `_tests/` subtree but does NOT
+    // run `mach package-tests`, so registered tests are absent even when
+    // moz.build entries are correct. Without the marker the audit warns on
+    // every registered test every build — pure noise. It defers to
+    // `fireforge test` / `mach package-tests` and silently skips test-path
+    // sources.
     const distRoot = join(engineDir, 'obj-debug', 'dist');
     const testsRoot = join(engineDir, 'obj-debug', '_tests');
     await ensureDir(distRoot);
@@ -419,12 +414,11 @@ describe('auditBuildArtifacts', () => {
   it('downgrades a stale-match to missing when the only same-basename candidate is in an unrelated subtree', async () => {
     // Source: `browser/modules/mybrowser/test/head.js`.
     // The correct `_tests/testing/mochitest/browser/…/mybrowser/test/head.js`
-    // does not exist (test packaging was scoped / skipped), but an unrelated
-    // upstream `_tests/xpcshell/dom/quota/test/xpcshell/common/head.js`
-    // remains in place from a prior run and trail-matches on the basename
-    // only. The old audit reported it as "stale against an unrelated file";
-    // the fix downgrades to `missing` with a warning that names the
-    // unrelated candidate so the operator is not misled.
+    // does not exist (test packaging was scoped or skipped), but an
+    // unrelated upstream `_tests/xpcshell/dom/quota/test/xpcshell/common/
+    // head.js` remains from a prior run and trail-matches on the basename
+    // only. Reporting that as "stale against an unrelated file" misleads;
+    // the audit downgrades to `missing` and names the unrelated candidate.
     const distRoot = join(engineDir, 'obj-debug', 'dist');
     const testsRoot = join(engineDir, 'obj-debug', '_tests');
     await ensureDir(distRoot);
@@ -492,12 +486,12 @@ describe('auditBuildArtifacts', () => {
   });
 
   it('keeps stale classification via the non-generic-segment bonus when trailing overlap is 1', async () => {
-    // Branding re-root case: `branding/<name>/content/aboutDialog.css`
-    // lands at `chrome/<area>/content/branding/aboutDialog.css`. Only the
-    // basename trail-matches (trailing=1), but `branding` is a meaningful,
-    // non-generic source segment that appears mid-candidate. The bonus
-    // path of `isConfidentMatch` accepts the pair so the audit surfaces
-    // a real staleness rather than reclassifying to missing.
+    // Branding re-root case: `branding/<name>/content/aboutDialog.css` lands
+    // at `chrome/<area>/content/branding/aboutDialog.css`. Only the basename
+    // trail-matches (trailing=1), but `branding` is a meaningful,
+    // non-generic source segment appearing mid-candidate. The bonus path of
+    // `isConfidentMatch` accepts the pair so the audit surfaces a real
+    // staleness rather than reclassifying to missing.
     const distRoot = join(engineDir, 'obj-debug', 'dist');
     await ensureDir(join(distRoot, 'bin/browser/chrome/browser/content/branding'));
     await ensureDir(join(engineDir, 'browser/branding/mybrowser/content'));
@@ -524,11 +518,12 @@ describe('auditBuildArtifacts', () => {
 
   it('skips files under path-convention installer-tree gates on non-matching hosts', async () => {
     // Windows stub-installer branding CSS lands through
-    // `browser/installer/windows/Makefile.in` FILES lists and `nsis/stub.nsh`,
-    // not through an `if CONFIG[…]:` block in any ancestor moz.build. Before
-    // this fix the audit warned on every touched stubinstaller CSS on every
-    // non-Windows build. The `/stubinstaller/` path fragment now counts as
-    // a Windows-only gate on convention alone.
+    // `browser/installer/windows/Makefile.in` FILES lists and
+    // `nsis/stub.nsh`, not through an `if CONFIG[…]:` block in any ancestor
+    // moz.build. Without a path-level gate the audit warns on every touched
+    // stubinstaller CSS on every non-Windows build, so the
+    // `/stubinstaller/` fragment counts as a Windows-only gate on
+    // convention alone.
     const dist = join(engineDir, 'obj-debug', 'dist');
     await ensureDir(dist);
     await ensureDir(join(engineDir, 'browser/branding/mybrowser/stubinstaller'));
@@ -558,16 +553,15 @@ describe('auditBuildArtifacts', () => {
   });
 
   it('uses jar.mn registration to pick the correct artifact across a basename collision', async () => {
-    // Motivating case: the fork adds `engine/browser/base/content/mybrowser.js`
-    // and registers it in `browser/base/jar.mn` as
+    // The fork adds `engine/browser/base/content/mybrowser.js` and registers
+    // it in `browser/base/jar.mn` as
     // `content/browser/mybrowser.js (content/mybrowser.js)`. A separate
     // patch puts an unrelated pref file of the same basename under
-    // `browser/defaults/preferences/`. Before this fix the basename-
-    // similarity heuristic could not distinguish them and "1 missing"
-    // fired against the correctly-packaged chrome resource. The
-    // registration-aware resolver probes the dist tree for files whose
-    // path ends with `/content/browser/mybrowser.js` and correctly
-    // selects the chrome artifact over the pref file.
+    // `browser/defaults/preferences/`. The basename-similarity heuristic
+    // cannot distinguish them, so "1 missing" fires against the
+    // correctly-packaged chrome resource. The registration-aware resolver
+    // probes the dist tree for files whose path ends with
+    // `/content/browser/mybrowser.js` and selects the chrome artifact.
     await ensureDir(join(engineDir, 'browser/base/content'));
     await writeText(
       join(engineDir, 'browser/base/jar.mn'),
@@ -684,17 +678,16 @@ describe('auditBuildArtifacts', () => {
   });
 
   it('resolves chrome-tree artifacts via known packaging transforms when jar.mn is bare', async () => {
-    // Motivating case from dogfooding: `engine/browser/base/content/mybrowser.js`
-    // is packaged to `chrome/browser/content/browser/mybrowser.js` under dist/,
-    // but an unrelated `browser/defaults/preferences/mybrowser.js` pref file
-    // from an earlier patch also lands under dist/. The source's jar.mn has
-    // no `(source)` annotation (a bare target line), so the
-    // registration-aware resolver cannot help. Before this fix the scorer
-    // tied both candidates at score=10, the structural-relation check
-    // rejected every candidate (all source segments are in the "generic"
-    // list), and the correctly-packaged chrome file was reported as missing.
+    // `engine/browser/base/content/mybrowser.js` is packaged to
+    // `chrome/browser/content/browser/mybrowser.js` under dist/, but an
+    // unrelated `browser/defaults/preferences/mybrowser.js` pref file from
+    // an earlier patch also lands under dist/. The source's jar.mn has no
+    // `(source)` annotation (a bare target line), so the
+    // registration-aware resolver cannot help: the scorer ties both
+    // candidates and the structural-relation check rejects every one,
+    // because all source segments are in the "generic" list.
     //
-    // The known-transform resolver now matches the expected
+    // The known-transform resolver matches the expected
     // `chrome/browser/content/browser/<basename>` suffix and returns the
     // chrome artifact before the scorer runs.
     await ensureDir(join(engineDir, 'browser/base/content'));

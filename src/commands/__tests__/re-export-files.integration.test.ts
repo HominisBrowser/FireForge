@@ -428,20 +428,19 @@ describe('re-export --files integration', () => {
   });
 
   it('--files --force DOES block when the shrink introduces a NEW cross-patch error', async () => {
-    // Fix 2 negative: the regression-only gate must still fire when the
-    // shrink itself introduces an error. Otherwise we'd have traded one
-    // class of miss for another.
+    // The regression-only gate must still fire when the shrink itself
+    // introduces an error, or one class of miss is traded for another.
     //
     // Construction:
     //   001 claims browser.js with an EMPTY body (baseline has no added
     //       lines → no forward-import from 001)
     //   002 creates foo/Helper.sys.mjs (order 2)
     // On disk: modify browser.js to add `import "./Helper.sys.mjs"`.
-    // Shrinking 001 --files [browser.js] regenerates 001's diff from
-    // the dirty engine state, so 001's new modifiedFileAdditions now
-    // contains the import. Projected check: 001 (order 1) imports a
-    // leaf owned by 002 (order 2) → new forward-import error that the
-    // baseline did not have → regression → must reject.
+    // Shrinking 001 --files [browser.js] regenerates 001's diff from the
+    // dirty engine state, so 001's new modifiedFileAdditions now contains
+    // the import. Projected check: 001 (order 1) imports a leaf owned by
+    // 002 (order 2) → a new forward-import error the baseline did not have
+    // → regression → must reject.
     const targetCreatorDiff = [
       'diff --git a/foo/Helper.sys.mjs b/foo/Helper.sys.mjs',
       'new file mode 100644',

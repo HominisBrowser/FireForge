@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { wireSubscript } from '../browser-wire.js';
-import { addDomFragmentTokenized, legacyAddDomFragment } from '../wire-dom-fragment.js';
+import { addDomFragmentTokenized } from '../wire-dom-fragment.js';
 import {
   addDestroyToBrowserInit,
   addDomFragment,
@@ -10,11 +11,7 @@ import {
   addSubscriptToBrowserMain,
 } from '../wire-targets.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -39,7 +36,7 @@ vi.mock('../config.js', () => ({
   ),
 }));
 
-vi.mock('../manifest-register.js', () => ({
+vi.mock('../moz-manifest-register.js', () => ({
   registerBrowserContent: vi.fn(() => ({
     manifest: 'browser/base/jar.mn',
     entry: '        content/browser/custom-widget.js    (content/custom-widget.js)',
@@ -71,10 +68,7 @@ vi.mock('../furnace-rollback.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
@@ -570,7 +564,7 @@ describe('addDestroyToBrowserInit', () => {
 // wireSubscript — subscriptDir support
 // ---------------------------------------------------------------------------
 
-import { registerBrowserContent } from '../manifest-register.js';
+import { registerBrowserContent } from '../moz-manifest-register.js';
 
 const mockRegisterBrowserContent = vi.mocked(registerBrowserContent);
 
@@ -781,28 +775,6 @@ describe('addDomFragmentTokenized (branch coverage)', () => {
     const content = `<?xml version="1.0"?>
 <div id="somethingElse"/>`;
     expect(() => addDomFragmentTokenized(content, '#include test.inc.xhtml')).toThrow(
-      /Could not find insertion point/
-    );
-  });
-});
-
-describe('legacyAddDomFragment (branch coverage)', () => {
-  it('falls back to <html:body> when browser-sets.inc is not found', () => {
-    const content = `<?xml version="1.0"?>
-<html:body>
-  <div/>
-</html:body>`;
-    const result = legacyAddDomFragment(content, '#include test.inc.xhtml');
-    expect(result).toContain('#include test.inc.xhtml');
-    const lines = result.split('\n');
-    const bodyIdx = lines.findIndex((l) => l.includes('<html:body>'));
-    const includeIdx = lines.findIndex((l) => l.includes('#include test.inc.xhtml'));
-    expect(includeIdx).toBe(bodyIdx + 1);
-  });
-
-  it('throws when neither browser-sets.inc nor <html:body> are found', () => {
-    const content = `<div id="other"/>`;
-    expect(() => legacyAddDomFragment(content, '#include test.inc.xhtml')).toThrow(
       /Could not find insertion point/
     );
   });

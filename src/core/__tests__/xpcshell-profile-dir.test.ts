@@ -3,9 +3,9 @@ import { rm, stat } from 'node:fs/promises';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { warn } from '../../utils/logger.js';
 import { withXpcshellProfileDir, XPCSHELL_PROFILE_ENV_VAR } from '../xpcshell-profile-dir.js';

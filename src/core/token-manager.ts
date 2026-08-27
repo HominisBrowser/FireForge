@@ -6,7 +6,7 @@ import { FurnaceError } from '../errors/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
-import { validateTokenName } from '../utils/validation.js';
+import { describeTokenNameProblem, makeEnumGuard } from '../utils/validation.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { loadFurnaceConfig } from './furnace-config.js';
 import {
@@ -27,9 +27,19 @@ import {
 } from './token-variant.js';
 
 /**
- * Dark mode behavior for a token.
+ * Dark mode behaviour for a token.
+ *
+ * Derived from {@link TOKEN_MODES} so the runtime allowlist and the type
+ * cannot drift: adding a member here without updating the list (or the
+ * reverse) is no longer possible, because there is only one list.
  */
-export type TokenMode = 'auto' | 'static' | 'override';
+export const TOKEN_MODES = ['auto', 'static', 'override'] as const;
+
+/** Dark mode behaviour for a token. */
+export type TokenMode = (typeof TOKEN_MODES)[number];
+
+/** Narrows an arbitrary string to a {@link TokenMode}. */
+export const isTokenMode = makeEnumGuard(TOKEN_MODES);
 
 /**
  * Options for adding a token.
@@ -140,7 +150,7 @@ async function validateTokenPrefix(root: string, options: AddTokenOptions): Prom
 }
 
 function validateTokenNameSyntax(tokenName: string): void {
-  const error = validateTokenName(tokenName);
+  const error = describeTokenNameProblem(tokenName);
   if (error) {
     throw new InvalidArgumentError(error, 'tokenName');
   }
@@ -220,11 +230,10 @@ async function addVariantTokenToCSS(
 }
 
 /**
- * Evaluates base-`:root` idempotency for one add: a token
- * already declared in the TARGET category skips; a token declared
- * anywhere else in the base block refuses loud — the pre-0.40.0
- * whole-file substring check silently skipped (and discarded
- * `--create-category`) in that case, exit 0.
+ * Evaluates base-`:root` idempotency for one add: a token already declared
+ * in the TARGET category skips; a token declared anywhere else in the base
+ * block refuses loud. A whole-file substring check instead skips silently —
+ * discarding `--create-category` — and exits 0.
  */
 function evaluateBaseTokenIdempotency(
   lines: string[],
@@ -387,7 +396,7 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
  * pair the media query with `:root[data-theme="dark"]` /
  * `:root[data-theme="light"]` blocks (viewer-toggle theming) require every
  * themed list to declare identical token sets, so an override add that only
- * wrote the media block was a guaranteed half-finished edit.
+ * wrote the media block would be a guaranteed half-finished edit.
  */
 const THEME_ATTRIBUTE_VARIANTS = [
   { variant: '[data-theme="dark"]', pick: 'dark' },

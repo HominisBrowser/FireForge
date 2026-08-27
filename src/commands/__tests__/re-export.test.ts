@@ -24,6 +24,11 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/git.js', () => ({
+  // Engine-precondition ladder (assertEngineGitReady). Stubbed to the
+  // healthy-engine answers so these suites test their own subject.
+  getHead: vi.fn(() => Promise.resolve('0'.repeat(40))),
+  isMissingHeadError: vi.fn(() => false),
+
   isGitRepository: vi.fn().mockResolvedValue(true),
 }));
 
@@ -81,7 +86,7 @@ vi.mock('../../core/patch-lint.js', () => ({
   countNonBinaryDiffLines: vi.fn().mockReturnValue({ total: 0, textLines: 0 }),
 }));
 
-vi.mock('../../core/lint-cache.js', () => ({
+vi.mock('../../core/patch-lint-cache.js', () => ({
   loadPerPatchLintCache: vi.fn(() => Promise.resolve({ schemaVersion: 3, entries: {} })),
   getPerPatchLintCacheHeadSha: vi.fn(() => Promise.resolve('headsha')),
   buildPerPatchLintCacheKey: vi.fn(() => Promise.resolve('cache-key')),
@@ -96,6 +101,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -120,6 +131,10 @@ vi.mock('@clack/prompts', () => ({
 // The adjacency advisory reads furnace-managed prefixes once per run;
 // mocked empty by default, with dedicated tests overriding it.
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set<string>())),
 }));
 
@@ -146,8 +161,8 @@ import {
   stampPatchVersions,
 } from '../../core/patch-manifest.js';
 import { GitError } from '../../errors/git.js';
-import { setInteractiveMode } from '../../test-utils/index.js';
-import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
+import { makeManifest, setInteractiveMode } from '../../test-utils/index.js';
+import type { PatchMetadata } from '../../types/commands/index.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { cancel, info, isCancel, outro, spinner, success, warn } from '../../utils/logger.js';
 import { reExportCommand } from '../re-export.js';
@@ -165,10 +180,6 @@ function makePatch(filename: string, filesAffected: string[]): PatchMetadata {
   };
 }
 
-function makeManifest(patches: PatchMetadata[]): PatchesManifest {
-  return { version: 1, patches };
-}
-
 describe('reExportCommand - --scan flag', () => {
   let restoreTTY: (() => void) | undefined;
 
@@ -182,7 +193,7 @@ describe('reExportCommand - --scan flag', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(readText).mockResolvedValue('{"assignments":[]}');
     vi.mocked(withFileLock).mockImplementation((_lockPath, operation) => operation());
-    vi.mocked(updatePatchAndMetadata).mockResolvedValue(undefined);
+    vi.mocked(updatePatchAndMetadata).mockResolvedValue(true);
     vi.mocked(lintExportedPatch).mockResolvedValue([]);
     vi.mocked(isCancel).mockReturnValue(false);
     vi.mocked(multiselect).mockResolvedValue([]);
@@ -259,7 +270,7 @@ describe('reExportCommand - --scan flag', () => {
     );
   });
 
-  // ── 0.37.0 item 4: stale-furnace gate wiring ──
+  // Stale-furnace gate wiring.
 
   it('runs the stale-furnace gate over the patch files before diffing', async () => {
     vi.mocked(loadPatchesManifest).mockResolvedValue(
@@ -1079,13 +1090,12 @@ describe('reExportCommand - --scan flag', () => {
     );
   });
 
-  it('warns when filesAffected names a path missing from disk without --scan (Finding #16)', async () => {
-    // Finding #16 guardrail: re-export without --scan preserves the
-    // manifest's filesAffected verbatim. If some of those paths are
-    // gone (deleted locally, moved by another branch), the refreshed
-    // patch body writes against a stale manifest and `verify` later
-    // fails on manifest-consistency with no obvious trigger. The
-    // warning alerts the operator before that happens.
+  it('warns when filesAffected names a path missing from disk without --scan', async () => {
+    // re-export without --scan preserves the manifest's filesAffected
+    // verbatim. When some of those paths are gone (deleted locally, moved
+    // by another branch), the refreshed patch body writes against a stale
+    // manifest and `verify` later fails on manifest-consistency with no
+    // obvious trigger. The warning alerts the operator first.
     const patch = makePatch('001-ui-test.patch', [
       'browser/modules/foo/a.js',
       'browser/modules/foo/missing.js',
@@ -1125,17 +1135,16 @@ describe('reExportCommand - --scan flag', () => {
   });
 
   it('refuses to broaden a patch with many scan-discovered files in non-interactive mode without --yes', async () => {
-    // Finding #13: pre-0.16.0 `--scan` silently pulled every sibling
-    // modified/untracked file into the patch, including unrelated
-    // features that merely shared a directory. The 0.16.0 gate refuses
-    // the broad expansion in non-interactive mode unless the operator
-    // passes --yes, so drift is visible before it lands in patches.json.
+    // Unguarded, `--scan` silently pulls every sibling modified/untracked
+    // file into the patch, including unrelated features that merely share a
+    // directory. The gate refuses the broad expansion in non-interactive
+    // mode unless the operator passes --yes, so drift is visible before it
+    // lands in patches.json.
     //
-    // The per-patch loop in `reExportCommand` catches the refusal, emits
-    // a warn, and rolls it into the "All selected patches failed" outer
-    // throw — asserting on the warn gives a stable signal regardless of
-    // whether the run contained a single patch (outer throw) or a mix
-    // (partial success).
+    // The per-patch loop in `reExportCommand` catches the refusal, emits a
+    // warn, and rolls it into the "All selected patches failed" outer throw
+    // — asserting on the warn gives a stable signal whether the run
+    // contained a single patch (outer throw) or a mix (partial success).
     restoreTTY = setInteractiveMode(false);
     const patch = makePatch('001-infra-startup-wiring.patch', ['browser/base/content/a.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
@@ -1589,13 +1598,13 @@ describe('reExportCommand - --scan flag', () => {
 
       expect(lintExportedPatch).toHaveBeenCalledTimes(1);
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
-      const ignore = call?.[5];
+      const ignore = call?.[4]?.ignoreChecks;
       expect(ignore).toBeInstanceOf(Set);
       expect(ignore?.has('large-patch-lines')).toBe(true);
       expect(ignore?.has('large-patch-files')).toBe(true);
     });
 
-    it('passes undefined when lintIgnore is absent on the patch', async () => {
+    it('omits ignoreChecks when lintIgnore is absent on the patch', async () => {
       const patch = makePatch('001-ui-test.patch', ['a.js']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
       vi.mocked(pathExists).mockResolvedValue(true);
@@ -1603,10 +1612,10 @@ describe('reExportCommand - --scan flag', () => {
       await reExportCommand('/fake/root', ['001'], {});
 
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
-      expect(call?.[5]).toBeUndefined();
+      expect(call?.[4]?.ignoreChecks).toBeUndefined();
     });
 
-    it('passes undefined when lintIgnore is an empty array (no intent to suppress)', async () => {
+    it('omits ignoreChecks when lintIgnore is an empty array (no intent to suppress)', async () => {
       const patch = makePatch('001-ui-test.patch', ['a.js']);
       patch.lintIgnore = [];
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
@@ -1615,20 +1624,18 @@ describe('reExportCommand - --scan flag', () => {
       await reExportCommand('/fake/root', ['001'], {});
 
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
-      expect(call?.[5]).toBeUndefined();
+      expect(call?.[4]?.ignoreChecks).toBeUndefined();
     });
   });
 
   describe('tier', () => {
     it('forwards patch.tier to lintExportedPatch as the 7th arg', async () => {
-      // 2026-04-21 eval: a branding patch that also touches a non-
-      // allowlisted sibling (e.g. a fork-specific theme override
-      // under browser/themes/<name>/) declares `tier: "branding"` in
-      // patches.json so lintPatchSize applies the branding thresholds
-      // on re-export. Without this forwarding, `re-export` would
-      // refresh the patch against the general thresholds and refire
-      // `large-patch-lines` at 3000 even when the operator had
-      // explicitly declared branding shape.
+      // A branding patch that also touches a non-allowlisted sibling (a
+      // fork-specific theme override under browser/themes/<name>/) declares
+      // `tier: "branding"` in patches.json so lintPatchSize applies the
+      // branding thresholds on re-export. Without the forwarding, re-export
+      // refreshes the patch against the general thresholds and refires
+      // `large-patch-lines` at 3000.
       const patch = makePatch('001-branding-full.patch', [
         'browser/branding/custom/logo.png',
         'browser/themes/custom-shared/tokens.css',
@@ -1641,10 +1648,10 @@ describe('reExportCommand - --scan flag', () => {
 
       expect(lintExportedPatch).toHaveBeenCalledTimes(1);
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
-      expect(call?.[6]).toBe('branding');
+      expect(call?.[4]).toEqual(expect.objectContaining({ patchTier: 'branding' }));
     });
 
-    it('passes undefined when tier is absent on the patch', async () => {
+    it('omits patchTier when tier is absent on the patch', async () => {
       const patch = makePatch('001-ui-test.patch', ['a.js']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
       vi.mocked(pathExists).mockResolvedValue(true);
@@ -1652,7 +1659,7 @@ describe('reExportCommand - --scan flag', () => {
       await reExportCommand('/fake/root', ['001'], {});
 
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
-      expect(call?.[6]).toBeUndefined();
+      expect(call?.[4]?.patchTier).toBeUndefined();
     });
   });
 
@@ -1670,12 +1677,11 @@ describe('reExportCommand - --scan flag', () => {
     });
 
     it('passes the new tier through to the lint pass on the same invocation', async () => {
-      // 2026-04-25 finding #2: setting --tier branding must take effect on
-      // the lint pass of the SAME re-export, not just the next one. Without
-      // this pre-emption, an operator running `re-export --tier branding`
-      // on a patch that crosses 15904 lines would still see a
-      // `large-patch-lines` error fire under the general thresholds before
-      // the new tier is even committed.
+      // Setting --tier branding must take effect on the lint pass of the
+      // SAME re-export, not just the next one. Without the pre-emption, an
+      // operator running `re-export --tier branding` on an oversized
+      // branding patch still sees a `large-patch-lines` error under the
+      // general thresholds before the new tier is committed.
       const patch = makePatch('001-branding-test.patch', ['a.js']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
       vi.mocked(pathExists).mockResolvedValue(true);
@@ -1684,7 +1690,7 @@ describe('reExportCommand - --scan flag', () => {
 
       expect(lintExportedPatch).toHaveBeenCalledTimes(1);
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
-      expect(call?.[6]).toBe('branding');
+      expect(call?.[4]).toEqual(expect.objectContaining({ patchTier: 'branding' }));
     });
 
     it('appends --lint-ignore values to the existing lintIgnore list (union)', async () => {
@@ -1729,7 +1735,7 @@ describe('reExportCommand - --scan flag', () => {
       });
 
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
-      const ignoreSet = call?.[5];
+      const ignoreSet = call?.[4]?.ignoreChecks;
       expect(ignoreSet).toBeInstanceOf(Set);
       expect(ignoreSet?.has('large-patch-lines')).toBe(true);
       expect(ignoreSet?.has('large-patch-files')).toBe(true);

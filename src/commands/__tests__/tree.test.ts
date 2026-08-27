@@ -7,6 +7,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/tree-cow.js', () => ({
   detectCowSupport: vi.fn(() => Promise.resolve('none')),
   cloneEntry: vi.fn(() => Promise.resolve()),
@@ -30,8 +32,8 @@ vi.mock('../../core/tree-store.js', () => ({
   getTreesDir: vi.fn(() => '/p/.fireforge/trees'),
   listTrees: vi.fn(() => Promise.resolve([])),
   getTreeMarkerPath: vi.fn((root: string) => `${root}/.fireforge/tree.json`),
-  readTreeMarker: vi.fn(() => Promise.resolve(undefined)),
-  readTreeMarkerState: vi.fn(() => Promise.resolve({ kind: 'absent' as const })),
+  tryReadTreeMarker: vi.fn(() => Promise.resolve(undefined)),
+  readTreeMarker: vi.fn(() => Promise.resolve({ kind: 'absent' as const })),
   removeTree: vi.fn(() => Promise.resolve()),
   withTreeLifecycleLock: vi.fn((_root: string, op: () => Promise<unknown>) => op()),
 }));
@@ -70,15 +72,7 @@ vi.mock('../../utils/fs.js', () => ({
 // the tests drive its exit/error paths.
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  success: vi.fn(),
-  setMachineOutputMode: vi.fn(),
-  setStdoutSealed: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -98,7 +92,7 @@ import {
   computePrimaryFingerprint,
   getTreesDir,
   listTrees,
-  readTreeMarkerState,
+  readTreeMarker,
   removeTree,
 } from '../../core/tree-store.js';
 import { info, setStdoutSealed, success, warn } from '../../utils/logger.js';
@@ -114,7 +108,7 @@ describe('tree create CoW gating', () => {
       join(primary, '.fireforge', 'trees')
     );
     // mockResolvedValue overrides outlive clearAllMocks — pin the defaults.
-    vi.mocked(readTreeMarkerState).mockResolvedValue({ kind: 'absent' });
+    vi.mocked(readTreeMarker).mockResolvedValue({ kind: 'absent' });
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-x86_64' });
     vi.mocked(cloneTree).mockResolvedValue({
       schemaVersion: 1,
@@ -164,7 +158,7 @@ describe('tree create CoW gating', () => {
     // An unparseable marker still means "something claims this is a tree";
     // reading it as absent would clone a snapshot into itself.
     vi.mocked(detectCowSupport).mockResolvedValue('clonefile');
-    vi.mocked(readTreeMarkerState).mockResolvedValue({
+    vi.mocked(readTreeMarker).mockResolvedValue({
       kind: 'corrupt',
       reason: 'the marker could not be read (Unexpected end of JSON input)',
     });
@@ -177,7 +171,7 @@ describe('tree create CoW gating', () => {
 
   it('refuses to nest under a valid marker', async () => {
     vi.mocked(detectCowSupport).mockResolvedValue('clonefile');
-    vi.mocked(readTreeMarkerState).mockResolvedValue({ kind: 'valid', marker: MARKER });
+    vi.mocked(readTreeMarker).mockResolvedValue({ kind: 'valid', marker: MARKER });
 
     await expect(treeCreateCommand(root, 'shard-a')).rejects.toThrow(/cannot be nested/);
     expect(cloneTree).not.toHaveBeenCalled();
@@ -325,8 +319,8 @@ describe('tree create CoW gating', () => {
   });
 
   it('a failed clone removes the partial tree and rethrows', async () => {
-    // Pre-0.41.0 a cloneTree failure leaked the partial tree, and the next
-    // create tripped the "already exists" refusal on debris.
+    // A cloneTree failure must not leak the partial tree, or the next create
+    // trips the "already exists" refusal on debris.
     vi.mocked(detectCowSupport).mockResolvedValue('clonefile');
     const treeRoot = join(root, '.fireforge', 'trees', 'shard-a');
     vi.mocked(cloneTree).mockImplementation(async () => {
@@ -385,7 +379,7 @@ describe('tree create --wait-lock', () => {
     vi.mocked(getTreesDir).mockImplementation((primary: string) =>
       join(primary, '.fireforge', 'trees')
     );
-    vi.mocked(readTreeMarkerState).mockResolvedValue({ kind: 'absent' });
+    vi.mocked(readTreeMarker).mockResolvedValue({ kind: 'absent' });
     vi.mocked(detectCowSupport).mockResolvedValue('clonefile');
     vi.mocked(cloneTree).mockResolvedValue(MARKER);
   });
@@ -399,8 +393,9 @@ describe('tree create --wait-lock', () => {
   }
 
   it('threads --wait-lock <seconds> into the engine session lock wait budget', async () => {
-    // Pre-0.41.0 the lock refusal recommended --wait-lock, but the flag was
-    // never registered on tree create: commander threw `unknown option`.
+    // The lock refusal recommends --wait-lock, so the flag must be
+    // registered on tree create — otherwise commander throws
+    // `unknown option`.
     await createTree('--wait-lock', '120');
 
     expect(withEngineSessionLock).toHaveBeenCalledWith(root, 'tree create', expect.any(Function), {
@@ -499,7 +494,7 @@ describe('tree remove --all', () => {
 describe('tree exec', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(readTreeMarkerState).mockResolvedValue({ kind: 'valid', marker: MARKER });
+    vi.mocked(readTreeMarker).mockResolvedValue({ kind: 'valid', marker: MARKER });
     vi.mocked(computePrimaryFingerprint).mockResolvedValue({
       engineHead: 'aaa',
       patchesFingerprint: 'bbb',
@@ -512,7 +507,7 @@ describe('tree exec', () => {
   }
 
   it('refuses an unknown tree name', async () => {
-    vi.mocked(readTreeMarkerState).mockResolvedValue({ kind: 'absent' });
+    vi.mocked(readTreeMarker).mockResolvedValue({ kind: 'absent' });
     await expect(exec('status')).rejects.toThrow(/No verification tree named "shard-a"/);
     expect(spawn).not.toHaveBeenCalled();
   });
@@ -520,7 +515,7 @@ describe('tree exec', () => {
   it('names the corruption for a tree whose marker cannot be read', async () => {
     // Collapsing corrupt into "no such tree" pointed the operator at the
     // wrong remediation: the directory IS there, claiming to be a tree.
-    vi.mocked(readTreeMarkerState).mockResolvedValue({
+    vi.mocked(readTreeMarker).mockResolvedValue({
       kind: 'corrupt',
       reason: 'its tree marker is not valid JSON',
     });
@@ -549,7 +544,7 @@ describe('tree exec', () => {
   });
 
   it('warns when uncommitted engine content changed without advancing HEAD', async () => {
-    vi.mocked(readTreeMarkerState).mockResolvedValue({
+    vi.mocked(readTreeMarker).mockResolvedValue({
       kind: 'valid',
       marker: { ...MARKER, engineFingerprint: 'engine-before' },
     });
@@ -612,7 +607,7 @@ describe('tree exec', () => {
   });
 
   it('does NOT seal stdout for pre-spawn refusals (no child ever wrote a verdict)', async () => {
-    vi.mocked(readTreeMarkerState).mockResolvedValue({ kind: 'absent' });
+    vi.mocked(readTreeMarker).mockResolvedValue({ kind: 'absent' });
     await expect(exec('status')).rejects.toThrow(/No verification tree/);
     expect(setStdoutSealed).not.toHaveBeenCalled();
   });

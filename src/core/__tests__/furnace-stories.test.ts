@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, readdir: vi.fn() };
 });
 
-vi.mock('../../utils/fs.js', () => ({
-  ensureDir: vi.fn(),
-  pathExists: vi.fn(),
-  removeDir: vi.fn(),
-  removeFile: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({ engine: '/project/engine' })),

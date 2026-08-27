@@ -11,6 +11,7 @@ import { error as logError } from '../../utils/logger.js';
 import {
   emitFailVerdict,
   emitHarnessVerdict,
+  emitKilledVerdict,
   emitPassVerdict,
   resetVerdictEmission,
   verdictEmitted,
@@ -162,5 +163,42 @@ describe('verdict rendering', () => {
       capture.restore();
     }
     expect(capture.writes).toEqual(['FIREFORGE-VERDICT: PASS checks=16 unexpected=0\n']);
+  });
+});
+
+describe('emitKilledVerdict', () => {
+  it('writes the terminal line for a run killed mid-flight', () => {
+    const stdout = captureStdout();
+    try {
+      expect(emitKilledVerdict('SIGTERM')).toBe(true);
+      expect(stdout.writes.join('')).toBe('FIREFORGE-VERDICT: FAIL reason=killed signal=SIGTERM\n');
+    } finally {
+      stdout.restore();
+    }
+  });
+
+  it('does not displace a verdict the run already reached', () => {
+    const stdout = captureStdout();
+    try {
+      emitFailVerdict('test-failures');
+      expect(emitKilledVerdict('SIGINT')).toBe(false);
+      expect(stdout.writes.join('')).toBe('FIREFORGE-VERDICT: FAIL reason=test-failures\n');
+    } finally {
+      stdout.restore();
+    }
+  });
+
+  it('stays silent when no test run was in flight', async () => {
+    // A Ctrl+C during `fireforge status` must not claim a test run happened.
+    // Reload the module so `armed` is false, as it is in a fresh process.
+    vi.resetModules();
+    const fresh = await import('../test-verdict.js');
+    const stdout = captureStdout();
+    try {
+      expect(fresh.emitKilledVerdict('SIGINT')).toBe(false);
+      expect(stdout.writes).toEqual([]);
+    } finally {
+      stdout.restore();
+    }
   });
 });

@@ -60,13 +60,13 @@ describe('resolveArtifactByKnownTransform', () => {
   });
 
   it('picks the expected chrome artifact even when an unrelated same-basename file exists', async () => {
-    // Simulates the MyBrowser regression: `engine/browser/base/content/mybrowser.js`
-    // packages at `chrome/browser/content/browser/mybrowser.js`, but an unrelated
-    // `browser/defaults/preferences/mybrowser.js` (a pref file shipped by a
-    // separate patch) sits at `bin/browser/defaults/preferences/mybrowser.js` in
-    // dist. The scorer tied both candidates at score=10 before this fix and
-    // the structural-relation check rejected both because every source segment
-    // is in the "generic" list.
+    // A source at `engine/browser/base/content/mybrowser.js` packages at
+    // `chrome/browser/content/browser/mybrowser.js`, but an unrelated
+    // `browser/defaults/preferences/mybrowser.js` (a pref file from a
+    // separate patch) sits at `bin/browser/defaults/preferences/mybrowser.js`
+    // in dist. Without the known-transform lookup the scorer ties both
+    // candidates and the structural-relation check rejects both, because
+    // every source segment is in the "generic" list.
     const correct = join(root, 'chrome/browser/content/browser/mybrowser.js');
     const wrong = join(root, 'bin/browser/defaults/preferences/mybrowser.js');
     await ensureDir(join(root, 'chrome/browser/content/browser'));

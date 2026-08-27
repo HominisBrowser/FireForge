@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
 import {
   validateAccessibility,
   validateCompatibility,
@@ -9,10 +10,7 @@ import {
   validateTokenLink,
 } from '../furnace-validate-checks.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -678,7 +676,7 @@ describe('validateCompatibility', () => {
     expect(issues.some((issue) => issue.check === 'not-moz-lit-element')).toBe(true);
   });
 
-  it('accepts a define-less library-kind component while keeping relative-import checks (0.37.0 item 6)', async () => {
+  it('accepts a define-less library-kind component while keeping relative-import checks', async () => {
     // A kind: "library" component is a base class + helpers with no element
     // of its own — requiring customElements.define() forced authors to ship
     // a deliberately inert element purely to satisfy the check.
@@ -780,13 +778,12 @@ describe('validateCompatibility', () => {
   });
 
   it('accepts customized built-in components that extend HTMLAnchorElement', async () => {
-    // Eval regression: `furnace override moz-support-link` wrote the
-    // upstream source verbatim (class MozSupportLink extends
-    // HTMLAnchorElement + customElements.define(..., { extends: "a" })),
-    // but `furnace validate` rejected it with `not-moz-lit-element`. The
-    // upstream pattern is a valid Firefox customized built-in — accept
-    // when both halves are present (class extends HTMLxxxElement AND the
-    // define call carries an `extends:` option).
+    // `furnace override moz-support-link` writes the upstream source
+    // verbatim (class MozSupportLink extends HTMLAnchorElement +
+    // customElements.define(..., { extends: "a" })). That is a valid
+    // Firefox customized built-in, so validate must accept it rather than
+    // rejecting with `not-moz-lit-element` — when both halves are present:
+    // class extends HTMLxxxElement AND the define call carries `extends:`.
     mockPathExists.mockImplementation((path: string) =>
       Promise.resolve(path.endsWith('.mjs') || path.endsWith('.css'))
     );
@@ -1082,9 +1079,9 @@ document.addEventListener("DOMContentLoaded", () => {});
   });
 
   it('reports a component with register=true that customElements.js never mentions', async () => {
-    // Before 0.41.0 validate emitted NO issue for this state, so
-    // `furnace validate --fix` — once scoped to the issue list — could no
-    // longer repair the one defect its registration block exists to repair.
+    // Emitting NO issue for this state means `furnace validate --fix` —
+    // scoped to the issue list — can no longer repair the one defect its
+    // registration block exists to repair.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`
 document.addEventListener("DOMContentLoaded", () => {

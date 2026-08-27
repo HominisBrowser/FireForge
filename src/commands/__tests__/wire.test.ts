@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeProjectPaths } from '../../test-utils/index.js';
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(),
@@ -14,6 +15,10 @@ vi.mock('../../core/browser-wire.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(),
   loadFurnaceConfig: vi.fn(),
 }));
@@ -22,19 +27,14 @@ vi.mock('../../core/parser-fallback.js', () => ({
   consumeParserFallbackEvents: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-// The dry-run/real-run parity probe added in 0.16.0 reads the chrome
-// document from disk and runs the same insertion-point scan the real
-// run uses. Every wire test in this file drives `pathExists` through a
-// generic mock that says "yes, everything exists", so the probe would
-// then try to read those files — we stub it out here to keep the focus
-// on the command-level behaviours these tests already cover. A
-// dedicated integration test pins the probe contract separately.
+// The dry-run/real-run parity probe reads the chrome document from disk and
+// runs the same insertion-point scan the real run uses. Every wire test in
+// this file drives `pathExists` through a generic mock that says "yes,
+// everything exists", so the probe would then try to read those files — it is
+// stubbed out here to keep the focus on the command-level behaviours these
+// tests cover. A dedicated integration test pins the probe contract.
 vi.mock('../../core/wire-dom-fragment.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../core/wire-dom-fragment.js')>();
   return {
@@ -43,14 +43,7 @@ vi.mock('../../core/wire-dom-fragment.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  success: vi.fn(),
-  info: vi.fn(),
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { wireSubscript } from '../../core/browser-wire.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
@@ -90,13 +83,11 @@ describe('wireCommand', () => {
     });
   });
 
-  it('warns in dry-run when the subscript file is absent (Eval 2)', async () => {
-    // The "wire first, create file after" workflow is legitimate so
-    // dry-run keeps the plan preview. But pre-fix, a missing subscript
-    // was invisible in the preview and the real run later refused
-    // with `Subscript file not found`. Surface the mismatch as a
-    // notice in the dry-run output so the operator sees it before
-    // re-running without --dry-run.
+  it('warns in dry-run when the subscript file is absent', async () => {
+    // The "wire first, create file after" workflow is legitimate, so dry-run
+    // keeps the plan preview. But a missing subscript that is invisible in
+    // the preview leaves the real run refusing with `Subscript file not
+    // found`, so the mismatch surfaces as a notice in the dry-run output.
     vi.mocked(pathExists).mockImplementation((path: string) => {
       if (path === '/project/engine/browser/components/custom/ghost.js') {
         return Promise.resolve(false);
@@ -168,10 +159,9 @@ describe('wireCommand', () => {
 
   it('probes engine-relative --dom paths inside the engine root', async () => {
     // Engine-relative input must be joined with paths.engine before the
-    // existence probe. Before the 0.16.0 fix, `pathExists` ran on the
-    // bare engine-relative path and resolved against CWD, so operators
-    // hit "DOM fragment file not found" for files that were correctly
-    // placed inside engine/.
+    // existence probe. Running `pathExists` on the bare engine-relative path
+    // resolves against CWD, so operators hit "DOM fragment file not found"
+    // for files correctly placed inside engine/.
     await expect(
       wireCommand('/project', 'panel', {
         dom: 'browser/base/content/fragments/panel.inc.xhtml',
@@ -454,11 +444,10 @@ describe('wireCommand', () => {
   });
 
   it('rejects invalid init expressions in --dry-run with the same error as the real run', async () => {
-    // Finding #7: pre-0.16.0 `wire --dry-run --init 'void 0'` previewed the
-    // expression successfully even though the real run rejected `void 0`
-    // (space characters fail the safe-interpolation regex). Validation now
-    // runs up-front in both paths, so the preview no longer silently
-    // promises a wiring the real command will refuse.
+    // `wire --dry-run --init 'void 0'` must not preview the expression
+    // successfully when the real run rejects `void 0` (space characters fail
+    // the safe-interpolation regex). Validation runs up-front in both paths
+    // so the preview never promises a wiring the real command refuses.
     await expect(
       wireCommand('/project', 'panel', { init: 'void 0', dryRun: true })
     ).rejects.toThrow(/Invalid init expression "void 0"/);
@@ -472,9 +461,9 @@ describe('wireCommand', () => {
   });
 
   it('coerces bare property chains to function calls in the dry-run preview', async () => {
-    // Finding #8: the preview must mirror what the real wire emits —
-    // `EvalStartup.init` is coerced to `EvalStartup.init()` in the
-    // generated block, so the preview reflects the same shape.
+    // The preview must mirror what the real wire emits — `X.init` is
+    // coerced to `X.init()` in the generated block, so the preview reflects
+    // the same shape.
     await expect(
       wireCommand('/project', 'panel', {
         init: 'EvalStartup.init',

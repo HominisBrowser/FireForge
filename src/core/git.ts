@@ -65,12 +65,10 @@ interface SourceScanSummary {
 }
 
 /**
- * Returns true when the error looks like a process killed by the spawn timeout
- * (SIGTERM → exit code 143) OR an AbortError raised by
- * `AbortSignal.timeout`. The AbortSignal path is the one observed during
- * the 2026-04-24 eval (Finding 10): Node's `child_process` layer
- * rejects with an AbortError when the signal fires, so the timeout
- * detection here needs to recognise that shape too.
+ * Returns true when the error looks like a process killed by the spawn
+ * timeout (SIGTERM → exit code 143) OR an AbortError raised by
+ * `AbortSignal.timeout` — Node's `child_process` layer rejects with an
+ * AbortError when the signal fires, so both shapes have to be recognised.
  */
 function isTimeoutError(error: unknown): boolean {
   // `exec` now rejects with a typed ExecTimeoutError when its `timeout`
@@ -96,23 +94,20 @@ async function cleanupIndexLock(dir: string): Promise<void> {
 }
 
 /**
- * Returns true when {@link relativePath} is ignored by `.gitignore` (or
- * any other exclusion mechanism git considers, e.g. `.git/info/exclude`,
- * core.excludesFile). Used by the chunked staging fallback to skip
- * entries that would otherwise fail `git add -- <path>` with the fatal
- * "The following paths are ignored by one of your .gitignore files"
- * error — a state the monolithic `git add -A` path silently handles.
+ * Returns true when {@link relativePath} is ignored by `.gitignore` (or any
+ * other exclusion mechanism git considers, e.g. `.git/info/exclude`,
+ * core.excludesFile). Used by the chunked staging fallback to skip entries
+ * that would otherwise fail `git add -- <path>` with the fatal "The
+ * following paths are ignored by one of your .gitignore files" error — a
+ * state the monolithic `git add -A` path silently handles. A Firefox
+ * checkout's top-level `.vscode/` is the common case: without this, the
+ * chunked invocation aborts the whole fallback and turns a recoverable
+ * monolithic timeout into a hard setup failure.
  *
- * Implementation: `git check-ignore -q -- <path>` exits 0 when the path
- * is ignored, 1 when it isn't, and >=128 on real failures. Treat
- * anything other than 0/1 as "unknown" and conservatively return false
- * so the chunk runs and any real underlying failure surfaces normally.
- *
- * 2026-04-26 eval Finding 4: a Firefox checkout's top-level `.vscode/`
- * is gitignored by the source tree's own `.gitignore`. Pre-fix, the
- * chunked `git add -- .vscode` invocation aborted the entire fallback
- * and turned a recoverable monolithic timeout into a hard setup
- * failure that required `fireforge download --force`.
+ * `git check-ignore -q -- <path>` exits 0 when the path is ignored, 1 when
+ * it is not, and >=128 on real failures. Anything other than 0/1 is treated
+ * as "unknown" and conservatively returns false, so the chunk runs and any
+ * real underlying failure surfaces normally.
  */
 async function isPathIgnored(dir: string, relativePath: string): Promise<boolean> {
   const result = await exec('git', ['check-ignore', '-q', '--', relativePath], { cwd: dir });
@@ -124,15 +119,14 @@ async function isPathIgnored(dir: string, relativePath: string): Promise<boolean
 }
 
 /**
- * Stages every file by walking top-level directories one at a time.
- * This avoids a single monolithic `git add -A` that may time out on
- * very large (~300 K file) trees like Firefox.
+ * Stages every file by walking top-level directories one at a time. This
+ * avoids a single monolithic `git add -A` that may time out on very large
+ * (~300 K file) trees like Firefox.
  *
- * 2026-04-24 eval Finding 10: a chunked pass that hits its own timeout
- * now raises a typed {@link GitIndexingTimeoutError} rather than the
- * opaque `AbortError: The operation was aborted` the caller otherwise
- * saw. The typed error carries the environment-variable override so the
- * operator can extend the budget and re-run.
+ * A chunked pass that hits its own timeout raises a typed
+ * {@link GitIndexingTimeoutError} rather than an opaque `AbortError: The
+ * operation was aborted`; the typed error carries the environment-variable
+ * override so the operator can extend the budget and re-run.
  */
 async function stageAllFilesChunked(
   dir: string,
@@ -197,10 +191,9 @@ async function stageAllFilesChunked(
 /**
  * Interval between heartbeat progress messages during the monolithic
  * `git add -A`. On a fresh ~600 MB Firefox tree the monolithic add runs
- * 60–120 seconds, during which git emits nothing to stdout/stderr. Without
- * a heartbeat the CLI spinner stays pinned on "Indexing Firefox source …"
- * for the full window, looks hung, and in the eval scenario operators
- * SIGINT'd mid-way assuming the process had stalled.
+ * 60–120 seconds, during which git emits nothing to stdout/stderr. Without a
+ * heartbeat the CLI spinner stays pinned on "Indexing Firefox source …" for
+ * the full window and looks hung, which invites a SIGINT mid-way.
  */
 const GIT_ADD_HEARTBEAT_MS = 15_000;
 const GIT_COMMIT_HEARTBEAT_MS = 15_000;
@@ -236,16 +229,12 @@ export async function stageAllFiles(
     `Source scan complete: ${scan.directories.length} top-level director${scan.directories.length === 1 ? 'y' : 'ies'}, ${scan.topLevelFiles.length} top-level file${scan.topLevelFiles.length === 1 ? '' : 's'}`
   );
 
-  // 2026-04-26 eval Finding 5: the pre-fix heartbeat used a single
-  // `heartbeatStartedAt` set at function entry and reported cumulative
-  // elapsed for the whole `stageAllFiles` invocation. After a
-  // monolithic timeout, the chunked-phase ticks therefore named
-  // numbers that already included the entire monolithic budget plus
-  // any host-sleep time, with no way for an operator watching the log
-  // to tell where the monolithic attempt ended and the chunked pass
-  // began. The heartbeat now tracks a per-phase start timestamp and
-  // labels each tick with the phase, so the chunked pass reports its
-  // own elapsed window and the monolithic→chunked handoff is visible.
+  // The heartbeat tracks a PER-PHASE start timestamp and labels each tick
+  // with the phase. A single start time set at function entry reports
+  // cumulative elapsed for the whole `stageAllFiles` invocation, so after a
+  // monolithic timeout the chunked-phase ticks name numbers that already
+  // include the entire monolithic budget, with no way to tell from the log
+  // where one attempt ended and the next began.
   let phase: 'monolithic' | 'chunked' = 'monolithic';
   let phaseStartedAt = Date.now();
 
@@ -271,13 +260,10 @@ export async function stageAllFiles(
       if (!isTimeoutError(error)) {
         throw await maybeWrapIndexLockError(dir, error);
       }
-      // 2026-04-24 eval Finding 10: the fallback transition used to be
-      // an implementation detail invisible to operators watching the
-      // spinner. Emit a loud, one-line banner so non-TTY log scrapers
-      // and TTY operators both see that the monolithic attempt lost and
-      // the chunked pass is starting. This was the missing signal in
-      // the eval log where the heartbeat went quiet for ~600s between
-      // the monolithic timeout and the chunked-pass failure.
+      // Emit a loud, one-line banner so non-TTY log scrapers and TTY
+      // operators both see that the monolithic attempt lost and the chunked
+      // pass is starting. Without it the fallback transition is invisible
+      // and the heartbeat simply goes quiet for minutes.
       options.onProgress?.(
         `Monolithic git add reached the ${Math.round(timeout / 1000)}s timeout; falling back to chunked staging. This pass may take several more minutes on a large tree.`
       );
@@ -514,20 +500,19 @@ export async function applyPatch(
 }
 
 /**
- * Applies a patch idempotently using reverse-forward pattern.
- * First tries to reverse the patch (in case it's already applied),
- * then applies it forward.
+ * Applies a patch idempotently using reverse-forward pattern. First tries to
+ * reverse the patch (in case it is already applied), then applies it forward.
  *
  * @param patchPath - Path to the patch file
  * @param repoDir - Repository directory
  * @param options.reject - Fall back to `git apply --reject`
- * @param options.protectedFiles - Files that must NOT be reset to HEAD by
- *   the recovery step. Callers applying a patch QUEUE pass the files
- *   already touched by previously applied patches in the same run: two
- *   overlapping patches (an `--allow-overlap` queue) share files, and the
- *   blanket `checkout HEAD` used to wipe the earlier patch's changes from
- *   the shared file before applying the later one — leaving the engine in
- *   a hybrid state the summary never described.
+ * @param options.protectedFiles - Files that must NOT be reset to HEAD by the
+ *   recovery step. Callers applying a patch QUEUE pass the files already
+ *   touched by previously applied patches in the same run: two overlapping
+ *   patches (an `--allow-overlap` queue) share files, and a blanket
+ *   `checkout HEAD` would wipe the earlier patch's changes from the shared
+ *   file before applying the later one, leaving the engine in a hybrid state
+ *   the summary never describes.
  */
 export async function applyPatchIdempotent(
   patchPath: string,
@@ -562,16 +547,15 @@ export async function applyPatchIdempotent(
 }
 
 /**
- * Restores `files` to their HEAD state, deleting files the patch would
- * CREATE (present on disk from a partial apply but absent in HEAD — for
- * those, `git checkout HEAD --` fails, and the historical code ignored
- * that failure entirely, leaving stray files that made the subsequent
- * forward apply die with "already exists" and no hint why).
+ * Restores `files` to their HEAD state, deleting files the patch would CREATE
+ * (present on disk from a partial apply but absent in HEAD — for those,
+ * `git checkout HEAD --` fails, and ignoring that failure leaves stray files
+ * that make the subsequent forward apply die with "already exists" and no
+ * hint why).
  *
- * Every git invocation is chunked via {@link chunkPathspecs} so a very
- * large patch cannot hit `E2BIG`, and every exit code is checked — a
- * silent failed restore is precisely the confusing state this recovery
- * step exists to prevent.
+ * Every git invocation is chunked via {@link chunkPathspecs} so a very large
+ * patch cannot hit `E2BIG`, and every exit code is checked — a silent failed
+ * restore is the confusing state this recovery step exists to prevent.
  */
 async function restoreFilesToHead(
   repoDir: string,

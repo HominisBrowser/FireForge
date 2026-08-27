@@ -128,16 +128,16 @@ async function diffOverride(
 }
 
 /**
- * Diffs a custom component's workspace files against the engine-deployed copy.
- * Shows what would change (or has changed) on the next `furnace apply`.
+ * Diffs a custom component's workspace files against the engine-deployed
+ * copy. Shows what would change (or has changed) on the next
+ * `furnace apply`.
  *
- * `.ftl` files deploy to `engine/<ftlDir>/<name>.ftl` via `applyCustomFtlFile`
- * — NOT to `customConfig.targetPath` — so the deployment-target lookup has
- * to branch on extension. Before this branch existed, a component's
- * localization file always reported "not yet deployed to engine (new
- * file)" after a successful apply/deploy because diff was looking for it
- * under the component's `targetPath` while apply had written it into the
- * locale tree.
+ * `.ftl` files deploy to `engine/<ftlDir>/<name>.ftl` via
+ * `applyCustomFtlFile` — NOT to `customConfig.targetPath` — so the
+ * deployment-target lookup has to branch on extension. Without the branch, a
+ * component's localization file always reports "not yet deployed to engine
+ * (new file)" after a successful apply, because diff looks for it under the
+ * component's `targetPath` while apply wrote it into the locale tree.
  */
 async function diffCustom(name: string, projectRoot: string, config: FurnaceConfig): Promise<void> {
   const customConfig = config.custom[name];

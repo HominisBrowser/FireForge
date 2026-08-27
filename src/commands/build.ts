@@ -6,6 +6,7 @@ import { auditBuildArtifacts } from '../core/build-audit.js';
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
 import { describeSignalShapedExit, prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { assertEngineExists } from '../core/engine-precondition.js';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import type { MachCommandResult, ProtectedMachBuildResult } from '../core/mach.js';
 import {
@@ -23,12 +24,12 @@ import {
   formatToolchainMismatchMessage,
   runToolchainPreflight,
 } from '../core/toolchain-preflight.js';
-import { GeneralError } from '../errors/base.js';
+import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { BuildOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { checkDiskSpace, pathExists } from '../utils/fs.js';
+import { checkDiskSpace } from '../utils/fs.js';
 import { error, info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../utils/options.js';
 import { isPositiveInteger } from '../utils/validation.js';
@@ -106,7 +107,7 @@ function resolveJobCount(
   }
 
   if (!isPositiveInteger(jobs)) {
-    throw new GeneralError('Build jobs must be a positive integer');
+    throw new InvalidArgumentError('Build jobs must be a positive integer', '--jobs');
   }
 
   return jobs;
@@ -228,17 +229,14 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   await checkDiskSpace(projectRoot, 20 * 1024 * 1024 * 1024, warn);
 
   // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
+  await assertEngineExists(paths.engine);
 
   // Toolchain preflight: compare the minimums the tree itself declares
-  // (cbindgen / rust) against the host binaries mach configure will
-  // resolve, and fail fast naming `fireforge bootstrap` instead of dying
-  // ~8s into configure with mach's "./mach bootstrap" remediation text
-  // (152.0b7 → 153.0b8 source-refresh drill). Fail-soft by design: only
-  // a definitively parsed minimum vs a definitively probed host version
-  // can fail here; anything uncertain proceeds to mach, where the
+  // (cbindgen / rust) against the host binaries mach configure will resolve,
+  // and fail fast naming `fireforge bootstrap` instead of dying ~8s into
+  // configure with mach's "./mach bootstrap" remediation text. Fail-soft by
+  // design: only a definitively parsed minimum vs a definitively probed host
+  // version can fail here; anything uncertain proceeds to mach, where the
   // mach-error-hints translator still names the right remedy.
   const toolchainMismatches = await runToolchainPreflight(paths.engine);
   if (toolchainMismatches.length > 0) {
@@ -324,13 +322,12 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   try {
     // Hold the per-project build lock across the mach invocation so two
     // overlapping `fireforge build` / `fireforge build --ui` commands
-    // against the same engine tree serialise instead of racing through
-    // the same obj-*. 2026-04-21 eval: a `build --ui` launched during
-    // an in-progress full build hit `No rule to make target 'XUL'` in
-    // mach, which is the downstream consequence of an incomplete
-    // backend — not a clue that a concurrent build was the cause. The
-    // lock turns the second invocation's failure into an explicit
-    // refusal naming the holder PID.
+    // against the same engine tree serialise instead of racing through the
+    // same obj-*. A `build --ui` launched during an in-progress full build
+    // otherwise hits `No rule to make target 'XUL'` in mach — the
+    // downstream consequence of an incomplete backend, with no clue that a
+    // concurrent build caused it. The lock turns the second invocation's
+    // failure into an explicit refusal naming the holder PID.
     result = await withBuildLock(projectRoot, async () => {
       if (options.ui) {
         return buildUI(paths.engine);
@@ -366,24 +363,20 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
     );
   }
 
-  // Tool-managed branding edits that land on `browser/moz.configure`
-  // before the build cause mach's post-build guard to print one of two
-  // banners that read like build failures even though the build
-  // completed cleanly:
+  // Tool-managed branding edits that land on `browser/moz.configure` before
+  // the build cause mach's post-build guard to print one of two banners that
+  // read like build failures even though the build completed cleanly:
   //
   //   1) "config.status is out of date with respect to ..."
   //   2) "Config object not found by mach. / Configure complete! /
   //      Be sure to run |mach build| to pick up any changes."
   //
-  // 2026-04-21 eval covered (1); 2026-04-26 eval Finding 8 reproduced
-  // (2) on a successful build. The pre-fix pattern only matched (1),
-  // so operators on the (2) path saw mach's own "Configure complete!"
-  // and "run |mach build|" lines unexplained between mach's
-  // "Your build was successful!" and FireForge's own "Build completed
-  // in Xm Ys" outro — a contradictory tail. Both shapes now route
-  // through the same annotation, emitted BEFORE FireForge's outro so
-  // the operator's last terminal line is the explanation, not the
-  // confusing mach guard text.
+  // Matching only (1) leaves operators on the (2) path seeing mach's own
+  // "Configure complete!" and "run |mach build|" lines unexplained between
+  // mach's "Your build was successful!" and FireForge's "Build completed in
+  // Xm Ys" outro — a contradictory tail. Both shapes route through the same
+  // annotation, emitted BEFORE FireForge's outro so the operator's last
+  // terminal line is the explanation, not the confusing mach guard text.
   const staleConfigurePatterns: RegExp[] = [
     /config\.status is out of date/i,
     /Config object not found by mach\.[\s\S]*Configure complete!/i,
@@ -478,23 +471,14 @@ export function registerBuild(
       ].join('\n')
     );
   addWaitLockOption(build).action(
-    withErrorHandling(
-      async (options: {
-        ui?: boolean;
-        jobs?: number;
-        brand?: string;
-        rewriteMozinfo?: boolean;
-        refuseUnexportedDrift?: boolean;
-        waitLock?: number | boolean;
-      }) => {
-        const projectRoot = getProjectRoot();
-        await withEngineSessionLock(
-          projectRoot,
-          'build',
-          () => buildCommand(projectRoot, pickDefined(options)),
-          { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
-        );
-      }
-    )
+    withErrorHandling(async (options: BuildOptions) => {
+      const projectRoot = getProjectRoot();
+      await withEngineSessionLock(
+        projectRoot,
+        'build',
+        () => buildCommand(projectRoot, pickDefined(options)),
+        { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
+      );
+    })
   );
 }

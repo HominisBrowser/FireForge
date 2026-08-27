@@ -2,6 +2,8 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   configExists: vi.fn(() => Promise.resolve(true)),
   loadConfig: vi.fn(() =>
@@ -135,7 +137,11 @@ vi.mock('../../core/file-lock.js', async (importOriginal) => ({
   withFileLock: vi.fn(async (_path: string, body: () => Promise<unknown>) => body()),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (_root: string, _kind: string, body: (ctx: unknown) => Promise<unknown>) =>
       body({
@@ -179,27 +185,20 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/process.js', () => ({
-  // Default to "watchman is installed" so the new check shows ok for the
-  // broad swath of existing tests that don't care about watch mode. The
-  // specific regression test for the missing-watchman branch overrides
-  // this with mockResolvedValueOnce(undefined).
-  // Doctor switched from `executableExists` (boolean) to `findExecutable`
-  // (returns the resolved path or undefined) so the OK row can name the
-  // path it actually found — see the 2026-04-25 eval finding where the
-  // operator's interactive shell saw no watchman but doctor reported OK.
+  // Default to "watchman is installed" so the check shows ok for the broad
+  // swath of tests that do not care about watch mode. The regression test
+  // for the missing-watchman branch overrides this with
+  // mockResolvedValueOnce(undefined).
+  //
+  // Doctor uses `findExecutable` (returns the resolved path or undefined)
+  // rather than `executableExists` (boolean) so the OK row can name the
+  // path it actually found.
   findExecutable: vi.fn(() => Promise.resolve('/usr/local/bin/watchman')),
   executableExists: vi.fn(() => Promise.resolve(true)),
   exec: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' })),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  info: vi.fn(),
-  success: vi.fn(),
-  error: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../verify.js', () => ({
   collectPatchQueueHealth: vi.fn(() =>
@@ -443,10 +442,9 @@ describe('doctorCommand', () => {
   });
 
   it('reports a patch-backed imported queue as passing with an ownership summary', async () => {
-    // Motivating case (eval 2): `fireforge import` on mybrowser applied 126
-    // patches. Every dirty row was patch-backed. The old check still
-    // warned "126 local changes" and told the operator to export/discard
-    // /reset — advice that would have dropped the entire import.
+    // `fireforge import` can apply a large patch queue where every dirty
+    // row is patch-backed. A check that warns "N local changes" and tells
+    // the operator to export/discard/reset would drop the entire import.
     const patchBackedEntries = Array.from({ length: 126 }).map((_, i) => ({
       status: ' M',
       indexStatus: ' ' as const,
@@ -608,19 +606,17 @@ describe('doctorCommand', () => {
   });
 
   it('warns (does not fail) when watchman is absent from PATH', async () => {
-    // Eval regression: `fireforge watch` depends on watchman, but prior
-    // to this check operators completed setup → download → build without
-    // ever seeing that requirement. Now doctor surfaces a warning row so
-    // the dependency gap is visible during the normal onboarding sweep.
-    // Warning-severity (not failure) because most projects don't run
-    // watch and we don't want to fail `doctor` outright for a
-    // command-specific dependency.
+    // `fireforge watch` depends on watchman, but without a doctor row an
+    // operator completes setup → download → build without ever seeing that
+    // requirement. Warning severity, not failure: most projects do not run
+    // watch, and `doctor` should not fail outright for a command-specific
+    // dependency.
     //
-    // Use `mockImplementationOnce` rather than `mockImplementation` so the
+    // Uses `mockImplementationOnce` rather than `mockImplementation` so the
     // override does not leak into sibling tests. `clearAllMocks` in the
-    // module beforeEach clears call history but preserves mock
-    // implementations, so a permanent override would turn unrelated tests'
-    // accounting (warning counts, passed-checks counts) sideways.
+    // module beforeEach clears call history but preserves implementations,
+    // so a permanent override would skew unrelated tests' warning and
+    // passed-check counts.
     const { findExecutable } = await import('../../utils/process.js');
     vi.mocked(findExecutable).mockImplementationOnce((name: string) =>
       Promise.resolve(name === 'watchman' ? undefined : '/usr/local/bin/' + name)
@@ -970,16 +966,21 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project', { repairPatchesManifest: true });
 
-    expect(rebuildPatchesManifest).toHaveBeenCalledWith('/project/patches', '140.9.0esr');
+    expect(rebuildPatchesManifest).toHaveBeenCalledWith(
+      '/project/patches',
+      '140.9.0esr',
+      // doctor honours `--wait-lock`; the repair rebuilds the manifest under
+      // the patch-directory lock.
+      expect.objectContaining({ command: 'doctor --repair-patches-manifest' })
+    );
     expect(result.exitCode).toBe(0);
     expect(
       vi.mocked(warn).mock.calls.some(([message]) => message.includes('Patch manifest consistency'))
     ).toBe(true);
-    // 2026-04-21 eval (Finding #17): the repair path now surfaces a
-    // per-file review warning naming each filename whose metadata was
-    // reconstructed from generic defaults. Operators can't recover the
-    // original description, but at least they see exactly which entries
-    // need their attention.
+    // The repair path surfaces a per-file review warning naming each
+    // filename whose metadata was reconstructed from generic defaults.
+    // Operators cannot recover the original description, but they can see
+    // exactly which entries need attention.
     expect(
       vi
         .mocked(warn)
@@ -990,11 +991,9 @@ describe('doctorCommand', () => {
             message.includes('generic description')
         )
     ).toBe(true);
-    // 2026-04-24 eval Finding 6: the repair warning used to tell the
-    // operator to hand-edit patches.json, which contradicts the README
-    // that treats the manifest as FireForge-owned. Assert that the new
-    // message points at `re-export` / `export` instead and explicitly
-    // warns against hand-editing.
+    // The repair warning must point at `re-export` / `export` and
+    // explicitly warn against hand-editing patches.json, which the README
+    // treats as FireForge-owned.
     const repairWarnings = vi
       .mocked(warn)
       .mock.calls.map(([message]) => message)
@@ -1094,7 +1093,13 @@ describe('doctorCommand', () => {
 
     await doctorCommand('/project', { repairPatchesManifest: true });
 
-    expect(rebuildPatchesManifest).toHaveBeenCalledWith('/project/patches', '142.0esr');
+    expect(rebuildPatchesManifest).toHaveBeenCalledWith(
+      '/project/patches',
+      '142.0esr',
+      // doctor honours `--wait-lock`; the repair rebuilds the manifest under
+      // the patch-directory lock.
+      expect.objectContaining({ command: 'doctor --repair-patches-manifest' })
+    );
     // And critically: NOT called with 'unknown'.
     expect(rebuildPatchesManifest).not.toHaveBeenCalledWith(expect.anything(), 'unknown');
   });
@@ -1515,9 +1520,9 @@ describe('doctorCommand', () => {
     });
 
     it('surfaces orphaned override directories not listed in furnace.json', async () => {
-      // Eval 2: a concurrent-override race left components/overrides/<name>
-      // on disk but dropped its furnace.json entry. `doctor` now lists the
-      // orphan so the operator sees it before the next apply fails.
+      // A concurrent-override race leaves components/overrides/<name> on
+      // disk but drops its furnace.json entry. `doctor` lists the orphan so
+      // the operator sees it before the next apply fails.
       vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
       vi.mocked(loadFurnaceConfig).mockResolvedValue({
         version: 1,
@@ -1547,8 +1552,7 @@ describe('doctorCommand', () => {
         vi
           .mocked(warn)
           .mock.calls.some(
-            ([message]) =>
-              message.includes('Furnace manifest sync') && message.includes('moz-button')
+            ([message]) => message.includes('Furnace config sync') && message.includes('moz-button')
           )
       ).toBe(true);
       expect(result.exitCode).toBe(0);
@@ -1871,7 +1875,13 @@ describe('registerDoctor', () => {
     const program = createProgram();
     await program.parseAsync(['node', 'test', 'doctor', '--repair-patches-manifest']);
 
-    expect(rebuildPatchesManifest).toHaveBeenCalledWith('/project/patches', '140.9.0esr');
+    expect(rebuildPatchesManifest).toHaveBeenCalledWith(
+      '/project/patches',
+      '140.9.0esr',
+      // doctor honours `--wait-lock`; the repair rebuilds the manifest under
+      // the patch-directory lock.
+      expect.objectContaining({ command: 'doctor --repair-patches-manifest' })
+    );
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -1888,15 +1898,14 @@ describe('registerDoctor', () => {
 /**
  * Pins the exact order of the declarative doctor check registry.
  *
- * The order matters for reasons beyond presentation: later checks read
- * state that earlier checks populate via the shared DoctorCheckContext.
- * In particular, "fireforge.json is valid" writes `ctx.config`, and
- * "Patch manifest consistency" reads `ctx.config?.firefox.version` to
- * stamp a rebuilt manifest during a repair run. Silently swapping those
- * two would still produce a passing suite on a fresh clone (the repair
- * path is rarely exercised), which is exactly the kind of bug this test
- * is meant to catch. If you legitimately need to reorder, update this
- * list and the dependency comment on DOCTOR_CHECKS at the same time.
+ * The order matters beyond presentation: later checks read state that
+ * earlier checks populate via the shared DoctorCheckContext. "fireforge.json
+ * is valid" writes `ctx.config`, and "Patch manifest consistency" reads
+ * `ctx.config?.firefox.version` to stamp a rebuilt manifest during a repair
+ * run. Swapping those two still produces a passing suite on a fresh clone,
+ * because the repair path is rarely exercised — which is exactly what this
+ * test catches. A legitimate reorder updates this list and the dependency
+ * comment on DOCTOR_CHECKS together.
  */
 describe('DOCTOR_CHECK_ORDER', () => {
   it('matches the expected declarative order', () => {
@@ -1925,7 +1934,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
       'Furnace lock',
       'Furnace engine state',
       'Furnace component validation',
-      'Furnace manifest sync',
+      'Furnace config sync',
       'Configs directory exists',
     ]);
   });

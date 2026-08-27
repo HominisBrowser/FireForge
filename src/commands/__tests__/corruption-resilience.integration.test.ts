@@ -19,6 +19,12 @@ import { importCommand } from '../import.js';
 import { setupCommand } from '../setup.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -82,12 +88,11 @@ describe('corruption resilience integration', () => {
   });
 
   it('export refuses to run over a corrupted patches.json and leaves it untouched', async () => {
-    // Finding H2 (2026-07-05 review): loadPatchesManifest collapsed
-    // "corrupt" into "absent", so an export over a hand-mangled
-    // patches.json rebuilt the manifest containing ONLY the new patch —
-    // silently destroying every other patch's metadata — and a failing
-    // export's rollback then deleted patches.json outright because the
-    // "before" state looked absent.
+    // `loadPatchesManifest` collapsing "corrupt" into "absent" makes an
+    // export over a hand-mangled patches.json rebuild the manifest
+    // containing ONLY the new patch — silently destroying every other
+    // patch's metadata — and a failing export's rollback then deletes
+    // patches.json outright, because the "before" state looked absent.
     const engineDir = join(projectRoot, 'engine');
     await initCommittedRepo(engineDir, {
       'browser/base/content/browser.js': 'export const title = "baseline";\n',

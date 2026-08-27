@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
@@ -28,7 +30,11 @@ vi.mock('../../core/furnace-apply.js', () => ({
   applyAllComponents: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -57,6 +63,10 @@ vi.mock('../../core/furnace-state-persist.js', async (importOriginal) => {
 });
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
   getFurnacePaths: vi.fn(() => ({
     overridesDir: '/project/furnace/overrides',
@@ -80,11 +90,15 @@ vi.mock('../../core/furnace-config.js', () => ({
   ),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -347,12 +361,11 @@ describe('furnaceApplyCommand', () => {
   });
 
   it('named apply disables the batch state persist and merges per-component state', async () => {
-    // Finding F1 (2026-07-05 review): named apply used to run the batch
-    // persist path, whose wholesale appliedChecksums replace wiped every
-    // OTHER component's checksum state — after which orphan detection and
-    // deleted-file undeploy (both keyed on that state) went blind. Named
-    // apply must mirror `furnace deploy <name>`: persistState: false plus
-    // a per-component merge.
+    // A named apply must not run the batch persist path, whose wholesale
+    // appliedChecksums replace wipes every OTHER component's checksum state
+    // — after which orphan detection and deleted-file undeploy, both keyed
+    // on that state, go blind. Named apply mirrors `furnace deploy <name>`:
+    // persistState: false plus a per-component merge.
     vi.mocked(loadConfig).mockResolvedValue({
       name: 'Test Browser',
       vendor: 'Test Vendor',

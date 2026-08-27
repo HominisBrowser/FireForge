@@ -18,7 +18,6 @@ import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { isContainedRelativePath } from '../utils/paths.js';
-import { exec } from '../utils/process.js';
 import { applyPatchIdempotent, reversePatch } from './git.js';
 import { getFileContentFromHead } from './git-file-ops.js';
 import { discoverPatches } from './patch-files.js';
@@ -41,13 +40,14 @@ export { applyPatchToContent, extractNewFileContent } from './patch-transform.js
 
 /**
  * Applies a single patch.
+ *
  * @param patch - Patch info
  * @param engineDir - Path to the engine directory
  * @param protectedFiles - Files touched by patches already applied in the
  *   current run; the idempotent-recovery reset must not wipe them (see
- *   applyPatchIdempotent). Overlapping queues (`--allow-overlap`) share
- *   files between patches, and a later patch's recovery used to reset the
- *   shared file to HEAD — silently discarding the earlier patch's changes.
+ *   applyPatchIdempotent). Overlapping queues (`--allow-overlap`) share files
+ *   between patches, and resetting a shared file to HEAD during a later
+ *   patch's recovery silently discards the earlier patch's changes.
  * @returns Patch result
  */
 async function applySinglePatch(
@@ -174,74 +174,6 @@ async function rollbackPatches(results: PatchResult[], engineDir: string): Promi
   }
 }
 
-/**
- * Applies all patches in order. Rolls back all successfully applied
- * patches when one fails so the engine directory stays clean.
- * @param patchesDir - Path to the patches directory
- * @param engineDir - Path to the engine directory
- * @returns Results for each patch
- */
-export async function applyPatches(patchesDir: string, engineDir: string): Promise<PatchResult[]> {
-  const patches = await discoverPatches(patchesDir);
-  const results: PatchResult[] = [];
-  const appliedFiles = new Set<string>();
-
-  for (const patch of patches) {
-    const result = await applySinglePatch(patch, engineDir, appliedFiles);
-    results.push(result);
-
-    if (result.success) {
-      for (const file of extractAffectedFiles(await readText(patch.path))) {
-        appliedFiles.add(file);
-      }
-    }
-
-    // Stop on first failure and roll back all previously applied patches
-    if (!result.success) {
-      const succeeded = results.filter((r) => r.success);
-      if (succeeded.length > 0) {
-        verbose(`Rolling back ${succeeded.length} previously applied patch(es)…`);
-        await rollbackPatches(succeeded, engineDir);
-      }
-      break;
-    }
-  }
-
-  return results;
-}
-
-/**
- * Validates that all patches can be applied.
- * @param patchesDir - Path to the patches directory
- * @param engineDir - Path to the engine directory
- * @returns Validation results
- */
-export async function validatePatches(
-  patchesDir: string,
-  engineDir: string
-): Promise<{ valid: boolean; errors: string[] }> {
-  const patches = await discoverPatches(patchesDir);
-  const errors: string[] = [];
-
-  for (const patch of patches) {
-    try {
-      const patchContent = await readText(patch.path);
-      await validatePatchTargets(patch, extractAffectedFiles(patchContent), engineDir);
-    } catch (error: unknown) {
-      errors.push(`${patch.filename}: ${toError(error).message}`);
-      continue;
-    }
-
-    const result = await exec('git', ['apply', '--check', '--', patch.path], { cwd: engineDir });
-    if (result.exitCode !== 0) {
-      const message = result.stderr.trim() || 'git apply --check failed';
-      errors.push(`${patch.filename}: ${message}`);
-    }
-  }
-
-  return { valid: errors.length === 0, errors };
-}
-
 async function validatePatchTargets(
   patch: PatchInfo,
   affectedFiles: string[],
@@ -335,17 +267,14 @@ export interface ApplyPatchesOptions {
  *   1. **Exact filename** — `005-foo.patch`. Matches only that filename.
  *   2. **Filename without extension** — `005-foo`. Matches `005-foo.patch`.
  *   3. **Bare numeric ordinal** — `5` or `005`. Matches the patch whose
- *      order prefix parses to the same integer (so `5` and `005` both
- *      match `005-foo.patch`, and `05` matches too because parseInt
- *      normalizes leading zeros).
+ *      order prefix parses to the same integer (so `5` and `005` both match
+ *      `005-foo.patch`, and `05` matches too because parseInt normalizes
+ *      leading zeros).
  *
- * A purely-numeric identifier is treated **only** as an ordinal: it does
- * not also match a filename that happens to literally equal the digits.
- * That would require a patch literally named `5` or `005` — which would
- * collide with the filename prefix anyway — and we prefer the explicit
- * ordinal interpretation. The earlier form's `patchFilename === needle`
- * short-circuit was kept behind the numeric gate so the match stays
- * single-meaning per identifier.
+ * A purely-numeric identifier is treated **only** as an ordinal: it does not
+ * also match a filename that happens to literally equal the digits. That
+ * would require a patch literally named `5` or `005`, which would collide
+ * with the filename prefix anyway.
  */
 export function matchesUntilFilename(patchFilename: string, needle: string): boolean {
   const isNumeric = /^\d+$/.test(needle);
@@ -490,11 +419,11 @@ export interface PatchedContentContext {
 
 /**
  * Builds a batched patched-content context that loads the manifest and
- * discovers patch files ONCE for many lookups, and memoizes each patch
- * body read across the batch. The old per-call helper re-ran
- * `loadPatchesManifest` + `discoverPatches` and re-read every affecting
- * patch body for every file — O(dirtyFiles × patches) redundant IO when
- * classifying a broad engine edit session during `status` or `import`.
+ * discovers patch files ONCE for many lookups, and memoizes each patch body
+ * read across the batch. A per-call helper re-runs `loadPatchesManifest` +
+ * `discoverPatches` and re-reads every affecting patch body for every file —
+ * O(dirtyFiles × patches) redundant IO when classifying a broad engine edit
+ * session during `status` or `import`.
  */
 export async function createPatchedContentContext(
   patchesDir: string,

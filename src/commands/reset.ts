@@ -3,6 +3,7 @@ import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
+import { stdioIsInteractive } from '../core/destructive.js';
 import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { clearAppliedFurnaceState } from '../core/furnace-config.js';
 import { hasChanges, resetChanges } from '../core/git.js';
@@ -53,7 +54,7 @@ export async function resetCommand(projectRoot: string, options: ResetOptions): 
   // Confirm reset unless --yes is specified
   if (!options.yes) {
     // Check for non-interactive mode
-    const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+    const isInteractive = stdioIsInteractive();
 
     if (!isInteractive) {
       throw new InvalidArgumentError(

@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { pathExists, readJson, readText, writeText } from '../../utils/fs.js';
 import {
   bootstrap,
@@ -35,13 +36,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return { ...actual, readdir: vi.fn() };
 });
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readJson: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-  ensureDir: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../../utils/process.js', () => ({
   exec: vi.fn(),
@@ -52,11 +47,7 @@ vi.mock('../../utils/process.js', () => ({
   executableExists: vi.fn(),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 // hasRunnableBundle reads getPlatform() to pick the per-OS binary path;
 // mock it so each `hasRunnableBundle` test can stamp the probe under a
@@ -191,7 +182,7 @@ describe('hasBuildArtifacts', () => {
   });
 });
 
-describe('hasRunnableBundle (Finding #13)', () => {
+describe('hasRunnableBundle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -613,7 +604,7 @@ describe('mach command execution', () => {
     stderrSpy.mockRestore();
   });
 
-  it('dispatches suite-specific mach commands with and without env (E1)', async () => {
+  it('dispatches suite-specific mach commands with and without env', async () => {
     const { execStream } = await import('../../utils/process.js');
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -634,8 +625,8 @@ describe('mach command execution', () => {
       expect.any(Object)
     );
 
-    // Every capture dispatch runs as a process-group leader (0.37.0 item 9a)
-    // so a mach dying at startup cannot strand multiprocessing workers.
+    // Every capture dispatch runs as a process-group leader so a mach dying
+    // at startup cannot strand multiprocessing workers.
     expect(vi.mocked(execStream).mock.lastCall?.[2]).toMatchObject({ processGroup: true });
 
     // Env-present branch (the `env ? { env } : {}` ternary) for both wrappers.
@@ -673,7 +664,7 @@ describe('mach command execution', () => {
     stderrSpy.mockRestore();
   });
 
-  it('annotates the known teardown traceback in the echo while capturing it raw (0.37.0 item 8)', async () => {
+  it('annotates the known teardown traceback in the echo while capturing it raw', async () => {
     const { execStream } = await import('../../utils/process.js');
     const echoed: string[] = [];
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((data) => {
@@ -1007,11 +998,10 @@ describe('mach command execution', () => {
   });
 
   it('surfaces the bindgen hint when the _CharT error lands on stdout instead of stderr', async () => {
-    // Finding #5: the eval's Darwin 25 Rust error streamed through mach's
-    // timestamp-prefixing wrapper on stdout, but pre-0.16.0 `build()` only
-    // scanned `result.stderr` for hints. Combined stdout+stderr scanning
-    // makes the registered `_CharT` hint fire against whichever stream
-    // mach chose.
+    // A Rust error can stream through mach's timestamp-prefixing wrapper on
+    // stdout, so scanning only `result.stderr` for hints misses it.
+    // Combined stdout+stderr scanning makes the registered `_CharT` hint
+    // fire against whichever stream mach chose.
     const { execInheritCapture } = await import('../../utils/process.js');
     const { warn } = await import('../../utils/logger.js');
     await primePythonResolution();
@@ -1029,10 +1019,9 @@ describe('mach command execution', () => {
   });
 
   it('surfaces the post-failure epilogue hint on a failed mach build that appends Configure complete!', async () => {
-    // Finding #6: mach's own shutdown pipeline prints a "Configure
-    // complete!" banner after a failed build, which reads like success.
-    // The hint now recognises the exact post-failure signature and
-    // clarifies the trailing block.
+    // mach's own shutdown pipeline prints a "Configure complete!" banner
+    // after a failed build, which reads like success. The hint recognises
+    // the post-failure signature and clarifies the trailing block.
     const { execInheritCapture } = await import('../../utils/process.js');
     const { warn } = await import('../../utils/logger.js');
     await primePythonResolution();
@@ -1087,7 +1076,7 @@ describe('mach command execution', () => {
   });
 });
 
-// ── 0.34.0: protected mach build dispatch (in-venv guard + uniform retries) ──
+// Protected mach build dispatch: in-venv guard plus uniform retries.
 
 describe('runProtectedMachBuild', () => {
   beforeEach(() => {
@@ -1158,9 +1147,9 @@ describe('runProtectedMachBuild', () => {
       expect.stringContaining('_asdict')
     );
     // Per-function arity-correct fallbacks and the mozbuild
-    // log_resource_usage wrap (0.34.1 field report: an svmem-shaped swap
-    // fallback wedged mach shutdown; end-of-build resource logging failed
-    // a successful compile).
+    // log_resource_usage wrap: an svmem-shaped swap fallback wedges mach
+    // shutdown, and end-of-build resource logging must not fail a successful
+    // compile.
     expect(writeText).toHaveBeenCalledWith(
       `${sitePackages}/fireforge_mach_guard.py`,
       expect.stringContaining('swap_memory')

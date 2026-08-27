@@ -3,21 +3,20 @@
  * macOS display power-state probe for the headed no-output stall.
  *
  * `TIMEOUT … application timed out after N seconds with no output` /
- * `Ran 0 checks` has three recorded causes, and one of them is purely
- * environmental: a HEADED run on an unattended machine whose display is
- * asleep or locked. A headed Firefox on a sleeping display never paints,
- * never reaches its first test, and dies at the no-output timeout —
- * indistinguishable, from the log alone, from a product hang.
+ * `Ran 0 checks` has three known causes, one of them purely environmental:
+ * a HEADED run on an unattended machine whose display is asleep or locked.
+ * A headed Firefox on a sleeping display never paints, never reaches its
+ * first test, and dies at the no-output timeout — indistinguishable, from
+ * the log alone, from a product hang.
  *
  * `caffeinate -disu` does not cure it. It PREVENTS sleep; it cannot WAKE a
  * display that is already asleep, so wrapping the run changes nothing once
- * the machine has already dimmed. `fireforge test` defaults to headed, so
- * an unattended run walks straight into this and the operator burns whole
- * cycles hunting a product cause.
+ * the machine has dimmed. `fireforge test` defaults to headed, so an
+ * unattended run walks straight into this.
  *
  * The probe is advisory and fail-open: anything unexpected reports
- * `'unknown'` and the caller degrades to the generic triage list rather
- * than asserting an environment it could not measure.
+ * `'unknown'` and the caller degrades to the generic triage list rather than
+ * asserting an environment it could not measure.
  */
 
 import { toError } from '../utils/errors.js';
@@ -67,10 +66,9 @@ export function parseDisplayPowerState(stdout: string): DisplaySleepState {
 }
 
 /**
- * Probes the display's power state. Non-darwin platforms report
- * `'unknown'` without spawning anything — the stall shape this serves is
- * a macOS field report and no equivalent single-command probe is wired for
- * other platforms.
+ * Probes the display's power state. Non-darwin platforms report `'unknown'`
+ * without spawning anything — the stall shape this serves is macOS-specific
+ * and no equivalent single-command probe is wired for other platforms.
  *
  * @param platform - `process.platform`-style id (injected for testability)
  * @returns The measured state, or `'unknown'` when unmeasurable

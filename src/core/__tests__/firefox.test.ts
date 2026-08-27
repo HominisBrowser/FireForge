@@ -784,13 +784,11 @@ describe('download stall detection', () => {
   });
 });
 
-describe('downloadFirefoxSource phase callback (Finding #2)', () => {
+describe('downloadFirefoxSource phase callback', () => {
   it('fires onPhase("download") before the transfer and onPhase("extract") before the tar run', async () => {
-    // Regression guard: pre-0.16.0 there was no way for the download
-    // command to distinguish the byte-transfer phase from the silent
-    // tar-xz decompression phase, so the spinner read "Downloading...
-    // 100%" throughout extraction. The phase callback gives the command
-    // a single signal to switch spinners.
+    // Without a phase callback the download command cannot distinguish the
+    // byte-transfer phase from the silent tar-xz decompression phase, so the
+    // spinner reads "Downloading... 100%" throughout extraction.
     const body = new ReadableStream({
       start(controller): void {
         controller.enqueue(new TextEncoder().encode('all-data'));

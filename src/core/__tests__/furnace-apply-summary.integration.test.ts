@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Investigation: a 0.39.0 field report claimed `furnace apply` printed
- * "No changes since last apply" for a component whose SOURCE had
- * just been edited, while the copy had actually landed (outcome correct,
- * report wrong). These tests exercise every candidate mechanism by which
- * the skip decision could disagree with the file state, against a real
- * filesystem. They double as the refutation evidence if the incident does
- * not reproduce: with content-based state checksums, "edited source +
- * skip report + identical files" implies an earlier apply (a watch cycle
- * or named apply) had already deployed exactly that edit — making the
- * report accurate.
+ * `furnace apply` skip decisions vs. actual file state.
+ *
+ * These tests exercise every mechanism by which the skip decision could
+ * disagree with the files on disk, against a real filesystem. With
+ * content-based state checksums, "edited source + skip report + identical
+ * files" implies an earlier apply (a watch cycle or named apply) already
+ * deployed exactly that edit — so the skip report is accurate.
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -20,6 +17,12 @@ import { createTempProject, removeTempProject } from '../../test-utils/index.js'
 import { applyAllComponents } from '../furnace-apply.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -92,7 +95,7 @@ describe('furnace apply skip-report accuracy', () => {
     const settled = await applyAllComponents(projectRoot);
     expect(settled.skipped).toEqual([{ name: 'panel', reason: 'No changes since last apply' }]);
 
-    // The incident: edit the SOURCE, then apply. The report must say
+    // Edit the SOURCE, then apply. The report must say
     // applied, and the engine copy must carry the edit.
     await writeFile(join(overrideDir, 'panel.css'), '.panel { color: rebeccapurple; }\n');
     const afterEdit = await applyAllComponents(projectRoot);

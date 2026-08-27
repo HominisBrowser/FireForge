@@ -13,7 +13,7 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { lstat, readdir, readFile, realpath, rm } from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, readFile, realpath, rm } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
@@ -27,6 +27,7 @@ import { LOCK_PID_FILE, withFileLock } from './file-lock.js';
 import { git } from './git-base.js';
 import { getAllDiff } from './git-diff.js';
 import { attemptMozinfoRewrite } from './mach-build-artifacts.js';
+import { checkDocumentVersion, describeNewerDocument } from './state-file.js';
 import { cloneEntry, type CowCapability } from './tree-cow.js';
 
 const TREE_MARKER_FILENAME = 'tree.json';
@@ -101,16 +102,19 @@ export async function withTreeLifecycleLock<T>(
 /**
  * Validates every field of a tree marker.
  *
- * The read below checked only `schemaVersion` and `name` and asserted the
- * rest, but the unvalidated fields are consumed unguarded: `primaryRoot`
- * reaches a user-facing refusal message (`tree-guard.ts:105`), and
+ * Checking only `schemaVersion` and `name` and asserting the rest is not
+ * enough: the unvalidated fields are consumed unguarded. `primaryRoot`
+ * reaches a user-facing refusal message in `tree-guard.ts`, and
  * `engineHead`/`patchesFingerprint` feed the staleness compare, where an
  * `undefined` from a truncated marker reports every tree as stale.
  */
+/** Schema version this build writes and understands. */
+const TREE_MARKER_SCHEMA_VERSION = 1;
+
 function isTreeMarker(value: unknown): value is TreeMarker {
   if (!isObject(value)) return false;
   return (
-    value['schemaVersion'] === 1 &&
+    value['schemaVersion'] === TREE_MARKER_SCHEMA_VERSION &&
     typeof value['name'] === 'string' &&
     typeof value['primaryRoot'] === 'string' &&
     typeof value['createdAt'] === 'string' &&
@@ -127,16 +131,23 @@ function isTreeMarker(value: unknown): value is TreeMarker {
  * Outcome of reading a tree marker.
  *
  * The three states must stay distinct because they carry opposite safety
- * meanings. `absent` means "this directory is not a tree", which is what lets
- * every mutating command run. `corrupt` means "this directory claims to be a
- * tree but we cannot read the claim" — collapsing it into `absent` (as a bare
- * `undefined` return does) hands a snapshot the full mutating command set on
- * the strength of a file we failed to parse, inverting `tree-guard.ts`'s
- * default-deny design. Deleting one field from a marker was enough to run
- * `reset` inside a clone.
+ * meanings. `absent` means "this directory is not a tree", which is what
+ * lets every mutating command run. `corrupt` means "this directory claims to
+ * be a tree but we cannot read the claim" — collapsing it into `absent` (as
+ * a bare `undefined` return does) hands a snapshot the full mutating command
+ * set on the strength of a file we failed to parse, inverting
+ * `tree-guard.ts`'s default-deny design. Deleting one field from a marker is
+ * enough to make `reset` runnable inside a clone.
  */
 export type TreeMarkerRead =
-  { kind: 'absent' } | { kind: 'valid'; marker: TreeMarker } | { kind: 'corrupt'; reason: string };
+  | { kind: 'absent' }
+  | { kind: 'valid'; marker: TreeMarker }
+  | { kind: 'corrupt'; reason: string }
+  /**
+   * Written by a NEWER FireForge. Distinct from `corrupt` because the remedy
+   * is the opposite: upgrade, do not delete.
+   */
+  | { kind: 'unsupported'; reason: string };
 
 /** Absolute path of a root's tree marker. */
 export function getTreeMarkerPath(root: string): string {
@@ -145,20 +156,39 @@ export function getTreeMarkerPath(root: string): string {
 
 /**
  * Reads the tree marker for a project root, distinguishing "not a tree" from
- * "a tree whose marker we could not read". Callers that make a safety decision
- * (the guard hook, the no-nesting refusal) must use this rather than
- * {@link readTreeMarker}.
+ * "a tree whose marker we could not read". Callers that make a safety
+ * decision (the guard hook, the no-nesting refusal) must use this rather
+ * than {@link tryReadTreeMarker}.
  *
  * Only ENOENT/ENOTDIR mean `absent`: any other probe failure (EACCES on the
  * `.fireforge` directory, EIO, …) reports `corrupt`, because "we cannot read
  * the marker" is not evidence that there is no marker — a `pathExists`
- * pre-check here classified a tree with an unreadable `.fireforge` as
- * `absent` and handed it the full mutating command set.
+ * pre-check classifies a tree with an unreadable `.fireforge` as `absent`
+ * and hands it the full mutating command set.
  */
-export async function readTreeMarkerState(root: string): Promise<TreeMarkerRead> {
+/**
+ * Naming convention for state-file readers:
+ *   - `readX(): Promise<XRead>` — the TRI-STATE read: absent, corrupt, or
+ *     valid.
+ *   - `tryReadX(): Promise<X | undefined>` — collapses absent and corrupt.
+ */
+export async function readTreeMarker(root: string): Promise<TreeMarkerRead> {
   const markerPath = getTreeMarkerPath(root);
   try {
     const raw = await readJson<unknown>(markerPath);
+    // Version FIRST, and reported distinctly. Folding the schemaVersion
+    // check into `isTreeMarker` makes a marker from a NEWER FireForge read
+    // as "missing or mistypes a required field" — and `tree-guard.ts` is
+    // default-deny on corrupt, so the operator is locked out of every
+    // mutating command inside the tree by a message claiming the file is
+    // malformed when it is merely newer.
+    const version = checkDocumentVersion(raw, 'schemaVersion', TREE_MARKER_SCHEMA_VERSION);
+    if (version.kind === 'newer') {
+      return {
+        kind: 'unsupported',
+        reason: describeNewerDocument('tree marker', version.found, TREE_MARKER_SCHEMA_VERSION),
+      };
+    }
     if (!isTreeMarker(raw)) {
       verbose(`Malformed tree marker at ${markerPath}`);
       return { kind: 'corrupt', reason: 'the marker is missing or mistypes a required field' };
@@ -178,10 +208,10 @@ export async function readTreeMarkerState(root: string): Promise<TreeMarkerRead>
  *
  * For display and best-effort paths only (`tree list` renders an unreadable
  * marker as staleness 'unknown'). Anything that decides whether a mutation may
- * proceed must call {@link readTreeMarkerState} and handle `corrupt`.
+ * proceed must call {@link readTreeMarker} and handle `corrupt`.
  */
-export async function readTreeMarker(root: string): Promise<TreeMarker | undefined> {
-  const state = await readTreeMarkerState(root);
+export async function tryReadTreeMarker(root: string): Promise<TreeMarker | undefined> {
+  const state = await readTreeMarker(root);
   return state.kind === 'valid' ? state.marker : undefined;
 }
 
@@ -197,7 +227,7 @@ export async function assertObjdirMatchesTreeMarker(
   projectRoot: string,
   objDir: string | undefined
 ): Promise<void> {
-  const state = await readTreeMarkerState(projectRoot);
+  const state = await readTreeMarker(projectRoot);
   if (state.kind !== 'valid' || state.marker.clonedObjdir === undefined) return;
   if (objDir !== state.marker.clonedObjdir) {
     throw new GeneralError(
@@ -323,18 +353,18 @@ async function assertCloneSafeObjdir(
 }
 
 /**
- * Materialises the tree at `treeRoot` from `primaryRoot` using
- * `capability` ('none' = plain copy, already gated on --force-copy by
- * the caller). The engine is cloned one TOP-LEVEL entry at a time so unwanted
- * `obj-*` directories are never traversed or materialised. That distinction
- * is substantial on Firefox trees: even CoW-cloning and deleting an objdir
- * touches metadata for millions of build outputs. With `withObjdir` exactly
- * that objdir is included — after {@link assertCloneSafeObjdir}
- * refuses symlinked or engine-escaping objdirs before any copying —
- * rewritten to the tree (see below), and
- * reconfigured in-tree via the caller-supplied `reconfigure` hook. A
- * fresh `.fireforge/` is created with only `state.json` (when present),
- * the last-build baseline (withObjdir only), and the tree marker.
+ * Materialises the tree at `treeRoot` from `primaryRoot` using `capability`
+ * ('none' = plain copy, already gated on --force-copy by the caller).
+ *
+ * The engine is cloned one TOP-LEVEL entry at a time so unwanted `obj-*`
+ * directories are never traversed or materialised — on a Firefox tree, even
+ * CoW-cloning and then deleting an objdir touches metadata for millions of
+ * build outputs. With `withObjdir` exactly that objdir is included (after
+ * {@link assertCloneSafeObjdir} refuses symlinked or engine-escaping objdirs
+ * before any copying), rewritten to the tree, and reconfigured in-tree via
+ * the caller-supplied `reconfigure` hook. A fresh `.fireforge/` is created
+ * with only `state.json` (when present), the last-build baseline (withObjdir
+ * only), and the tree marker.
  */
 export async function cloneTree(args: {
   primaryRoot: string;
@@ -345,7 +375,6 @@ export async function cloneTree(args: {
   withObjdir?: { objDir: string; reconfigure: (treeEngineDir: string) => Promise<void> };
 }): Promise<TreeMarker> {
   const { primaryRoot, treeRoot, name, capability, createdAt, withObjdir } = args;
-  const { mkdir, cp } = await import('node:fs/promises');
   if (withObjdir) {
     // Refuse a symlinked/escaping primary objdir BEFORE any copying: the
     // clone would carry the symlink and every later write would land in
@@ -411,7 +440,7 @@ export async function cloneTree(args: {
   const { engineHead, engineFingerprint, patchesFingerprint } =
     await computePrimaryFingerprint(primaryRoot);
   const marker: TreeMarker = {
-    schemaVersion: 1,
+    schemaVersion: TREE_MARKER_SCHEMA_VERSION,
     name,
     primaryRoot,
     createdAt,
@@ -462,7 +491,7 @@ export async function listTrees(primaryRoot: string): Promise<TreeListEntry[]> {
   for (const name of (await readdir(treesDir)).sort((a, b) => a.localeCompare(b))) {
     if (name.endsWith('.lock')) continue;
     const path = join(treesDir, name);
-    const marker = await readTreeMarker(path);
+    const marker = await tryReadTreeMarker(path);
     if (!marker) {
       entries.push({ name, path, createdAt: '(no marker)', staleness: 'unknown' });
       continue;
@@ -492,19 +521,19 @@ type TreeLockState =
  * file-lock internals.
  *
  * Liveness comes from the shared {@link isProcessAlive}, which treats EPERM
- * as alive. The local copy this replaced returned `false` for EPERM, so a
- * tree whose build lock was held by a live process running under a different
- * uid passed the guard below and was `rm -rf`'d mid-build.
+ * as alive. Returning `false` for EPERM lets a tree whose build lock is held
+ * by a live process running under a different uid pass the guard below and
+ * get `rm -rf`'d mid-build.
  *
- * The `unknown` state is not a theoretical case. `withFileLock` takes the lock
- * by creating the directory and only *then* writes the owner file, treating a
- * write failure as non-fatal — so every acquisition passes through a window in
- * which the lock is genuinely held and has no readable PID, and a read-only or
- * full filesystem leaves it that way for the lock's whole life. Reporting that
- * as `free` let `removeTree` recursively delete a tree out from under a live
- * build. `file-lock.ts` reaches the same conclusion for its own stale
- * recovery, where an unreadable PID falls back to an age-only heuristic rather
- * than assuming the lock is abandoned.
+ * The `unknown` state is not theoretical. `withFileLock` takes the lock by
+ * creating the directory and only *then* writes the owner file, treating a
+ * write failure as non-fatal — so every acquisition passes through a window
+ * in which the lock is genuinely held and has no readable PID, and a
+ * read-only or full filesystem leaves it that way for the lock's whole life.
+ * Reporting that as `free` lets `removeTree` recursively delete a tree out
+ * from under a live build. `file-lock.ts` reaches the same conclusion for
+ * its own stale recovery, where an unreadable PID falls back to an age-only
+ * heuristic rather than assuming the lock is abandoned.
  */
 async function inspectTreeLock(lockPath: string): Promise<TreeLockState> {
   if (!existsSync(lockPath)) return { kind: 'free' };

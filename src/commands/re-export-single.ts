@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Single-patch refresh core for `fireforge re-export`, split out of
- * `re-export.ts` (at the per-file line budget after the
- * hoisted-lint and foreign-drift wiring). The orchestrator loop calls
- * {@link reExportSinglePatchWithIndexLockRetry} per selected patch.
+ * `re-export.ts` to stay under the per-file line budget. The orchestrator
+ * loop calls {@link reExportSinglePatchWithIndexLockRetry} per selected
+ * patch.
  */
 
 import { getProjectPaths } from '../core/config.js';
+import { stdioIsInteractive } from '../core/destructive.js';
 import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
@@ -123,7 +124,7 @@ async function reExportSinglePatch(
     });
 
     if (options.scanFiles === undefined) {
-      const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+      const isInteractive = stdioIsInteractive();
       const proceed = await confirmBroadScanAdditions({
         patchFilename: patch.filename,
         added: scanResult.added,
@@ -137,15 +138,14 @@ async function reExportSinglePatch(
     }
     currentFilesAffected = scanResult.updated;
   } else if (options.files === undefined) {
-    // Finding #16: when neither `--scan` nor `--files` is set and some
-    // of the manifest's claimed files no longer exist on disk, the
-    // re-export silently writes a refreshed body whose filesAffected
-    // still names the vanished paths. That is the documented contract,
-    // but it is also a footgun — a later `verify` then fails on
-    // manifest-consistency with no obvious trigger. Emit one advisory
-    // warning up-front when we can detect the drift cheaply, so the
-    // operator has a chance to re-run with `--scan` or `--files`
-    // before the stale filesAffected lands in patches.json.
+    // When neither `--scan` nor `--files` is set and some of the manifest's
+    // claimed files no longer exist on disk, the re-export silently writes a
+    // refreshed body whose filesAffected still names the vanished paths.
+    // That is the documented contract, but it is also a footgun — a later
+    // `verify` then fails on manifest-consistency with no obvious trigger.
+    // Emit one advisory warning up-front when the drift is cheap to detect,
+    // so the operator can re-run with `--scan` or `--files` before the stale
+    // filesAffected lands in patches.json.
     const args = { patch, paths, manifest, currentFilesAffected, ctx: adjacentCtx };
     if (await reportAdjacentUnmanagedFiles(args)) return false;
   }
@@ -165,11 +165,11 @@ async function reExportSinglePatch(
     for (const f of removed) info(`  - ${f}`);
   }
 
-  // Stale-furnace-source gate (0.37.0 item 4): re-export captures deployed
-  // engine copies, so a component source edited after the last furnace
-  // apply would land in the patch as its OLD deployed content. Refuse (or
-  // warn under --allow-stale-furnace) before diffing. Runs in dry-run too
-  // so the failure surfaces early.
+  // Stale-furnace-source gate: re-export captures deployed engine copies, so
+  // a component source edited after the last furnace apply would land in the
+  // patch as its OLD deployed content. Refuse (or warn under
+  // --allow-stale-furnace) before diffing. Runs in dry-run too so the failure
+  // surfaces early.
   await enforceFreshFurnaceSources(
     paths.root,
     currentFilesAffected,
@@ -303,11 +303,18 @@ async function commitRefreshedPatch(args: {
   lintResult: Awaited<ReturnType<typeof lintReExportedPatch>>;
 }): Promise<void> {
   const { patch, paths, manifest, options, config, lintCtx, diffContent, updates } = args;
-  await updatePatchAndMetadata(paths.patches, patch.filename, diffContent, updates, undefined, {
-    config,
-    command: 're-export',
-    forceUnsafe: options.forceUnsafe === true,
-  });
+  const bodyChanged = await updatePatchAndMetadata(
+    paths.patches,
+    patch.filename,
+    diffContent,
+    updates,
+    undefined,
+    {
+      config,
+      command: 're-export',
+      forceUnsafe: options.forceUnsafe === true,
+    }
+  );
 
   refreshQueueCtxEntry(lintCtx, patch.filename, diffContent);
   if (args.lintResult !== null) {
@@ -331,7 +338,14 @@ async function commitRefreshedPatch(args: {
     }
   }
 
-  success(`Re-exported ${patch.filename}`);
+  // A bulk run refreshes every patch; saying "Re-exported" for one whose body
+  // did not move buries the patches that DID move. The run still counts this
+  // patch as successfully refreshed, so `--stamp` completeness is unaffected.
+  if (bodyChanged) {
+    success(`Re-exported ${patch.filename}`);
+  } else {
+    info(`Unchanged ${patch.filename}`);
+  }
 }
 
 /** The projected metadata + lint inputs for one patch's refresh. */
@@ -347,11 +361,11 @@ interface ReExportUpdatePlan {
  * Threads the patch's own `lintIgnore` list through so the per-patch
  * suppression honoured by export/export-all is also honoured here — a
  * re-export could otherwise not refresh an advisory-noisy but intentional
- * patch without the blunt `--skip-lint`. The paired `patch.tier` threads
- * the explicit branding-threshold opt-in the same way. The CLI flags
- * `--tier` and `--lint-ignore` participate with append/union semantics
- * (explicit removal lives on `fireforge patch lint-ignore`), computed
- * before the lint pass so the new intent takes effect on this invocation.
+ * patch without the blunt `--skip-lint`. The paired `patch.tier` threads the
+ * explicit branding-threshold opt-in the same way. The CLI flags `--tier`
+ * and `--lint-ignore` participate with append/union semantics (explicit
+ * removal lives on `fireforge patch lint-ignore`), computed before the lint
+ * pass so the new intent takes effect on this invocation.
  */
 function computeReExportUpdates(
   patch: PatchMetadata,

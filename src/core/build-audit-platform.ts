@@ -4,34 +4,29 @@
  *
  * `moz.build` files commonly wrap entries in conditional blocks like
  * `if CONFIG["MAKENSISU"]:` (Windows-only stubinstaller) or
- * `if CONFIG["OS_TARGET"] == "Darwin":` (macOS-only artwork). On a host
- * that does not match the gate, the wrapped files are never processed
- * by the build, so they cannot appear under `dist/`. Without this
- * detection, the audit fires a "missing packaged artifact" warning for
- * every gated file on every off-platform build — pure noise.
+ * `if CONFIG["OS_TARGET"] == "Darwin":` (macOS-only artwork). On a host that
+ * does not match the gate, the wrapped files are never processed by the
+ * build, so they cannot appear under `dist/` — without this detection the
+ * audit warns about every gated file on every off-platform build.
  *
  * Two gate sources are consulted, in order:
  *   1. Python-style `if CONFIG[...]:` blocks in the owning `moz.build`.
- *   2. Path-convention gates — certain directory fragments are packaged
- *      by platform-specific Makefile.in / NSIS recipes that FireForge
- *      does not parse, so a file living under `browser/installer/windows/`
- *      or any `/stubinstaller/` subtree is Windows-only regardless of
- *      what its nearest moz.build says. (The branding stubinstaller CSS
- *      is the motivating case: referenced from
- *      `browser/installer/windows/Makefile.in` / `nsis/stub.nsh` with no
- *      `if CONFIG[…]:` in any moz.build ancestor.)
+ *   2. Path-convention gates — certain directory fragments are packaged by
+ *      platform-specific Makefile.in / NSIS recipes that FireForge does not
+ *      parse, so a file under `browser/installer/windows/` or any
+ *      `/stubinstaller/` subtree is Windows-only regardless of what its
+ *      nearest moz.build says.
  *
- * The detection is intentionally lightweight: we walk up from the
- * source file looking for the closest `moz.build`, scan it for an
- * occurrence of the source basename inside an `if CONFIG[...]:` block,
- * and check whether the gate expression matches the host platform.
- * The path-convention pass kicks in only when no moz.build gate is
- * found, so an explicit moz.build gate always wins.
+ * The detection is intentionally lightweight: walk up from the source file
+ * to the closest `moz.build`, scan it for the source basename inside an
+ * `if CONFIG[...]:` block, and check whether the gate matches the host. The
+ * path-convention pass runs only when no moz.build gate is found, so an
+ * explicit gate always wins.
  *
- * This is best-effort. False negatives (we miss a gate and warn anyway)
- * are tolerable — the audit is warn-only. False positives (we wrongly
- * skip a gated file that should ship on this host) are not, so the
- * detection errs toward NOT skipping when uncertain.
+ * Best-effort by design. False negatives (missing a gate and warning anyway)
+ * are tolerable — the audit is warn-only. False positives (skipping a file
+ * that should ship on this host) are not, so it errs toward NOT skipping
+ * when uncertain.
  */
 
 import { dirname, join } from 'node:path';
@@ -162,17 +157,14 @@ export function findEnclosingGate(content: string, basename: string): string | u
 
 /**
  * Path-convention gates: directories whose files are packaged by
- * platform-specific build recipes (NSIS stub installer, DMG creation,
- * Linux installer scripts) that live outside the moz.build graph. A
- * file under any of these fragments is platform-restricted regardless
- * of what its nearest `moz.build` says.
+ * platform-specific build recipes (NSIS stub installer, DMG creation, Linux
+ * installer scripts) that live outside the moz.build graph. A file under any
+ * of these fragments is platform-restricted regardless of what its nearest
+ * `moz.build` says.
  *
- * `stubinstaller/` is the Windows NSIS stub installer asset tree. It
- * is referenced from `browser/installer/windows/Makefile.in` (via
- * `FILES` / `_WIDGET_FILES` lists) and `nsis/stub.nsh`, never through
- * an `if CONFIG[…]:` block an ancestor moz.build exposes. Without
- * this path-level gate, the audit warns on every touched branding
- * stubinstaller CSS on every non-Windows build.
+ * `stubinstaller/` is the Windows NSIS stub installer asset tree, referenced
+ * from `browser/installer/windows/Makefile.in` and `nsis/stub.nsh` rather
+ * than through any `if CONFIG[…]:` block an ancestor moz.build exposes.
  */
 const PATH_GATES: ReadonlyArray<{ fragment: string; platform: Platform; label: string }> = [
   { fragment: '/stubinstaller/', platform: 'win32', label: 'path convention: /stubinstaller/' },

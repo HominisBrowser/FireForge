@@ -285,10 +285,10 @@ describe('resolvePatchIdentifier', () => {
     ).toMatchObject({ name: 'eval-furnace-token-override' });
   });
 
-  it('resolves by manifest `name` field (Eval 1 Finding #6)', () => {
-    // The eval showed `patch reorder eval-furnace-token-override` being
-    // rejected because the resolver only knew filenames. Accepting the
-    // `name` handle matches the CLI help and `patches.json` schema.
+  it('resolves by manifest `name` field', () => {
+    // `patch reorder <name>` must accept the manifest `name` handle, which
+    // is what the CLI help and `patches.json` schema advertise — a resolver
+    // that knows only filenames rejects it.
     expect(resolvePatchIdentifier('eval-furnace-token-override', fixturePatches)).toMatchObject({
       filename: '002-ui-eval-furnace-token-override.patch',
     });

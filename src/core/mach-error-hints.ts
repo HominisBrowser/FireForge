@@ -30,13 +30,33 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
       'Use JS_PREFERENCE_FILES instead, or add at least one #filter / #expand directive to the file.',
   },
   {
+    // mozbuild raises `UnsortedError` while READING a moz.build whose
+    // StrictOrderingOnAppendList entries are out of order, so `mach
+    // configure` dies before anything compiles. The ordering rule is the
+    // part operators get wrong: mozbuild sorts by `.lower()`
+    // (`StrictOrderingOnAppendList.ensure_sorted`), so an uppercase letter
+    // does NOT sort ahead of a lowercase one, and an entry that looks
+    // correctly placed by byte order can be rejected. mozbuild's own
+    // message names both entries ("We expected X but got Y") and survives
+    // to the operator through `extractMachConfigureError`, so the hint
+    // supplies only the rule and the remedy.
+    pattern: /mozbuild\.util\.UnsortedError|\bUnsortedError\b/,
+    hint:
+      'A moz.build list is out of order — mozbuild rejects the file while reading it, so ' +
+      'configure dies before any compile. The entries are compared CASE-INSENSITIVELY ' +
+      '(mozbuild lowercases before comparing), so uppercase does not sort before lowercase: ' +
+      '"HominisEditorFilePaths.sys.mjs" belongs BEFORE "HominisEditorFiles.sys.mjs" ' +
+      '("filep" < "files"). The mozbuild error above names the file and both entries — move ' +
+      'the entry to the position it names. "fireforge lint --per-patch" checks this ' +
+      '(mozbuild-unsorted-list) before a build, which is the cheaper place to catch it.',
+  },
+  {
     // `mach package` inside `packager.py` dereferences a `None` sink when
-    // the packaging input set cannot resolve an entry it expected — the
-    // most common real-world cause is running `fireforge package` before
-    // a full `fireforge build` has finished, so `obj-*/dist/` is missing
-    // pieces the packager assumes exist. The hint points at that root
-    // cause specifically; the broader "build failed" path has already
-    // surfaced the raw traceback above this hint.
+    // the packaging input set cannot resolve an entry it expected — most
+    // commonly running `fireforge package` before a full `fireforge build`
+    // has finished, so `obj-*/dist/` is missing pieces the packager assumes
+    // exist. The broader "build failed" path has already surfaced the raw
+    // traceback above this hint.
     pattern:
       /packager\.py[\s\S]*?AttributeError: 'NoneType' object has no attribute 'open'|AttributeError: 'NoneType' object has no attribute 'open'[\s\S]*?packager\.py/,
     hint:
@@ -49,14 +69,12 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
   {
     // Upstream bindgen on some macOS libc++ SDK versions emits
     // `pub type basic_string___self_view = root::std::__1::basic_string_view<_CharT>;`
-    // inside gecko-profiler's generated `bindings.rs`, but `_CharT` is
-    // not in scope where the alias lands — so the Rust compile fails
-    // with "cannot find type `_CharT`". The symptom is obscure and the
-    // fix is external: a downstream consumer's patch queue may ship
-    // `990-infra-bindgen-basic-string-workaround.patch`, which strips
-    // the offending alias line post-generation. This hint surfaces the
-    // workaround pointer alongside the raw bindgen output so operators
-    // don't have to reverse-engineer the failure.
+    // inside gecko-profiler's generated `bindings.rs`, but `_CharT` is not
+    // in scope where the alias lands, so the Rust compile fails with
+    // "cannot find type `_CharT`". The fix is external: a consumer's patch
+    // queue may ship a workaround patch that strips the offending alias line
+    // post-generation. This hint surfaces that pointer alongside the raw
+    // bindgen output.
     pattern:
       /cannot find type `_CharT` in this scope[\s\S]*?gecko-profiler-|gecko-profiler-[\s\S]*?cannot find type `_CharT` in this scope/,
     hint:
@@ -73,13 +91,12 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
   {
     // Firefox declares per-release toolchain minimums in-tree
     // (`build/moz.configure/bindgen.configure` for cbindgen; mozboot's
-    // MINIMUM_RUST_VERSION for rustc/cargo), and a source hop can move
-    // them. The 152.0b7 → 153.0b8 source-refresh drill hit exactly this:
-    // the first post-hop build died ~8s into `mach configure` with
-    // "ERROR: cbindgen version 0.29.1 is too old. At least version
-    // 0.29.4 is required." — and mach's own remediation text names
-    // "./mach bootstrap", the wrong entry point for a FireForge-managed
-    // repo. Pattern matches configure's cbindgen die() shape.
+    // MINIMUM_RUST_VERSION for rustc/cargo), and a source hop can move them.
+    // The failure lands ~8s into `mach configure` — e.g. "ERROR: cbindgen
+    // version 0.29.1 is too old. At least version 0.29.4 is required." —
+    // and mach's own remediation text names "./mach bootstrap", the wrong
+    // entry point for a FireForge-managed repo. Pattern matches configure's
+    // cbindgen die() shape.
     pattern: /\bversion [\d.]+ is too old\.?\s+At least version [\d.]+ is required/i,
     hint:
       'A toolchain component is older than the minimum this Firefox source declares — typical ' +
@@ -100,16 +117,13 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
       'the build.',
   },
   {
-    // When `mach build` fails mid-compile, mach's own shutdown pipeline still
-    // runs its trailing "Config object not found by mach. / Configure
+    // When `mach build` fails mid-compile, mach's own shutdown pipeline
+    // still runs its trailing "Config object not found by mach. / Configure
     // complete! / Be sure to run |mach build|..." summary on the way out.
     // Those three lines are plain upstream mach output, printed AFTER the
-    // non-zero exit code has already been established, and they look
-    // deceptively like a success banner — the eval's Darwin 25 log had
-    // operators double-checking whether `make` had actually failed. We do
-    // not own those lines, but we can give the operator a specific nudge
-    // that they are cosmetic post-failure output rather than a mixed
-    // success/failure signal.
+    // non-zero exit code is established, and they read deceptively like a
+    // success banner. Nudge the operator that they are cosmetic
+    // post-failure output, not a mixed success/failure signal.
     pattern: /Config object not found by mach\.[\s\S]*?Configure complete!/,
     hint:
       'Ignore the trailing "Config object not found by mach. / Configure complete!" block — ' +

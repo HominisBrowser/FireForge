@@ -2,12 +2,11 @@
 /**
  * Real-git tests for the context-reduction ("fuzz") apply path.
  *
- * These deliberately do NOT mock `exec`. The original implementation
- * passed `--fuzz=N` — a GNU patch(1) flag that `git apply` rejects with a
- * usage error — and the mocked tests simulated `--check --fuzz=1`
- * succeeding, so CI validated behavior real git cannot produce and the
- * feature shipped broken (2026-07-05 review, finding H1). Every
- * escalation scenario here runs against an actual git repository.
+ * These deliberately do NOT mock `exec`. `--fuzz=N` is a GNU patch(1) flag
+ * that `git apply` rejects with a usage error, and a mocked test can
+ * simulate `--check --fuzz=1` succeeding — validating behaviour real git
+ * cannot produce. Every escalation scenario here runs against an actual git
+ * repository.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -16,9 +15,9 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-}));
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { applyPatchWithFuzz } from '../patch-apply-fuzz.js';
 

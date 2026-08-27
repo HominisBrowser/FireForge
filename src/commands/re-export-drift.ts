@@ -315,16 +315,16 @@ export async function reportForeignDrift(args: {
 }
 
 /**
- * Splits the drifting files into "you probably wrote this" and "this
- * predates your last export". `--refuse-foreign-drift` calls every
- * absorbed line "foreign" — including the operator's OWN additions
- * from the same session — and "foreign" reads as "another session's",
- * which is precisely the case where proceeding would be wrong. Authorship
- * is unknowable, but RECENCY is not: a file whose mtime is newer than the
- * patch body this run is refreshing changed after the last export, which
- * on a single-operator slice is the operator's own edit. Returns the
- * subset of `files` that qualifies; an unstattable path is reported as
- * NOT recently edited, so the cautious wording is the fallback.
+ * Splits the drifting files into "you probably wrote this" and "this predates
+ * your last export". `--refuse-foreign-drift` calls every absorbed line
+ * "foreign" — including the operator's OWN additions from the same session —
+ * and "foreign" reads as "another session's", which is precisely the case
+ * where proceeding would be wrong. Authorship is unknowable, but RECENCY is
+ * not: a file whose mtime is newer than the patch body this run is refreshing
+ * changed after the last export, which on a single-operator slice is the
+ * operator's own edit. Returns the subset of `files` that qualifies; an
+ * unstattable path is reported as NOT recently edited, so the cautious
+ * wording is the fallback.
  */
 async function findFilesEditedSinceLastExport(
   engineDir: string,

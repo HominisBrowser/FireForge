@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readJson: vi.fn(),
-  writeJson: vi.fn(),
-}));
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../state-file.js', () => ({
   withStateFileLock: vi.fn(async (_path: string, operation: () => Promise<unknown>) => operation()),
@@ -626,7 +622,7 @@ describe('furnace-config helpers', () => {
     ).toThrow('path traversal');
   });
 
-  it('accepts kind: "library" on a register: false custom component (0.37.0 item 6)', () => {
+  it('accepts kind: "library" on a register: false custom component', () => {
     const config = validateFurnaceConfig({
       version: 1,
       componentPrefix: 'moz-',
@@ -987,7 +983,7 @@ describe('furnace-config helpers', () => {
   });
 });
 
-describe('stampFurnaceOverrideBaseVersions (Finding #17)', () => {
+describe('stampFurnaceOverrideBaseVersions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWithStateFileLock.mockImplementation(async (_path, operation) => operation());

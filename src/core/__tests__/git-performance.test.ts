@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 const { execMock, executableExistsMock, pathExistsMock, removeFileMock, readdirMock } = vi.hoisted(
   () => ({
     execMock: vi.fn(),
@@ -23,9 +25,7 @@ vi.mock('../../utils/fs.js', () => ({
   readText: vi.fn(),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:fs/promises')>();
@@ -102,9 +102,8 @@ describe('stageAllFiles', () => {
     //   + 2 (chunked dirs)
     //   + 1 (top-level files batch) = 7
     expect(execMock.mock.calls.length).toBe(7);
-    // 2026-04-24 eval Finding 10: the fallback transition banner now
-    // names the elapsed timeout so non-TTY log scrapers can see exactly
-    // why the monolithic attempt lost.
+    // The fallback transition banner names the elapsed timeout so non-TTY
+    // log scrapers can see exactly why the monolithic attempt lost.
     expect(progress).toHaveBeenCalledWith(
       expect.stringMatching(/Monolithic git add reached the \d+s timeout/)
     );
@@ -117,15 +116,14 @@ describe('stageAllFiles', () => {
     expect(progress).toHaveBeenCalledWith('Staging directory 1/2: browser/...');
   });
 
-  it('skips gitignored top-level entries during chunked fallback (Finding 4)', async () => {
-    // Pre-fix: a Firefox checkout's gitignored `.vscode/` (or any
-    // top-level entry covered by .gitignore) failed the chunked
-    // fallback with `The following paths are ignored by one of your
-    // .gitignore files`, turning a recoverable monolithic timeout
-    // into a hard setup failure that required `download --force`. The
-    // chunked path now pre-filters via `git check-ignore`; ignored
-    // entries log a soft "Skipping gitignored: …" line and the rest
-    // of the tree stages normally.
+  it('skips gitignored top-level entries during chunked fallback', async () => {
+    // A Firefox checkout's gitignored `.vscode/` (or any top-level entry
+    // covered by .gitignore) fails the chunked fallback with `The following
+    // paths are ignored by one of your .gitignore files`, turning a
+    // recoverable monolithic timeout into a hard setup failure requiring
+    // `download --force`. The chunked path pre-filters via
+    // `git check-ignore`; ignored entries log a soft "Skipping gitignored: …"
+    // line and the rest of the tree stages normally.
     execMock.mockResolvedValueOnce({ exitCode: 143, stdout: '', stderr: 'SIGTERM' });
     pathExistsMock.mockResolvedValue(false);
     readdirMock.mockResolvedValueOnce([
@@ -168,14 +166,13 @@ describe('stageAllFiles', () => {
     );
   });
 
-  it('labels heartbeat ticks with the active phase (Finding 5)', async () => {
-    // Pre-fix: the elapsed-time heartbeat reset only at function entry,
-    // so the chunked phase reported numbers that included the entire
-    // monolithic timeout window with no way to tell where one ended
-    // and the other started. The fix tracks a per-phase start
-    // timestamp; the first phase is `monolithic`, the second is
-    // `chunked staging`, and the heartbeat ticks each carry that label
-    // so non-TTY scrapers see the transition.
+  it('labels heartbeat ticks with the active phase', async () => {
+    // An elapsed-time heartbeat that resets only at function entry makes the
+    // chunked phase report numbers including the entire monolithic timeout
+    // window, with no way to tell where one ended and the other started. The
+    // heartbeat tracks a per-phase start timestamp; the first phase is
+    // `monolithic`, the second is `chunked staging`, and the ticks carry that
+    // label so non-TTY scrapers see the transition.
     vi.useFakeTimers();
     try {
       execMock.mockResolvedValueOnce({ exitCode: 143, stdout: '', stderr: 'SIGTERM' });
@@ -218,11 +215,10 @@ describe('stageAllFiles', () => {
     await expect(stageAllFiles('/repo')).rejects.toBeInstanceOf(GitError);
   });
 
-  // 2026-04-24 eval Finding 10: the chunked fallback used to re-throw
-  // the low-level AbortError when its own timeout fired. Operators saw
-  // a generic "The operation was aborted" with no recovery direction;
-  // the typed error carries the environment-variable override so the
-  // next `download --force` is guided by the error message itself.
+  // Re-throwing the low-level AbortError when the chunked fallback's own
+  // timeout fires shows operators a generic "The operation was aborted" with
+  // no recovery direction; the typed error carries the environment-variable
+  // override so the next `download --force` is guided by the message itself.
   it('raises GitIndexingTimeoutError when the chunked fallback itself times out', async () => {
     const { GitIndexingTimeoutError } = await import('../../errors/git.js');
     // Monolithic SIGTERM timeout → fall through to chunked.

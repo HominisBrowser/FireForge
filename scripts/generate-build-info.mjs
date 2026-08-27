@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 // Stamps dist/build-info.json with the source commit and dirty state so a
-// tarball's identity is more than its semver: three distinct builds shipped
-// as "0.41.0" before this existed, one of them from an entirely
-// uncommitted tree that no commit can reproduce.
+// tarball's identity is more than its semver: several distinct builds can
+// ship under one version, including one from an entirely uncommitted tree
+// that no commit can reproduce.
 //
 // `--loud` (used by prepack) additionally prints a prominent stderr banner
 // when the tree is dirty; FIREFORGE_PACK_STRICT=1 turns that banner into a

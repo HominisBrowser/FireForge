@@ -3,10 +3,10 @@
  * Attribute-variant block helpers for the tokens CSS scaffold.
  *
  * `fireforge token add --mode` can author the base `:root { }` block and the
- * dark `@media (prefers-color-scheme: dark)` block, but there was no way to
- * target an attribute-keyed selector such as `:root[data-skin="precision"]`
- * or `:root[data-private]` — forcing those override blocks to be hand-edited.
- * These helpers locate (or compute the insertion point for) a top-level
+ * dark `@media (prefers-color-scheme: dark)` block, but not an
+ * attribute-keyed selector such as `:root[data-skin="precision"]` or
+ * `:root[data-private]`, which would otherwise have to be hand-edited. These
+ * helpers locate (or compute the insertion point for) a top-level
  * `:root<variant>` block so `token-manager.ts` can splice a declaration into
  * it, keeping all token authoring in the CLI.
  */

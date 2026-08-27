@@ -198,6 +198,24 @@ test` brackets the harness run with `snapshotEngineGeneration` and
     waiter) and `engine-session-lock.test.ts` (queue position in the wait
     line).
 
+## Lock release (0.44.0)
+
+`releaseLockIfOwned(lockPath)` in `src/core/file-lock.ts` is the ownership-
+checked removal for callers that hold no acquisition token — currently the
+signal-time furnace sweeper (`forceReleaseFurnaceLocksForActiveOperations`).
+It verifies the PID before removing, which is the half of `releaseLock`'s
+guard a sweeper can still perform: the sweeper knows which lock paths its own
+operations opened but not the per-acquisition UUID they minted. The bare `rm`
+it replaced could delete a lock a DIFFERENT process had acquired in the window
+between our operation dying and the sweep running.
+
+`completeJournalRollback` in `src/core/furnace-operation.ts` owns the
+mutation-body rollback sequence that eight furnace commands previously
+duplicated verbatim. The ordering is the invariant: `markRolledBack()` runs
+BEFORE the restore, so a restore that itself fails does not leave the
+lifecycle wrapper replaying the same journal on the way out; and the ORIGINAL
+error is rethrown unless the rollback is what failed.
+
 ## Who owns what
 
 | Module                            | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |

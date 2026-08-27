@@ -31,7 +31,7 @@ describe('lintObserverTopics', () => {
     expect(issues).toHaveLength(0);
   });
 
-  it('parses multi-line call sites instead of skipping them (field report B5)', () => {
+  it('parses multi-line call sites instead of skipping them', () => {
     const source = [
       'Services.obs.notifyObservers(',
       '  null,',

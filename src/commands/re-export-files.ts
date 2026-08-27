@@ -2,10 +2,14 @@
 import { join } from 'node:path';
 
 import { getProjectPaths } from '../core/config.js';
-import { appendHistory, confirmDestructive, type ConflictReport } from '../core/destructive.js';
+import {
+  appendHistory,
+  confirmDestructive,
+  type ConflictReport,
+  type DestructiveOpResult,
+} from '../core/destructive.js';
 import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
-import { computeProjectedLintRegressions } from '../core/lint-projection.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
 import {
@@ -16,6 +20,7 @@ import {
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../core/patch-lint.js';
+import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
 import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
@@ -27,17 +32,13 @@ import { info, outro, success, warn } from '../utils/logger.js';
 import { runPatchLint } from './export-shared.js';
 
 /**
- * Computes the effective `tier` and `lintIgnore` carrying both the
- * patch's existing values and the CLI flag overrides. Pure helper —
- * extracted from {@link reExportFilesInPlace} both to share with the
- * standard re-export path conceptually and to keep the orchestrator
- * function under the per-file LOC budget.
+ * Computes the effective `tier` and `lintIgnore` carrying both the patch's
+ * existing values and the CLI flag overrides.
  *
- * Tier resolution: the CLI flag takes precedence; the patch's existing
- * tier is the fallback. Lint-ignore resolution: union of the patch's
- * existing list and the CLI flag values, de-duplicated; an empty
- * result returns `undefined` so the caller can drop the field rather
- * than write an empty array.
+ * Tier resolution: the CLI flag takes precedence; the patch's existing tier
+ * is the fallback. Lint-ignore resolution: union of the patch's existing list
+ * and the CLI flag values, de-duplicated; an empty result returns `undefined`
+ * so the caller can drop the field rather than write an empty array.
  */
 function resolveEffectiveTierAndLintIgnore(
   target: PatchMetadata,
@@ -57,12 +58,10 @@ function resolveEffectiveTierAndLintIgnore(
 
 /**
  * Projects the cross-patch context (replace the target entry with its
- * shrunken self), runs the patch-queue lint against the projection,
- * and returns a conflict report only for regressions introduced *by*
- * this shrink. Pre-existing cross-patch errors are surfaced as a
- * non-blocking warning so the user does not walk away thinking the
- * queue is clean. Extracted from {@link reExportFilesInPlace} to keep
- * the orchestrator function under the per-file LOC budget.
+ * shrunken self), runs the patch-queue lint against the projection, and
+ * returns a conflict report only for regressions introduced *by* this
+ * shrink. Pre-existing cross-patch errors are surfaced as a non-blocking
+ * warning so the user does not walk away thinking the queue is clean.
  */
 async function runProjectedCrossPatchLint(
   patchesDir: string,
@@ -107,9 +106,8 @@ async function runProjectedCrossPatchLint(
 
 /**
  * Builds the `Partial<PatchMetadata>` payload for the `--files` write,
- * folding in the CLI flag overrides for `tier` and `lintIgnore` only
- * when the operator actually asked for them. Extracted to keep
- * {@link reExportFilesInPlace} under the per-file LOC budget.
+ * folding in the CLI flag overrides for `tier` and `lintIgnore` only when the
+ * operator actually asked for them.
  */
 function buildFilesModeMetadataUpdates(
   actualProjectedFiles: string[],
@@ -138,7 +136,7 @@ async function confirmFilesModeProjection(args: {
   missingFiles: string[];
   options: ReExportOptions;
   conflicts: ConflictReport | null;
-}): Promise<'proceed' | 'dry-run' | 'cancelled'> {
+}): Promise<DestructiveOpResult> {
   const {
     target,
     retained,
@@ -191,17 +189,16 @@ async function confirmFilesModeProjection(args: {
 }
 
 /**
- * Handles `re-export --files` end-to-end: computes the projected diff,
- * runs the per-patch and cross-patch lint against a context in which the
- * target patch has been replaced with the projected state, gates on
+ * Handles `re-export --files` end-to-end: computes the projected diff, runs
+ * the per-patch and cross-patch lint against a context in which the target
+ * patch has been replaced with the projected state, gates on
  * confirmDestructive, and writes atomically.
  *
  * Lives outside reExportSinglePatch because the --files path has strictly
  * different semantics (authoritative file list, destructive shrink
- * confirmation, cross-patch projection lint) and shoehorning it through
- * the generic single-patch helper is what led to the earlier bug where
- * the projection lint ran against the current (unchanged) queue instead
- * of the projected state.
+ * confirmation, cross-patch projection lint). Shoehorning it through the
+ * generic single-patch helper is what makes the projection lint run against
+ * the current (unchanged) queue instead of the projected state.
  */
 export async function reExportFilesInPlace(
   paths: ReturnType<typeof getProjectPaths>,
@@ -220,8 +217,8 @@ export async function reExportFilesInPlace(
 
   const requested = [...new Set(filesOption)].sort();
 
-  // Stale-furnace-source gate (0.37.0 item 4): same refusal as the generic
-  // re-export path — the projected diff would capture stale deployed copies.
+  // Stale-furnace-source gate: same refusal as the generic re-export path —
+  // the projected diff would capture stale deployed copies.
   await enforceFreshFurnaceSources(
     paths.root,
     requested,
@@ -277,16 +274,14 @@ export async function reExportFilesInPlace(
     );
   }
 
-  // Run the per-patch lint against the projected diff. This mirrors what
+  // Run the per-patch lint against the projected diff, mirroring what
   // runPatchLint does in the standard re-export path. The target patch's
   // `lintIgnore` threads through so a shrink of an advisory-noisy-but-
   // intentional patch (branding bundle, localised-resource pack) does not
   // have to choose between `--skip-lint` (blunt) and the full rebase path.
-  // `target.tier` threads the explicit branding-threshold opt-in for
-  // the branding patch that also touches a non-allowlisted sibling.
-  // CLI flags `--tier` and `--lint-ignore` participate too, with
-  // append/union semantics on the lint-ignore list (matching the
-  // standard re-export path).
+  // `target.tier` threads the explicit branding-threshold opt-in. CLI flags
+  // `--tier` and `--lint-ignore` participate too, with append/union
+  // semantics on the lint-ignore list.
   const { effectiveTier, effectiveLintIgnore, flagIgnoreSet } = resolveEffectiveTierAndLintIgnore(
     target,
     options
@@ -340,7 +335,7 @@ export async function reExportFilesInPlace(
     conflicts,
   });
 
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Re-export cancelled');
     return;
   }
@@ -350,13 +345,13 @@ export async function reExportFilesInPlace(
     return;
   }
 
-  // Execute the write. At this point the projected diff is guaranteed to
-  // be non-empty and `actualProjectedFiles` is guaranteed to match the
-  // paths the body really touches, so the manifest cannot drift from the
-  // regenerated patch body. The history append runs inside the same patch
-  // directory lock as the mutation (via the onCommitted hook) so two
-  // concurrent re-exports cannot interleave records and a crash between
-  // mutation and append cannot orphan the audit trail.
+  // Execute the write. At this point the projected diff is guaranteed
+  // non-empty and `actualProjectedFiles` is guaranteed to match the paths the
+  // body really touches, so the manifest cannot drift from the regenerated
+  // patch body. The history append runs inside the same patch directory lock
+  // as the mutation (via the onCommitted hook) so two concurrent re-exports
+  // cannot interleave records and a crash between mutation and append cannot
+  // orphan the audit trail.
   await updatePatchAndMetadata(
     paths.patches,
     target.filename,

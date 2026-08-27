@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../build-baseline.js', () => ({
   readBuildBaseline: vi.fn(),
 }));
@@ -18,10 +20,7 @@ vi.mock('../git-status.js', () => ({
   getUntrackedFiles: vi.fn(),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { warn } from '../../utils/logger.js';
 import { readBuildBaseline } from '../build-baseline.js';
@@ -159,14 +158,13 @@ describe('checkStaleBuildForTest', () => {
     expect(result.stale).toBe(false);
   });
 
-  it('skips fingerprint-matching files when the baseline carries packageableFingerprints (Finding #18)', async () => {
-    // Regression guard: with per-file fingerprints in the baseline, the
-    // stale check must not flag a path whose live content still matches
-    // what it was at build time — that is the motivating case for
-    // projects with persistent patch/furnace workdir diffs that stay
-    // byte-identical between builds. Use a real temp engine directory
-    // because `node:fs/promises.readFile` is an ESM namespace export
-    // that vitest cannot spy on.
+  it('skips fingerprint-matching files when the baseline carries packageableFingerprints', async () => {
+    // With per-file fingerprints in the baseline, the stale check must not
+    // flag a path whose live content still matches what it was at build
+    // time — the case for projects with persistent patch/furnace workdir
+    // diffs that stay byte-identical between builds. Uses a real temp engine
+    // directory because `node:fs/promises.readFile` is an ESM namespace
+    // export that vitest cannot spy on.
     const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const { join: joinPath } = await import('node:path');
@@ -274,7 +272,7 @@ describe('formatStaleBuildWarning', () => {
 });
 
 describe('findUncoveredRequestPaths', () => {
-  it('treats an absent coverage claim as full coverage (pre-0.37.0 baselines)', () => {
+  it('treats an absent coverage claim as full coverage', () => {
     expect(findUncoveredRequestPaths(undefined, ['browser/foo/test/unit/test_a.js'])).toEqual([]);
   });
 
@@ -368,6 +366,24 @@ describe('formatTestCoverageRefusal', () => {
     expect(message).toContain('not missing coverage');
   });
 
+  it('names --extend-coverage, so the union is discoverable at the moment it is needed', () => {
+    // A scoped build REPLACES the claim, so under concurrent sessions a
+    // peer's build erases coverage you still hold. The flag that fixes that
+    // is useless if the refusal never mentions it.
+    const message = formatTestCoverageRefusal(
+      ['browser/components/history/test/browser/browser_hist.js'],
+      ['browser/components/tiles/test/browser/browser_a.js']
+    );
+    expect(message).toContain('--extend-coverage');
+    expect(message).toContain('engine HEAD');
+    expect(message).toContain('engine/mozconfig');
+  });
+
+  it('omits the --extend-coverage hint when there is no scoped rebuild to attach it to', () => {
+    const message = formatTestCoverageRefusal([FULL_SUITE_REQUEST], ['browser/foo/test']);
+    expect(message).not.toContain('--extend-coverage');
+  });
+
   it('suggests a full rebuild for a full-suite request instead of an empty --build list', () => {
     const message = formatTestCoverageRefusal([FULL_SUITE_REQUEST], ['browser/foo/test']);
     expect(message).toContain(FULL_SUITE_REQUEST);
@@ -420,7 +436,7 @@ describe('checkStaticComponentsStale', () => {
     expect(mockGit).not.toHaveBeenCalled();
   });
 
-  it('returns fresh on a pre-0.38.0 baseline without an anchor', async () => {
+  it('returns fresh on a baseline without an anchor', async () => {
     const legacy = anchoredBaseline();
     delete (legacy as { staticComponentsBaseline?: unknown }).staticComponentsBaseline;
     const result = await checkStaticComponentsStale('/project/engine', legacy);

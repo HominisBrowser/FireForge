@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/furnace-validate.js', () => ({
   validateAllComponents: vi.fn(),
   validateComponent: vi.fn(),
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   getFurnacePaths: vi.fn(() => ({
     furnaceConfig: '/project/furnace.json',
     componentsDir: '/project/components',
@@ -20,14 +26,7 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  info: vi.fn(),
-  success: vi.fn(),
-  error: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { getFurnacePaths } from '../../core/furnace-config.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';

@@ -20,6 +20,11 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/git.js', () => ({
+  // Engine-precondition ladder (assertEngineGitReady). Stubbed to the
+  // healthy-engine answers so these suites test their own subject.
+  getHead: vi.fn(() => Promise.resolve('0'.repeat(40))),
+  isMissingHeadError: vi.fn(() => false),
+
   isGitRepository: vi.fn().mockResolvedValue(true),
   getStatusWithCodes: vi.fn().mockResolvedValue([]),
 }));
@@ -93,6 +98,12 @@ vi.mock('../../core/furnace-stale-export.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -224,7 +235,7 @@ describe('exportCommand - directory support', () => {
     expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/b.js');
   });
 
-  // ── 0.37.0 item 4: stale-furnace gate wiring ──
+  // Stale-furnace gate wiring.
 
   it('runs the stale-furnace gate over the export files before diffing', async () => {
     mockStatForPaths(['dir']);
@@ -279,7 +290,7 @@ describe('exportCommand - directory support', () => {
     ).rejects.toThrow(/moz-tiles/);
   });
 
-  it('auto-excludes directory-derived files owned by other patches (0.34.0)', async () => {
+  it('auto-excludes directory-derived files owned by other patches', async () => {
     mockStatForPaths(['dir']);
     vi.mocked(getModifiedFilesInDir).mockResolvedValue(['dir/a.js', 'dir/b.js']);
     vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
@@ -319,7 +330,7 @@ describe('exportCommand - directory support', () => {
     );
   });
 
-  it('errors clearly when every directory file is owned by other patches (0.34.0)', async () => {
+  it('errors clearly when every directory file is owned by other patches', async () => {
     mockStatForPaths(['dir']);
     vi.mocked(getModifiedFilesInDir).mockResolvedValue(['dir/a.js']);
     vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
@@ -869,7 +880,7 @@ describe('registerExport', () => {
   });
 });
 
-describe('exportCommand — engine/ prefix normalization (Finding #4)', () => {
+describe('exportCommand — engine/ prefix normalization', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStatForPaths([]);
@@ -879,12 +890,10 @@ describe('exportCommand — engine/ prefix normalization (Finding #4)', () => {
 
   it('accepts a repo-root-relative engine/ prefix on a file path', async () => {
     // Operator pastes the path with the `engine/` prefix (the same form
-    // `register`/`test` already accept). Before the fix, export threw
-    // `File "engine/browser/base/content/fresh-extra-a.js" has no changes
-    // to export.` because status returns paths relative to engine/ and
-    // the explicit prefix double-rooted the candidate. After the fix,
-    // `stripEnginePrefix` normalises the input so the status lookup
-    // sees the engine-relative form.
+    // `register`/`test` already accept). Without the strip, export throws
+    // `File "engine/browser/base/content/foo.js" has no changes to export.`
+    // because status returns paths relative to engine/ and the explicit
+    // prefix double-roots the candidate.
     vi.mocked(getStatusWithCodes).mockResolvedValue([
       { status: 'M', file: 'browser/base/content/fresh-extra-a.js' },
     ]);

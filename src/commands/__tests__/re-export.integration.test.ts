@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,12 +14,18 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
-import { info, warn } from '../../utils/logger.js';
+import { info, success, warn } from '../../utils/logger.js';
 import { reExportCommand } from '../re-export.js';
 import { withDryRunPurityGuard } from '../re-export-bulk-scan.js';
 import { verifyCommand } from '../verify.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -229,6 +235,49 @@ describe('reExportCommand integration', () => {
     await expect(readProjectText(projectRoot, 'patches/patches.json')).resolves.toBe(
       makeManifest()
     );
+  });
+
+  it('reports Unchanged and does not rewrite a patch whose body did not move', async () => {
+    await writeFiles(join(projectRoot, 'engine'), { 'tracked.txt': 'changed\n' });
+    await reExportCommand(projectRoot, ['001'], {});
+
+    const patchPath = join(projectRoot, 'patches/001-ui-test.patch');
+    const firstBody = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    const firstMtime = (await stat(patchPath)).mtimeMs;
+    expect(vi.mocked(success)).toHaveBeenCalledWith('Re-exported 001-ui-test.patch');
+
+    vi.clearAllMocks();
+    // Nothing in engine/ moved between the two runs.
+    await reExportCommand(projectRoot, ['001'], {});
+
+    expect(vi.mocked(info)).toHaveBeenCalledWith('Unchanged 001-ui-test.patch');
+    expect(vi.mocked(success)).not.toHaveBeenCalledWith('Re-exported 001-ui-test.patch');
+    await expect(readProjectText(projectRoot, 'patches/001-ui-test.patch')).resolves.toBe(
+      firstBody
+    );
+    expect((await stat(patchPath)).mtimeMs).toBe(firstMtime);
+  });
+
+  it('round-trips a tracked binary file as a GIT binary patch, not a stub', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    const cert = 'certs/release_primary.der';
+    await mkdir(join(engineDir, 'certs'), { recursive: true });
+    await writeFile(join(engineDir, cert), Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04]));
+    await runGit(engineDir, ['add', '--', cert]);
+    await runGit(engineDir, ['commit', '-m', 'add cert']);
+    await writeFile(join(engineDir, cert), Buffer.from([0x00, 0x09, 0x63, 0x21, 0x44]));
+
+    await writeFiles(projectRoot, {
+      'patches/patches.json': makeManifest().replace('"tracked.txt"', `"${cert}"`),
+    });
+
+    await reExportCommand(projectRoot, ['001'], {});
+
+    const body = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expect(body).toContain('GIT binary patch');
+    expect(body).not.toContain('Binary files');
+    // And the queue this produced is one `verify` accepts.
+    await expect(verifyCommand(projectRoot)).resolves.toBeUndefined();
   });
 
   it('--scan-file assigns only the intended adjacent new file', async () => {
@@ -503,16 +552,12 @@ describe('reExportCommand integration', () => {
 });
 
 /**
- * Adjacent-unmanaged reproduction. The consumer field report claimed a
- * scan-less re-export "silently ignores brand-new adjacent files"; the
- * same-directory
- * advisory has in fact shipped since v0.27.2, so that sub-claim is
- * partially REFUTED — the first test pins the advisory firing for the
- * exact reported shape (a new test created beside a patch's owned tests).
- * The second test documents the residual blind spot the claim most likely
- * observed: a new file in a subdirectory that is not the dirname of any
- * owned file is still not reported (deliberately out of scope — recursive
- * directory scans are too noisy on Firefox-sized trees).
+ * Adjacent-unmanaged reproduction. The same-directory advisory fires for the
+ * canonical shape — a new test created beside a patch's owned tests — which
+ * the first test pins. The second documents the residual blind spot: a new
+ * file in a subdirectory that is not the dirname of any owned file is
+ * deliberately not reported, because recursive directory scans are too noisy
+ * on Firefox-sized trees.
  */
 describe('reExportCommand adjacency advisory', () => {
   let projectRoot: string;
@@ -971,14 +1016,11 @@ describe('reExportCommand --expect and fail-closed drift baseline', () => {
 });
 
 /**
- * The consumer reported two `--refuse-foreign-drift` refusals that printed
- * "Re-export refused" yet exited 0. Reproduction against the
- * consumer's exact build identity showed every refusal variant exits 1 from
- * the CLI itself — the observed 0 was the shell pipeline's exit status
- * (`… | tee`). These pins make the in-process contract explicit: a fully
- * refused run rejects with the refusal (naming every patch), and the refusal
- * outranks the generic all-failed abort. The cross-process exit code is
- * pinned in src/__tests__/re-export-refusal-exit.test.ts.
+ * A fully refused `--refuse-foreign-drift` run must reject with the refusal
+ * (naming every patch), and the refusal must outrank the generic all-failed
+ * abort. A consumer observing exit 0 is reading the shell pipeline's status
+ * (`… | tee`), not the CLI's; the cross-process exit code is pinned in
+ * src/__tests__/re-export-refusal-exit.test.ts.
  */
 describe('reExportCommand fully-refused run exit contract', () => {
   const FILE_A = 'comp/a.js';
@@ -1077,13 +1119,12 @@ describe('reExportCommand fully-refused run exit contract', () => {
 });
 
 /**
- * The 0.40.0 field incident — a real re-export of patch A followed by a
- * `--dry-run` of unrelated patch B, after which patch A's just-written
- * export had reverted. The suspected materialize-and-restore mechanism does
- * not exist on the re-export path; these tests pin the exact observed
- * sequence byte-for-byte (patch artifacts, manifest, engine working tree,
- * AND the git index — the one place a dry-run can legally touch state), plus
- * the untracked-binary staging variant and the runtime purity guard itself.
+ * Dry-run purity: a real re-export of patch A followed by a `--dry-run` of
+ * unrelated patch B must leave A's just-written export intact. These tests
+ * pin the exact sequence byte-for-byte (patch artifacts, manifest, engine
+ * working tree, AND the git index — the one place a dry-run can legally
+ * touch state), plus the untracked-binary staging variant and the runtime
+ * purity guard itself.
  */
 describe('reExportCommand dry-run purity', () => {
   let projectRoot: string;

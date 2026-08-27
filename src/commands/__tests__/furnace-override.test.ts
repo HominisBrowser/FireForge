@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import { furnaceOverrideCommand } from '../furnace/override.js';
 
 vi.mock('../../core/config.js', () => ({
@@ -22,6 +23,10 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -65,7 +70,11 @@ vi.mock('../../core/furnace-rollback.js', () => ({
   restoreRollbackJournalOrThrow: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -117,15 +126,7 @@ vi.mock('../../utils/fs.js', () => ({
   writeJson: vi.fn(),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  cancel: vi.fn(),
-  isCancel: vi.fn(() => false),
-  note: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('@clack/prompts', () => ({
   select: vi.fn(),
@@ -139,9 +140,9 @@ import * as p from '@clack/prompts';
 import {
   furnaceConfigExists,
   loadFurnaceConfig,
+  updateFurnaceState,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
 import { getComponentDetails, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
 import { copyFile, ensureDir, pathExists, writeJson } from '../../utils/fs.js';
 import { cancel, isCancel } from '../../utils/logger.js';
@@ -458,11 +459,19 @@ describe('furnaceOverrideCommand', () => {
       })
     ).rejects.toThrow(/rollback failed/);
 
-    expect(vi.mocked(recordFurnaceRollbackFailure)).toHaveBeenCalledWith(
-      '/project',
-      'override-rollback',
-      'component "moz-button": rollback failed'
-    );
+    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
+    // state — rather than the internal call. The rollback sequence now lives
+    // in `completeJournalRollback`, whose call to the recorder is
+    // intra-module and so invisible to a module-level spy.
+    const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1] as
+      | ((state: Record<string, unknown>) => {
+          pendingRepair?: { operation: string; reason: string };
+        })
+      | undefined;
+    expect(updater).toBeTypeOf('function');
+    const pendingRepair = updater?.({}).pendingRepair;
+    expect(pendingRepair?.operation).toBe('override-rollback');
+    expect(pendingRepair?.reason).toBe('component "moz-button": rollback failed');
   });
 
   describe('interactive mode', () => {
@@ -573,21 +582,18 @@ describe('furnaceOverrideCommand', () => {
 
   describe('classification collisions', () => {
     it('promotes a stock-bucket component to override instead of refusing', async () => {
-      // Before 0.16.0 this path threw `already registered as a stock
-      // component. Remove it from config.stock before creating an override`
-      // — awkward guidance because `furnace scan` auto-populates
-      // `config.stock`, so the operator had to hand-edit furnace.json
-      // before every override of a stock widget. The new behaviour splices
-      // the name out of the stock bucket in-memory and lets
-      // `writeFurnaceConfig` persist the promotion atomically alongside
+      // Refusing with "already registered as a stock component. Remove it
+      // from config.stock before creating an override" is awkward guidance,
+      // because `furnace scan` auto-populates `config.stock` — so the
+      // operator has to hand-edit furnace.json before every override of a
+      // stock widget. The name is spliced out of the stock bucket in-memory
+      // and `writeFurnaceConfig` persists the promotion atomically alongside
       // the new override entry.
-      // Persisted state returned by every load, including the fresh
-      // read inside `saveOverrideConfig` that the concurrent-race fix
-      // added. Using `mockResolvedValue` (not `mockResolvedValueOnce`)
-      // so both the outer load and the inner lock-side re-read see the
-      // same on-disk state — otherwise the fresh read returned the
-      // empty default from the module-level mock and the stock promotion
-      // silently vanished.
+      //
+      // `mockResolvedValue` (not `...Once`) so both the outer load and the
+      // inner lock-side re-read see the same on-disk state — otherwise the
+      // fresh read returns the empty default from the module-level mock and
+      // the stock promotion silently vanishes.
       vi.mocked(furnaceConfigExists).mockResolvedValue(true);
       vi.mocked(loadFurnaceConfig).mockResolvedValue({
         version: 1,
@@ -640,19 +646,17 @@ describe('furnaceOverrideCommand', () => {
 
   describe('concurrent write-safety', () => {
     it('re-reads furnace.json inside the lock to preserve concurrent overrides', async () => {
-      // Eval 2: two parallel `furnace override` calls exited 0 and both
-      // override directories landed on disk, but furnace.json kept only
-      // one entry. Root cause: the command loaded its config snapshot
-      // BEFORE entering the operation lock and wrote that stale snapshot
-      // back at the end — overwriting the other writer's addition.
+      // Two parallel `furnace override` calls can exit 0 with both override
+      // directories on disk while furnace.json keeps only one entry: the
+      // command loads its config snapshot BEFORE entering the operation lock
+      // and writes that stale snapshot back at the end, overwriting the
+      // other writer's addition.
       //
       // This test simulates the ordering: the first `loadFurnaceConfig`
-      // call (outer pre-lock) sees an empty-overrides snapshot; the
-      // second call (inner post-lock re-read) sees a snapshot that a
-      // concurrent process has already extended with `moz-card`.
-      // The final `writeFurnaceConfig` must preserve `moz-card` AND
-      // add `moz-button` — if it drops to the outer snapshot, the
-      // regression is re-introduced.
+      // call (outer pre-lock) sees an empty-overrides snapshot; the second
+      // (inner post-lock re-read) sees a snapshot a concurrent process has
+      // already extended with `moz-card`. The final `writeFurnaceConfig`
+      // must preserve `moz-card` AND add `moz-button`.
       vi.mocked(furnaceConfigExists).mockResolvedValue(true);
       vi.mocked(loadFurnaceConfig)
         .mockResolvedValueOnce({

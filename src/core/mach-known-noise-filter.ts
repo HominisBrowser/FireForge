@@ -1,30 +1,29 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Terminal-echo filter for the KNOWN upstream mozsystemmonitor teardown
- * traceback (0.37.0 item 8).
+ * Terminal-echo filter for the known upstream mozsystemmonitor teardown
+ * traceback.
  *
- * Every headless test run against the 153-beta engine ends with an
+ * Headless test runs against recent engines can end with an
  * `AttributeError: 'SystemResourceMonitor' object has no attribute
  * 'stop_time'` traceback at harness teardown — upstream noise that sits
- * exactly where a reader looks for the failure summary. 0.36.0 already made
- * real failure lines beat this traceback in CLASSIFICATION; this filter
- * closes the PRESENTATION gap by collapsing the echoed traceback to one
- * labeled line.
+ * exactly where a reader looks for the failure summary. Real failure lines
+ * already beat this traceback in CLASSIFICATION; this filter closes the
+ * PRESENTATION gap by collapsing the echoed traceback to one labeled line.
  *
  * Scope is deliberately narrow:
  *   - Only the terminal ECHO is filtered. The captured stdout/stderr strings
- *     stay raw — the classifier (`test-harness-crash.ts`) depends on the
- *     raw traceback for its green-summary override and secondary-noise
+ *     stay raw — the classifier (`test-harness-crash.ts`) depends on the raw
+ *     traceback for its green-summary override and secondary-noise
  *     detection.
  *   - Only the exact documented incident is collapsed, and every condition
  *     must hold: an `AttributeError` on `SystemResourceMonitor` naming one
- *     of the two known attributes (`stop_time`, `poll_interval` — the
- *     0.34.0 guard family), AND a `mozsystemmonitor/resourcemonitor.py`
- *     stack frame, AND a previously-seen SUITE_END shutdown marker (shared
- *     across the run's stdout/stderr filter instances — the marker usually
- *     lands on stdout while the traceback lands on stderr). A novel
- *     attribute, a novel exception type in resourcemonitor.py, or a
- *     pre-shutdown occurrence is echoed verbatim, always.
+ *     of the two known attributes (`stop_time`, `poll_interval`), AND a
+ *     `mozsystemmonitor/resourcemonitor.py` stack frame, AND a
+ *     previously-seen SUITE_END shutdown marker (shared across the run's
+ *     stdout/stderr filter instances — the marker usually lands on stdout
+ *     while the traceback lands on stderr). A novel attribute, a novel
+ *     exception type in resourcemonitor.py, or a pre-shutdown occurrence is
+ *     echoed verbatim, always.
  *   - The hold buffer is bounded; on overflow the block is flushed verbatim
  *     and the filter returns to pass-through, so output is never lost.
  */
@@ -35,10 +34,9 @@ const CHAINED_EXCEPTION_CONNECTOR_PATTERN =
 
 /**
  * Closed allowlist of the documented teardown family's attributes:
- * `stop_time` (the 0.37.0 item-8 incident) and `poll_interval` (the same
- * mozsystemmonitor init failure the 0.34.0 resource-guard family covers —
- * `test-harness-crash.ts` already classifies it as recognized noise). Any
- * other missing attribute is a NEW upstream defect and must print verbatim.
+ * `stop_time` and `poll_interval` (the same mozsystemmonitor init failure
+ * `test-harness-crash.ts` already classifies as recognized noise). Any other
+ * missing attribute is a NEW upstream defect and must print verbatim.
  */
 const KNOWN_TEARDOWN_ATTRIBUTE_ERROR_PATTERN =
   /AttributeError: 'SystemResourceMonitor' object has no attribute '(?:stop_time|poll_interval)'/;

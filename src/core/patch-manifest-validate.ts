@@ -20,6 +20,7 @@ import {
   isValidFirefoxVersion,
   PATCH_CATEGORIES,
 } from '../utils/validation.js';
+import { checkDocumentVersion, describeNewerDocument } from './state-file.js';
 
 function parseForwardImports(data: unknown, label: string): PatchStagedForwardImport[] {
   if (!isArray(data)) {
@@ -117,16 +118,13 @@ function validatePatchMetadata(data: unknown, index: number): PatchMetadata {
 
   const filesAffected = rec.stringArray('filesAffected');
 
-  // Optional fields. These were silently stripped before the 0.17.0
-  // branding-tier work reached in and audited the loader — the 0.16.0
-  // `lintIgnore` escape hatch demonstrably round-tripped only through
-  // test fixtures that mocked `loadPatchesManifest` directly. Real
-  // operator edits to `patches.json` were dropped on every subsequent
-  // load, so any patch that relied on `lintIgnore` to suppress a
-  // specific lint rule was quietly re-tripped the next time the
-  // manifest validated. Preserve both the pre-existing `lintIgnore`
-  // and the new `tier` field here so future-added optional fields
-  // have a ready template to follow.
+  // Optional fields. These are easy to strip silently — an escape hatch
+  // that round-trips only through test fixtures mocking
+  // `loadPatchesManifest` looks fine while real operator edits to
+  // `patches.json` are dropped on every load, so a patch relying on
+  // `lintIgnore` to suppress a rule is quietly re-tripped the next time the
+  // manifest validates. Preserve both `lintIgnore` and `tier` here; future
+  // optional fields follow the same template.
   const lintIgnore = rec.optionalStringArray('lintIgnore');
 
   const rawTier = rec.raw('tier');
@@ -164,14 +162,31 @@ function validatePatchMetadata(data: unknown, index: number): PatchMetadata {
   return result;
 }
 
-/** Validates raw patches.json data and returns the typed manifest shape. */
+/** Manifest schema version this build writes and understands. */
+const PATCHES_MANIFEST_VERSION = 1;
+
+/**
+ * Validates raw patches.json data and returns the typed manifest shape.
+ *
+ * @param data - Parsed patches.json content
+ * @returns The validated manifest
+ */
 export function validatePatchesManifest(data: unknown): PatchesManifest {
   if (!isObject(data)) {
     throw new Error('patches.json must be a JSON object');
   }
 
-  if (data['version'] !== 1) {
-    throw new Error('patches.json version must be 1');
+  // A manifest from a NEWER FireForge is not corrupt. The bare "version must
+  // be 1" this replaced sent the operator looking for damage in a file that
+  // only needed a newer build to read it.
+  const version = checkDocumentVersion(data, 'version', PATCHES_MANIFEST_VERSION);
+  if (version.kind === 'newer') {
+    throw new Error(
+      describeNewerDocument('patches manifest', version.found, PATCHES_MANIFEST_VERSION)
+    );
+  }
+  if (version.kind !== 'current') {
+    throw new Error(`patches.json version must be ${PATCHES_MANIFEST_VERSION}`);
   }
 
   if (!isArray(data['patches'])) {

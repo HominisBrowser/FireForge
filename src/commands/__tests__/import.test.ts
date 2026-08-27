@@ -21,6 +21,11 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/git.js', () => ({
+  // Engine-precondition ladder (assertEngineGitReady). Stubbed to the
+  // healthy-engine answers so these suites test their own subject.
+  isGitRepository: vi.fn(() => Promise.resolve(true)),
+  isMissingHeadError: vi.fn(() => false),
+
   getHead: vi.fn(),
 }));
 
@@ -70,6 +75,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -166,7 +177,7 @@ describe('importCommand drift handling', () => {
 
     try {
       await expect(importCommand('/fake/root')).rejects.toThrow(
-        'Engine HEAD has drifted from base commit. Re-run with --force to bypass drift check.'
+        /Re-run with --yes to accept the drift, or --force to also bypass the patch-integrity gate/
       );
     } finally {
       restoreTTY();
@@ -181,7 +192,7 @@ describe('importCommand drift handling', () => {
 
     try {
       await expect(importCommand('/fake/root', { continue: true })).rejects.toThrow(
-        'Engine HEAD has drifted from base commit. Re-run with --force to bypass drift check.'
+        /Re-run with --yes to accept the drift, or --force to also bypass the patch-integrity gate/
       );
     } finally {
       restoreTTY();
@@ -503,9 +514,8 @@ describe('importCommand drift handling', () => {
     await expect(importCommand('/fake/root')).rejects.toThrow('Failed to apply 1 patch(es)');
 
     // updateState is called with a transactional updater function. Invoke it
-    // with a freshly-loaded state to verify the shape of the write, since the
-    // caller-captured state from line 261 of import.ts must NOT flow into the
-    // write path (Finding 1 in the concurrency audit).
+    // with a freshly-loaded state to verify the shape of the write, since
+    // the caller-captured state must NOT flow into the write path.
     expect(updateState).toHaveBeenCalledTimes(1);
     const [root, updater] = vi.mocked(updateState).mock.calls[0] ?? [];
     expect(root).toBe('/fake/root');
@@ -527,11 +537,10 @@ describe('importCommand drift handling', () => {
   });
 
   it('scopes --until to skip integrity issues on out-of-range later patches', async () => {
-    // Eval regression: with `--until 001-foo.patch`, an integrity problem on
-    // 002-bar.patch used to block the import because `validatePatchIntegrity`
-    // scanned every patch and no filter applied before the blocking check.
-    // The fix filters the returned issues to the `--until` range, so a broken
-    // later patch does not prevent replaying an earlier good subset.
+    // With `--until 001-foo.patch`, an integrity problem on 002-bar.patch
+    // must not block the import: `validatePatchIntegrity` scans every patch,
+    // so the returned issues are filtered to the `--until` range and a
+    // broken later patch does not prevent replaying an earlier good subset.
     vi.mocked(getHead).mockResolvedValue('base-commit');
     vi.mocked(countPatches).mockResolvedValue(2);
     vi.mocked(loadPatchesManifest).mockResolvedValue({
@@ -632,11 +641,10 @@ describe('importCommand drift handling', () => {
   });
 
   it('resolves a bare-ordinal --until so in-range integrity issues still block', async () => {
-    // Regression (2026-07-05 review, M5): `--until 5` only matched
-    // FILENAMES when building the scope set, so the set came back empty —
-    // integrity issues inside the range were silently dropped, dry-run
-    // previewed "0 patches", and the apply loop (whose matcher accepts
-    // ordinals) applied 1..5 anyway.
+    // `--until 5` matching FILENAMES only makes the scope set come back
+    // empty — integrity issues inside the range are silently dropped,
+    // dry-run previews "0 patches", and the apply loop (whose matcher
+    // accepts ordinals) applies 1..5 anyway.
     vi.mocked(getHead).mockResolvedValue('base-commit');
     vi.mocked(countPatches).mockResolvedValue(2);
     vi.mocked(loadPatchesManifest).mockResolvedValue({

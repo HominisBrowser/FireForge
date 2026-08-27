@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Attribution of projected placement lint errors, split out of
- * export-flow.ts for the line budget. A placement projection lints one
- * merged queue — the renumbered existing patches plus a synthetic entry
- * for the pending patch — so its errors used to render as one flat list
- * that read as though the NEW patch caused every one of them. A
- * renumbering that re-evaluates pre-existing staged relationships (455
- * importing a module created by 456, legal only at their current
- * ordinals) then sent the operator auditing a perfectly fine export.
+ * export-flow.ts for the line budget.
  *
- * Consumed by export-flow.ts; no top-level registrar is exported and none
- * is wanted.
+ * A placement projection lints one merged queue — the renumbered existing
+ * patches plus a synthetic entry for the pending patch — so a flat error
+ * list reads as though the NEW patch caused every one of them. A renumbering
+ * that re-evaluates pre-existing staged relationships (patch 455 importing a
+ * module created by 456, legal only at their current ordinals) then sends
+ * the operator auditing a perfectly fine export.
+ *
+ * Consumed by export-flow.ts; no top-level registrar is exported and none is
+ * wanted.
  */
 import { formatPatchLintIssue } from '../core/patch-lint.js';
 import type { PatchRenameEntry } from '../core/patch-manifest.js';

@@ -21,6 +21,10 @@ vi.mock('../../core/git-file-ops.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   getFurnacePaths: vi.fn(() => ({
     furnaceConfig: '/project/furnace.json',
     componentsDir: '/project/components',
@@ -52,6 +56,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   info: vi.fn(),
   intro: vi.fn(),
   outro: vi.fn(),
@@ -262,12 +272,10 @@ describe('furnaceDiffCommand', () => {
   });
 
   it('diffs against baseCommit even when the engine worktree matches the override', async () => {
-    // This is the regression guard for the reported bug: after an override
-    // has been applied, the engine working tree equals the override, and the
-    // old implementation read from the worktree and silently reported no
-    // differences. The new implementation reads from baseCommit via git
-    // show, so even with a worktree matching the override content, a real
-    // difference against pristine Firefox is still detected.
+    // After an override has been applied, the engine working tree equals
+    // the override — so an implementation reading from the worktree silently
+    // reports no differences. Reading from baseCommit via `git show` detects
+    // the real difference against pristine Firefox even then.
     vi.mocked(readdir).mockResolvedValue([
       { name: 'moz-card.css', isFile: () => true },
     ] as unknown as Awaited<ReturnType<typeof readdir>>);
@@ -335,16 +343,12 @@ describe('furnaceDiffCommand', () => {
   });
 
   it('checks the locale tree for a custom component .ftl instead of targetPath', async () => {
-    // Regression guard for Finding #7: `diff` previously probed
-    // `engine/<customConfig.targetPath>/<name>.ftl`, but `furnace apply`
-    // actually writes the `.ftl` to `engine/<ftlDir>/<name>.ftl`. After a
-    // clean apply, the on-disk deployed file existed in the locale tree
-    // and its contents matched the workspace, yet `diff` reported "not
-    // yet deployed to engine (new file)" because it looked in the wrong
-    // directory. The fix mirrors `applyCustomFtlFile`'s path computation;
-    // a passing diff must now probe
-    // `engine/toolkit/locales/en-US/toolkit/global/moz-lab-pill.ftl`
-    // (the default FTL location used by resolveFtlDir).
+    // `diff` must probe `engine/<ftlDir>/<name>.ftl`, where
+    // `furnace apply` actually writes the `.ftl` — not
+    // `engine/<customConfig.targetPath>/<name>.ftl`. Probing the wrong
+    // directory reports "not yet deployed to engine (new file)" after a
+    // clean apply, while the deployed file sits in the locale tree with
+    // matching contents.
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
@@ -387,7 +391,7 @@ describe('furnaceDiffCommand', () => {
     ).toBe(false);
 
     // With workspace and deployed contents equal, the command must not
-    // report "not yet deployed to engine" — that was the eval repro.
+    // report "not yet deployed to engine".
     expect(info).not.toHaveBeenCalledWith(expect.stringContaining('not yet deployed to engine'));
   });
 });

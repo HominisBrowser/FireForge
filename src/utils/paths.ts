@@ -22,15 +22,17 @@ export function normalizePathSlashes(path: string): string {
  * Strips a leading `engine/` (or `engine\\`) segment from a user-supplied
  * path so the same command invocation accepts both repo-root-relative paths
  * (`engine/browser/base/content/foo.js`) and engine-relative paths
- * (`browser/base/content/foo.js`). The match is case-insensitive because
- * default macOS and Windows filesystems treat `Engine/` and `engine/` as
- * the same directory; a literal lowercase-only check previously left `mach`
- * / the manifest writers resolving against a wrongly-cased prefix. Leading
- * whitespace is ignored so tab-completed inputs don't slip past the strip.
+ * (`browser/base/content/foo.js`).
  *
- * The return value is trimmed of the same leading whitespace when the
- * prefix matched, and otherwise passed through verbatim — callers that
- * care about internal whitespace can trim on their side.
+ * The match is case-insensitive because default macOS and Windows
+ * filesystems treat `Engine/` and `engine/` as the same directory; a literal
+ * lowercase-only check leaves `mach` and the manifest writers resolving
+ * against a wrongly-cased prefix. Leading whitespace is ignored so
+ * tab-completed inputs do not slip past the strip.
+ *
+ * The return value is trimmed of that leading whitespace when the prefix
+ * matched, and otherwise passed through verbatim — callers that care about
+ * internal whitespace can trim on their side.
  *
  * @param filePath Path as provided by the user
  * @returns Path relative to the engine directory (or the original when the

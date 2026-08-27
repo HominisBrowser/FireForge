@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { select, text } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig, loadState } from '../../core/config.js';
+import { stdioIsInteractive } from '../../core/destructive.js';
 import {
   createDefaultFurnaceConfig,
   furnaceConfigExists,
@@ -13,7 +14,8 @@ import {
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { resolveFtlDir } from '../../core/furnace-constants.js';
-import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
+import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
+import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import {
   CUSTOM_ELEMENT_TAG_PATTERN,
   CUSTOM_ELEMENT_TAG_RULES,
@@ -21,7 +23,6 @@ import {
 import {
   createRollbackJournal,
   recordCreatedDir,
-  restoreRollbackJournalOrThrow,
   type RollbackJournal,
   snapshotFile,
 } from '../../core/furnace-rollback.js';
@@ -46,9 +47,14 @@ async function loadAuthoringFurnaceConfig(
 
 /**
  * Copies the source files needed for a new override into the workspace.
+ * @param engineDir - Absolute path to the engine checkout
  * @param srcDir - Original component directory in the engine checkout
  * @param destDir - Destination override directory in the workspace
+ * @param componentName - Custom element tag name being overridden
+ * @param hasFTL - Whether the component ships a localized `.ftl` file
  * @param overrideType - Requested override mode
+ * @param ftlDir - Engine-relative directory the shared `.ftl` deploys into
+ * @param journal - Rollback journal every write is recorded in
  * @returns Filenames copied into the override directory
  */
 async function copyOverrideFiles(
@@ -127,10 +133,10 @@ async function copyOverrideFiles(
 /**
  * Writes override metadata to disk and updates furnace.json with the new
  * override entry. Re-reads the current on-disk furnace.json inside the
- * operation lock and splices the new entry onto the fresh state so two
- * concurrent `furnace override` commands cannot race their read-modify
- * -write cycles into a single surviving entry (eval 2: parallel overrides
- * both reported success but furnace.json kept only the second writer).
+ * operation lock and splices the new entry onto the fresh state, so two
+ * concurrent `furnace override` commands cannot race their read-modify-write
+ * cycles into a single surviving entry — otherwise both report success and
+ * furnace.json keeps only the second writer's.
  */
 async function saveOverrideConfig(
   projectRoot: string,
@@ -235,23 +241,12 @@ async function performOverrideMutations(args: {
 
         return filesCopied;
       } catch (error: unknown) {
-        // This body owns its rollback end to end, so tell the lifecycle
-        // wrapper not to restore the same journal again on the way out.
-        ctx.markRolledBack();
-        try {
-          await restoreRollbackJournalOrThrow(
-            journal,
-            `Failed to override component "${args.componentName}"`
-          );
-        } catch (rollbackError) {
-          await recordFurnaceRollbackFailure(
-            args.projectRoot,
-            'override-rollback',
-            `component "${args.componentName}": ${toError(rollbackError).message}`
-          );
-          throw rollbackError;
-        }
-        throw error;
+        return await completeJournalRollback(ctx, journal, error, {
+          projectRoot: args.projectRoot,
+          operation: 'override-rollback',
+          failureMessage: `Failed to override component "${args.componentName}"`,
+          subject: `component "${args.componentName}"`,
+        });
       }
     }
   );
@@ -313,7 +308,7 @@ export async function furnaceOverrideCommand(
   name?: string,
   options: FurnaceOverrideOptions = {}
 ): Promise<void> {
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
 
   intro('Furnace Override');
 
@@ -339,9 +334,7 @@ export async function furnaceOverrideCommand(
   }
 
   // Verify engine/ exists (config-independent precondition)
-  if (!(await pathExists(paths.engine))) {
-    throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
-  }
+  await assertFurnaceEngineReady(projectRoot);
 
   // Load the current config without auto-creating a new furnace.json. A user
   // cancelling out of the interactive prompts should not leave a fresh config
@@ -510,7 +503,7 @@ export async function furnaceBatchOverrideCommand(
 ): Promise<void> {
   intro(`Furnace Override (batch: ${names.length} components)`);
 
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
   if (!options.type && !isInteractive) {
     throw new InvalidArgumentError(
       'Override type is required for batch override in non-interactive mode. Use -t css-only or -t full.',
@@ -519,9 +512,7 @@ export async function furnaceBatchOverrideCommand(
   }
 
   const paths = getProjectPaths(projectRoot);
-  if (!(await pathExists(paths.engine))) {
-    throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
-  }
+  await assertFurnaceEngineReady(projectRoot);
 
   // Validate all names upfront before any mutations
   for (const name of names) {

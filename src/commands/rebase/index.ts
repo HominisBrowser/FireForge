@@ -31,7 +31,12 @@ import { CorruptRebaseSessionError, RebaseSessionExistsError } from '../../error
 import type { CommandContext } from '../../types/cli.js';
 import type { RebaseOptions } from '../../types/commands/index.js';
 import { info, intro, outro, spinner } from '../../utils/logger.js';
-import { commanderArgParser, pickDefined } from '../../utils/options.js';
+import {
+  addWaitLockOption,
+  commanderArgParser,
+  pickDefined,
+  resolveWaitLockSeconds,
+} from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { handleAbort } from './abort.js';
 import { confirmDirtyEngineReset } from './confirm.js';
@@ -52,8 +57,8 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
   const existing = await readRebaseSession(projectRoot);
   if (existing.present) {
     // A corrupt session must not be reported as "already in progress": that
-    // message tells the operator to run --continue or --abort, and before
-    // 0.41.0 both of those then reported "no rebase session in progress".
+    // message tells the operator to run --continue or --abort, and both of
+    // those then report "no rebase session in progress".
     if (!existing.valid) {
       throw new CorruptRebaseSessionError(getRebaseSessionPath(projectRoot), existing.reason);
     }
@@ -62,9 +67,9 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
 
   const paths = getProjectPaths(projectRoot);
 
-  // Keeps the rebase-specific tail on the unborn-HEAD remediation (2026-04-24
-  // eval Finding 11: --dry-run used to skip this check entirely, so the real
-  // run then failed on `git rev-parse HEAD`).
+  // Keeps the rebase-specific tail on the unborn-HEAD remediation. Skipping
+  // this check in --dry-run leaves the real run to fail on
+  // `git rev-parse HEAD`.
   await assertEngineGitReady(paths.engine, { unbornHeadSuffix: ', then retry the rebase.' });
 
   const config = await loadConfig(projectRoot);
@@ -144,7 +149,13 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
   await saveRebaseSession(projectRoot, session);
 
   // Run the patch loop
-  await runPatchLoop(projectRoot, session, paths, maxFuzz);
+  await runPatchLoop(
+    projectRoot,
+    session,
+    paths,
+    maxFuzz,
+    resolveWaitLockSeconds(options.waitLock)
+  );
 }
 
 // ── Public API ──
@@ -163,7 +174,11 @@ export async function rebaseCommand(
   }
 
   if (options.continue) {
-    return handleContinue(projectRoot, options.maxFuzz ?? 3);
+    return handleContinue(
+      projectRoot,
+      options.maxFuzz ?? 3,
+      resolveWaitLockSeconds(options.waitLock)
+    );
   }
 
   return handleFreshStart(projectRoot, options);
@@ -174,7 +189,7 @@ export function registerRebase(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const command = program
     .command('rebase')
     .description(
       'Semi-automated Firefox source version upgrade — apply patches with drift tolerance and re-export'
@@ -187,18 +202,19 @@ export function registerRebase(
       'Maximum context-reduction steps for git apply -C<n> (fuzz-like drift tolerance; default: 3)',
       commanderArgParser((v) => parsePositiveIntegerFlag('--max-fuzz', v))
     )
-    .option('-y, --yes', 'Skip dirty-tree confirmation prompt')
-    .action(
-      withErrorHandling(
-        async (options: {
-          continue?: boolean;
-          abort?: boolean;
-          dryRun?: boolean;
-          maxFuzz?: number;
-          yes?: boolean;
-        }) => {
-          await rebaseCommand(getProjectRoot(), pickDefined(options));
-        }
-      )
-    );
+    .option('-y, --yes', 'Skip dirty-tree confirmation prompt');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (options: {
+        continue?: boolean;
+        abort?: boolean;
+        dryRun?: boolean;
+        maxFuzz?: number;
+        yes?: boolean;
+        waitLock?: boolean | number;
+      }) => {
+        await rebaseCommand(getProjectRoot(), pickDefined(options));
+      }
+    )
+  );
 }

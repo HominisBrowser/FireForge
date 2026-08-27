@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { type FSWatcher, watch as fsWatch } from 'node:fs';
 
-import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { loadConfig } from '../../core/config.js';
 import { applyAllComponents, computeComponentChecksums } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
-import {
-  furnaceConfigExists,
-  getFurnacePaths,
-  loadFurnaceConfig,
-} from '../../core/furnace-config.js';
+import { getFurnacePaths } from '../../core/furnace-config.js';
 import { isComponentSourceFile } from '../../core/furnace-constants.js';
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
+import { assertFurnaceReady } from '../../core/furnace-precondition.js';
 import {
   getPersistableAppliedEntry,
   persistSingleComponentState,
@@ -90,11 +87,10 @@ function classifyWatchApplyError(err: unknown): string {
 async function runWatchLoop(projectRoot: string): Promise<void> {
   const furnacePaths = getFurnacePaths(projectRoot);
   // Both categories are eligible targets. The set is fixed; only existence
-  // varies over time — a component dir created AFTER watch started (e.g.
-  // the user runs `furnace create` in another terminal) must be picked up
-  // without restarting watch. The prior one-shot `pathExists` check at
-  // startup captured only the dirs that existed then, leaving any later
-  // creation invisible.
+  // varies over time — a component dir created AFTER watch started (the user
+  // running `furnace create` in another terminal) must be picked up without
+  // restarting watch. A one-shot `pathExists` check at startup captures only
+  // the dirs that existed then, leaving any later creation invisible.
   const candidateDirs = [furnacePaths.overridesDir, furnacePaths.customDir];
   const watchDirs: string[] = [];
   const watchers = new Map<string, FSWatcher>();
@@ -279,20 +275,7 @@ export async function furnaceApplyCommand(
 ): Promise<void> {
   intro(name ? `Furnace Apply (${name})` : 'Furnace Apply');
 
-  // Verify engine exists
-  const paths = getProjectPaths(projectRoot);
-  if (!(await pathExists(paths.engine))) {
-    throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
-  }
-
-  // Load furnace config
-  if (!(await furnaceConfigExists(projectRoot))) {
-    throw new FurnaceError(
-      'No furnace.json found. Run "fireforge furnace create" or "fireforge furnace override" to get started.'
-    );
-  }
-
-  const config = await loadFurnaceConfig(projectRoot);
+  const { config } = await assertFurnaceReady(projectRoot);
 
   const overrideCount = Object.keys(config.overrides).length;
   const customCount = Object.keys(config.custom).length;
@@ -328,12 +311,12 @@ export async function furnaceApplyCommand(
       // `persistState: false` for a NAMED apply is load-bearing: the batch
       // persist path replaces `appliedChecksums` wholesale with only this
       // run's entries, and the batch loops filter to the named component —
-      // so routing a named apply through it persisted a state file
-      // containing ONLY that component, wiping every other component's
-      // checksums. Orphan detection and deleted-file undeploy both key on
-      // that state, so the wiped components' stale engine files became
-      // invisible to apply AND to `furnace validate`. Named apply merges
-      // per-component state below, exactly like `furnace deploy <name>`.
+      // so routing a named apply through it persists a state file containing
+      // ONLY that component, wiping every other component's checksums.
+      // Orphan detection and deleted-file undeploy both key on that state,
+      // so the wiped components' stale engine files become invisible to
+      // apply AND to `furnace validate`. Named apply merges per-component
+      // state below, exactly like `furnace deploy <name>`.
       const applyResult = await applyAllComponents(projectRoot, dryRun, {
         operationContext: ctx,
         ...(name !== undefined ? { componentName: name, persistState: false } : {}),

@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Run orchestration for `fireforge test`: bounded harness-crash retries
- * (field reports C1/C2) and sequential per-file sharding of multi-path
- * invocations (field report C3).
+ * Run orchestration for `fireforge test`: bounded harness-crash retries and
+ * sequential per-file sharding of multi-path invocations.
  *
- * Sharding exists because passing several browser-chrome files to one
- * mach invocation destabilizes later files — cross-file profile/pref
- * bleed in the shared mochitest profile made the second file time out at
- * window-open while each file passed in isolation. Sequential single-file
- * harness runs cost startup time but make results reproducible; the
- * combined invocation stays available via `--no-shard`.
+ * Sharding exists because passing several browser-chrome files to one mach
+ * invocation destabilizes later files — cross-file profile/pref bleed in the
+ * shared mochitest profile makes the second file time out at window-open
+ * while each file passes in isolation. Sequential single-file harness runs
+ * cost startup time but make results reproducible; the combined invocation
+ * stays available via `--no-shard`.
  */
 
 import { type DisplaySleepState, probeDisplaySleepState } from '../core/display-state.js';
@@ -19,6 +18,7 @@ import {
   testWithOutput,
   xpcshellTestWithOutput,
 } from '../core/mach.js';
+import { changedPrefNoiseVerdictNote } from '../core/test-changed-prefs.js';
 import {
   buildHarnessCrashMessage,
   classifyHarnessRun,
@@ -42,8 +42,8 @@ export const DEFAULT_HARNESS_RETRIES = 2;
  * Which mach command a run dispatches to. Single-suite runs use the
  * suite-specific command (`mach xpcshell-test` / `mach mochitest`), which
  * skips the mozlog resource monitor that crashes generic `mach test` on a
- * broken host (field report E1). `generic` is the historical `mach test`
- * path (mixed/all-tests runs, or the `--generic-mach-test` opt-out).
+ * broken host. `generic` is the plain `mach test` path (mixed/all-tests runs,
+ * or the `--generic-mach-test` opt-out).
  */
 export type TestSuite = 'xpcshell' | 'mochitest' | 'generic';
 
@@ -152,6 +152,14 @@ async function runTestsWithRetriesInner(
     );
   }
 
+  // A verdict whose every unexpected result is time-driven pref noise is
+  // still a FAIL — only the note changes, so a `unexpected=2` line is not
+  // read as two real assertion failures.
+  if (verdict.kind === 'test-failures' && verdict.note === undefined) {
+    const prefNote = changedPrefNoiseVerdictNote(`${result.stdout}\n${result.stderr}`);
+    if (prefNote !== undefined) verdict = { ...verdict, note: prefNote };
+  }
+
   const displayState = await probeDisplayStateForStall(verdict, ctx.headless);
   if (displayState !== undefined) {
     const note = headedDisplayAsleepVerdictNote(verdict.signature as HarnessCrashSignature, {
@@ -166,10 +174,10 @@ async function runTestsWithRetriesInner(
 }
 
 /**
- * Probes the display's power state for a HEADED no-output stall, and only
- * for that shape. Every other outcome — a passing run, a real
- * test failure, a headless run, any other crash shape — skips the probe
- * entirely, so the common paths spawn nothing.
+ * Probes the display's power state for a HEADED no-output stall, and only for
+ * that shape. Every other outcome — a passing run, a real test failure, a
+ * headless run, any other crash shape — skips the probe entirely, so the
+ * common paths spawn nothing.
  *
  * @returns The measured state, or undefined when the shape does not apply
  */
@@ -185,11 +193,10 @@ async function probeDisplayStateForStall(
 
 /**
  * One sequential harness invocation of a sharded run: a requested path
- * argument and the mach paths dispatched for it. A file argument is a
- * group of one; a directory argument groups its enumerated test files so
- * the whole directory still runs in ONE browser instance (cross-file
- * state carries within a directory run exactly like the pre-enumeration
- * behavior).
+ * argument and the mach paths dispatched for it. A file argument is a group
+ * of one; a directory argument groups its enumerated test files so the whole
+ * directory still runs in ONE browser instance, keeping cross-file state
+ * behaviour within a directory run.
  */
 export interface ShardGroup {
   /** The path argument as the operator passed it (display label). */

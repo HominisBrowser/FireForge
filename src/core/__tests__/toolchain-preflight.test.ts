@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import {
   formatMajorVersionHopNotice,
   formatToolchainMismatchMessage,
@@ -22,9 +23,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 /** Registers an execFile behaviour keyed by binary name. */
 function mockHostVersions(outputs: Record<string, string | Error>): void {
@@ -163,9 +162,8 @@ describe('toolchain preflight', () => {
 
   describe('runToolchainPreflight', () => {
     it('reports a definitive mismatch when every resolvable candidate is older than the tree minimum', async () => {
-      // The drill's exact configuration: cbindgen 0.29.1 on the host
-      // PATH (and no state-dir copy), 0.29.4 declared by the
-      // freshly-hopped tree.
+      // cbindgen 0.29.1 on the host PATH (and no state-dir copy), 0.29.4
+      // declared by the freshly-hopped tree.
       await writeMinimumFixtures(engineDir, {
         cbindgen: BINDGEN_CONFIGURE_FIXTURE,
         rust: MOZBOOT_UTIL_FIXTURE,
@@ -186,11 +184,11 @@ describe('toolchain preflight', () => {
       ]);
     });
 
-    it('passes when the mozbuild state-dir copy meets the minimum even though the PATH copy is older (0.35.0 false positive)', async () => {
-      // Field configuration: fireforge bootstrap installed 0.29.4 into
-      // ~/.mozbuild/cbindgen/cbindgen (which configure tries FIRST), while
-      // an old 0.29.1 from ~/.cargo/bin shadowed it on PATH. 0.35.0
-      // probed only the PATH copy and blocked a build that succeeds.
+    it('passes when the mozbuild state-dir copy meets the minimum even though the PATH copy is older', async () => {
+      // `fireforge bootstrap` installs 0.29.4 into ~/.mozbuild/cbindgen/
+      // cbindgen, which configure tries FIRST, while an old 0.29.1 from
+      // ~/.cargo/bin shadows it on PATH. Probing only the PATH copy blocks a
+      // build that succeeds.
       await writeMinimumFixtures(engineDir, { cbindgen: BINDGEN_CONFIGURE_FIXTURE });
       mockHostVersions({
         [stateDirCbindgen]: 'cbindgen 0.29.4\n',
@@ -282,8 +280,8 @@ describe('toolchain preflight', () => {
     });
 
     it('compares component-wise, not lexically', async () => {
-      // 0.30 vs 0.29.4: lexical comparison would call "0.30" lower than
-      // "0.29.4" only if compared digit-by-digit — pin the numeric path.
+      // 0.30 vs 0.29.4: a lexical comparison calls "0.30" lower. Pin the
+      // numeric path.
       await writeMinimumFixtures(engineDir, { cbindgen: BINDGEN_CONFIGURE_FIXTURE });
       mockHostVersions({ cbindgen: 'cbindgen 0.30\n' });
 

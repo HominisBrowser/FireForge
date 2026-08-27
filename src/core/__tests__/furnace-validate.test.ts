@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createFsMock } from '../../test-utils/module-mocks.js';
 import {
   validateAccessibility,
@@ -15,14 +16,14 @@ vi.mock('../../utils/fs.js', () => createFsMock());
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() =>
     Promise.resolve({
@@ -37,10 +38,10 @@ vi.mock('../config.js', () => ({
 
 vi.mock('../furnace-config.js', () => ({
   getFurnacePaths: vi.fn(() => ({
-    configPath: '/project/furnace.json',
-    componentsDir: '/project/components',
-    customDir: '/project/components/custom',
-    overridesDir: '/project/components/overrides',
+    configPath: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    customDir: nativePath('/project/components/custom'),
+    overridesDir: nativePath('/project/components/overrides'),
   })),
   loadFurnaceConfig: vi.fn(),
 }));
@@ -606,15 +607,15 @@ describe('validateCompatibility', () => {
   it('allows stock token references that already exist in the original override CSS', async () => {
     mockPathExists.mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/components/overrides/moz-card/moz-card.css' ||
-          path === '/project/engine/toolkit/content/widgets/moz-card/moz-card.css'
+        path === nativePath('/components/overrides/moz-card/moz-card.css') ||
+          path === nativePath('/project/engine/toolkit/content/widgets/moz-card/moz-card.css')
       )
     );
     mockReadText.mockImplementation((path: string) => {
-      if (path === '/components/overrides/moz-card/moz-card.css') {
+      if (path === nativePath('/components/overrides/moz-card/moz-card.css')) {
         return Promise.resolve(':host { border: var(--card-border); }');
       }
-      if (path === '/project/engine/toolkit/content/widgets/moz-card/moz-card.css') {
+      if (path === nativePath('/project/engine/toolkit/content/widgets/moz-card/moz-card.css')) {
         return Promise.resolve(':host { border: var(--card-border); }');
       }
       return Promise.resolve('');
@@ -633,7 +634,7 @@ describe('validateCompatibility', () => {
 
   it('still flags non-prefixed variables for custom components', async () => {
     mockPathExists.mockImplementation((path: string) =>
-      Promise.resolve(path === '/components/custom/moz-audit-card/moz-audit-card.css')
+      Promise.resolve(path === nativePath('/components/custom/moz-audit-card/moz-audit-card.css'))
     );
     mockReadText.mockResolvedValue(':host { border: var(--card-border); }');
 
@@ -844,7 +845,7 @@ describe('validateCompatibility', () => {
 
   it('rejects raw CSS color values', async () => {
     mockPathExists.mockImplementation((path: string) =>
-      Promise.resolve(path === '/components/custom/moz-audit-card/moz-audit-card.css')
+      Promise.resolve(path === nativePath('/components/custom/moz-audit-card/moz-audit-card.css'))
     );
     mockReadText.mockResolvedValue(':host { color: #ff0000; }');
 
@@ -866,7 +867,7 @@ describe('validateCompatibility', () => {
     };
 
     mockPathExists.mockImplementation((path: string) =>
-      Promise.resolve(path === '/components/custom/moz-audit-card/moz-audit-card.css')
+      Promise.resolve(path === nativePath('/components/custom/moz-audit-card/moz-audit-card.css'))
     );
     mockReadText.mockResolvedValue(':host { border: var(--card-border); }');
 
@@ -888,7 +889,7 @@ describe('validateCompatibility', () => {
     };
 
     mockPathExists.mockImplementation((path: string) =>
-      Promise.resolve(path === '/components/custom/moz-audit-card/moz-audit-card.css')
+      Promise.resolve(path === nativePath('/components/custom/moz-audit-card/moz-audit-card.css'))
     );
     mockReadText.mockResolvedValue(
       ':host { transform: translateX(var(--cross-component-channel)); }'
@@ -907,7 +908,7 @@ describe('validateCompatibility', () => {
 
   it('auto-exempts component-local variables declared and consumed in the same CSS file', async () => {
     mockPathExists.mockImplementation((path: string) =>
-      Promise.resolve(path === '/components/custom/moz-audit-card/moz-audit-card.css')
+      Promise.resolve(path === nativePath('/components/custom/moz-audit-card/moz-audit-card.css'))
     );
     // `--cam-x` is both declared and read in this file — runtime state
     // channel, not a design token reference.
@@ -926,7 +927,7 @@ describe('validateCompatibility', () => {
 
   it('still flags referenced-but-not-declared unprefixed variables', async () => {
     mockPathExists.mockImplementation((path: string) =>
-      Promise.resolve(path === '/components/custom/moz-audit-card/moz-audit-card.css')
+      Promise.resolve(path === nativePath('/components/custom/moz-audit-card/moz-audit-card.css'))
     );
     // `--rogue` is read but never declared in this component's CSS — not a
     // local runtime channel, so the token-prefix violation should still fire.
@@ -1266,12 +1267,12 @@ describe('validateTokenLink', () => {
       // Check the more-specific filename first — `browser.xhtml` is a suffix
       // of `mybrowser.xhtml`, so `endsWith('browser.xhtml')` on the wrong
       // branch would swallow the token link and flip the assertion.
-      if (path.endsWith('/mybrowser.xhtml')) {
+      if (path.endsWith(nativePath('/mybrowser.xhtml'))) {
         return Promise.resolve(
           '<window><link rel="stylesheet" href="testbrowser-tokens.css" /><html:body></html:body></window>'
         );
       }
-      if (path.endsWith('/browser.xhtml')) {
+      if (path.endsWith(nativePath('/browser.xhtml'))) {
         return Promise.resolve('<window><html:body></html:body></window>');
       }
       return Promise.resolve('');
@@ -1440,8 +1441,13 @@ describe('validateCompatibility — compose and CSS hygiene warnings', () => {
   };
 
   function mockComponentFiles(files: Record<string, string>): void {
-    mockPathExists.mockImplementation((path: string) => Promise.resolve(path in files));
-    mockReadText.mockImplementation((path: string) => Promise.resolve(files[path] ?? ''));
+    // The table is written POSIX-style; the code under test builds its
+    // lookups with `join`, so re-key on the host's separators.
+    const native = Object.fromEntries(
+      Object.entries(files).map(([path, content]) => [nativePath(path), content])
+    );
+    mockPathExists.mockImplementation((path: string) => Promise.resolve(path in native));
+    mockReadText.mockImplementation((path: string) => Promise.resolve(native[path] ?? ''));
   }
 
   it('flags excessive !important usage', async () => {

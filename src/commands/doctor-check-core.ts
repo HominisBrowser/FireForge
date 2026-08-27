@@ -43,6 +43,15 @@ export interface DoctorCheckContext {
    * re-parse the file; undefined when the config could not be loaded.
    */
   furnaceConfig: FurnaceConfig | undefined;
+  /**
+   * State this run actually mutated, one human-readable line per write.
+   * Repairs run inside the check loop while the exit code is computed only
+   * after every check, so a repair can land and the run still exit non-zero
+   * on an unrelated check — and a non-zero exit reads as "nothing happened".
+   * The runner prints these before the summary in every branch so a write is
+   * never invisible.
+   */
+  mutations: string[];
 }
 
 /**

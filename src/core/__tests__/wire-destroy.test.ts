@@ -19,6 +19,7 @@ vi.mock('../parser-fallback.js', async (importOriginal) => ({
   withParserFallback: parserFallbackMock,
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import { addDestroyAST, addDestroyToBrowserInit, legacyAddDestroy } from '../wire-destroy.js';
 
@@ -155,7 +156,7 @@ const gBrowserInit = {
       true
     );
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/browser/base/content/browser-init.js',
+      nativePath('/engine/browser/base/content/browser-init.js'),
       expect.stringContaining('DockController.destroy();')
     );
   });
@@ -171,7 +172,7 @@ const gBrowserInit = {
       true
     );
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/browser/base/content/browser-init.js',
+      nativePath('/engine/browser/base/content/browser-init.js'),
       expect.stringContaining('DockController.destroy();')
     );
   });

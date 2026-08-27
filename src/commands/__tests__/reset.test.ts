@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { makeGitStatusEntry, makeProjectPaths } from '../../test-utils/index.js';
+import { makeGitStatusEntry, makeProjectPaths, nativePath } from '../../test-utils/index.js';
 
 const loggerState = vi.hoisted(() => ({
   spinnerStop: vi.fn(),
@@ -197,13 +197,16 @@ describe('resetCommand', () => {
     expect(spinner).toHaveBeenCalledWith('Resetting changes...');
     expect(loggerState.spinnerStop).toHaveBeenCalledWith('Changes reset');
     expect(outro).toHaveBeenCalledWith('Working tree restored to clean state');
-    expect(resetChanges).toHaveBeenCalledWith('/project/engine');
+    expect(resetChanges).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 
   it('runs the components.conf staleness advisory after a successful reset', async () => {
     await expect(resetCommand('/project', { yes: true })).resolves.toBeUndefined();
 
-    expect(warnIfStaticComponentsStale).toHaveBeenCalledWith('/project', '/project/engine');
+    expect(warnIfStaticComponentsStale).toHaveBeenCalledWith(
+      '/project',
+      nativePath('/project/engine')
+    );
   });
 
   it('skips the staleness advisory on dry-run and clean-tree paths', async () => {

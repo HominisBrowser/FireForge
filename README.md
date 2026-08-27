@@ -23,7 +23,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 - Node.js 22.22.1+
 - Python 3
 - Git
-- The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows (never tested on Windows tbh — smoke-run process cleanup there uses `taskkill /T /F` and is best-effort)
+- The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows.
 - Watchman, if you want `fireforge watch` (optional)
 
 ## Getting Started
@@ -88,15 +88,6 @@ Queue maintenance lives under `fireforge patch`: `patch compact` closes ordinal 
 new one as a single transaction — including staged-dependency owner rewrites — with
 `--dry-run` support. `patch rename` also supports `--category` and `--order`; every
 queue-mutating patch command accepts `--wait-lock [seconds]`.
-
-Under several concurrent sessions a held lock is the normal state, not an exceptional
-one, so a wait budget is a property of the session rather than of the invocation: set
-`FIREFORGE_WAIT_LOCK=<seconds>` and every lock-taking command that was not given an
-explicit `--wait-lock` uses it. A wait whose queue position keeps improving is granted a
-fresh budget on each advance (up to four times the requested one, capped at an hour), so
-a long-but-moving queue no longer expires one position from the head; a queue that stops
-moving still starves on the budget you asked for, and the refusal names the position you
-reached.
 
 `fireforge test <directory>` runs exactly that directory: FireForge enumerates the
 directory's test files and passes the explicit file list to mach in one invocation, so

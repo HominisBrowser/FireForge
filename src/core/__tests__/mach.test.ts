@@ -56,6 +56,7 @@ vi.mock('../../utils/platform.js', () => ({
   getPlatform: vi.fn(() => 'linux'),
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import { getPlatform } from '../../utils/platform.js';
 
 describe('hasBuildArtifacts', () => {
@@ -72,7 +73,7 @@ describe('hasBuildArtifacts', () => {
   it('returns the single valid obj-* directory when only one has dist', async () => {
     vi.mocked(readdir).mockResolvedValue(['obj-debug', 'obj-stale'] as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === '/engine/obj-debug/dist')
+      Promise.resolve(path === nativePath('/engine/obj-debug/dist'))
     );
 
     await expect(hasBuildArtifacts('/engine')).resolves.toEqual({
@@ -106,7 +107,8 @@ describe('hasBuildArtifacts', () => {
     vi.mocked(readdir).mockResolvedValue(['obj-debug'] as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/engine/obj-debug/dist' || path === '/engine/obj-debug/mozinfo.json'
+        path === nativePath('/engine/obj-debug/dist') ||
+          path === nativePath('/engine/obj-debug/mozinfo.json')
       )
     );
     vi.mocked(readJson).mockResolvedValue({
@@ -131,8 +133,9 @@ describe('hasBuildArtifacts', () => {
     vi.mocked(readdir).mockResolvedValue(['obj-aarch64-apple-darwin25.4.0'] as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/Users/dev/project2/engine/obj-aarch64-apple-darwin25.4.0/dist' ||
-          path === '/Users/dev/project2/engine/obj-aarch64-apple-darwin25.4.0/mozinfo.json'
+        path === nativePath('/Users/dev/project2/engine/obj-aarch64-apple-darwin25.4.0/dist') ||
+          path ===
+            nativePath('/Users/dev/project2/engine/obj-aarch64-apple-darwin25.4.0/mozinfo.json')
       )
     );
     vi.mocked(readJson).mockResolvedValue({
@@ -151,8 +154,8 @@ describe('hasBuildArtifacts', () => {
     vi.mocked(readdir).mockResolvedValue(['obj-aarch64-apple-darwin25.4.0'] as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine/obj-aarch64-apple-darwin25.4.0/dist' ||
-          path === '/project/engine/obj-aarch64-apple-darwin25.4.0/mozinfo.json'
+        path === nativePath('/project/engine/obj-aarch64-apple-darwin25.4.0/dist') ||
+          path === nativePath('/project/engine/obj-aarch64-apple-darwin25.4.0/mozinfo.json')
       )
     );
     vi.mocked(readJson).mockResolvedValue({
@@ -170,7 +173,8 @@ describe('hasBuildArtifacts', () => {
     vi.mocked(readdir).mockResolvedValue(['obj-debug'] as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/engine/obj-debug/dist' || path === '/engine/obj-debug/mozinfo.json'
+        path === nativePath('/engine/obj-debug/dist') ||
+          path === nativePath('/engine/obj-debug/mozinfo.json')
       )
     );
     vi.mocked(readJson).mockResolvedValue({ topsrcdir: 42 });
@@ -201,13 +205,14 @@ describe('hasRunnableBundle', () => {
     vi.mocked(getPlatform).mockReturnValue('linux');
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/engine/obj-debug/dist' || path === '/engine/obj-debug/dist/bin/mybrowser'
+        path === nativePath('/engine/obj-debug/dist') ||
+          path === nativePath('/engine/obj-debug/dist/bin/mybrowser')
       )
     );
 
     const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
     expect(result.runnable).toBe(true);
-    expect(result.expectedPath).toBe('obj-debug/dist/bin/mybrowser');
+    expect(result.expectedPath).toBe(nativePath('obj-debug/dist/bin/mybrowser'));
   });
 
   it('reports the expected path when the Linux binary is missing', async () => {
@@ -216,25 +221,26 @@ describe('hasRunnableBundle', () => {
     // message must name the missing path so the operator can grep dist/
     // for a moved/renamed binary.
     vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === '/engine/obj-debug/dist')
+      Promise.resolve(path === nativePath('/engine/obj-debug/dist'))
     );
 
     const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
     expect(result.runnable).toBe(false);
-    expect(result.expectedPath).toBe('obj-debug/dist/bin/mybrowser');
+    expect(result.expectedPath).toBe(nativePath('obj-debug/dist/bin/mybrowser'));
   });
 
   it('appends .exe to the probed Windows binary path', async () => {
     vi.mocked(getPlatform).mockReturnValue('win32');
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/engine/obj-debug/dist' || path === '/engine/obj-debug/dist/bin/mybrowser.exe'
+        path === nativePath('/engine/obj-debug/dist') ||
+          path === nativePath('/engine/obj-debug/dist/bin/mybrowser.exe')
       )
     );
 
     const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
     expect(result.runnable).toBe(true);
-    expect(result.expectedPath).toBe('obj-debug/dist/bin/mybrowser.exe');
+    expect(result.expectedPath).toBe(nativePath('obj-debug/dist/bin/mybrowser.exe'));
   });
 
   it('finds the macOS binary inside *.app/Contents/MacOS/<binaryName>', async () => {
@@ -245,28 +251,30 @@ describe('hasRunnableBundle', () => {
     ] as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/engine/obj-debug/dist' ||
-          path === '/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser'
+        path === nativePath('/engine/obj-debug/dist') ||
+          path === nativePath('/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser')
       )
     );
 
     const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
     expect(result.runnable).toBe(true);
-    expect(result.expectedPath).toBe('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser');
+    expect(result.expectedPath).toBe(
+      nativePath('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser')
+    );
   });
 
   it('reports the expected macOS path even when no .app exists yet', async () => {
     vi.mocked(getPlatform).mockReturnValue('darwin');
     vi.mocked(readdir).mockResolvedValue([] as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === '/engine/obj-debug/dist')
+      Promise.resolve(path === nativePath('/engine/obj-debug/dist'))
     );
 
     const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
     expect(result.runnable).toBe(false);
     // The synthetic "<AppName>.app" placeholder tells the operator what
     // shape to look for without committing to a specific display name.
-    expect(result.expectedPath).toContain('<AppName>.app/Contents/MacOS/mybrowser');
+    expect(result.expectedPath).toContain(nativePath('<AppName>.app/Contents/MacOS/mybrowser'));
   });
 
   it('degrades to runnable=false on readdir failure rather than throwing', async () => {
@@ -293,14 +301,16 @@ describe('hasRunnableBundle', () => {
     ] as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/engine/obj-debug/dist' ||
-          path === '/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser'
+        path === nativePath('/engine/obj-debug/dist') ||
+          path === nativePath('/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser')
       )
     );
 
     const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
     expect(result.runnable).toBe(true);
-    expect(result.expectedPath).toBe('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser');
+    expect(result.expectedPath).toBe(
+      nativePath('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser')
+    );
   });
 
   it('keeps looking through later .app bundles when an earlier one is empty on darwin', async () => {
@@ -315,15 +325,17 @@ describe('hasRunnableBundle', () => {
     ] as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/engine/obj-debug/dist' ||
+        path === nativePath('/engine/obj-debug/dist') ||
           // OldBrowser.app binary is NOT present; MyBrowser.app is.
-          path === '/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser'
+          path === nativePath('/engine/obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser')
       )
     );
 
     const result = await hasRunnableBundle('/engine', 'mybrowser', 'obj-debug');
     expect(result.runnable).toBe(true);
-    expect(result.expectedPath).toBe('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser');
+    expect(result.expectedPath).toBe(
+      nativePath('obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser')
+    );
   });
 });
 
@@ -514,7 +526,7 @@ describe('mach command execution', () => {
   async function primePythonResolution(engineDir = '/engine'): Promise<void> {
     const { executableExists, exec } = await import('../../utils/process.js');
     vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === `${engineDir}/mach`)
+      Promise.resolve(path === nativePath(`${engineDir}/mach`))
     );
     vi.mocked(readText).mockResolvedValue('MIN_PYTHON_VERSION = (3, 10)\n');
     vi.mocked(executableExists).mockResolvedValue(true);
@@ -539,7 +551,7 @@ describe('mach command execution', () => {
 
     expect(exec).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'build'],
+      [nativePath('/engine/mach'), 'build'],
       expect.objectContaining({ cwd: '/engine', env: { MOZCONFIG: 'debug' } })
     );
   });
@@ -549,9 +561,9 @@ describe('mach command execution', () => {
     await primePythonResolution();
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/engine/mach' ||
-          path === '/engine/tools/lint/ignorefile.yml' ||
-          path === '/engine/.gitignore'
+        path === nativePath('/engine/mach') ||
+          path === nativePath('/engine/tools/lint/ignorefile.yml') ||
+          path === nativePath('/engine/.gitignore')
       )
     );
     vi.mocked(readText).mockResolvedValue('obj-*/\n*.pyc\n');
@@ -561,10 +573,10 @@ describe('mach command execution', () => {
       runMach(['lint', '--fix', 'browser/base/content/foo.js'], '/engine')
     ).resolves.toBe(0);
 
-    expect(writeText).toHaveBeenCalledWith('/engine/.hgignore', 'obj-*/\n*.pyc\n');
+    expect(writeText).toHaveBeenCalledWith(nativePath('/engine/.hgignore'), 'obj-*/\n*.pyc\n');
     expect(exec).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'lint', '--fix', 'browser/base/content/foo.js'],
+      [nativePath('/engine/mach'), 'lint', '--fix', 'browser/base/content/foo.js'],
       expect.objectContaining({ cwd: '/engine' })
     );
   });
@@ -578,7 +590,7 @@ describe('mach command execution', () => {
 
     expect(execInherit).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'package'],
+      [nativePath('/engine/mach'), 'package'],
       expect.objectContaining({ cwd: '/engine' })
     );
   });
@@ -614,14 +626,14 @@ describe('mach command execution', () => {
     await xpcshellTestWithOutput('/engine', ['a_test.js'], ['--headless']);
     expect(execStream).toHaveBeenLastCalledWith(
       'python3.12',
-      ['/engine/mach', 'xpcshell-test', 'a_test.js', '--headless'],
+      [nativePath('/engine/mach'), 'xpcshell-test', 'a_test.js', '--headless'],
       expect.any(Object)
     );
 
     await mochitestWithOutput('/engine', ['browser_x.js'], []);
     expect(execStream).toHaveBeenLastCalledWith(
       'python3.12',
-      ['/engine/mach', 'mochitest', 'browser_x.js'],
+      [nativePath('/engine/mach'), 'mochitest', 'browser_x.js'],
       expect.any(Object)
     );
 
@@ -824,52 +836,52 @@ describe('mach command execution', () => {
 
     expect(execInherit).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'bootstrap', '--application-choice', 'browser'],
+      [nativePath('/engine/mach'), 'bootstrap', '--application-choice', 'browser'],
       expect.any(Object)
     );
     expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'build', '-j', '4'],
+      [nativePath('/engine/mach'), 'build', '-j', '4'],
       expect.any(Object)
     );
     expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'build'],
+      [nativePath('/engine/mach'), 'build'],
       expect.any(Object)
     );
     expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'build', 'faster'],
+      [nativePath('/engine/mach'), 'build', 'faster'],
       expect.any(Object)
     );
     expect(execInherit).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'run', '--safe-mode'],
+      [nativePath('/engine/mach'), 'run', '--safe-mode'],
       expect.any(Object)
     );
     expect(execInherit).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'package'],
+      [nativePath('/engine/mach'), 'package'],
       expect.any(Object)
     );
     expect(execInherit).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'watch'],
+      [nativePath('/engine/mach'), 'watch'],
       expect.any(Object)
     );
     expect(execInherit).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'test', 'browser/test', '--headless'],
+      [nativePath('/engine/mach'), 'test', 'browser/test', '--headless'],
       expect.any(Object)
     );
     expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'bootstrap', '--application-choice', 'browser'],
+      [nativePath('/engine/mach'), 'bootstrap', '--application-choice', 'browser'],
       expect.any(Object)
     );
     expect(execInheritCapture).toHaveBeenCalledWith(
       'python3.12',
-      ['/engine/mach', 'watch'],
+      [nativePath('/engine/mach'), 'watch'],
       expect.any(Object)
     );
 
@@ -907,7 +919,7 @@ describe('mach command execution', () => {
     // there specifically to avoid tripping exactOptionalPropertyTypes, so
     // the assertion shape has to match — a plain objectContaining would
     // pass even with `key: undefined`.
-    expect(execSmokeRun).toHaveBeenCalledWith('python3.12', ['/engine/mach', 'run'], {
+    expect(execSmokeRun).toHaveBeenCalledWith('python3.12', [nativePath('/engine/mach'), 'run'], {
       cwd: '/engine',
       env: { SMOKE: '1' },
       smokeTimeoutMs: 30_000,
@@ -938,7 +950,7 @@ describe('mach command execution', () => {
       timedOut: true,
     });
 
-    expect(execSmokeRun).toHaveBeenCalledWith('python3.12', ['/engine/mach', 'run'], {
+    expect(execSmokeRun).toHaveBeenCalledWith('python3.12', [nativePath('/engine/mach'), 'run'], {
       cwd: '/engine',
       smokeTimeoutMs: 15_000,
     });
@@ -1087,7 +1099,7 @@ describe('runProtectedMachBuild', () => {
   async function prime(engineDir = '/engine'): Promise<void> {
     const { executableExists, exec } = await import('../../utils/process.js');
     vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === `${engineDir}/mach`)
+      Promise.resolve(path === nativePath(`${engineDir}/mach`))
     );
     vi.mocked(readText).mockResolvedValue('MIN_PYTHON_VERSION = (3, 10)\n');
     vi.mocked(executableExists).mockResolvedValue(true);
@@ -1111,13 +1123,14 @@ describe('runProtectedMachBuild', () => {
     });
     vi.mocked(readdir).mockImplementation(((dir: string) => {
       if (dir === '/engine') return Promise.resolve([dirent('obj-debug'), dirent('browser')]);
-      if (dir === '/engine/obj-debug/_virtualenvs') return Promise.resolve([dirent('build')]);
-      if (dir === '/engine/obj-debug/_virtualenvs/build/lib')
+      if (dir === nativePath('/engine/obj-debug/_virtualenvs'))
+        return Promise.resolve([dirent('build')]);
+      if (dir === nativePath('/engine/obj-debug/_virtualenvs/build/lib'))
         return Promise.resolve([dirent('python3.11')]);
       return Promise.reject(new Error('ENOENT'));
     }) as never);
     vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === '/engine/mach' || path.endsWith('site-packages'))
+      Promise.resolve(path === nativePath('/engine/mach') || path.endsWith('site-packages'))
     );
     vi.mocked(execInheritCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
 
@@ -1129,21 +1142,21 @@ describe('runProtectedMachBuild', () => {
     // covers the whole crash family: psutil wrappers AND the constructor
     // guard that pre-populates poll_interval.
     expect(writeText).toHaveBeenCalledWith(
-      `${sitePackages}/fireforge_mach_guard.py`,
+      nativePath(`${sitePackages}/fireforge_mach_guard.py`),
       expect.stringContaining('poll_interval')
     );
     expect(writeText).toHaveBeenCalledWith(
-      `${sitePackages}/fireforge_mach_guard.py`,
+      nativePath(`${sitePackages}/fireforge_mach_guard.py`),
       expect.stringContaining('virtual_memory')
     );
     expect(writeText).toHaveBeenCalledWith(
-      `${sitePackages}/fireforge_mach_guard.py`,
+      nativePath(`${sitePackages}/fireforge_mach_guard.py`),
       expect.stringContaining('__init__')
     );
     // The degraded fallback is a full namedtuple duck type (downstream
     // report: mozsystemmonitor subscripts and unpacks the reading).
     expect(writeText).toHaveBeenCalledWith(
-      `${sitePackages}/fireforge_mach_guard.py`,
+      nativePath(`${sitePackages}/fireforge_mach_guard.py`),
       expect.stringContaining('_asdict')
     );
     // Per-function arity-correct fallbacks and the mozbuild
@@ -1151,15 +1164,15 @@ describe('runProtectedMachBuild', () => {
     // shutdown, and end-of-build resource logging must not fail a successful
     // compile.
     expect(writeText).toHaveBeenCalledWith(
-      `${sitePackages}/fireforge_mach_guard.py`,
+      nativePath(`${sitePackages}/fireforge_mach_guard.py`),
       expect.stringContaining('swap_memory')
     );
     expect(writeText).toHaveBeenCalledWith(
-      `${sitePackages}/fireforge_mach_guard.py`,
+      nativePath(`${sitePackages}/fireforge_mach_guard.py`),
       expect.stringContaining('log_resource_usage')
     );
     expect(writeText).toHaveBeenCalledWith(
-      `${sitePackages}/fireforge_mach_guard.pth`,
+      nativePath(`${sitePackages}/fireforge_mach_guard.pth`),
       expect.stringContaining('import fireforge_mach_guard')
     );
   });
@@ -1224,7 +1237,7 @@ describe('runProtectedMachBuild', () => {
     expect(execInheritCapture).toHaveBeenCalledTimes(1);
     expect(execInheritCapture).toHaveBeenCalledWith(
       expect.any(String),
-      ['/engine/mach', 'build', '-j', '4'],
+      [nativePath('/engine/mach'), 'build', '-j', '4'],
       expect.anything()
     );
   });

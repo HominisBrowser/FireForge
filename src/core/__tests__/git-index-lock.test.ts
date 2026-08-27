@@ -43,6 +43,8 @@ function setupInitMocks(addResult: { exitCode: number; stdout: string; stderr: s
     .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config core.untrackedCache
     .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config core.fsmonitor
     .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config feature.manyFiles
+    .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config core.autocrlf
+    .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config core.eol
     .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git remote add origin
     .mockResolvedValueOnce(addResult); // git add -A
 }

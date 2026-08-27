@@ -2,17 +2,19 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn().mockReturnValue({
     root: '/fake/root',
-    engine: '/fake/engine',
-    patches: '/fake/patches',
-    config: '/fake/root/fireforge.json',
-    fireforgeDir: '/fake/root/.fireforge',
-    state: '/fake/root/.fireforge/state.json',
-    configs: '/fake/root/configs',
-    src: '/fake/root/src',
-    componentsDir: '/fake/root/src/components',
+    engine: nativePath('/fake/engine'),
+    patches: nativePath('/fake/patches'),
+    config: nativePath('/fake/root/fireforge.json'),
+    fireforgeDir: nativePath('/fake/root/.fireforge'),
+    state: nativePath('/fake/root/.fireforge/state.json'),
+    configs: nativePath('/fake/root/configs'),
+    src: nativePath('/fake/root/src'),
+    componentsDir: nativePath('/fake/root/src/components'),
   }),
   loadConfig: vi.fn().mockResolvedValue({
     firefox: { version: '140.9.0esr' },
@@ -155,7 +157,7 @@ import { exportCommand, registerExport } from '../export.js';
 function mockStatForPaths(dirPaths: string[]): void {
   vi.mocked(stat).mockImplementation((p) => {
     const pathStr = String(p);
-    const isDir = dirPaths.some((d) => pathStr.endsWith(d));
+    const isDir = dirPaths.some((d) => pathStr.endsWith(nativePath(d)));
     return Promise.resolve({ isDirectory: () => isDir } as Awaited<ReturnType<typeof stat>>);
   });
 }
@@ -185,7 +187,7 @@ describe('exportCommand - guards', () => {
   it('fails early when the engine checkout is missing', async () => {
     const { pathExists } = await import('../../utils/fs.js');
     vi.mocked(pathExists).mockImplementation((targetPath) =>
-      Promise.resolve(targetPath !== '/fake/engine')
+      Promise.resolve(targetPath !== nativePath('/fake/engine'))
     );
 
     await expect(
@@ -231,8 +233,8 @@ describe('exportCommand - directory support', () => {
     });
 
     expect(generateFullFilePatch).toHaveBeenCalledTimes(2);
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/a.js');
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/b.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/a.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/b.js');
   });
 
   // Stale-furnace gate wiring.
@@ -322,7 +324,7 @@ describe('exportCommand - directory support', () => {
 
     // Only the unowned file is diffed; the owned one is excluded with a notice.
     expect(generateFullFilePatch).toHaveBeenCalledTimes(1);
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/b.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/b.js');
     expect(info).toHaveBeenCalledWith(
       expect.stringContaining(
         'Excluding dir/a.js from the directory export (owned by 002-ui-earlier.patch)'
@@ -419,7 +421,7 @@ describe('exportCommand - directory support', () => {
 
     const directoryCommit = vi.mocked(commitExportedPatch).mock.calls[0]?.[0];
     expect(directoryCommit).toMatchObject({
-      patchesDir: '/fake/patches',
+      patchesDir: nativePath('/fake/patches'),
       category: 'ui',
       name: 'test-dir',
       description: 'test',
@@ -445,7 +447,7 @@ describe('exportCommand - directory support', () => {
 
     expect(getModifiedFilesInDir).not.toHaveBeenCalled();
     expect(getUntrackedFilesInDir).not.toHaveBeenCalled();
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'file.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'file.js');
   });
 
   it('should handle single file that is untracked', async () => {
@@ -463,7 +465,7 @@ describe('exportCommand - directory support', () => {
       description: 'test',
     });
 
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'new-file.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'new-file.js');
   });
 
   it('should deduplicate files found in both modified and untracked lists', async () => {
@@ -508,8 +510,8 @@ describe('exportCommand - multi-path support', () => {
     });
 
     expect(generateFullFilePatch).toHaveBeenCalledTimes(2);
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'a.js');
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'b.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'a.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'b.js');
   });
 
   it('should export a mix of files and directories into a single patch', async () => {
@@ -530,15 +532,15 @@ describe('exportCommand - multi-path support', () => {
     });
 
     expect(generateFullFilePatch).toHaveBeenCalledTimes(2);
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/a.js');
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'standalone.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/a.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'standalone.js');
   });
 
   it('should deduplicate files across overlapping paths', async () => {
     // Pass both a directory and a file within that directory
     vi.mocked(stat).mockImplementation((p) => {
       const pathStr = String(p);
-      if (pathStr.endsWith('/dir') || pathStr.endsWith('/dir/')) {
+      if (pathStr.endsWith(nativePath('/dir')) || pathStr.endsWith(nativePath('/dir/'))) {
         return Promise.resolve({ isDirectory: () => true } as Awaited<ReturnType<typeof stat>>);
       }
       return Promise.resolve({ isDirectory: () => false } as Awaited<ReturnType<typeof stat>>);
@@ -558,8 +560,8 @@ describe('exportCommand - multi-path support', () => {
 
     // dir/a.js appears via both the directory scan and explicit path, but should only generate once
     expect(generateFullFilePatch).toHaveBeenCalledTimes(2);
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/a.js');
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/b.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/a.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/b.js');
   });
 
   it('should throw when one of the specified files has no changes', async () => {
@@ -612,7 +614,7 @@ describe('exportCommand - multi-path support', () => {
 
     const combinedCommit = vi.mocked(commitExportedPatch).mock.calls[0]?.[0];
     expect(combinedCommit).toMatchObject({
-      patchesDir: '/fake/patches',
+      patchesDir: nativePath('/fake/patches'),
       category: 'ui',
       name: 'combined',
       description: 'test',
@@ -682,7 +684,7 @@ describe('exportCommand - multi-path support', () => {
 
     expect(warn).toHaveBeenCalledWith('Skipping binary file with no diff: image.png');
     expect(generateFullFilePatch).toHaveBeenCalledTimes(1);
-    expect(generateFullFilePatch).toHaveBeenCalledWith('/fake/engine', 'dir/a.js');
+    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/a.js');
   });
 });
 
@@ -912,7 +914,7 @@ describe('exportCommand — engine/ prefix normalization', () => {
     // Once the prefix is stripped, the diff generator must see the
     // engine-relative form — exactly what git sees.
     expect(generateFullFilePatch).toHaveBeenCalledWith(
-      '/fake/engine',
+      nativePath('/fake/engine'),
       'browser/base/content/fresh-extra-a.js'
     );
     expect(commitExportedPatch).toHaveBeenCalled();
@@ -933,6 +935,9 @@ describe('exportCommand — engine/ prefix normalization', () => {
       description: 'dir prefix test',
     });
 
-    expect(getModifiedFilesInDir).toHaveBeenCalledWith('/fake/engine', 'browser/base/content');
+    expect(getModifiedFilesInDir).toHaveBeenCalledWith(
+      nativePath('/fake/engine'),
+      'browser/base/content'
+    );
   });
 });

@@ -33,6 +33,7 @@ vi.mock('../furnace-config.js', () => ({
 
 import { writeFile } from 'node:fs/promises';
 
+import { nativePath } from '../../test-utils/index.js';
 import { loadFurnaceState, updateFurnaceState } from '../furnace-config.js';
 import {
   __resetFurnaceOperationStateForTests,
@@ -82,7 +83,7 @@ afterEach(async () => {
 
 describe('runFurnaceMutation', () => {
   it('resolves the furnace lock path under the .fireforge directory', () => {
-    expect(getFurnaceLockPath('/project')).toBe('/project/.fireforge/furnace.lock');
+    expect(getFurnaceLockPath('/project')).toBe(nativePath('/project/.fireforge/furnace.lock'));
   });
 
   it('returns the body result on the happy path', async () => {
@@ -595,7 +596,7 @@ describe('recordFurnaceRollbackFailure', () => {
 
     expect(updateFurnaceStateMock).toHaveBeenCalledTimes(1);
     const [root, updater] = updateFurnaceStateMock.mock.calls[0]!;
-    expect(root).toBe('/some/root');
+    expect(root).toBe(nativePath('/some/root'));
     // The updater is a function that mutates the state in-place; invoke it
     // with an empty state to verify the marker shape.
     const next = (updater as (state: Record<string, unknown>) => Record<string, unknown>)({});

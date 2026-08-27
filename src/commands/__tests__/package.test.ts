@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { makeProjectPaths } from '../../test-utils/index.js';
+import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../core/config.js', () => ({
@@ -137,7 +137,7 @@ describe('packageCommand', () => {
     expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'stable');
     expect(verbose).toHaveBeenCalledWith('Packaging with brand: stable');
     expect(info).toHaveBeenCalledWith('Brand: stable');
-    expect(machPackageCapture).toHaveBeenCalledWith('/project/engine');
+    expect(machPackageCapture).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(info).toHaveBeenCalledWith('\nPackage created in obj-*/dist/');
     expect(outro).toHaveBeenCalledWith(expect.stringContaining('Packaging completed in'));
   });
@@ -198,6 +198,6 @@ describe('registerPackage', () => {
     await program.parseAsync(['node', 'test', 'package', '--brand', 'stable']);
 
     expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'stable');
-    expect(machPackageCapture).toHaveBeenCalledWith('/project/engine');
+    expect(machPackageCapture).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 });

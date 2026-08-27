@@ -190,6 +190,11 @@ const MODULE_THRESHOLDS = {
   // Stale jar.mn registration check — `--repair-furnace` must actually prune,
   // not report success without touching the lines.
   'src/commands/doctor-furnace-jar.ts': { lines: 95, branches: 90, functions: 100 },
+  // Manifest repair. Pinned just below landing coverage: the preserve-or-
+  // refuse branches are the whole point of both modules, and a regression
+  // there is silent data loss rather than a visible failure.
+  'src/core/patch-manifest-files-affected.ts': { lines: 95, branches: 85 },
+  'src/commands/doctor-patch-manifest.ts': { lines: 85, branches: 78 },
   // Deletes engine sources and rewrites three jar manifests. Happy-path round
   // trips alone leave the refusal, cancel, idempotent-re-remove and rollback
   // arms dark.

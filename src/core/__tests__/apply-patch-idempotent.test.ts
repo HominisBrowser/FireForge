@@ -24,7 +24,10 @@ async function createTestRepo(prefix: string): Promise<{ repoDir: string; tempDi
   await mkdir(repoDir, { recursive: true });
   await exec('git', ['init'], { cwd: repoDir });
   await exec('git', ['config', 'user.email', 'test@test.com'], { cwd: repoDir });
-  await exec('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
+  // Pin line endings so patch bytes do not depend on the host's global
+  // `core.autocrlf` (true by default on Windows).
+  await exec('git', ['config', 'core.autocrlf', 'false'], { cwd: repoDir });
+  await exec('git', ['config', 'core.eol', 'lf'], { cwd: repoDir });
   return { repoDir, tempDir };
 }
 

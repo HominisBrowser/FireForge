@@ -78,25 +78,30 @@ describe('withXpcshellProfileDir', () => {
     });
   });
 
-  it('warns instead of throwing when cleanup fails', async () => {
-    delete process.env['XPCSHELL_TEST_PROFILE_DIR'];
-    // Force a REAL cleanup failure: a child file inside a directory whose
-    // permission bits forbid unlinking (no write/execute on the dir).
-    const { chmod, writeFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    let seenDir = '';
-    await expect(
-      withXpcshellProfileDir(undefined, async (env) => {
-        seenDir = env[XPCSHELL_PROFILE_ENV_VAR] ?? '';
-        await writeFile(join(seenDir, 'held.txt'), 'x');
-        await chmod(seenDir, 0o444);
-        return 'ok';
-      })
-    ).resolves.toBe('ok');
-    expect(vi.mocked(warn)).toHaveBeenCalledWith(
-      expect.stringContaining('Could not clean up xpcshell profile dir')
-    );
-    await chmod(seenDir, 0o755);
-    await rm(seenDir, { recursive: true, force: true });
-  });
+  // POSIX mode bits are the refusal mechanism here; NTFS ignores
+  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  it.skipIf(process.platform === 'win32')(
+    'warns instead of throwing when cleanup fails',
+    async () => {
+      delete process.env['XPCSHELL_TEST_PROFILE_DIR'];
+      // Force a REAL cleanup failure: a child file inside a directory whose
+      // permission bits forbid unlinking (no write/execute on the dir).
+      const { chmod, writeFile } = await import('node:fs/promises');
+      const { join } = await import('node:path');
+      let seenDir = '';
+      await expect(
+        withXpcshellProfileDir(undefined, async (env) => {
+          seenDir = env[XPCSHELL_PROFILE_ENV_VAR] ?? '';
+          await writeFile(join(seenDir, 'held.txt'), 'x');
+          await chmod(seenDir, 0o444);
+          return 'ok';
+        })
+      ).resolves.toBe('ok');
+      expect(vi.mocked(warn)).toHaveBeenCalledWith(
+        expect.stringContaining('Could not clean up xpcshell profile dir')
+      );
+      await chmod(seenDir, 0o755);
+      await rm(seenDir, { recursive: true, force: true });
+    }
+  );
 });

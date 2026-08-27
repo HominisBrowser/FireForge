@@ -7,7 +7,7 @@
  * selector are mocked so the tests are deterministic and do not depend on
  * the host having a real listener.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../utils/process.js', () => ({
   exec: vi.fn(),
@@ -44,9 +44,23 @@ function lsofOutput(pid: number, command: string): string {
   return `p${pid}\nc${command}\nn*:2828\n`;
 }
 
+// These modules branch on `process.platform` directly (not the mockable
+// `getPlatform()`), so the POSIX expectations below only hold when the
+// branch is forced. Pin it here instead of inheriting the runner's OS.
+const originalPlatform = process.platform;
+
+function stubPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { value, configurable: true });
+}
+
+afterAll(() => {
+  Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetPlatform.mockReturnValue('darwin');
+  stubPlatform('darwin');
 });
 
 describe('objdir browser process preflight', () => {

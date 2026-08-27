@@ -83,6 +83,7 @@ import { runMarionettePreflight } from '../../core/marionette-preflight.js';
 import {} from '../../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
 import { GeneralError } from '../../errors/base.js';
+import { nativePath } from '../../test-utils/index.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { testCommand } from '../test.js';
 
@@ -230,8 +231,9 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
   });
 
   it('removes a stale xpcshell _tests symlink and retries mach test once', async () => {
-    const staleLink =
-      '/project/engine/obj-debug/_tests/xpcshell/toolkit/mozapps/extensions/test/xpcshell/data/bug455906_block.xml';
+    const staleLink = nativePath(
+      '/project/engine/obj-debug/_tests/xpcshell/toolkit/mozapps/extensions/test/xpcshell/data/bug455906_block.xml'
+    );
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/toolkit/mozapps/extensions/test/xpcshell/xpcshell.toml'
     );
@@ -259,8 +261,9 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
   });
 
   it('removes stale xpcshell install symlinks under the shared mochitest harness tree', async () => {
-    const staleLink =
-      '/project/engine/obj-debug/_tests/testing/mochitest/browser/browser/extensions/formautofill/test/fixtures/autocomplete_address_basic.html';
+    const staleLink = nativePath(
+      '/project/engine/obj-debug/_tests/testing/mochitest/browser/browser/extensions/formautofill/test/fixtures/autocomplete_address_basic.html'
+    );
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/extensions/formautofill/test/unit/xpcshell.toml'
     );
@@ -377,7 +380,9 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
 
   it('fails before mach when xpcshell and browser paths are mixed', async () => {
     vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
-      Promise.resolve(path.includes('/xpcshell/') ? '/project/engine/foo/xpcshell.toml' : null)
+      Promise.resolve(
+        path.includes('/xpcshell/') ? nativePath('/project/engine/foo/xpcshell.toml') : null
+      )
     );
 
     await expect(
@@ -392,7 +397,9 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
 
   it('refuses a mixed request before dispatching the pre-test build', async () => {
     vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
-      Promise.resolve(path.includes('/xpcshell/') ? '/project/engine/foo/xpcshell.toml' : null)
+      Promise.resolve(
+        path.includes('/xpcshell/') ? nativePath('/project/engine/foo/xpcshell.toml') : null
+      )
     );
 
     await expect(

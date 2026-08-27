@@ -118,6 +118,7 @@ import { updateFurnaceState } from '../../core/furnace-config.js';
 import { restoreRollbackJournal } from '../../core/furnace-rollback.js';
 import { cleanStories, syncStories } from '../../core/furnace-stories.js';
 import { hasBuildArtifacts, runMach, runMachCapture } from '../../core/mach.js';
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { furnacePreviewCommand } from '../furnace/preview.js';
 
@@ -126,9 +127,9 @@ describe('furnacePreviewCommand', () => {
     vi.clearAllMocks();
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/.cargo/config.toml'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/.cargo/config.toml')
       )
     );
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
@@ -137,7 +138,7 @@ describe('furnacePreviewCommand', () => {
 
   it('fails early when the Firefox checkout lacks Storybook support', async () => {
     vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === '/project/engine')
+      Promise.resolve(path === nativePath('/project/engine'))
     );
 
     await expect(furnacePreviewCommand('/project')).rejects.toThrow(
@@ -151,7 +152,7 @@ describe('furnacePreviewCommand', () => {
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 130 });
 
     await expect(furnacePreviewCommand('/project')).resolves.toBeUndefined();
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 
   // `mach storybook` runs an ~1000-package `npm install` when the Storybook
@@ -163,9 +164,9 @@ describe('furnacePreviewCommand', () => {
     const { info } = await import('../../utils/logger.js');
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/.cargo/config.toml'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/.cargo/config.toml')
         // Note: '/project/engine/browser/components/storybook/node_modules' absent.
       )
     );
@@ -187,10 +188,10 @@ describe('furnacePreviewCommand', () => {
     const { info } = await import('../../utils/logger.js');
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/browser/components/storybook/node_modules' ||
-          path === '/project/engine/.cargo/config.toml'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/browser/components/storybook/node_modules') ||
+          path === nativePath('/project/engine/.cargo/config.toml')
       )
     );
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 130 });
@@ -227,7 +228,7 @@ describe('furnacePreviewCommand', () => {
     );
 
     expect(syncStories).toHaveBeenCalled();
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 
   it('stages workspace components and restores them on teardown', async () => {
@@ -248,7 +249,7 @@ describe('furnacePreviewCommand', () => {
     );
     /* eslint-enable @typescript-eslint/no-unsafe-assignment */
     expect(syncStories).toHaveBeenCalled();
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(restoreRollbackJournal).toHaveBeenCalled();
   });
 
@@ -282,7 +283,7 @@ describe('furnacePreviewCommand', () => {
 
     await expect(furnacePreviewCommand('/project')).rejects.toThrow(/disk full mid-write/i);
 
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
     // Staging rollback must still run too.
     expect(restoreRollbackJournal).toHaveBeenCalled();
   });
@@ -333,7 +334,7 @@ describe('furnacePreviewCommand', () => {
     expect(next.pendingRepair?.reason).toContain('EACCES');
     // cleanStories must still have run even though the journal restore
     // is the failing step — both teardown steps are independent.
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 
   it('records a pendingRepair marker when cleanStories fails but still attempts journal restore', async () => {
@@ -377,9 +378,9 @@ describe('furnacePreviewCommand — build-artefact preflight', () => {
     vi.clearAllMocks();
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/.cargo/config.toml'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/.cargo/config.toml')
       )
     );
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
@@ -418,7 +419,8 @@ describe('furnacePreviewCommand — build-artefact preflight', () => {
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' || path === '/project/engine/browser/components/storybook'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook')
         // both .cargo/config.toml and .cargo/config.toml.in intentionally missing
       )
     );
@@ -435,9 +437,9 @@ describe('furnacePreviewCommand — build-artefact preflight', () => {
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/.cargo/config.toml.in'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/.cargo/config.toml.in')
       )
     );
 

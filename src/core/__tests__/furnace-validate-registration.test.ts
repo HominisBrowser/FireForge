@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -18,7 +19,7 @@ vi.mock('../config.js', () => ({
 }));
 
 vi.mock('../furnace-config.js', () => ({
-  getFurnacePaths: vi.fn(() => ({ customDir: '/project/components/custom' })),
+  getFurnacePaths: vi.fn(() => ({ customDir: nativePath('/project/components/custom') })),
 }));
 
 vi.mock('../token-manager.js', () => ({
@@ -52,8 +53,8 @@ const LOCALIZED_CONFIG: CustomComponentConfig = {
   localized: true,
 };
 
-const FTL_DEST = '/engine/toolkit/locales/en-US/toolkit/global/moz-dock.ftl';
-const FTL_SRC = '/project/components/custom/moz-dock/moz-dock.ftl';
+const FTL_DEST = nativePath('/engine/toolkit/locales/en-US/toolkit/global/moz-dock.ftl');
+const FTL_SRC = nativePath('/project/components/custom/moz-dock/moz-dock.ftl');
 
 describe('furnace registration validation helpers', () => {
   beforeEach(() => {
@@ -82,11 +83,11 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
         [
-          '/project/components/custom/moz-dock',
-          '/engine/toolkit/content',
-          '/engine/toolkit/content/moz-dock.css',
-          '/engine/toolkit/content/jar.mn',
-          '/engine/toolkit/content/customElements.js',
+          nativePath('/project/components/custom/moz-dock'),
+          nativePath('/engine/toolkit/content'),
+          nativePath('/engine/toolkit/content/moz-dock.css'),
+          nativePath('/engine/toolkit/content/jar.mn'),
+          nativePath('/engine/toolkit/content/customElements.js'),
         ].includes(filePath)
       )
     );
@@ -98,7 +99,7 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(readText).mockImplementation((filePath: string) => {
       if (filePath.endsWith('moz-dock.css')) return Promise.resolve('same-content');
       if (filePath.endsWith('moz-dock.mjs')) {
-        return Promise.resolve(filePath.startsWith('/project/') ? 'src' : 'dest');
+        return Promise.resolve(filePath.startsWith(nativePath('/project/')) ? 'src' : 'dest');
       }
       if (filePath.endsWith('jar.mn')) {
         return Promise.resolve('content/global/elements/moz-dock.css');
@@ -133,21 +134,22 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
         [
-          '/project/components/custom/moz-dock',
-          '/engine/toolkit/content',
-          '/engine/toolkit/content/moz-dock.css',
-          '/engine/toolkit/content/moz-dock.mjs',
-          '/engine/toolkit/content/jar.mn',
-          '/engine/toolkit/content/customElements.js',
+          nativePath('/project/components/custom/moz-dock'),
+          nativePath('/engine/toolkit/content'),
+          nativePath('/engine/toolkit/content/moz-dock.css'),
+          nativePath('/engine/toolkit/content/moz-dock.mjs'),
+          nativePath('/engine/toolkit/content/jar.mn'),
+          nativePath('/engine/toolkit/content/customElements.js'),
         ].includes(filePath)
       )
     );
     vi.mocked(readdir).mockResolvedValue([{ isFile: () => true, name: 'moz-dock.mjs' }] as never);
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath === '/project/components/custom/moz-dock/moz-dock.mjs') {
+      if (filePath === nativePath('/project/components/custom/moz-dock/moz-dock.mjs')) {
         return Promise.resolve('source');
       }
-      if (filePath === '/engine/toolkit/content/moz-dock.mjs') return Promise.resolve('target');
+      if (filePath === nativePath('/engine/toolkit/content/moz-dock.mjs'))
+        return Promise.resolve('target');
       if (filePath.endsWith('jar.mn')) {
         return Promise.resolve(
           'content/global/elements/moz-dock.css\ncontent/global/elements/moz-dock.mjs'
@@ -181,11 +183,11 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
         [
-          '/project/components/custom/moz-dock',
-          '/engine/toolkit/content',
-          '/engine/toolkit/content/moz-dock.mjs',
-          '/engine/toolkit/content/jar.mn',
-          '/engine/toolkit/content/customElements.js',
+          nativePath('/project/components/custom/moz-dock'),
+          nativePath('/engine/toolkit/content'),
+          nativePath('/engine/toolkit/content/moz-dock.mjs'),
+          nativePath('/engine/toolkit/content/jar.mn'),
+          nativePath('/engine/toolkit/content/customElements.js'),
         ].includes(filePath)
       )
     );
@@ -229,9 +231,11 @@ describe('furnace registration validation helpers', () => {
   it('flags localized components whose .ftl is missing from the Fluent tree', async () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
-        ['/project/components/custom/moz-dock', '/engine/toolkit/content', FTL_SRC].includes(
-          filePath
-        )
+        [
+          nativePath('/project/components/custom/moz-dock'),
+          nativePath('/engine/toolkit/content'),
+          FTL_SRC,
+        ].includes(filePath)
       )
     );
     vi.mocked(readdir).mockResolvedValue([] as never);
@@ -253,8 +257,8 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
         [
-          '/project/components/custom/moz-dock',
-          '/engine/toolkit/content',
+          nativePath('/project/components/custom/moz-dock'),
+          nativePath('/engine/toolkit/content'),
           FTL_SRC,
           FTL_DEST,
         ].includes(filePath)
@@ -282,8 +286,8 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
         [
-          '/project/components/custom/moz-dock',
-          '/engine/toolkit/content',
+          nativePath('/project/components/custom/moz-dock'),
+          nativePath('/engine/toolkit/content'),
           FTL_SRC,
           FTL_DEST,
         ].includes(filePath)
@@ -308,9 +312,11 @@ describe('furnace registration validation helpers', () => {
     // cause the drift oracle to look for it in the Fluent tree.
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
-        ['/project/components/custom/moz-dock', '/engine/toolkit/content', FTL_SRC].includes(
-          filePath
-        )
+        [
+          nativePath('/project/components/custom/moz-dock'),
+          nativePath('/engine/toolkit/content'),
+          FTL_SRC,
+        ].includes(filePath)
       )
     );
     vi.mocked(readdir).mockResolvedValue([] as never);
@@ -329,11 +335,14 @@ describe('furnace registration validation helpers', () => {
   it('warns when tokenized component CSS is not linked from browser.xhtml', async () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
-        ['/component/moz-dock.css', '/engine/browser/base/content/browser.xhtml'].includes(filePath)
+        [
+          nativePath('/component/moz-dock.css'),
+          nativePath('/engine/browser/base/content/browser.xhtml'),
+        ].includes(filePath)
       )
     );
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath === '/component/moz-dock.css') {
+      if (filePath === nativePath('/component/moz-dock.css')) {
         return Promise.resolve('.dock { color: var(--ff-token-color); }');
       }
       return Promise.resolve('<html></html>');
@@ -359,10 +368,10 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
         [
-          '/component/moz-dock.css',
-          '/engine/browser/base/content',
-          '/engine/browser/base/content/browser.xhtml',
-          '/engine/browser/base/content/mybrowser.xhtml',
+          nativePath('/component/moz-dock.css'),
+          nativePath('/engine/browser/base/content'),
+          nativePath('/engine/browser/base/content/browser.xhtml'),
+          nativePath('/engine/browser/base/content/mybrowser.xhtml'),
         ].includes(filePath)
       )
     );
@@ -372,14 +381,14 @@ describe('furnace registration validation helpers', () => {
       'something-unrelated.js',
     ] as never);
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath === '/component/moz-dock.css') {
+      if (filePath === nativePath('/component/moz-dock.css')) {
         return Promise.resolve('.dock { color: var(--ff-token-color); }');
       }
-      if (filePath === '/engine/browser/base/content/browser.xhtml') {
+      if (filePath === nativePath('/engine/browser/base/content/browser.xhtml')) {
         // Upstream document does not mount moz-dock and does not link tokens.
         return Promise.resolve('<window><html:body></html:body></window>');
       }
-      if (filePath === '/engine/browser/base/content/mybrowser.xhtml') {
+      if (filePath === nativePath('/engine/browser/base/content/mybrowser.xhtml')) {
         // Replacement document mounts moz-dock AND links the tokens CSS.
         return Promise.resolve(
           '<window><link rel="stylesheet" href="nightlyfox.css" /><moz-dock></moz-dock></window>'
@@ -400,16 +409,16 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
         [
-          '/component/moz-dock.css',
-          '/engine/browser/base/content',
-          '/engine/browser/base/content/browser.xhtml',
-          '/engine/browser/base/content/mybrowser.xhtml',
+          nativePath('/component/moz-dock.css'),
+          nativePath('/engine/browser/base/content'),
+          nativePath('/engine/browser/base/content/browser.xhtml'),
+          nativePath('/engine/browser/base/content/mybrowser.xhtml'),
         ].includes(filePath)
       )
     );
     vi.mocked(readdir).mockResolvedValue(['browser.xhtml', 'mybrowser.xhtml'] as never);
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath === '/component/moz-dock.css') {
+      if (filePath === nativePath('/component/moz-dock.css')) {
         return Promise.resolve('.dock { color: var(--ff-token-color); }');
       }
       if (filePath.endsWith('mybrowser.xhtml')) {
@@ -433,15 +442,15 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
         [
-          '/component/moz-dock.css',
-          '/engine/browser/base/content',
-          '/engine/browser/base/content/mybrowser.xhtml',
+          nativePath('/component/moz-dock.css'),
+          nativePath('/engine/browser/base/content'),
+          nativePath('/engine/browser/base/content/mybrowser.xhtml'),
         ].includes(filePath)
       )
     );
     vi.mocked(readdir).mockResolvedValue(['mybrowser.xhtml'] as never);
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath === '/component/moz-dock.css') {
+      if (filePath === nativePath('/component/moz-dock.css')) {
         return Promise.resolve('.dock { color: var(--ff-token-color); }');
       }
       if (filePath.endsWith('mybrowser.xhtml')) {
@@ -482,7 +491,7 @@ describe('furnace registration validation helpers', () => {
       // custom component regardless of whether the component had a .css file.
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
         // jar.mn exists; component CSS source does NOT.
-        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
+        if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
         return Promise.resolve(false);
       });
       vi.mocked(readText).mockResolvedValue('content/global/elements/moz-dock.mjs');
@@ -495,8 +504,8 @@ describe('furnace registration validation helpers', () => {
 
     it('still warns about missing CSS entry when the source has a CSS file', async () => {
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
-        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
-        if (filePath === '/project/components/custom/moz-dock/moz-dock.css') {
+        if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
+        if (filePath === nativePath('/project/components/custom/moz-dock/moz-dock.css')) {
           return Promise.resolve(true);
         }
         return Promise.resolve(false);
@@ -512,7 +521,7 @@ describe('furnace registration validation helpers', () => {
 
     it('errors when the .mjs entry is missing regardless of CSS presence', async () => {
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
-        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
+        if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
         return Promise.resolve(false);
       });
       vi.mocked(readText).mockResolvedValue('# empty jar');
@@ -526,8 +535,8 @@ describe('furnace registration validation helpers', () => {
 
     it('flags stale registrations pointing at removed component files', async () => {
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
-        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
-        if (filePath === '/project/components/custom/moz-dock/moz-dock.mjs') {
+        if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
+        if (filePath === nativePath('/project/components/custom/moz-dock/moz-dock.mjs')) {
           return Promise.resolve(true);
         }
         // The renamed-away helper no longer exists in the workspace.
@@ -551,8 +560,8 @@ describe('furnace registration validation helpers', () => {
 
     it('does not flag live registrations as stale', async () => {
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
-        if (filePath === '/engine/toolkit/content/jar.mn') return Promise.resolve(true);
-        if (filePath.startsWith('/project/components/custom/moz-dock/')) {
+        if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
+        if (filePath.startsWith(nativePath('/project/components/custom/moz-dock/'))) {
           return Promise.resolve(true);
         }
         return Promise.resolve(false);
@@ -568,7 +577,7 @@ describe('furnace registration validation helpers', () => {
 
   it('reports filesInSync false when source exists but target does not', async () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/components/custom/moz-dock')
+      Promise.resolve(filePath === nativePath('/project/components/custom/moz-dock'))
     );
     vi.mocked(readdir).mockResolvedValue([{ isFile: () => true, name: 'moz-dock.mjs' }] as never);
 
@@ -677,9 +686,9 @@ describe('furnace registration validation helpers', () => {
       vi.mocked(pathExists).mockImplementation((filePath: string) =>
         Promise.resolve(
           [
-            '/project/components/custom/moz-dock',
-            '/engine/toolkit/content',
-            '/engine/toolkit/content/jar.mn',
+            nativePath('/project/components/custom/moz-dock'),
+            nativePath('/engine/toolkit/content'),
+            nativePath('/engine/toolkit/content/jar.mn'),
           ].includes(filePath)
         )
       );
@@ -717,9 +726,9 @@ describe('furnace registration validation helpers', () => {
       vi.mocked(pathExists).mockImplementation((filePath: string) =>
         Promise.resolve(
           [
-            '/project/components/custom/moz-dock',
-            '/engine/toolkit/content',
-            '/engine/toolkit/content/customElements.js',
+            nativePath('/project/components/custom/moz-dock'),
+            nativePath('/engine/toolkit/content'),
+            nativePath('/engine/toolkit/content/customElements.js'),
           ].includes(filePath)
         )
       );

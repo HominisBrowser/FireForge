@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createFsMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../utils/fs.js', () => createFsMock());
@@ -8,14 +9,14 @@ vi.mock('../../utils/fs.js', () => createFsMock());
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   // `applyAllComponents` reads fireforge.json only for the optional
   // `markerComment` field. Tests do not exercise it, so resolve to an empty
@@ -43,11 +44,11 @@ vi.mock('../furnace-registration.js', () => ({
 
 vi.mock('../furnace-config.js', () => ({
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    overridesDir: '/project/components/overrides',
-    customDir: '/project/components/custom',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    overridesDir: nativePath('/project/components/overrides'),
+    customDir: nativePath('/project/components/custom'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
   loadFurnaceConfig: vi.fn(),
   loadFurnaceState: vi.fn(),
@@ -184,7 +185,7 @@ describe('applyAllComponents', () => {
 
   it('throws when the engine directory is missing', async () => {
     vi.mocked(pathExists).mockImplementation((filePath) =>
-      Promise.resolve(filePath !== '/project/engine')
+      Promise.resolve(filePath !== nativePath('/project/engine'))
     );
 
     await expect(applyAllComponents('/project')).rejects.toThrow(FurnaceError);
@@ -418,8 +419,8 @@ describe('applyAllComponents', () => {
 
     expect(hasOverrideEngineDrift).toHaveBeenCalledWith(
       {
-        engineDir: '/project/engine',
-        componentDir: '/project/components/overrides/moz-card',
+        engineDir: nativePath('/project/engine'),
+        componentDir: nativePath('/project/components/overrides/moz-card'),
         ftlDir: 'toolkit/locales/en-US/toolkit/global',
       },
       expect.objectContaining({ type: 'css-only' }),
@@ -452,7 +453,7 @@ describe('applyAllComponents', () => {
       {
         root: '/project',
         name: 'moz-panel',
-        componentDir: '/project/components/custom/moz-panel',
+        componentDir: nativePath('/project/components/custom/moz-panel'),
         ftlDir: 'toolkit/locales/en-US/toolkit/global',
       },
       expect.objectContaining({ register: true })
@@ -506,7 +507,7 @@ describe('applyAllComponents', () => {
     const result = await applyAllComponents('/project');
 
     expect(undeployCustomFiles).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       expect.objectContaining({ register: true }),
       ['moz-panel.css'],
       'toolkit/locales/en-US/toolkit/global',
@@ -514,8 +515,10 @@ describe('applyAllComponents', () => {
     );
     // jar.mn must be re-synced (remove all + re-add live entries) so the
     // stale CSS entry does not survive into the engine.
-    expect(removeJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-panel');
-    expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-panel', ['moz-panel.mjs']);
+    expect(removeJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel');
+    expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel', [
+      'moz-panel.mjs',
+    ]);
     // The .mjs is still present, so customElements registration is NOT
     // touched. Only the deletion of the .mjs itself should trigger that.
     expect(removeCustomElementRegistration).not.toHaveBeenCalled();
@@ -565,14 +568,14 @@ describe('applyAllComponents', () => {
     expect(applyOverrideComponent).not.toHaveBeenCalled();
     // Orphaned helper is undeployed and jar.mn re-synced to the live set.
     expect(undeployCustomFiles).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       expect.objectContaining({ register: true }),
       ['panel-helper-old.mjs'],
       'toolkit/locales/en-US/toolkit/global',
       expect.any(Object)
     );
-    expect(removeJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-panel');
-    expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-panel', [
+    expect(removeJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel');
+    expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel', [
       'moz-panel.mjs',
       'panel-helper-new.mjs',
     ]);
@@ -605,9 +608,14 @@ describe('applyAllComponents', () => {
 
     await applyAllComponents('/project');
 
-    expect(removeCustomElementRegistration).toHaveBeenCalledWith('/project/engine', 'moz-panel');
-    expect(removeJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-panel');
-    expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-panel', ['moz-panel.css']);
+    expect(removeCustomElementRegistration).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'moz-panel'
+    );
+    expect(removeJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel');
+    expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel', [
+      'moz-panel.css',
+    ]);
   });
 
   it('undeploys files removed from an override component workspace', async () => {
@@ -632,7 +640,7 @@ describe('applyAllComponents', () => {
     const result = await applyAllComponents('/project');
 
     expect(undeployOverrideFiles).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       expect.objectContaining({ type: 'css-only' }),
       ['moz-card.css'],
       'toolkit/locales/en-US/toolkit/global',
@@ -702,7 +710,7 @@ describe('applyAllComponents', () => {
 
   it('collects missing-directory and apply errors without aborting the batch', async () => {
     vi.mocked(pathExists).mockImplementation((filePath) => {
-      if (filePath === '/project/components/overrides/moz-card') {
+      if (filePath === nativePath('/project/components/overrides/moz-card')) {
         return Promise.resolve(false);
       }
       return Promise.resolve(true);

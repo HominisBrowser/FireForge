@@ -14,6 +14,7 @@ vi.mock('../../errors/build.js', async (importOriginal) => {
   return actual;
 });
 
+import { nativePath } from '../../test-utils/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { pathExists, readText, writeTextIfChanged } from '../../utils/fs.js';
 import { BrandingMozconfigMismatchError } from '../branding.js';
@@ -158,7 +159,7 @@ function stubReadTemplates(common: string, platform: string): void {
     if (
       probedPath.endsWith('.mozconfig') &&
       !probedPath.endsWith('common.mozconfig') &&
-      probedPath.includes('/configs/')
+      probedPath.includes(nativePath('/configs/'))
     ) {
       // A platform template (e.g. linux.mozconfig).
       return Promise.resolve(platform);
@@ -178,11 +179,11 @@ describe('generateMozconfig', () => {
     await generateMozconfig('/configs', '/engine', config);
 
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/engine/mozconfig',
+      nativePath('/engine/mozconfig'),
       expect.stringContaining('COMMON_OPT=TestBrowser')
     );
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/engine/mozconfig',
+      nativePath('/engine/mozconfig'),
       expect.stringContaining('PLATFORM_OPT=TestVendor')
     );
   });
@@ -198,7 +199,7 @@ describe('generateMozconfig', () => {
     await generateMozconfig('/configs', '/engine', config);
 
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/engine/mozconfig',
+      nativePath('/engine/mozconfig'),
       expect.stringContaining('ac_add_options --with-distribution-id=test.browser\n')
     );
   });

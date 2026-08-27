@@ -76,7 +76,7 @@ export async function addTokenToDocs(
   let countUpdated = false;
 
   const isLiteral = !options.value.startsWith('var(');
-  const mapsTo = isLiteral ? '—' : options.value.replace(/var\(([^)]+)\)/, '$1');
+  const mapsTo = isLiteral ? '—' : options.value.replace(/^var\(([^)]+)\)/, '$1');
   const tokenCell = `\`${options.tokenName}\``;
   const valueCell = `\`${options.value}\``;
 

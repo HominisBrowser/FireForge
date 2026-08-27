@@ -6,6 +6,7 @@ import { createFsMock } from '../../test-utils/module-mocks.js';
 vi.mock('../../utils/fs.js', () => createFsMock());
 
 import { FurnaceError } from '../../errors/furnace.js';
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import {
   addCustomElementRegistration,
@@ -111,7 +112,7 @@ describe('furnace registration AST coverage', () => {
     );
 
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/toolkit/content/customElements.js',
+      nativePath('/engine/toolkit/content/customElements.js'),
       expect.stringContaining('dock-controller.js')
     );
   });
@@ -126,7 +127,7 @@ describe('furnace registration AST coverage', () => {
     );
 
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/toolkit/content/customElements.js',
+      nativePath('/engine/toolkit/content/customElements.js'),
       expect.stringContaining('      "moz-dock",')
     );
   });
@@ -156,7 +157,7 @@ describe('furnace registration AST coverage', () => {
     );
 
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/toolkit/content/customElements.js',
+      nativePath('/engine/toolkit/content/customElements.js'),
       expect.stringContaining('["moz-dock", "chrome://global/content/elements/moz-dock.mjs"]')
     );
   });

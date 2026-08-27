@@ -34,6 +34,7 @@ import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceState, OverrideComponentConfig } from '../../types/furnace.js';
 import { pathExists, removeDir, removeFile } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
+import { normalizePathSlashes } from '../../utils/paths.js';
 import { removeDeployedCustomFiles } from './remove-state.js';
 
 /**
@@ -215,7 +216,10 @@ export async function performCustomRemovalMutations(args: {
     if (await pathExists(ftlPath)) {
       await snapshotFile(journal, ftlPath);
       await removeFile(ftlPath);
-      info(`Deleted localized file engine/${ftlRel}`);
+      // `ftlRel` is a native join, so on Windows an interpolated
+      // `engine/${ftlRel}` renders as `engine/toolkit\locales\...` — one
+      // message with both separators. Print the engine-relative form.
+      info(`Deleted localized file engine/${normalizePathSlashes(ftlRel)}`);
     }
     // Drop the locale jar.mn chrome registration that `applyCustomFtlFile`
     // wrote during deploy — otherwise the engine is left with a

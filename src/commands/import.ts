@@ -21,6 +21,7 @@ import {
 import {
   checkVersionCompatibility,
   loadPatchesManifest,
+  recommendManifestRepair,
   validatePatchesManifestConsistency,
   validatePatchIntegrity,
 } from '../core/patch-manifest.js';
@@ -338,7 +339,11 @@ async function assertScopedManifestConsistency(
     throw new GeneralError(
       'Patch manifest consistency check failed. Repair patches/patches.json before importing.\n' +
         `  ${issueSummary}\n\n` +
-        'Run "fireforge doctor --repair-patches-manifest" to rebuild the manifest from on-disk patch files.'
+        // Naming the whole-manifest rebuild for drift that is only in
+        // `filesAffected` puts the operator one keystroke from rewriting every
+        // row to correct one derived list. The narrow repair is the remedy the
+        // failure actually calls for.
+        recommendManifestRepair(scopedManifestIssues)
     );
   }
 }

@@ -66,4 +66,18 @@ describe('removeTree lock-release race', () => {
     await expect(removeTree('/primary', 'shard-a')).rejects.toThrow(/--force/);
     expect(rmMock).not.toHaveBeenCalled();
   });
+
+  // The containment guard compares a prefix built with `join` against a root
+  // built with `resolve`. Any input where the two forms differ — a relative
+  // primary root here, a drive-less path on Windows — made the guard reject
+  // every tree as an escape. Both sides are resolved now.
+  it('does not mistake a resolvable primary root for a containment escape', async () => {
+    existsSyncMock.mockReturnValue(false);
+
+    await expect(removeTree('relative-primary', 'shard-a')).resolves.toBeUndefined();
+    expect(rmMock).toHaveBeenCalledWith(
+      expect.stringContaining('shard-a'),
+      expect.objectContaining({ recursive: true })
+    );
+  });
 });

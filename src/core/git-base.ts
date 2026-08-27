@@ -162,3 +162,21 @@ export async function configureGitPerformance(repoDir: string): Promise<void> {
   await git(['config', 'core.fsmonitor', 'false'], repoDir);
   await git(['config', 'feature.manyFiles', 'true'], repoDir);
 }
+
+/**
+ * Pins the engine repository's line-ending policy to "store and check out
+ * exactly what upstream shipped".
+ *
+ * Git's Windows installer defaults to a global `core.autocrlf=true`, which
+ * rewrites LF to CRLF on checkout and back on staging. FireForge cannot
+ * tolerate that: patch bodies are byte diffs of the working tree, and
+ * `hashObjectBatch` deliberately delegates to git so `.gitattributes` and
+ * `core.autocrlf` DO apply to the hashes `status` compares against. Under the
+ * global default the same tree hashes differently on Windows than everywhere
+ * else, so exported patches and drift detection disagree across machines.
+ * Setting it per-repository leaves the developer's global config alone.
+ */
+export async function configureGitLineEndings(repoDir: string): Promise<void> {
+  await git(['config', 'core.autocrlf', 'false'], repoDir);
+  await git(['config', 'core.eol', 'lf'], repoDir);
+}

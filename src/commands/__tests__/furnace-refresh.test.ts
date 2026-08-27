@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() =>
     Promise.resolve({
@@ -35,11 +37,11 @@ vi.mock('../../core/furnace-config.js', () => ({
   updateFurnaceState: vi.fn(() => Promise.resolve()),
 
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    overridesDir: '/project/components/overrides',
-    customDir: '/project/components/custom',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    overridesDir: nativePath('/project/components/overrides'),
+    customDir: nativePath('/project/components/custom'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -172,7 +174,7 @@ describe('furnace refresh', () => {
 
   it('throws when engine directory is missing', async () => {
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (typeof path === 'string' && path.includes('/project/engine'))
+      if (typeof path === 'string' && path.includes(nativePath('/project/engine')))
         return Promise.resolve(false);
       return Promise.resolve(true);
     });
@@ -385,7 +387,7 @@ describe('furnace refresh', () => {
 
   it('throws when override directory is missing', async () => {
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (typeof path === 'string' && path.includes('overrides/moz-button'))
+      if (typeof path === 'string' && path.includes(nativePath('overrides/moz-button')))
         return Promise.resolve(false);
       return Promise.resolve(true);
     });
@@ -425,8 +427,8 @@ describe('furnace refresh', () => {
     );
 
     expect(refreshOverrideFile).toHaveBeenCalledWith(
-      '/project/engine',
-      expect.stringContaining('/components/overrides/moz-button/'),
+      nativePath('/project/engine'),
+      expect.stringContaining(nativePath('/components/overrides/moz-button/')),
       expect.any(String),
       expect.any(String),
       expect.any(String),
@@ -434,8 +436,8 @@ describe('furnace refresh', () => {
       undefined
     );
     expect(refreshOverrideFile).toHaveBeenCalledWith(
-      '/project/engine',
-      expect.stringContaining('/components/overrides/moz-card/'),
+      nativePath('/project/engine'),
+      expect.stringContaining(nativePath('/components/overrides/moz-card/')),
       expect.any(String),
       expect.any(String),
       expect.any(String),
@@ -505,7 +507,7 @@ describe('furnace refresh --reset-base', () => {
 
     // The whole point: no three-way merge runs.
     expect(refreshOverrideFile).not.toHaveBeenCalled();
-    expect(getHead).toHaveBeenCalledWith('/project/engine');
+    expect(getHead).toHaveBeenCalledWith(nativePath('/project/engine'));
     const written = vi.mocked(writeFurnaceConfig).mock.calls[0]?.[1];
     expect(written?.overrides['moz-button']).toEqual({
       type: 'full',

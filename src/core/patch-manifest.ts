@@ -7,9 +7,15 @@
  */
 
 export {
+  type PatchManifestConsistencyIssue,
   rebuildPatchesManifest,
+  recommendManifestRepair,
   validatePatchesManifestConsistency,
 } from './patch-manifest-consistency.js';
+export {
+  type FilesAffectedRepair,
+  repairPatchesFilesAffected,
+} from './patch-manifest-files-affected.js';
 export {
   addPatchToManifest,
   loadPatchesManifest,

@@ -81,7 +81,12 @@ function lastNonEmptyLine(stdout: string): string {
   return lines.at(-1) ?? '';
 }
 
-describe('FIREFORGE-VERDICT through tree exec', () => {
+// The whole contract runs THROUGH `tree exec`, which refuses on Windows
+// (`assertPosix` in ../commands/tree.ts) — there is no child to inherit
+// stdout from there. The refusal itself is pinned in tree.test.ts.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
+describePosix('FIREFORGE-VERDICT through tree exec', () => {
   let projectRoot: string;
 
   /**

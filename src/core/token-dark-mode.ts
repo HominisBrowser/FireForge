@@ -14,6 +14,23 @@
  */
 
 /**
+ * True when `line` carries a `:root` selector whose opening brace is on the
+ * same line, with no intervening brace of either kind.
+ *
+ * Index arithmetic rather than `/:root[^{}]*\{/`: that pattern restarts at
+ * every `:root` in the line, which is quadratic on a line repeating the
+ * selector (CodeQL `js/polynomial-redos`). `tokens.css` comes from a
+ * consumer's engine tree, so such a line needs no attacker to arrive.
+ */
+function rootOpensBraceOnLine(line: string): boolean {
+  const brace = line.indexOf('{');
+  if (brace === -1) return false;
+  const root = line.lastIndexOf(':root', brace - ':root'.length);
+  if (root === -1 || root + ':root'.length > brace) return false;
+  return !line.slice(root + ':root'.length, brace).includes('}');
+}
+
+/**
  * Strips the content of `/* ... *\/` block comments from an array of
  * CSS source lines while preserving each line's length. Indexed scans
  * over the returned mirror line up with the original, so callers that
@@ -85,9 +102,9 @@ export function findDarkRootInsertionIndex(lines: string[]): number | null {
   let rootOpenLine = -1;
   for (let i = darkMediaLine; i < stripped.length; i++) {
     const line = stripped[i] ?? '';
-    if (/(^|[\s,{])\s*:root\b/.test(line)) {
+    if (/(?:^|[\s,{]):root\b/.test(line)) {
       // Brace on the same line?
-      if (/:root[^{}]*\{/.test(line)) {
+      if (rootOpensBraceOnLine(line)) {
         rootOpenLine = i;
         break;
       }

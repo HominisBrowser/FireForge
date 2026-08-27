@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { makeProjectPaths } from '../../test-utils/index.js';
+import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
 
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn().mockResolvedValue({
@@ -46,8 +46,10 @@ vi.mock('../../core/git.js', async (importOriginal) => {
 });
 
 vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn((path: string) => Promise.resolve(path === '/project/engine')),
-  pathExistsStrict: vi.fn((path: string) => Promise.resolve(path === '/project/engine')),
+  pathExists: vi.fn((path: string) => Promise.resolve(path === nativePath('/project/engine'))),
+  pathExistsStrict: vi.fn((path: string) =>
+    Promise.resolve(path === nativePath('/project/engine'))
+  ),
   removeDir: vi.fn().mockResolvedValue(undefined),
   ensureDir: vi.fn().mockResolvedValue(undefined),
   checkDiskSpace: vi.fn().mockResolvedValue(undefined),
@@ -92,6 +94,7 @@ import { ChecksumMismatchError, EngineExistsError } from '../../errors/download.
 import { pathExists, pathExistsStrict, removeDir } from '../../utils/fs.js';
 import type { SpinnerHandle } from '../../utils/logger.js';
 import { info, spinner, step, warn } from '../../utils/logger.js';
+import { escapeRegex } from '../../utils/regex.js';
 import { downloadCommand } from '../download.js';
 
 function createSpinnerMock(): SpinnerHandle & {
@@ -124,10 +127,10 @@ describe('downloadCommand', () => {
     vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
     vi.mocked(withFileLock).mockImplementation((_lockPath, operation) => operation());
     vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === '/project/engine')
+      Promise.resolve(path === nativePath('/project/engine'))
     );
     vi.mocked(pathExistsStrict).mockImplementation((path: string) =>
-      Promise.resolve(path === '/project/engine')
+      Promise.resolve(path === nativePath('/project/engine'))
     );
   });
 
@@ -144,18 +147,20 @@ describe('downloadCommand', () => {
     );
     expect(mockRename).toHaveBeenNthCalledWith(
       1,
-      '/project/engine',
-      expect.stringMatching(/^\/project\/engine\.backup-/)
+      nativePath('/project/engine'),
+      expect.stringMatching(new RegExp(`^${escapeRegex(nativePath('/project/engine'))}\\.backup-`))
     );
     expect(mockRename).toHaveBeenNthCalledWith(
       2,
-      expect.stringMatching(/^\/project\/engine\.replacement-/),
-      '/project/engine'
+      expect.stringMatching(
+        new RegExp(`^${escapeRegex(nativePath('/project/engine'))}\\.replacement-`)
+      ),
+      nativePath('/project/engine')
     );
     expect(mockRename).toHaveBeenNthCalledWith(
       3,
-      expect.stringMatching(/^\/project\/engine\.backup-/),
-      '/project/engine'
+      expect.stringMatching(new RegExp(`^${escapeRegex(nativePath('/project/engine'))}\\.backup-`)),
+      nativePath('/project/engine')
     );
   });
 
@@ -168,7 +173,7 @@ describe('downloadCommand', () => {
     vi.mocked(resumeRepository).mockRejectedValueOnce(new Error('resume failed'));
 
     await expect(downloadCommand('/project', {})).rejects.toThrow(
-      'Engine directory contains a partially initialized checkout: /project/engine'
+      `Engine directory contains a partially initialized checkout: ${nativePath('/project/engine')}`
     );
 
     expect(initRepository).not.toHaveBeenCalled();
@@ -224,7 +229,10 @@ describe('downloadCommand', () => {
       process.stderr.isTTY = originalStderrTTY;
     }
 
-    expect(resumeRepository).toHaveBeenCalledWith('/project/engine', expect.any(Object));
+    expect(resumeRepository).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      expect.any(Object)
+    );
     // Progress messages flow through the spinner handle exclusively — the
     // non-TTY spinner fallback emits `p.log.step(msg)` internally, so an
     // explicit `step()` alongside `.message()` double-prints every git-init
@@ -237,7 +245,7 @@ describe('downloadCommand', () => {
     await expect(downloadCommand('/project', {})).rejects.toBeInstanceOf(EngineExistsError);
 
     expect(withFileLock).toHaveBeenCalledWith(
-      '/project/.fireforge/download.fireforge.lock',
+      nativePath('/project/.fireforge/download.fireforge.lock'),
       expect.any(Function),
       // The download lock waits generously: a legitimate holder runs for
       // 10+ minutes, and dead holders are reaped by the PID probe anyway.
@@ -251,7 +259,8 @@ describe('downloadCommand', () => {
     // Engine exists AND furnace-state.json exists → force branch should clear it after activation.
     vi.mocked(pathExistsStrict).mockResolvedValue(true);
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (path === '/project/.fireforge/furnace-state.json') return Promise.resolve(true);
+      if (path === nativePath('/project/.fireforge/furnace-state.json'))
+        return Promise.resolve(true);
       return Promise.resolve(false);
     });
     vi.mocked(initRepository).mockResolvedValue(undefined);
@@ -262,15 +271,17 @@ describe('downloadCommand', () => {
     expect(downloadFirefoxSource).toHaveBeenCalledWith(
       '140.9.0esr',
       'firefox-esr',
-      expect.stringMatching(/^\/project\/engine\.replacement-/),
-      '/project/.fireforge/cache',
+      expect.stringMatching(
+        new RegExp(`^${escapeRegex(nativePath('/project/engine'))}\\.replacement-`)
+      ),
+      nativePath('/project/.fireforge/cache'),
       expect.any(Function),
       expect.any(Function),
       undefined,
       expect.any(Function),
       undefined
     );
-    expect(removeDir).not.toHaveBeenCalledWith('/project/engine');
+    expect(removeDir).not.toHaveBeenCalledWith(nativePath('/project/engine'));
     // pendingRepair preservation + wholesale clear is the shared helper's
     // contract, pinned by furnace-config tests.
     expect(clearAppliedFurnaceState).toHaveBeenCalledTimes(1);
@@ -289,7 +300,7 @@ describe('downloadCommand', () => {
 
     await expect(downloadCommand('/project', { force: true })).rejects.toBe(mismatch);
 
-    expect(removeDir).not.toHaveBeenCalledWith('/project/engine');
+    expect(removeDir).not.toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(mockRename).not.toHaveBeenCalled();
     expect(initRepository).not.toHaveBeenCalled();
     expect(clearAppliedFurnaceState).not.toHaveBeenCalled();
@@ -460,8 +471,8 @@ describe('downloadCommand', () => {
     expect(downloadFirefoxSource).toHaveBeenCalledWith(
       '140.9.0esr',
       'firefox-esr',
-      '/project/engine',
-      '/project/.fireforge/cache',
+      nativePath('/project/engine'),
+      nativePath('/project/.fireforge/cache'),
       expect.any(Function),
       expect.any(Function),
       'a'.repeat(64),
@@ -493,8 +504,8 @@ describe('downloadCommand', () => {
     expect(downloadFirefoxSource).toHaveBeenCalledWith(
       '141.0',
       'firefox',
-      '/project/engine',
-      '/project/.fireforge/cache',
+      nativePath('/project/engine'),
+      nativePath('/project/.fireforge/cache'),
       expect.any(Function),
       expect.any(Function),
       undefined,

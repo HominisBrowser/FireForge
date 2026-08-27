@@ -33,6 +33,7 @@ vi.mock('../parser-fallback.js', async (importOriginal) => ({
   withParserFallback: parserFallbackMock,
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import {
   addSubscriptAST,
@@ -138,7 +139,7 @@ function bootstrapBrowser() {
 
     await expect(addSubscriptToBrowserMain('/engine', 'dock-controller')).resolves.toBe(true);
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/browser/base/content/browser-main.js',
+      nativePath('/engine/browser/base/content/browser-main.js'),
       expect.stringContaining('dock-controller.js')
     );
   });

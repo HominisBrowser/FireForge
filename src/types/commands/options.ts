@@ -1025,7 +1025,30 @@ export interface DoctorOptions {
    * the patch manifest under that lock.
    */
   waitLock?: number | boolean;
+  /**
+   * Rebuild patches.json from the on-disk patch files, preserving every
+   * field the patch bodies cannot express. Refused when patches.json exists
+   * but cannot be parsed, unless `allowMetadataLoss` is also set.
+   */
   repairPatchesManifest?: boolean;
+  /**
+   * Repair only the `filesAffected` lists that disagree with their patch
+   * body. Narrower than `repairPatchesManifest`: it rewrites one field on the
+   * drifted rows and leaves every other row byte-identical, and it needs no
+   * project config, so it works on a project whose fireforge.json is broken.
+   */
+  repairFilesAffected?: boolean;
+  /**
+   * Accept the whole-manifest metadata reinvention that rebuilding an
+   * unparseable patches.json implies. Only meaningful with
+   * `repairPatchesManifest`.
+   */
+  allowMetadataLoss?: boolean;
+  /**
+   * Project what a requested repair would change and write nothing. Refused
+   * without a repair flag rather than accepted as a silent no-op.
+   */
+  dryRun?: boolean;
   /**
    * Clear a stale `pendingResolution` marker, but only after the same
    * read-only queue health checks used by `fireforge verify` report no

@@ -569,7 +569,11 @@ export async function removeTree(
   options: { force?: boolean } = {}
 ): Promise<void> {
   assertValidTreeName(name);
-  const treesDir = getTreesDir(primaryRoot);
+  // Both sides resolved: the containment prefix has to be in the same form as
+  // the path it guards. `getTreesDir` is a `join`, so on Windows it yields a
+  // drive-less path while `resolve` below adds the drive letter — the prefix
+  // test then failed for EVERY tree and refused each removal as an escape.
+  const treesDir = resolve(getTreesDir(primaryRoot));
   const treeRoot = resolve(treesDir, name);
   if (!treeRoot.startsWith(treesDir + sep) || basename(treeRoot) !== name) {
     throw new GeneralError(

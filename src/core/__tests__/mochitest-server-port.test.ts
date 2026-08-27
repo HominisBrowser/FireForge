@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../utils/process.js', () => ({ exec: vi.fn() }));
 vi.mock('../marionette-port.js', () => ({ probeMarionettePort: vi.fn() }));
@@ -19,8 +19,22 @@ const HARNESS_HTTPD = {
     '/project/engine/obj-debug/dist/bin/xpcshell -g /x -f /project/engine/obj-debug/_tests/testing/mochitest/server.js',
 };
 
+// These modules branch on `process.platform` directly (not the mockable
+// `getPlatform()`), so the POSIX expectations below only hold when the
+// branch is forced. Pin it here instead of inheriting the runner's OS.
+const originalPlatform = process.platform;
+
+function stubPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { value, configurable: true });
+}
+
+afterAll(() => {
+  Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+});
+
 beforeEach(() => {
   vi.mocked(probeMarionettePort).mockReset();
+  stubPlatform('darwin');
 });
 
 describe('isMochitestServerHolder', () => {

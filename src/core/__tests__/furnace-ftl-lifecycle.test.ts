@@ -47,6 +47,7 @@ vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(),
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import { copyFile, pathExists, readText, removeFile } from '../../utils/fs.js';
 import { FTL_DIR } from '../furnace-constants.js';
 import { isGitRepository } from '../git.js';
@@ -96,8 +97,8 @@ describe('FTL localization lifecycle', () => {
 
       // The .ftl file should be copied to the FTL_DIR location
       expect(mockCopyFile).toHaveBeenCalledWith(
-        '/comp/my-widget/my-widget.ftl',
-        `/engine/${FTL_DIR}/my-widget.ftl`
+        nativePath('/comp/my-widget/my-widget.ftl'),
+        nativePath(`/engine/${FTL_DIR}/my-widget.ftl`)
       );
       expect(result.affectedPaths).toContain(`${FTL_DIR}/my-widget.ftl`);
     });
@@ -284,8 +285,8 @@ describe('FTL localization lifecycle', () => {
       );
 
       expect(mockCopyFile).toHaveBeenCalledWith(
-        '/comp/moz-card/moz-card.ftl',
-        `/engine/${FTL_DIR}/moz-card.ftl`
+        nativePath('/comp/moz-card/moz-card.ftl'),
+        nativePath(`/engine/${FTL_DIR}/moz-card.ftl`)
       );
       expect(result.affectedPaths).toContain(`${FTL_DIR}/moz-card.ftl`);
     });
@@ -332,10 +333,10 @@ describe('FTL localization lifecycle', () => {
         journal
       );
 
-      expect(mockRemoveFile).toHaveBeenCalledWith(`/engine/${FTL_DIR}/my-widget.ftl`);
+      expect(mockRemoveFile).toHaveBeenCalledWith(nativePath(`/engine/${FTL_DIR}/my-widget.ftl`));
       // The returned relative path should be under FTL_DIR, not the component targetPath
       expect(result[0]).toContain(FTL_DIR);
-      expect(result[0]).not.toContain('browser/components/widget');
+      expect(result[0]).not.toContain(nativePath('browser/components/widget'));
     });
 
     it('removes non-FTL files from the component targetPath', async () => {
@@ -356,7 +357,7 @@ describe('FTL localization lifecycle', () => {
       );
 
       expect(mockRemoveFile).toHaveBeenCalledWith(
-        '/engine/browser/components/widget/my-widget.css'
+        nativePath('/engine/browser/components/widget/my-widget.css')
       );
       expect(result[0]).toContain('browser/components/widget');
     });
@@ -412,7 +413,7 @@ describe('FTL localization lifecycle', () => {
         journal
       );
 
-      expect(mockRemoveFile).toHaveBeenCalledWith(`/engine/${FTL_DIR}/moz-card.ftl`);
+      expect(mockRemoveFile).toHaveBeenCalledWith(nativePath(`/engine/${FTL_DIR}/moz-card.ftl`));
       expect(result.removed).toContain(`${FTL_DIR}/moz-card.ftl`);
     });
   });

@@ -62,12 +62,19 @@ vi.mock('../../core/patch-apply.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../../core/patch-manifest.js', () => ({
-  loadPatchesManifest: vi.fn(),
-  checkVersionCompatibility: vi.fn().mockReturnValue(null),
-  validatePatchIntegrity: vi.fn().mockResolvedValue([]),
-  validatePatchesManifestConsistency: vi.fn().mockResolvedValue([]),
-}));
+vi.mock('../../core/patch-manifest.js', async (importOriginal) => {
+  // The real `recommendManifestRepair` is used: which repair the refusal
+  // names is derived from the issue codes, and stubbing it would leave the
+  // recommendation assertions below asserting nothing.
+  const actual = await importOriginal<typeof import('../../core/patch-manifest.js')>();
+  return {
+    loadPatchesManifest: vi.fn(),
+    checkVersionCompatibility: vi.fn().mockReturnValue(null),
+    recommendManifestRepair: actual.recommendManifestRepair,
+    validatePatchIntegrity: vi.fn().mockResolvedValue([]),
+    validatePatchesManifestConsistency: vi.fn().mockResolvedValue([]),
+  };
+});
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn().mockResolvedValue(true),
@@ -390,6 +397,43 @@ describe('importCommand drift handling', () => {
     );
 
     expect(applyPatchesWithContinue).not.toHaveBeenCalled();
+  });
+
+  it('names the narrow repair when the only drift is in filesAffected', async () => {
+    // A `files-affected-mismatch` is a derived list disagreeing with the diff
+    // it describes. Naming the whole-manifest rebuild for it is how a
+    // downstream fork came to rewrite every row in its manifest to correct
+    // one list, so the refusal must offer the repair that fixes only that.
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'files-affected-mismatch',
+        filename: '905-ui-newtab.patch',
+        message: '905-ui-newtab.patch declares [a] but the patch file targets [a, b].',
+      },
+    ]);
+
+    await expect(importCommand('/fake/root', { force: true })).rejects.toThrow(
+      '--repair-files-affected'
+    );
+  });
+
+  it('still names the full rebuild when an issue the narrow repair cannot fix is present', async () => {
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'files-affected-mismatch',
+        filename: '905-ui-newtab.patch',
+        message: '905-ui-newtab.patch declares [a] but the patch file targets [a, b].',
+      },
+      {
+        code: 'untracked-patch-file',
+        filename: '906-ui-panel.patch',
+        message: '906-ui-panel.patch exists on disk but is not tracked in patches.json.',
+      },
+    ]);
+
+    await expect(importCommand('/fake/root', { force: true })).rejects.toThrow(
+      '--repair-patches-manifest'
+    );
   });
 
   it('returns early when the patches directory does not exist', async () => {

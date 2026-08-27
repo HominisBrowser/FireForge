@@ -130,6 +130,7 @@ import {
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { registerSharedCSS } from '../../core/register-shared-css.js';
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { cancel, info, isCancel, note, success, warn } from '../../utils/logger.js';
 import { furnaceInitCommand } from '../furnace/init.js';
@@ -339,7 +340,7 @@ describe('furnaceInitCommand', () => {
     vi.mocked(pathExists).mockImplementation((path: string) => {
       // engine/ exists; tokens CSS does not yet exist (so we exercise
       // the scaffold + register path).
-      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
       return Promise.resolve(false);
     });
     vi.mocked(registerSharedCSS).mockResolvedValue({
@@ -356,7 +357,7 @@ describe('furnaceInitCommand', () => {
     }
 
     expect(vi.mocked(registerSharedCSS)).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'mybrowser-tokens.css',
       undefined,
       false
@@ -371,7 +372,7 @@ describe('furnaceInitCommand', () => {
     // already registered must be idempotent: the registration helper
     // returns `skipped: true`, so no info banner is emitted.
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
       return Promise.resolve(false);
     });
     vi.mocked(registerSharedCSS).mockResolvedValue({
@@ -398,7 +399,7 @@ describe('furnaceInitCommand', () => {
     // populated, or the operator is testing). Failure to register must
     // be a soft warning, never a hard failure that aborts init.
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
       return Promise.resolve(false);
     });
     vi.mocked(registerSharedCSS).mockRejectedValue(

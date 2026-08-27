@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../core/config.js', () => ({
@@ -20,14 +21,14 @@ vi.mock('../../core/config.js', () => ({
   updateState: vi.fn(() => Promise.resolve()),
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
 }));
 
@@ -92,11 +93,11 @@ vi.mock('../../core/mach.js', () => ({
 vi.mock('../../core/furnace-config.js', () => ({
   furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    overridesDir: '/project/components/overrides',
-    customDir: '/project/components/custom',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    overridesDir: nativePath('/project/components/overrides'),
+    customDir: nativePath('/project/components/custom'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -169,13 +170,28 @@ vi.mock('../../core/patch-apply.js', () => ({
   countPatches: vi.fn(() => Promise.resolve(1)),
 }));
 
-vi.mock('../../core/patch-manifest.js', () => ({
-  rebuildPatchesManifest: vi.fn(() =>
-    Promise.resolve({ manifest: { version: 1, patches: [] }, recoveredFilenames: [] })
-  ),
-  validatePatchIntegrity: vi.fn(() => Promise.resolve([])),
-  validatePatchesManifestConsistency: vi.fn(() => Promise.resolve([])),
-}));
+vi.mock('../../core/patch-manifest.js', async (importOriginal) => {
+  // `recommendManifestRepair` is pure advice derived from the issue list, so
+  // the real one is used here: the assertions below are about which repair
+  // doctor names, and a stubbed hint would assert nothing.
+  const actual = await importOriginal<typeof import('../../core/patch-manifest.js')>();
+  return {
+    rebuildPatchesManifest: vi.fn(() =>
+      Promise.resolve({
+        manifest: { version: 1, patches: [] },
+        recoveredFilenames: [],
+        droppedFilenames: [],
+        written: true,
+      })
+    ),
+    repairPatchesFilesAffected: vi.fn(() =>
+      Promise.resolve({ repairs: [], skippedFilenames: [], written: false })
+    ),
+    recommendManifestRepair: actual.recommendManifestRepair,
+    validatePatchIntegrity: vi.fn(() => Promise.resolve([])),
+    validatePatchesManifestConsistency: vi.fn(() => Promise.resolve([])),
+  };
+});
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
@@ -231,6 +247,7 @@ import { getWorkingTreeStatus } from '../../core/git-status.js';
 import { ensurePython } from '../../core/mach.js';
 import {
   rebuildPatchesManifest,
+  repairPatchesFilesAffected,
   validatePatchesManifestConsistency,
   validatePatchIntegrity,
 } from '../../core/patch-manifest.js';
@@ -257,6 +274,12 @@ function createProgram(): Command {
   return program;
 }
 
+// The orphaned-harness check is `skipIf: () => process.platform === 'win32'`
+// (see doctor-orphaned-harness.ts), so a clean Windows run reports one check
+// fewer. Naming the difference keeps the summary assertion meaningful on both
+// platforms instead of pinning a number that is only true on POSIX.
+const PASSING_CHECK_COUNT = process.platform === 'win32' ? 15 : 16;
+
 describe('doctorCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -280,6 +303,13 @@ describe('doctorCommand', () => {
     vi.mocked(rebuildPatchesManifest).mockResolvedValue({
       manifest: { version: 1, patches: [] },
       recoveredFilenames: [],
+      droppedFilenames: [],
+      written: true,
+    });
+    vi.mocked(repairPatchesFilesAffected).mockResolvedValue({
+      repairs: [],
+      skippedFilenames: [],
+      written: false,
     });
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(readdir).mockResolvedValue([]);
@@ -316,16 +346,16 @@ describe('doctorCommand', () => {
 
   it('runs post-rebase registration audit when requested', async () => {
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath.endsWith('browser/moz.configure')) {
+      if (filePath.endsWith(nativePath('browser/moz.configure'))) {
         return Promise.resolve('option("--with-browser-chrome-url", help=BROWSER_CHROME_URL)');
       }
-      if (filePath.endsWith('browser/base/jar.mn')) {
+      if (filePath.endsWith(nativePath('browser/base/jar.mn'))) {
         return Promise.resolve('content/browser/browser.xhtml');
       }
-      if (filePath.endsWith('toolkit/content/customElements.js')) {
+      if (filePath.endsWith(nativePath('toolkit/content/customElements.js'))) {
         return Promise.resolve('customElements.setElementCreationCallback("moz-dock", () => {})');
       }
-      if (filePath.endsWith('toolkit/content/jar.mn')) {
+      if (filePath.endsWith(nativePath('toolkit/content/jar.mn'))) {
         return Promise.resolve('content/global/elements/moz-dock.mjs');
       }
       return Promise.resolve('');
@@ -359,16 +389,16 @@ describe('doctorCommand', () => {
   /** Makes the four shape probes read clean so only the browser.toml walk can warn. */
   function mockCleanShapeProbes(): void {
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath.endsWith('browser/moz.configure')) {
+      if (filePath.endsWith(nativePath('browser/moz.configure'))) {
         return Promise.resolve('option("--with-browser-chrome-url", help=BROWSER_CHROME_URL)');
       }
-      if (filePath.endsWith('browser/base/jar.mn')) {
+      if (filePath.endsWith(nativePath('browser/base/jar.mn'))) {
         return Promise.resolve('content/browser/browser.xhtml');
       }
-      if (filePath.endsWith('toolkit/content/customElements.js')) {
+      if (filePath.endsWith(nativePath('toolkit/content/customElements.js'))) {
         return Promise.resolve('customElements.setElementCreationCallback("moz-dock", () => {})');
       }
-      if (filePath.endsWith('toolkit/content/jar.mn')) {
+      if (filePath.endsWith(nativePath('toolkit/content/jar.mn'))) {
         return Promise.resolve('content/global/elements/moz-dock.mjs');
       }
       return Promise.resolve('');
@@ -418,7 +448,7 @@ describe('doctorCommand', () => {
   it('reports a clean workspace as fully passing', async () => {
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('All 16 checks passed!');
+    expect(outro).toHaveBeenCalledWith(`All ${PASSING_CHECK_COUNT} checks passed!`);
     expect(result.exitCode).toBe(0);
   });
 
@@ -461,7 +491,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('All 16 checks passed!');
+    expect(outro).toHaveBeenCalledWith(`All ${PASSING_CHECK_COUNT} checks passed!`);
     expect(
       vi.mocked(success).mock.calls.some(([message]) => message.includes('126 tool-managed'))
     ).toBe(true);
@@ -490,7 +520,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('All 16 checks passed!');
+    expect(outro).toHaveBeenCalledWith(`All ${PASSING_CHECK_COUNT} checks passed!`);
     expect(
       vi.mocked(success).mock.calls.some(([message]) => message.includes('1 tool-managed change'))
     ).toBe(true);
@@ -549,7 +579,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith('All 16 checks passed!');
+    expect(outro).toHaveBeenCalledWith(`All ${PASSING_CHECK_COUNT} checks passed!`);
     expect(
       vi.mocked(success).mock.calls.some(([message]) => message.includes('tool-managed change'))
     ).toBe(true);
@@ -619,7 +649,7 @@ describe('doctorCommand', () => {
     // passed-check counts.
     const { findExecutable } = await import('../../utils/process.js');
     vi.mocked(findExecutable).mockImplementationOnce((name: string) =>
-      Promise.resolve(name === 'watchman' ? undefined : '/usr/local/bin/' + name)
+      Promise.resolve(name === 'watchman' ? undefined : nativePath('/usr/local/bin/') + name)
     );
 
     const result = await doctorCommand('/project');
@@ -659,7 +689,7 @@ describe('doctorCommand', () => {
   it('fails doctor when a required declared external tool is missing', async () => {
     const { findExecutable } = await import('../../utils/process.js');
     vi.mocked(findExecutable).mockImplementation((name: string) =>
-      Promise.resolve(name === 'missing-tool' ? undefined : '/usr/local/bin/' + name)
+      Promise.resolve(name === 'missing-tool' ? undefined : nativePath('/usr/local/bin/') + name)
     );
     vi.mocked(loadConfig).mockResolvedValue({
       name: 'MyBrowser',
@@ -686,7 +716,7 @@ describe('doctorCommand', () => {
   it('warns doctor when an optional declared external tool is missing', async () => {
     const { findExecutable } = await import('../../utils/process.js');
     vi.mocked(findExecutable).mockImplementation((name: string) =>
-      Promise.resolve(name === 'optional-tool' ? undefined : '/usr/local/bin/' + name)
+      Promise.resolve(name === 'optional-tool' ? undefined : nativePath('/usr/local/bin/') + name)
     );
     vi.mocked(loadConfig).mockResolvedValue({
       name: 'MyBrowser',
@@ -962,12 +992,14 @@ describe('doctorCommand', () => {
         ],
       },
       recoveredFilenames: ['001-ui-toolbar.patch'],
+      droppedFilenames: [],
+      written: true,
     });
 
     const result = await doctorCommand('/project', { repairPatchesManifest: true });
 
     expect(rebuildPatchesManifest).toHaveBeenCalledWith(
-      '/project/patches',
+      nativePath('/project/patches'),
       '140.9.0esr',
       // doctor honours `--wait-lock`; the repair rebuilds the manifest under
       // the patch-directory lock.
@@ -1094,7 +1126,7 @@ describe('doctorCommand', () => {
     await doctorCommand('/project', { repairPatchesManifest: true });
 
     expect(rebuildPatchesManifest).toHaveBeenCalledWith(
-      '/project/patches',
+      nativePath('/project/patches'),
       '142.0esr',
       // doctor honours `--wait-lock`; the repair rebuilds the manifest under
       // the patch-directory lock.
@@ -1102,6 +1134,230 @@ describe('doctorCommand', () => {
     );
     // And critically: NOT called with 'unknown'.
     expect(rebuildPatchesManifest).not.toHaveBeenCalledWith(expect.anything(), 'unknown');
+  });
+
+  it('offers the narrow repair when the only drift is in filesAffected', async () => {
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'files-affected-mismatch',
+        filename: '905-ui-newtab.patch',
+        message: '905-ui-newtab.patch declares [a] but the patch file targets [a, b].',
+      },
+    ]);
+
+    await doctorCommand('/project');
+
+    const hints = vi
+      .mocked(warn)
+      .mock.calls.map(([message]) => message)
+      .filter((message): message is string => typeof message === 'string');
+    expect(hints.some((message) => message.includes('--repair-files-affected'))).toBe(true);
+    expect(hints.some((message) => message.includes('--repair-patches-manifest'))).toBe(false);
+  });
+
+  it('repairs only filesAffected when --repair-files-affected is requested', async () => {
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'files-affected-mismatch',
+        filename: '905-ui-newtab.patch',
+        message: '905-ui-newtab.patch declares [a] but the patch file targets [a, b].',
+      },
+    ]);
+    vi.mocked(repairPatchesFilesAffected).mockResolvedValueOnce({
+      repairs: [{ filename: '905-ui-newtab.patch', before: ['a'], after: ['a', 'b'] }],
+      skippedFilenames: [],
+      written: true,
+    });
+
+    const result = await doctorCommand('/project', { repairFilesAffected: true });
+
+    expect(repairPatchesFilesAffected).toHaveBeenCalledWith(
+      nativePath('/project/patches'),
+      ['905-ui-newtab.patch'],
+      expect.objectContaining({ command: 'doctor --repair-files-affected', dryRun: false })
+    );
+    // The narrow repair never reaches the whole-manifest rebuild.
+    expect(rebuildPatchesManifest).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('reports the write when a repair lands and a later check fails', async () => {
+    // The repair runs inside the check loop while the exit code is computed
+    // after every check. A non-zero exit reads as "nothing happened", which
+    // is exactly how a downstream fork came to believe a destructive repair
+    // had not run.
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'files-affected-mismatch',
+        filename: '905-ui-newtab.patch',
+        message: '905-ui-newtab.patch declares [a] but the patch file targets [a, b].',
+      },
+    ]);
+    vi.mocked(repairPatchesFilesAffected).mockResolvedValueOnce({
+      repairs: [{ filename: '905-ui-newtab.patch', before: ['a'], after: ['a', 'b'] }],
+      skippedFilenames: [],
+      written: true,
+    });
+    vi.mocked(validatePatchIntegrity).mockResolvedValueOnce([
+      { patchFile: '906-ui-panel.patch', targetFile: 'browser/gone.js' },
+    ] as never);
+
+    const result = await doctorCommand('/project', { repairFilesAffected: true });
+
+    expect(result.exitCode).toBe(1);
+    const warnings = vi
+      .mocked(warn)
+      .mock.calls.map(([message]) => message)
+      .filter((message): message is string => typeof message === 'string');
+    expect(warnings.some((message) => message.includes('Repairs applied this run:'))).toBe(true);
+    expect(warnings.some((message) => message.includes('filesAffected corrected on 1 patch'))).toBe(
+      true
+    );
+  });
+
+  it('writes nothing under --dry-run and says so', async () => {
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'files-affected-mismatch',
+        filename: '905-ui-newtab.patch',
+        message: '905-ui-newtab.patch declares [a] but the patch file targets [a, b].',
+      },
+    ]);
+    vi.mocked(repairPatchesFilesAffected).mockResolvedValueOnce({
+      repairs: [{ filename: '905-ui-newtab.patch', before: ['a'], after: ['a', 'b'] }],
+      skippedFilenames: [],
+      written: false,
+    });
+
+    await doctorCommand('/project', { repairFilesAffected: true, dryRun: true });
+
+    expect(repairPatchesFilesAffected).toHaveBeenCalledWith(
+      nativePath('/project/patches'),
+      ['905-ui-newtab.patch'],
+      expect.objectContaining({ dryRun: true })
+    );
+    const warnings = vi
+      .mocked(warn)
+      .mock.calls.map(([message]) => message)
+      .filter((message): message is string => typeof message === 'string');
+    expect(warnings.some((message) => message.includes('Dry run'))).toBe(true);
+    // Nothing was written, so nothing is claimed as applied.
+    expect(warnings.some((message) => message.includes('Repairs applied this run:'))).toBe(false);
+  });
+
+  it('forwards --allow-metadata-loss to the rebuild', async () => {
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'manifest-invalid',
+        filename: 'patches.json',
+        message: 'patches.json exists but could not be parsed.',
+      },
+    ]);
+
+    await doctorCommand('/project', {
+      repairPatchesManifest: true,
+      allowMetadataLoss: true,
+    });
+
+    expect(rebuildPatchesManifest).toHaveBeenCalledWith(
+      nativePath('/project/patches'),
+      '140.9.0esr',
+      expect.objectContaining({ allowMetadataLoss: true })
+    );
+  });
+
+  it('names rows the repairs could not act on', async () => {
+    // A dropped manifest row and a skipped filename are both losses the
+    // operator would otherwise only find by diffing patches.json afterwards.
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'missing-patch-file',
+        filename: '003-ui-gone.patch',
+        message: '003-ui-gone.patch is listed in patches.json but the patch file is missing.',
+      },
+    ]);
+    vi.mocked(rebuildPatchesManifest).mockResolvedValueOnce({
+      manifest: { version: 1, patches: [] },
+      recoveredFilenames: [],
+      droppedFilenames: ['003-ui-gone.patch'],
+      written: true,
+    });
+
+    await doctorCommand('/project', { repairPatchesManifest: true });
+
+    const warnings = vi
+      .mocked(warn)
+      .mock.calls.map(([message]) => message)
+      .filter((message): message is string => typeof message === 'string');
+    expect(
+      warnings.some(
+        (message) =>
+          message.includes('Dropped the manifest entry for 003-ui-gone.patch') &&
+          message.includes('no such patch file on disk')
+      )
+    ).toBe(true);
+  });
+
+  it('reports a --repair-files-affected run that has nothing it can fix', async () => {
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'untracked-patch-file',
+        filename: '906-ui-panel.patch',
+        message: '906-ui-panel.patch exists on disk but is not tracked in patches.json.',
+      },
+    ]);
+
+    const result = await doctorCommand('/project', { repairFilesAffected: true });
+
+    expect(repairPatchesFilesAffected).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(1);
+    expect(
+      vi
+        .mocked(error)
+        .mock.calls.some(
+          ([message]) => typeof message === 'string' && message.includes('has nothing to repair')
+        )
+    ).toBe(true);
+  });
+
+  it('warns about filenames the narrow repair skipped', async () => {
+    vi.mocked(validatePatchesManifestConsistency).mockResolvedValueOnce([
+      {
+        code: 'files-affected-mismatch',
+        filename: '905-ui-newtab.patch',
+        message: '905-ui-newtab.patch declares [a] but the patch file targets [a, b].',
+      },
+    ]);
+    vi.mocked(repairPatchesFilesAffected).mockResolvedValueOnce({
+      repairs: [],
+      skippedFilenames: ['905-ui-newtab.patch'],
+      written: false,
+    });
+
+    await doctorCommand('/project', { repairFilesAffected: true });
+
+    expect(
+      vi
+        .mocked(warn)
+        .mock.calls.some(
+          ([message]) =>
+            typeof message === 'string' && message.includes('Skipped 905-ui-newtab.patch')
+        )
+    ).toBe(true);
+  });
+
+  it('refuses repair flag combinations that cannot mean what they say', async () => {
+    await expect(
+      doctorCommand('/project', { repairPatchesManifest: true, repairFilesAffected: true })
+    ).rejects.toThrow('mutually exclusive');
+    // A --dry-run with no repair to project is a flag that silently does
+    // nothing, which reads as a preview reporting "no changes".
+    await expect(doctorCommand('/project', { dryRun: true })).rejects.toThrow(
+      'needs a manifest repair to project'
+    );
+    await expect(doctorCommand('/project', { allowMetadataLoss: true })).rejects.toThrow(
+      '--allow-metadata-loss only applies'
+    );
   });
 
   it('does not add engine state consistency check when baseCommit is missing', async () => {
@@ -1178,7 +1434,8 @@ describe('doctorCommand', () => {
         tokenHostDocuments: ['browser/base/content/mybrowser-shell.xhtml'],
       });
       vi.mocked(pathExists).mockImplementation((p: string) => {
-        if (p.endsWith('browser/base/content/browser.xhtml')) return Promise.resolve(false);
+        if (p.endsWith(nativePath('browser/base/content/browser.xhtml')))
+          return Promise.resolve(false);
         return Promise.resolve(true);
       });
 
@@ -1226,7 +1483,8 @@ describe('doctorCommand', () => {
     it('"Furnace engine paths" falls back to browser.xhtml when tokenHostDocuments is not set', async () => {
       // No tokenHostDocuments in the config — old default applies.
       vi.mocked(pathExists).mockImplementation((p: string) => {
-        if (p.endsWith('browser/base/content/browser.xhtml')) return Promise.resolve(false);
+        if (p.endsWith(nativePath('browser/base/content/browser.xhtml')))
+          return Promise.resolve(false);
         return Promise.resolve(true);
       });
 
@@ -1582,7 +1840,7 @@ describe('doctorCommand', () => {
         return Promise.resolve([]);
       }) as unknown as typeof readdir);
       vi.mocked(readJson).mockImplementation((path: string): Promise<unknown> => {
-        if (typeof path === 'string' && path.endsWith('moz-button/override.json')) {
+        if (typeof path === 'string' && path.endsWith(nativePath('moz-button/override.json'))) {
           return Promise.resolve({
             type: 'css-only',
             description: 'Recovered',
@@ -1617,7 +1875,7 @@ describe('doctorCommand', () => {
       vi.mocked(readdir).mockImplementation(((
         path: string
       ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
-        if (typeof path === 'string' && path.endsWith('components/custom')) {
+        if (typeof path === 'string' && path.endsWith(nativePath('components/custom'))) {
           return Promise.resolve([
             {
               name: 'moz-empty',
@@ -1626,7 +1884,7 @@ describe('doctorCommand', () => {
             },
           ]);
         }
-        if (typeof path === 'string' && path.endsWith('components/custom/moz-empty')) {
+        if (typeof path === 'string' && path.endsWith(nativePath('components/custom/moz-empty'))) {
           return Promise.resolve([]);
         }
         return Promise.resolve([]);
@@ -1634,7 +1892,7 @@ describe('doctorCommand', () => {
 
       const result = await doctorCommand('/project', { repairFurnace: true });
 
-      expect(rmdir).toHaveBeenCalledWith('/project/components/custom/moz-empty');
+      expect(rmdir).toHaveBeenCalledWith(nativePath('/project/components/custom/moz-empty'));
       expect(
         vi
           .mocked(warn)
@@ -1657,7 +1915,7 @@ describe('doctorCommand', () => {
       vi.mocked(readdir).mockImplementation(((
         path: string
       ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
-        if (typeof path === 'string' && path.endsWith('components/custom')) {
+        if (typeof path === 'string' && path.endsWith(nativePath('components/custom'))) {
           return Promise.resolve([
             {
               name: 'moz-lived-in',
@@ -1666,7 +1924,10 @@ describe('doctorCommand', () => {
             },
           ]);
         }
-        if (typeof path === 'string' && path.endsWith('components/custom/moz-lived-in')) {
+        if (
+          typeof path === 'string' &&
+          path.endsWith(nativePath('components/custom/moz-lived-in'))
+        ) {
           return Promise.resolve([
             {
               name: 'moz-lived-in.mjs',
@@ -1680,7 +1941,7 @@ describe('doctorCommand', () => {
 
       const result = await doctorCommand('/project', { repairFurnace: true });
 
-      expect(rmdir).not.toHaveBeenCalledWith('/project/components/custom/moz-lived-in');
+      expect(rmdir).not.toHaveBeenCalledWith(nativePath('/project/components/custom/moz-lived-in'));
       expect(
         vi
           .mocked(warn)
@@ -1714,7 +1975,7 @@ describe('doctorCommand', () => {
             },
           ]);
         }
-        if (typeof path === 'string' && path.endsWith('components/custom')) {
+        if (typeof path === 'string' && path.endsWith(nativePath('components/custom'))) {
           return Promise.resolve([
             {
               name: 'moz-empty',
@@ -1723,13 +1984,13 @@ describe('doctorCommand', () => {
             },
           ]);
         }
-        if (typeof path === 'string' && path.endsWith('components/custom/moz-empty')) {
+        if (typeof path === 'string' && path.endsWith(nativePath('components/custom/moz-empty'))) {
           return Promise.resolve([]);
         }
         return Promise.resolve([]);
       }) as unknown as typeof readdir);
       vi.mocked(readJson).mockImplementation((path: string): Promise<unknown> => {
-        if (typeof path === 'string' && path.endsWith('moz-button/override.json')) {
+        if (typeof path === 'string' && path.endsWith(nativePath('moz-button/override.json'))) {
           return Promise.resolve({
             type: 'css-only',
             description: 'Recovered',
@@ -1743,7 +2004,7 @@ describe('doctorCommand', () => {
       const result = await doctorCommand('/project', { repairFurnace: true });
 
       expect(writeFurnaceConfig).toHaveBeenCalled();
-      expect(rmdir).toHaveBeenCalledWith('/project/components/custom/moz-empty');
+      expect(rmdir).toHaveBeenCalledWith(nativePath('/project/components/custom/moz-empty'));
       expect(
         vi
           .mocked(warn)
@@ -1843,6 +2104,13 @@ describe('registerDoctor', () => {
     vi.mocked(rebuildPatchesManifest).mockResolvedValue({
       manifest: { version: 1, patches: [] },
       recoveredFilenames: [],
+      droppedFilenames: [],
+      written: true,
+    });
+    vi.mocked(repairPatchesFilesAffected).mockResolvedValue({
+      repairs: [],
+      skippedFilenames: [],
+      written: false,
     });
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(checkFurnaceConfigExists).mockResolvedValue(false);
@@ -1876,7 +2144,7 @@ describe('registerDoctor', () => {
     await program.parseAsync(['node', 'test', 'doctor', '--repair-patches-manifest']);
 
     expect(rebuildPatchesManifest).toHaveBeenCalledWith(
-      '/project/patches',
+      nativePath('/project/patches'),
       '140.9.0esr',
       // doctor honours `--wait-lock`; the repair rebuilds the manifest under
       // the patch-directory lock.

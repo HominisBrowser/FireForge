@@ -28,6 +28,10 @@ describe('patch round-trip integration', () => {
     await exec('git', ['init'], { cwd: engineDir });
     await exec('git', ['config', 'user.email', 'test@test.com'], { cwd: engineDir });
     await exec('git', ['config', 'user.name', 'Test'], { cwd: engineDir });
+    // Pin line endings so patch bytes do not depend on the host's global
+    // `core.autocrlf` (true by default on Windows).
+    await exec('git', ['config', 'core.autocrlf', 'false'], { cwd: engineDir });
+    await exec('git', ['config', 'core.eol', 'lf'], { cwd: engineDir });
 
     const testFile = join(engineDir, 'test.txt');
     await writeFile(testFile, 'line 1\nline 2\nline 3\n');
@@ -78,6 +82,10 @@ describe('patch round-trip integration', () => {
     await exec('git', ['init'], { cwd: engineDir });
     await exec('git', ['config', 'user.email', 'test@test.com'], { cwd: engineDir });
     await exec('git', ['config', 'user.name', 'Test'], { cwd: engineDir });
+    // Pin line endings so patch bytes do not depend on the host's global
+    // `core.autocrlf` (true by default on Windows).
+    await exec('git', ['config', 'core.autocrlf', 'false'], { cwd: engineDir });
+    await exec('git', ['config', 'core.eol', 'lf'], { cwd: engineDir });
 
     // Create multiple baseline files
     await writeFile(join(engineDir, 'a.css'), 'body { color: red; }\n');
@@ -119,6 +127,10 @@ describe('patch round-trip integration', () => {
     await exec('git', ['init'], { cwd: engineDir });
     await exec('git', ['config', 'user.email', 'test@test.com'], { cwd: engineDir });
     await exec('git', ['config', 'user.name', 'Test'], { cwd: engineDir });
+    // Pin line endings so patch bytes do not depend on the host's global
+    // `core.autocrlf` (true by default on Windows).
+    await exec('git', ['config', 'core.autocrlf', 'false'], { cwd: engineDir });
+    await exec('git', ['config', 'core.eol', 'lf'], { cwd: engineDir });
 
     await writeFile(join(engineDir, 'existing.txt'), 'base\n');
     await exec('git', ['add', '-A'], { cwd: engineDir });

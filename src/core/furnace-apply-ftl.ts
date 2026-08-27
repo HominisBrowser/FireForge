@@ -22,6 +22,7 @@ import type {
 } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { copyFile, pathExists, readText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
 import { resolveFtlChromeSubPath, resolveFtlLocaleJarMnPath } from './furnace-constants.js';
 import { addLocaleFtlJarMnEntry, removeLocaleFtlJarMnEntry } from './furnace-registration.js';
@@ -172,7 +173,9 @@ export async function applyCustomFtlFile(
     await snapshotFile(rollbackJournal, ftlDest);
   }
   await copyFile(ftlSrc, ftlDest);
-  affectedPaths.push(relative(engineDir, ftlDest));
+  // Sibling pushes on this list are POSIX literals (`localeJarRel`); keep
+  // the computed one in the same spelling.
+  affectedPaths.push(normalizePathSlashes(relative(engineDir, ftlDest)));
 
   const chromeSubPath = resolveFtlChromeSubPath(ftlDir);
   const localeJarRel = resolveFtlLocaleJarMnPath(ftlDir);

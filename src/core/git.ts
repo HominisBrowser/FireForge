@@ -17,6 +17,7 @@ import { exec } from '../utils/process.js';
 import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
 import {
   chunkPathspecs,
+  configureGitLineEndings,
   configureGitPerformance,
   ensureGit,
   git,
@@ -344,6 +345,7 @@ export async function initRepository(
   // Enable performance settings for large trees
   reportProgress('Configuring git performance settings...');
   await configureGitPerformance(dir);
+  await configureGitLineEndings(dir);
 
   // Add a local-only origin remote so that Firefox's mach bootstrap and
   // build scripts (which shell out to `git remote get-url origin`) don't
@@ -395,6 +397,7 @@ export async function resumeRepository(
   // Ensure performance settings are in place (may not have been set)
   reportProgress('Configuring git performance settings...');
   await configureGitPerformance(dir);
+  await configureGitLineEndings(dir);
 
   // Clean up any stale index lock left by the killed process
   await cleanupIndexLock(dir);

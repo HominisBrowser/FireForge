@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { delimiter } from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { makeProjectPaths } from '../../test-utils/index.js';
+import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
 import { createFsMock } from '../../test-utils/module-mocks.js';
 
 const loggerState = vi.hoisted(() => ({
@@ -147,8 +149,8 @@ describe('watchCommand', () => {
     await expect(watchCommand('/project')).resolves.toBeUndefined();
 
     expect(generateMozconfig).toHaveBeenCalledWith(
-      '/project/configs',
-      '/project/engine',
+      nativePath('/project/configs'),
+      nativePath('/project/engine'),
       expect.anything()
     );
     // Watch threads a subprocess env into mach so the resolved watchman
@@ -156,7 +158,7 @@ describe('watchCommand', () => {
     // env directly rather than via matchers so the types stay concrete for
     // the compiler.
     const call = vi.mocked(watchWithOutput).mock.calls[0];
-    expect(call?.[0]).toBe('/project/engine');
+    expect(call?.[0]).toBe(nativePath('/project/engine'));
     const envPath = call?.[1]?.env?.['PATH'];
     expect(envPath).toBeDefined();
     expect(envPath).toContain('/opt/homebrew/bin');
@@ -170,7 +172,9 @@ describe('watchCommand', () => {
   // subscription step with a `FasterBuildException: timed out`.
   it('forwards the resolved watchman directory to the mach subprocess PATH', async () => {
     const originalPath = process.env['PATH'];
-    process.env['PATH'] = '/usr/bin:/bin';
+    // The helper splits and rejoins PATH on the host's delimiter (`;` on
+    // Windows), so the fixture has to be written in the same dialect.
+    process.env['PATH'] = ['/usr/bin', '/bin'].join(delimiter);
     try {
       vi.mocked(findExecutable).mockResolvedValue('/opt/homebrew/bin/watchman');
       await expect(watchCommand('/project')).resolves.toBeUndefined();
@@ -194,7 +198,7 @@ describe('watchCommand', () => {
 
   it('does not duplicate the watchman directory when it is already on PATH', async () => {
     const originalPath = process.env['PATH'];
-    process.env['PATH'] = '/opt/homebrew/bin:/usr/bin';
+    process.env['PATH'] = ['/opt/homebrew/bin', '/usr/bin'].join(delimiter);
     try {
       vi.mocked(findExecutable).mockResolvedValue('/opt/homebrew/bin/watchman');
       await expect(watchCommand('/project')).resolves.toBeUndefined();
@@ -203,7 +207,7 @@ describe('watchCommand', () => {
       const passedPath = call?.[1]?.env?.['PATH'];
       // The helper only prepends when the directory is not already
       // present; it leaves the existing PATH untouched otherwise.
-      expect(passedPath).toBe('/opt/homebrew/bin:/usr/bin');
+      expect(passedPath).toBe(['/opt/homebrew/bin', '/usr/bin'].join(delimiter));
     } finally {
       if (originalPath !== undefined) {
         process.env['PATH'] = originalPath;

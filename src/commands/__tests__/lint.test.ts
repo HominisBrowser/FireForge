@@ -10,14 +10,14 @@ vi.mock('node:fs/promises', () => ({
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() => Promise.resolve({})),
 }));
@@ -147,7 +147,7 @@ import {
 import { collectDiffFilePaths, tagLintIssues } from '../../core/patch-lint-diff-tag.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { GeneralError } from '../../errors/base.js';
-import { makeManifest } from '../../test-utils/index.js';
+import { makeManifest, nativePath } from '../../test-utils/index.js';
 import type { PatchMetadata } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
@@ -176,9 +176,9 @@ describe('lintCommand — branch coverage', () => {
 
     await lintCommand('/project', ['src']);
 
-    expect(getModifiedFilesInDir).toHaveBeenCalledWith('/project/engine', 'src');
-    expect(getUntrackedFilesInDir).toHaveBeenCalledWith('/project/engine', 'src');
-    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+    expect(getModifiedFilesInDir).toHaveBeenCalledWith(nativePath('/project/engine'), 'src');
+    expect(getUntrackedFilesInDir).toHaveBeenCalledWith(nativePath('/project/engine'), 'src');
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith(nativePath('/project/engine'), [
       'src/app.ts',
       'src/new.ts',
     ]);
@@ -190,7 +190,7 @@ describe('lintCommand — branch coverage', () => {
 
     await lintCommand('/project', ['src/']);
 
-    expect(getModifiedFilesInDir).toHaveBeenCalledWith('/project/engine', 'src');
+    expect(getModifiedFilesInDir).toHaveBeenCalledWith(nativePath('/project/engine'), 'src');
   });
 
   it('falls back to file lookup when stat throws', async () => {
@@ -200,7 +200,9 @@ describe('lintCommand — branch coverage', () => {
     await lintCommand('/project', ['missing.ts']);
 
     expect(getStatusWithCodes).toHaveBeenCalled();
-    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', ['missing.ts']);
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith(nativePath('/project/engine'), [
+      'missing.ts',
+    ]);
   });
 
   it('loads file statuses only once for multiple file inputs', async () => {
@@ -670,8 +672,8 @@ describe('lintCommand — branch coverage', () => {
       expect(buildPerPatchLintCacheKey).toHaveBeenCalledWith(
         expect.objectContaining({
           projectRoot: '/project',
-          engineDir: '/project/engine',
-          patchesDir: '/project/patches',
+          engineDir: nativePath('/project/engine'),
+          patchesDir: nativePath('/project/patches'),
           patch,
           existingFiles: ['a.ts'],
           engineHeadSha: 'test-head-sha',
@@ -887,7 +889,7 @@ describe('lintCommand — branch coverage', () => {
       const patch = makePatch('001-ui-test.patch', ['missing.ts']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
       vi.mocked(pathExists).mockImplementation((p: string) => {
-        if (p.endsWith('/missing.ts')) return Promise.resolve(false);
+        if (p.endsWith(nativePath('/missing.ts'))) return Promise.resolve(false);
         return Promise.resolve(true);
       });
 
@@ -914,7 +916,7 @@ describe('lintCommand — branch coverage', () => {
       vi.mocked(pathExists).mockImplementation((p: string) => {
         // engine/ exists but none of the filesAffected do — every
         // patch is filtered out of the lint pass.
-        if (p === '/project/engine') return Promise.resolve(true);
+        if (p === nativePath('/project/engine')) return Promise.resolve(true);
         if (p.endsWith('.ts')) return Promise.resolve(false);
         return Promise.resolve(true);
       });
@@ -940,7 +942,7 @@ describe('lintCommand — branch coverage', () => {
       const missing = makePatch('002-ui-missing.patch', ['missing.ts']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([applied, missing]));
       vi.mocked(pathExists).mockImplementation((p: string) => {
-        if (p.endsWith('/missing.ts')) return Promise.resolve(false);
+        if (p.endsWith(nativePath('/missing.ts'))) return Promise.resolve(false);
         return Promise.resolve(true);
       });
       vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
@@ -997,7 +999,7 @@ describe('lintCommand — engine/ prefix normalization', () => {
       lintCommand('/project', ['engine/browser/base/content/foo.js'])
     ).resolves.toBeUndefined();
 
-    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith(nativePath('/project/engine'), [
       'browser/base/content/foo.js',
     ]);
     expect(info).not.toHaveBeenCalledWith('No modified files found in the specified paths.');
@@ -1009,7 +1011,10 @@ describe('lintCommand — engine/ prefix normalization', () => {
 
     await lintCommand('/project', ['engine/browser/base/content']);
 
-    expect(getModifiedFilesInDir).toHaveBeenCalledWith('/project/engine', 'browser/base/content');
+    expect(getModifiedFilesInDir).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'browser/base/content'
+    );
   });
 });
 
@@ -1074,7 +1079,7 @@ describe('lintCommand — default-mode branding exclusion', () => {
     await lintCommand('/project', []);
 
     // The diff handed to `lintExportedPatch` must exclude branding paths.
-    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith(nativePath('/project/engine'), [
       'browser/base/content/myhook.js',
     ]);
     // The operator sees a one-line note telling them what was excluded.
@@ -1093,7 +1098,7 @@ describe('lintCommand — default-mode branding exclusion', () => {
 
     // No branding exclusion note fires when there's nothing to exclude.
     expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Excluded'));
-    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith(nativePath('/project/engine'), [
       'browser/base/content/myhook.js',
     ]);
   });
@@ -1133,7 +1138,7 @@ describe('lintCommand — default-mode branding exclusion', () => {
 
     await lintCommand('/project', ['browser/branding/mybrowser/locales/en-US/brand.ftl']);
 
-    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith('/project/engine', [
+    expect(getDiffForFilesAgainstHead).toHaveBeenCalledWith(nativePath('/project/engine'), [
       'browser/branding/mybrowser/locales/en-US/brand.ftl',
     ]);
     // No "Excluded …" banner in file-list mode.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('node:fs/promises', () => ({
@@ -10,14 +11,14 @@ vi.mock('node:fs/promises', () => ({
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    engine: '/project/engine',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    engine: nativePath('/project/engine'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
 }));
 
@@ -34,11 +35,11 @@ vi.mock('../../core/furnace-config.js', () => ({
 
   furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    overridesDir: '/project/components/overrides',
-    customDir: '/project/components/custom',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    overridesDir: nativePath('/project/components/overrides'),
+    customDir: nativePath('/project/components/custom'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -148,7 +149,7 @@ describe('furnaceValidateCommand', () => {
     await furnaceValidateCommand('/project', 'moz-card');
 
     expect(validateComponent).toHaveBeenCalledWith(
-      '/project/components/overrides/moz-card',
+      nativePath('/project/components/overrides/moz-card'),
       'moz-card',
       'override',
       expect.any(Object),
@@ -168,7 +169,7 @@ describe('furnaceValidateCommand', () => {
     await furnaceValidateCommand('/project', 'moz-sidebar');
 
     expect(validateComponent).toHaveBeenCalledWith(
-      '/project/components/custom/moz-sidebar',
+      nativePath('/project/components/custom/moz-sidebar'),
       'moz-sidebar',
       'custom',
       expect.any(Object),
@@ -391,8 +392,8 @@ describe('furnaceValidateCommand', () => {
       ).resolves.toBeUndefined();
 
       expect(pruneStaleJarMnEntries).toHaveBeenCalledWith(
-        '/project/engine',
-        '/project/components/custom',
+        nativePath('/project/engine'),
+        nativePath('/project/components/custom'),
         ['moz-sidebar']
       );
       expect(info).toHaveBeenCalledWith(
@@ -458,7 +459,7 @@ describe('furnaceValidateCommand', () => {
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
       ).resolves.toBeUndefined();
 
-      expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-sidebar', [
+      expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-sidebar', [
         'moz-sidebar.mjs',
       ]);
       expect(info).toHaveBeenCalledWith('Fixed: added moz-sidebar.mjs to jar.mn for moz-sidebar');
@@ -494,7 +495,7 @@ describe('furnaceValidateCommand', () => {
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
       ).rejects.toThrow(/Validation failed/i);
 
-      expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-sidebar', [
+      expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-sidebar', [
         'moz-sidebar.css',
       ]);
     });
@@ -509,7 +510,7 @@ describe('furnaceValidateCommand', () => {
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
       ).resolves.toBeUndefined();
 
-      expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-sidebar', [
+      expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-sidebar', [
         'moz-sidebar.mjs',
         'moz-sidebar.css',
       ]);
@@ -609,7 +610,7 @@ describe('furnaceValidateCommand', () => {
       ).rejects.toThrow(/Validation failed/i);
 
       expect(addCustomElementRegistration).toHaveBeenCalledWith(
-        '/project/engine',
+        nativePath('/project/engine'),
         'moz-sidebar',
         'chrome://global/content/elements/moz-sidebar.mjs'
       );
@@ -643,7 +644,7 @@ describe('furnaceValidateCommand', () => {
       ).rejects.toThrow(/Validation failed/i);
 
       expect(addCustomElementRegistration).toHaveBeenCalledWith(
-        '/project/engine',
+        nativePath('/project/engine'),
         'moz-sidebar',
         expect.any(String)
       );
@@ -675,7 +676,7 @@ describe('furnaceValidateCommand', () => {
       ).resolves.toBeUndefined();
 
       expect(addCustomElementRegistration).toHaveBeenCalledWith(
-        '/project/engine',
+        nativePath('/project/engine'),
         'moz-sidebar',
         'chrome://global/content/elements/moz-sidebar.mjs'
       );
@@ -807,7 +808,7 @@ describe('furnaceValidateCommand', () => {
         furnaceValidateCommand('/project', undefined, { fix: true })
       ).resolves.toBeUndefined();
 
-      expect(addJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-sidebar', [
+      expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-sidebar', [
         'moz-sidebar.mjs',
       ]);
       expect(info).toHaveBeenCalledWith('\nAuto-fixed 1 issue(s).');

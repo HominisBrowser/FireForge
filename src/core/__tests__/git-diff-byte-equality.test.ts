@@ -42,6 +42,8 @@ describe('getAllDiff byte contract (real git)', () => {
     await runGit(root, ['init']);
     await runGit(root, ['config', 'user.email', 'fireforge@example.test']);
     await runGit(root, ['config', 'user.name', 'FireForge Tests']);
+    await runGit(root, ['config', 'core.autocrlf', 'false']);
+    await runGit(root, ['config', 'core.eol', 'lf']);
     await write(root, 'tracked.js', 'const a = 1;\n');
     await runGit(root, ['add', '-A']);
     await runGit(root, ['commit', '-m', 'initial']);

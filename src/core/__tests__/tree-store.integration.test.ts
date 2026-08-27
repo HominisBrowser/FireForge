@@ -499,14 +499,19 @@ describe('tree store', () => {
     await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({ kind: 'corrupt' });
   });
 
-  it('distinguishes an absent marker from an unreadable one', async () => {
-    const bareRoot = await createTempProject('ff-tree-nomarker-');
-    try {
-      await expect(readTreeMarker(bareRoot)).resolves.toEqual({ kind: 'absent' });
-    } finally {
-      await removeTempProject(bareRoot);
+  // POSIX mode bits are the refusal mechanism here; NTFS ignores
+  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  it.skipIf(process.platform === 'win32')(
+    'distinguishes an absent marker from an unreadable one',
+    async () => {
+      const bareRoot = await createTempProject('ff-tree-nomarker-');
+      try {
+        await expect(readTreeMarker(bareRoot)).resolves.toEqual({ kind: 'absent' });
+      } finally {
+        await removeTempProject(bareRoot);
+      }
     }
-  });
+  );
 
   it.skipIf(process.getuid?.() === 0)(
     'reports an inaccessible .fireforge directory as corrupt, not absent',

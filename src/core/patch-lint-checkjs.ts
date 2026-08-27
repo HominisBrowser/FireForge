@@ -37,6 +37,7 @@ import type {
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import {
   composeShimSource,
   SHIM_FILENAME,
@@ -49,6 +50,21 @@ import {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Converts a native path into the form TypeScript uses for `fileName`.
+ *
+ * TypeScript normalizes every path it hands a `CompilerHost` to forward
+ * slashes on ALL platforms, while `resolve()` here yields the platform
+ * separator. On Windows that mismatch made every `ownedAbsolute.has(fileName)`
+ * and `relByAbsolute.get(fileName)` lookup miss, so the host served an empty
+ * source file for each owned file and the whole pass reported zero findings —
+ * silently, because "no diagnostics" is indistinguishable from "clean code".
+ * Every path that crosses the TS boundary goes through here.
+ */
+function toTsPath(path: string): string {
+  return normalizePathSlashes(path);
+}
 
 /**
  * Builds the host-side module resolver for the checkJs pass: maps an import
@@ -136,8 +152,15 @@ function createPathsResolver(
         captured = specifier.slice(prefix.length, specifier.length - suffix.length);
       }
       for (const target of targets) {
-        const rel = target.includes('*') ? target.replace('*', captured) : target;
-        const abs = resolve(baseDir, rel);
+        // A `paths` target carries at most one `*`, and TypeScript substitutes
+        // that one wildcard — spelled as index arithmetic (mirroring the
+        // prefix/suffix split on the pattern side above) rather than
+        // `replace('*', …)`, whose first-occurrence-only behaviour reads as an
+        // incomplete rewrite (CodeQL `js/incomplete-sanitization`).
+        const star = target.indexOf('*');
+        const rel =
+          star === -1 ? target : target.slice(0, star) + captured + target.slice(star + 1);
+        const abs = toTsPath(resolve(baseDir, rel));
         if (!fileExists(abs)) continue;
         onResolved(abs);
         return {
@@ -238,7 +261,7 @@ export async function runCheckJsGrouped(
   const ownedAbsolute = new Set<string>();
   const relByAbsolute = new Map<string, string>();
   for (const rel of resolutionOwned) {
-    const abs = resolve(repoDir, rel);
+    const abs = toTsPath(resolve(repoDir, rel));
     if (await pathExists(abs)) {
       if (rootScope === undefined || rootScope.has(rel)) rootFiles.push(abs);
       ownedAbsolute.add(abs);
@@ -278,7 +301,7 @@ export async function runCheckJsGrouped(
     };
   }
 
-  const shimPath = resolve(repoDir, SHIM_FILENAME);
+  const shimPath = toTsPath(resolve(repoDir, SHIM_FILENAME));
   rootFiles.push(shimPath);
 
   const strict = mode?.strict === true;

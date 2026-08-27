@@ -52,6 +52,7 @@ vi.mock('../moz-manifest-tokenizers.js', async (importOriginal) => {
   };
 });
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 
@@ -606,7 +607,7 @@ describe('registerFile with createManifest', () => {
   it('scaffolds a missing module moz.build instead of failing', async () => {
     // No manifests exist anywhere except the parent browser/modules/moz.build.
     mockPathExists.mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/engine/browser/modules/moz.build')
+      Promise.resolve(filePath === nativePath('/project/engine/browser/modules/moz.build'))
     );
     mockReadText.mockResolvedValue('DIRS += [\n    "newtab",\n]\n');
 
@@ -623,14 +624,16 @@ describe('registerFile with createManifest', () => {
       true
     );
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/project/engine/browser/modules/testbrowser/moz.build',
+      nativePath('/project/engine/browser/modules/testbrowser/moz.build'),
       expect.stringContaining('EXTRA_JS_MODULES.testbrowser')
     );
   });
 
   it('creates the xpcshell.toml and wires XPCSHELL_TESTS_MANIFESTS', async () => {
     mockPathExists.mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/engine/browser/components/testbrowser/moz.build')
+      Promise.resolve(
+        filePath === nativePath('/project/engine/browser/components/testbrowser/moz.build')
+      )
     );
     mockReadText.mockResolvedValue('EXTRA_JS_MODULES.testbrowser += [\n    "Store.sys.mjs",\n]\n');
 
@@ -644,11 +647,11 @@ describe('registerFile with createManifest', () => {
 
     expect(result.manifest).toBe('browser/components/testbrowser/test/unit/xpcshell.toml');
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/project/engine/browser/components/testbrowser/test/unit/xpcshell.toml',
+      nativePath('/project/engine/browser/components/testbrowser/test/unit/xpcshell.toml'),
       expect.stringContaining('["test_store.js"]')
     );
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/project/engine/browser/components/testbrowser/moz.build',
+      nativePath('/project/engine/browser/components/testbrowser/moz.build'),
       expect.stringContaining('XPCSHELL_TESTS_MANIFESTS')
     );
   });

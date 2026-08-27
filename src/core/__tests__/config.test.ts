@@ -13,6 +13,7 @@ vi.mock('../state-file.js', () => ({
 }));
 
 import { ConfigError, ConfigNotFoundError } from '../../errors/config.js';
+import { nativePath } from '../../test-utils/index.js';
 import type { FireForgeConfig, FireForgeState } from '../../types/config.js';
 import { pathExists, pathExistsStrict, readJson, writeJson } from '../../utils/fs.js';
 import { verbose, warn } from '../../utils/logger.js';
@@ -72,14 +73,14 @@ describe('config helpers', () => {
   it('builds the expected project paths', () => {
     expect(getProjectPaths('/project')).toEqual({
       root: '/project',
-      config: `/project/${CONFIG_FILENAME}`,
-      fireforgeDir: `/project/${FIREFORGE_DIR}`,
-      state: `/project/${FIREFORGE_DIR}/${STATE_FILENAME}`,
-      engine: '/project/engine',
-      patches: '/project/patches',
-      configs: '/project/configs',
-      src: '/project/src',
-      componentsDir: '/project/components',
+      config: nativePath(`/project/${CONFIG_FILENAME}`),
+      fireforgeDir: nativePath(`/project/${FIREFORGE_DIR}`),
+      state: nativePath(`/project/${FIREFORGE_DIR}/${STATE_FILENAME}`),
+      engine: nativePath('/project/engine'),
+      patches: nativePath('/project/patches'),
+      configs: nativePath('/project/configs'),
+      src: nativePath('/project/src'),
+      componentsDir: nativePath('/project/components'),
     });
   });
 
@@ -87,7 +88,7 @@ describe('config helpers', () => {
     mockPathExistsStrict.mockResolvedValueOnce(true);
 
     await expect(configExists('/project')).resolves.toBe(true);
-    expect(mockPathExistsStrict).toHaveBeenCalledWith('/project/fireforge.json');
+    expect(mockPathExistsStrict).toHaveBeenCalledWith(nativePath('/project/fireforge.json'));
   });
 });
 
@@ -650,7 +651,7 @@ describe('config persistence', () => {
     mockReadJson.mockResolvedValueOnce(makeValidConfig());
 
     await expect(loadConfig('/project')).resolves.toEqual(makeValidConfig());
-    expect(mockReadJson).toHaveBeenCalledWith('/project/fireforge.json');
+    expect(mockReadJson).toHaveBeenCalledWith(nativePath('/project/fireforge.json'));
   });
 
   it('throws a ConfigNotFoundError when fireforge.json is missing', async () => {
@@ -688,8 +689,12 @@ describe('config persistence', () => {
     await writeConfig('/project', makeValidConfig());
     await writeConfigDocument('/project', { custom: { enabled: true } });
 
-    expect(mockWriteJson).toHaveBeenNthCalledWith(1, '/project/fireforge.json', makeValidConfig());
-    expect(mockWriteJson).toHaveBeenNthCalledWith(2, '/project/fireforge.json', {
+    expect(mockWriteJson).toHaveBeenNthCalledWith(
+      1,
+      nativePath('/project/fireforge.json'),
+      makeValidConfig()
+    );
+    expect(mockWriteJson).toHaveBeenNthCalledWith(2, nativePath('/project/fireforge.json'), {
       custom: { enabled: true },
     });
   });
@@ -772,7 +777,9 @@ describe('config persistence', () => {
     mockReadJson.mockRejectedValueOnce(new Error('bad json'));
 
     await expect(loadState('/project')).resolves.toEqual({});
-    expect(mockQuarantineStateFile).toHaveBeenCalledWith('/project/.fireforge/state.json');
+    expect(mockQuarantineStateFile).toHaveBeenCalledWith(
+      nativePath('/project/.fireforge/state.json')
+    );
     expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('could not be parsed: bad json'));
   });
 
@@ -796,7 +803,7 @@ describe('config persistence', () => {
       },
     });
 
-    expect(mockWriteJson).toHaveBeenCalledWith('/project/.fireforge/state.json', {
+    expect(mockWriteJson).toHaveBeenCalledWith(nativePath('/project/.fireforge/state.json'), {
       baseCommit: 'abc123',
       pendingResolution: {
         patchFilename: 'broken.patch',
@@ -815,10 +822,10 @@ describe('config persistence', () => {
     await saveState('/project', { baseCommit: 'def456' });
     await updateState('/project', { buildMode: 'debug' });
 
-    expect(mockWriteJson).toHaveBeenNthCalledWith(1, '/project/.fireforge/state.json', {
+    expect(mockWriteJson).toHaveBeenNthCalledWith(1, nativePath('/project/.fireforge/state.json'), {
       baseCommit: 'def456',
     });
-    expect(mockWriteJson).toHaveBeenNthCalledWith(2, '/project/.fireforge/state.json', {
+    expect(mockWriteJson).toHaveBeenNthCalledWith(2, nativePath('/project/.fireforge/state.json'), {
       baseCommit: 'abc123',
       buildMode: 'debug',
     });
@@ -841,7 +848,7 @@ describe('config persistence', () => {
       },
     }));
 
-    expect(mockWriteJson).toHaveBeenCalledWith('/project/.fireforge/state.json', {
+    expect(mockWriteJson).toHaveBeenCalledWith(nativePath('/project/.fireforge/state.json'), {
       pendingResolution: {
         patchFilename: 'failed.patch',
         originalError: 'retry failed',

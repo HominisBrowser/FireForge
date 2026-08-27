@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import { nativePath } from '../../test-utils/index.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import { furnaceCreateCommand } from '../furnace/create.js';
 
@@ -21,14 +22,14 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() => ({
     name: 'TestBrowser',
@@ -65,11 +66,11 @@ vi.mock('../../core/furnace-config.js', () => ({
   })),
   writeFurnaceConfig: vi.fn(),
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    customDir: '/project/components/custom',
-    overridesDir: '/project/components/overrides',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    customDir: nativePath('/project/components/custom'),
+    overridesDir: nativePath('/project/components/overrides'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
 }));
 
@@ -177,8 +178,9 @@ beforeEach(() => {
   mockScanWidgetsDirectory.mockResolvedValue([]);
   // Simulate: engine exists, component dir doesn't exist yet
   mockPathExists.mockImplementation((path: string) => {
-    if (path === '/project/engine') return Promise.resolve(true);
-    if (path.includes('components/custom/moz-test-widget')) return Promise.resolve(false);
+    if (path === nativePath('/project/engine')) return Promise.resolve(true);
+    if (path.includes(nativePath('components/custom/moz-test-widget')))
+      return Promise.resolve(false);
     return Promise.resolve(false);
   });
 });
@@ -201,7 +203,9 @@ describe('furnaceCreateCommand --with-tests', () => {
 
     // Check that test directory was created using binaryName from fireforge.json
     const ensureDirCalls = mockEnsureDir.mock.calls.map((c) => c[0]);
-    const testDirCall = ensureDirCalls.find((p: string) => p.includes('content/test/testbrowser'));
+    const testDirCall = ensureDirCalls.find((p: string) =>
+      p.includes(nativePath('content/test/testbrowser'))
+    );
     expect(testDirCall).toBeDefined();
 
     // Check that test files were written
@@ -240,7 +244,10 @@ describe('furnaceCreateCommand --with-tests', () => {
     expect(headCall?.[1] ?? '').toContain('document.createElement(tag);');
 
     // Check that moz.build registration was called with binaryName
-    expect(mockRegisterTestManifest).toHaveBeenCalledWith('/project/engine', 'testbrowser');
+    expect(mockRegisterTestManifest).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'testbrowser'
+    );
   });
 
   it('avoids double-prefixed test filename when component name contains binaryName', async () => {
@@ -249,8 +256,9 @@ describe('furnaceCreateCommand --with-tests', () => {
 
     // Override pathExists to allow the new component name
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path.includes('components/custom/moz-testbrowser-foo')) return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path.includes(nativePath('components/custom/moz-testbrowser-foo')))
+        return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -287,7 +295,7 @@ describe('furnaceCreateCommand --with-tests', () => {
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -305,7 +313,9 @@ describe('furnaceCreateCommand --with-tests', () => {
 
     // Crucially, nothing under engine/ should have been created.
     const ensureDirCalls = mockEnsureDir.mock.calls.map((c) => c[0]);
-    expect(ensureDirCalls.find((p: string) => p.includes('content/test'))).toBeUndefined();
+    expect(
+      ensureDirCalls.find((p: string) => p.includes(nativePath('content/test')))
+    ).toBeUndefined();
     expect(mockRegisterTestManifest).not.toHaveBeenCalled();
   });
 
@@ -317,7 +327,7 @@ describe('furnaceCreateCommand --with-tests', () => {
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -351,7 +361,7 @@ describe('furnaceCreateCommand --with-tests', () => {
 
     // No test directory created
     const ensureDirCalls = mockEnsureDir.mock.calls.map((c) => c[0]);
-    const testDirCall = ensureDirCalls.find((p: string) => p.includes('content/test'));
+    const testDirCall = ensureDirCalls.find((p: string) => p.includes(nativePath('content/test')));
     expect(testDirCall).toBeUndefined();
 
     // moz.build registration not called
@@ -363,12 +373,13 @@ describe('furnaceCreateCommand --with-tests', () => {
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path.includes('components/custom/moz-test-widget')) return Promise.resolve(false);
-      if (path.endsWith('/browser/base/content/test/testbrowser/browser.toml')) {
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path.includes(nativePath('components/custom/moz-test-widget')))
+        return Promise.resolve(false);
+      if (path.endsWith(nativePath('/browser/base/content/test/testbrowser/browser.toml'))) {
         return Promise.resolve(true);
       }
-      if (path.endsWith('/browser/base/content/test/testbrowser/head.js')) {
+      if (path.endsWith(nativePath('/browser/base/content/test/testbrowser/head.js'))) {
         return Promise.resolve(true);
       }
       return Promise.resolve(false);
@@ -582,7 +593,7 @@ describe('furnaceCreateCommand --xpcshell', () => {
     // not mix with browser-chrome tests.
     const xpcshellDir = mockEnsureDir.mock.calls
       .map((c) => c[0])
-      .find((p: string) => p.includes('testbrowser-xpcshell/moz-storage-widget'));
+      .find((p: string) => p.includes(nativePath('testbrowser-xpcshell/moz-storage-widget')));
     expect(xpcshellDir).toBeDefined();
 
     const manifest = writeTextCalls.find(
@@ -625,7 +636,7 @@ describe('furnaceCreateCommand --xpcshell', () => {
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -763,8 +774,9 @@ describe('furnaceCreateCommand validation', () => {
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-test-widget') return Promise.resolve(true);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-test-widget'))
+        return Promise.resolve(true);
       return Promise.resolve(false);
     });
 
@@ -885,7 +897,7 @@ describe('furnaceCreateCommand validation', () => {
         furnaceCreateCommand('/project', 'moz-test-widget', {
           description: 'Shared-ftl widget',
           localized: false,
-          sharedFtl: 'browser/mybrowser-dock.ftl',
+          sharedFtl: nativePath('browser/mybrowser-dock.ftl'),
         })
       ).rejects.toThrow(
         '--shared-ftl requires localization. Remove --no-localized or drop --shared-ftl.'
@@ -894,7 +906,7 @@ describe('furnaceCreateCommand validation', () => {
         furnaceCreateCommand('/project', 'moz-test-widget', {
           description: 'Shared-ftl widget',
           localized: false,
-          sharedFtl: 'browser/mybrowser-dock.ftl',
+          sharedFtl: nativePath('browser/mybrowser-dock.ftl'),
         })
       ).rejects.toThrow(InvalidArgumentError);
     } finally {
@@ -945,7 +957,7 @@ describe('interactive mode', () => {
     vi.mocked(multiselect).mockResolvedValueOnce(['register']); // features
     mockIsComponentInEngine.mockResolvedValue(false);
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
       return Promise.resolve(false);
     });
 
@@ -983,7 +995,7 @@ describe('interactive mode', () => {
     vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
     mockIsComponentInEngine.mockResolvedValue(false);
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
       return Promise.resolve(false);
     });
 

@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { PUBLIC_API_EXPORTS } from '../test-utils/public-api.js';
+import { escapeRegex } from '../utils/regex.js';
 
 const execFileAsync = promisify(execFile);
 type StringExecFileOptions = Omit<ExecFileOptions, 'encoding'> & { encoding?: BufferEncoding };
@@ -170,7 +171,7 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     // the content hash that distinguishes it from another pack at the same
     // HEAD. A release packs clean, so CI sees the bare form.
     const versionPattern = new RegExp(
-      `^${packageVersion.replace(/\./g, '\\.')}\\+g[0-9a-f]{7,40}(\\.dirty(\\.[0-9a-f]{8})?)?$`
+      `^${escapeRegex(packageVersion)}\\+g[0-9a-f]{7,40}(\\.dirty(\\.[0-9a-f]{8})?)?$`
     );
     const { stdout: versionOutput } = await execFileAsync(process.execPath, [binPath, '--version']);
     expect(versionOutput.trim()).toMatch(versionPattern);

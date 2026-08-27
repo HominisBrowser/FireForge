@@ -22,6 +22,7 @@ import { readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import { pathExists } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 
 /** Maximum directory depth to traverse when scanning a tree root. */
 const MAX_SCAN_DEPTH = 12;
@@ -57,11 +58,19 @@ export function isTestPath(sourcePath: string): boolean {
 }
 
 /**
- * Splits a POSIX path into segments, dropping empties.
- * @param path POSIX-separated path
+ * Splits a path into segments, dropping empties.
+ *
+ * Separators are normalized first because the candidates come from `join()`
+ * over a `readdir` walk of the dist tree: on Windows those carry backslashes,
+ * which a `/`-only split collapses into a SINGLE segment. Every candidate then
+ * scores the same, so the trailing-overlap heuristic that disambiguates
+ * same-basename artifacts (`branding/…/aboutDialog.css` versus
+ * `browser/…/aboutDialog.css`) silently picks an arbitrary one.
+ *
+ * @param path Path in either separator style
  */
 function pathSegments(path: string): string[] {
-  return path.split('/').filter(Boolean);
+  return normalizePathSlashes(path).split('/').filter(Boolean);
 }
 
 /**

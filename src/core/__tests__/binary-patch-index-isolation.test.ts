@@ -39,6 +39,8 @@ describe('untracked binary patch generation (real git)', () => {
     await runGit(root, ['init']);
     await runGit(root, ['config', 'user.email', 'fireforge@example.test']);
     await runGit(root, ['config', 'user.name', 'FireForge Tests']);
+    await runGit(root, ['config', 'core.autocrlf', 'false']);
+    await runGit(root, ['config', 'core.eol', 'lf']);
     await writeFile(join(root, 'seed.txt'), 'seed\n');
     await runGit(root, ['add', '-A']);
     await runGit(root, ['commit', '-m', 'initial']);

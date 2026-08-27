@@ -124,6 +124,10 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // consumed by doctor.ts; no top-level register* is exported and none is
   // wanted.
   'doctor-orphaned-harness.ts',
+  // Patch-manifest consistency check and its two repair paths, split out of
+  // doctor.ts for the line budget. Exports a `DoctorCheckDefinition`
+  // consumed by doctor.ts; no registrar is wanted.
+  'doctor-patch-manifest.ts',
   // Ownership-aware working-tree inspector split out of doctor.ts so
   // that file stays under max-lines. Exports an async helper that
   // `doctor.ts` calls from inside its git-checks group.

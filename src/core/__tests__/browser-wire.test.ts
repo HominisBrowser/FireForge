@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { wireSubscript } from '../browser-wire.js';
 import { addDomFragmentTokenized } from '../wire-dom-fragment.js';
@@ -16,14 +17,14 @@ vi.mock('../../utils/fs.js', () => createFsMock());
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() =>
     Promise.resolve({
@@ -425,7 +426,7 @@ describe('addDomFragment', () => {
 
     expect(result).toBe(true);
     const writePath = mockWriteText.mock.calls[0]?.[0] as string;
-    expect(writePath).toBe('/engine/browser/base/content/mybrowser-shell.xhtml');
+    expect(writePath).toBe(nativePath('/engine/browser/base/content/mybrowser-shell.xhtml'));
     const written = mockWriteText.mock.calls[0]?.[1] as string;
     // Include path is relative to the target doc's directory, not hardcoded browser/base/content
     expect(written).toContain('#include fragments/panel.inc.xhtml');
@@ -589,7 +590,7 @@ describe('wireSubscript', () => {
 
     expect(result.subscriptAdded).toBe(true);
     expect(mockRegisterBrowserContent).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'my-widget.js',
       undefined,
       '../components/mybrowser/my-widget.js'
@@ -608,7 +609,7 @@ describe('wireSubscript', () => {
     }
 
     expect(mockRegisterBrowserContent).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'my-widget.js',
       undefined,
       '../components/mybrowser/my-widget.js'
@@ -619,7 +620,7 @@ describe('wireSubscript', () => {
     await wireSubscript('/project', 'my-widget', {});
 
     expect(mockRegisterBrowserContent).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'my-widget.js',
       undefined,
       undefined

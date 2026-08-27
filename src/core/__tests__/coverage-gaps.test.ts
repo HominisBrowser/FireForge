@@ -277,11 +277,19 @@ describe('withPatchDirectoryLock — coverage gaps', () => {
   });
 
   it('re-throws non-EEXIST errors from mkdir', async () => {
-    // Use a path beneath a regular file so the lock helper cannot create its parent directory.
-    const nonExistentParent = '/dev/null/fireforge-lock-test';
+    // A path beneath a REGULAR FILE: mkdir cannot create the parent, so the
+    // helper must surface the error rather than treating it as a held lock.
+    // (`/dev/null/...` used to stand in for this, but Windows has no
+    // `/dev/null` — mkdir simply created the directory and nothing threw.)
+    const dir = await mkdtemp(join(tmpdir(), 'fireforge-lock-'));
+    tempDirs.push(dir);
+    const regularFile = join(dir, 'not-a-directory');
+    await writeFile(regularFile, 'x');
 
     await expect(
-      withPatchDirectoryLock(nonExistentParent, () => Promise.resolve('nope'))
+      withPatchDirectoryLock(join(regularFile, 'fireforge-lock-test'), () =>
+        Promise.resolve('nope')
+      )
     ).rejects.toThrow();
   });
 });

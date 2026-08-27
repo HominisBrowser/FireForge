@@ -89,6 +89,8 @@ import {
   ExtractionError,
   VersionNotFoundError,
 } from '../../errors/download.js';
+import { nativePath } from '../../test-utils/index.js';
+import { escapeRegex } from '../../utils/regex.js';
 import {
   downloadFirefoxSource,
   formatBytes,
@@ -469,7 +471,7 @@ describe('checksum-based cache validation', () => {
     await downloadFirefoxSource('140.9.0', 'firefox', '/tmp/dest', '/tmp/cache');
 
     expect(mockWithFileLock).toHaveBeenCalledWith(
-      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.fireforge-cache.lock',
+      nativePath('/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.fireforge-cache.lock'),
       expect.any(Function)
     );
   });
@@ -533,10 +535,10 @@ describe('checksum-based cache validation', () => {
     ).rejects.toThrow(/SHA-256 mismatch/);
 
     expect(fsMod.removeFile).toHaveBeenCalledWith(
-      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz'
+      nativePath('/tmp/cache/firefox-firefox-140.9.0.source.tar.xz')
     );
     expect(fsMod.removeFile).toHaveBeenCalledWith(
-      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json'
+      nativePath('/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json')
     );
   });
 
@@ -591,13 +593,15 @@ describe('checksum-based cache validation', () => {
     ).rejects.toThrow(/No response body received/);
 
     expect(fsMod.removeFile).not.toHaveBeenCalledWith(
-      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz'
+      nativePath('/tmp/cache/firefox-firefox-140.9.0.source.tar.xz')
     );
     expect(fsMod.removeFile).not.toHaveBeenCalledWith(
-      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json'
+      nativePath('/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json')
     );
     expect(vi.mocked(fsMod.removeFile).mock.calls[0]?.[0]).toMatch(
-      /^\/tmp\/cache\/firefox-firefox-140\.9\.0\.source\.tar\.xz\.part-/
+      new RegExp(
+        `^${escapeRegex(nativePath('/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.part-'))}`
+      )
     );
   });
 });
@@ -631,10 +635,10 @@ describe('download extraction behavior', () => {
     ).rejects.toThrow(ExtractionError);
 
     expect(fsMod.removeFile).toHaveBeenCalledWith(
-      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz'
+      nativePath('/tmp/cache/firefox-firefox-140.9.0.source.tar.xz')
     );
     expect(fsMod.removeFile).toHaveBeenCalledWith(
-      '/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json'
+      nativePath('/tmp/cache/firefox-firefox-140.9.0.source.tar.xz.json')
     );
   });
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('node:fs/promises', () => ({
@@ -21,14 +22,14 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() =>
     Promise.resolve({
@@ -41,11 +42,11 @@ vi.mock('../../core/furnace-config.js', () => ({
   loadFurnaceConfig: vi.fn(),
   writeFurnaceConfig: vi.fn(),
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    overridesDir: '/project/components/overrides',
-    customDir: '/project/components/custom',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    overridesDir: nativePath('/project/components/overrides'),
+    customDir: nativePath('/project/components/custom'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
   updateFurnaceState: vi.fn(),
 }));
@@ -215,9 +216,9 @@ function defaultOverrideConfig(): FurnaceConfig {
 
 function setupCustomPathExists(): void {
   mockPathExists.mockImplementation((path: string) => {
-    if (path === '/project/engine') return Promise.resolve(true);
-    if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
-    if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+    if (path === nativePath('/project/engine')) return Promise.resolve(true);
+    if (path === nativePath('/project/components/custom/moz-sidebar')) return Promise.resolve(true);
+    if (path === nativePath('/project/components/custom/moz-nav')) return Promise.resolve(false);
     if (path.includes('customElements.js')) return Promise.resolve(true);
     if (path.includes('jar.mn')) return Promise.resolve(true);
     return Promise.resolve(false);
@@ -316,7 +317,8 @@ describe('furnaceRenameCommand validation', () => {
 
   it('throws FurnaceError when old directory does not exist', async () => {
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(false);
+      if (path === nativePath('/project/components/custom/moz-sidebar'))
+        return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -330,8 +332,9 @@ describe('furnaceRenameCommand validation', () => {
 
   it('throws FurnaceError when new directory already exists', async () => {
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-nav') return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-nav')) return Promise.resolve(true);
       return Promise.resolve(false);
     });
 
@@ -345,11 +348,11 @@ describe('furnaceRenameCommand custom component rename', () => {
   it('renames a custom component directory and files', async () => {
     await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
 
-    expect(mockEnsureDir).toHaveBeenCalledWith('/project/components/custom/moz-nav');
+    expect(mockEnsureDir).toHaveBeenCalledWith(nativePath('/project/components/custom/moz-nav'));
 
     const writeTextPaths = mockWriteText.mock.calls.map((c) => c[0]);
-    expect(writeTextPaths).toContain('/project/components/custom/moz-nav/moz-nav.mjs');
-    expect(writeTextPaths).toContain('/project/components/custom/moz-nav/moz-nav.css');
+    expect(writeTextPaths).toContain(nativePath('/project/components/custom/moz-nav/moz-nav.mjs'));
+    expect(writeTextPaths).toContain(nativePath('/project/components/custom/moz-nav/moz-nav.css'));
 
     expect(mockWriteFurnaceConfig).toHaveBeenCalled();
     const configArg = mockWriteFurnaceConfig.mock.calls[0]?.[1];
@@ -442,9 +445,10 @@ moz-panel-group { display: flex; }`);
     });
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-panel') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-drawer') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-panel')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-drawer'))
+        return Promise.resolve(false);
       if (path.includes('customElements.js')) return Promise.resolve(true);
       if (path.includes('jar.mn')) return Promise.resolve(true);
       return Promise.resolve(false);
@@ -505,8 +509,8 @@ moz-panel-group { display: flex; }`);
     await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
 
     expect(mockCopyFile).toHaveBeenCalledWith(
-      '/project/components/custom/moz-sidebar/override.json',
-      '/project/components/custom/moz-nav/override.json'
+      nativePath('/project/components/custom/moz-sidebar/override.json'),
+      nativePath('/project/components/custom/moz-nav/override.json')
     );
   });
 });
@@ -516,9 +520,11 @@ describe('furnaceRenameCommand override component rename', () => {
     mockLoadFurnaceConfig.mockResolvedValue(defaultOverrideConfig());
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/overrides/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/overrides/moz-nav') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/overrides/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/overrides/moz-nav'))
+        return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -527,7 +533,7 @@ describe('furnaceRenameCommand override component rename', () => {
 
     await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
 
-    expect(mockEnsureDir).toHaveBeenCalledWith('/project/components/overrides/moz-nav');
+    expect(mockEnsureDir).toHaveBeenCalledWith(nativePath('/project/components/overrides/moz-nav'));
     expect(mockWriteFurnaceConfig).toHaveBeenCalled();
 
     const configArg = mockWriteFurnaceConfig.mock.calls[0]?.[1];
@@ -539,9 +545,11 @@ describe('furnaceRenameCommand override component rename', () => {
     mockLoadFurnaceConfig.mockResolvedValue(defaultOverrideConfig());
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/overrides/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/overrides/moz-nav') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/overrides/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/overrides/moz-nav'))
+        return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -569,17 +577,20 @@ describe('furnaceRenameCommand engine registrations', () => {
     await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
 
     expect(mockRemoveCustomElementRegistration).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'moz-sidebar'
     );
     expect(mockAddCustomElementRegistration).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'moz-nav',
       'chrome://global/content/elements/moz-nav.mjs'
     );
-    expect(mockRemoveJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-sidebar');
+    expect(mockRemoveJarMnEntries).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'moz-sidebar'
+    );
     expect(mockAddJarMnEntries).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'moz-nav',
       expect.arrayContaining(['moz-nav.mjs', 'moz-nav.css'])
     );
@@ -587,13 +598,14 @@ describe('furnaceRenameCommand engine registrations', () => {
 
   it('renames FTL files in the engine locale directory', async () => {
     const ftlDir = 'toolkit/locales/en-US/toolkit/global';
-    const oldFtlPath = `/project/engine/${ftlDir}/moz-sidebar.ftl`;
-    const newFtlPath = `/project/engine/${ftlDir}/moz-nav.ftl`;
+    const oldFtlPath = nativePath(`/project/engine/${ftlDir}/moz-sidebar.ftl`);
+    const newFtlPath = nativePath(`/project/engine/${ftlDir}/moz-nav.ftl`);
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-nav')) return Promise.resolve(false);
       if (path.includes('customElements.js')) return Promise.resolve(true);
       if (path.includes('jar.mn')) return Promise.resolve(true);
       if (path === oldFtlPath) return Promise.resolve(true);
@@ -646,25 +658,26 @@ describe('furnaceRenameCommand engine registrations', () => {
     });
     const localeJarRel = 'toolkit/locales/jar.mn';
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-nav')) return Promise.resolve(false);
       if (path.includes('customElements.js')) return Promise.resolve(true);
-      if (path.endsWith('toolkit/content/jar.mn')) return Promise.resolve(true);
-      if (path.endsWith(localeJarRel)) return Promise.resolve(true);
+      if (path.endsWith(nativePath('toolkit/content/jar.mn'))) return Promise.resolve(true);
+      if (path.endsWith(nativePath(localeJarRel))) return Promise.resolve(true);
       return Promise.resolve(false);
     });
 
     await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
 
     expect(vi.mocked(removeLocaleFtlJarMnEntry)).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       localeJarRel,
       'moz-sidebar',
       'toolkit/global'
     );
     expect(vi.mocked(addLocaleFtlJarMnEntry)).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       localeJarRel,
       'moz-nav',
       'toolkit/global'
@@ -792,9 +805,11 @@ describe('furnaceRenameCommand path-label messaging', () => {
     // can never swap them.
     mockLoadFurnaceConfig.mockResolvedValue(defaultOverrideConfig());
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/overrides/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/overrides/moz-nav') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/overrides/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/overrides/moz-nav'))
+        return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -828,11 +843,12 @@ describe('furnaceRenameCommand engine-tree cleanup', () => {
   });
 
   it('removes the deployed widget directory at the old targetPath', async () => {
-    const oldDeployedDir = '/project/engine/toolkit/content/widgets/moz-sidebar';
+    const oldDeployedDir = nativePath('/project/engine/toolkit/content/widgets/moz-sidebar');
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-nav')) return Promise.resolve(false);
       if (path === oldDeployedDir) return Promise.resolve(true);
       if (path.includes('customElements.js')) return Promise.resolve(true);
       if (path.includes('jar.mn')) return Promise.resolve(true);
@@ -848,15 +864,16 @@ describe('furnaceRenameCommand engine-tree cleanup', () => {
   });
 
   it('renames the mochikit test file and updates chrome.toml', async () => {
-    const mochikitDir = '/project/engine/toolkit/content/tests/widgets';
-    const oldTestPath = `${mochikitDir}/test_moz-sidebar.html`;
-    const newTestPath = `${mochikitDir}/test_moz-nav.html`;
-    const chromeTomlPath = `${mochikitDir}/chrome.toml`;
+    const mochikitDir = nativePath('/project/engine/toolkit/content/tests/widgets');
+    const oldTestPath = nativePath(`${mochikitDir}/test_moz-sidebar.html`);
+    const newTestPath = nativePath(`${mochikitDir}/test_moz-nav.html`);
+    const chromeTomlPath = nativePath(`${mochikitDir}/chrome.toml`);
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-nav')) return Promise.resolve(false);
       if (path === mochikitDir) return Promise.resolve(true);
       if (path === oldTestPath) return Promise.resolve(true);
       if (path === chromeTomlPath) return Promise.resolve(true);
@@ -920,10 +937,12 @@ describe('furnaceRenameCommand engine-tree cleanup', () => {
     // `--test-style=none` don't have the mochikit files at all; rename
     // must not fail trying to clean something that was never there.
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
-      if (path === '/project/engine/toolkit/content/tests/widgets') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-nav')) return Promise.resolve(false);
+      if (path === nativePath('/project/engine/toolkit/content/tests/widgets'))
+        return Promise.resolve(false);
       if (path.includes('customElements.js')) return Promise.resolve(true);
       if (path.includes('jar.mn')) return Promise.resolve(true);
       return Promise.resolve(false);
@@ -933,15 +952,16 @@ describe('furnaceRenameCommand engine-tree cleanup', () => {
   });
 
   it('renames browser-chrome test files and updates stale tag references in the body', async () => {
-    const testDir = '/project/engine/browser/base/content/test/mybrowser';
-    const oldTestPath = `${testDir}/browser_mybrowser_sidebar.js`;
-    const newTestPath = `${testDir}/browser_mybrowser_nav.js`;
-    const tomlPath = `${testDir}/browser.toml`;
+    const testDir = nativePath('/project/engine/browser/base/content/test/mybrowser');
+    const oldTestPath = nativePath(`${testDir}/browser_mybrowser_sidebar.js`);
+    const newTestPath = nativePath(`${testDir}/browser_mybrowser_nav.js`);
+    const tomlPath = nativePath(`${testDir}/browser.toml`);
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-sidebar') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-nav') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-nav')) return Promise.resolve(false);
       if (path === testDir || path === oldTestPath || path === tomlPath)
         return Promise.resolve(true);
       if (path.includes('customElements.js')) return Promise.resolve(true);

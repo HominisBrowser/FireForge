@@ -8,6 +8,7 @@ vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, writeTextIfChanged } from '../../utils/fs.js';
 
 const config = {
@@ -62,7 +63,7 @@ brandFullName=MyBrowser
 trademarkInfo = { " " }
 `);
       }
-      if (filePath.includes('/toolkit/moz.configure')) {
+      if (filePath.includes(nativePath('/toolkit/moz.configure'))) {
         return Promise.resolve(`
 project_flag(
     env="MOZ_APP_VENDOR",
@@ -112,7 +113,7 @@ project_flag(
         filePath.endsWith('configure.sh') ||
           filePath.endsWith('brand.properties') ||
           filePath.endsWith('brand.ftl') ||
-          filePath.endsWith('/browser/moz.configure')
+          filePath.endsWith(nativePath('/browser/moz.configure'))
       )
     );
     vi.mocked(readText).mockImplementation((filePath: string) => {
@@ -173,7 +174,7 @@ MOZ_APP_VENDOR="My Company"
 MOZ_MACBUNDLE_ID="mybrowser"
 `);
       }
-      if (filePath.includes('/toolkit/moz.configure')) {
+      if (filePath.includes(nativePath('/toolkit/moz.configure'))) {
         return Promise.resolve(`
 project_flag(
     env="MOZ_APP_VENDOR",
@@ -197,7 +198,7 @@ describe('setupBranding', () => {
   it('skips writes when branding files already match the config', async () => {
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath.includes('/toolkit/moz.configure')) {
+      if (filePath.includes(nativePath('/toolkit/moz.configure'))) {
         return Promise.resolve(`
 project_flag(
     env="MOZ_APP_VENDOR",
@@ -234,7 +235,7 @@ project_flag(
       return Promise.resolve(false);
     });
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath.includes('/toolkit/moz.configure')) {
+      if (filePath.includes(nativePath('/toolkit/moz.configure'))) {
         return Promise.resolve(`
 project_flag(
     env="MOZ_APP_VENDOR",
@@ -270,7 +271,7 @@ project_flag(
       return Promise.resolve(false);
     });
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath.includes('/toolkit/moz.configure')) {
+      if (filePath.includes(nativePath('/toolkit/moz.configure'))) {
         return Promise.resolve(`
 project_flag(
     env="MOZ_APP_VENDOR",
@@ -305,11 +306,11 @@ project_flag(
       if (filePath.endsWith('mybrowser')) return Promise.resolve(false);
       if (filePath.endsWith('brand.properties')) return Promise.resolve(true);
       if (filePath.endsWith('brand.ftl')) return Promise.resolve(true);
-      if (filePath.endsWith('/browser/moz.configure')) return Promise.resolve(true);
+      if (filePath.endsWith(nativePath('/browser/moz.configure'))) return Promise.resolve(true);
       return Promise.resolve(false);
     });
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath.endsWith('/browser/moz.configure')) {
+      if (filePath.endsWith(nativePath('/browser/moz.configure'))) {
         return Promise.resolve('# configure without vendor imply option\n');
       }
       return Promise.resolve('');
@@ -339,7 +340,7 @@ project_flag(
       return Promise.resolve(false);
     });
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath.includes('/toolkit/moz.configure')) {
+      if (filePath.includes(nativePath('/toolkit/moz.configure'))) {
         return Promise.resolve(`
 project_flag(
     env="MOZ_APP_VENDOR",
@@ -376,7 +377,7 @@ project_flag(
       if (filePath.endsWith('configure.sh')) return Promise.resolve(true);
       if (filePath.endsWith('brand.properties')) return Promise.resolve(false);
       if (filePath.endsWith('brand.ftl')) return Promise.resolve(false);
-      if (filePath.endsWith('/browser/moz.configure')) return Promise.resolve(true);
+      if (filePath.endsWith(nativePath('/browser/moz.configure'))) return Promise.resolve(true);
       return Promise.resolve(false);
     });
     vi.mocked(readText).mockImplementation((filePath: string) => {
@@ -391,7 +392,7 @@ project_flag(
           ].join('\n')
         );
       }
-      if (filePath.includes('/toolkit/moz.configure')) {
+      if (filePath.includes(nativePath('/toolkit/moz.configure'))) {
         return Promise.resolve(`
 project_flag(
     env="MOZ_APP_VENDOR",
@@ -400,7 +401,7 @@ project_flag(
 )
 `);
       }
-      if (filePath.endsWith('/browser/moz.configure')) {
+      if (filePath.endsWith(nativePath('/browser/moz.configure'))) {
         return Promise.resolve('imply_option("MOZ_APP_VENDOR", "My Company")\n');
       }
       return Promise.resolve('');

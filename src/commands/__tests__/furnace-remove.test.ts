@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('@clack/prompts', () => ({
@@ -28,11 +29,11 @@ vi.mock('../../core/furnace-config.js', () => ({
   updateFurnaceState: vi.fn(() => Promise.resolve()),
   loadFurnaceState: vi.fn(() => Promise.resolve({})),
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    customDir: '/project/components/custom',
-    overridesDir: '/project/components/overrides',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    customDir: nativePath('/project/components/custom'),
+    overridesDir: nativePath('/project/components/overrides'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
 }));
 
@@ -94,14 +95,14 @@ vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() =>
     Promise.resolve({
@@ -209,25 +210,29 @@ describe('furnaceRemoveCommand', () => {
   it('deregisters custom components before deleting deployed files', async () => {
     vi.mocked(pathExists).mockImplementation((target: string) =>
       Promise.resolve(
-        target === '/project/components/custom/moz-audit-widget' ||
-          target === '/project/engine/toolkit/content/widgets/moz-audit-widget'
+        target === nativePath('/project/components/custom/moz-audit-widget') ||
+          target === nativePath('/project/engine/toolkit/content/widgets/moz-audit-widget')
       )
     );
 
     await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(removeCustomElementRegistration).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'moz-audit-widget'
     );
-    expect(removeJarMnEntries).toHaveBeenCalledWith('/project/engine', 'moz-audit-widget');
+    expect(removeJarMnEntries).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'moz-audit-widget'
+    );
 
     const ceCallOrder = vi.mocked(removeCustomElementRegistration).mock.invocationCallOrder[0];
     const jarCallOrder = vi.mocked(removeJarMnEntries).mock.invocationCallOrder[0];
     const deleteTargetOrder = vi
       .mocked(removeDir)
       .mock.calls.find(
-        ([target]) => target === '/project/engine/toolkit/content/widgets/moz-audit-widget'
+        ([target]) =>
+          target === nativePath('/project/engine/toolkit/content/widgets/moz-audit-widget')
       );
 
     expect(ceCallOrder).toBeLessThan(deleteTargetOrder ? 999999 : Number.MAX_SAFE_INTEGER);
@@ -345,12 +350,12 @@ describe('furnaceRemoveCommand', () => {
     // override.json must be excluded by isOverrideCopyCandidate; only the .css
     // file is restored.
     expect(restoreTrackedPath).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'toolkit/content/widgets/moz-card/moz-card.css'
     );
     expect(restoreTrackedPath).toHaveBeenCalledTimes(1);
     expect(removeFile).not.toHaveBeenCalled();
-    expect(removeDir).toHaveBeenCalledWith('/project/components/overrides/moz-card');
+    expect(removeDir).toHaveBeenCalledWith(nativePath('/project/components/overrides/moz-card'));
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Deployed files may remain'));
     expect(writeFurnaceConfig).toHaveBeenCalledWith(
       '/project',
@@ -381,7 +386,7 @@ describe('furnaceRemoveCommand', () => {
       custom: {},
     });
     vi.mocked(pathExists).mockImplementation((target: string) =>
-      Promise.resolve(target === '/project/components/overrides/moz-button')
+      Promise.resolve(target === nativePath('/project/components/overrides/moz-button'))
     );
 
     await furnaceRemoveCommand('/project', 'moz-button', { yes: true });
@@ -441,13 +446,13 @@ describe('furnaceRemoveCommand', () => {
 
     // The workspace .mjs is restored from HEAD via git restore.
     expect(restoreTrackedPath).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'toolkit/content/widgets/moz-card/moz-card.mjs'
     );
     // The state-only orphan .css is hard-deleted from the engine, even
     // though the workspace no longer references it.
     expect(removeFile).toHaveBeenCalledWith(
-      '/project/engine/toolkit/content/widgets/moz-card/moz-card-partial.css'
+      nativePath('/project/engine/toolkit/content/widgets/moz-card/moz-card-partial.css')
     );
   });
 
@@ -480,11 +485,11 @@ describe('furnaceRemoveCommand', () => {
     await furnaceRemoveCommand('/project', 'moz-card', { yes: true });
 
     expect(restoreTrackedPath).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'toolkit/content/widgets/moz-card/moz-card.mjs'
     );
     expect(removeFile).toHaveBeenCalledWith(
-      '/project/engine/toolkit/content/widgets/moz-card/moz-card-partial.css'
+      nativePath('/project/engine/toolkit/content/widgets/moz-card/moz-card-partial.css')
     );
   });
 
@@ -573,7 +578,7 @@ describe('furnaceRemoveCommand', () => {
     // transactional block before the update was attempted.
     expect(snapshotFile).toHaveBeenCalledWith(
       expect.anything(),
-      '/project/.fireforge/furnace-state.json'
+      nativePath('/project/.fireforge/furnace-state.json')
     );
   });
 
@@ -640,12 +645,14 @@ describe('furnaceRemoveCommand', () => {
   it('cleans up test files for custom components', async () => {
     vi.mocked(pathExists).mockImplementation((target: string) =>
       Promise.resolve(
-        target === '/project/components/custom/moz-audit-widget' ||
-          target === '/project/engine/toolkit/content/widgets/moz-audit-widget' ||
-          target === '/project/engine/browser/base/content/test/mybrowser' ||
+        target === nativePath('/project/components/custom/moz-audit-widget') ||
+          target === nativePath('/project/engine/toolkit/content/widgets/moz-audit-widget') ||
+          target === nativePath('/project/engine/browser/base/content/test/mybrowser') ||
           target ===
-            '/project/engine/browser/base/content/test/mybrowser/browser_mybrowser_audit_widget.js' ||
-          target === '/project/engine/browser/base/content/test/mybrowser/browser.toml'
+            nativePath(
+              '/project/engine/browser/base/content/test/mybrowser/browser_mybrowser_audit_widget.js'
+            ) ||
+          target === nativePath('/project/engine/browser/base/content/test/mybrowser/browser.toml')
       )
     );
     vi.mocked(readText).mockResolvedValue('\n["browser_mybrowser_audit_widget.js"]\n');
@@ -654,31 +661,35 @@ describe('furnaceRemoveCommand', () => {
     await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(unlink).toHaveBeenCalledWith(
-      '/project/engine/browser/base/content/test/mybrowser/browser_mybrowser_audit_widget.js'
+      nativePath(
+        '/project/engine/browser/base/content/test/mybrowser/browser_mybrowser_audit_widget.js'
+      )
     );
     expect(writeText).toHaveBeenCalledWith(
-      '/project/engine/browser/base/content/test/mybrowser/browser.toml',
+      nativePath('/project/engine/browser/base/content/test/mybrowser/browser.toml'),
       expect.any(String)
     );
-    expect(removeDir).toHaveBeenCalledWith('/project/engine/browser/base/content/test/mybrowser');
+    expect(removeDir).toHaveBeenCalledWith(
+      nativePath('/project/engine/browser/base/content/test/mybrowser')
+    );
   });
 
   it('deregisters test manifest when test directory becomes empty', async () => {
     vi.mocked(pathExists).mockImplementation((target: string) =>
-      Promise.resolve(target === '/project/engine/browser/base/content/test/mybrowser')
+      Promise.resolve(target === nativePath('/project/engine/browser/base/content/test/mybrowser'))
     );
     vi.mocked(readdir).mockResolvedValue([]);
     vi.mocked(deregisterTestManifest).mockResolvedValue(true);
 
     await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
-    expect(deregisterTestManifest).toHaveBeenCalledWith('/project/engine', 'mybrowser');
+    expect(deregisterTestManifest).toHaveBeenCalledWith(nativePath('/project/engine'), 'mybrowser');
     expect(info).toHaveBeenCalledWith('Deregistered test manifest from browser/base/moz.build');
   });
 
   it('warns but continues when test file cleanup fails', async () => {
     vi.mocked(pathExists).mockImplementation((target: string) =>
-      Promise.resolve(target === '/project/engine/browser/base/content/test/mybrowser')
+      Promise.resolve(target === nativePath('/project/engine/browser/base/content/test/mybrowser'))
     );
     vi.mocked(readdir).mockRejectedValue(new Error('EPERM'));
 
@@ -702,11 +713,13 @@ describe('furnaceRemoveCommand', () => {
         },
       },
     });
-    const ftlPath = '/project/engine/toolkit/locales/en-US/toolkit/global/moz-audit-widget.ftl';
+    const ftlPath = nativePath(
+      '/project/engine/toolkit/locales/en-US/toolkit/global/moz-audit-widget.ftl'
+    );
     vi.mocked(pathExists).mockImplementation((target: string) =>
       Promise.resolve(
-        target === '/project/components/custom/moz-audit-widget' ||
-          target === '/project/engine/toolkit/content/widgets/moz-audit-widget' ||
+        target === nativePath('/project/components/custom/moz-audit-widget') ||
+          target === nativePath('/project/engine/toolkit/content/widgets/moz-audit-widget') ||
           target === ftlPath
       )
     );
@@ -739,11 +752,13 @@ describe('furnaceRemoveCommand', () => {
         },
       },
     });
-    const ftlPath = '/project/engine/toolkit/locales/en-US/toolkit/global/moz-audit-widget.ftl';
+    const ftlPath = nativePath(
+      '/project/engine/toolkit/locales/en-US/toolkit/global/moz-audit-widget.ftl'
+    );
     vi.mocked(pathExists).mockImplementation((target: string) =>
       Promise.resolve(
-        target === '/project/components/custom/moz-audit-widget' ||
-          target === '/project/engine/toolkit/content/widgets/moz-audit-widget' ||
+        target === nativePath('/project/components/custom/moz-audit-widget') ||
+          target === nativePath('/project/engine/toolkit/content/widgets/moz-audit-widget') ||
           target === ftlPath
       )
     );
@@ -751,7 +766,7 @@ describe('furnaceRemoveCommand', () => {
     await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(removeCustomFtlJarMnEntry).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'moz-audit-widget.ftl',
       'toolkit/locales/en-US/toolkit/global',
       expect.objectContaining({ localized: true }),
@@ -762,15 +777,15 @@ describe('furnaceRemoveCommand', () => {
   it('does not touch the Fluent tree for non-localized custom components', async () => {
     vi.mocked(pathExists).mockImplementation((target: string) =>
       Promise.resolve(
-        target === '/project/components/custom/moz-audit-widget' ||
-          target === '/project/engine/toolkit/content/widgets/moz-audit-widget'
+        target === nativePath('/project/components/custom/moz-audit-widget') ||
+          target === nativePath('/project/engine/toolkit/content/widgets/moz-audit-widget')
       )
     );
 
     await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(removeFile).not.toHaveBeenCalledWith(
-      expect.stringContaining('toolkit/locales/en-US/toolkit/global/')
+      expect.stringContaining(nativePath('toolkit/locales/en-US/toolkit/global/'))
     );
   });
 
@@ -824,7 +839,9 @@ function resetRemoveMocks(): void {
 /** Marks the given engine-relative suffixes as existing on disk. */
 function existsFor(...suffixes: string[]): void {
   vi.mocked(pathExists).mockImplementation((target: string) =>
-    Promise.resolve(suffixes.some((suffix) => target.includes(suffix)))
+    // The suffixes are written POSIX-style; `target` carries the host's
+    // separators, so render each suffix natively before matching.
+    Promise.resolve(suffixes.some((suffix) => target.includes(nativePath(suffix))))
   );
 }
 
@@ -996,7 +1013,9 @@ describe('furnaceRemoveCommand — mochikit test cleanup', () => {
     await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(unlink).toHaveBeenCalledWith(
-      expect.stringContaining('toolkit/content/tests/widgets/test_moz-audit-widget.html')
+      expect.stringContaining(
+        nativePath('toolkit/content/tests/widgets/test_moz-audit-widget.html')
+      )
     );
     const written = vi.mocked(writeText).mock.calls.find(([path]) => path.endsWith('chrome.toml'));
     expect(written?.[1]).not.toContain('test_moz-audit-widget.html');
@@ -1037,7 +1056,7 @@ describe('furnaceRemoveCommand — xpcshell scaffold cleanup', () => {
     await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(removeDir).toHaveBeenCalledWith(
-      expect.stringContaining('mybrowser-xpcshell/moz-audit-widget')
+      expect.stringContaining(nativePath('mybrowser-xpcshell/moz-audit-widget'))
     );
     expect(info).toHaveBeenCalledWith(
       expect.stringContaining('Deleted empty xpcshell parent directory')

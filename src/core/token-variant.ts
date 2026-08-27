@@ -66,6 +66,27 @@ function canonicalSelector(selector: string): string {
   return selector.replace(/\s+/g, '').replace(/["']/g, '');
 }
 
+/**
+ * The `:root[…]` selector fragment on `line`, spanning to the LAST `]` that
+ * precedes the block's opening brace, or `null` when the line carries none.
+ *
+ * Index arithmetic rather than `/:root\[[^{]*\]/`: `[^{]` also matches `]`,
+ * so that pattern backtracks quadratically on a line repeating `:root[`
+ * (CodeQL `js/polynomial-redos`). Taking the last `]` — not the first —
+ * preserves the greedy regex's reach, so a multi-attribute selector still
+ * compares as the whole fragment and does not collide with a single-attribute
+ * variant that happens to be its prefix.
+ */
+function rootAttributeSelector(line: string): string | null {
+  const start = line.indexOf(':root[');
+  if (start === -1) return null;
+  const brace = line.indexOf('{', start);
+  const limit = brace === -1 ? line.length : brace;
+  const close = line.lastIndexOf(']', limit - 1);
+  if (close <= start + ':root['.length - 1) return null;
+  return line.slice(start, close + 1);
+}
+
 /** A located `:root<variant>` block: `open`/`close` are line indices. */
 interface VariantBlock {
   open: number;
@@ -87,8 +108,8 @@ function findVariantBlock(lines: string[], variant: string): VariantBlock | null
 
   for (let i = 0; i < stripped.length; i++) {
     const line = stripped[i] ?? '';
-    const match = /:root\[[^{]*\]/.exec(line);
-    if (!match || canonicalSelector(match[0]) !== want) continue;
+    const selector = rootAttributeSelector(line);
+    if (selector === null || canonicalSelector(selector) !== want) continue;
 
     let openLine = /\{/.test(line) ? i : -1;
     if (openLine === -1) {

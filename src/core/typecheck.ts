@@ -26,6 +26,7 @@ import type { TypecheckIssue, TypecheckProjectResult } from '../types/typecheck.
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import {
   composeShimSource,
   SHIM_FILENAME,
@@ -280,7 +281,12 @@ async function runTypecheckForProject(
   // file — and never write it to disk. The CompilerHost below serves
   // it from `shimSource` for `fileExists`/`readFile`/`getSourceFile`.
   const projectDir = dirname(absConfig);
-  const shimPath = resolve(projectDir, `.fireforge-${SHIM_FILENAME}`);
+  // Forward slashes deliberately: TypeScript normalizes every `fileName` it
+  // hands a CompilerHost, on every platform. A shim path carrying Windows
+  // separators never matches those callbacks, so the shim is not served (its
+  // globals report as undefined identifiers) and its own diagnostics are not
+  // filtered out below — the pass reports failures that do not exist.
+  const shimPath = normalizePathSlashes(resolve(projectDir, `.fireforge-${SHIM_FILENAME}`));
 
   const rootFiles = [...parsed.fileNames, shimPath];
   const defaultHost = ts.createCompilerHost(options);

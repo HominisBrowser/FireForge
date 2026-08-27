@@ -1,13 +1,22 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../utils/process.js', () => ({ exec: vi.fn() }));
 
 import { exec } from '../../utils/process.js';
 import { readProcessCpuSeconds } from '../process-cpu-time.js';
 
+// `readProcessCpuSeconds` branches on `process.platform` directly, so the
+// `ps`-shaped expectations below only hold when the branch is forced.
+const originalPlatform = process.platform;
+
+afterAll(() => {
+  Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+});
+
 beforeEach(() => {
   vi.mocked(exec).mockReset();
+  Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
 });
 
 describe('readProcessCpuSeconds', () => {

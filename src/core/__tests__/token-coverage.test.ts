@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createFsMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../utils/fs.js', () => createFsMock());
@@ -33,7 +34,7 @@ describe('measureTokenCoverage', () => {
     );
 
     mockedReadText.mockImplementation((filePath) => {
-      if (filePath.endsWith('styles/a.css')) {
+      if (filePath.endsWith(nativePath('styles/a.css'))) {
         return Promise.resolve(
           [
             '/* var(--mybrowser-commented) #123456 rgb(1, 2, 3) */',
@@ -48,7 +49,7 @@ describe('measureTokenCoverage', () => {
         );
       }
 
-      if (filePath.endsWith('styles/b.css')) {
+      if (filePath.endsWith(nativePath('styles/b.css'))) {
         return Promise.resolve(
           [
             '.panel {',
@@ -156,7 +157,7 @@ describe('measureTokenCoverage', () => {
 
     const report = await measureTokenCoverage('/repo/engine', ['styles/a.css']);
 
-    expect(mockedLoadFurnaceConfig).toHaveBeenCalledWith('/repo');
+    expect(mockedLoadFurnaceConfig).toHaveBeenCalledWith(nativePath('/repo'));
     expect(report).toEqual({
       filesScanned: 1,
       tokenUsages: 0,

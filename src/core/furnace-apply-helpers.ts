@@ -14,6 +14,7 @@ import type {
 import { toError } from '../utils/errors.js';
 import { copyFile, ensureDir, pathExists, readText, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { buildCustomDryRunActions } from './furnace-apply-dry-run.js';
 import {
   applyCustomFtlFile,
@@ -105,7 +106,12 @@ export async function restoreOverrideFileToBaseline(
   enginePath: string,
   journal: RollbackJournal
 ): Promise<'restored' | 'removed' | 'noop'> {
-  const relPath = relative(engineDir, enginePath);
+  // Engine-relative paths are IDENTIFIERS here, not filesystem arguments:
+  // they are handed to git, recorded in furnace state, and compared against
+  // the POSIX paths furnace.json and jar.mn already carry. `relative()`
+  // returns backslashes on Windows, so without this the same file has two
+  // spellings and every cross-check misses.
+  const relPath = normalizePathSlashes(relative(engineDir, enginePath));
 
   // Snapshot before mutation so a later rollback can undo both restoration
   // (writes whatever content we removed back) and deletion (recreates the
@@ -180,7 +186,7 @@ export async function undeployCustomFiles(
 
     if (await pathExists(enginePath)) {
       await removeFile(enginePath);
-      removed.push(relative(engineDir, enginePath));
+      removed.push(normalizePathSlashes(relative(engineDir, enginePath)));
     }
 
     // When an `.ftl` is deleted from the workspace the corresponding locale
@@ -239,7 +245,7 @@ export async function undeployOverrideFiles(
   for (const fileName of deletedFiles) {
     const enginePath = getOverrideEngineTargetPath(engineDir, config, fileName, ftlDir);
     const action = await restoreOverrideFileToBaseline(engineDir, enginePath, rollbackJournal);
-    const relPath = relative(engineDir, enginePath);
+    const relPath = normalizePathSlashes(relative(engineDir, enginePath));
     if (action === 'restored') restored.push(relPath);
     else if (action === 'removed') removed.push(relPath);
   }
@@ -450,7 +456,7 @@ export async function applyCustomComponent(
       const src = join(componentDir, entry.name);
       const dest = join(targetDir, entry.name);
       await deployFileWithFragments(src, dest, sharedDir);
-      affectedPaths.push(relative(engineDir, dest));
+      affectedPaths.push(normalizePathSlashes(relative(engineDir, dest)));
       copiedFileNames.push(entry.name);
     })
   );
@@ -569,7 +575,7 @@ export async function applyOverrideComponent(
       const src = join(componentDir, entry.name);
       const dest = getOverrideEngineTargetPath(engineDir, config, entry.name, ftlDir);
       await copyFile(src, dest);
-      affectedPaths.push(relative(engineDir, dest));
+      affectedPaths.push(normalizePathSlashes(relative(engineDir, dest)));
     })
   );
 

@@ -3,15 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn().mockReturnValue({
-    root: '/fake/root',
-    engine: '/fake/engine',
-    patches: '/fake/patches',
-    config: '/fake/root/fireforge.json',
-    fireforgeDir: '/fake/root/.fireforge',
-    state: '/fake/root/.fireforge/state.json',
-    configs: '/fake/root/configs',
-    src: '/fake/root/src',
-    componentsDir: '/fake/root/src/components',
+    root: nativePath('/fake/root'),
+    engine: nativePath('/fake/engine'),
+    patches: nativePath('/fake/patches'),
+    config: nativePath('/fake/root/fireforge.json'),
+    fireforgeDir: nativePath('/fake/root/.fireforge'),
+    state: nativePath('/fake/root/.fireforge/state.json'),
+    configs: nativePath('/fake/root/configs'),
+    src: nativePath('/fake/root/src'),
+    componentsDir: nativePath('/fake/root/src/components'),
   }),
   loadConfig: vi.fn().mockResolvedValue({
     name: 'TestBrowser',
@@ -161,7 +161,7 @@ import {
   stampPatchVersions,
 } from '../../core/patch-manifest.js';
 import { GitError } from '../../errors/git.js';
-import { makeManifest, setInteractiveMode } from '../../test-utils/index.js';
+import { makeManifest, nativePath, setInteractiveMode } from '../../test-utils/index.js';
 import type { PatchMetadata } from '../../types/commands/index.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { cancel, info, isCancel, outro, spinner, success, warn } from '../../utils/logger.js';
@@ -280,7 +280,7 @@ describe('reExportCommand - --scan flag', () => {
     await expect(reExportCommand('/fake/root', ['001'], {})).resolves.toBeUndefined();
 
     expect(enforceFreshFurnaceSources).toHaveBeenCalledWith(
-      '/fake/root',
+      nativePath('/fake/root'),
       ['toolkit/content/widgets/moz-tiles/a.mjs'],
       false,
       're-export'
@@ -297,7 +297,7 @@ describe('reExportCommand - --scan flag', () => {
     ).resolves.toBeUndefined();
 
     expect(enforceFreshFurnaceSources).toHaveBeenCalledWith(
-      '/fake/root',
+      nativePath('/fake/root'),
       ['a.js'],
       true,
       're-export'
@@ -325,9 +325,9 @@ describe('reExportCommand - --scan flag', () => {
     const missingPatch = makePatch('002-ui-missing.patch', ['missing.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([existingPatch, missingPatch]));
     vi.mocked(pathExists).mockImplementation((targetPath: string) => {
-      if (targetPath === '/fake/engine') return Promise.resolve(true);
-      if (targetPath.endsWith('/a.js')) return Promise.resolve(true);
-      if (targetPath.endsWith('/missing.js')) return Promise.resolve(false);
+      if (targetPath === nativePath('/fake/engine')) return Promise.resolve(true);
+      if (targetPath.endsWith(nativePath('/a.js'))) return Promise.resolve(true);
+      if (targetPath.endsWith(nativePath('/missing.js'))) return Promise.resolve(false);
       return Promise.resolve(true);
     });
 
@@ -348,7 +348,7 @@ describe('reExportCommand - --scan flag', () => {
     const missingPatch = makePatch('002-ui-missing.patch', ['missing.js']);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([existingPatch, missingPatch]));
     vi.mocked(pathExists).mockImplementation((targetPath: string) => {
-      if (targetPath.endsWith('/missing.js')) return Promise.resolve(false);
+      if (targetPath.endsWith(nativePath('/missing.js'))) return Promise.resolve(false);
       return Promise.resolve(true);
     });
 
@@ -410,7 +410,9 @@ describe('reExportCommand - --scan flag', () => {
       )
     );
     expect(info).not.toHaveBeenCalledWith(expect.stringContaining('brand.ftl'));
-    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('furnace-widget/part.css'));
+    expect(info).not.toHaveBeenCalledWith(
+      expect.stringContaining(nativePath('furnace-widget/part.css'))
+    );
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
   });
 
@@ -469,7 +471,7 @@ describe('reExportCommand - --scan flag', () => {
 
     expect(info).toHaveBeenCalledWith('  + browser/modules/foo/b.js');
     expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      '/fake/patches',
+      nativePath('/fake/patches'),
       '001-ui-test.patch',
       expect.any(String),
       expect.objectContaining({
@@ -628,7 +630,7 @@ describe('reExportCommand - --scan flag', () => {
     await reExportCommand('/fake/root', ['001'], { dryRun: true });
 
     expect(withFileLock).toHaveBeenCalledWith(
-      '/fake/root/.fireforge/re-export-dry-run.lock',
+      nativePath('/fake/root/.fireforge/re-export-dry-run.lock'),
       expect.any(Function),
       expect.any(Object)
     );
@@ -649,7 +651,9 @@ describe('reExportCommand - --scan flag', () => {
       activeGitInspection++;
       try {
         if (activeGitInspection > 1) {
-          throw new Error("fatal: Unable to create '/fake/engine/.git/index.lock': File exists.");
+          throw new Error(
+            "fatal: Unable to create nativePath('/fake/engine/.git/index.lock'): File exists."
+          );
         }
         await new Promise((resolve) => setTimeout(resolve, 10));
         return 'diff --git a/browser/modules/foo/a.js b/browser/modules/foo/a.js\n+content\n';
@@ -1067,7 +1071,7 @@ describe('reExportCommand - --scan flag', () => {
     expect(scanCall).toBeDefined();
     const updatedFiles = (scanCall?.[3] as { filesAffected: string[] }).filesAffected;
     expect(updatedFiles).toContain('browser/modules/foo/new.js');
-    expect(updatedFiles).not.toContain('browser/modules/foo/claimed.js');
+    expect(updatedFiles).not.toContain(nativePath('browser/modules/foo/claimed.js'));
   });
 
   it('plain re-export checks siblings for suggestions without changing filesAffected', async () => {
@@ -1077,11 +1081,17 @@ describe('reExportCommand - --scan flag', () => {
 
     await reExportCommand('/fake/root', ['001'], {});
 
-    expect(getModifiedFilesInDir).toHaveBeenCalledWith('/fake/engine', 'browser/modules/foo');
-    expect(getUntrackedFilesInDir).toHaveBeenCalledWith('/fake/engine', 'browser/modules/foo');
+    expect(getModifiedFilesInDir).toHaveBeenCalledWith(
+      nativePath('/fake/engine'),
+      'browser/modules/foo'
+    );
+    expect(getUntrackedFilesInDir).toHaveBeenCalledWith(
+      nativePath('/fake/engine'),
+      'browser/modules/foo'
+    );
     expect(getClaimedFiles).toHaveBeenCalled();
     expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      '/fake/patches',
+      nativePath('/fake/patches'),
       '001-ui-test.patch',
       expect.any(String),
       expect.objectContaining({ filesAffected: ['browser/modules/foo/a.js'] }),
@@ -1102,7 +1112,7 @@ describe('reExportCommand - --scan flag', () => {
     ]);
     vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
     vi.mocked(pathExists).mockImplementation((p: string) => {
-      if (p.endsWith('/missing.js')) return Promise.resolve(false);
+      if (p.endsWith(nativePath('/missing.js'))) return Promise.resolve(false);
       return Promise.resolve(true);
     });
 
@@ -1352,7 +1362,7 @@ describe('reExportCommand - --scan flag', () => {
 
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
     expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      '/fake/patches',
+      nativePath('/fake/patches'),
       '002-ui-second.patch',
       expect.any(String),
       expect.any(Object),
@@ -1531,7 +1541,7 @@ describe('reExportCommand - --scan flag', () => {
 
       expect(stampPatchVersions).toHaveBeenCalledTimes(1);
       expect(stampPatchVersions).toHaveBeenCalledWith(
-        '/fake/patches',
+        nativePath('/fake/patches'),
         ['001-ui-first.patch', '002-ui-second.patch'],
         '140.9.0esr',
         'firefox-esr'
@@ -1546,9 +1556,9 @@ describe('reExportCommand - --scan flag', () => {
       const missingPatch = makePatch('002-ui-missing.patch', ['missing.js']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([goodPatch, missingPatch]));
       vi.mocked(pathExists).mockImplementation((p: string) => {
-        if (p === '/fake/engine') return Promise.resolve(true);
-        if (p.endsWith('/a.js')) return Promise.resolve(true);
-        if (p.endsWith('/missing.js')) return Promise.resolve(false);
+        if (p === nativePath('/fake/engine')) return Promise.resolve(true);
+        if (p.endsWith(nativePath('/a.js'))) return Promise.resolve(true);
+        if (p.endsWith(nativePath('/missing.js'))) return Promise.resolve(false);
         return Promise.resolve(true);
       });
 

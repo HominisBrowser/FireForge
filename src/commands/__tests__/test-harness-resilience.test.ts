@@ -81,6 +81,7 @@ import {} from '../../core/marionette-port.js';
 import {} from '../../core/marionette-preflight.js';
 import {} from '../../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
+import { nativePath } from '../../test-utils/index.js';
 import { isSymlink, pathExists } from '../../utils/fs.js';
 import { info, note, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
@@ -329,7 +330,7 @@ describe('testCommand harness resilience', () => {
 
     const envArg = vi.mocked(testWithOutput).mock.calls[0]?.[3];
     expect(envArg).toEqual({
-      MYBROWSER_PERF_SAMPLE_JSON: '/project/artifacts/perf-samples.json',
+      MYBROWSER_PERF_SAMPLE_JSON: nativePath('/project/artifacts/perf-samples.json'),
     });
   });
 

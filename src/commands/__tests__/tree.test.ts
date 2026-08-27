@@ -98,7 +98,14 @@ import {
 import { info, setStdoutSealed, success, warn } from '../../utils/logger.js';
 import { registerTree, treeCreateCommand, treeListCommand, treeRemoveCommand } from '../tree.js';
 
-describe('tree create CoW gating', () => {
+// `tree create`, `tree remove` and `tree exec` refuse outright on Windows
+// (`assertPosix` in ../tree.ts) because copy-on-write cloning needs
+// clonefile/reflink. Their suites cannot run there; the refusal itself is
+// pinned by the platform-stubbed suite at the end of this file, so skipping
+// costs no coverage. `treeListCommand` carries no such guard and still runs.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
+describePosix('tree create CoW gating', () => {
   let root: string;
 
   beforeEach(async () => {
@@ -370,7 +377,7 @@ function fakeChild(outcome: { code?: number | null; error?: Error }): EventEmitt
   return child;
 }
 
-describe('tree create --wait-lock', () => {
+describePosix('tree create --wait-lock', () => {
   let root: string;
 
   beforeEach(async () => {
@@ -461,7 +468,7 @@ describe('treeListCommand', () => {
   });
 });
 
-describe('tree remove --all', () => {
+describePosix('tree remove --all', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -491,7 +498,7 @@ describe('tree remove --all', () => {
   });
 });
 
-describe('tree exec', () => {
+describePosix('tree exec', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(readTreeMarker).mockResolvedValue({ kind: 'valid', marker: MARKER });
@@ -621,5 +628,36 @@ describe('tree exec', () => {
     } finally {
       process.argv[1] = original ?? '';
     }
+  });
+});
+
+describe('POSIX-only refusals', () => {
+  const originalPlatform = process.platform;
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
+
+  const onWindows = (): void => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  };
+
+  it('refuses tree create on Windows, naming copy-on-write as the reason', async () => {
+    onWindows();
+    await expect(treeCreateCommand('/primary', 'shard-a')).rejects.toThrow(
+      /tree is POSIX-only.*clonefile\/reflink/s
+    );
+  });
+
+  it('refuses tree remove on Windows', async () => {
+    onWindows();
+    await expect(treeRemoveCommand('/primary', 'shard-a')).rejects.toThrow(/tree is POSIX-only/);
+  });
+
+  it('refuses tree exec on Windows', async () => {
+    onWindows();
+    await expect(
+      treeProgram('/p').parseAsync(['node', 'ff', 'tree', 'exec', 'shard-a', 'status'])
+    ).rejects.toThrow(/tree is POSIX-only/);
   });
 });

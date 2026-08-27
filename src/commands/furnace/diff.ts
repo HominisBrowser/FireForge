@@ -13,6 +13,7 @@ import type { FurnaceConfig } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { formatErrorText, formatSuccessText, info, intro, outro } from '../../utils/logger.js';
+import { normalizePathSlashes } from '../../utils/paths.js';
 
 /**
  * Renders a multi-hunk unified diff between the two strings and returns a
@@ -78,12 +79,15 @@ async function diffOverride(
     if (!isComponentSourceFile(entry.name)) continue;
 
     // git show takes a repo-relative path. paths.engine IS the repo root.
-    const enginePath = getOverrideEngineTargetPath(
-      paths.engine,
-      overrideConfig,
-      entry.name,
-      ftlDir
-    ).slice(paths.engine.length + 1);
+    // The slice leaves the host's separators behind, and `git show <ref>:<path>`
+    // only understands forward slashes — on Windows the unnormalized form makes
+    // every baseline read miss, so every overridden file is reported as a new
+    // file and `furnace diff` shows nothing.
+    const enginePath = normalizePathSlashes(
+      getOverrideEngineTargetPath(paths.engine, overrideConfig, entry.name, ftlDir).slice(
+        paths.engine.length + 1
+      )
+    );
     const modifiedPath = join(overrideDir, entry.name);
     const baselineDisplayPath = enginePath;
 

@@ -43,6 +43,7 @@ describe('tracked binary diff generation (real git)', () => {
     await runGit(root, ['config', 'user.email', 'fireforge@example.test']);
     await runGit(root, ['config', 'user.name', 'FireForge Tests']);
     await runGit(root, ['config', 'core.autocrlf', 'false']);
+    await runGit(root, ['config', 'core.eol', 'lf']);
     await mkdir(join(root, 'toolkit/certs'), { recursive: true });
     await mkdir(join(root, 'browser/base/content'), { recursive: true });
     await writeFile(join(root, CERT), ORIGINAL);

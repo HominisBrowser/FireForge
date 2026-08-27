@@ -8,6 +8,7 @@ import { getStagedDiffForFiles } from '../../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../../core/git-file-ops.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
 import { resolveCommand } from '../resolve.js';
@@ -211,7 +212,9 @@ describe('resolveCommand', () => {
       ],
     });
     vi.mocked(pathExists).mockImplementation((targetPath) =>
-      Promise.resolve(targetPath.endsWith('file1.js') || !targetPath.includes('/fake/engine/'))
+      Promise.resolve(
+        targetPath.endsWith('file1.js') || !targetPath.includes(nativePath('/fake/engine/'))
+      )
     );
     const diff = fakeUnifiedDiff(['file1.js']);
     vi.mocked(getStagedDiffForFiles).mockResolvedValue(diff);
@@ -292,7 +295,9 @@ describe('resolveCommand', () => {
       ],
     });
     vi.mocked(pathExists).mockImplementation((targetPath) =>
-      Promise.resolve(targetPath.endsWith('file1.js') || !targetPath.includes('/fake/engine/'))
+      Promise.resolve(
+        targetPath.endsWith('file1.js') || !targetPath.includes(nativePath('/fake/engine/'))
+      )
     );
     vi.mocked(getStagedDiffForFiles).mockResolvedValue(fakeUnifiedDiff(['file1.js']));
     vi.mocked(updatePatchAndMetadata).mockRejectedValue(new Error('disk full'));

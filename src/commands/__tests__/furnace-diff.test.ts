@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadState: vi.fn(() => Promise.resolve({ baseCommit: 'base123' })),
 }));
@@ -26,11 +28,11 @@ vi.mock('../../core/furnace-config.js', () => ({
   updateFurnaceState: vi.fn(() => Promise.resolve()),
 
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    overridesDir: '/project/components/overrides',
-    customDir: '/project/components/custom',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    overridesDir: nativePath('/project/components/overrides'),
+    customDir: nativePath('/project/components/custom'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -118,7 +120,7 @@ describe('furnaceDiffCommand', () => {
 
   it('fails when the override directory does not exist', async () => {
     vi.mocked(pathExists).mockImplementation((filePath) =>
-      Promise.resolve(!filePath.includes('/components/overrides/moz-card'))
+      Promise.resolve(!filePath.includes(nativePath('/components/overrides/moz-card')))
     );
 
     await expect(furnaceDiffCommand('/project', 'moz-card')).rejects.toThrow(
@@ -136,7 +138,7 @@ describe('furnaceDiffCommand', () => {
       { name: 'nested', isFile: () => false },
     ] as unknown as Awaited<ReturnType<typeof readdir>>);
     vi.mocked(pathExists).mockImplementation((filePath) => {
-      if (filePath.endsWith('/project/components/overrides/moz-card')) {
+      if (filePath.endsWith(nativePath('/project/components/overrides/moz-card'))) {
         return Promise.resolve(true);
       }
       return Promise.resolve(true);
@@ -151,7 +153,7 @@ describe('furnaceDiffCommand', () => {
       return Promise.resolve(null);
     });
     vi.mocked(readText).mockImplementation((filePath) => {
-      if (filePath.endsWith('/project/components/overrides/moz-card/moz-card.css')) {
+      if (filePath.endsWith(nativePath('/project/components/overrides/moz-card/moz-card.css'))) {
         return Promise.resolve(['.root {', '  color: red;', '  padding: 4px;', '}'].join('\n'));
       }
       throw new Error(`Unexpected file read: ${filePath}`);
@@ -160,7 +162,7 @@ describe('furnaceDiffCommand', () => {
     await furnaceDiffCommand('/project', 'moz-card');
 
     expect(getFileContentAtRef).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'toolkit/content/widgets/moz-card/moz-card.css',
       'base123'
     );
@@ -199,7 +201,7 @@ describe('furnaceDiffCommand', () => {
     await furnaceDiffCommand('/project', 'moz-card');
 
     expect(getFileContentAtRef).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'toolkit/locales/en-US/toolkit/global/moz-card.ftl',
       'base123'
     );
@@ -336,7 +338,7 @@ describe('furnaceDiffCommand', () => {
 
     // Should use the per-override baseCommit, not the global state one
     expect(getFileContentAtRef).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       expect.any(String),
       'override-specific-sha'
     );
@@ -382,11 +384,15 @@ describe('furnaceDiffCommand', () => {
     // a project without an override in `ftlBasePath`), NOT the component
     // targetPath.
     expect(
-      probedPaths.some((p) => p.includes('toolkit/locales/en-US') && p.endsWith('moz-lab-pill.ftl'))
+      probedPaths.some(
+        (p) => p.includes(nativePath('toolkit/locales/en-US')) && p.endsWith('moz-lab-pill.ftl')
+      )
     ).toBe(true);
     expect(
       probedPaths.some((p) =>
-        p.endsWith('/project/engine/toolkit/content/widgets/moz-lab-pill/moz-lab-pill.ftl')
+        p.endsWith(
+          nativePath('/project/engine/toolkit/content/widgets/moz-lab-pill/moz-lab-pill.ftl')
+        )
       )
     ).toBe(false);
 

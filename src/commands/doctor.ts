@@ -13,24 +13,22 @@ import { getCurrentBranch, getHead, isGitRepository, isMissingHeadError } from '
 import { ensureGit } from '../core/git-base.js';
 import { ensureMach, ensurePython } from '../core/mach.js';
 import { countPatches } from '../core/patch-apply.js';
-import {
-  rebuildPatchesManifest,
-  validatePatchesManifestConsistency,
-  validatePatchIntegrity,
-} from '../core/patch-manifest.js';
+import { validatePatchIntegrity } from '../core/patch-manifest.js';
+import { InvalidArgumentError } from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DoctorCheck, DoctorOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, success, warn } from '../utils/logger.js';
-import { addWaitLockOption, resolveWaitLockSeconds } from '../utils/options.js';
+import { addWaitLockOption } from '../utils/options.js';
 import { findExecutable } from '../utils/process.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, resolveDoctorSeverity, warning } from './doctor-check-core.js';
 import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { ORPHANED_HARNESS_DOCTOR_CHECK } from './doctor-orphaned-harness.js';
+import { PATCH_MANIFEST_CONSISTENCY_CHECK } from './doctor-patch-manifest.js';
 import { POST_REBASE_AUDIT_CHECK } from './doctor-post-rebase-audit.js';
 import { inspectEngineWorkingTree } from './doctor-working-tree.js';
 import { collectPatchQueueHealth } from './verify.js';
@@ -353,87 +351,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
       return ok('Patches found', `${patchCount} patch${patchCount === 1 ? '' : 'es'} found`);
     },
   },
-  {
-    name: 'Patch manifest consistency',
-    dependsOn: ['fireforge.json is valid'],
-    run: async (ctx) => {
-      if (!(await pathExists(ctx.paths.patches))) {
-        return [];
-      }
-
-      const manifestConsistencyIssues = await validatePatchesManifestConsistency(ctx.paths.patches);
-      if (manifestConsistencyIssues.length === 0) {
-        return ok('Patch manifest consistency');
-      }
-
-      if (!ctx.options.repairPatchesManifest) {
-        return failure(
-          'Patch manifest consistency',
-          manifestConsistencyIssues.map((issue) => issue.message).join(' '),
-          'Run "fireforge doctor --repair-patches-manifest" to rebuild patches.json from patch files.'
-        );
-      }
-
-      // Repair stamps sourceEsrVersion into every recovered entry. If the
-      // earlier "fireforge.json is valid" check failed, ctx.config is
-      // undefined and we must refuse rather than fabricate a fallback —
-      // persisting 'unknown' into manifest metadata is hard to reverse
-      // and would mislead every later command that reads it.
-      if (!ctx.config) {
-        return failure(
-          'Patch manifest consistency',
-          'Cannot repair patches.json: fireforge.json could not be loaded, so the Firefox version to stamp into recovered manifest entries is unknown.',
-          'Fix the fireforge.json errors reported above and re-run "fireforge doctor --repair-patches-manifest".'
-        );
-      }
-
-      try {
-        const repaired = await rebuildPatchesManifest(
-          ctx.paths.patches,
-          ctx.config.firefox.version,
-          {
-            waitLockSeconds: resolveWaitLockSeconds(ctx.options.waitLock),
-            command: 'doctor --repair-patches-manifest',
-          }
-        );
-        // The repair path must not silently overwrite human-written
-        // descriptions on recovered entries, which leaves the queue less
-        // trustworthy as an audit trail. The rebuilder returns the list of
-        // filenames whose metadata was entirely invented, named explicitly
-        // here so the operator knows which patches to review. Entries that
-        // WERE preserved (only `filesAffected` / ordering drifted) are not
-        // flagged.
-        if (repaired.recoveredFilenames.length > 0) {
-          for (const filename of repaired.recoveredFilenames) {
-            // Telling the operator to hand-edit patches.json contradicts the
-            // README and downstream docs, which treat the manifest as
-            // FireForge-owned. Point at the existing `re-export` / `export`
-            // workflow so the fix stays inside the tool: re-exporting the
-            // same files with an explicit `--description` overwrites the
-            // recovered entry with operator-supplied metadata and supersedes
-            // the mtime-based createdAt stamp.
-            warn(
-              `Recovered manifest entry for ${filename} with generic description and mtime-based createdAt. ` +
-                'Re-export the affected files with `fireforge re-export <filename> --description "<your description>"` ' +
-                '(or `fireforge export <paths...> --name <name> --category <category> --description "<your description>"`) ' +
-                'to overwrite the reconstructed metadata, or accept the generic description if the original text is not recoverable. ' +
-                'Avoid hand-editing patches.json — FireForge owns that file and will regenerate it on the next manifest consistency pass.'
-            );
-          }
-        }
-        return warning(
-          'Patch manifest consistency',
-          `Rebuilt patches.json from ${repaired.manifest.patches.length} patch${repaired.manifest.patches.length === 1 ? '' : 'es'}${repaired.recoveredFilenames.length > 0 ? ` (${repaired.recoveredFilenames.length} with reconstructed metadata — see warnings above)` : ''}. Review recovered metadata before release.`
-        );
-      } catch (err: unknown) {
-        return failure(
-          'Patch manifest consistency',
-          toError(err).message,
-          'Repair failed. Fix the underlying patch metadata issue and retry the doctor command.'
-        );
-      }
-    },
-  },
+  PATCH_MANIFEST_CONSISTENCY_CHECK,
   {
     name: 'Patch integrity',
     skipIf: (ctx) => !ctx.engineExists,
@@ -490,7 +408,10 @@ export const DOCTOR_CHECK_ORDER: readonly string[] = DOCTOR_CHECKS.map((check) =
  * @param checks - The check results to display
  * @returns The exit code reflecting the overall result
  */
-export function reportDoctorResults(checks: DoctorCheck[]): ExitCode {
+export function reportDoctorResults(
+  checks: DoctorCheck[],
+  mutations: readonly string[] = []
+): ExitCode {
   info('');
 
   let passedCount = 0;
@@ -520,6 +441,17 @@ export function reportDoctorResults(checks: DoctorCheck[]): ExitCode {
 
   info('');
 
+  // Printed in every branch, including the failing one: a repair that wrote
+  // and then met an unrelated failing check must not be reported as a run
+  // where nothing happened.
+  if (mutations.length > 0) {
+    warn('Repairs applied this run:');
+    for (const mutation of mutations) {
+      warn(`  ${mutation}`);
+    }
+    info('');
+  }
+
   if (failedCount === 0 && warningCount === 0) {
     outro(`All ${passedCount} checks passed!`);
   } else if (failedCount === 0) {
@@ -544,6 +476,43 @@ export interface DoctorResult {
 }
 
 /**
+ * Rejects repair-flag combinations that cannot mean what they say.
+ *
+ * The two manifest repairs are different operations on the same file, and
+ * `--dry-run` with nothing to project is a flag that silently does nothing —
+ * the shape most likely to be mistaken for a preview that reported "no
+ * changes".
+ */
+function assertRepairOptions(options: DoctorOptions): void {
+  if (options.repairPatchesManifest === true && options.repairFilesAffected === true) {
+    throw new InvalidArgumentError(
+      '--repair-patches-manifest and --repair-files-affected are mutually exclusive. ' +
+        'Use --repair-files-affected for filesAffected drift; use --repair-patches-manifest ' +
+        'when rows are missing, untracked or duplicated.',
+      '--repair-files-affected'
+    );
+  }
+  if (options.allowMetadataLoss === true && options.repairPatchesManifest !== true) {
+    throw new InvalidArgumentError(
+      '--allow-metadata-loss only applies to --repair-patches-manifest.',
+      '--allow-metadata-loss'
+    );
+  }
+  if (
+    options.dryRun === true &&
+    options.repairPatchesManifest !== true &&
+    options.repairFilesAffected !== true
+  ) {
+    throw new InvalidArgumentError(
+      '--dry-run needs a manifest repair to project. Pass it with ' +
+        '--repair-patches-manifest or --repair-files-affected. ' +
+        '(--repair-furnace has no dry-run: it reconciles engine state, not a manifest.)',
+      '--dry-run'
+    );
+  }
+}
+
+/**
  * Runs the doctor command to diagnose issues.
  * @param projectRoot - Root directory of the project
  */
@@ -552,6 +521,8 @@ export async function doctorCommand(
   options: DoctorOptions = {}
 ): Promise<DoctorResult> {
   intro('FireForge Doctor');
+
+  assertRepairOptions(options);
 
   const paths = getProjectPaths(projectRoot);
   const state = await loadState(projectRoot);
@@ -567,6 +538,7 @@ export async function doctorCommand(
     config: undefined,
     furnaceConfigExists: furnaceConfigExistsFlag,
     furnaceConfig: undefined,
+    mutations: [],
   };
 
   const checks: DoctorCheck[] = [];
@@ -574,7 +546,7 @@ export async function doctorCommand(
     checks.push(...(await executeCheck(definition, ctx)));
   }
 
-  const exitCode = reportDoctorResults(checks);
+  const exitCode = reportDoctorResults(checks, ctx.mutations);
   return { checks, exitCode };
 }
 
@@ -588,8 +560,17 @@ export function registerDoctor(
     .description('Diagnose project issues')
     .option(
       '--repair-patches-manifest',
-      'Rebuild patches/patches.json from the current patch files before reporting results'
+      'Rebuild patches/patches.json from the current patch files before reporting results. Only filesAffected and order are recomputed; every other field on an existing entry is preserved'
     )
+    .option(
+      '--repair-files-affected',
+      'Repair only the filesAffected lists that disagree with their patch body, leaving every other manifest field untouched'
+    )
+    .option(
+      '--allow-metadata-loss',
+      'With --repair-patches-manifest, rebuild even when patches.json cannot be parsed — every descriptive field on every entry is then reinvented'
+    )
+    .option('--dry-run', 'Show what a requested repair would change without writing anything')
     .option(
       '--repair-furnace',
       'Reconcile furnace state: clear stale furnace-state.json entries, re-run furnace apply to fix engine drift, and clear the pending-repair marker set by a failed preview teardown'

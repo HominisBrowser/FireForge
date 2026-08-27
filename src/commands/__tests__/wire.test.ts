@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { makeProjectPaths } from '../../test-utils/index.js';
+import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../core/config.js', () => ({
@@ -89,7 +89,7 @@ describe('wireCommand', () => {
     // the preview leaves the real run refusing with `Subscript file not
     // found`, so the mismatch surfaces as a notice in the dry-run output.
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (path === '/project/engine/browser/components/custom/ghost.js') {
+      if (path === nativePath('/project/engine/browser/components/custom/ghost.js')) {
         return Promise.resolve(false);
       }
       return Promise.resolve(true);
@@ -109,7 +109,7 @@ describe('wireCommand', () => {
       wireCommand('/project', 'panel', {
         init: 'Panel.init()',
         destroy: 'Panel.destroy()',
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
         dryRun: true,
       })
     ).resolves.toBeUndefined();
@@ -133,15 +133,17 @@ describe('wireCommand', () => {
 
   it('validates the DOM fragment path before wiring', async () => {
     vi.mocked(pathExists).mockImplementation((value) =>
-      Promise.resolve(value !== '/project/engine/browser/base/content/fragments/panel.inc.xhtml')
+      Promise.resolve(
+        value !== nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml')
+      )
     );
 
     await expect(
       wireCommand('/project', 'panel', {
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
       })
     ).rejects.toThrow(
-      'DOM fragment file not found: /project/engine/browser/base/content/fragments/panel.inc.xhtml'
+      `DOM fragment file not found: ${nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml')}`
     );
 
     expect(wireSubscript).not.toHaveBeenCalled();
@@ -169,7 +171,7 @@ describe('wireCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(pathExists).toHaveBeenCalledWith(
-      '/project/engine/browser/base/content/fragments/panel.inc.xhtml'
+      nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml')
     );
     expect(wireSubscript).toHaveBeenCalledWith(
       '/project',
@@ -191,7 +193,7 @@ describe('wireCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(pathExists).toHaveBeenCalledWith(
-      '/project/engine/browser/base/content/fragments/panel.inc.xhtml'
+      nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml')
     );
     expect(wireSubscript).toHaveBeenCalledWith(
       '/project',
@@ -208,12 +210,12 @@ describe('wireCommand', () => {
     // future refactor doesn't accidentally re-route absolutes through join.
     await expect(
       wireCommand('/project', 'panel', {
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
       })
     ).resolves.toBeUndefined();
 
     expect(pathExists).toHaveBeenCalledWith(
-      '/project/engine/browser/base/content/fragments/panel.inc.xhtml'
+      nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml')
     );
   });
 
@@ -223,7 +225,9 @@ describe('wireCommand', () => {
     // joined path) — matching the existing absolute-input behaviour so
     // the error is copy-pasteable back into the CLI.
     vi.mocked(pathExists).mockImplementation((value) =>
-      Promise.resolve(value !== '/project/engine/browser/base/content/fragments/missing.inc.xhtml')
+      Promise.resolve(
+        value !== nativePath('/project/engine/browser/base/content/fragments/missing.inc.xhtml')
+      )
     );
 
     await expect(
@@ -266,7 +270,7 @@ describe('wireCommand', () => {
         destroy: 'Panel.destroy()',
         after: 'existing-panel',
         subscriptDir: 'browser/base/content/custom',
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
       })
     ).resolves.toBeUndefined();
 
@@ -331,7 +335,7 @@ describe('wireCommand', () => {
 
     await expect(
       wireCommand('/project', 'panel', {
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
       })
     ).resolves.toBeUndefined();
 
@@ -361,7 +365,7 @@ describe('wireCommand', () => {
 
     await expect(
       wireCommand('/project', 'panel', {
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
         target: 'browser/base/content/mybrowser.xhtml',
       })
     ).resolves.toBeUndefined();
@@ -378,7 +382,7 @@ describe('wireCommand', () => {
   it('omits domTargetPath when the resolved target is the upstream default', async () => {
     await expect(
       wireCommand('/project', 'panel', {
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
       })
     ).resolves.toBeUndefined();
 
@@ -393,7 +397,7 @@ describe('wireCommand', () => {
   it('rejects --target values that escape engine/', async () => {
     await expect(
       wireCommand('/project', 'panel', {
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
         target: '../outside.xhtml',
       })
     ).rejects.toThrow('Target chrome document must stay within engine/: ../outside.xhtml');
@@ -417,7 +421,7 @@ describe('wireCommand', () => {
 
     await expect(
       wireCommand('/project', 'panel', {
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
       })
     ).rejects.toThrow(/Chrome document not found.*tokenHostDocuments/s);
 
@@ -430,7 +434,7 @@ describe('wireCommand', () => {
 
     await expect(
       wireCommand('/project', 'panel', {
-        dom: '/project/engine/browser/base/content/fragments/panel.inc.xhtml',
+        dom: nativePath('/project/engine/browser/base/content/fragments/panel.inc.xhtml'),
       })
     ).resolves.toBeUndefined();
 

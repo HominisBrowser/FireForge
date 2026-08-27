@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { FireForgeError, LockContentionError } from '../../errors/base.js';
+import { nativePath } from '../../test-utils/index.js';
 import { warn } from '../../utils/logger.js';
 import {
   createSiblingLockPath,
@@ -52,10 +53,10 @@ async function exists(path: string): Promise<boolean> {
 describe('file-lock', () => {
   it('derives a sibling lock path', () => {
     expect(createSiblingLockPath('/tmp/fireforge/state.json')).toBe(
-      '/tmp/fireforge/state.json.fireforge.lock'
+      nativePath('/tmp/fireforge/state.json.fireforge.lock')
     );
     expect(createSiblingLockPath('/tmp/fireforge/state.json', '.custom.lock')).toBe(
-      '/tmp/fireforge/state.json.custom.lock'
+      nativePath('/tmp/fireforge/state.json.custom.lock')
     );
   });
 

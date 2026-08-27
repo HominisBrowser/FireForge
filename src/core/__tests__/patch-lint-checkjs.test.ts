@@ -936,6 +936,61 @@ describe('runCheckJs', () => {
     }
   });
 
+  it('honours an exact (wildcard-free) paths mapping, and substitutes only the one wildcard', async () => {
+    // The substitution is index arithmetic rather than `replace('*', …)`
+    // (CodeQL `js/incomplete-sanitization` read the first-occurrence-only
+    // replace as an incomplete rewrite). Both target shapes are pinned here:
+    // a wildcard-free target, which is used verbatim, and a target whose one
+    // `*` is filled with the captured segment.
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-paths-exact-'));
+    await mkdir(join(tmpDir, 'lib'), { recursive: true });
+    await writeFile(
+      join(tmpDir, 'lib', 'Exact.sys.mjs'),
+      [
+        '/**',
+        ' * @returns {number} a number',
+        ' */',
+        'export function getNum() {',
+        '  return 1;',
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(
+      join(tmpDir, 'consumer.sys.mjs'),
+      [
+        "import { getNum } from 'resource:///exact/Thing.sys.mjs';",
+        '/** @returns {string} A string */',
+        'export function use() {',
+        '  return getNum();',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const owned = new Set(['consumer.sys.mjs']);
+      const result = await runCheckJs(tmpDir, owned, undefined, undefined, {
+        strict: true,
+        compilerOptions: {
+          paths: { 'resource:///exact/Thing.sys.mjs': ['lib/Exact.sys.mjs'] },
+        },
+      });
+      const errors = result.filter((i) => i.check === 'checkjs-type-error');
+      expect(errors.some((i) => i.file === 'consumer.sys.mjs')).toBe(true);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('honours a triple-slash <reference> inside the extra shim instead of dropping it', async () => {
     const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');

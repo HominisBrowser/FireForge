@@ -19,6 +19,7 @@ vi.mock('../parser-fallback.js', async (importOriginal) => ({
   withParserFallback: parserFallbackMock,
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import { addInitAST, addInitToBrowserInit, legacyAddInit } from '../wire-init.js';
 
@@ -288,7 +289,7 @@ const gBrowserInit = {
 
     await expect(addInitToBrowserInit('/engine', 'DockController.init()')).resolves.toBe(true);
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/browser/base/content/browser-init.js',
+      nativePath('/engine/browser/base/content/browser-init.js'),
       expect.stringContaining('DockController.init();')
     );
   });

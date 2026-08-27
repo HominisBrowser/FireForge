@@ -144,6 +144,7 @@ import {
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { getComponentDetails, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
+import { nativePath } from '../../test-utils/index.js';
 import { copyFile, ensureDir, pathExists, writeJson } from '../../utils/fs.js';
 import { cancel, isCancel } from '../../utils/logger.js';
 
@@ -249,8 +250,8 @@ describe('furnaceOverrideCommand', () => {
     });
 
     expect(vi.mocked(copyFile)).toHaveBeenCalledWith(
-      '/project/engine/toolkit/locales/en-US/toolkit/global/moz-button.ftl',
-      '/project/components/overrides/moz-button/moz-button.ftl'
+      nativePath('/project/engine/toolkit/locales/en-US/toolkit/global/moz-button.ftl'),
+      nativePath('/project/components/overrides/moz-button/moz-button.ftl')
     );
   });
 

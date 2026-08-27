@@ -26,6 +26,7 @@ vi.mock('../license-headers.js', () => ({
 
 import { readdir } from 'node:fs/promises';
 
+import { nativePath } from '../../test-utils/index.js';
 import { ensureDir, pathExists, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { loadFurnaceConfig } from '../furnace-config.js';
 import {
@@ -97,7 +98,9 @@ describe('generateStoryContent', () => {
 
 describe('getStoriesDir', () => {
   it('returns the correct path', () => {
-    expect(getStoriesDir('/engine')).toBe('/engine/browser/components/storybook/stories');
+    expect(getStoriesDir('/engine')).toBe(
+      nativePath('/engine/browser/components/storybook/stories')
+    );
   });
 });
 

@@ -56,6 +56,7 @@ vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(),
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import { copyFile, ensureDir, pathExists, readText, removeFile } from '../../utils/fs.js';
 import { FTL_DIR } from '../furnace-constants.js';
 import {
@@ -461,8 +462,8 @@ describe('applyOverrideComponent', () => {
     );
 
     expect(mockCopyFile).toHaveBeenCalledWith(
-      '/comp/moz-card/moz-card.ftl',
-      '/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl'
+      nativePath('/comp/moz-card/moz-card.ftl'),
+      nativePath('/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl')
     );
     expect(result.affectedPaths).toContain('toolkit/locales/en-US/toolkit/global/moz-card.ftl');
   });
@@ -520,7 +521,7 @@ describe('applyOverrideComponent', () => {
     );
 
     expect(result.actions?.[0]?.target).toBe(
-      '/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl'
+      nativePath('/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl')
     );
   });
 });
@@ -629,7 +630,9 @@ describe('undeployCustomFiles', () => {
       journal
     );
 
-    expect(removeFile).toHaveBeenCalledWith('/engine/browser/components/panel/moz-panel.css');
+    expect(removeFile).toHaveBeenCalledWith(
+      nativePath('/engine/browser/components/panel/moz-panel.css')
+    );
     expect(result).toEqual(['browser/components/panel/moz-panel.css']);
   });
 
@@ -653,7 +656,7 @@ describe('undeployCustomFiles', () => {
     // FTL goes under FTL_DIR, not the component's targetPath.
     expect(removeFile).toHaveBeenCalledWith(expect.stringContaining('moz-loc.ftl'));
     expect(result[0]).toContain('moz-loc.ftl');
-    expect(result[0]).not.toContain('browser/components/loc');
+    expect(result[0]).not.toContain(nativePath('browser/components/loc'));
   });
 
   it('is a no-op when an engine file is already missing', async () => {
@@ -825,7 +828,10 @@ describe('symlink handling', () => {
     );
 
     expect(mockCopyFile).toHaveBeenCalledTimes(1);
-    expect(mockCopyFile).toHaveBeenCalledWith('/comp/moz-panel/moz-panel.mjs', expect.any(String));
+    expect(mockCopyFile).toHaveBeenCalledWith(
+      nativePath('/comp/moz-panel/moz-panel.mjs'),
+      expect.any(String)
+    );
   });
 
   it('applyOverrideComponent skips symlinks during file copy', async () => {

@@ -198,6 +198,25 @@ test` brackets the harness run with `snapshotEngineGeneration` and
     waiter) and `engine-session-lock.test.ts` (queue position in the wait
     line).
 
+11. **A manifest repair preserves what it cannot recompute, or refuses.**
+    `doctor --repair-patches-manifest` is a MERGE: only `filesAffected` and
+    `order` are derived from the patch files, and every other field on an
+    existing entry is carried forward by spreading it, so a field a `.patch`
+    body cannot express — `stagedDependencies`, `lintIgnore`, `tier`, and
+    whatever is added to `PatchMetadata` next — survives by construction
+    rather than by being listed. The one case where nothing can be carried
+    forward is a `patches.json` that exists but does not parse; the rebuild
+    refuses it, naming what would be reinvented, unless
+    `--allow-metadata-loss` is passed. `doctor --repair-files-affected` is
+    the narrow repair for drift that is only in the derived list: it goes
+    through `mutatePatchRowsInManifest`, so untouched rows keep their exact
+    JSON. Both repairs take the patch-directory lock (invariant 2), both
+    support `--dry-run`, and a repair that wrote is reported before the
+    doctor summary in every branch — the run can still exit non-zero on an
+    unrelated check, and a non-zero exit otherwise reads as "nothing
+    happened". Enforced by `patch-manifest-repair.test.ts` (real temp
+    queues) and the repair cases in `doctor.test.ts`.
+
 ## Lock release (0.44.0)
 
 `releaseLockIfOwned(lockPath)` in `src/core/file-lock.ts` is the ownership-

@@ -54,6 +54,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { readdir } from 'node:fs/promises';
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { applyPatchIdempotent, reversePatch } from '../git.js';
 import { getFileContentFromHead } from '../git-file-ops.js';
@@ -97,9 +98,9 @@ describe('patch orchestration helpers', () => {
     const patches = await discoverPatches('/patches');
 
     expect(patches).toEqual([
-      { path: '/patches/001-alpha.patch', filename: '001-alpha.patch', order: 1 },
-      { path: '/patches/001-bravo.patch', filename: '001-bravo.patch', order: 1 },
-      { path: '/patches/010-zebra.patch', filename: '010-zebra.patch', order: 10 },
+      { path: nativePath('/patches/001-alpha.patch'), filename: '001-alpha.patch', order: 1 },
+      { path: nativePath('/patches/001-bravo.patch'), filename: '001-bravo.patch', order: 1 },
+      { path: nativePath('/patches/010-zebra.patch'), filename: '010-zebra.patch', order: 10 },
     ]);
     await expect(countPatches('/patches')).resolves.toBe(3);
   });
@@ -164,7 +165,7 @@ describe('patch orchestration helpers', () => {
       conflictingFiles: ['browser/modules/conflict.js'],
     });
     expect(summary.skipped).toEqual([
-      { filename: '003-gamma.patch', path: '/patches/003-gamma.patch', order: 3 },
+      { filename: '003-gamma.patch', path: nativePath('/patches/003-gamma.patch'), order: 3 },
     ]);
     expect(applyPatchIdempotent).toHaveBeenCalledTimes(3);
   });
@@ -241,7 +242,7 @@ describe('patch orchestration helpers', () => {
       { name: '002-beta.patch', isFile: () => true },
     ] as never);
     vi.mocked(readText).mockImplementation((filePath) =>
-      Promise.resolve(filePath === '/patches/001-alpha.patch' ? 'body-one' : 'body-two')
+      Promise.resolve(filePath === nativePath('/patches/001-alpha.patch') ? 'body-one' : 'body-two')
     );
     vi.mocked(applyPatchTextToContent)
       .mockReturnValueOnce('after patch one\n')
@@ -293,7 +294,7 @@ describe('patch orchestration helpers', () => {
 
     // 001-alpha rolled back
     expect(reversePatch).toHaveBeenCalledTimes(1);
-    expect(reversePatch).toHaveBeenCalledWith('/patches/001-alpha.patch', '/engine');
+    expect(reversePatch).toHaveBeenCalledWith(nativePath('/patches/001-alpha.patch'), '/engine');
   });
 
   it('does not roll back when continue mode is enabled', async () => {

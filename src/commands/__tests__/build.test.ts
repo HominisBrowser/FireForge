@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { makeProjectPaths } from '../../test-utils/index.js';
+import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
 
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn(),
@@ -176,8 +176,8 @@ describe('buildCommand', () => {
 
     await expect(buildCommand('/project', { rewriteMozinfo: true })).resolves.toBeUndefined();
 
-    expect(attemptMozinfoRewrite).toHaveBeenCalledWith('/project/engine', 'obj-debug');
-    expect(runMach).toHaveBeenCalledWith(['configure'], '/project/engine');
+    expect(attemptMozinfoRewrite).toHaveBeenCalledWith(nativePath('/project/engine'), 'obj-debug');
+    expect(runMach).toHaveBeenCalledWith(['configure'], nativePath('/project/engine'));
     expect(prepareBuildEnvironment).toHaveBeenCalled();
     expect(build).toHaveBeenCalled();
   });
@@ -231,7 +231,7 @@ describe('buildCommand', () => {
       expect.objectContaining({ binaryName: 'mybrowser' }),
       expect.objectContaining({ previousBaseline: undefined })
     );
-    expect(buildUI).toHaveBeenCalledWith('/project/engine');
+    expect(buildUI).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(build).not.toHaveBeenCalled();
     expect(verbose).toHaveBeenCalledWith('Building with brand: beta');
     expect(info).toHaveBeenCalledWith('Brand: beta');
@@ -244,7 +244,7 @@ describe('buildCommand', () => {
     await expect(buildCommand('/project', {})).resolves.toBeUndefined();
     expect(writeBuildBaseline).toHaveBeenCalledWith(
       '/project',
-      '/project/engine',
+      nativePath('/project/engine'),
       'mybrowser',
       'full',
       undefined,
@@ -255,7 +255,7 @@ describe('buildCommand', () => {
     await expect(buildCommand('/project', { ui: true })).resolves.toBeUndefined();
     expect(writeBuildBaseline).toHaveBeenCalledWith(
       '/project',
-      '/project/engine',
+      nativePath('/project/engine'),
       'mybrowser',
       'full',
       undefined,
@@ -287,7 +287,7 @@ describe('buildCommand', () => {
 
     await expect(buildCommand('/project', {})).resolves.toBeUndefined();
 
-    expect(build).toHaveBeenCalledWith('/project/engine', 12);
+    expect(build).toHaveBeenCalledWith(nativePath('/project/engine'), 12);
     expect(info).toHaveBeenCalledWith('Using 12 parallel jobs');
   });
 
@@ -300,7 +300,7 @@ describe('buildCommand', () => {
 
     await expect(buildCommand('/project', { jobs: 6 })).resolves.toBeUndefined();
 
-    expect(build).toHaveBeenCalledWith('/project/engine', 6);
+    expect(build).toHaveBeenCalledWith(nativePath('/project/engine'), 6);
     expect(info).toHaveBeenCalledWith('Using 6 parallel jobs');
   });
 
@@ -334,10 +334,10 @@ describe('buildCommand', () => {
     expect((failure as Error).message).toContain('Captured stderr tail:');
     expect((failure as Error).message).toContain('Assets.car: No such file or directory');
     expect((failure as Error).message).toContain(
-      'Verbose rerun: cd /project/engine && ./mach build -v'
+      `Verbose rerun: cd ${nativePath('/project/engine')} && ./mach build -v`
     );
 
-    expect(build).toHaveBeenCalledWith('/project/engine', 8);
+    expect(build).toHaveBeenCalledWith(nativePath('/project/engine'), 8);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Build failed after'));
   });
 
@@ -550,7 +550,7 @@ describe('buildCommand', () => {
   it('proceeds to the build when the toolchain preflight passes (fail-soft default)', async () => {
     await buildCommand('/project', {});
 
-    expect(runToolchainPreflight).toHaveBeenCalledWith('/project/engine');
+    expect(runToolchainPreflight).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(build).toHaveBeenCalled();
   });
 });
@@ -584,7 +584,7 @@ describe('registerBuild', () => {
     await program.parseAsync(['node', 'test', 'build', '--ui', '--jobs', '4', '--brand', 'beta']);
 
     expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'beta');
-    expect(buildUI).toHaveBeenCalledWith('/project/engine');
+    expect(buildUI).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(build).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledWith('Using 4 parallel jobs');
   });

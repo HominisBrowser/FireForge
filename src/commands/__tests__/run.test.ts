@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
@@ -99,6 +99,13 @@ import { SmokeRunError } from '../../errors/run.js';
 import { pathExists, removeDir, removeFile } from '../../utils/fs.js';
 import { info, verbose, warn } from '../../utils/logger.js';
 import { registerRun, runCommand, SMOKE_EXIT_FAILURE, SMOKE_LAUNCH_FAILURE } from '../run.js';
+
+// `--smoke-exit` refuses on Windows (`runSmokeExit` in ../run.ts): killing a
+// process GROUP has no clean Windows equivalent, so the flag would leave
+// content processes orphaned. Its suites cannot run there; the refusal is
+// pinned by the platform-stubbed suite at the end of this file.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+const itPosix = process.platform === 'win32' ? it.skip : it;
 
 const FURNACE_PATHS = {
   furnaceConfig: '/project/furnace.json',
@@ -384,7 +391,7 @@ describe('runCommand', () => {
 
   // --- smoke-exit coverage ---
 
-  describe('--smoke-exit', () => {
+  describePosix('--smoke-exit', () => {
     it('routes through runMachSmoke and succeeds when the deadline fires with no findings', async () => {
       vi.mocked(runMachSmoke).mockResolvedValue({
         stdout: '',
@@ -743,7 +750,7 @@ describe('runCommand', () => {
       expect(run).toHaveBeenCalled();
     });
 
-    it('parses --smoke-exit as a positive integer and forwards it', async () => {
+    itPosix('parses --smoke-exit as a positive integer and forwards it', async () => {
       const program = new Command();
       vi.mocked(runMachSmoke).mockResolvedValue({
         stdout: '',
@@ -799,7 +806,7 @@ describe('runCommand', () => {
       ).rejects.toThrow(/positive integer/);
     });
 
-    it('parses --headless and forwards it to the browser in both launch modes', async () => {
+    itPosix('parses --headless and forwards it to the browser in both launch modes', async () => {
       const program = new Command();
       vi.mocked(run).mockResolvedValue(0);
       vi.mocked(runMachSmoke).mockResolvedValue({
@@ -825,7 +832,7 @@ describe('runCommand', () => {
       );
     });
 
-    it('accumulates repeated --console-allow values and passes them through', async () => {
+    itPosix('accumulates repeated --console-allow values and passes them through', async () => {
       const program = new Command();
       vi.mocked(runMachSmoke).mockResolvedValue({
         stdout: '',
@@ -857,5 +864,29 @@ describe('runCommand', () => {
       // uncalled when the parser silently drops repeats).
       expect(runMachSmoke).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('--smoke-exit POSIX-only refusal', () => {
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([]);
+    vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
+
+  it('refuses the flag on Windows and never launches a smoke run', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+    await expect(runCommand('/project', { smokeExit: 30 })).rejects.toThrow(
+      /--smoke-exit is POSIX-only/
+    );
+    expect(runMachSmoke).not.toHaveBeenCalled();
   });
 });

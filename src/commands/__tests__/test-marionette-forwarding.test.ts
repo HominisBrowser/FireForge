@@ -92,6 +92,7 @@ import {
   operatorAlreadySetAppPath,
   resolveXpcshellAppdirArg,
 } from '../../core/xpcshell-appdir.js';
+import { nativePath } from '../../test-utils/index.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { info, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
@@ -414,7 +415,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
       expect.objectContaining({ binaryName: 'mybrowser' })
     );
     expect(ensureLaunchableBrowserNotRunning).toHaveBeenCalledWith(
-      '/project/engine/obj-debug/dist/bin/firefox',
+      nativePath('/project/engine/obj-debug/dist/bin/firefox'),
       { killStaleBrowser: false }
     );
   });

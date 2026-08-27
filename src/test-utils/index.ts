@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { GitStatusEntry } from '../core/git-base.js';
@@ -23,6 +23,20 @@ export const DEFAULT_CONFIG: FireForgeConfig = {
   },
   license: 'EUPL-1.2',
 };
+
+/**
+ * Renders a POSIX-written fixture path in the host's native separator form.
+ *
+ * Assertions compare against values the code built with `join`/`resolve`, so a
+ * literal `'/project/engine'` only matches on POSIX — on Windows the code
+ * produces `\project\engine` and the expectation is the only thing that is
+ * wrong. Wrapping the literal keeps it readable while making the comparison
+ * separator-correct on every platform. Only ever wrap the EXPECTED side: a
+ * value derived from the code under test must never be laundered through this.
+ */
+export function nativePath(posixPath: string): string {
+  return posixPath.replace(/\//g, sep);
+}
 
 /** Creates a temporary project root for integration-style tests. */
 export async function createTempProject(prefix = 'fireforge-test-'): Promise<string> {
@@ -177,6 +191,11 @@ export async function initCommittedRepo(
   await runGit(repoDir, ['init']);
   await runGit(repoDir, ['config', 'user.email', 'fireforge@example.test']);
   await runGit(repoDir, ['config', 'user.name', 'FireForge Tests']);
+  // Pin line endings: on a Windows host the global `core.autocrlf=true`
+  // rewrites LF to CRLF on checkout, which changes the blob hashes and the
+  // exact bytes every patch round-trip asserts on.
+  await runGit(repoDir, ['config', 'core.autocrlf', 'false']);
+  await runGit(repoDir, ['config', 'core.eol', 'lf']);
   await runGit(repoDir, ['add', '-A']);
   await runGit(repoDir, ['commit', '-m', 'initial']);
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
 import {
   addJarMnEntries,
   addLocaleFtlJarMnEntry,
@@ -10,11 +11,7 @@ import {
   removeLocaleFtlJarMnEntry,
 } from '../furnace-registration.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 
@@ -219,7 +216,7 @@ describe('removeJarMnEntries', () => {
   });
 });
 
-describe('removeJarMnEntries — renamed helpers (0.34.0)', () => {
+describe('removeJarMnEntries — renamed helpers', () => {
   it('removes helper lines whose basename does not start with the tag name', async () => {
     // The field bug: `foo-utils.mjs` under (widgets/moz-panel/...) survived
     // the tag-prefixed remove pass and left a stale line that broke
@@ -257,7 +254,7 @@ describe('removeJarMnEntries — renamed helpers (0.34.0)', () => {
   });
 });
 
-describe('stale jar.mn registrations (0.34.0)', () => {
+describe('stale jar.mn registrations', () => {
   const JAR_WITH_STALE = [
     'toolkit.jar:',
     '% content global %content/global/',

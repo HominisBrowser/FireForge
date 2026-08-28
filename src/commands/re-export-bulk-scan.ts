@@ -132,18 +132,19 @@ export async function loadScanFilesAssignments(
 
 /**
  * Fingerprints every piece of state a `re-export --dry-run` promises not to
- * disturb: the engine's commit + working-tree status (via the same generation
- * token `fireforge test` uses) and the byte content of every regular file
- * under `patches/` — ALL of them, not just the selected patches, because the
- * field incident was a dry-run of patch B reverting a just-written
- * export of patch A. A missing patches directory (ENOENT/ENOTDIR) fingerprints
- * as empty — there is nothing there to protect — but any other listing failure
- * (EACCES, EIO, …) throws: an unreadable directory is not evidence it is
- * empty, and treating it as such would let the guard silently vouch for state
- * it never saw (fail closed). The same rule covers an unmeasurable engine
- * generation and an unreadable individual patch file; a before-pass failure
- * aborts the dry run before it starts, since a guard that measured nothing
- * cannot vouch for anything.
+ * disturb: the engine's commit + working-tree status (via the same
+ * generation token `fireforge test` uses) and the byte content of every
+ * regular file under `patches/` — ALL of them, not just the selected
+ * patches, because a dry-run of patch B can revert a just-written export of
+ * patch A.
+ *
+ * A missing patches directory (ENOENT/ENOTDIR) fingerprints as empty — there
+ * is nothing there to protect — but any other listing failure (EACCES, EIO,
+ * …) throws: an unreadable directory is not evidence it is empty, and
+ * treating it as such lets the guard silently vouch for state it never saw.
+ * The same rule covers an unmeasurable engine generation and an unreadable
+ * individual patch file; a before-pass failure aborts the dry run before it
+ * starts, since a guard that measured nothing cannot vouch for anything.
  */
 async function fingerprintDryRunState(
   engineDir: string,
@@ -182,12 +183,11 @@ async function fingerprintDryRunState(
       );
     }
   }
-  // Bounded pool over the per-file hashing (28 MB of patch
-  // bodies were read strictly serially, twice per dry run). Workers never
-  // throw — each returns a discriminated result, and error selection
-  // happens in the ordered pass below so the refusal deterministically
-  // names the FIRST failing file in sorted order, exactly as the serial
-  // loop did. The guard's semantics are untouched: whole-queue scope,
+  // Bounded pool over the per-file hashing: tens of megabytes of patch
+  // bodies, read twice per dry run. Workers never throw — each returns a
+  // discriminated result, and error selection happens in the ordered pass
+  // below so the refusal deterministically names the FIRST failing file in
+  // sorted order. The guard's semantics are untouched: whole-queue scope,
   // fresh measurement on both passes, fail closed on any non-ENOENT read.
   type PatchHashResult = { hash: string } | { vanished: true } | { error: unknown };
   const results = await mapWithConcurrency(
@@ -229,15 +229,15 @@ async function fingerprintDryRunState(
 }
 
 /**
- * Runtime enforcement of the dry-run purity contract: fingerprints
- * the engine tree and every patch artifact before and after `operation`, and
- * throws when a dry-run changed anything it promised only to inspect. This
- * turns any recurrence of the 0.40.0 "dry-run reverted a just-written export"
- * incident into a hard, named failure instead of silent data loss discovered
- * only when a later gate fails. The post-fingerprint runs whether `operation`
- * resolves or rejects — a dry-run that mutates state and THEN fails is exactly
- * the case where a rollback defect must not go unreported; a rejection with a
- * purity violation surfaces the violation with the original error as `cause`.
+ * Runtime enforcement of the dry-run purity contract: fingerprints the engine
+ * tree and every patch artifact before and after `operation`, and throws when
+ * a dry-run changed anything it promised only to inspect. That turns a
+ * "dry-run reverted a just-written export" incident into a hard, named
+ * failure instead of silent data loss discovered only when a later gate
+ * fails. The post-fingerprint runs whether `operation` resolves or rejects —
+ * a dry-run that mutates state and THEN fails is exactly the case where a
+ * rollback defect must not go unreported; a rejection with a purity
+ * violation surfaces the violation with the original error as `cause`.
  * No-op outside dry-run.
  */
 export async function withDryRunPurityGuard<T>(

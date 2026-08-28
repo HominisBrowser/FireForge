@@ -6,21 +6,21 @@
  * A slice that ADDS new files and MOVES lines into them from an existing
  * patch has no path through the two refusal flags:
  *
- *  - `re-export --refuse-adjacent-unmanaged` refuses while the new files
- *    are still unmanaged; and
+ *  - `re-export --refuse-adjacent-unmanaged` refuses while the new files are
+ *    still unmanaged; and
  *  - exporting the new files as their own patch fails cross-patch lint,
  *    because at the projected placement the OLD patch still contains the
  *    moved code.
  *
- * Each guard is individually correct. Together they dead-end, and the way
- * out is non-obvious: adopt the new files into the OLD patch first
- * (`re-export --scan --scan-file`), then split them out into a patch of
- * their own (`patch move-files --create --order N`).
+ * Each guard is individually correct. Together they dead-end, and the way out
+ * is non-obvious: adopt the new files into the OLD patch first
+ * (`re-export --scan --scan-file`), then split them out into a patch of their
+ * own (`patch move-files --create --order N`).
  *
- * This module recognises the shape from evidence FireForge already has —
- * the pending diff's new-file content versus the added lines the existing
- * patches carry — so the refusal can name the sequence instead of leaving
- * the operator to derive it.
+ * This module recognises the shape from evidence FireForge already has — the
+ * pending diff's new-file content versus the added lines the existing patches
+ * carry — so the refusal can name the sequence instead of leaving the
+ * operator to derive it.
  */
 
 import { extractAddedLinesPerFile } from './patch-lint-diff.js';

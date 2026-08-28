@@ -2,13 +2,13 @@
 /**
  * `observer-topic-naming` rule body, extracted from `patch-lint.ts`.
  *
- * The historical implementation captured the first string literal after
- * the call's opening paren on a single line. That mis-attributed string
- * literals in complex subject arguments and silently skipped multi-line
- * call sites. This version scans the balanced argument list (across
- * newlines, string-aware), takes the *topic* argument by position, and
- * allowlists well-known Firefox-owned topics so tests that simulate
- * upstream notifications are not pushed toward renaming real topics.
+ * Capturing the first string literal after the call's opening paren on a
+ * single line mis-attributes string literals in complex subject arguments
+ * and silently skips multi-line call sites. This scans the balanced argument
+ * list (across newlines, string-aware), takes the *topic* argument by
+ * position, and allowlists well-known Firefox-owned topics so tests that
+ * simulate upstream notifications are not pushed toward renaming real
+ * topics.
  */
 
 import type { PatchLintIssue } from '../types/commands/index.js';

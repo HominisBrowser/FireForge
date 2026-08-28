@@ -9,6 +9,7 @@ import { pathExists, readJson, readText, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { isObject, isString } from '../utils/validation.js';
+import { extractMozObjdirName } from './mach-mozconfig.js';
 
 /**
  * Result of checking for build artifacts.
@@ -22,6 +23,13 @@ export interface BuildArtifactCheck {
   ambiguous?: boolean;
   /** All candidate obj-* directories with build artifacts */
   objDirs?: string[];
+  /**
+   * Objdir name the active mozconfig declares via `MOZ_OBJDIR`, when the
+   * candidates were ambiguous and the declaration did not resolve to exactly
+   * one of them. Carried so the refusal can say the declaration was seen and
+   * did not help — that is itself the diagnosis.
+   */
+  declaredObjDir?: string;
   /** Build metadata points at a different source or objdir */
   metadataMismatch?: {
     objDir: string;
@@ -69,6 +77,25 @@ function validateBuildMozinfo(data: unknown): BuildMozinfo {
 }
 
 /**
+ * Reads the objdir name the engine's mozconfig declares, or undefined when
+ * there is no mozconfig, it cannot be read, or it declares nothing.
+ *
+ * Fail-open by construction: this only ever narrows an ambiguity that would
+ * otherwise refuse, so an unreadable mozconfig costs nothing beyond the
+ * refusal the caller was already going to raise.
+ */
+async function readDeclaredObjDirName(engineDir: string): Promise<string | undefined> {
+  try {
+    const mozconfigPath = join(engineDir, 'mozconfig');
+    if (!(await pathExists(mozconfigPath))) return undefined;
+    return extractMozObjdirName(await readText(mozconfigPath));
+  } catch (error: unknown) {
+    verbose(`Could not read mozconfig for MOZ_OBJDIR: ${toError(error).message}`);
+    return undefined;
+  }
+}
+
+/**
  * Checks if build artifacts exist in the engine directory.
  * Looks for obj-* directories with a dist subdirectory. Detection is
  * deliberately symlink-agnostic — building/running against a symlinked
@@ -100,11 +127,34 @@ export async function hasBuildArtifacts(engineDir: string): Promise<BuildArtifac
       return firstObjDir ? { exists: false, objDir: firstObjDir } : { exists: false };
     }
 
+    let resolvedObjDirs = validObjDirs;
+    let declaredObjDir: string | undefined;
     if (validObjDirs.length > 1) {
-      return { exists: true, ambiguous: true, objDirs: validObjDirs };
+      // An ambiguous glob is a question the mozconfig may already answer.
+      // Refusing when the active configuration NAMES the objdir sends the
+      // operator to rename a directory to satisfy a scan, when the thing
+      // that decides the build has said which one it is. The refusal is
+      // kept for the genuinely ambiguous case: a declaration that does not
+      // resolve to exactly one candidate selects nothing.
+      declaredObjDir = await readDeclaredObjDirName(engineDir);
+      const declaredMatches =
+        declaredObjDir === undefined
+          ? []
+          : validObjDirs.filter((candidate) => candidate === declaredObjDir);
+      if (declaredMatches.length === 1) {
+        verbose(`Objdir ambiguity resolved by mozconfig MOZ_OBJDIR: ${declaredMatches[0] ?? ''}.`);
+        resolvedObjDirs = declaredMatches;
+      } else {
+        return {
+          exists: true,
+          ambiguous: true,
+          objDirs: validObjDirs,
+          ...(declaredObjDir !== undefined ? { declaredObjDir } : {}),
+        };
+      }
     }
 
-    const selectedObjDir = validObjDirs[0];
+    const selectedObjDir = resolvedObjDirs[0];
     if (!selectedObjDir) {
       return { exists: false };
     }
@@ -423,15 +473,8 @@ export interface BuildArtifactPreflightOptions {
  *
  * Takes an already-probed {@link BuildArtifactCheck} rather than probing
  * itself, so it stays a pure validator: callers keep their own
- * `hasBuildArtifacts` call (which their suites already stub) and this function
- * needs no test double of its own.
- *
- * Five commands carried a character-identical copy of this ladder, including
- * the same `ambiguous && objDirs && objDirs.length > 0` expression that
- * `BuildArtifactCheck`'s boolean-plus-optionals shape forces at every reader.
- * The shape itself is unchanged — it has several producers and a documented
- * refusal contract (see the containment predicates below) — but it is now
- * destructured in exactly one place.
+ * `hasBuildArtifacts` call (which their suites already stub) and this
+ * function needs no test double of its own.
  */
 export function assertBuildArtifacts(
   engineDir: string,
@@ -439,7 +482,7 @@ export function assertBuildArtifacts(
   options: BuildArtifactPreflightOptions
 ): void {
   if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
-    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
+    throw new AmbiguousBuildArtifactsError(buildCheck.objDirs, buildCheck.declaredObjDir);
   }
 
   const mismatchMessage = buildArtifactMismatchMessage(engineDir, buildCheck, options.label);
@@ -505,13 +548,14 @@ export async function findObjdirRelocationViolation(args: {
     return `${objDir}/mozinfo.json topobjdir resolves to ${actualObjDir ?? '(absent)'}, expected ${expectedObjDir}`;
   }
 
-  // The canonical no-primary-paths assertion (mirrors the opt-in real-mach
-  // proof in scripts/run-full-firefox-integration.mjs): substring search on
-  // the resolved primary engine dir is collision-safe against the tree's own
-  // paths — `<primary>/.fireforge/trees/<name>/engine` never contains the
-  // substring `<primary>/engine`. Scans exactly the configure-generated
-  // root files; `config.status` is mandatory (checked above), the rest are
-  // optional-if-absent because not every configure backend writes them.
+  // The canonical no-primary-paths assertion (mirrored by the opt-in
+  // real-mach proof in scripts/run-full-firefox-integration.mjs): substring
+  // search on the resolved primary engine dir is collision-safe against the
+  // tree's own paths — `<primary>/.fireforge/trees/<name>/engine` never
+  // contains the substring `<primary>/engine`. Scans exactly the
+  // configure-generated root files; `config.status` is mandatory (checked
+  // above), the rest are optional-if-absent because not every configure
+  // backend writes them.
   const forbidden = resolve(forbiddenDir);
   for (const name of ['config.status', 'backend.mk', 'Makefile', 'config/autoconf.mk']) {
     const filePath = join(objDirPath, ...name.split('/'));

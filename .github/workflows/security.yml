@@ -29,61 +29,28 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - name: Detect code scanning availability
-        id: code_scanning
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-
-          status="$({
-            curl -sS \
-              -o /dev/null \
-              -w "%{http_code}" \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${REPOSITORY}/code-scanning/alerts?per_page=1"
-          })"
-
-          case "$status" in
-            200)
-              echo "enabled=true" >> "$GITHUB_OUTPUT"
-              ;;
-            403|404)
-              echo "enabled=false" >> "$GITHUB_OUTPUT"
-              echo "CodeQL upload is unavailable for ${REPOSITORY} (GitHub API returned HTTP ${status})."
-              ;;
-            *)
-              echo "Unexpected GitHub API response while checking code scanning availability: HTTP ${status}." >&2
-              exit 1
-              ;;
-          esac
-
-      - if: steps.code_scanning.outputs.enabled == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - if: steps.code_scanning.outputs.enabled == 'true'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # CodeQL runs unconditionally. This job previously probed
+      # `/code-scanning/alerts` and skipped itself on 403/404 — but that
+      # endpoint 404s until an analysis exists, and the probe prevented the
+      # analysis, so the guard could never open and CodeQL never ran once.
+      # The ruleset (scripts/setup-rulesets.sh) lists `codeql` as a required
+      # check, which made that a check satisfiable by a job that analysed
+      # nothing. This repository is public, so SARIF upload is available.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.22.1'
+          node-version-file: '.nvmrc'
           cache: 'npm'
-      - if: steps.code_scanning.outputs.enabled == 'true'
-        name: Pin npm to the packageManager version
+      - name: Pin npm to the packageManager version
         run: |
           NPM_VERSION="$(node -p "require('./package.json').packageManager.split('@')[1]")"
           npm install -g "npm@${NPM_VERSION}"
-      - if: steps.code_scanning.outputs.enabled == 'true'
-        run: npm ci
-      - if: steps.code_scanning.outputs.enabled == 'true'
-        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+      - run: npm ci
+      - uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
           languages: javascript-typescript
-      - if: steps.code_scanning.outputs.enabled == 'true'
-        run: npm run build
-      - if: steps.code_scanning.outputs.enabled == 'true'
-        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
-      - if: steps.code_scanning.outputs.enabled != 'true'
-        run: echo 'Skipping CodeQL because this repository is not configured to accept code scanning uploads from this workflow.'
+      - run: npm run build
+      - uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
 
   npm-audit:
     name: npm audit
@@ -92,7 +59,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.22.1'
+          node-version-file: '.nvmrc'
           cache: 'npm'
       - name: Pin npm to the packageManager version
         run: |

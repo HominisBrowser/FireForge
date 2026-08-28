@@ -39,6 +39,16 @@ const EXPECTED_WAIT_LOCK_COMMANDS = [
   'patch move-files',
   'patch split',
   'patch compact',
+  // These mutate patch state under the patch-directory lock, so they must
+  // HONOR the flag rather than carry the accept-and-ignore registration
+  // whose help text claims the command takes no FireForge lock.
+  'patch tier',
+  'patch lint-ignore',
+  'patch staged-dependency',
+  'export-all',
+  'resolve',
+  'doctor',
+  'rebase',
 ].sort();
 
 /** The accept-and-ignore registration says so in its description. */
@@ -96,7 +106,9 @@ describe('--wait-lock structural coverage', () => {
     );
     expect(ignored).not.toHaveLength(0);
     expect(ignored).toContain('status');
-    expect(ignored).toContain('patch staged-dependency');
+    // `config` is a genuinely lock-free command — the right example for the
+    // accept-and-ignore half of the contract.
+    expect(ignored).toContain('config');
     // A lock-taking command must never be downgraded to the ignored form.
     for (const honoring of EXPECTED_WAIT_LOCK_COMMANDS) {
       expect(ignored).not.toContain(honoring);

@@ -3,21 +3,21 @@
  * Stale-furnace-source gate for `fireforge patch export` / `re-export`.
  *
  * Exports capture the DEPLOYED engine copies of furnace-managed files, not
- * the `components/` sources. Editing a component source and re-exporting
- * its owning patch WITHOUT an intervening `furnace deploy`/`apply` silently
+ * the `components/` sources. Editing a component source and re-exporting its
+ * owning patch WITHOUT an intervening `furnace deploy`/`apply` silently
  * exports the stale deployed copy — per-patch lint then flags the old line
- * count and the patch body lags the source. This gate detects that
- * sequence by comparing component source directories against the checksums
- * recorded at the last apply (`FurnaceState.appliedChecksums`) — the same
- * signal `warnIfFurnaceStale` uses for run/watch — and refuses the export
- * unless the operator passes `--allow-stale-furnace`.
+ * count and the patch body lags the source. This gate detects that sequence
+ * by comparing component source directories against the checksums recorded
+ * at the last apply (`FurnaceState.appliedChecksums`) — the same signal
+ * `warnIfFurnaceStale` uses for run/watch — and refuses the export unless
+ * the operator passes `--allow-stale-furnace`.
  *
  * Checksum-based on purpose: git checkouts and `furnace refresh` churn
  * mtimes without content changes, so an mtime comparison would misfire.
  *
- * Probe failures (broken furnace config, missing state) degrade to a
- * verbose log and an empty result — a broken furnace setup must never
- * block non-furnace patch work.
+ * Probe failures (broken furnace config, missing state) degrade to a verbose
+ * log and an empty result — a broken furnace setup must never block
+ * non-furnace patch work.
  */
 
 import { GeneralError } from '../errors/base.js';

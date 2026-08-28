@@ -2,12 +2,11 @@
 /**
  * RuleTester coverage for the local ESLint rules.
  *
- * These rules are `error`-level in `eslint.config.js` and shipped with no
- * tests, so their false positives were only discoverable by running the linter
- * over hypothetical code. Both of the ones fixed in 0.41.0 are `valid` cases
- * below: a regex literal that is a metacharacter class but is not a regex
- * escape, and a ternary whose `String(...)` fallback takes a different value
- * than the tested error.
+ * These rules are `error`-level in `eslint.config.js`, so an untested false
+ * positive blocks the gate on correct code. The two shapes that look like
+ * violations but are not appear as `valid` cases below: a regex literal that
+ * is a metacharacter class but not a regex escape, and a ternary whose
+ * `String(...)` fallback takes a different value than the tested error.
  */
 import { RuleTester } from 'eslint';
 import tseslint from 'typescript-eslint';
@@ -198,5 +197,25 @@ js.run('no-empty-jsdoc', rules['no-empty-jsdoc'], {
   invalid: [
     { code: '/** */\nfunction f() {}', errors: [{ messageId: 'emptyJsdoc' }] },
     { code: '/**\n *\n */\nfunction f() {}', errors: [{ messageId: 'emptyJsdoc' }] },
+  ],
+});
+
+js.run('no-open-coded-tty-check', rules['no-open-coded-tty-check'], {
+  valid: [
+    // The spinner gate asks a different question — can output be redrawn —
+    // so it must not be routed through a prompt-answerability predicate.
+    { code: 'const ok = process.stdout.isTTY && process.stderr.isTTY;' },
+    { code: 'const ok = stdioIsInteractive();' },
+    { code: 'const ok = process.stdin.isTTY;' },
+  ],
+  invalid: [
+    {
+      code: 'const isInteractive = process.stdin.isTTY && process.stdout.isTTY;',
+      errors: [{ messageId: 'openCoded' }],
+    },
+    {
+      code: 'if (!(process.stdin.isTTY && process.stdout.isTTY)) { throw new Error("x"); }',
+      errors: [{ messageId: 'openCoded' }],
+    },
   ],
 });

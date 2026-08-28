@@ -11,14 +11,12 @@ import {
 import { success } from '../../utils/logger.js';
 import { sourceSetCommand } from '../source.js';
 
-vi.mock('../../utils/logger.js', () => ({
-  setStdoutSealed: vi.fn(),
-  intro: vi.fn(),
-  outro: vi.fn(),
-  success: vi.fn(),
-  info: vi.fn(),
-  setMachineOutputMode: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', async () => {
+  // Imported inside the factory: `vi.mock` is hoisted above the
+  // import block, so a top-level binding is not yet initialised here.
+  const { createLoggerMock } = await import('../../test-utils/module-mocks.js');
+  return createLoggerMock();
+});
 
 describe('sourceSetCommand', () => {
   let projectRoot: string;

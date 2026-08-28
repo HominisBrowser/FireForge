@@ -3,30 +3,29 @@
  * Packaging-verification test templates for
  * `fireforge furnace chrome-doc create --with-tests`.
  *
- * Motivation: an operator who scaffolds a top-level chrome document wants
- * to know "did the file actually land in the packaged bundle?" before
- * relying on it at runtime. Both natural test harnesses have gaps for
- * this question:
+ * An operator who scaffolds a top-level chrome document wants to know "did
+ * the file actually land in the packaged bundle?" before relying on it at
+ * runtime. Both natural test harnesses have gaps for that question:
  *
  *   - xpcshell's `chrome://browser/*` URI registration lags what the real
  *     browser loads even with `firefox-appdir = "browser"` set, so
- *     `NetUtil.asyncFetch("chrome://browser/content/<name>.xhtml")` can
- *     fail with `NS_ERROR_FILE_NOT_FOUND` against a file that IS
- *     correctly packaged (the motivating case).
+ *     `NetUtil.asyncFetch("chrome://browser/content/<name>.xhtml")` can fail
+ *     with `NS_ERROR_FILE_NOT_FOUND` against a file that IS correctly
+ *     packaged.
  *   - Browser-chrome mochitests require a `tabbrowser`, which a
  *     fork-authored chrome doc that replaces `browser.xhtml` deliberately
- *     does not carry (the URILoadingHelper crash path).
+ *     does not carry.
  *
  * This scaffold threads the needle by probing the filesystem directly:
- * `Services.dirsvc.get("XCurProcD", Ci.nsIFile)` returns the current
- * process directory (the browser app dir when `firefox-appdir = "browser"`),
- * and the packaged chrome layout for a jar.mn entry
- * `content/browser/<name>.xhtml` is stable across platforms at
- * `<AppDir>/chrome/browser/content/browser/<name>.xhtml` on an unpacked
- * tree (the default for `mach build` without `MOZ_CHROME_MULTILOCALE`
- * / omnijar). A tree that packs omni.ja would need a different probe;
- * the scaffold notes that out-of-scope case explicitly rather than
- * silently producing a test that fails on packed builds.
+ * `Services.dirsvc.get("XCurProcD", Ci.nsIFile)` returns the current process
+ * directory (the browser app dir when `firefox-appdir = "browser"`), and the
+ * packaged chrome layout for a jar.mn entry `content/browser/<name>.xhtml`
+ * is stable across platforms at
+ * `<AppDir>/chrome/browser/content/browser/<name>.xhtml` on an unpacked tree
+ * (the default for `mach build` without `MOZ_CHROME_MULTILOCALE` / omnijar).
+ * A tree that packs omni.ja would need a different probe; the scaffold notes
+ * that out-of-scope case explicitly rather than silently producing a test
+ * that fails on packed builds.
  */
 
 /**
@@ -72,17 +71,16 @@ add_task(async function test_${taskSuffix}_files_packaged() {
   const appDir = Services.dirsvc.get("XCurProcD", Ci.nsIFile);
 
   // Probes a pair of candidate layouts for the same packaged file:
-  //   1) \`<AppDir>/chrome/browser/…\` — the unpacked layout when
-  //      XCurProcD honours \`firefox-appdir = "browser"\` and resolves
-  //      into \`dist/bin/browser/\`.
-  //   2) \`<AppDir>/browser/chrome/browser/…\` — the macOS .app bundle
-  //      layout and some ESR configurations, where XCurProcD sits one
-  //      level above \`browser/\` even when the appdir directive is set.
+  //   1) \`<AppDir>/chrome/browser/…\` — the unpacked layout when XCurProcD
+  //      honours \`firefox-appdir = "browser"\` and resolves into
+  //      \`dist/bin/browser/\`.
+  //   2) \`<AppDir>/browser/chrome/browser/…\` — the macOS .app bundle layout
+  //      and some ESR configurations, where XCurProcD sits one level above
+  //      \`browser/\` even when the appdir directive is set.
   // If either path exists the file is packaged; the assertion only fails
   // when BOTH layouts miss, which is the actual stale-build / missing
-  // jar.mn entry case. Before this dual probe, the eval on macOS
-  // consistently failed against layout (2) even though the file was
-  // packaged correctly.
+  // jar.mn entry case. A single-layout probe fails on macOS against layout
+  // (2) even though the file is packaged correctly.
   function probeEither(primary, fallback, description) {
     const primaryFile = appDir.clone();
     for (const segment of primary) {
@@ -123,9 +121,8 @@ add_task(async function test_${taskSuffix}_files_packaged() {
   // \`content/browser/<name>-chrome.css\` (see \`chromeDocJarIncMnCssEntry\`
   // in \`src/commands/furnace/chrome-doc-templates.ts\`), so the packaged
   // file lands under \`chrome/browser/content/browser/\`, not under
-  // \`skin/classic/browser/\`. The 2026-04-21 eval's first
-  // \`fireforge test --build\` against a scaffolded chrome-doc reported
-  // a false failure because the probe was looking at the skin layout.
+  // \`skin/classic/browser/\`. Probing the skin layout reports a false
+  // failure on the first \`fireforge test --build\` after a scaffold.
   probeEither(
     ["chrome", "browser", "content", "browser", "${name}-chrome.css"],
     ["browser", "chrome", "browser", "content", "browser", "${name}-chrome.css"],

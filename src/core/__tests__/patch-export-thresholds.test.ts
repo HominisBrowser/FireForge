@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../patch-apply.js', () => ({
   discoverPatches: vi.fn(),
   isNewFilePatch: vi.fn(),
@@ -19,16 +21,9 @@ vi.mock('../patch-manifest.js', () => ({
   findPatchesAffectingFile: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-  removeFile: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -40,6 +35,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { unlink } from 'node:fs/promises';
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, removeFile, writeText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 import { discoverPatches, isNewFilePatch } from '../patch-apply.js';
@@ -88,7 +84,7 @@ describe('patch-export threshold coverage', () => {
 
   it('rolls back commit state when manifest update fails', async () => {
     vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: '001-ui-old.patch', path: '/patches/001-ui-old.patch' },
+      { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
     ] as never);
     vi.mocked(loadPatchesManifest).mockResolvedValue({
       version: 1,
@@ -106,7 +102,7 @@ describe('patch-export threshold coverage', () => {
       ],
     } as never);
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/patches/001-ui-old.patch')
+      Promise.resolve(filePath === nativePath('/patches/001-ui-old.patch'))
     );
     vi.mocked(readText).mockResolvedValueOnce('old patch');
     vi.mocked(addPatchToManifest).mockRejectedValueOnce(new Error('manifest exploded'));
@@ -123,9 +119,9 @@ describe('patch-export threshold coverage', () => {
       })
     ).rejects.toThrow('manifest exploded');
 
-    expect(writeText).toHaveBeenCalledWith('/patches/001-ui-dock.patch', 'new patch');
-    expect(removeFile).toHaveBeenCalledWith('/patches/001-ui-dock.patch');
-    expect(writeText).toHaveBeenCalledWith('/patches/001-ui-old.patch', 'old patch');
+    expect(writeText).toHaveBeenCalledWith(nativePath('/patches/001-ui-dock.patch'), 'new patch');
+    expect(removeFile).toHaveBeenCalledWith(nativePath('/patches/001-ui-dock.patch'));
+    expect(writeText).toHaveBeenCalledWith(nativePath('/patches/001-ui-old.patch'), 'old patch');
     expect(savePatchesManifest).toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   });
@@ -133,7 +129,7 @@ describe('patch-export threshold coverage', () => {
   it('returns the most recent patch affecting a file', async () => {
     vi.mocked(findPatchesAffectingFile).mockResolvedValue([
       {
-        patch: { filename: '001-ui-old.patch', path: '/patches/001-ui-old.patch' },
+        patch: { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
         metadata: { filename: '001-ui-old.patch', order: 1 },
       },
       {
@@ -250,21 +246,23 @@ describe('patch-export threshold coverage', () => {
       ],
     } as never);
     vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: '001-ui-old.patch', path: '/patches/001-ui-old.patch' },
+      { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
       { filename: '002-ui-other.patch', path: '/patches/002-ui-other.patch' },
     ] as never);
     vi.mocked(isNewFilePatch).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/patches/001-ui-old.patch')
+      Promise.resolve(filePath === nativePath('/patches/001-ui-old.patch'))
     );
 
     await expect(
       findSupersededPatches('/patches', ['browser/base/content/browser.js'], '002-ui-other.patch')
-    ).resolves.toEqual([{ filename: '001-ui-old.patch', path: '/patches/001-ui-old.patch' }]);
+    ).resolves.toEqual([
+      { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
+    ]);
   });
 
   it('removes superseded patch files after a successful commit', async () => {
     vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: '001-ui-old.patch', path: '/patches/001-ui-old.patch' },
+      { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
     ] as never);
     vi.mocked(loadPatchesManifest).mockResolvedValue({
       version: 1,
@@ -282,7 +280,7 @@ describe('patch-export threshold coverage', () => {
       ],
     } as never);
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/patches/001-ui-old.patch')
+      Promise.resolve(filePath === nativePath('/patches/001-ui-old.patch'))
     );
 
     await expect(
@@ -297,11 +295,13 @@ describe('patch-export threshold coverage', () => {
       })
     ).resolves.toEqual(
       expect.objectContaining({
-        superseded: [{ filename: '001-ui-old.patch', path: '/patches/001-ui-old.patch' }],
+        superseded: [
+          { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
+        ],
       })
     );
 
-    expect(removeFile).toHaveBeenCalledWith('/patches/001-ui-old.patch');
+    expect(removeFile).toHaveBeenCalledWith(nativePath('/patches/001-ui-old.patch'));
   });
 
   it('plans an export even when there is no existing manifest', async () => {
@@ -370,7 +370,10 @@ describe('patch-export threshold coverage', () => {
     ).rejects.toThrow('write failed');
 
     // Rollback should restore original content, not delete the file
-    expect(writeText).toHaveBeenCalledWith('/patches/001-ui-dock.patch', 'pre-existing content');
+    expect(writeText).toHaveBeenCalledWith(
+      nativePath('/patches/001-ui-dock.patch'),
+      'pre-existing content'
+    );
   });
 
   it('commitExportedPatch rollback removes manifest file when no manifest existed before', async () => {
@@ -392,12 +395,12 @@ describe('patch-export threshold coverage', () => {
     ).rejects.toThrow('boom');
 
     // With no prior manifest, rollback should remove the manifest file
-    expect(removeFile).toHaveBeenCalledWith('/patches/patches.json');
+    expect(removeFile).toHaveBeenCalledWith(nativePath('/patches/patches.json'));
   });
 
   it('commitExportedPatch skips backup for superseded patches missing on disk', async () => {
     vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: '001-ui-old.patch', path: '/patches/001-ui-old.patch' },
+      { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
     ] as never);
     vi.mocked(loadPatchesManifest).mockResolvedValue({
       version: 1,
@@ -429,7 +432,7 @@ describe('patch-export threshold coverage', () => {
 
     expect(result.superseded).toHaveLength(1);
     // readText should NOT have been called for the superseded patch backup
-    expect(readText).not.toHaveBeenCalledWith('/patches/001-ui-old.patch');
+    expect(readText).not.toHaveBeenCalledWith(nativePath('/patches/001-ui-old.patch'));
   });
 
   it('commitExportedPatch warns when rollback itself fails', async () => {
@@ -505,9 +508,9 @@ describe('patch-export threshold coverage', () => {
 
     await expect(
       updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'updated' })
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
 
-    expect(writeText).toHaveBeenCalledWith('/patches/001-ui-old.patch', 'new body');
+    expect(writeText).toHaveBeenCalledWith(nativePath('/patches/001-ui-old.patch'), 'new body');
     expect(mutatePatchRowsInManifest).toHaveBeenCalledWith(
       '/patches',
       ['001-ui-old.patch'],
@@ -541,7 +544,10 @@ describe('patch-export threshold coverage', () => {
     ).rejects.toThrow('manifest save fail');
 
     // Should have attempted rollback of patch content
-    expect(writeText).toHaveBeenCalledWith('/patches/001-ui-old.patch', 'original body');
+    expect(writeText).toHaveBeenCalledWith(
+      nativePath('/patches/001-ui-old.patch'),
+      'original body'
+    );
   });
 
   it('updatePatchAndMetadata warns when rollback of patch content fails', async () => {

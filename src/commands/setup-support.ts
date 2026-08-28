@@ -13,8 +13,10 @@ import { ensureDir, pathExists, readText, writeText } from '../utils/fs.js';
 import { cancel } from '../utils/logger.js';
 import { getPackageRoot } from '../utils/package-root.js';
 import {
+  FIREFOX_PRODUCTS,
   inferProductFromVersion,
   isValidAppId,
+  isValidFirefoxProduct,
   isValidFirefoxVersion,
   isValidProjectLicense,
 } from '../utils/validation.js';
@@ -47,19 +49,14 @@ function renderLicenseTemplate(
 }
 
 function resolveFirefoxProduct(value: unknown, field: string): FirefoxProduct {
-  if (
-    value === 'firefox' ||
-    value === 'firefox-esr' ||
-    value === 'firefox-beta' ||
-    value === 'firefox-devedition'
-  ) {
+  // Matches the sibling `resolveProjectLicense`, which already delegates to
+  // its guard. The `||` chain this replaced spelled the member list twice —
+  // once as the predicate and once in the message.
+  if (typeof value === 'string' && isValidFirefoxProduct(value)) {
     return value;
   }
 
-  throw new InvalidArgumentError(
-    'Invalid product (use: firefox, firefox-esr, firefox-beta, firefox-devedition)',
-    field
-  );
+  throw new InvalidArgumentError(`Invalid product (use: ${FIREFOX_PRODUCTS.join(', ')})`, field);
 }
 
 function resolveProjectLicense(value: unknown, field: string): ProjectLicense {
@@ -382,14 +379,11 @@ export function buildSetupConfig(inputs: ResolvedSetupInputs): FireForgeConfig {
 
 /**
  * Creates or updates the root `package.json` so its `license` field matches
- * the project license selected during setup. When the file already exists we
- * ONLY touch the `license` field — preserving `name`, `description`,
- * `dependencies`, `scripts`, and every other author-editorial field the
- * operator may have added. Without this sync, a `fireforge setup --force`
- * that picked a new license left the old license in `package.json`, which
- * then disagreed with `fireforge.json` (the motivating eval finding:
- * setup rewrote fireforge.json but left the original package.json
- * untouched, so the two files described different projects).
+ * the project license selected during setup. When the file already exists
+ * ONLY the `license` field is touched — preserving `name`, `description`,
+ * `dependencies`, `scripts`, and every other author-editorial field. Without
+ * this sync, a `fireforge setup --force` that picks a new license leaves the
+ * old one in `package.json`, so the two files describe different projects.
  *
  * Preserves the file's trailing newline state so a hand-edited
  * `package.json` with a specific EOL convention is not silently
@@ -421,12 +415,11 @@ async function syncRootPackageJson(projectRoot: string, license: ProjectLicense)
     return;
   }
 
-  // Treat the object as a typed shape with only the one field we modify.
+  // Treat the object as a typed shape with only the one field modified.
   // Keeping it narrowly typed rather than `Record<string, unknown>` avoids
-  // eslint's `dot-notation` / `noPropertyAccessFromIndexSignature`
-  // friction, and the rest of the package.json body is preserved via
-  // object spread at the write site so we don't lose author-editorial
-  // fields.
+  // eslint's `dot-notation` / `noPropertyAccessFromIndexSignature` friction,
+  // and the rest of the package.json body is preserved via object spread at
+  // the write site.
   const packageJson = parsed as { license?: unknown } & Record<string, unknown>;
   if (packageJson.license === license) {
     return;

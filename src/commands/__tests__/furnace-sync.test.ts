@@ -25,6 +25,10 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
   getFurnacePaths: vi.fn(() => ({
     overridesDir: '/project/furnace/overrides',
@@ -69,7 +73,11 @@ vi.mock('../../core/furnace-apply-output.js', () => ({
   logApplyResult: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn((_root: string, _kind: string, body: (ctx: unknown) => unknown) =>
     body({ registerJournal: vi.fn(), registerCleanup: vi.fn(), markRolledBack: vi.fn() })
   ),
@@ -101,6 +109,12 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   info: vi.fn(),
   intro: vi.fn(),
   outro: vi.fn(),

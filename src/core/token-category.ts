@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Category banner and token-declaration helpers for the tokens CSS file
- *. Split out of `token-manager.ts` to stay inside the per-file
- * line budget.
+ * Category banner and token-declaration helpers for the tokens CSS file.
+ * Split out of `token-manager.ts` to stay inside the per-file line budget.
  *
  * Banner matching is EXACT: the text between the `=` runs (single-line
  * shape) or on the block line (multi-line shape) must equal the category
- * after trimming. The pre-0.40.0 substring match let a TOC comment or a
- * longer banner (`Colors — Canvas` for `Colors`) satisfy the lookup, so
- * `token add` wrote into the wrong section — or no-oped for 19
- * consecutive calls — with exit 0.
+ * after trimming. A substring match lets a TOC comment or a longer banner
+ * (`Colors — Canvas` for `Colors`) satisfy the lookup, so `token add` writes
+ * into the wrong section — or no-ops — with exit 0.
  */
 import { join } from 'node:path';
 
@@ -23,6 +21,60 @@ function singleLineBannerPattern(category: string): RegExp {
 
 function multiLineBlockNameMatches(blockLine: string, category: string): boolean {
   return blockLine.replace(/^\s*\*\s*/, '').trim() === category;
+}
+
+/**
+ * Body of the first `/* … *\/` comment on `line`, or `null` when the line
+ * carries no closed block comment.
+ *
+ * Deliberately index arithmetic rather than a regex: every regex spelling of
+ * "banner comment" this module used to carry was super-linear on a line that
+ * repeats the opening shape (CodeQL `js/polynomial-redos`), and `tokens.css`
+ * is a file FireForge reads out of a consumer's engine tree, so a
+ * pathological line needs no attacker to arrive.
+ */
+function blockCommentBody(line: string): string | null {
+  const open = line.indexOf('/*');
+  if (open === -1) return null;
+  const close = line.indexOf('*/', open + 2);
+  if (close === -1) return null;
+  return line.slice(open + 2, close);
+}
+
+/**
+ * True when `line` carries a single-line banner comment — a closed block
+ * comment whose body both opens and closes with `=`. Recognises the decorative
+ * all-`=` rule as well as a named `= Foo =` banner, which is what the section
+ * scan wants: either shape ends the preceding section.
+ */
+function isSingleLineBannerLine(line: string): boolean {
+  const body = blockCommentBody(line)?.trim();
+  return body !== undefined && body.length >= 2 && body.startsWith('=') && body.endsWith('=');
+}
+
+/**
+ * Name declared by a single-line banner (`/* = Foo = *\/` → `Foo`), or `null`
+ * when the line is not a named banner. The `=` runs on both sides are
+ * required; a decorative all-`=` rule carries no name and yields `null`.
+ */
+function singleLineBannerName(line: string): string | null {
+  const body = blockCommentBody(line);
+  if (body === null) return null;
+
+  let start = 0;
+  let end = body.length;
+  while (start < end && /\s/.test(body[start] ?? '')) start++;
+  const leadingEqStart = start;
+  while (start < end && body[start] === '=') start++;
+  if (start === leadingEqStart) return null;
+
+  while (end > start && /\s/.test(body[end - 1] ?? '')) end--;
+  const trailingEqEnd = end;
+  while (end > start && body[end - 1] === '=') end--;
+  if (end === trailingEqEnd) return null;
+
+  const name = body.slice(start, end).trim();
+  return name.length > 0 ? name : null;
 }
 
 /**
@@ -69,14 +121,12 @@ export function categoryHeaderExists(lines: string[], category: string): boolean
  */
 function discoverCategoryHeaders(lines: string[]): string[] {
   const categories = new Set<string>();
-  const singleLinePattern = /\/\*\s*=+\s*(.+?)\s*=+\s*\*\//;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
-    const singleMatch = singleLinePattern.exec(line);
-    if (singleMatch?.[1]) {
-      const extracted = singleMatch[1].trim();
-      if (extracted.length > 0) categories.add(extracted);
+    const extracted = singleLineBannerName(line);
+    if (extracted !== null) {
+      categories.add(extracted);
       continue;
     }
 
@@ -223,7 +273,7 @@ export function findCategorySection(
   for (let i = scanStart; i < lines.length; i++) {
     const line = lines[i] ?? '';
     if (
-      /\/\*\s*=.*=\s*\*\//.test(line) ||
+      isSingleLineBannerLine(line) ||
       (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) ||
       /^\s*\}/.test(line)
     ) {

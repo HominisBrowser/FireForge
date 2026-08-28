@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  error: vi.fn(),
-  info: vi.fn(),
-  success: vi.fn(),
-  warn: vi.fn(),
-}));
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import type { ApplyResult, DryRunAction } from '../../types/furnace.js';
 import { error, info, success, warn } from '../../utils/logger.js';

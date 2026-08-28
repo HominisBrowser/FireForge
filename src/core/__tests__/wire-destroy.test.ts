@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 const parserFallbackMock = vi.hoisted(() =>
   vi.fn((primary: () => string, ...rest: unknown[]) => {
     void rest;
@@ -8,16 +10,16 @@ const parserFallbackMock = vi.hoisted(() =>
   })
 );
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../parser-fallback.js', () => ({
+vi.mock('../parser-fallback.js', async (importOriginal) => ({
+  // Pure logic with no side effects; only `withParserFallback` needs
+  // controlling here.
+  ...(await importOriginal<typeof import('../parser-fallback.js')>()),
   withParserFallback: parserFallbackMock,
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import { addDestroyAST, addDestroyToBrowserInit, legacyAddDestroy } from '../wire-destroy.js';
 
@@ -154,7 +156,7 @@ const gBrowserInit = {
       true
     );
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/browser/base/content/browser-init.js',
+      nativePath('/engine/browser/base/content/browser-init.js'),
       expect.stringContaining('DockController.destroy();')
     );
   });
@@ -170,7 +172,7 @@ const gBrowserInit = {
       true
     );
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/browser/base/content/browser-init.js',
+      nativePath('/engine/browser/base/content/browser-init.js'),
       expect.stringContaining('DockController.destroy();')
     );
   });
@@ -181,9 +183,8 @@ const gBrowserInit = {
   });
 
   it('coerces a bare property chain into a function call (AST path)', () => {
-    // Finding #8 symmetric case for destroy: `EvalStartup.destroy` must
-    // invoke, not just reference. `addDestroyAST` now appends `()` when
-    // the caller passed a bare property chain.
+    // `X.destroy` must invoke, not just reference: `addDestroyAST` appends
+    // `()` when the caller passed a bare property chain.
     const updated = addDestroyAST(BASE_BROWSER_INIT, 'EvalStartup.destroy');
     expect(updated).toContain('EvalStartup.destroy();');
     expect(updated).not.toMatch(/EvalStartup\.destroy;[^(]/);

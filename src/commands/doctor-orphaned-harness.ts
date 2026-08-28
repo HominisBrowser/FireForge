@@ -1,29 +1,27 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Doctor check for PRE-EXISTING orphaned test-harness workers (0.37.0
- * item 9b).
+ * Doctor check for PRE-EXISTING orphaned test-harness workers.
  *
- * Field incident: a mach invocation that died at harness startup stranded a
- * Python 3.14 `multiprocessing` spawn worker plus its resource tracker; the
- * worker reparented to launchd (PPID 1) and busy-spun at 100% CPU for ~26
- * days (~415 CPU-hours) undetected. The dispatch-side fix is the
- * process-group reaping in `utils/process.ts`; this check covers orphans
- * that predate it (or leaked from non-FireForge invocations), using the
- * detection recipe that found the incident process: PPID 1 + large
- * accumulated CPU TIME + a `multiprocessing.spawn`/`resource_tracker`
- * command line.
+ * A mach invocation that dies at harness startup can strand a Python
+ * `multiprocessing` spawn worker plus its resource tracker; the worker
+ * reparents to launchd (PPID 1) and busy-spins at 100% CPU indefinitely.
+ * The dispatch-side fix is the process-group reaping in `utils/process.ts`;
+ * this check covers orphans that predate it (or leaked from non-FireForge
+ * invocations), detecting them by PPID 1 + large accumulated CPU TIME + a
+ * `multiprocessing.spawn`/`resource_tracker` command line.
  *
- * Report-only by design: FireForge never kills pre-existing processes it
- * did not spawn — the check names each candidate and suggests the kill.
+ * Report-only by design: FireForge never kills pre-existing processes it did
+ * not spawn — the check names each candidate and suggests the kill.
  *
- * Canary integration was deliberately skipped: the friction log asked for
- * doctor AND/OR `test --canary`, and adding a system-wide process scan to
- * the canary hot path buys no extra coverage over the doctor check.
+ * Deliberately not wired into `test --canary`: a system-wide process scan on
+ * the canary hot path buys no coverage the doctor check does not already
+ * give.
  */
 
 import type { DoctorCheck } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { exec } from '../utils/process.js';
+import { parsePsDuration } from '../utils/ps-duration.js';
 import type { DoctorCheckDefinition } from './doctor-check-core.js';
 import { ok, warning } from './doctor-check-core.js';
 
@@ -50,34 +48,12 @@ const HARNESS_WORKER_COMMAND_PATTERN =
 const DEFAULT_MIN_CPU_SECONDS = 600;
 
 /**
- * Parses a `ps` TIME value in either dialect:
- *   - linux `[dd-]hh:mm:ss` (e.g. `26-03:14:12`, `03:14:12`)
- *   - darwin/BSD `mm:ss.cc` with cumulative minutes (e.g. `38412:07.55`)
- * Returns NaN for unrecognized shapes.
+ * Parses a `ps` TIME (accumulated CPU) value. Implemented in terms of
+ * {@link parsePsDuration} — `time=` and `etime=` share one grammar, and a
+ * second copy is how the two would drift.
  */
 export function parseCpuTime(time: string): number {
-  const trimmed = time.trim();
-  let days = 0;
-  let rest = trimmed;
-  const dayMatch = /^(\d+)-(.*)$/.exec(trimmed);
-  if (dayMatch) {
-    days = Number(dayMatch[1]);
-    rest = dayMatch[2] ?? '';
-  }
-  const parts = rest.split(':');
-  if (parts.length === 3) {
-    // hh:mm:ss (linux; seconds may not carry fractions but tolerate them)
-    const [h, m, s] = parts.map(Number);
-    if ([h, m, s].some((n) => Number.isNaN(n))) return NaN;
-    return days * 86400 + (h ?? 0) * 3600 + (m ?? 0) * 60 + (s ?? 0);
-  }
-  if (parts.length === 2) {
-    // mm:ss.cc (darwin — the minutes field accumulates without wrapping)
-    const [m, s] = parts.map(Number);
-    if ([m, s].some((n) => Number.isNaN(n))) return NaN;
-    return days * 86400 + (m ?? 0) * 60 + (s ?? 0);
-  }
-  return NaN;
+  return parsePsDuration(time);
 }
 
 /**

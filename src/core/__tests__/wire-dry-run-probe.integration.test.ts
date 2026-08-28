@@ -2,14 +2,14 @@
 /**
  * Real-fs integration test for `probeDomFragmentInsertionPoint`.
  *
- * 2026-04-21 eval (Finding #12): `fireforge wire --dry-run` and the
- * real run disagreed when `--dom` resolved through `tokenHostDocuments`.
- * Dry-run previewed a plausible mutation plan; the real run threw
- * `Could not find insertion point in chrome document`. This test
- * exercises the new probe helper against a browser.xhtml-shaped file
- * (has an insertion anchor → probe succeeds) and a chrome-doc-shaped
- * file with neither `#include browser-sets.inc` nor `<html:body>`
- * (probe throws with the same error the real run would throw).
+ * `fireforge wire --dry-run` and the real run must not disagree when `--dom`
+ * resolves through `tokenHostDocuments`: dry-run previewing a plausible
+ * mutation plan while the real run throws `Could not find insertion point in
+ * chrome document` is the failure this closes. The test exercises the probe
+ * against a browser.xhtml-shaped file (has an insertion anchor → probe
+ * succeeds) and a chrome-doc-shaped file with neither `#include
+ * browser-sets.inc` nor `<html:body>` (probe throws the same error the real
+ * run would).
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -93,12 +93,11 @@ describe('probeDomFragmentInsertionPoint', () => {
   });
 
   it('throws "Could not find insertion point" when no anchor is present', async () => {
-    // Mimics the 2026-04-21 eval scenario: a `furnace chrome-doc
-    // create`-scaffolded top-level chrome document exists and is
-    // registered in `tokenHostDocuments[0]`, but lacks both
-    // `#include browser-sets.inc` and `<html:body>`. The real run
-    // threw inside `addDomFragment`; the probe now throws the same
-    // error so dry-run catches it too.
+    // A `furnace chrome-doc create`-scaffolded top-level chrome document
+    // exists and is registered in `tokenHostDocuments[0]`, but lacks both
+    // `#include browser-sets.inc` and `<html:body>`. The real run throws
+    // inside `addDomFragment`; the probe throws the same error so dry-run
+    // catches it too.
     const engineDir = await createEngine();
     const domFilePath = 'browser/base/content/fragments/panel.inc.xhtml';
     const targetPath = 'browser/base/content/ff-workbench.xhtml';

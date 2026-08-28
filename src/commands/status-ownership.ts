@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Ownership-table assembly for `status`, split out of `status.ts` (FORGE
- * L3) so the human `--ownership` mode and the additive `ownership` block on
- * the `--json` payload build the SAME rows from the SAME scan.
+ * Ownership-table assembly for `status`, split out of `status.ts` so the
+ * human `--ownership` mode and the additive `ownership` block on the
+ * `--json` payload build the SAME rows from the SAME scan.
  *
- * Before L3 the `--ownership` branch re-implemented the shared scan and
- * inlined a second copy of the classification call, then discarded
- * everything but each file's classification — three back-to-back `status`
- * invocations in a gate therefore paid three full worktree scans. Both
- * callers now hand this module the already-classified files.
+ * A separate `--ownership` branch re-implements the shared scan and inlines
+ * a second copy of the classification call, then discards everything but
+ * each file's classification — so three back-to-back `status` invocations in
+ * a gate pay three full worktree scans. Both callers hand this module the
+ * already-classified files instead.
  *
  * No renderer lives here: `renderOwnershipTable` (human) and the JSON
  * serializer stay with their respective output layers.
@@ -37,13 +37,15 @@ export interface OwnershipJsonBlock {
 /**
  * Builds the flat path→owning-patch rows. Sources are the manifest's
  * `filesAffected`, worktree drift, and the cross-patch
- * duplicate-new-file-creation map produced by walking each patch body —
- * the last being the alignment fix between `status --ownership` and
- * `fireforge verify` (see `buildOwnershipTable`'s header).
- * @param patchesDir - Path to the patches directory
- * @param manifestPatches - Patch rows from patches.json (empty when absent)
- * @param files - Scanned worktree entries, temp-filtered
+ * duplicate-new-file-creation map produced by walking each patch body — the
+ * last being what keeps `status --ownership` aligned with `fireforge verify`
+ * (see `buildOwnershipTable`'s header).
+ *
+ * @param patchesDir - Absolute path to the patches directory
+ * @param manifestPatches - Manifest rows, each with its `filesAffected`
+ * @param files - Raw worktree status entries
  * @param classified - The same entries, already classified
+ * @returns The flat ownership rows
  */
 export async function collectOwnershipRows(
   patchesDir: string,

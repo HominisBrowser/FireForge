@@ -5,37 +5,31 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import { wireSubscript } from '../browser-wire.js';
 
 /**
  * Integration-style tests for the wire rollback journal.
  *
- * The existing unit tests in `browser-wire.test.ts` mock `utils/fs.js`
- * heavily so every wire-target helper can be exercised in isolation. That
- * approach is a poor fit for the rollback path because rollback
- * deliberately bypasses the wrapper module and calls `node:fs/promises`
- * directly. These tests build a real filesystem fixture under `tmpdir()`
- * with plausible stand-ins for `browser-main.js`, `browser-init.js`, the
- * chrome document, and `browser/base/jar.mn`, invoke `wireSubscript`, and
- * verify that a forced failure mid-sequence leaves every file byte-for-byte
- * identical to its pre-wire state.
+ * The unit tests in `browser-wire.test.ts` mock `utils/fs.js` heavily so
+ * every wire-target helper can be exercised in isolation. That is a poor fit
+ * for the rollback path, which deliberately bypasses the wrapper module and
+ * calls `node:fs/promises` directly. These tests build a real filesystem
+ * fixture under `tmpdir()` with plausible stand-ins for `browser-main.js`,
+ * `browser-init.js`, the chrome document, and `browser/base/jar.mn`, invoke
+ * `wireSubscript`, and verify that a forced failure mid-sequence leaves
+ * every file byte-for-byte identical to its pre-wire state.
  *
- * The failure is injected at the DOM-fragment insertion step — the actual
- * repro from the eval findings — by passing a chrome-document path whose
- * contents do not contain an insertion anchor (no `#include
- * browser-sets.inc` and no `<html:body>`). That matches what an operator
- * sees when pointing `wire --dom` at a fork that has already replaced the
- * upstream browser.xhtml with something else without preserving one of
- * those anchors.
+ * The failure is injected at the DOM-fragment insertion step by passing a
+ * chrome-document path whose contents contain no insertion anchor (no
+ * `#include browser-sets.inc` and no `<html:body>`) — what an operator sees
+ * when pointing `wire --dom` at a fork that replaced the upstream
+ * browser.xhtml without preserving one of those anchors.
  */
 
 // Silence intro/outro + warn() during tests. The wire helpers call
 // `utils/logger.js`'s warn() on AST fallback; we don't need that output.
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-  info: vi.fn(),
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 // The wire flow calls getProjectPaths to derive engineDir; the real module
 // assumes a configured FireForge project, so substitute a minimal one.
@@ -164,10 +158,10 @@ describe('wireSubscript — transactional rollback', () => {
   });
 
   it('restores every touched file when the DOM fragment step fails', async () => {
-    // Chrome document without either anchor — the tokenizer AND the legacy
-    // regex fallback both fail, which is the eval-repro condition. Note
-    // that the legacy fallback substring-matches `<html:body`, so the
-    // fixture cannot even mention that token in a comment.
+    // Chrome document without either anchor, so the tokenizer AND the legacy
+    // regex fallback both fail. The legacy fallback substring-matches
+    // `<html:body`, so the fixture cannot even mention that token in a
+    // comment.
     const badChromeDoc = `<?xml version="1.0"?>
 <window>
   <hbox/>

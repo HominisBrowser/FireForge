@@ -1,17 +1,23 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(),
   loadConfig: vi.fn(),
 }));
 
-// The 0.16.0 token-coverage command asks the furnace-config module whether
+// The token-coverage command asks the furnace-config module whether
 // furnace.json exists (it augments discovery with deployed custom-component
-// CSS). The mock covers both paths: `furnaceConfigExists` returns false
-// by default so baseline tests skip the augmentation, and targeted cases
-// flip it via `mockResolvedValueOnce`.
+// CSS). The mock covers both paths: `furnaceConfigExists` returns false by
+// default so baseline tests skip the augmentation, and targeted cases flip it
+// via `mockResolvedValueOnce`.
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(),
   loadFurnaceConfig: vi.fn(),
 }));
@@ -19,9 +25,8 @@ vi.mock('../../core/furnace-config.js', () => ({
 vi.mock('../../core/git.js', () => ({
   getStatusWithCodes: vi.fn(),
   isGitRepository: vi.fn(),
-  // token-coverage's engine precondition ladder was truncated before 0.41.0
-  // and never reached the unborn-HEAD rung — which is why this mock did not
-  // need these. It does now.
+  // token-coverage's engine precondition ladder reaches the unborn-HEAD
+  // rung, so the git mock has to supply these.
   getHead: vi.fn(() => Promise.resolve('abc1234')),
   isMissingHeadError: vi.fn(() => false),
 }));
@@ -38,22 +43,16 @@ vi.mock('../../core/token-coverage.js', () => ({
   measureTokenCoverage: vi.fn(),
 }));
 
-vi.mock('../../core/token-manager.js', () => ({
+vi.mock('../../core/token-manager.js', async (importOriginal) => ({
+  // TOKEN_MODES and its `isTokenMode` guard are pure data and a pure
+  // predicate; the command's validation is what these tests exercise.
+  ...(await importOriginal<typeof import('../../core/token-manager.js')>()),
   getTokensCssPath: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  intro: vi.fn(),
-  outro: vi.fn(),
-  success: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
@@ -144,12 +143,12 @@ describe('tokenCoverageCommand', () => {
   });
 
   it('includes CSS files inside untracked directories', async () => {
-    // Eval 1 Finding #13: an imported patch stack added new CSS under
-    // `browser/themes/shared/` and the engine worktree reported
-    // `?? browser/themes/shared/` (collapsed). The old command scanned
-    // status codes directly and reported "No modified CSS files"
-    // because the directory path did not end in `.css`. Expanding
-    // untracked directories picks up the files inside.
+    // An imported patch stack can add new CSS under
+    // `browser/themes/shared/` while the engine worktree reports
+    // `?? browser/themes/shared/` (collapsed). Scanning status codes
+    // directly reports "No modified CSS files" because the directory path
+    // does not end in `.css`; expanding untracked directories picks up the
+    // files inside.
     vi.mocked(expandUntrackedDirectoryEntries).mockResolvedValueOnce([
       statusEntry('??', 'browser/themes/shared/mybrowser-extras.css'),
       statusEntry('??', 'browser/themes/shared/mybrowser-spacing.css'),
@@ -271,9 +270,9 @@ describe('tokenCoverageCommand', () => {
   });
 
   it('augments scan with Furnace custom-component CSS files that exist on disk', async () => {
-    // Finding #10: the eval had a deployed `moz-eval-card.css` that was
-    // untracked in git but present in the engine, and coverage missed it
-    // entirely because the old discovery path only read git status.
+    // A deployed component CSS file can be untracked in git but present in
+    // the engine, and a discovery path that only reads git status misses it
+    // entirely.
     mockedGetWorkingTreeStatus.mockResolvedValue([
       statusEntry(' M', 'browser/themes/shared/panel.css'),
     ]);

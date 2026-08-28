@@ -70,8 +70,8 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // status.ts (at the max-lines budget). Exports resolveStatusCheckPolicy
   // and runStatusCheck consumed by status.ts; no registrar is wanted.
   'status-check.ts',
-  // status --json payload rendering incl. the --summary gate shape
-  //, split out of status.ts for the line budget. Exports
+  // status --json payload rendering, including the --summary gate shape,
+  // split out of status.ts for the line budget. Exports
   // renderJsonStatus/renderJsonSummaryStatus consumed by status.ts;
   // no registrar is wanted.
   'status-json.ts',
@@ -104,23 +104,30 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // Post-bootstrap validation checks consumed by bootstrap.ts. Exports
   // check helpers, not a top-level registrar.
   'bootstrap-checks.ts',
+  // Post-rebase registration audit consumed by doctor.ts. Exports a check
+  // definition, not a top-level registrar.
+  'doctor-post-rebase-audit.ts',
   // Furnace doctor checks split out of doctor.ts so the main file stays
   // under the max-lines threshold. The file exports a typed array of
   // DoctorCheckDefinition values that doctor.ts splices into its
   // registry; no top-level register* is exported and none is wanted.
   'doctor-furnace.ts',
-  // Stale jar.mn registration check split out of doctor-furnace.ts to
-  // keep that file within the line budget; exports a
-  // DoctorCheckDefinition consumed by doctor-furnace.ts (0.34.0).
+  // Stale jar.mn registration check split out of doctor-furnace.ts to keep
+  // that file within the line budget; exports a DoctorCheckDefinition
+  // consumed by doctor-furnace.ts.
   'doctor-furnace-jar.ts',
   // Orphan-override detection split out of doctor-furnace.ts to keep
   // that file under the max-lines threshold. Exports a single
   // `DoctorCheckDefinition` consumed by doctor-furnace.ts.
-  'doctor-furnace-manifest-sync.ts',
-  // Orphaned-harness-worker scan (0.37.0 item 9b). Exports a single
-  // `DoctorCheckDefinition` consumed by doctor.ts; no top-level
-  // register* is exported and none is wanted.
+  'doctor-furnace-config-sync.ts',
+  // Orphaned-harness-worker scan. Exports a single `DoctorCheckDefinition`
+  // consumed by doctor.ts; no top-level register* is exported and none is
+  // wanted.
   'doctor-orphaned-harness.ts',
+  // Patch-manifest consistency check and its two repair paths, split out of
+  // doctor.ts for the line budget. Exports a `DoctorCheckDefinition`
+  // consumed by doctor.ts; no registrar is wanted.
+  'doctor-patch-manifest.ts',
   // Ownership-aware working-tree inspector split out of doctor.ts so
   // that file stays under max-lines. Exports an async helper that
   // `doctor.ts` calls from inside its git-checks group.
@@ -137,11 +144,10 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // re-export.ts to keep that command under max-lines.
   're-export-bulk-scan.ts',
   're-export-options.ts',
-  // The orchestrator itself. Its CLI registration moved to
-  // `re-export-register.ts` in 0.41.0 — that split is what let the file drop
-  // from 526 to 416 lines and shed the only file-level `eslint-disable
-  // max-lines` in `src/`. `re-export.ts` exports `reExportCommand`, consumed
-  // by the registrar; no top-level registrar remains here.
+  // The orchestrator itself. Its CLI registration lives in
+  // `re-export-register.ts`, which is what keeps this file under the
+  // per-file line cap. `re-export.ts` exports `reExportCommand`, consumed by
+  // the registrar; no top-level registrar remains here.
   're-export.ts',
   // Per-patch lint orchestration split out of lint.ts so the aggregate
   // command and cache-backed queue path both stay under max-lines.
@@ -234,11 +240,10 @@ describe('COMMAND_MANIFEST integrity', () => {
 
   it('every top-level command file with a registrar is referenced by the manifest', async () => {
     // Drift protection: scans src/commands/*.ts for `export function
-    // register*` declarations and asserts the manifest source imports
-    // each one. Previously a new command could compile and type-check
-    // cleanly without being added to the manifest — the command
-    // simply would not ship, and no test would fail. This walks the
-    // files directly so it surfaces the omission at test time.
+    // register*` declarations and asserts the manifest source imports each
+    // one. Without it a new command compiles and type-checks cleanly
+    // without being added to the manifest — it simply does not ship, and no
+    // test fails.
     const manifestSource = await readFile(join(COMMANDS_DIR, 'manifest.ts'), 'utf-8');
     const importedRegistrars = new Set<string>();
     const importPattern = /\bregister[A-Z][A-Za-z0-9_]*/g;
@@ -292,12 +297,10 @@ describe('COMMAND_MANIFEST integrity', () => {
   });
 
   it('each group-style parent command installs a default action that exits cleanly', () => {
-    // Finding #1: pre-0.16.0 `fireforge patch` and `fireforge token` fell
-    // through to commander's default help-then-exit-1 path, while
-    // `fireforge furnace` had a friendly default action and exited 0.
-    // Scripts probing the CLI surface saw an inconsistent exit contract
-    // for informational invocations. Each group-style parent now installs
-    // a default action that prints its own help and returns successfully.
+    // Every group-style parent installs a default action that prints its own
+    // help and returns successfully. Falling through to commander's default
+    // help-then-exit-1 path gives scripts probing the CLI surface an
+    // inconsistent exit contract for informational invocations.
     const noopContext: CommandContext = {
       getProjectRoot: () => '/tmp/fireforge-manifest-test',
       withErrorHandling: <T extends unknown[]>(handler: (...args: T) => Promise<void>) => {

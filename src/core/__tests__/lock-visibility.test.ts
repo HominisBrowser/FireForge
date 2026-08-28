@@ -10,7 +10,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { formatEngineSessionLockStatus } from '../engine-session-lock.js';
+import { formatEngineSessionLockStatus, formatWaitExtendedLine } from '../engine-session-lock.js';
 import { readLockQueue, readLockStatus, withFileLock } from '../file-lock.js';
 
 describe('readLockStatus', () => {
@@ -94,5 +94,68 @@ describe('readLockStatus', () => {
     expect(lines[0]).toContain('NOT RUNNING');
     expect(lines[0]).toContain('42s');
     expect(lines[1]).toContain('2 waiter(s)');
+  });
+
+  it('reports the holder CPU time when it could be measured', () => {
+    const lines = formatEngineSessionLockStatus(
+      {
+        held: true,
+        holder: { pid: 42, alive: true, metadata: ['command=build'] },
+        heldForMs: 5_000,
+        queueDepth: 0,
+      },
+      12.5
+    );
+    expect(lines[2]).toBe('Holder CPU time: 12.5s.');
+  });
+
+  it('flags a long hold at near-zero CPU as the shape of a WEDGED command', () => {
+    // Liveness only answers "does the process exist". This is the fact an
+    // operator otherwise reconstructs with `ps aux | grep fireforge`.
+    const lines = formatEngineSessionLockStatus(
+      {
+        held: true,
+        holder: { pid: 42, alive: true, metadata: ['command=build'] },
+        heldForMs: 11 * 60 * 1000,
+        queueDepth: 3,
+      },
+      0.4
+    );
+    expect(lines[2]).toContain('WEDGED');
+    // Never stated as a verdict: an I/O-blocked holder looks identical.
+    expect(lines[2]).toContain('blocked on I/O looks the same');
+  });
+
+  it('omits the CPU line entirely when the holder is not running or unmeasurable', () => {
+    const dead = formatEngineSessionLockStatus(
+      {
+        held: true,
+        holder: { pid: 42, alive: false, metadata: [] },
+        heldForMs: 5_000,
+        queueDepth: 0,
+      },
+      99
+    );
+    expect(dead).toHaveLength(2);
+    const unmeasured = formatEngineSessionLockStatus({
+      held: true,
+      holder: { pid: 42, alive: true, metadata: [] },
+      heldForMs: 5_000,
+      queueDepth: 0,
+    });
+    expect(unmeasured).toHaveLength(2);
+  });
+});
+
+describe('formatWaitExtendedLine', () => {
+  it('names BOTH budgets, because the whole point is that they diverged', () => {
+    const line = formatWaitExtendedLine(2, 600_000, 300_000);
+    expect(line).toContain('2 still ahead of you');
+    expect(line).toContain('600s total');
+    expect(line).toContain('you asked for 300s');
+  });
+
+  it('says you are next when nothing is ahead', () => {
+    expect(formatWaitExtendedLine(0, 600_000, 300_000)).toContain('you are now next');
   });
 });

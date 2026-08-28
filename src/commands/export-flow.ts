@@ -302,12 +302,12 @@ export async function projectPlacementForLint(
     if (!rename) return entry;
     return { ...entry, filename: rename.newFilename, order: rename.newOrder };
   });
-  // Synthetic entry for the pending patch, populated with both its
-  // new-file content AND its added-line content for files it modifies
-  // so the forward-import rule can inspect imports the patch *itself*
-  // authors — whether they live in a brand-new file or are added to an
-  // existing file. Leaving either map empty lets a patch land before
-  // one of its own dependencies and still pass the gate.
+  // Synthetic entry for the pending patch, populated with both its new-file
+  // content AND its added-line content for files it modifies, so the
+  // forward-import rule can inspect imports the patch *itself* authors —
+  // whether they live in a brand-new file or are added to an existing one.
+  // Leaving either map empty lets a patch land before one of its own
+  // dependencies and still pass the gate.
   projectedEntries.push({
     filename: plan.newFilename,
     order: plan.insertionOrder,

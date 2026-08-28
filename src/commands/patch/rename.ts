@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * `fireforge patch rename <name>` — relabels a patch's filename, manifest
- * `name`, and (optionally) `description` without rewriting the `.patch`
- * file body.
+ * `name`, and (optionally) `description` without rewriting the `.patch` file
+ * body.
  *
- * Companion to `re-export --files <subset>`. Re-export shrinks the body
- * + `filesAffected`, but leaves the patch's identity describing the
- * pre-shrink scope. Before this verb existed, the only workaround for
- * that drift was `delete` + re-export, which briefly removed the patch
- * from the queue (any forward-import dependent would refuse the
- * re-export until the deleted patch's siblings were rewritten).
+ * Companion to `re-export --files <subset>`. Re-export shrinks the body and
+ * `filesAffected` but leaves the patch's identity describing the pre-shrink
+ * scope. The only alternative for that drift is `delete` + re-export, which
+ * briefly removes the patch from the queue — any forward-import dependent
+ * then refuses the re-export until the deleted patch's siblings are
+ * rewritten.
  *
  * The filename rename and the manifest mutation happen under the patch
- * directory lock so concurrent exports cannot allocate the new
- * filename, and a filesystem rename failure rolls back before the
- * manifest is touched.
+ * directory lock so concurrent exports cannot allocate the new filename, and
+ * a filesystem rename failure rolls back before the manifest is touched.
  */
 
 import { rename as fsRename } from 'node:fs/promises';
@@ -517,7 +516,7 @@ export async function patchRenameCommand(
     outro('Dry run complete — no changes made');
     return;
   }
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Rename cancelled');
     return;
   }

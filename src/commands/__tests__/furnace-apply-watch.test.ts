@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() =>
     Promise.resolve({
@@ -33,7 +36,11 @@ vi.mock('../../core/furnace-apply-output.js', () => ({
   logApplyResult: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -54,13 +61,17 @@ vi.mock('../../core/furnace-operation.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(true)),
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    overridesDir: '/project/components/overrides',
-    customDir: '/project/components/custom',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    overridesDir: nativePath('/project/components/overrides'),
+    customDir: nativePath('/project/components/custom'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -86,11 +97,15 @@ vi.mock('../../core/furnace-version-drift.js', () => ({
   formatOverrideBaseVersionDriftWarning: vi.fn(() => ''),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -216,7 +231,7 @@ describe('furnaceApplyCommand — watch mode', () => {
     //   3. first refreshWatchers → customDir: false
     //   4+ subsequent refreshWatchers calls on poll tick: still false
     vi.mocked(pathExists).mockImplementation((targetPath: string) => {
-      if (targetPath === '/project/engine') return Promise.resolve(true);
+      if (targetPath === nativePath('/project/engine')) return Promise.resolve(true);
       return Promise.resolve(false);
     });
 
@@ -258,8 +273,9 @@ describe('furnaceApplyCommand — watch mode', () => {
     // `furnace override` command in another terminal).
     let overrideExists = false;
     vi.mocked(pathExists).mockImplementation((targetPath: string) => {
-      if (targetPath === '/project/engine') return Promise.resolve(true);
-      if (targetPath === '/project/components/overrides') return Promise.resolve(overrideExists);
+      if (targetPath === nativePath('/project/engine')) return Promise.resolve(true);
+      if (targetPath === nativePath('/project/components/overrides'))
+        return Promise.resolve(overrideExists);
       return Promise.resolve(false);
     });
 

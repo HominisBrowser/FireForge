@@ -6,21 +6,20 @@
  * Overrides are forks of Firefox source files taken at a specific point in
  * time. If Firefox moves forward and the override's `baseVersion` is not
  * refreshed, the override may apply against a file whose upstream shape has
- * changed — which is the single biggest silent failure mode for furnace.
+ * changed — the single biggest silent failure mode for furnace.
  *
- * This module is deliberately pure and string-only: it does no I/O and does
- * not parse Firefox version components. Comparing by string equality is
- * sufficient because `fireforge.json` stores a canonical version string
- * (e.g. `"140.9.0esr"`) and overrides are created with exactly that string
- * copied from `forgeConfig.firefox.version`. Any string mismatch is worth
- * surfacing — even "140.0" vs "140.9.0esr" is a real drift signal.
+ * Deliberately pure and string-only: no I/O, and no parsing of Firefox
+ * version components. String equality is sufficient because `fireforge.json`
+ * stores a canonical version string (e.g. `"140.9.0esr"`) and overrides are
+ * created with exactly that string copied from
+ * `forgeConfig.firefox.version`. Any mismatch is worth surfacing — even
+ * "140.0" vs "140.9.0esr" is a real drift signal.
  *
  * The result GATES apply/deploy: both warn and then FAIL without --force
  * (see furnaceApplyCommand / furnaceDeployCommand), and `furnace sync`
- * re-checks it after refresh before applying. Status reports drift
- * alongside the component overview. Keep this doc in sync with the gates —
- * an earlier version claimed the result was advisory, which invited
- * re-breaking the gate.
+ * re-checks it after refresh before applying. Status reports drift alongside
+ * the component overview. Keep this doc in sync with the gates — it is not
+ * advisory.
  */
 
 import type { FurnaceConfig } from '../types/furnace.js';

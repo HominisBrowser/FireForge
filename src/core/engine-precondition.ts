@@ -3,17 +3,13 @@
  * Shared engine precondition ladder for commands that read or mutate
  * `engine/` through git.
  *
- * Five commands carried their own copy of this three-rung check, and **two of
- * them were truncated**: `resolve.ts` and `token-coverage.ts` stopped after
- * the `isGitRepository` rung and omitted the unborn-HEAD guard entirely
- * (neither even imported `getHead`/`isMissingHeadError`). Both then went on to
- * enumerate working-tree status, and against an unborn HEAD the whole
- * ~300k-file Firefox tree reads as untracked — so an engine left half
- * initialised by an interrupted `download` produced a nonsensical result
- * rather than the actionable refusal the other three commands gave.
+ * The rungs matter in order. Skipping the unborn-HEAD guard and going
+ * straight to enumerating working-tree status makes the whole ~300k-file
+ * Firefox tree read as untracked, so an engine left half-initialised by an
+ * interrupted `download` produces a nonsensical result instead of an
+ * actionable refusal.
  *
- * The remediation paragraph also existed in three independently-editable
- * copies that had already drifted. It lives here once now.
+ * The remediation wording lives here once so the callers cannot drift apart.
  */
 
 import { GeneralError } from '../errors/base.js';
@@ -32,11 +28,42 @@ const UNBORN_HEAD_REMEDIATION =
 export interface EngineGitReadyOptions {
   /**
    * Appended to the unborn-HEAD remediation, e.g. `', then retry the rebase.'`
-   * Preserves the one deliberate wording divergence between the copies. The
-   * base message deliberately ends WITHOUT punctuation so the suffix reads as
-   * one sentence; callers that pass nothing get a plain full stop.
+   * The base message deliberately ends WITHOUT punctuation so the suffix
+   * reads as one sentence; callers that pass nothing get a plain full stop.
    */
   unbornHeadSuffix?: string;
+}
+
+/**
+ * Error factory for callers whose domain uses a class other than
+ * `GeneralError`. The furnace family raises `FurnaceError`, which carries
+ * its own `userMessage` and exit code 9, so a helper hardcoding
+ * `GeneralError` would silently change both.
+ */
+export type PreconditionErrorFactory = (message: string) => Error;
+
+/** Default factory: the message every non-furnace command already used. */
+const defaultErrorFactory: PreconditionErrorFactory = (message) => new GeneralError(message);
+
+/**
+ * Asserts only that the engine checkout EXISTS.
+ *
+ * The first rung of {@link assertEngineGitReady}. Most callers want exactly
+ * this rung and no more: `build`, `run`, `test`, `package`, `watch`,
+ * `import` and `bootstrap` never run git against the engine and each has its
+ * own richer follow-up gate, so promoting them to the full three-rung ladder
+ * would refuse runs that work today.
+ *
+ * @param engineDir - Absolute path to the engine checkout
+ * @param errorFactory - Optional domain-specific error constructor
+ */
+export async function assertEngineExists(
+  engineDir: string,
+  errorFactory: PreconditionErrorFactory = defaultErrorFactory
+): Promise<void> {
+  if (!(await pathExists(engineDir))) {
+    throw errorFactory('Firefox source not found. Run "fireforge download" first.');
+  }
 }
 
 /**

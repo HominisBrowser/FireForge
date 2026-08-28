@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
 import {
   applyCustomComponent,
   applyOverrideComponent,
@@ -15,13 +16,7 @@ import {
 } from '../furnace-apply-helpers.js';
 import { createRollbackJournal } from '../furnace-rollback.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  copyFile: vi.fn(),
-  ensureDir: vi.fn(),
-  removeFile: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../furnace-registration.js', () => ({
   addCustomElementRegistration: vi.fn(),
@@ -61,6 +56,7 @@ vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(),
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import { copyFile, ensureDir, pathExists, readText, removeFile } from '../../utils/fs.js';
 import { FTL_DIR } from '../furnace-constants.js';
 import {
@@ -207,16 +203,13 @@ describe('applyCustomComponent', () => {
   it('rejects invalid component names', async () => {
     await expect(
       applyCustomComponent(
-        '/engine',
-        'INVALID',
-        '/comp',
+        { engineDir: '/engine', name: 'INVALID', componentDir: '/comp', ftlDir: FTL_DIR },
         {
           description: 'test',
           targetPath: 'toolkit/content/widgets/invalid',
           register: false,
           localized: false,
-        },
-        FTL_DIR
+        }
       )
     ).rejects.toThrow('Invalid component name');
   });
@@ -229,16 +222,13 @@ describe('applyCustomComponent', () => {
     ] as never);
 
     const result = await applyCustomComponent(
-      '/engine',
-      'my-btn',
-      '/comp/my-btn',
+      { engineDir: '/engine', name: 'my-btn', componentDir: '/comp/my-btn', ftlDir: FTL_DIR },
       {
         description: 'Button',
         targetPath: 'toolkit/content/widgets/my-btn',
         register: false,
         localized: false,
-      },
-      FTL_DIR
+      }
     );
 
     expect(mockEnsureDir).toHaveBeenCalled();
@@ -252,16 +242,13 @@ describe('applyCustomComponent', () => {
     mockReaddir.mockResolvedValueOnce([fakeEntry('my-btn.mjs')] as never);
 
     await applyCustomComponent(
-      '/engine',
-      'my-btn',
-      '/comp/my-btn',
+      { engineDir: '/engine', name: 'my-btn', componentDir: '/comp/my-btn', ftlDir: FTL_DIR },
       {
         description: 'Button',
         targetPath: 'toolkit/content/widgets/my-btn',
         register: true,
         localized: false,
-      },
-      FTL_DIR
+      }
     );
 
     expect(mockAddCEReg).toHaveBeenCalledWith(
@@ -278,16 +265,13 @@ describe('applyCustomComponent', () => {
     mockAddCEReg.mockRejectedValueOnce(new Error('parse error'));
 
     const result = await applyCustomComponent(
-      '/engine',
-      'my-btn',
-      '/comp/my-btn',
+      { engineDir: '/engine', name: 'my-btn', componentDir: '/comp/my-btn', ftlDir: FTL_DIR },
       {
         description: 'Button',
         targetPath: 'toolkit/content/widgets/my-btn',
         register: true,
         localized: false,
-      },
-      FTL_DIR
+      }
     );
 
     expect(result.stepErrors).toHaveLength(1);
@@ -299,16 +283,13 @@ describe('applyCustomComponent', () => {
     mockPathExists.mockResolvedValue(true);
 
     await applyCustomComponent(
-      '/engine',
-      'my-btn',
-      '/comp/my-btn',
+      { engineDir: '/engine', name: 'my-btn', componentDir: '/comp/my-btn', ftlDir: FTL_DIR },
       {
         description: 'Button',
         targetPath: 'toolkit/content/widgets/my-btn',
         register: false,
         localized: true,
-      },
-      FTL_DIR
+      }
     );
 
     // 1 .mjs copy + 1 .ftl copy
@@ -320,16 +301,13 @@ describe('applyCustomComponent', () => {
     mockPathExists.mockResolvedValue(false);
 
     const result = await applyCustomComponent(
-      '/engine',
-      'my-btn',
-      '/comp/my-btn',
+      { engineDir: '/engine', name: 'my-btn', componentDir: '/comp/my-btn', ftlDir: FTL_DIR },
       {
         description: 'Button',
         targetPath: 'toolkit/content/widgets/my-btn',
         register: true,
         localized: false,
       },
-      FTL_DIR,
       true
     );
 
@@ -344,16 +322,13 @@ describe('applyCustomComponent', () => {
     mockValidateCEReg.mockRejectedValueOnce(new Error('no DOMContentLoaded block'));
 
     const result = await applyCustomComponent(
-      '/engine',
-      'my-btn',
-      '/comp/my-btn',
+      { engineDir: '/engine', name: 'my-btn', componentDir: '/comp/my-btn', ftlDir: FTL_DIR },
       {
         description: 'Button',
         targetPath: 'toolkit/content/widgets/my-btn',
         register: true,
         localized: false,
       },
-      FTL_DIR,
       true
     );
 
@@ -370,16 +345,13 @@ describe('applyCustomComponent', () => {
     mockValidateJarMn.mockRejectedValueOnce(new Error('jar.mn is empty'));
 
     const result = await applyCustomComponent(
-      '/engine',
-      'my-btn',
-      '/comp/my-btn',
+      { engineDir: '/engine', name: 'my-btn', componentDir: '/comp/my-btn', ftlDir: FTL_DIR },
       {
         description: 'Button',
         targetPath: 'toolkit/content/widgets/my-btn',
         register: false,
         localized: false,
       },
-      FTL_DIR,
       true
     );
 
@@ -395,16 +367,13 @@ describe('applyCustomComponent', () => {
     mockValidateJarMn.mockResolvedValueOnce(undefined);
 
     const result = await applyCustomComponent(
-      '/engine',
-      'my-btn',
-      '/comp/my-btn',
+      { engineDir: '/engine', name: 'my-btn', componentDir: '/comp/my-btn', ftlDir: FTL_DIR },
       {
         description: 'Button',
         targetPath: 'toolkit/content/widgets/my-btn',
         register: true,
         localized: false,
       },
-      FTL_DIR,
       true
     );
 
@@ -418,16 +387,13 @@ describe('applyOverrideComponent', () => {
 
     await expect(
       applyOverrideComponent(
-        '/engine',
-        'moz-card',
-        '/comp/moz-card',
+        { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
         {
           type: 'css-only',
           description: 'Card override',
           basePath: 'toolkit/content/widgets/moz-card',
           baseVersion: '145.0',
-        },
-        FTL_DIR
+        }
       )
     ).rejects.toThrow('Override target path not found');
   });
@@ -441,16 +407,13 @@ describe('applyOverrideComponent', () => {
     ] as never);
 
     const result = await applyOverrideComponent(
-      '/engine',
-      'moz-card',
-      '/comp/moz-card',
+      { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
       {
         type: 'css-only',
         description: 'Card override',
         basePath: 'toolkit/content/widgets/moz-card',
         baseVersion: '145.0',
-      },
-      FTL_DIR
+      }
     );
 
     expect(mockCopyFile).toHaveBeenCalledTimes(1);
@@ -466,16 +429,13 @@ describe('applyOverrideComponent', () => {
     ] as never);
 
     const result = await applyOverrideComponent(
-      '/engine',
-      'moz-card',
-      '/comp/moz-card',
+      { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
       {
         type: 'full',
         description: 'Full override',
         basePath: 'toolkit/content/widgets/moz-card',
         baseVersion: '145.0',
-      },
-      FTL_DIR
+      }
     );
 
     expect(mockCopyFile).toHaveBeenCalledTimes(2);
@@ -492,21 +452,18 @@ describe('applyOverrideComponent', () => {
     ] as never);
 
     const result = await applyOverrideComponent(
-      '/engine',
-      'moz-card',
-      '/comp/moz-card',
+      { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
       {
         type: 'full',
         description: 'Full override',
         basePath: 'toolkit/content/widgets/moz-card',
         baseVersion: '145.0',
-      },
-      FTL_DIR
+      }
     );
 
     expect(mockCopyFile).toHaveBeenCalledWith(
-      '/comp/moz-card/moz-card.ftl',
-      '/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl'
+      nativePath('/comp/moz-card/moz-card.ftl'),
+      nativePath('/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl')
     );
     expect(result.affectedPaths).toContain('toolkit/locales/en-US/toolkit/global/moz-card.ftl');
   });
@@ -517,16 +474,13 @@ describe('applyOverrideComponent', () => {
 
     await expect(
       applyOverrideComponent(
-        '/engine',
-        'moz-card',
-        '/comp/moz-card',
+        { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
         {
           type: 'css-only',
           description: 'Card override',
           basePath: 'toolkit/content/widgets/moz-card',
           baseVersion: '145.0',
-        },
-        FTL_DIR
+        }
       )
     ).rejects.toThrow('No matching files');
   });
@@ -536,16 +490,13 @@ describe('applyOverrideComponent', () => {
     mockReaddir.mockResolvedValueOnce([fakeEntry('moz-card.css')] as never);
 
     const result = await applyOverrideComponent(
-      '/engine',
-      'moz-card',
-      '/comp/moz-card',
+      { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
       {
         type: 'css-only',
         description: 'Card override',
         basePath: 'toolkit/content/widgets/moz-card',
         baseVersion: '145.0',
       },
-      FTL_DIR,
       true
     );
 
@@ -559,21 +510,18 @@ describe('applyOverrideComponent', () => {
     mockReaddir.mockResolvedValueOnce([fakeEntry('moz-card.ftl')] as never);
 
     const result = await applyOverrideComponent(
-      '/engine',
-      'moz-card',
-      '/comp/moz-card',
+      { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
       {
         type: 'full',
         description: 'Card override',
         basePath: 'toolkit/content/widgets/moz-card',
         baseVersion: '145.0',
       },
-      FTL_DIR,
       true
     );
 
     expect(result.actions?.[0]?.target).toBe(
-      '/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl'
+      nativePath('/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl')
     );
   });
 });
@@ -682,7 +630,9 @@ describe('undeployCustomFiles', () => {
       journal
     );
 
-    expect(removeFile).toHaveBeenCalledWith('/engine/browser/components/panel/moz-panel.css');
+    expect(removeFile).toHaveBeenCalledWith(
+      nativePath('/engine/browser/components/panel/moz-panel.css')
+    );
     expect(result).toEqual(['browser/components/panel/moz-panel.css']);
   });
 
@@ -706,7 +656,7 @@ describe('undeployCustomFiles', () => {
     // FTL goes under FTL_DIR, not the component's targetPath.
     expect(removeFile).toHaveBeenCalledWith(expect.stringContaining('moz-loc.ftl'));
     expect(result[0]).toContain('moz-loc.ftl');
-    expect(result[0]).not.toContain('browser/components/loc');
+    expect(result[0]).not.toContain(nativePath('browser/components/loc'));
   });
 
   it('is a no-op when an engine file is already missing', async () => {
@@ -868,20 +818,20 @@ describe('symlink handling', () => {
     ] as never);
 
     await applyCustomComponent(
-      '/engine',
-      'moz-panel',
-      '/comp/moz-panel',
+      { engineDir: '/engine', name: 'moz-panel', componentDir: '/comp/moz-panel', ftlDir: FTL_DIR },
       {
         description: 'Panel',
         targetPath: 'browser/components/panel',
         register: false,
         localized: false,
-      },
-      FTL_DIR
+      }
     );
 
     expect(mockCopyFile).toHaveBeenCalledTimes(1);
-    expect(mockCopyFile).toHaveBeenCalledWith('/comp/moz-panel/moz-panel.mjs', expect.any(String));
+    expect(mockCopyFile).toHaveBeenCalledWith(
+      nativePath('/comp/moz-panel/moz-panel.mjs'),
+      expect.any(String)
+    );
   });
 
   it('applyOverrideComponent skips symlinks during file copy', async () => {
@@ -892,16 +842,13 @@ describe('symlink handling', () => {
     ] as never);
 
     const { affectedPaths } = await applyOverrideComponent(
-      '/engine',
-      'moz-card',
-      '/comp/moz-card',
+      { engineDir: '/engine', name: 'moz-card', componentDir: '/comp/moz-card', ftlDir: FTL_DIR },
       {
         type: 'css-only',
         description: 'Card override',
         basePath: 'toolkit/content/widgets/moz-card',
         baseVersion: '145.0',
-      },
-      FTL_DIR
+      }
     );
 
     expect(mockCopyFile).toHaveBeenCalledTimes(1);

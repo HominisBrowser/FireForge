@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() =>
     Promise.resolve({
@@ -30,12 +32,16 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    overridesDir: '/project/components/overrides',
-    customDir: '/project/components/custom',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    overridesDir: nativePath('/project/components/overrides'),
+    customDir: nativePath('/project/components/custom'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -69,7 +75,11 @@ vi.mock('../../core/furnace-refresh.js', () => ({
   refreshOverrideFile: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -102,6 +112,11 @@ vi.mock('../../core/furnace-rollback.js', () => ({
 }));
 
 vi.mock('../../core/git.js', () => ({
+  // Engine-precondition ladder (assertEngineGitReady). Stubbed to the
+  // healthy-engine answers so these suites test their own subject.
+  isGitRepository: vi.fn(() => Promise.resolve(true)),
+  isMissingHeadError: vi.fn(() => false),
+
   getHead: vi.fn(() => Promise.resolve('engine-head-sha999')),
 }));
 
@@ -110,6 +125,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -130,7 +151,11 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 import { loadState } from '../../core/config.js';
-import { loadFurnaceConfig, writeFurnaceConfig } from '../../core/furnace-config.js';
+import {
+  loadFurnaceConfig,
+  updateFurnaceState,
+  writeFurnaceConfig,
+} from '../../core/furnace-config.js';
 import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
 import { refreshOverrideFile } from '../../core/furnace-refresh.js';
 import { restoreRollbackJournalOrThrow } from '../../core/furnace-rollback.js';
@@ -149,7 +174,7 @@ describe('furnace refresh', () => {
 
   it('throws when engine directory is missing', async () => {
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (typeof path === 'string' && path.includes('/project/engine'))
+      if (typeof path === 'string' && path.includes(nativePath('/project/engine')))
         return Promise.resolve(false);
       return Promise.resolve(true);
     });
@@ -362,7 +387,7 @@ describe('furnace refresh', () => {
 
   it('throws when override directory is missing', async () => {
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      if (typeof path === 'string' && path.includes('overrides/moz-button'))
+      if (typeof path === 'string' && path.includes(nativePath('overrides/moz-button')))
         return Promise.resolve(false);
       return Promise.resolve(true);
     });
@@ -402,8 +427,8 @@ describe('furnace refresh', () => {
     );
 
     expect(refreshOverrideFile).toHaveBeenCalledWith(
-      '/project/engine',
-      expect.stringContaining('/components/overrides/moz-button/'),
+      nativePath('/project/engine'),
+      expect.stringContaining(nativePath('/components/overrides/moz-button/')),
       expect.any(String),
       expect.any(String),
       expect.any(String),
@@ -411,8 +436,8 @@ describe('furnace refresh', () => {
       undefined
     );
     expect(refreshOverrideFile).toHaveBeenCalledWith(
-      '/project/engine',
-      expect.stringContaining('/components/overrides/moz-card/'),
+      nativePath('/project/engine'),
+      expect.stringContaining(nativePath('/components/overrides/moz-card/')),
       expect.any(String),
       expect.any(String),
       expect.any(String),
@@ -482,7 +507,7 @@ describe('furnace refresh --reset-base', () => {
 
     // The whole point: no three-way merge runs.
     expect(refreshOverrideFile).not.toHaveBeenCalled();
-    expect(getHead).toHaveBeenCalledWith('/project/engine');
+    expect(getHead).toHaveBeenCalledWith(nativePath('/project/engine'));
     const written = vi.mocked(writeFurnaceConfig).mock.calls[0]?.[1];
     expect(written?.overrides['moz-button']).toEqual({
       type: 'full',
@@ -544,10 +569,20 @@ describe('furnace refresh — rollback failure', () => {
       /could not restore moz-button\.mjs/
     );
 
-    expect(recordFurnaceRollbackFailure).toHaveBeenCalledWith(
-      '/project',
-      'refresh-rollback',
-      expect.stringContaining('override "moz-button": could not restore moz-button.mjs')
+    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
+    // state — rather than the internal call. The rollback sequence now lives
+    // in `completeJournalRollback`, whose call to the recorder is
+    // intra-module and so invisible to a module-level spy.
+    const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1] as
+      | ((state: Record<string, unknown>) => {
+          pendingRepair?: { operation: string; reason: string };
+        })
+      | undefined;
+    expect(updater).toBeTypeOf('function');
+    const pendingRepair = updater?.({}).pendingRepair;
+    expect(pendingRepair?.operation).toBe('refresh-rollback');
+    expect(pendingRepair?.reason).toContain(
+      'override "moz-button": could not restore moz-button.mjs'
     );
   });
 

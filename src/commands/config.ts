@@ -116,10 +116,10 @@ export async function configCommand(
   if (value === undefined) {
     // Get mode — read the raw document rather than the validated config so
     // keys persisted via `fireforge config <key> --force` remain readable.
-    // `validateConfig` builds a typed clone containing only the known
-    // schema fields; relying on it here would silently hide forced-write
-    // keys and surface "Unknown config key" on the read even though the
-    // key is sitting plainly inside fireforge.json.
+    // `validateConfig` builds a typed clone containing only the known schema
+    // fields, so relying on it here would hide forced-write keys and surface
+    // "Unknown config key" even though the key sits plainly inside
+    // fireforge.json.
     const rawConfig = await loadRawConfigDocument(projectRoot);
     const currentValue = getNestedValue(rawConfig, key);
 
@@ -157,44 +157,37 @@ export async function configCommand(
     let unchanged: boolean;
     try {
       // Serialise the read → mutate → write round-trip behind the sidecar
-      // config lock so two concurrent `fireforge config` invocations can't
+      // config lock so two concurrent `fireforge config` invocations cannot
       // each read the pre-state, mutate their own copy, and clobber each
-      // other on write. Before the lock, the 2026-04-21 eval reproduced
-      // silent data loss with two parallel `fireforge config <key>
-      // <value>` commands writing different keys: both exited 0, one key
-      // survived, the other vanished. Atomic file writes (temp + rename)
-      // were never enough on their own — the lost update happens before
-      // the rename, inside the read-modify step. Readers stay lock-free
-      // (see `withConfigFileLock` docstring).
+      // other on write — both exiting 0 with one key silently lost. Atomic
+      // file writes (temp + rename) are not enough on their own: the lost
+      // update happens before the rename, inside the read-modify step.
+      // Readers stay lock-free (see `withConfigFileLock`).
       unchanged = await withConfigFileLock(projectRoot, async () => {
-        // 2026-04-26 eval Finding 11: short-circuit when the new value
-        // matches the current on-disk value. Pre-fix, every set ran
-        // through `mutateConfig` + `writeConfig`, which round-trips
-        // through `JSON.stringify` and rewrites the file even when no
-        // semantic change happened — the rewrite reorders top-level
-        // keys (`license`, `markerComment`, etc.) on every harmless
-        // re-set, producing diff churn for no reason. The check uses
-        // the raw on-disk document so forced-keys round-trip the same
-        // as known keys.
+        // Short-circuit when the new value matches the current on-disk
+        // value. Running every set through `mutateConfig` + `writeConfig`
+        // round-trips through `JSON.stringify` and rewrites the file even
+        // when nothing changed semantically, reordering top-level keys
+        // (`license`, `markerComment`, …) on every harmless re-set. The
+        // check uses the raw on-disk document so forced keys round-trip the
+        // same as known keys.
         const rawConfig = await loadRawConfigDocument(projectRoot);
         const currentValue = getNestedValue(rawConfig, key);
         if (deepEqual(currentValue, parsedValue)) {
           return true;
         }
 
-        // `--force` is intended as an escape hatch for *unknown* keys; it
-        // should not also let the user write a structurally invalid value
-        // for a *known* key. Apply strict validation whenever the key is
-        // listed in SUPPORTED_CONFIG_PATHS, regardless of --force, and only
-        // skip validation for genuinely unknown key paths.
+        // `--force` is an escape hatch for *unknown* keys; it must not also
+        // let the user write a structurally invalid value for a *known* key.
+        // Strict validation applies whenever the key is listed in
+        // SUPPORTED_CONFIG_PATHS, regardless of --force.
         //
         // BOTH branches seed the mutation from the raw on-disk document.
-        // The known-key branch used to round-trip through `loadConfig` →
-        // `validateConfig`, which builds a typed clone containing only the
-        // known schema fields — so any ordinary `fireforge config <key>
-        // <value>` silently dropped every previously --force-written key
-        // from fireforge.json (2026-07-05 review, finding H4; the --force
-        // branch's comment described this exact hazard for its own path).
+        // Round-tripping the known-key branch through `loadConfig` →
+        // `validateConfig` builds a typed clone containing only the known
+        // schema fields, so any ordinary `fireforge config <key> <value>`
+        // would silently drop every previously --force-written key from
+        // fireforge.json.
         if (options.force && !keyIsKnown) {
           const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
           await writeConfigDocument(projectRoot, updatedConfig);
@@ -213,10 +206,10 @@ export async function configCommand(
     } catch (error: unknown) {
       // Only value/validation problems are the user's "invalid value".
       // Lock-acquisition timeouts and I/O failures must keep their own
-      // types/messages — re-labelling a lock timeout as `Invalid value for
-      // "<key>"` used to point diagnosis at the value (and return the
-      // wrong exit-code class) when the actual problem was a concurrent
-      // fireforge process holding the config lock.
+      // types and messages — re-labelling a lock timeout as `Invalid value
+      // for "<key>"` points diagnosis at the value (and returns the wrong
+      // exit-code class) when the real problem is a concurrent fireforge
+      // process holding the config lock.
       if (error instanceof ConfigError) {
         throw new InvalidArgumentError(
           `Invalid value for "${key}": ${toError(error).message}`,
@@ -236,11 +229,11 @@ export async function configCommand(
 }
 
 /**
- * Structural equality check covering the shapes that
- * `fireforge config` accepts: primitives (strings, numbers, booleans),
- * `null`, arrays of primitives, and nested objects. Used to short-circuit
- * no-op writes (Finding 11) — when the parsed value matches the current
- * on-disk value, skip the mutate + write step entirely.
+ * Structural equality check covering the shapes `fireforge config` accepts:
+ * primitives (strings, numbers, booleans), `null`, arrays of primitives, and
+ * nested objects. Used to short-circuit no-op writes — when the parsed value
+ * matches the current on-disk value, the mutate + write step is skipped
+ * entirely.
  */
 function deepEqual(a: JsonValue | undefined, b: JsonValue | undefined): boolean {
   if (a === b) return true;

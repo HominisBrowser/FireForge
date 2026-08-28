@@ -157,7 +157,7 @@ vi.mock('../../core/patch-apply-fuzz.js', () => ({
 }));
 
 vi.mock('../../core/rebase-session.js', () => ({
-  loadRebaseSession: loadRebaseSessionMock,
+  tryReadRebaseSession: loadRebaseSessionMock,
   saveRebaseSession: saveRebaseSessionMock,
   clearRebaseSession: clearRebaseSessionMock,
   hasActiveRebaseSession: hasActiveRebaseSessionMock,
@@ -181,6 +181,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -370,12 +376,11 @@ describe('fireforge rebase', () => {
     expect(saveRebaseSessionMock).not.toHaveBeenCalled();
   });
 
-  // 2026-04-24 eval Finding 11: after an aborted `download --force`, the
-  // engine's `.git/` exists but has no valid HEAD. `rebase --dry-run` used
-  // to print "Dry run complete" suggesting the rebase was ready to run,
-  // then the real `rebase --yes` failed immediately with
-  // `fatal: ambiguous argument 'HEAD'`. Dry-run now mirrors the real-run
-  // baseline check and refuses with a clear recovery pointer.
+  // After an aborted `download --force`, the engine's `.git/` exists but has
+  // no valid HEAD. Without mirroring the real-run baseline check,
+  // `rebase --dry-run` prints "Dry run complete" — suggesting the rebase is
+  // ready — and the real `rebase --yes` then fails immediately with
+  // `fatal: ambiguous argument 'HEAD'`.
   it('dry-run refuses when engine HEAD is unborn (post-aborted-download baseline)', async () => {
     hasActiveRebaseSessionMock.mockResolvedValue(false);
     getHeadMock.mockRejectedValueOnce(

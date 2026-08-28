@@ -3,18 +3,13 @@
  * Builds a concise "patch not found" error message with did-you-mean
  * suggestions in place of the full queue enumeration.
  *
- * 2026-04-26 eval Finding 12: pre-fix every `patch` subcommand
- * (`delete`, `reorder`, `tier`, `lint-ignore`) caught a missing
- * identifier by joining every queued patch's filename and (optional)
- * manifest name into a single comma-separated `Available: ...` tail.
- * On a 29-patch queue the resulting line ran ~1500 characters and
- * buried the actual error under noise that was almost never useful in
- * CI. The new shape ranks each known identifier (ordinal,
- * filename-with-and-without-`.patch`, manifest name) by Levenshtein
- * distance from the operator's input, surfaces up to three suggestions
- * close enough to be plausibly the intended target, and falls back to
- * a count-only summary that points at `fireforge patch list` when no
- * close match exists. The full enumeration is no longer ever inlined.
+ * Joining every queued patch's filename and manifest name into a
+ * comma-separated `Available: ...` tail runs ~1500 characters on a 29-patch
+ * queue and buries the actual error. This ranks each known identifier
+ * (ordinal, filename with and without `.patch`, manifest name) by
+ * Levenshtein distance from the operator's input, surfaces up to three
+ * plausible suggestions, and falls back to a count-only summary pointing at
+ * `fireforge patch list` when no close match exists.
  */
 
 import type { PatchMetadata } from '../types/commands/index.js';
@@ -95,13 +90,13 @@ function rankSuggestions(identifier: string, candidates: string[]): string[] {
     .map((candidate) => {
       const lower = candidate.toLowerCase();
       // Prefix relation in EITHER direction is a stronger signal than edit
-      // distance and is not bounded by it: a partial ordinal or
-      // an abbreviated slug ("ui-foo" for "002-ui-foo.patch") is many edits
-      // away from the full identifier yet is obviously the intended target.
-      // `lower.startsWith(needle)`: the operator typed an abbreviation of
-      // a real identifier. The reverse relation is only meaningful when
-      // the candidate is substantial — otherwise the single-character
-      // ordinal "9" would "match" every input starting with a 9.
+      // distance and is not bounded by it: a partial ordinal or an
+      // abbreviated slug ("ui-foo" for "002-ui-foo.patch") is many edits away
+      // from the full identifier yet is obviously the intended target.
+      // `lower.startsWith(needle)`: the operator typed an abbreviation of a
+      // real identifier. The reverse relation is only meaningful when the
+      // candidate is substantial — otherwise the single-character ordinal
+      // "9" would "match" every input starting with a 9.
       const prefixMatch =
         needle.length >= MIN_PREFIX_MATCH_LENGTH &&
         (lower.startsWith(needle) ||

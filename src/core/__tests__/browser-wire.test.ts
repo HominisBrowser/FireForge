@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { wireSubscript } from '../browser-wire.js';
-import { addDomFragmentTokenized, legacyAddDomFragment } from '../wire-dom-fragment.js';
+import { addDomFragmentTokenized } from '../wire-dom-fragment.js';
 import {
   addDestroyToBrowserInit,
   addDomFragment,
@@ -10,23 +12,19 @@ import {
   addSubscriptToBrowserMain,
 } from '../wire-targets.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() =>
     Promise.resolve({
@@ -39,7 +37,7 @@ vi.mock('../config.js', () => ({
   ),
 }));
 
-vi.mock('../manifest-register.js', () => ({
+vi.mock('../moz-manifest-register.js', () => ({
   registerBrowserContent: vi.fn(() => ({
     manifest: 'browser/base/jar.mn',
     entry: '        content/browser/custom-widget.js    (content/custom-widget.js)',
@@ -71,10 +69,7 @@ vi.mock('../furnace-rollback.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
@@ -431,7 +426,7 @@ describe('addDomFragment', () => {
 
     expect(result).toBe(true);
     const writePath = mockWriteText.mock.calls[0]?.[0] as string;
-    expect(writePath).toBe('/engine/browser/base/content/mybrowser-shell.xhtml');
+    expect(writePath).toBe(nativePath('/engine/browser/base/content/mybrowser-shell.xhtml'));
     const written = mockWriteText.mock.calls[0]?.[1] as string;
     // Include path is relative to the target doc's directory, not hardcoded browser/base/content
     expect(written).toContain('#include fragments/panel.inc.xhtml');
@@ -570,7 +565,7 @@ describe('addDestroyToBrowserInit', () => {
 // wireSubscript — subscriptDir support
 // ---------------------------------------------------------------------------
 
-import { registerBrowserContent } from '../manifest-register.js';
+import { registerBrowserContent } from '../moz-manifest-register.js';
 
 const mockRegisterBrowserContent = vi.mocked(registerBrowserContent);
 
@@ -595,7 +590,7 @@ describe('wireSubscript', () => {
 
     expect(result.subscriptAdded).toBe(true);
     expect(mockRegisterBrowserContent).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'my-widget.js',
       undefined,
       '../components/mybrowser/my-widget.js'
@@ -614,7 +609,7 @@ describe('wireSubscript', () => {
     }
 
     expect(mockRegisterBrowserContent).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'my-widget.js',
       undefined,
       '../components/mybrowser/my-widget.js'
@@ -625,7 +620,7 @@ describe('wireSubscript', () => {
     await wireSubscript('/project', 'my-widget', {});
 
     expect(mockRegisterBrowserContent).toHaveBeenCalledWith(
-      '/project/engine',
+      nativePath('/project/engine'),
       'my-widget.js',
       undefined,
       undefined
@@ -781,28 +776,6 @@ describe('addDomFragmentTokenized (branch coverage)', () => {
     const content = `<?xml version="1.0"?>
 <div id="somethingElse"/>`;
     expect(() => addDomFragmentTokenized(content, '#include test.inc.xhtml')).toThrow(
-      /Could not find insertion point/
-    );
-  });
-});
-
-describe('legacyAddDomFragment (branch coverage)', () => {
-  it('falls back to <html:body> when browser-sets.inc is not found', () => {
-    const content = `<?xml version="1.0"?>
-<html:body>
-  <div/>
-</html:body>`;
-    const result = legacyAddDomFragment(content, '#include test.inc.xhtml');
-    expect(result).toContain('#include test.inc.xhtml');
-    const lines = result.split('\n');
-    const bodyIdx = lines.findIndex((l) => l.includes('<html:body>'));
-    const includeIdx = lines.findIndex((l) => l.includes('#include test.inc.xhtml'));
-    expect(includeIdx).toBe(bodyIdx + 1);
-  });
-
-  it('throws when neither browser-sets.inc nor <html:body> are found', () => {
-    const content = `<div id="other"/>`;
-    expect(() => legacyAddDomFragment(content, '#include test.inc.xhtml')).toThrow(
       /Could not find insertion point/
     );
   });

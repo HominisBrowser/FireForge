@@ -113,8 +113,8 @@ function reservedRangeForOrder(
 
 /**
  * Returns the configured range that contains `order` for `category`, or
- * null when no such range exists. Exported for the forward-import hint
- *, which suppresses ordinal suggestions the reorder policy
+ * null when no such range exists. Exported for the forward-import hint,
+ * which suppresses ordinal suggestions the reorder policy
  * would refuse.
  */
 export function categoryRangeForOrder(

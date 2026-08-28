@@ -348,3 +348,50 @@ describe('patch parse helper coverage', () => {
     expect(extractConflictingFiles(undefined)).toEqual([]);
   });
 });
+
+describe('parseDiffSections binary payload detection', () => {
+  const DELTA_SECTION = [
+    'diff --git a/res/cert.der b/res/cert.der',
+    'index 1d94f88ad7bb4e5e1b1a0c9a0f0e6d4c3b2a1908..37ae6960c3aa1b2c3d4e5f60718293a4b5c6d7e8 100644',
+    'GIT binary patch',
+    'literal 8',
+    'PcmZQzWX><iNG$>Y29N?L',
+    '',
+    'literal 9',
+    'QcmZQzWJ=1+ODw7c00^)Gi2wiq',
+    '',
+  ].join('\n');
+
+  const STUB_SECTION = [
+    'diff --git a/res/cert.der b/res/cert.der',
+    'index 1d94f88ad7..37ae6960c3 100644',
+    'Binary files a/res/cert.der and b/res/cert.der differ',
+  ].join('\n');
+
+  it('marks a GIT binary patch section as carrying a reconstructable delta', () => {
+    const [section] = parseDiffSections(DELTA_SECTION);
+    expect(section?.isBinary).toBe(true);
+    expect(section?.hasBinaryDelta).toBe(true);
+    expect(section?.hunks).toEqual([]);
+  });
+
+  it('marks a "Binary files … differ" stub as binary WITHOUT a delta', () => {
+    const [section] = parseDiffSections(STUB_SECTION);
+    expect(section?.isBinary).toBe(true);
+    expect(section?.hasBinaryDelta).toBe(false);
+  });
+
+  it('still parses the index hashes off a stub, which is why hasBinaryDelta is needed', () => {
+    // The stub carries a CORRECT new-side hash. Any check keyed on the hash
+    // alone concludes the recorded bytes match the live file, for a body that
+    // cannot produce those bytes — the trap `hasBinaryDelta` closes.
+    const [section] = parseDiffSections(STUB_SECTION);
+    expect(section?.indexOldHash).toBe('1d94f88ad7');
+    expect(section?.indexNewHash).toBe('37ae6960c3');
+  });
+
+  it('leaves hasBinaryDelta false for ordinary text sections', () => {
+    const sections = parseDiffSections(MULTI_HUNK_PATCH);
+    expect(sections.every((section) => !section.isBinary && !section.hasBinaryDelta)).toBe(true);
+  });
+});

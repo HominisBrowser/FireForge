@@ -4,11 +4,11 @@
  *
  * `status --json --fail-on` (and every other machine-mode command) promises
  * that stdout belongs exclusively to the machine payload and diagnostics
- * route to stderr. Pre-0.41.0 the command's `finally` restored machine mode
- * WHILE the refusal was still propagating, so by the time `withErrorHandling`
- * logged it, clack's styled error landed on stdout after the JSON. These
- * tests use the real logger and the real `withErrorHandling` — the defect is
- * invisible to suites that mock either.
+ * route to stderr. Restoring machine mode in the command's `finally` WHILE
+ * the refusal is still propagating means that by the time
+ * `withErrorHandling` logs it, clack's styled error lands on stdout after
+ * the JSON. These tests use the real logger and the real
+ * `withErrorHandling` — the defect is invisible to suites that mock either.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -146,9 +146,24 @@ describe('machine-output error routing', () => {
 
     await expect(handler()).rejects.toBeInstanceOf(CommandError);
 
-    const stderrText = stderrWrite.mock.calls.map((call) => String(call[0])).join('');
-    expect(stderrText).toContain('error: lock file unreadable');
+    // `tree list --json` emits the SAME failure envelope `status --json`
+    // does. Writing nothing to stdout and leaving the operator-facing line
+    // on stderr gives a scripted consumer a parseable refusal from one
+    // command and a bare non-zero exit from the other. See
+    // docs/machine-output.md.
     const stdoutText = stdoutWrite.mock.calls.map((call) => String(call[0])).join('');
-    expect(stdoutText).toBe('');
+    const payload = JSON.parse(stdoutText.trim()) as {
+      schemaVersion: number;
+      error: string;
+      code: string;
+    };
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      error: 'lock file unreadable',
+      code: 'tree-list-failed',
+    });
+    expect(stdoutText.trimEnd().split('\n')).toHaveLength(1);
+    const stderrText = stderrWrite.mock.calls.map((call) => String(call[0])).join('');
+    expect(stderrText).not.toContain('Unexpected error');
   });
 });

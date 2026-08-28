@@ -15,7 +15,7 @@ import { join } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import { pathExists, readText } from '../utils/fs.js';
-import { mozbuildSortCompare } from './manifest-helpers.js';
+import { mozbuildSortCompare } from './moz-manifest-helpers.js';
 
 /**
  * moz.build list variables mozbuild declares as `StrictOrderingOnAppendList`
@@ -89,30 +89,30 @@ function stripMozBuildComment(line: string): string {
 }
 
 /**
- * Extracts every strict-ordered list (with items in file order) from moz.build
- * content.
+ * Extracts every strict-ordered list (with items in file order) from
+ * moz.build content.
  *
- * Comments are stripped before both the item scan and the close-bracket test.
- * moz.build is Python, and before 0.41.0 neither step knew that:
+ * Comments are stripped before both the item scan and the close-bracket
+ * test, because moz.build is Python:
  *
- * - a quoted string in a trailing comment was scraped in as a phantom list
- *   item (`"Zeta.cpp",  # replaces "Beta.cpp"` yielded a `Beta.cpp` entry), so
- *   the sort check reported an unsorted list naming a file that is not in it —
- *   with a fingerprint that could never stabilise, because the item does not
- *   exist to be moved;
- * - a `]` anywhere in a comment (`# see foo[0]`) closed the list early and
- *   silently truncated the item set.
+ * - a quoted string in a trailing comment would otherwise be scraped in as a
+ *   phantom list item (`"Zeta.cpp",  # replaces "Beta.cpp"` yielding a
+ *   `Beta.cpp` entry), so the sort check reports an unsorted list naming a
+ *   file that is not in it — with a fingerprint that can never stabilise,
+ *   because the item does not exist to be moved;
+ * - a `]` anywhere in a comment (`# see foo[0]`) would close the list early
+ *   and silently truncate the item set.
  *
- * The scan also no longer advances the caller's loop counter: an unterminated
- * list used to consume the rest of the file, so every *later* list in it was
- * skipped entirely.
+ * The scan also does not advance the caller's loop counter: an unterminated
+ * list would otherwise consume the rest of the file and skip every later
+ * list in it.
  *
  * Nor does an unterminated list borrow the NEXT list's bracket. The forward
- * scan stops at the next list opener rather than reading through it: without
- * that, an unclosed `EXTRA_COMPONENTS` swallowed the following
- * `EXTRA_JS_MODULES` — its items merged into the first list's item set and its
- * `]` accepted as the first list's close — reporting a sorting error against a
- * variable that never contained those items, and skipping the second list.
+ * scan stops at the next list opener rather than reading through it —
+ * otherwise an unclosed `EXTRA_COMPONENTS` swallows the following
+ * `EXTRA_JS_MODULES`, merging its items into the first list and accepting
+ * its `]` as the first list's close, reporting a sorting error against a
+ * variable that never contained those items.
  */
 function collectStrictOrderedLists(content: string): MozBuildListOccurrence[] {
   const lines = content.split('\n');

@@ -4,6 +4,7 @@ import { delimiter, dirname } from 'node:path';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { assertEngineExists } from '../core/engine-precondition.js';
 import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
 import {
   generateMozconfig,
@@ -16,7 +17,6 @@ import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import { toError } from '../utils/errors.js';
-import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose } from '../utils/logger.js';
 import { exec, findExecutable } from '../utils/process.js';
 
@@ -74,16 +74,19 @@ function buildWatchmanConfigureTimeMessage(): string {
   );
 }
 
-/**
- * Builds the generic unsupported-watch failure message.
- * @param exitCode - Exit code returned by `mach watch`
- * @param watchmanPath - Optional absolute path to the resolved watchman binary; surfaced in the guidance so the operator can see whether FireForge actually found one.
- * @returns User-facing failure guidance
- */
 function hasWatchPermissionFailure(output: string): boolean {
   return /Operation not permitted|EPERM|EACCES/i.test(output);
 }
 
+/**
+ * Builds the generic unsupported-watch failure message.
+ *
+ * @param exitCode - Exit code returned by `mach watch`
+ * @param watchmanPath - Optional absolute path to the resolved watchman
+ *   binary; surfaced in the guidance so the operator can see whether
+ *   FireForge actually found one.
+ * @returns User-facing failure guidance
+ */
 function buildUnsupportedWatchMessage(
   exitCode: number,
   watchmanPath: string | undefined,
@@ -134,19 +137,15 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   const paths = getProjectPaths(projectRoot);
 
   // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
+  await assertEngineExists(paths.engine);
 
-  // Resolve the watchman binary to an absolute path up-front so we can
-  // (a) refuse fast when it is missing AND (b) prepend its directory to
-  // the mach subprocess PATH. 2026-04-24 eval Finding 12: on macOS,
-  // `which watchman` from the interactive shell returns
-  // `/opt/homebrew/bin/watchman`, but the Node subprocess PATH
-  // frequently omits `/opt/homebrew/bin`, so the shell probe passed and
-  // mach's `watch-project` call then timed out because its own PATH
-  // lookup for watchman failed. Threading the directory through the
-  // subprocess env fixes it.
+  // Resolve the watchman binary to an absolute path up-front so we can (a)
+  // refuse fast when it is missing AND (b) prepend its directory to the mach
+  // subprocess PATH. On macOS, `which watchman` from an interactive shell
+  // returns `/opt/homebrew/bin/watchman`, but the Node subprocess PATH
+  // frequently omits `/opt/homebrew/bin` — so the shell probe passes and
+  // mach's `watch-project` call then times out on its own failed PATH
+  // lookup. Threading the directory through the subprocess env fixes it.
   const watchmanPath = await findExecutable('watchman');
   if (!watchmanPath) {
     throw new GeneralError(
@@ -210,12 +209,11 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   info('Press Ctrl+C to stop\n');
 
   // Compose the subprocess env: start from the parent process env, then
-  // prepend the resolved watchman directory to PATH so the mach
-  // subprocess sees the same binary our probe just validated. Without
-  // this, a watchman install on `/opt/homebrew/bin` (the default
-  // homebrew prefix on Apple Silicon) is absent from the PATH Node
-  // inherits on spawn, and `mach watch` fails at the `watch-project`
-  // subscription step.
+  // prepend the resolved watchman directory to PATH so the mach subprocess
+  // sees the same binary the probe just validated. Without it, a watchman
+  // install under `/opt/homebrew/bin` is absent from the PATH Node inherits
+  // on spawn and `mach watch` fails at the `watch-project` subscription
+  // step.
   const watchmanDir = dirname(watchmanPath);
   const existingPath = process.env['PATH'] ?? '';
   const pathSegments = existingPath.split(delimiter).filter((segment) => segment.length > 0);

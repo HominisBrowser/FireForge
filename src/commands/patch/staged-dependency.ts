@@ -18,6 +18,7 @@ import type {
 } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
+import { addWaitLockOption, resolveWaitLockSeconds } from '../../utils/options.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 import { validateStagedDependencyAdd } from './staged-dependency-validate.js';
 
@@ -392,11 +393,19 @@ export async function patchStagedDependencyCommand(
     return;
   }
 
-  const result = await mutatePatchMetadata(paths.patches, targetPatch.filename, (current) => {
-    const after = applyToStaged(current.stagedDependencies);
-    if (countStagedEntries(after) === 0) return { unset: ['stagedDependencies'] };
-    return { set: { stagedDependencies: after } };
-  });
+  const result = await mutatePatchMetadata(
+    paths.patches,
+    targetPatch.filename,
+    (current) => {
+      const after = applyToStaged(current.stagedDependencies);
+      if (countStagedEntries(after) === 0) return { unset: ['stagedDependencies'] };
+      return { set: { stagedDependencies: after } };
+    },
+    {
+      waitLockSeconds: resolveWaitLockSeconds(options.waitLock),
+      command: 'patch staged-dependency',
+    }
+  );
 
   if (!result) {
     throw new GeneralError(
@@ -446,7 +455,7 @@ export async function patchStagedDependencyCommand(
  */
 export function registerPatchStagedDependency(parent: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  parent
+  const command = parent
     .command('staged-dependency <name>')
     .description(
       'Edit PatchMetadata.stagedDependencies on a single patch (no .patch body rewrite).'
@@ -474,28 +483,10 @@ export function registerPatchStagedDependency(parent: Command, context: CommandC
     .option(
       '-y, --yes',
       'Record scripted consent in the destructive-operation history log. This command never prompts; the flag exists for workflow uniformity with commands that do.'
-    )
-    .action(
-      withErrorHandling(
-        async (
-          name: string,
-          options: {
-            add?: boolean;
-            remove?: boolean;
-            clear?: boolean;
-            kind?: string;
-            file?: string;
-            specifier?: string;
-            line?: string;
-            creates?: string;
-            owner?: string;
-            reason?: string;
-            dryRun?: boolean;
-            yes?: boolean;
-          }
-        ) => {
-          await patchStagedDependencyCommand(getProjectRoot(), name, options);
-        }
-      )
     );
+  addWaitLockOption(command).action(
+    withErrorHandling(async (name: string, options: PatchStagedDependencyOptions) => {
+      await patchStagedDependencyCommand(getProjectRoot(), name, options);
+    })
+  );
 }

@@ -4,12 +4,11 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import type { TypecheckIssue, TypecheckProjectResult } from '../../types/typecheck.js';
 import { CHECK_JS_DISABLED_NOTICE, runTypecheck } from '../typecheck.js';
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '__fixtures__', 'typecheck');
 

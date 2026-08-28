@@ -61,8 +61,7 @@ export function validateChromeScriptJsDoc(
     // would emit a pseudo-issue for every rule here. The orchestrator already
     // runs the export walker on `.sys.mjs` separately, so silently declining
     // to lint an unparseable script is the correct degradation for this file
-    // and only this file. Pinned by "returns no issues when the source uses
-    // module-only syntax" in patch-lint-chrome-jsdoc.test.ts.
+    // and only this file.
     return [];
   }
 
@@ -71,11 +70,11 @@ export function validateChromeScriptJsDoc(
 
   for (const node of body) {
     if (node.type === 'FunctionDeclaration') {
-      validateFunctionDecl(node, comments, source, issues);
+      issues.push(...validateFunctionDecl(node, comments, source));
     } else if (node.type === 'ClassDeclaration') {
-      validateClassDecl(node, comments, source, issues);
+      issues.push(...validateClassDecl(node, comments, source));
       if (classMethodMode !== 'off') {
-        validateClassMethods(node, comments, source, issues, classMethodMode);
+        issues.push(...validateClassMethods(node, comments, source, classMethodMode));
       }
     }
     // Top-level `var Foo = class {...}` / `let Foo = function() {...}`
@@ -89,15 +88,12 @@ export function validateChromeScriptJsDoc(
 }
 
 /**
- * Per-file dispatch: applies the chrome-subscript JSDoc rule to one file
- * if it qualifies, mapping {@link JsDocIssue} into {@link PatchLintIssue}.
- * Extracted so the orchestrator in `patch-lint.ts` stays under the
- * project's per-file line budget — `patch-lint.ts` invokes this helper
- * inline once per affected JS/MJS file. Returns an empty array when the
- * file does not qualify (not a chrome subscript, not patch-owned, or the
- * mode is `'off'` / unset). The orchestrator pre-computes `isChromeOwned`
- * (true iff the file is a patch-owned `.js` non-`.sys.mjs`) so the call
- * site fits on a single line.
+ * Per-file dispatch: applies the chrome-subscript JSDoc rule to one file if
+ * it qualifies, mapping {@link JsDocIssue} into {@link PatchLintIssue}.
+ * Returns an empty array when the file does not qualify (not a chrome
+ * subscript, not patch-owned, or the mode is `'off'` / unset). The
+ * orchestrator pre-computes `isChromeOwned` (true iff the file is a
+ * patch-owned `.js` non-`.sys.mjs`) so the call site fits on a single line.
  */
 export function lintChromeScriptJsDocForFile(
   file: string,

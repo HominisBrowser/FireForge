@@ -5,6 +5,7 @@ import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig, loadState, updateState } from '../core/config.js';
+import { stdioIsInteractive } from '../core/destructive.js';
 import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { getStagedDiffForFiles } from '../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../core/git-file-ops.js';
@@ -25,29 +26,33 @@ import {
   spinner,
   success,
 } from '../utils/logger.js';
+import { addWaitLockOption, resolveWaitLockSeconds } from '../utils/options.js';
 
 /**
  * Options accepted by {@link resolveCommand}.
  */
 export interface ResolveCommandOptions {
   /**
-   * Skip the interactive "Have you finished fixing the files?"
-   * confirmation prompt and treat the resolution as complete.
+   * Skip the interactive "Have you finished fixing the files?" confirmation
+   * prompt and treat the resolution as complete.
    *
-   * Motivating case (2026-04-21 eval, Finding #18): a scripted or
-   * CI-assisted recovery flow that has already completed the manual
-   * merge step cannot advance through `fireforge resolve` because the
-   * TTY guard refuses non-interactive invocations outright. `--yes`
-   * is the explicit opt-in for those flows: the operator is asserting
-   * they have already done the merge, and the command proceeds
-   * straight to the patch-refresh + state-clear path.
+   * A scripted or CI-assisted recovery flow that has already completed the
+   * manual merge step cannot otherwise advance through `fireforge resolve`,
+   * because the TTY guard refuses non-interactive invocations outright.
+   * `--yes` is the explicit opt-in: the operator asserts the merge is done,
+   * and the command proceeds straight to the patch-refresh + state-clear
+   * path.
    *
-   * The guard without `--yes` is preserved — running `resolve` with
-   * no TTY and no `--yes` still refuses so an accidental pipe-into
-   * invocation doesn't silently commit whatever the engine happens
-   * to contain.
+   * The guard without `--yes` is preserved — running `resolve` with no TTY
+   * and no `--yes` still refuses, so an accidental pipe-into invocation does
+   * not silently commit whatever the engine happens to contain.
    */
   yes?: boolean;
+  /**
+   * Seconds to wait for the patch directory lock. `resolve` rewrites a patch
+   * body and its metadata under that lock.
+   */
+  waitLock?: number | boolean;
 }
 
 /**
@@ -75,13 +80,12 @@ export async function resolveCommand(
 
   await assertEngineGitReady(paths.engine);
 
-  // Non-interactive mode requires an explicit `--yes` to proceed: the
-  // operator is asserting the manual merge is complete and the
-  // refreshed diff is the one to record. Without `--yes`, an accidental
-  // pipe / CI shell could otherwise commit whatever the engine
-  // currently contains. 2026-04-21 eval (Finding #18): a scripted
-  // recovery flow was dead-ended by the unconditional TTY refusal.
-  if (!(process.stdin.isTTY && process.stdout.isTTY) && !options.yes) {
+  // Non-interactive mode requires an explicit `--yes`: the operator is
+  // asserting the manual merge is complete and the refreshed diff is the one
+  // to record. Without it, an accidental pipe or CI shell could commit
+  // whatever the engine currently contains — but an unconditional TTY
+  // refusal dead-ends a scripted recovery flow.
+  if (!stdioIsInteractive() && !options.yes) {
     throw new GeneralError(
       'Cannot run "fireforge resolve" in non-interactive mode. Use a terminal with TTY support, or pass "--yes" to skip the interactive confirmation once the manual merge is complete.'
     );
@@ -168,36 +172,40 @@ export async function resolveCommand(
     }
 
     // Atomically write the patch body and the metadata update under the
-    // shared patch-directory lock. Replaces the previous lock-free
-    // sequence of updatePatch + updatePatchMetadata, which a concurrent
-    // import / export / re-export / patch reorder / patch compact could
-    // interleave with and leave the manifest disagreeing with the
-    // freshly-written patch body.
+    // shared patch-directory lock. A lock-free updatePatch +
+    // updatePatchMetadata sequence can be interleaved by a concurrent
+    // import / export / re-export / patch reorder / patch compact, leaving
+    // the manifest disagreeing with the freshly-written patch body.
     //
-    // Always recompute `filesAffected` from the diff content itself. The
-    // eval finding #16 scenario: the user's manual fix removed every
-    // hunk for one file while the file still existed on disk, so the
-    // pre-0.16.0 gate of "update filesAffected only when files were
-    // deleted from disk" left the manifest claiming a file the patch
-    // body no longer targeted. The next `fireforge import` then failed
-    // the patch-manifest consistency check even though resolve reported
-    // success. `extractAffectedFiles` already owns the canonical
-    // "parse a diff, return its target paths" logic used by export and
-    // consistency — using it here keeps resolve in agreement with every
-    // other writer.
+    // Always recompute `filesAffected` from the diff content itself. When a
+    // manual fix removes every hunk for one file while the file still exists
+    // on disk, a gate of "update filesAffected only when files were deleted
+    // from disk" leaves the manifest claiming a file the patch body no longer
+    // targets, and the next `fireforge import` fails the patch-manifest
+    // consistency check even though resolve reported success.
+    // `extractAffectedFiles` already owns the canonical "parse a diff, return
+    // its target paths" logic used by export and consistency, so using it
+    // here keeps resolve in agreement with every other writer.
     const diffFilesAffected = extractAffectedFiles(diffContent);
     const config = await loadConfig(projectRoot);
-    await updatePatchAndMetadata(paths.patches, patchFilename, diffContent, {
-      filesAffected: diffFilesAffected,
-      ...buildPatchSourceMetadata(config.firefox),
-    });
+    await updatePatchAndMetadata(
+      paths.patches,
+      patchFilename,
+      diffContent,
+      {
+        filesAffected: diffFilesAffected,
+        ...buildPatchSourceMetadata(config.firefox),
+      },
+      undefined,
+      undefined,
+      { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'resolve' }
+    );
 
-    // Cleanup: Clear pendingResolution from state.json transactionally so
-    // we don't clobber concurrent updates to unrelated keys (e.g. another
-    // command writing buildMode or baseCommit between our loadState and
-    // saveState). The updater function runs inside the state-file lock
-    // with the freshest on-disk state, so only pendingResolution is
-    // affected.
+    // Clear pendingResolution from state.json transactionally so a
+    // concurrent update to unrelated keys (another command writing buildMode
+    // or baseCommit between our load and save) is not clobbered. The updater
+    // runs inside the state-file lock with the freshest on-disk state, so
+    // only pendingResolution is affected.
     await updateState(projectRoot, (current) => {
       const next = { ...current };
       delete next.pendingResolution;
@@ -222,7 +230,7 @@ export function registerResolve(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const command = program
     .command('resolve')
     .description(
       'Update a broken patch with manual fixes (then run "fireforge import" to resume the queue)'
@@ -230,10 +238,10 @@ export function registerResolve(
     .option(
       '-y, --yes',
       'Skip the interactive confirmation prompt. Use for non-interactive automation flows (CI, scripted recovery) after the manual merge is complete.'
-    )
-    .action(
-      withErrorHandling(async (options: { yes?: boolean }) => {
-        await resolveCommand(getProjectRoot(), options);
-      })
     );
+  addWaitLockOption(command).action(
+    withErrorHandling(async (options: { yes?: boolean; waitLock?: boolean | number }) => {
+      await resolveCommand(getProjectRoot(), options);
+    })
+  );
 }

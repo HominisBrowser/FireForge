@@ -3,16 +3,12 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { runCheckJs, runCheckJsGrouped } from '../patch-lint-checkjs.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { pathExists, readText } from '../../utils/fs.js';
 
@@ -207,7 +203,7 @@ describe('runCheckJs', () => {
   });
 
   it('carries JSDoc type-guard predicates across owned chrome:// module boundaries', async () => {
-    // Field report B1: per-patch lint used to type all cross-module imports
+    // Per-patch lint must not type all cross-module imports
     // as `any` (noResolve + wildcard ambient modules), so `value is Element`
     // guards lost their narrowing and call sites accumulated false
     // checkjs-type-errors. Owned imports now resolve to real sources.
@@ -486,7 +482,7 @@ describe('runCheckJs', () => {
   });
 
   it('accepts ChromeUtils.getClassName, defineLazyGetter, and Localization under strict checkJs', async () => {
-    // Field report B3: these are stable chrome globals; the shim's closed
+    // These are stable chrome globals; the shim's closed
     // ChromeUtils member list rejected the two methods (TS2339 is not in
     // the suppressed-code set) and Localization was undeclared.
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
@@ -636,13 +632,13 @@ describe('runCheckJs', () => {
   });
 
   it('lets an extra shim ADD members to shim globals via interface merging', async () => {
-    // The drill's second half: `ChromeUtilsShim` is a mergeable global
-    // interface, so a project extra shim can extend `ChromeUtils` without
-    // the duplicate-identifier error a second `declare var ChromeUtils`
-    // produces. The fixture adds a novel member; the correct use must
-    // pass (proving no duplicate-identifier / missing-member diagnostics)
-    // and a misuse must still be flagged (proving the member is TYPED by
-    // the merge, not swallowed by a suppressed cannot-find-name code).
+    // `ChromeUtilsShim` is a mergeable global interface, so a project extra
+    // shim can extend `ChromeUtils` without the duplicate-identifier error a
+    // second `declare var ChromeUtils` produces. The fixture adds a novel
+    // member; the correct use must pass (proving no duplicate-identifier /
+    // missing-member diagnostics) and a misuse must still be flagged
+    // (proving the member is TYPED by the merge, not swallowed by a
+    // suppressed cannot-find-name code).
     const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
 
@@ -781,7 +777,7 @@ describe('runCheckJs', () => {
     }
   });
 
-  // ── Item B2 / C (0.32.0): scope split — one program, per-file attribution ──
+  // Scope split: one program, per-file attribution.
 
   it('runCheckJsGrouped attributes each diagnostic to its originating file', async () => {
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
@@ -934,6 +930,61 @@ describe('runCheckJs', () => {
       });
       const errors = withPaths.filter((i) => i.check === 'checkjs-type-error');
       expect(errors.length).toBeGreaterThanOrEqual(1);
+      expect(errors.some((i) => i.file === 'consumer.sys.mjs')).toBe(true);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('honours an exact (wildcard-free) paths mapping, and substitutes only the one wildcard', async () => {
+    // The substitution is index arithmetic rather than `replace('*', …)`
+    // (CodeQL `js/incomplete-sanitization` read the first-occurrence-only
+    // replace as an incomplete rewrite). Both target shapes are pinned here:
+    // a wildcard-free target, which is used verbatim, and a target whose one
+    // `*` is filled with the captured segment.
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-paths-exact-'));
+    await mkdir(join(tmpDir, 'lib'), { recursive: true });
+    await writeFile(
+      join(tmpDir, 'lib', 'Exact.sys.mjs'),
+      [
+        '/**',
+        ' * @returns {number} a number',
+        ' */',
+        'export function getNum() {',
+        '  return 1;',
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(
+      join(tmpDir, 'consumer.sys.mjs'),
+      [
+        "import { getNum } from 'resource:///exact/Thing.sys.mjs';",
+        '/** @returns {string} A string */',
+        'export function use() {',
+        '  return getNum();',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const owned = new Set(['consumer.sys.mjs']);
+      const result = await runCheckJs(tmpDir, owned, undefined, undefined, {
+        strict: true,
+        compilerOptions: {
+          paths: { 'resource:///exact/Thing.sys.mjs': ['lib/Exact.sys.mjs'] },
+        },
+      });
+      const errors = result.filter((i) => i.check === 'checkjs-type-error');
       expect(errors.some((i) => i.file === 'consumer.sys.mjs')).toBe(true);
     } finally {
       await rm(tmpDir, { recursive: true, force: true });

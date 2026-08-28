@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 // Mirrors the real `withParserFallback` contract (primary → rethrowIf →
 // fallback) so tests exercise the `rethrowIf` predicate rather than a stub
 // that can never reach it.
@@ -22,16 +24,16 @@ const parserFallbackMock = vi.hoisted(() =>
   )
 );
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../parser-fallback.js', () => ({
+vi.mock('../parser-fallback.js', async (importOriginal) => ({
+  // Pure logic with no side effects; only `withParserFallback` needs
+  // controlling here.
+  ...(await importOriginal<typeof import('../parser-fallback.js')>()),
   withParserFallback: parserFallbackMock,
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import {
   addSubscriptAST,
@@ -137,7 +139,7 @@ function bootstrapBrowser() {
 
     await expect(addSubscriptToBrowserMain('/engine', 'dock-controller')).resolves.toBe(true);
     expect(writeText).toHaveBeenCalledWith(
-      '/engine/browser/base/content/browser-main.js',
+      nativePath('/engine/browser/base/content/browser-main.js'),
       expect.stringContaining('dock-controller.js')
     );
   });

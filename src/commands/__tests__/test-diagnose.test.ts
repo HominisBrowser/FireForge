@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Direct unit tests for the harness-verdict application layer: the
- * green-summary rejection surfacing (0.35.0 crash green-wash fix) and the
- * non-zero-exit diagnosis branches that only fire on specific captured
- * output shapes. The classifier itself is covered by
- * `src/core/__tests__/test-harness-crash.test.ts`; the command-level
- * composition by `test.test.ts`.
+ * green-summary rejection surfacing and the non-zero-exit diagnosis branches
+ * that only fire on specific captured output shapes. The classifier itself
+ * is covered by `src/core/__tests__/test-harness-crash.test.ts`; the
+ * command-level composition by `test.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  setStdoutSealed: vi.fn(),
-  info: vi.fn(),
-}));
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { createPostRebuildFailureContext } from '../../core/test-harness-output.js';
 import { info } from '../../utils/logger.js';
@@ -216,7 +214,7 @@ describe('finalizeSingleRunOutcome', () => {
     });
   });
 
-  it('echoes the TEST-UNEXPECTED blocks with assertion text into the failure summary (0.37.0 item 7)', () => {
+  it('echoes the TEST-UNEXPECTED blocks with assertion text into the failure summary', () => {
     const outcome = makeOutcome({
       exitCode: 1,
       verdict: {
@@ -278,7 +276,7 @@ describe('diagnoseShardOutcome', () => {
     expect(diagnosis).toContain('browser_hominis_cui_telemetry.js');
   });
 
-  it('prepends the TEST-UNEXPECTED blocks to the shard diagnosis string (0.37.0 item 7)', () => {
+  it('prepends the TEST-UNEXPECTED blocks to the shard diagnosis string', () => {
     const outcome = makeOutcome({
       exitCode: 1,
       verdict: {

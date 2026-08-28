@@ -5,10 +5,9 @@ import { readOnlyGitIndexEnv } from './git-readonly-index.js';
 
 /**
  * Environment variable that overrides the monolithic `git add -A` timeout
- * (milliseconds). 2026-04-24 eval Finding 10: operators on slow or loaded
- * filesystems legitimately exceeded the 10-minute default during a
- * 140.10.0esr baseline indexing pass; making the cap overridable lets
- * them retry without recompiling.
+ * (milliseconds). Operators on slow or loaded filesystems can legitimately
+ * exceed the 10-minute default during a baseline indexing pass; making the
+ * cap overridable lets them retry without recompiling.
  */
 export const GIT_ADD_TIMEOUT_ENV_VAR = 'FIREFORGE_GIT_ADD_TIMEOUT_MS';
 
@@ -45,11 +44,10 @@ export const GIT_ADD_TIMEOUT_MS: number = resolveTimeoutFromEnv(
 );
 
 /**
- * Resolved timeout for each chunk of the chunked fallback path. Grew
- * from 20 to 30 minutes in 0.18.1 because the fallback is already the
- * last line of defence before aborting — erring on the side of "complete
- * the indexing" over "fail fast" matches the real-world recovery
- * workflow.
+ * Resolved timeout for each chunk of the chunked fallback path. Generous by
+ * design: the fallback is already the last line of defence before aborting,
+ * so erring toward "complete the indexing" over "fail fast" matches the
+ * real-world recovery workflow.
  */
 export const GIT_ADD_CHUNK_TIMEOUT_MS: number = resolveTimeoutFromEnv(
   GIT_ADD_CHUNK_TIMEOUT_ENV_VAR,
@@ -163,4 +161,22 @@ export async function configureGitPerformance(repoDir: string): Promise<void> {
   // Explicitly disable fsmonitor to avoid daemon issues on freshly-created repos
   await git(['config', 'core.fsmonitor', 'false'], repoDir);
   await git(['config', 'feature.manyFiles', 'true'], repoDir);
+}
+
+/**
+ * Pins the engine repository's line-ending policy to "store and check out
+ * exactly what upstream shipped".
+ *
+ * Git's Windows installer defaults to a global `core.autocrlf=true`, which
+ * rewrites LF to CRLF on checkout and back on staging. FireForge cannot
+ * tolerate that: patch bodies are byte diffs of the working tree, and
+ * `hashObjectBatch` deliberately delegates to git so `.gitattributes` and
+ * `core.autocrlf` DO apply to the hashes `status` compares against. Under the
+ * global default the same tree hashes differently on Windows than everywhere
+ * else, so exported patches and drift detection disagree across machines.
+ * Setting it per-repository leaves the developer's global config alone.
+ */
+export async function configureGitLineEndings(repoDir: string): Promise<void> {
+  await git(['config', 'core.autocrlf', 'false'], repoDir);
+  await git(['config', 'core.eol', 'lf'], repoDir);
 }

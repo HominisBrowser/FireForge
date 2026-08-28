@@ -2,12 +2,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RebaseSession } from '../../../core/rebase-session.js';
+import { createLoggerMock } from '../../../test-utils/module-mocks.js';
 import { info } from '../../../utils/logger.js';
 import { printSummary } from '../summary.js';
 
-vi.mock('../../../utils/logger.js', () => ({
-  info: vi.fn(),
-}));
+vi.mock('../../../utils/logger.js', () => createLoggerMock());
 
 describe('printSummary', () => {
   it('prints source product context and total patch count', () => {

@@ -14,7 +14,7 @@ import { join } from 'node:path';
 
 import { FireForgeError } from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
-import { PatchManifestCorruptError } from '../errors/patch.js';
+import { PatchError, PatchManifestCorruptError } from '../errors/patch.js';
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
 import type { JsonObject } from '../types/json.js';
 import { assert } from '../utils/assert.js';
@@ -414,7 +414,7 @@ export async function renumberPatchesInManifest(
 
   const manifest = await loadPatchesManifestForWrite(patchesDir);
   if (!manifest) {
-    throw new Error('Cannot renumber patches: patches.json is missing.');
+    throw new PatchError('Cannot renumber patches: patches.json is missing.');
   }
 
   // Phase 1: rename each old filename to a unique temp staging name so the
@@ -427,7 +427,10 @@ export async function renumberPatchesInManifest(
     for (const [oldFilename, entry] of renameMap) {
       const oldPath = join(patchesDir, oldFilename);
       if (!(await pathExistsStrict(oldPath))) {
-        throw new Error(`Cannot renumber: patch file is missing on disk: ${oldFilename}`);
+        throw new PatchError(
+          `Cannot renumber: patch file is missing on disk: ${oldFilename}`,
+          oldFilename
+        );
       }
       const stagedName = `.fireforge-renumber-${stagingId}-${oldFilename}`;
       const stagedPath = join(patchesDir, stagedName);
@@ -457,21 +460,21 @@ export async function renumberPatchesInManifest(
       const { staged, toEntry } = stagedEntry;
       const targetPath = join(patchesDir, toEntry.newFilename);
       if (await pathExistsStrict(targetPath)) {
-        throw new Error(
-          `Cannot renumber: target patch filename already exists on disk: ${toEntry.newFilename}`
+        throw new PatchError(
+          `Cannot renumber: target patch filename already exists on disk: ${toEntry.newFilename}`,
+          toEntry.newFilename
         );
       }
       await rename(join(patchesDir, staged), targetPath);
-      // Postcondition assert: confirm the target actually exists on
-      // disk before we mark the rename complete. A silent rename
-      // failure would leave the manifest and the filesystem
-      // disagreeing — exactly what the eval 1 Finding #7 report
-      // described: manifest rewrote to new filenames while the old
-      // files stayed on disk. If the assert ever fires, the Phase 2
-      // rollback will undo prior moves before re-throwing.
+      // Postcondition assert: confirm the target actually exists on disk
+      // before marking the rename complete. A silent rename failure leaves
+      // the manifest and the filesystem disagreeing — manifest rewritten to
+      // new filenames while the old files stay on disk. If the assert fires,
+      // the Phase 2 rollback undoes prior moves before re-throwing.
       if (!(await pathExistsStrict(targetPath))) {
-        throw new Error(
-          `Rename postcondition failed: expected ${toEntry.newFilename} to exist after rename, but it was not found on disk.`
+        throw new PatchError(
+          `Rename postcondition failed: expected ${toEntry.newFilename} to exist after rename, but it was not found on disk.`,
+          toEntry.newFilename
         );
       }
       completedFinalRenames.push(stagedEntry);
@@ -651,12 +654,10 @@ export async function removePatchFileAndManifest(
       try {
         await savePatchesManifest(patchesDir, originalManifest);
       } catch (rollbackError: unknown) {
-        // Compound failure: both the delete and the rollback failed,
-        // so the directory is in a known-inconsistent state. Throw a
-        // dedicated error type that carries both causes so the
-        // operator's log shows the complete picture instead of the
-        // original delete error with a warning about the rollback
-        // buried in stderr.
+        // Compound failure: both the delete and the rollback failed, so the
+        // directory is in a known-inconsistent state. A dedicated error type
+        // carrying both causes shows the complete picture instead of the
+        // original delete error with a rollback warning buried in stderr.
         throw new PatchDeleteRollbackError(filename, deleteError, toError(rollbackError));
       }
     }

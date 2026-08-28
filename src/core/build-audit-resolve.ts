@@ -2,30 +2,27 @@
 /*
  * Path-resolution helpers for the post-build dist-tree audit.
  *
- * Resolves the expected on-disk artifact location for a given engine
- * source path. The previous implementation matched purely by basename and
- * suffered three classes of false positive:
+ * Resolves the expected on-disk artifact location for a given engine source
+ * path. Matching purely by basename produces three classes of false
+ * positive, each of which these helpers exist to avoid:
  *
- *   1. A branding override (e.g. `engine/browser/branding/<name>/content/aboutDialog.css`)
- *      shipped at `chrome/browser/content/branding/aboutDialog.css` would
- *      get matched against the unrelated upstream
- *      `chrome/browser/content/browser/aboutDialog.css`.
- *   2. Test files (`browser_*.js`, `test_*.js`) live under `_tests/`, not
- *      `dist/`, so every registered test was reported as missing.
+ *   1. A branding override (`engine/browser/branding/<name>/content/
+ *      aboutDialog.css`, shipped at `chrome/browser/content/branding/
+ *      aboutDialog.css`) matching the unrelated upstream
+ *      `chrome/browser/content/browser/aboutDialog.css`. Handled by ranking
+ *      same-basename candidates on shared trailing path segments.
+ *   2. Test files (`browser_*.js`, `test_*.js`) living under `_tests/`, not
+ *      `dist/`. Handled by routing test paths to a separate resolver.
  *   3. Build inputs (`jar.mn`, `moz.build`, `Makefile.in`, `moz.configure`)
- *      never appear under `dist/` — they are consumed, not packaged.
- *
- * The helpers below address (1) by ranking same-basename candidates by
- * how many trailing path segments they share with the source, and (2) by
- * routing test paths to a separate `_tests/`-aware resolver.
- *
- * (3) is handled in `build-audit.ts` via `isPackageablePath`.
+ *      that are consumed rather than packaged. Handled in `build-audit.ts`
+ *      via `isPackageablePath`.
  */
 
 import { readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import { pathExists } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 
 /** Maximum directory depth to traverse when scanning a tree root. */
 const MAX_SCAN_DEPTH = 12;
@@ -61,11 +58,19 @@ export function isTestPath(sourcePath: string): boolean {
 }
 
 /**
- * Splits a POSIX path into segments, dropping empties.
- * @param path POSIX-separated path
+ * Splits a path into segments, dropping empties.
+ *
+ * Separators are normalized first because the candidates come from `join()`
+ * over a `readdir` walk of the dist tree: on Windows those carry backslashes,
+ * which a `/`-only split collapses into a SINGLE segment. Every candidate then
+ * scores the same, so the trailing-overlap heuristic that disambiguates
+ * same-basename artifacts (`branding/…/aboutDialog.css` versus
+ * `browser/…/aboutDialog.css`) silently picks an arbitrary one.
+ *
+ * @param path Path in either separator style
  */
 function pathSegments(path: string): string[] {
-  return path.split('/').filter(Boolean);
+  return normalizePathSlashes(path).split('/').filter(Boolean);
 }
 
 /**
@@ -96,14 +101,13 @@ export function countTrailingSegmentMatches(a: string, b: string): number {
 /**
  * Path segments too common to identify an artifact on their own.
  *
- * Shared deliberately: this set governs two halves of ONE decision, and the
- * halves disagreed before 0.41.0. `scoreCandidate` (selection) used an
- * 11-entry copy while `isConfidentMatch` (confirmation, in `build-audit.ts`)
- * used a 17-entry one, so a source path containing `test`, `tests`, `unit`,
- * `common`, `xpcshell` or `mochitest` earned a +1 selection bonus for a
- * segment that confirmation then rejected as meaningless — the chosen
- * artifact could never be confirmed. The union is authoritative; any addition
- * must apply to both halves, which is now automatic.
+ * Shared deliberately: this set governs two halves of ONE decision —
+ * `scoreCandidate` (selection) and `isConfidentMatch` (confirmation, in
+ * `build-audit.ts`). When the halves kept separate copies they disagreed,
+ * so a source path could earn a selection bonus for a segment that
+ * confirmation then rejected as meaningless, leaving the chosen artifact
+ * unconfirmable. Any addition must apply to both halves, which is now
+ * automatic.
  */
 export const GENERIC_PATH_SEGMENTS: ReadonlySet<string> = new Set([
   'content',
@@ -127,17 +131,16 @@ export const GENERIC_PATH_SEGMENTS: ReadonlySet<string> = new Set([
 
 /**
  * Computes a score for `candidatePath` relative to `sourcePath`. Higher
- * scores win. Score = trailing-segment match count, with a bonus when
- * the candidate's path contains a meaningful intermediate segment from
- * the source (e.g. `branding`, the branding dir name itself, etc.).
+ * scores win. Score = trailing-segment match count, with a bonus when the
+ * candidate's path contains a meaningful intermediate segment from the
+ * source (e.g. `branding`, or the branding dir name itself).
  *
- * The bonus exists because Firefox packaging often re-roots files: a
- * source `branding/<name>/content/aboutDialog.css` lands at
+ * The bonus exists because Firefox packaging often re-roots files: a source
+ * `branding/<name>/content/aboutDialog.css` lands at
  * `chrome/browser/content/branding/aboutDialog.css` — only the basename
- * trails-match, but the `branding` segment moved into the middle of
- * the candidate path. Without the bonus, that candidate would tie with
- * the unrelated `chrome/browser/content/browser/aboutDialog.css` and
- * the audit would pick whichever the directory walk hit first.
+ * trails-match, but the `branding` segment moved into the middle of the
+ * candidate path. Without the bonus that candidate ties with the unrelated
+ * `chrome/browser/content/browser/aboutDialog.css`.
  *
  * @param sourcePath Engine-relative POSIX path
  * @param candidatePath Absolute path under the dist tree

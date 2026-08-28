@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { loadFurnaceState } from '../../core/furnace-config.js';
@@ -68,8 +69,6 @@ export async function removeDeployedCustomFiles(
   if (deletedCount > 0) {
     info(`Deleted ${deletedCount} deployed file(s) from engine/${targetPath}/`);
   }
-
-  const { readdir } = await import('node:fs/promises');
   if ((await readdir(engineTargetDir)).length === 0) {
     await removeDir(engineTargetDir);
     info(`Removed now-empty engine/${targetPath}/`);

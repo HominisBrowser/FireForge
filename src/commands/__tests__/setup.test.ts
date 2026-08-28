@@ -31,6 +31,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   note: vi.fn(),
@@ -262,5 +268,38 @@ describe('setupCommand non-interactive', () => {
       firefox: { product: 'firefox-beta', version: '147.0b1' },
       license: 'MPL-2.0',
     });
+  });
+
+  it('accepts --yes as an alias for --force', async () => {
+    // `setup`'s only bypass is the overwrite prompt, so the two flags mean the
+    // same thing here. Seventeen other commands spell this bypass `--yes`;
+    // accepting it lets a scripted sequence use one spelling throughout.
+    const program = new Command();
+    const withErrorHandling = <T extends unknown[]>(
+      fn: (...args: T) => Promise<void>
+    ): ((...args: T) => Promise<void>) => fn;
+
+    registerSetup(program, { getProjectRoot: () => '/project', withErrorHandling });
+
+    await program.parseAsync([
+      'node',
+      'fireforge',
+      'setup',
+      '--name',
+      'YesBrowser',
+      '--vendor',
+      'YesCorp',
+      '--app-id',
+      'org.yescorp.browser',
+      '--binary-name',
+      'yesbrowser',
+      '--firefox-version',
+      '147.0b1',
+      '--yes',
+    ]);
+
+    // Reaching writeConfig at all is the assertion: without the alias mapping
+    // to `force`, the non-interactive run refuses rather than overwriting.
+    expect(vi.mocked(writeConfig)).toHaveBeenCalled();
   });
 });

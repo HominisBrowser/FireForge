@@ -3,21 +3,19 @@
  * Fuzz-like patch application with escalating context reduction.
  *
  * Tries an exact `git apply` first, then retries with git's real
- * drift-tolerance knob: `-C<n>` (reduced context matching). `git apply`
- * has NO `--fuzz` option — that flag belongs to GNU `patch(1)`. The
- * original implementation passed `--fuzz=N`, which git rejects with a
- * usage error (exit 129) that the escalation loop swallowed, so every
- * "fuzzy" attempt silently failed and patches that would have applied
- * with context drift were reported as hard conflicts (2026-07-05 review,
- * finding H1; verified against git 2.50). If all context-reduction levels
- * fail, falls through to `git apply --reject` so the user gets `.rej`
- * files for manual resolution.
+ * drift-tolerance knob: `-C<n>` (reduced context matching). `git apply` has
+ * NO `--fuzz` option — that flag belongs to GNU `patch(1)`, and passing it
+ * makes git exit 129 with a usage error that an escalation loop will happily
+ * swallow, so every "fuzzy" attempt silently fails and patches that would
+ * have applied with context drift are reported as hard conflicts. If all
+ * context-reduction levels fail, falls through to `git apply --reject` so
+ * the user gets `.rej` files for manual resolution.
  *
  * Semantics note: GNU fuzz *fuzzily matches* context; `-C<n>` *ignores*
  * outer context lines instead. Step k maps to `-C(3-k)` (git's default
- * context width is 3), so the final step `-C0` matches on line positions
- * and -/+ content alone — the rough analogue of GNU `--fuzz=3` on a
- * 3-context patch.
+ * context width is 3), so the final step `-C0` matches on line positions and
+ * -/+ content alone — the rough analogue of GNU `--fuzz=3` on a 3-context
+ * patch.
  */
 
 import { InvalidArgumentError } from '../errors/base.js';
@@ -122,16 +120,15 @@ export async function applyPatchWithFuzz(
 /**
  * Extracts `.rej` file paths from `git apply --reject` stderr.
  *
- * Git's actual output shape (verified against git 2.50):
+ * Git's output shape:
  *
  *   Applying patch f.txt with 1 reject...
  *   Rejected hunk #1.
  *
- * The reject file is `<file>.rej` next to the target. The previous regex
- * (`Rejected hunk.*to (.+\.rej)`) targeted GNU `patch(1)`'s "saving
- * rejects to file X.rej" phrasing, which git never prints — so
- * `rejectFiles` was always empty and the conflict-summary ".rej files
- * created" hint never fired.
+ * The reject file is `<file>.rej` next to the target. Matching GNU
+ * `patch(1)`'s "saving rejects to file X.rej" phrasing instead — which git
+ * never prints — leaves `rejectFiles` always empty and the
+ * conflict-summary ".rej files created" hint never fires.
  */
 function extractRejectFiles(stderr: string): string[] {
   const rejectFiles: string[] = [];

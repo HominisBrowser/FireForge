@@ -26,6 +26,10 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   ensureFurnaceConfig: vi.fn(() =>
     Promise.resolve({
       version: 1,
@@ -69,7 +73,11 @@ vi.mock('../../core/furnace-scanner.js', () => ({
 // Stub the lifecycle wrapper so tests do not need to spin up the real
 // furnace-wide file lock. The body is invoked synchronously so command
 // behavior is unchanged from the test's perspective.
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -105,6 +113,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   cancel: vi.fn(),
   info: vi.fn(),
   intro: vi.fn(),
@@ -326,7 +340,7 @@ describe('furnaceScanCommand', () => {
     expect(restoreRollbackJournalOrThrow).toHaveBeenCalled();
   });
 
-  it('--track persists every untracked component into stock non-interactively (0.34.0)', async () => {
+  it('--track persists every untracked component into stock non-interactively', async () => {
     setTTY(false, false);
     vi.mocked(scanWidgetsDirectory).mockResolvedValue([
       { tagName: 'moz-button', hasCSS: true, hasFTL: false, isRegistered: true },
@@ -366,7 +380,7 @@ describe('furnaceScanCommand', () => {
     expect(prompts.confirm).not.toHaveBeenCalled();
   });
 
-  it('--track is a no-op when everything is already tracked (0.34.0)', async () => {
+  it('--track is a no-op when everything is already tracked', async () => {
     vi.mocked(scanWidgetsDirectory).mockResolvedValue([
       { tagName: 'moz-button', hasCSS: true, hasFTL: false, isRegistered: true },
     ] as never);
@@ -385,7 +399,7 @@ describe('furnaceScanCommand', () => {
     expect(info).toHaveBeenCalledWith(expect.stringContaining('Nothing to track'));
   });
 
-  it('non-interactive scan without --track points at --track (0.34.0)', async () => {
+  it('non-interactive scan without --track points at --track', async () => {
     vi.mocked(scanWidgetsDirectory).mockResolvedValue([
       { tagName: 'moz-dialog', hasCSS: false, hasFTL: false, isRegistered: true },
     ] as never);

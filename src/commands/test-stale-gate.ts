@@ -22,25 +22,24 @@ import type { TestOptions } from '../types/commands/index.js';
 import { warn } from '../utils/logger.js';
 
 /**
- * Stale-build preflight — when `--build` was NOT requested, detect
- * packageable engine edits since the last successful build and fail
- * UP-FRONT unless the operator explicitly accepts the stale package risk.
+ * Stale-build preflight — when `--build` was NOT requested, detect packageable
+ * engine edits since the last successful build and fail UP-FRONT unless the
+ * operator explicitly accepts the stale package risk.
  *
  * Packaging COVERAGE is checked first, on EVERY non-`--build` run and
- * regardless of staleness or `--allow-stale-build`: a runtime packaged by
- * a file-scoped `test --build` can lack support fixtures for OTHER
- * manifests even when nothing changed since — dispatching such a run
- * hangs on missing fixtures rather than failing, so the flag (which only
- * accepts stale CONTENT) must not be the trigger. Field incident: a
- * three-file scoped rebuild left `file_tiles_audio.html` unpackaged and a
- * later run over different files timed out twice at 45s waiting on
- * `DOMAudioPlaybackStarted`.
+ * regardless of staleness or `--allow-stale-build`: a runtime packaged by a
+ * file-scoped `test --build` can lack support fixtures for OTHER manifests
+ * even when nothing changed since — dispatching such a run hangs on missing
+ * fixtures rather than failing, so the flag (which only accepts stale
+ * CONTENT) must not be the trigger. A three-file scoped rebuild leaving one
+ * fixture unpackaged makes a later run over different files time out waiting
+ * on an event that never fires.
  *
- * Exception: a path-less `test --doctor` stops at the Marionette health
- * check (`runDoctorPreflight` returns 'stop' when no test paths were
- * given) and never dispatches a test, so it needs no packaging coverage —
- * treating it as a full-suite request would refuse a probe that touches
- * no fixtures. The stale-content refusal still applies to it unchanged.
+ * Exception: a path-less `test --doctor` stops at the Marionette health check
+ * (`runDoctorPreflight` returns 'stop' when no test paths were given) and
+ * never dispatches a test, so it needs no packaging coverage — treating it as
+ * a full-suite request would refuse a probe that touches no fixtures. The
+ * stale-content refusal still applies to it unchanged.
  */
 export async function enforceStaleBuildGate(
   projectRoot: string,

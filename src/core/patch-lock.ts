@@ -5,7 +5,7 @@
 
 import { join } from 'node:path';
 
-import { FireForgeError } from '../errors/base.js';
+import { CommandError, FireForgeError } from '../errors/base.js';
 import { PatchError } from '../errors/patch.js';
 import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
@@ -20,7 +20,7 @@ export interface PatchDirectoryLockOptions {
    * Wait up to this many seconds for the patch directory lock instead of the
    * default ~30 s budget. Enables exponential poll backoff (100 ms → 2 s)
    * and a holder-identified progress line roughly every 5 s. `undefined`
-   * preserves the historical behavior exactly.
+   * keeps the default.
    */
   waitLockSeconds?: number | undefined;
   /** Command name recorded in the lock's owner metadata for holder diagnostics. */
@@ -90,7 +90,25 @@ export async function withPatchDirectoryLock<T>(
 ): Promise<T> {
   const lockDir = join(patchesDir, PATCH_DIRECTORY_LOCK);
   const { waitLockSeconds, command } = options;
-  return withFileLock(lockDir, operation, {
+
+  // Tag whatever the BODY throws so the catch below can tell it apart from a
+  // lock-acquire/release failure. Narrowing by origin rather than by error
+  // shape is what "the rewrap is for lock I/O" actually means: an errno test
+  // would still reclassify an EACCES raised while the body writes a .patch
+  // file, and a class test cannot see a bare `new Error` from a body at all.
+  let bodyFailure: unknown;
+  let bodyThrew = false;
+  const trackedOperation = async (): Promise<T> => {
+    try {
+      return await operation();
+    } catch (error: unknown) {
+      bodyThrew = true;
+      bodyFailure = error;
+      throw error;
+    }
+  };
+
+  return withFileLock(lockDir, trackedOperation, {
     ...(waitLockSeconds !== undefined
       ? {
           timeoutMs: waitLockSeconds * 1000,
@@ -105,12 +123,12 @@ export async function withPatchDirectoryLock<T>(
     ...(command !== undefined
       ? { ownerMetadata: [`command=${command}`, `started=${new Date().toISOString()}`] }
       : {}),
-    // Reason first, remedy second. The remedy is waiting, not
-    // deleting: bulk exports/re-exports legitimately hold this lock for
-    // minutes, FireForge reaps genuinely stale locks on its own, and the
-    // old advice ("rm -rf" while a holder was alive) destroyed a live
-    // lock. The leading sentence is a message contract; extend, don't
-    // reword. withFileLock appends the holder identification.
+    // Reason first, remedy second. The remedy is waiting, not deleting: bulk
+    // exports/re-exports legitimately hold this lock for minutes, and
+    // FireForge reaps genuinely stale locks on its own — advice to `rm -rf`
+    // while a holder is alive destroys a live lock. The leading sentence is
+    // a message contract; extend, do not reword. withFileLock appends the
+    // holder identification.
     onTimeoutMessage:
       `Timed out waiting for another FireForge command mutating ${patchesDir}.\n` +
       `Pass --wait-lock [seconds] to wait longer (bare --wait-lock waits up to 60 seconds). ` +
@@ -120,10 +138,31 @@ export async function withPatchDirectoryLock<T>(
       `Removing stale patch lock (age: ${Math.round(ageMs / 1000)}s). ` +
       'A previous fireforge process may have crashed.',
   }).catch((error: unknown) => {
+    // The body's own failures are never ours to reclassify. Rewrapping them
+    // reports an EACCES writing patches.json, a postcondition failure from
+    // renumberPatchesInManifest, or a plain TypeError from a FireForge bug
+    // as a "Patch Error" carrying three fixed remedies about Firefox-version
+    // compatibility and `fireforge reset` — none of which apply. Worse,
+    // src/cli.ts prints a stack only for non-FireForgeError throwables, so
+    // the rewrap moves real bugs into the branch that discards their stack.
+    if (bodyThrew && error === bodyFailure) {
+      throw error;
+    }
+
     if (error instanceof FireForgeError) {
       throw error;
     }
 
-    throw new PatchError(toError(error).message);
+    // CommandError is the one class in src/errors/ that does NOT extend
+    // FireForgeError: it is the sentinel carrying an already-rendered exit
+    // code to the entrypoint. The `instanceof FireForgeError` guard above
+    // misses it, so without this the exit code was replaced by PATCH_ERROR.
+    if (error instanceof CommandError) {
+      throw error;
+    }
+
+    // What remains is a genuine failure to acquire or release the lock.
+    const cause = toError(error);
+    throw new PatchError(cause.message, undefined, cause);
   });
 }

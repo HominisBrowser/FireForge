@@ -3,6 +3,7 @@ import { Command } from 'commander';
 
 import { readBuildBaseline } from '../core/build-baseline.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { assertEngineExists } from '../core/engine-precondition.js';
 import {
   formatEngineSessionLockStatus,
   readEngineSessionLockStatus,
@@ -12,9 +13,9 @@ import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from
 import { getUntrackedFilesInDir, resolveMaxUntrackedFilesPerDir } from '../core/git-status.js';
 import { renderOwnershipTable } from '../core/ownership-table.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
+import { readProcessCpuSeconds } from '../core/process-cpu-time.js';
 import { type ClassifiedFile, classifyFiles, type StatusFile } from '../core/status-classify.js';
-import { CommandError, GeneralError, InvalidArgumentError } from '../errors/base.js';
-import { ExitCode } from '../errors/codes.js';
+import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { StatusOptions } from '../types/commands/index.js';
 import { FIREFORGE_TMP_PATH_PATTERN, pathExists } from '../utils/fs.js';
@@ -26,6 +27,7 @@ import {
   setMachineOutputMode,
   warn,
 } from '../utils/logger.js';
+import { emitMachineError } from '../utils/machine-output.js';
 import { resolveStatusCheckPolicy, runStatusCheck } from './status-check.js';
 import { renderJsonStatus, renderJsonSummaryStatus } from './status-json.js';
 import {
@@ -151,12 +153,13 @@ async function classifyStatusFiles(
 /**
  * The one worktree scan every classifying mode shares: porcelain status,
  * collapsed-directory expansion, atomic-temp-file filtering, and the
- * truncation banner. `--ownership` used to carry its own copy of this
- * block; a non-git engine degrades to an empty list there,
- * which is why the git probe is a parameter rather than a hard guard.
+ * truncation banner. A non-git engine degrades to an empty list for
+ * `--ownership`, which is why the git probe is a parameter rather than a
+ * hard guard.
+ *
  * @param engineDir - Path to the engine directory
  * @param requireGitRepository - When false, a non-git engine yields `[]`
- *   instead of being probed (the historical `--ownership` behavior)
+ *   instead of being probed
  */
 async function scanEngineStatusFiles(
   engineDir: string,
@@ -174,12 +177,13 @@ async function scanEngineStatusFiles(
 }
 
 /**
- * Emits the `--json` payload (full or `--summary`) and applies the
- * `--check` policy, which stays the SOLE exit driver on this path.
+ * Emits the `--json` payload (full or `--summary`) and applies the `--check`
+ * policy, which stays the SOLE exit driver on this path.
  *
- * `--include-ownership` is a MODIFIER, not a mode: it appends an
- * ownership block without touching exit semantics, so an ownership conflict
- * still fails only the human `--ownership` mode.
+ * `--include-ownership` is a MODIFIER, not a mode: it appends an ownership
+ * block without touching exit semantics, so an ownership conflict still
+ * fails only the human `--ownership` mode.
+ *
  * @param classified - Classified worktree entries
  * @param files - The same entries pre-classification, for ownership rows
  * @param paths - Resolved project paths
@@ -272,8 +276,8 @@ export async function statusCommand(
 
   // On a throw, machine mode deliberately stays ENGAGED: withErrorHandling
   // routes the styled error to stderr while the mode is on and resets it
-  // centrally (a mid-throw restore here put the refusal on stdout after the
-  // JSON payload, breaking the 0.40.0 stderr promise).
+  // centrally. A mid-throw restore here would put the refusal on stdout
+  // after the JSON payload.
   await runStatusCommandBody(projectRoot, options);
 
   if (isMachineOutputMode() !== previousMachineOutputMode) {
@@ -326,9 +330,12 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
   // concurrent command is busy with, and that answer must not depend on
   // engine/ being readable.
   if (options.lock === true) {
-    for (const line of formatEngineSessionLockStatus(
-      await readEngineSessionLockStatus(projectRoot)
-    )) {
+    const snapshot = await readEngineSessionLockStatus(projectRoot);
+    const holderCpuSeconds =
+      snapshot.holder?.alive === true
+        ? await readProcessCpuSeconds(snapshot.holder.pid)
+        : undefined;
+    for (const line of formatEngineSessionLockStatus(snapshot, holderCpuSeconds)) {
       info(line);
     }
     outro('Lock status');
@@ -345,25 +352,23 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
   const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
 
-  const emitJsonError = (code: string, message: string): never => {
-    process.stdout.write(JSON.stringify({ schemaVersion: 1, error: message, code }) + '\n');
-    throw new CommandError(ExitCode.GENERAL_ERROR);
-  };
+  // Shared envelope: see src/utils/machine-output.ts and
+  // docs/machine-output.md. `status` was the only command that had one.
+  const emitJsonError = emitMachineError;
 
   // Ownership mode is a flat file→patch table; sources are the manifest's
   // filesAffected, any worktree drift, and the cross-patch
-  // duplicate-new-file-creation map produced by walking each patch
-  // body. The latter is the alignment fix between `status --ownership`
-  // and `fireforge verify` — see buildOwnershipTable's header comment.
-  // Runs before the default classify path so we can short-circuit
-  // without computing patch-backed state.
+  // duplicate-new-file-creation map produced by walking each patch body. The
+  // last is what keeps `status --ownership` aligned with `fireforge verify`
+  // — see buildOwnershipTable's header. Runs before the default classify
+  // path so it can short-circuit without computing patch-backed state.
   if (options.ownership) {
-    if (!(await pathExists(paths.engine))) {
-      throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-    }
+    // Rung 1 only, deliberately — see the note below on why this branch
+    // does not take the full assertEngineGitReady ladder.
+    await assertEngineExists(paths.engine);
     const manifest = await loadPatchesManifest(paths.patches);
-    // Same scan and the SAME classification pass as every other mode
-    //. This branch keeps its historical guard shape on purpose:
+    // Same scan and the SAME classification pass as every other mode.
+    // This branch keeps its historical guard shape on purpose:
     // no baseline-commit assertion, and a non-git engine degrades to an
     // empty table rather than the recovery banner.
     const rawFilesOwnership = await scanEngineStatusFiles(paths.engine, false);
@@ -391,7 +396,10 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
     return;
   }
 
-  // Check if engine exists
+  // Not routed through assertEngineExists: the --json contract requires a
+  // machine-readable payload on stdout BEFORE the throw, so scripted
+  // consumers get a parseable refusal instead of a bare non-zero exit. The
+  // message is kept identical to the helper's on purpose.
   if (!(await pathExists(paths.engine))) {
     if (options.json) {
       emitJsonError('engine-missing', 'Firefox source not found. Run "fireforge download" first.');
@@ -417,11 +425,10 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
   const files = await scanEngineStatusFiles(paths.engine, true);
 
   // `--json` callers expect machine-parseable output on every invocation,
-  // including the clean-tree case. Before this ordering fix a clean tree
-  // printed "No modified files" / "Working tree clean" via the human
-  // branch below and `--json` was silently ignored, so scripts that piped
-  // the output through a JSON parser broke precisely when there was
-  // nothing to report. Emit `[]` here and return before the human fallback.
+  // including the clean-tree case. Falling through to the human branch below
+  // silently ignores `--json` and breaks scripts that pipe the output
+  // through a JSON parser precisely when there is nothing to report. Emit
+  // `[]` here and return before the human fallback.
   if (options.json) {
     const classified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
     await renderJsonMode(classified, files, paths, options, checkPolicy);
@@ -511,21 +518,8 @@ export function registerStatus(
       'Comma-separated classification list that fails --check, replacing the default set (implies --check). Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict, binary-unsupported'
     )
     .action(
-      withErrorHandling(
-        async (options: {
-          raw?: boolean;
-          lock?: boolean;
-          unmanaged?: boolean;
-          ownership?: boolean;
-          testCoverage?: boolean;
-          json?: boolean;
-          summary?: boolean;
-          includeOwnership?: boolean;
-          check?: boolean;
-          failOn?: string;
-        }) => {
-          await statusCommand(getProjectRoot(), options);
-        }
-      )
+      withErrorHandling(async (options: StatusOptions) => {
+        await statusCommand(getProjectRoot(), options);
+      })
     );
 }

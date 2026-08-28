@@ -4,16 +4,8 @@ import { join } from 'node:path';
 import type { ComponentType, FurnaceConfig, ValidationIssue } from '../types/furnace.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { escapeRegex, hasRawCssColors } from '../utils/regex.js';
-import {
-  classExtendsMozLitElement,
-  collectCssVariableDeclarations,
-  collectCssVariableReferences,
-  createIssue,
-  getTokenPrefixContext,
-  hasCustomElementDefineCall,
-  hasRelativeModuleImport,
-  stripCssBlockComments,
-} from './furnace-validate-helpers.js';
+import { getProjectPaths } from './config.js';
+import { createIssue } from './furnace-validate-helpers.js';
 
 async function validateMjsCompatibility(
   mjsPath: string,
@@ -286,4 +278,174 @@ export async function validateCompatibility(
   }
 
   return issues;
+}
+
+/** Removes CSS block comments before running simple string-based checks. */
+function stripCssBlockComments(content: string): string {
+  return content.replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+/** Detects relative ES module imports in a component module file. */
+function hasRelativeModuleImport(mjsContent: string): boolean {
+  return (
+    /^\s*import\s.*from\s+["']\.\.?\//m.test(mjsContent) ||
+    /^\s*import\s+["']\.\.?\//m.test(mjsContent)
+  );
+}
+
+/** Detects whether a module defines a custom element at runtime. */
+function hasCustomElementDefineCall(mjsContent: string): boolean {
+  return /customElements\.define\s*\(/.test(mjsContent);
+}
+
+/**
+ * Detects whether the module's `customElements.define(...)` call includes a
+ * literal `extends:` option (third argument). That shape is the marker for
+ * a customized built-in element — the class extends a specific
+ * `HTMLxxxElement` rather than the autonomous `MozLitElement` path.
+ *
+ * Firefox's own widgets use this pattern for toolkit anchors (e.g.
+ * `moz-support-link` extends `HTMLAnchorElement` with
+ * `customElements.define("moz-support-link", ..., { extends: "a" })`), and
+ * the validator's `not-moz-lit-element` check must allow them through or
+ * `furnace override` of a valid upstream component fails its own
+ * `furnace validate` pass with nothing the operator can fix.
+ */
+function hasCustomElementExtendsOption(mjsContent: string): boolean {
+  // Match `customElements.define(..., { ..., extends: "..." })`. Tolerant of
+  // whitespace, line breaks, and other object properties. The `[^)]*` stops
+  // the inner greedy match at the closing define call paren so a later
+  // `define` call on a different custom element in the same module does
+  // not bleed its options in.
+  return /customElements\.define\s*\([^)]*\bextends\s*:\s*["'`]/.test(mjsContent);
+}
+
+/**
+ * Checks whether a declared component class extends a valid element base.
+ *
+ * Two shapes are accepted:
+ *
+ * 1. Autonomous custom element: `class X extends MozLitElement` — the
+ *    default FireForge pattern for fork-authored components and most
+ *    toolkit widgets.
+ * 2. Customized built-in: `class X extends HTML<Something>Element` paired
+ *    with a `customElements.define(..., ..., { extends: "<tagname>" })`
+ *    call. Firefox's `moz-support-link`, `moz-button-group` tabbing
+ *    widgets, and a handful of other toolkit components use this form;
+ *    `furnace override` of those components writes the original source
+ *    verbatim and the validator must not reject them.
+ *
+ * A class that extends a plain `HTMLElement` WITHOUT a `extends:` option
+ * is still rejected — that's the legitimate `not-moz-lit-element` case
+ * the rule was originally designed to catch.
+ */
+function classExtendsMozLitElement(mjsContent: string): boolean {
+  const hasClassDeclaration = /class\s+\w+\s+extends\s+/.test(mjsContent);
+  if (!hasClassDeclaration) {
+    // No class declaration — skip this check since the component may use a
+    // different pattern (e.g. function-based). Other validators will catch
+    // structural issues.
+    return true;
+  }
+
+  if (/class\s+\w+\s+extends\s+MozLitElement\b/.test(mjsContent)) {
+    return true;
+  }
+
+  // Customized built-in: extend a specific HTMLxxxElement AND the define
+  // call carries an `extends:` option. Both halves are required — a class
+  // that extends `HTMLAnchorElement` without the matching define option is
+  // almost certainly an author mistake, and a define call with `extends:`
+  // without a matching class is unreachable.
+  const extendsCustomizedBuiltin = /class\s+\w+\s+extends\s+HTML[A-Z]\w*Element\b/.test(mjsContent);
+  if (extendsCustomizedBuiltin && hasCustomElementExtendsOption(mjsContent)) {
+    return true;
+  }
+
+  return false;
+}
+
+/** Collects CSS custom property references used via var(--token-name). */
+function collectCssVariableReferences(cssContent: string): string[] {
+  const referencedVariables: string[] = [];
+  const variablePattern = /var\(\s*(--[\w-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = variablePattern.exec(cssContent)) !== null) {
+    const variableName = match[1];
+    if (variableName) {
+      referencedVariables.push(variableName);
+    }
+  }
+
+  return referencedVariables;
+}
+
+/**
+ * Collects CSS custom property *declarations* — names appearing on the
+ * left-hand side of a `--name:` declaration. Used to auto-exempt
+ * component-local runtime variables from the token-prefix check: if the
+ * component both declares and consumes a variable in its own CSS file, it
+ * is a local runtime channel, not a design-token reference.
+ *
+ * The anchor `(?:^|[{;,\s])` rules out `var(--name)` occurrences (which are
+ * always preceded by `(`), so references are not mistaken for declarations.
+ */
+function collectCssVariableDeclarations(cssContent: string): Set<string> {
+  const declared = new Set<string>();
+  const pattern = /(?:^|[{;,\s])(--[\w-]+)\s*:/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(cssContent)) !== null) {
+    const name = match[1];
+    if (name) declared.add(name);
+  }
+  return declared;
+}
+
+async function collectInheritedOverrideVariables(
+  tagName: string,
+  config: FurnaceConfig,
+  root: string
+): Promise<Set<string>> {
+  const inheritedVariables = new Set<string>();
+  const basePath = config.overrides[tagName]?.basePath;
+  if (!basePath) {
+    return inheritedVariables;
+  }
+
+  const { engine: engineDir } = getProjectPaths(root);
+  const originalCssPath = join(engineDir, basePath, `${tagName}.css`);
+  if (!(await pathExists(originalCssPath))) {
+    return inheritedVariables;
+  }
+
+  const originalCssContent = stripCssBlockComments(await readText(originalCssPath));
+  for (const variableName of collectCssVariableReferences(originalCssContent)) {
+    inheritedVariables.add(variableName);
+  }
+
+  return inheritedVariables;
+}
+
+/** Builds token-validation context from the config allowlist and inherited override CSS. */
+async function getTokenPrefixContext(
+  tagName: string,
+  type: ComponentType,
+  config: FurnaceConfig,
+  root: string | undefined
+): Promise<{
+  allowlist: Set<string>;
+  inheritedOverrideVars: Set<string>;
+  runtimeVariables: Set<string>;
+}> {
+  const allowlist = new Set(config.tokenAllowlist ?? []);
+  const runtimeVariables = new Set(config.runtimeVariables ?? []);
+  if (type !== 'override' || !root) {
+    return { allowlist, inheritedOverrideVars: new Set<string>(), runtimeVariables };
+  }
+
+  return {
+    allowlist,
+    inheritedOverrideVars: await collectInheritedOverrideVariables(tagName, config, root),
+    runtimeVariables,
+  };
 }

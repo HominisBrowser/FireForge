@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 const promptMocks = vi.hoisted(() => ({
   group: vi.fn(),
   text: vi.fn(),
@@ -20,14 +23,14 @@ vi.mock('node:os', () => ({
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    engine: '/project/engine',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    engine: nativePath('/project/engine'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   writeConfig: vi.fn().mockResolvedValue(undefined),
   loadConfig: vi.fn().mockResolvedValue({ binaryName: 'nightlyfox' }),
@@ -41,9 +44,7 @@ vi.mock('../../utils/fs.js', () => ({
   writeJson: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  cancel: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../../utils/package-root.js', () => ({
   getPackageRoot: vi.fn(() => '/pkg'),
@@ -359,26 +360,27 @@ describe('setup-support', () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
         [
-          '/project/.gitignore',
-          '/pkg/templates/licenses/0BSD.md',
-          '/pkg/templates/configs',
-          '/pkg/templates/configs/common.mozconfig',
+          nativePath('/project/.gitignore'),
+          nativePath('/pkg/templates/licenses/0BSD.md'),
+          nativePath('/pkg/templates/configs'),
+          nativePath('/pkg/templates/configs/common.mozconfig'),
         ].includes(filePath)
       )
     );
     vi.mocked(readText).mockImplementation((filePath: string) => {
-      if (filePath === '/project/.gitignore') return Promise.resolve('node_modules\ndist\n');
-      if (filePath === '/pkg/templates/licenses/0BSD.md')
+      if (filePath === nativePath('/project/.gitignore'))
+        return Promise.resolve('node_modules\ndist\n');
+      if (filePath === nativePath('/pkg/templates/licenses/0BSD.md'))
         return Promise.resolve('[year] [fullname]');
-      if (filePath === '/pkg/templates/configs/common.mozconfig') {
+      if (filePath === nativePath('/pkg/templates/configs/common.mozconfig')) {
         return Promise.resolve(
           'ac_add_options --with-app-name=${name} ${vendor} ${appId} ${binaryName}'
         );
       }
       return Promise.resolve(
-        filePath === '/project/.gitignore'
+        filePath === nativePath('/project/.gitignore')
           ? 'node_modules\ndist\n'
-          : filePath === '/pkg/templates/licenses/0BSD.md'
+          : filePath === nativePath('/pkg/templates/licenses/0BSD.md')
             ? '[year] [fullname]'
             : ''
       );
@@ -395,19 +397,19 @@ describe('setup-support', () => {
     });
 
     expect(writeText).toHaveBeenCalledWith(
-      '/project/.gitignore',
+      nativePath('/project/.gitignore'),
       'node_modules\ndist\nengine/\n.fireforge/\n'
     );
     expect(writeText).toHaveBeenCalledWith(
-      '/project/package.json',
+      nativePath('/project/package.json'),
       JSON.stringify({ private: true, license: '0BSD' }, null, 2) + '\n'
     );
     expect(writeText).toHaveBeenCalledWith(
-      '/project/LICENSE',
+      nativePath('/project/LICENSE'),
       expect.stringContaining('Audit Corp')
     );
     expect(writeText).toHaveBeenCalledWith(
-      '/project/configs/common.mozconfig',
+      nativePath('/project/configs/common.mozconfig'),
       'ac_add_options --with-app-name=Audit Fox Audit Corp org.auditfox.browser auditfox'
     );
   });
@@ -426,7 +428,7 @@ describe('setup-support', () => {
     });
 
     expect(writeText).toHaveBeenCalledWith(
-      '/project/.gitignore',
+      nativePath('/project/.gitignore'),
       'node_modules/\ndist/\nengine/\n.fireforge/\n'
     );
   });
@@ -444,7 +446,7 @@ describe('setup-support', () => {
       build: { jobs: 4 },
     });
 
-    expect(writeJson).toHaveBeenCalledWith('/project/patches/patches.json', {
+    expect(writeJson).toHaveBeenCalledWith(nativePath('/project/patches/patches.json'), {
       version: 1,
       patches: [],
     });
@@ -452,7 +454,7 @@ describe('setup-support', () => {
 
   it('does not overwrite an existing patches.json', async () => {
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/patches/patches.json')
+      Promise.resolve(filePath === nativePath('/project/patches/patches.json'))
     );
 
     await writeSetupProjectFiles('/project', {
@@ -469,17 +471,17 @@ describe('setup-support', () => {
   });
 
   it('updates only the license field on an existing root package.json and preserves deps', async () => {
-    // Eval regression: `fireforge setup --force` that picked a new license
-    // rewrote fireforge.json but left the root package.json untouched. The
-    // two files then disagreed about the project license. The fix syncs the
-    // package.json `license` field while preserving every other author-
-    // editorial field (dependencies, scripts, name, description, …).
+    // A `fireforge setup --force` that picks a new license must not rewrite
+    // fireforge.json while leaving the root package.json untouched — the two
+    // files then disagree about the project license. The sync updates the
+    // package.json `license` field while preserving every other
+    // author-editorial field (dependencies, scripts, name, description, …).
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/package.json')
+      Promise.resolve(filePath === nativePath('/project/package.json'))
     );
     vi.mocked(readText).mockImplementation((filePath: string) =>
       Promise.resolve(
-        filePath === '/project/package.json'
+        filePath === nativePath('/project/package.json')
           ? JSON.stringify(
               {
                 name: 'audit-fox',
@@ -508,7 +510,7 @@ describe('setup-support', () => {
 
     const packageWriteCall = vi
       .mocked(writeText)
-      .mock.calls.find(([path]) => path === '/project/package.json');
+      .mock.calls.find(([path]) => path === nativePath('/project/package.json'));
     expect(packageWriteCall).toBeDefined();
     const written = packageWriteCall?.[1] ?? '';
     const parsed = JSON.parse(written) as Record<string, unknown>;
@@ -523,11 +525,11 @@ describe('setup-support', () => {
     // Idempotency: `setup` without a license change should not rewrite the
     // file at all (avoids spurious diffs on repeated runs).
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/package.json')
+      Promise.resolve(filePath === nativePath('/project/package.json'))
     );
     vi.mocked(readText).mockImplementation((filePath: string) =>
       Promise.resolve(
-        filePath === '/project/package.json'
+        filePath === nativePath('/project/package.json')
           ? JSON.stringify({ private: true, license: 'EUPL-1.2' }, null, 2) + '\n'
           : ''
       )
@@ -545,7 +547,7 @@ describe('setup-support', () => {
 
     const packageWriteCall = vi
       .mocked(writeText)
-      .mock.calls.find(([path]) => path === '/project/package.json');
+      .mock.calls.find(([path]) => path === nativePath('/project/package.json'));
     expect(packageWriteCall).toBeUndefined();
   });
 
@@ -554,10 +556,10 @@ describe('setup-support', () => {
     // the operator's editorial responsibility. Rewriting it would clobber
     // in-progress content and is worse than a no-op.
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/package.json')
+      Promise.resolve(filePath === nativePath('/project/package.json'))
     );
     vi.mocked(readText).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/package.json' ? '{ not-json' : '')
+      Promise.resolve(filePath === nativePath('/project/package.json') ? '{ not-json' : '')
     );
 
     await writeSetupProjectFiles('/project', {
@@ -572,7 +574,7 @@ describe('setup-support', () => {
 
     const packageWriteCall = vi
       .mocked(writeText)
-      .mock.calls.find(([path]) => path === '/project/package.json');
+      .mock.calls.find(([path]) => path === nativePath('/project/package.json'));
     expect(packageWriteCall).toBeUndefined();
   });
 });

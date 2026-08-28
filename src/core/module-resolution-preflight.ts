@@ -3,24 +3,22 @@
  * Engine-aware resolution preflight for queue-owned system modules.
  *
  * An `.sys.mjs` that a packaged module imports but whose `EXTRA_JS_MODULES`
- * registration never landed kills every xpcshell suite
- * with `xpcshell return code: -11` and ZERO output — no import error, no
- * stack, nothing. The 0.41.0 `unregistered-system-module` check catches
- * this class, but only in one shape: a module NEWLY CREATED by a patch in
- * the projected queue. The class recurred through the other shape — three
- * modules imported from an ALREADY-EXISTING module before their moz.build
- * lines landed — and cost a full rebuild cycle before anyone recognised it.
+ * registration never landed kills every xpcshell suite with `xpcshell return
+ * code: -11` and ZERO output — no import error, no stack, nothing. The
+ * queue-level `unregistered-system-module` check catches one shape of this:
+ * a module NEWLY CREATED by a patch in the projected queue. The other shape
+ * — modules imported from an ALREADY-EXISTING module before their moz.build
+ * lines land — slips past it entirely.
  *
  * This preflight closes that gap by asking the question against the ENGINE
  * rather than against a projected diff: for every `resource:///modules/…`
  * specifier imported by any queue-owned module, does the module it names
  * exist, and is it registered in a moz.build that covers it?
  *
- * Scope is the queue-owned file set on purpose. A specifier that resolves
- * to no owned file is an UPSTREAM Firefox module, which FireForge does not
+ * Scope is the queue-owned file set on purpose. A specifier that resolves to
+ * no owned file is an UPSTREAM Firefox module, which FireForge does not
  * police and cannot cheaply enumerate; policing only what the fork owns is
- * both the actionable set and the one that produced every recorded
- * incident.
+ * both the actionable set and the one that produces real incidents.
  */
 
 import { dirname, join } from 'node:path';

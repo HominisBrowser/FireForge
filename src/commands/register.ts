@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
-import { registerFile } from '../core/manifest-rules.js';
+import { registerFile } from '../core/moz-manifest-rules.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { RegisterOptions } from '../types/commands/index.js';
@@ -71,12 +71,10 @@ export async function registerCommand(
   );
 
   if (options.dryRun) {
-    // 2026-04-21 eval (Finding #8): dry-run always said "Would
-    // register" even when the rule's idempotency check already knew
-    // the entry was present, so automation read the plan as "work to
-    // do" and the following real run then reported "Already
-    // registered". Surface the idempotency decision in dry-run too so
-    // the plan mirrors the real command's outcome.
+    // Dry-run must surface the idempotency decision too. Always saying
+    // "Would register" — even when the rule already knows the entry is
+    // present — makes automation read the plan as "work to do" while the
+    // following real run reports "Already registered".
     if (result.skipped) {
       info(`[dry-run] Already registered: ${engineRelativePath} in ${result.manifest}`);
       outro('Dry run complete');

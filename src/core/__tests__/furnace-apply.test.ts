@@ -2,19 +2,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FurnaceError } from '../../errors/furnace.js';
+import { createFsMock } from '../../test-utils/module-mocks.js';
 import { computeComponentChecksums, hasComponentChanged } from '../furnace-apply.js';
 import {
   addCustomElementRegistration,
   removeCustomElementRegistration,
 } from '../furnace-registration.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-  copyFile: vi.fn(),
-  ensureDir: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();

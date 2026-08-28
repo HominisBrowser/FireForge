@@ -7,7 +7,12 @@
 
 import { join } from 'node:path';
 
-import type { CustomComponentConfig, DryRunAction, StepError } from '../types/furnace.js';
+import type {
+  ComponentApplyContext,
+  CustomComponentConfig,
+  DryRunAction,
+  StepError,
+} from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { describeLocaleFtlJarMnRegistration, describeSharedFtlPrune } from './furnace-apply-ftl.js';
@@ -31,14 +36,12 @@ function isRegularFile(entry: DirectoryEntry): boolean {
 
 /** Computes the planned dry-run actions (and pre-flight step errors) for a custom component. */
 export async function buildCustomDryRunActions(
-  name: string,
-  componentDir: string,
-  engineDir: string,
+  ctx: Pick<ComponentApplyContext, 'engineDir' | 'name' | 'componentDir' | 'ftlDir'>,
   config: CustomComponentConfig,
   targetDir: string,
-  entries: DirectoryEntry[],
-  ftlDir: string
+  entries: DirectoryEntry[]
 ): Promise<{ actions: DryRunAction[]; stepErrors: StepError[] }> {
+  const { engineDir, name, componentDir, ftlDir } = ctx;
   const actions: DryRunAction[] = [];
   const stepErrors: StepError[] = [];
 
@@ -82,7 +85,7 @@ export async function buildCustomDryRunActions(
   // A sharedFtl widget owns its strings via the shared bundle; surface the
   // removal of any dangling per-widget locale jar.mn entry so the dry-run
   // plan matches what apply will do (and explains the unblocked build).
-  const pruneAction = await describeSharedFtlPrune(engineDir, name, ftlDir, config);
+  const pruneAction = await describeSharedFtlPrune(ctx, config);
   if (pruneAction) {
     actions.push(pruneAction);
   }

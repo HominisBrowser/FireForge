@@ -5,6 +5,8 @@ import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig, loadState, updateState } from '../core/config.js';
+import { stdioIsInteractive } from '../core/destructive.js';
+import { assertEngineExists } from '../core/engine-precondition.js';
 import { getHead } from '../core/git.js';
 import { getDirtyFiles } from '../core/git-status.js';
 import {
@@ -19,6 +21,7 @@ import {
 import {
   checkVersionCompatibility,
   loadPatchesManifest,
+  recommendManifestRepair,
   validatePatchesManifestConsistency,
   validatePatchIntegrity,
 } from '../core/patch-manifest.js';
@@ -140,14 +143,13 @@ async function checkUncommittedPatchFiles(
       const unmanagedDirtyFiles = await getUnmanagedDirtyFiles(engineDir, patchesDir, dirtyFiles);
 
       if (unmanagedDirtyFiles.length === 0) {
-        // Common path here: operator just ran `fireforge resolve` to
+        // Common path here: the operator just ran `fireforge resolve` to
         // regenerate a patch from manual conflict edits, so the engine
-        // already carries the patch's effects. The import below will
-        // still re-apply each patch (a no-op for files whose contents
-        // already match), so phrase the line as "no resync needed"
-        // rather than "patches already applied" — the latter contradicts
-        // the "Applied N patch(es)" summary `applyPatchesWithContinue`
-        // prints next, which the 2026-04-25 eval flagged as ambiguous.
+        // already carries the patch's effects. The import below still
+        // re-applies each patch (a no-op for files whose contents already
+        // match), so phrase the line as "no resync needed" rather than
+        // "patches already applied" — the latter contradicts the "Applied N
+        // patch(es)" summary `applyPatchesWithContinue` prints next.
         info(
           'Patch-touched files already match the stored patch stack — no engine resync needed before re-applying.'
         );
@@ -173,12 +175,12 @@ async function handlePatchFailures(
   const firstFailed = summary.failed[0];
 
   if (firstFailed) {
-    // Transactional update rather than `loadState` + mutate + `saveState`. The
-    // caller captures `state` at the start of the import run, and the run can
-    // span a long window (drift-check prompt, patch apply loop). A concurrent
-    // command (`fireforge download`, `rebase`, another state mutation) writing
-    // unrelated fields during that window would be silently clobbered when the
-    // stale state object was written back.
+    // Transactional update rather than `loadState` + mutate + `saveState`.
+    // The caller captures `state` at the start of the import run, and the run
+    // can span a long window (drift-check prompt, patch apply loop). A
+    // concurrent command (`fireforge download`, `rebase`, another state
+    // mutation) writing unrelated fields during that window would be silently
+    // clobbered when the stale state object was written back.
     await updateState(projectRoot, (current) => ({
       ...current,
       pendingResolution: {
@@ -234,23 +236,30 @@ async function handlePatchFailures(
 async function checkEngineDrift(
   engineDir: string,
   baseCommit: string,
-  forceImport: boolean
+  forceImport: boolean,
+  acceptPrompts: boolean
 ): Promise<boolean> {
   const currentHead = await getHead(engineDir);
   if (currentHead === baseCommit) return true;
 
-  if (!(process.stdin.isTTY && process.stdout.isTTY)) {
-    if (!forceImport) {
+  // `--yes` and `--force` both answer this prompt; only `--force` also
+  // waives the patch-integrity gate further down.
+  const promptAnswered = forceImport || acceptPrompts;
+
+  if (!stdioIsInteractive()) {
+    if (!promptAnswered) {
       throw new GeneralError(
-        'Engine HEAD has drifted from base commit. Re-run with --force to bypass drift check.'
+        'Engine HEAD has drifted from base commit. Re-run with --yes to accept the drift, or --force to also bypass the patch-integrity gate.'
       );
     }
     warn(
-      'Engine HEAD has drifted from base commit. Continuing because --force was provided in non-interactive mode.'
+      `Engine HEAD has drifted from base commit. Continuing because ${forceImport ? '--force' : '--yes'} was provided in non-interactive mode.`
     );
   } else {
-    if (forceImport) {
-      warn('Engine HEAD has drifted from base commit. Continuing because --force was provided.');
+    if (promptAnswered) {
+      warn(
+        `Engine HEAD has drifted from base commit. Continuing because ${forceImport ? '--force' : '--yes'} was provided.`
+      );
     } else {
       warn('Warning: Engine is not at the baseline commit.');
       const shouldContinue = await confirm({
@@ -287,10 +296,10 @@ function buildUntilFilenameSet(
   if (until === undefined) return set;
   // Resolve the identifier with the SAME matcher the apply loop uses
   // (`matchesUntilFilename` accepts filenames, extension-less names, AND
-  // bare ordinals). The previous filename-only match meant
-  // `import --until 5` produced an EMPTY scope set — the UI previewed
-  // "0 patches", the integrity gates filtered every in-range issue away —
-  // and then the apply loop happily applied patches 1..5 anyway.
+  // bare ordinals). A filename-only match makes `import --until 5` produce
+  // an EMPTY scope set — the UI previews "0 patches", the integrity gates
+  // filter every in-range issue away — and the apply loop then applies
+  // patches 1..5 anyway.
   const target = patches.find((p) => matchesUntilFilename(p.filename, until));
   if (!target) return set;
   for (const patch of patches) {
@@ -330,7 +339,11 @@ async function assertScopedManifestConsistency(
     throw new GeneralError(
       'Patch manifest consistency check failed. Repair patches/patches.json before importing.\n' +
         `  ${issueSummary}\n\n` +
-        'Run "fireforge doctor --repair-patches-manifest" to rebuild the manifest from on-disk patch files.'
+        // Naming the whole-manifest rebuild for drift that is only in
+        // `filesAffected` puts the operator one keystroke from rewriting every
+        // row to correct one derived list. The narrow repair is the remedy the
+        // failure actually calls for.
+        recommendManifestRepair(scopedManifestIssues)
     );
   }
 }
@@ -388,7 +401,7 @@ async function gateImportIntegrity(
 
     if (forceImport) {
       warn('Continuing because --force was provided. Integrity issues were not resolved.\n');
-    } else if (!(process.stdin.isTTY && process.stdout.isTTY)) {
+    } else if (!stdioIsInteractive()) {
       throw new GeneralError(
         `Refusing to import while ${integrityIssues.length} patch integrity issue(s) are unresolved. ` +
           `Fix the issues reported above (see "fireforge doctor") or re-run with --force to continue anyway.`
@@ -450,18 +463,22 @@ export async function importCommand(
 
   const continueOnFailure = options.continue ?? false;
   const forceImport = options.force ?? false;
+  const acceptPrompts = options.yes ?? false;
 
   const paths = getProjectPaths(projectRoot);
 
   // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
+  await assertEngineExists(paths.engine);
 
   // Engine consistency check before applying patches
   const state = await loadState(projectRoot);
   if (state.baseCommit && !isDryRun) {
-    const shouldContinue = await checkEngineDrift(paths.engine, state.baseCommit, forceImport);
+    const shouldContinue = await checkEngineDrift(
+      paths.engine,
+      state.baseCommit,
+      forceImport,
+      acceptPrompts
+    );
     if (!shouldContinue) return;
   }
 
@@ -502,15 +519,14 @@ export async function importCommand(
   await warnVersionCompatibility(projectRoot, manifest, untilFilenameSet, options.until);
 
   // Validate patch integrity (detect orphaned modification patches). Warn
-  // and prompt the operator to confirm before proceeding — the legacy
-  // warn-and-continue behaviour hid the real root cause because import
-  // would later fail during patch application with a secondary, unrelated
-  // error that made diagnosis harder.
+  // and prompt the operator to confirm before proceeding: warn-and-continue
+  // hides the real root cause, because import then fails during patch
+  // application with a secondary, unrelated error.
   //
   // Scope the surfaced issues to the `--until` range: a later patch with
   // integrity problems should not block importing an earlier good subset,
-  // which is exactly what operators reach for when the tail of the queue
-  // is broken and they want to keep working against an earlier checkpoint.
+  // which is exactly what operators reach for when the tail of the queue is
+  // broken and they want to keep working against an earlier checkpoint.
   const integrityOk = await gateImportIntegrity(
     paths,
     untilFilenameSet,
@@ -584,6 +600,14 @@ export function registerImport(
       '-f, --force',
       'Proceed despite engine drift and overwrite unmanaged changes in patch-touched files'
     )
+    // NOT an alias of --force. `--force` waives two orthogonal things: the
+    // drift prompt AND the patch-integrity gate. `--yes` waives only the
+    // prompt, so a scripted import can run unattended while the integrity
+    // refusal stays armed — which is the guard you actually want in CI.
+    .option(
+      '-y, --yes',
+      'Answer the drift prompt non-interactively. Unlike --force, this does NOT waive the patch-integrity gate.'
+    )
     .option(
       '--until <patch>',
       'Apply patches only up to and including this patch (alias: --stop-at)'
@@ -595,6 +619,7 @@ export function registerImport(
         async (options: {
           continue?: boolean;
           force?: boolean;
+          yes?: boolean;
           until?: string;
           stopAt?: string;
           dryRun?: boolean;

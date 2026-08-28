@@ -2,11 +2,10 @@
 /**
  * Browser-chrome test-body rewriting for `furnace rename`.
  *
- * All four replacements were bare, unanchored, and global until 0.41.0, so a
- * rename of `moz-panel` rewrote `moz-panel-group` and every other identifier
- * merely *containing* the old name. Its two siblings (`furnace/rename.ts` and
- * `rename-xpcshell.ts`) already carried word-boundary guards, and
- * `rename.ts:359-361` carries the comment naming this exact hazard.
+ * Bare, unanchored, global replacements make a rename of `moz-panel` rewrite
+ * `moz-panel-group` and every other identifier merely *containing* the old
+ * name. The two sibling rewriters (`furnace/rename.ts` and
+ * `rename-xpcshell.ts`) carry word-boundary guards for the same reason.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -47,8 +46,8 @@ describe('updateBrowserChromeTestContent', () => {
   });
 
   it('does not rewrite an identifier that merely contains the stem', () => {
-    // `deriveTestStem('moz-panel')` is the bare fragment `panel`, which before
-    // 0.41.0 was replaced everywhere it appeared as a substring.
+    // `deriveTestStem('moz-panel')` is the bare fragment `panel`, which an
+    // unanchored rule replaces everywhere it appears as a substring.
     const source = [
       'add_task(async function test_panel_defined() {',
       '  const panelHost = document.getElementById("sidepanelHost");',

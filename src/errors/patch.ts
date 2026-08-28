@@ -5,13 +5,13 @@ import { ExitCode } from './codes.js';
 /**
  * Error thrown when `patches.json` exists but cannot be parsed or validated.
  *
- * This must be a HARD error on every mutating path. The historical behavior
- * collapsed "corrupt" into "absent" (`loadPatchesManifest` returned null for
- * both), so the next `fireforge export` would rebuild the manifest containing
- * only the new patch — silently destroying every other patch's metadata
- * (tiers, descriptions, lintIgnore, staged dependencies) — and a failed
- * export's rollback would then delete `patches.json` outright because the
- * "before" state looked absent (2026-07-05 review, finding H2).
+ * This must be a HARD error on every mutating path. Collapsing "corrupt"
+ * into "absent" — a `loadPatchesManifest` that returns null for both — makes
+ * the next `fireforge export` rebuild the manifest containing only the new
+ * patch, silently destroying every other patch's metadata (tiers,
+ * descriptions, lintIgnore, staged dependencies); a failed export's rollback
+ * then deletes `patches.json` outright, because the "before" state looked
+ * absent.
  */
 export class PatchManifestCorruptError extends FireForgeError {
   readonly code = ExitCode.PATCH_ERROR;

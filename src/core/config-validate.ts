@@ -14,13 +14,15 @@ import { verbose } from '../utils/logger.js';
 import { parseObject } from '../utils/parse.js';
 import { isContainedRelativePath, isExplicitAbsolutePath } from '../utils/paths.js';
 import {
+  describeProductVersionIncompatibility,
+  FIREFOX_PRODUCTS,
   isObject,
   isValidAppId,
   isValidFirefoxCandidate,
+  isValidFirefoxProduct,
   isValidFirefoxVersion,
   isValidProjectLicense,
   PROJECT_LICENSES,
-  validateFirefoxProductVersionCompatibility,
 } from '../utils/validation.js';
 import { SUPPORTED_CONFIG_ROOT_KEYS } from './config-paths.js';
 import { parsePatchPolicyBlock } from './config-validate-patch-policy.js';
@@ -101,15 +103,18 @@ function parseFirefoxBlock(rec: ReturnType<typeof parseObject>): FireForgeConfig
   }
 
   const firefoxProduct = requireConfigString(firefoxRec, 'product', 'firefox.product');
-  const validProducts = ['firefox', 'firefox-esr', 'firefox-beta', 'firefox-devedition'];
-  if (!validProducts.includes(firefoxProduct)) {
+  // Uses the shared guard rather than a fourth copy of the member list. This
+  // is the fireforge.json READ path: a product added to the union but not to
+  // the copy that used to live here would have been silently rejected from
+  // every project config.
+  if (!isValidFirefoxProduct(firefoxProduct)) {
     throw new ConfigError(
-      `Config field "firefox.product" must be one of: ${validProducts.join(', ')}`
+      `Config field "firefox.product" must be one of: ${FIREFOX_PRODUCTS.join(', ')}`
     );
   }
 
   // Cross-field validation: product and version must be compatible
-  const compatError = validateFirefoxProductVersionCompatibility(firefoxVersion, firefoxProduct);
+  const compatError = describeProductVersionIncompatibility(firefoxVersion, firefoxProduct);
   if (compatError) {
     throw new ConfigError(compatError);
   }
@@ -130,7 +135,7 @@ function parseFirefoxBlock(rec: ReturnType<typeof parseObject>): FireForgeConfig
 
   return {
     version: firefoxVersion,
-    product: firefoxProduct as FireForgeConfig['firefox']['product'],
+    product: firefoxProduct,
     ...(firefoxSha256 !== undefined ? { sha256: firefoxSha256.toLowerCase() } : {}),
     ...(firefoxCandidate !== undefined ? { candidate: firefoxCandidate } : {}),
   };

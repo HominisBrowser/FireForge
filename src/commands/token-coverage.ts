@@ -47,10 +47,9 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
 
   // Also scan CSS files deployed by Furnace custom components. Deployed
   // files can be committed (and therefore absent from `git status`) while
-  // still being the primary surface where token adoption matters. Before
-  // 0.16.0, coverage only looked at modified files, which silently
-  // undercounted projects where Furnace writes many component-CSS files
-  // into the engine and they are already tracked.
+  // still being the primary surface where token adoption matters; looking
+  // only at modified files silently undercounts projects where Furnace
+  // writes many component-CSS files into the engine.
   const furnaceCssFiles = await collectFurnaceCustomCssFiles(
     projectRoot,
     paths.engine,

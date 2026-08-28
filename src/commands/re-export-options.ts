@@ -22,12 +22,12 @@ export interface NormalizedReExportArguments {
 
 /**
  * Accepts the `export`-style space-separated path shape for
- * `re-export <patch> --files` (0.34.0 field report): commander's
- * `--files <paths>` consumes one comma-separated value, so
- * `re-export 006-x --files a/b.js c/d.js` used to park `c/d.js` in the
- * positional patches and fail with "--files operates on exactly one
- * target patch" — pointing at the wrong argument. When every positional
- * beyond the first looks like a file path, fold them into the file list.
+ * `re-export <patch> --files`. Commander's `--files <paths>` consumes one
+ * comma-separated value, so `re-export 006-x --files a/b.js c/d.js` parks
+ * `c/d.js` in the positional patches and fails with "--files operates on
+ * exactly one target patch" — pointing at the wrong argument. When every
+ * positional beyond the first looks like a file path, fold them into the
+ * file list.
  */
 export function normalizeReExportFilesPositionals(
   patches: readonly string[],

@@ -3,11 +3,8 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { getProjectPaths } from '../../core/config.js';
-import {
-  furnaceConfigExists,
-  getFurnacePaths,
-  loadFurnaceConfig,
-} from '../../core/furnace-config.js';
+import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
+import { assertFurnaceReady } from '../../core/furnace-precondition.js';
 import {
   addCustomElementRegistration,
   addJarMnEntries,
@@ -59,9 +56,9 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
     }
   }
 
-  // Prune stale jar.mn registrations (lines pointing at removed/renamed
-  // component files — 0.34.0 field report: these broke packaging while
-  // validate --fix reported success without touching them).
+  // Prune stale jar.mn registrations (lines pointing at removed or renamed
+  // component files). These break packaging, and validate --fix must not
+  // report success without touching them.
   if (issues.some((issue) => issue.check === 'stale-jar-registration')) {
     try {
       const pruned = await pruneStaleJarMnEntries(
@@ -104,12 +101,11 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
   // Repair components missing from customElements.js entirely (reported by
   // validate as `missing-custom-element-registration`).
   //
-  // Scoped to the components named in `issues`. Until 0.41.0 this iterated
-  // every entry in `config.custom`, so `furnace validate <one-component> --fix`
-  // wrote customElements.js registrations for EVERY custom component — outside
-  // the issue list it was handed, and invisibly, since `fixed` was never
-  // incremented here. The block's own comment already claimed this scoping;
-  // the code did not implement it.
+  // Scoped to the components named in `issues`: iterating every entry in
+  // `config.custom` makes `furnace validate <one-component> --fix` write
+  // customElements.js registrations for EVERY custom component, outside the
+  // issue list it was handed and invisibly, since `fixed` is never
+  // incremented here.
   const componentsWithIssues = new Set(issues.map((issue) => issue.component));
   for (const componentName of componentsWithIssues) {
     const customConfig = config.custom[componentName];
@@ -149,13 +145,10 @@ export async function furnaceValidateCommand(
 ): Promise<void> {
   intro('Furnace Validate');
 
-  if (!(await furnaceConfigExists(projectRoot))) {
-    throw new FurnaceError(
-      'No furnace.json found. Run "fireforge furnace create" or "fireforge furnace override" to get started.'
-    );
-  }
-
-  const config = await loadFurnaceConfig(projectRoot);
+  // Gains the engine rung here: this was the one site in the family that
+  // checked furnace.json alone, so a validate against a missing engine
+  // produced downstream noise instead of the shared precondition refusal.
+  const { config } = await assertFurnaceReady(projectRoot);
   const furnacePaths = getFurnacePaths(projectRoot);
 
   let totalErrors = 0;
@@ -227,12 +220,12 @@ export async function furnaceValidateCommand(
     }
   }
 
-  // Auto-fix fixable issues when --fix is passed. The auto-fix counter
-  // returned by `autoFixIssues` only counts function calls that did not
-  // throw — a write that succeeded but did not actually resolve the issue
-  // (e.g. addJarMnEntries appended to a file mach later ignores) would
-  // still bump the count. Re-validate the affected components and compute
-  // the *actual* drop in fixable issues so the reported number is honest.
+  // Auto-fix fixable issues when --fix is passed. The counter returned by
+  // `autoFixIssues` only counts function calls that did not throw — a write
+  // that succeeded but did not actually resolve the issue (addJarMnEntries
+  // appending to a file mach later ignores) would still bump it. Re-validate
+  // the affected components and compute the *actual* drop in fixable issues
+  // so the reported number is honest.
   if (options.fix && allIssues.length > 0) {
     const fixableIssues = allIssues.filter((issue) => FIXABLE_CHECKS.has(issue.check));
     if (fixableIssues.length > 0) {

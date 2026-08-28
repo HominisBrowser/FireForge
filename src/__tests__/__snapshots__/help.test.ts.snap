@@ -153,8 +153,10 @@ Options:
   --force                Proceed despite baseVersion drift (stale overrides)
   -w, --watch            Watch component directories and re-apply on changes
   --wait-lock [seconds]  Wait up to this many seconds (default 60) for another
-                         FireForge command to release the contended lock,
-                         instead of failing on the default budget
+                         FireForge command to release EVERY lock this command
+                         takes, instead of failing on the default budget. Set
+                         FIREFORGE_WAIT_LOCK to apply a budget to every command
+                         in a session
   -h, --help             display help for command
 "
 `;
@@ -233,8 +235,10 @@ Options:
   --force                Proceed despite baseVersion drift (stale overrides)
   --skip-validate        Skip the validation step (apply only)
   --wait-lock [seconds]  Wait up to this many seconds (default 60) for another
-                         FireForge command to release the contended lock,
-                         instead of failing on the default budget
+                         FireForge command to release EVERY lock this command
+                         takes, instead of failing on the default budget. Set
+                         FIREFORGE_WAIT_LOCK to apply a budget to every command
+                         in a session
   -h, --help             display help for command
 "
 `;
@@ -394,8 +398,10 @@ Options:
                              theirs = accept upstream) (choices: "ours",
                              "theirs")
   --wait-lock [seconds]      Wait up to this many seconds (default 60) for
-                             another FireForge command to release the contended
-                             lock, instead of failing on the default budget
+                             another FireForge command to release EVERY lock
+                             this command takes, instead of failing on the
+                             default budget. Set FIREFORGE_WAIT_LOCK to apply a
+                             budget to every command in a session
   -h, --help                 display help for command
 "
 `;
@@ -436,8 +442,10 @@ Options:
   --force-unsafe            Bypass projected-lint refusals
   --skip-lint               Skip per-patch lint of the projected bodies
   --wait-lock [seconds]     Wait up to this many seconds (default 60) for
-                            another FireForge command to release the contended
-                            lock, instead of failing on the default budget
+                            another FireForge command to release EVERY lock this
+                            command takes, instead of failing on the default
+                            budget. Set FIREFORGE_WAIT_LOCK to apply a budget to
+                            every command in a session
   -h, --help                display help for command
 "
 `;
@@ -468,8 +476,11 @@ Options:
   -y, --yes                Record scripted consent in the destructive-operation
                            history log. This command never prompts; the flag
                            exists for workflow uniformity with commands that do.
-  --wait-lock [seconds]    Accepted for scripting uniformity and ignored: this
-                           command takes no FireForge lock
+  --wait-lock [seconds]    Wait up to this many seconds (default 60) for another
+                           FireForge command to release EVERY lock this command
+                           takes, instead of failing on the default budget. Set
+                           FIREFORGE_WAIT_LOCK to apply a budget to every
+                           command in a session
   -h, --help               display help for command
 "
 `;

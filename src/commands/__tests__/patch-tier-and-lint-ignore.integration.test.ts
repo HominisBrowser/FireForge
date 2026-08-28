@@ -858,7 +858,7 @@ describe('patch staged-dependency', () => {
     ).rejects.toThrow(/matches patch 300-ui-widget\.patch/);
   });
 
-  // ── 0.37.0 item 5: registration-kind entries ──
+  // Registration-kind entries.
 
   it('--add --kind registration writes a registrations declaration', async () => {
     await seed(patchesDir, [makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'])]);
@@ -1004,7 +1004,7 @@ describe('patch lint-ignore — describeChange message format', () => {
   });
 });
 
-describe('destructive-operation contract (2026-07-05 review follow-up)', () => {
+describe('destructive-operation contract', () => {
   // Both commands mutate manifest metadata and append history; they must
   // follow the same summary + dry-run + confirmation/--yes contract as
   // patch delete/reorder/compact. They used to accept --yes without ever

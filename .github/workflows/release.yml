@@ -30,7 +30,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.22.1'
+          node-version-file: '.nvmrc'
           registry-url: 'https://registry.npmjs.org'
 
       # Trusted publishing needs npm >= 11.5.1, which the Node 22 bundled npm
@@ -71,9 +71,10 @@ jobs:
           VERSION="$(node -p 'require("./package.json").version')"
           git diff --cached --quiet || git commit -m "release: v$VERSION"
 
-      - name: Run release checks
-        run: npm run release:check
-
+      # No explicit `npm run release:check` step here: `npm publish` (and
+      # `npm publish --dry-run`) fire `prepublishOnly`, which runs the same
+      # gate before any registry interaction. Running it here as well meant
+      # every release executed the full gate twice.
       - name: Determine version
         id: version
         run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"

@@ -18,7 +18,7 @@ import { join } from 'node:path';
 
 import { confirm } from '@clack/prompts';
 
-import { InvalidArgumentError } from '../errors/base.js';
+import { CancellationError, InvalidArgumentError } from '../errors/base.js';
 import { ensureDir } from '../utils/fs.js';
 import { info, isCancel, warn } from '../utils/logger.js';
 
@@ -63,8 +63,16 @@ export interface DestructiveOpInput {
   conflicts?: ConflictReport | null;
 }
 
-/** Outcome of {@link confirmDestructive}. */
-export type DestructiveOpResult = 'proceed' | 'dry-run' | 'cancelled';
+/**
+ * Outcome of the destructive-operation contract.
+ *
+ * `'declined'` means the operator answered "no" — a successful run that
+ * chose not to proceed, so callers return normally and the process exits 0.
+ * An INTERRUPT (Esc / Ctrl+C) is not represented here: it throws
+ * {@link CancellationError} and exits 130. Collapsing the two would make an
+ * interrupted prompt indistinguishable from a declined one.
+ */
+export type DestructiveOpResult = 'proceed' | 'dry-run' | 'declined';
 
 /**
  * Inputs to {@link appendHistory}. Entries are appended as one JSON record
@@ -106,8 +114,12 @@ function printConflicts(conflicts: ConflictReport): void {
 }
 
 /**
- * True when BOTH standard handles are real TTYs, i.e. a `confirm()` prompt
+ * True when BOTH standard handles are real TTYs, i.e. an interactive prompt
  * can actually be answered.
+ *
+ * Named for the condition rather than for confirmation specifically: many
+ * call sites gate a `text()` / `multiselect()` input prompt or a mode
+ * switch, not a destructive confirmation.
  *
  * Node types `isTTY` as `boolean`, but at runtime it is `true | undefined`
  * (absent when the handle is not a TTY). Unusual harnesses (vitest stdio
@@ -115,7 +127,7 @@ function printConflicts(conflicts: ConflictReport): void {
  * handle, so every falsy variant — false, undefined, a null-patched mock —
  * must route to the non-interactive path.
  */
-function confirmationIsAnswerable(): boolean {
+export function stdioIsInteractive(): boolean {
   const stdinIsTTY = process.stdin.isTTY as boolean | undefined;
   const stdoutIsTTY = process.stdout.isTTY as boolean | undefined;
   return stdinIsTTY === true && stdoutIsTTY === true;
@@ -131,8 +143,7 @@ function confirmationIsAnswerable(): boolean {
  * --create` that is minutes of work before a scripted run learns it needed
  * `--yes`, and the failure reads as an obscure late error rather than a
  * usage problem. Calling this at command entry turns it into a usage
- * refusal that names the flag, in the same shape as the 0.41.0
- * `move-files --create` / `--description` refusal.
+ * refusal that names the flag.
  *
  * A `--yes` or `--dry-run` run never prompts, so neither is refused.
  *
@@ -145,7 +156,7 @@ export function assertConfirmationAvailable(
   options: { yes?: boolean | undefined; dryRun?: boolean | undefined }
 ): void {
   if (options.yes === true || options.dryRun === true) return;
-  if (confirmationIsAnswerable()) return;
+  if (stdioIsInteractive()) return;
   throw new InvalidArgumentError(
     `"${operation}" ends in an interactive confirmation, but this run has no TTY to answer it ` +
       '(stdin/stdout are not both terminals). Re-run with --yes to confirm non-interactively ' +
@@ -159,14 +170,14 @@ export function assertConfirmationAvailable(
  * Executes the destructive-operation contract: summary → conflict refusal →
  * dry-run / force / prompt / non-TTY refusal.
  *
- * Returns the decision for the caller to act on; callers must not execute the
- * mutation when the result is `'dry-run'` or `'cancelled'`, and must call
- * {@link appendHistory} only after the mutation succeeds (never on dry-run or
- * cancellation).
+ * Returns the decision for the caller to act on; callers must not execute
+ * the mutation when the result is `'dry-run'` or `'declined'`, and must call
+ * {@link appendHistory} only after the mutation succeeds (never on dry-run
+ * or decline).
  *
  * @param input - Operation description, flags, and optional conflict report
  * @returns `'proceed'` to execute, `'dry-run'` to skip execution, or
- *   `'cancelled'` when the user declined the prompt
+ *   `'declined'` when the user declined the prompt
  */
 export async function confirmDestructive(input: DestructiveOpInput): Promise<DestructiveOpResult> {
   const { operation, title, summary, yes, dryRun, unsafeOverride, conflicts } = input;
@@ -209,15 +220,9 @@ export async function confirmDestructive(input: DestructiveOpInput): Promise<Des
     return 'proceed';
   }
 
-  // Non-TTY without --yes: refuse with a clear message pointing at --yes.
-  // Never silently proceed.
-  // Node types `isTTY` as `boolean`, but at runtime it is `true | undefined`
-  // (absent when the handle is not a TTY). Unusual harnesses (vitest stdio
-  // capture, CI spawners, mocked pipes) can also leave it unset on only
-  // one handle. We cast to the real runtime type and compare against
-  // literal `true` so any falsy variant — false, undefined, or a
-  // null-patched mock — routes to the non-interactive path.
-  if (!confirmationIsAnswerable()) {
+  // Non-TTY without --yes: refuse with a message pointing at --yes rather
+  // than silently proceeding.
+  if (!stdioIsInteractive()) {
     printSummary(title, summary);
     throw new InvalidArgumentError(
       `Interactive confirmation not available for "${operation}". ` +
@@ -227,18 +232,25 @@ export async function confirmDestructive(input: DestructiveOpInput): Promise<Des
   }
 
   // Interactive path: print the summary first so the user sees the full
-  // picture, then prompt. Cancellation and negative answer both map to
-  // 'cancelled' so the caller can return without running anything.
+  // picture, then prompt.
   printSummary(title, summary);
   const confirmed = await confirm({
     message: `${title} — proceed?`,
     initialValue: false,
   });
 
-  // `isCancel` narrows the clack sentinel away, leaving a plain boolean —
-  // the defensive `!== true` this replaced is now provably redundant.
-  if (isCancel(confirmed) || !confirmed) {
-    return 'cancelled';
+  // An INTERRUPT and a "no" are different outcomes and must not share an
+  // exit code. Esc / Ctrl+C is a real interrupt — 130 is 128+SIGINT and is
+  // what a script needs to tell "the operator aborted" from "the operator
+  // considered it and declined". Answering "no" is a successful run.
+  //
+  // `isCancel` narrows the clack sentinel away, leaving a plain boolean.
+  if (isCancel(confirmed)) {
+    throw new CancellationError();
+  }
+
+  if (!confirmed) {
+    return 'declined';
   }
 
   return 'proceed';

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Cross-patch lint infrastructure: the queue context builder, the
- * duplicate-new-file-creation and forward-import rules, the
- * forward-import ignore-marker, and the per-specifier extractor that
- * powers the forward-import rule.
+ * duplicate-new-file-creation and forward-import rules, the forward-import
+ * ignore-marker, and the per-specifier extractor that powers the
+ * forward-import rule.
  *
  * Separated from `patch-lint.ts` so the per-patch and cross-patch rule
- * bodies stay within the project's per-file line budget. `patch-lint.ts`
- * re-exports the public surface so callers continue to import from a
- * single module.
+ * bodies each stay within the per-file line budget. `patch-lint.ts`
+ * re-exports the public surface so callers continue to import from a single
+ * module.
  */
 
 import { basename } from 'node:path';
@@ -25,6 +25,7 @@ import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { stripJsComments } from '../utils/regex.js';
 import { discoverPatches } from './patch-files.js';
+import { lintPatchQueueBinaryBodies } from './patch-lint-binary.js';
 import { collectNewFileCreatorsByPath } from './patch-lint-creators.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
 import { lintPatchQueueModuleRegistrations } from './patch-lint-module-registration.js';
@@ -83,8 +84,8 @@ export interface PatchQueueContext {
   /**
    * Optional patchPolicy config. When present, the forward-import rule
    * validates its "Closest legal ordinal" suggestion against the importing
-   * patch's category range and suppresses it when no legal ordinal exists
-   *. Absent = current behavior (hint always printed).
+   * patch's category range and suppresses it when no legal ordinal exists.
+   * Absent = current behavior (hint always printed).
    */
   patchPolicy?: PatchPolicyConfig;
 }
@@ -170,10 +171,8 @@ export {
 
 /**
  * Cross-patch lint rule: the same path is newly created (`--- /dev/null →
- * +++ b/path`) by more than one patch. This is the failure mode that
- * motivated the rule — a fork landed three patches each trying to create
- * the same file, and the error surfaced only when import rolled back
- * mid-apply.
+ * +++ b/path`) by more than one patch. Without it the collision surfaces
+ * only when import rolls back mid-apply.
  *
  * Reports one error per conflicting path, naming every patch that creates
  * the path so the operator can pick the correct fix (`patch delete` or
@@ -487,14 +486,13 @@ function isLaterOwner(owner: NewFileOwner, entry: PatchQueueEntry): boolean {
  * Cross-patch lint rule: a patch imports a module that a later patch is
  * responsible for creating.
  *
- * Approach is deliberately conservative — we do not resolve `resource://`
- * URLs to engine file paths. Instead we build a cross-queue index of
- * newly-created files keyed by their basename, and flag imports whose leaf
- * matches an entry owned by a later-ordered patch. False positives from
- * unrelated basename collisions (two different directories happening to
- * create files named `Helper.sys.mjs`) are possible; the README documents
- * the limitation and the inline ignore marker above provides an escape
- * hatch.
+ * Deliberately conservative — `resource://` URLs are not resolved to engine
+ * file paths. Instead a cross-queue index of newly-created files is built,
+ * keyed by basename, and imports whose leaf matches an entry owned by a
+ * later-ordered patch are flagged. False positives from unrelated basename
+ * collisions (two directories both creating `Helper.sys.mjs`) are possible;
+ * the README documents the limitation and the inline ignore marker above is
+ * the escape hatch.
  *
  * Rules out:
  * - Imports whose leaf matches a newly-created file in the *same* or an
@@ -712,13 +710,13 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
       });
     }
 
-    // Registration-kind declarations (0.37.0 item 5): a jar.mn packaging
-    // line, customElements registration, or actor registration referencing
-    // a later-created file. There is no import specifier to match — the
+    // Registration-kind declarations: a jar.mn packaging line,
+    // customElements registration, or actor registration referencing a
+    // later-created file. There is no import specifier to match — the
     // declaration is "used" when the declared line (whitespace-trimmed)
-    // appears among the lines this patch adds to the declaring file AND
-    // its `creates` resolves to a file a later-ordered patch actually
-    // creates (with `owner`, when set, naming that patch) — mirroring
+    // appears among the lines this patch adds to the declaring file AND its
+    // `creates` resolves to a file a later-ordered patch actually creates
+    // (with `owner`, when set, naming that patch) — mirroring
     // findMatchingStagedDependency for the import kind.
     for (const registration of entry.metadata?.stagedDependencies?.registrations ?? []) {
       const failure = findStagedRegistrationFailure(entry, registration, newFileIndex);
@@ -828,5 +826,6 @@ export function lintPatchQueue(ctx: PatchQueueContext): PatchLintIssue[] {
     ...lintPatchQueueDuplicateCreations(ctx),
     ...lintPatchQueueForwardImports(ctx),
     ...lintPatchQueueModuleRegistrations(ctx),
+    ...lintPatchQueueBinaryBodies(ctx),
   ];
 }

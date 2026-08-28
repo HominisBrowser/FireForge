@@ -5,6 +5,7 @@ import { join, relative } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
 import type {
+  ComponentApplyContext,
   CustomComponentConfig,
   DryRunAction,
   OverrideComponentConfig,
@@ -13,12 +14,14 @@ import type {
 import { toError } from '../utils/errors.js';
 import { copyFile, ensureDir, pathExists, readText, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { buildCustomDryRunActions } from './furnace-apply-dry-run.js';
 import {
   applyCustomFtlFile,
   applySharedFtlPrune,
   removeCustomFtlJarMnEntry,
 } from './furnace-apply-ftl.js';
+import { normalizeForChecksum } from './furnace-checksum-utils.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
 import { deployFileWithFragments, SHARED_FRAGMENTS_DIR } from './furnace-css-fragments.js';
 import { addCustomElementRegistration, addJarMnEntries } from './furnace-registration.js';
@@ -35,8 +38,8 @@ interface DirectoryEntry {
 
 /**
  * True for a plain-file directory entry — symlinks and directories are
- * never copy candidates. Exported for the patch-owned overwrite probe
- *, which walks the same override copy-candidate set as apply.
+ * never copy candidates. Exported for the patch-owned overwrite probe,
+ * which walks the same override copy-candidate set as apply.
  */
 export function isRegularFile(entry: DirectoryEntry): boolean {
   if (!entry.isFile()) return false;
@@ -103,7 +106,12 @@ export async function restoreOverrideFileToBaseline(
   enginePath: string,
   journal: RollbackJournal
 ): Promise<'restored' | 'removed' | 'noop'> {
-  const relPath = relative(engineDir, enginePath);
+  // Engine-relative paths are IDENTIFIERS here, not filesystem arguments:
+  // they are handed to git, recorded in furnace state, and compared against
+  // the POSIX paths furnace.json and jar.mn already carry. `relative()`
+  // returns backslashes on Windows, so without this the same file has two
+  // spellings and every cross-check misses.
+  const relPath = normalizePathSlashes(relative(engineDir, enginePath));
 
   // Snapshot before mutation so a later rollback can undo both restoration
   // (writes whatever content we removed back) and deletion (recreates the
@@ -138,8 +146,7 @@ export async function computeComponentChecksums(
     if (!isChecksummedComponentFile(entry.name)) continue;
 
     const content = await readText(join(componentDir, entry.name));
-    const normalized = content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
-    const hash = createHash('sha256').update(normalized).digest('hex');
+    const hash = createHash('sha256').update(normalizeForChecksum(content)).digest('hex');
     checksums[entry.name] = hash;
   }
 
@@ -179,7 +186,7 @@ export async function undeployCustomFiles(
 
     if (await pathExists(enginePath)) {
       await removeFile(enginePath);
-      removed.push(relative(engineDir, enginePath));
+      removed.push(normalizePathSlashes(relative(engineDir, enginePath)));
     }
 
     // When an `.ftl` is deleted from the workspace the corresponding locale
@@ -238,7 +245,7 @@ export async function undeployOverrideFiles(
   for (const fileName of deletedFiles) {
     const enginePath = getOverrideEngineTargetPath(engineDir, config, fileName, ftlDir);
     const action = await restoreOverrideFileToBaseline(engineDir, enginePath, rollbackJournal);
-    const relPath = relative(engineDir, enginePath);
+    const relPath = normalizePathSlashes(relative(engineDir, enginePath));
     if (action === 'restored') restored.push(relPath);
     else if (action === 'removed') removed.push(relPath);
   }
@@ -276,10 +283,6 @@ function componentChecksumsChanged(
   return false;
 }
 
-function normalizeForChecksum(content: string): string {
-  return content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
-}
-
 /**
  * Detects whether an override component's deployed files are missing from the
  * engine or differ from the source. Used as a guard before skipping apply on a
@@ -293,12 +296,11 @@ function normalizeForChecksum(content: string): string {
  * for projects with many components.
  */
 export async function hasOverrideEngineDrift(
-  engineDir: string,
-  componentDir: string,
+  ctx: Pick<ComponentApplyContext, 'engineDir' | 'componentDir' | 'ftlDir'>,
   config: OverrideComponentConfig,
-  ftlDir: string,
   cachedEngineChecksums?: Record<string, string>
 ): Promise<boolean> {
+  const { engineDir, componentDir, ftlDir } = ctx;
   const entries = await readdir(componentDir, { withFileTypes: true, encoding: 'utf8' });
   for (const entry of entries) {
     if (!isRegularFile(entry)) continue;
@@ -337,12 +339,10 @@ export async function hasOverrideEngineDrift(
  * the validate command.
  */
 export async function hasCustomEngineDrift(
-  root: string,
-  name: string,
-  componentDir: string,
-  config: CustomComponentConfig,
-  ftlDir: string
+  ctx: Pick<ComponentApplyContext, 'root' | 'name' | 'componentDir' | 'ftlDir'>,
+  config: CustomComponentConfig
 ): Promise<boolean> {
+  const { root, name, componentDir, ftlDir } = ctx;
   const status = await checkRegistrationConsistency(root, name, config, ftlDir);
   if (!status.targetExists || !status.filesInSync) {
     return true;
@@ -392,15 +392,15 @@ export interface CustomApplyOptions {
 
 /** Applies a custom component into the engine tree and captures registration step errors. */
 export async function applyCustomComponent(
-  engineDir: string,
-  name: string,
-  componentDir: string,
+  ctx: Pick<ComponentApplyContext, 'engineDir' | 'name' | 'componentDir' | 'ftlDir'>,
   config: CustomComponentConfig,
-  ftlDir: string,
   dryRun = false,
   rollbackJournal?: RollbackJournal,
   applyOptions: CustomApplyOptions = {}
 ): Promise<{ affectedPaths: string[]; stepErrors: StepError[]; actions?: DryRunAction[] }> {
+  // `ftlDir` stays on the context (the FTL and dry-run callees below read
+  // it) but is not needed by name here.
+  const { engineDir, name, componentDir } = ctx;
   if (!/^[a-z][a-z0-9-]*$/.test(name)) {
     throw new FurnaceError(`Invalid component name "${name}": must match /^[a-z][a-z0-9-]*$/`);
   }
@@ -418,15 +418,7 @@ export async function applyCustomComponent(
   }
 
   if (dryRun) {
-    const { actions, stepErrors } = await buildCustomDryRunActions(
-      name,
-      componentDir,
-      engineDir,
-      config,
-      targetDir,
-      entries,
-      ftlDir
-    );
+    const { actions, stepErrors } = await buildCustomDryRunActions(ctx, config, targetDir, entries);
     return { affectedPaths: [], stepErrors, actions };
   }
 
@@ -456,15 +448,15 @@ export async function applyCustomComponent(
 
   // Copy phase (parallel — independent file writes to different paths).
   // CSS files carrying @fireforge-include directives are written as their
-  // fragment-expanded form (field report D2); the workspace source keeps
-  // only the directive, so shared CSS stays single-sourced.
+  // fragment-expanded form; the workspace source keeps only the directive,
+  // so shared CSS stays single-sourced.
   const sharedDir = join(componentDir, '..', '..', SHARED_FRAGMENTS_DIR);
   await Promise.all(
     filesToCopy.map(async (entry) => {
       const src = join(componentDir, entry.name);
       const dest = join(targetDir, entry.name);
       await deployFileWithFragments(src, dest, sharedDir);
-      affectedPaths.push(relative(engineDir, dest));
+      affectedPaths.push(normalizePathSlashes(relative(engineDir, dest)));
       copiedFileNames.push(entry.name);
     })
   );
@@ -473,28 +465,12 @@ export async function applyCustomComponent(
   // the shared bundle is owned elsewhere and FireForge must not copy or
   // register a per-component `.ftl` on its behalf.
   if (config.localized && !config.sharedFtl) {
-    await applyCustomFtlFile(
-      engineDir,
-      name,
-      componentDir,
-      ftlDir,
-      affectedPaths,
-      stepErrors,
-      rollbackJournal
-    );
+    await applyCustomFtlFile(ctx, affectedPaths, stepErrors, rollbackJournal);
   } else if (config.localized && config.sharedFtl) {
     // Drop any dangling per-widget locale jar.mn entry that would point at a
     // non-existent `<chromeSubPath>/<name>.ftl` and fail `mach build`. The
     // shared bundle (a different chrome path/base name) is never touched.
-    await applySharedFtlPrune(
-      engineDir,
-      name,
-      ftlDir,
-      config,
-      affectedPaths,
-      stepErrors,
-      rollbackJournal
-    );
+    await applySharedFtlPrune(ctx, config, affectedPaths, stepErrors, rollbackJournal);
   }
 
   if (config.register) {
@@ -537,14 +513,12 @@ export async function applyCustomComponent(
 
 /** Applies an override component by copying its matching files onto the engine tree. */
 export async function applyOverrideComponent(
-  engineDir: string,
-  name: string,
-  componentDir: string,
+  ctx: Pick<ComponentApplyContext, 'engineDir' | 'name' | 'componentDir' | 'ftlDir'>,
   config: OverrideComponentConfig,
-  ftlDir: string,
   dryRun = false,
   rollbackJournal?: RollbackJournal
 ): Promise<{ affectedPaths: string[]; actions?: DryRunAction[] }> {
+  const { engineDir, name, componentDir, ftlDir } = ctx;
   const targetDir = join(engineDir, config.basePath);
 
   if (!(await pathExists(targetDir))) {
@@ -601,7 +575,7 @@ export async function applyOverrideComponent(
       const src = join(componentDir, entry.name);
       const dest = getOverrideEngineTargetPath(engineDir, config, entry.name, ftlDir);
       await copyFile(src, dest);
-      affectedPaths.push(relative(engineDir, dest));
+      affectedPaths.push(normalizePathSlashes(relative(engineDir, dest)));
     })
   );
 

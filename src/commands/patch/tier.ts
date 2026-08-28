@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge patch tier <name>` — sets or clears `PatchMetadata.tier` on
- * a single patch without rewriting the `.patch` file body.
+ * `fireforge patch tier <name>` — sets or clears `PatchMetadata.tier` on a
+ * single patch without rewriting the `.patch` file body.
  *
- * Companion to `fireforge re-export <name> --tier <tier>`. Re-export is
- * the right tool when the patch body itself needs to be regenerated; this
- * subcommand exists for the metadata-only adjustment, where the operator
- * has discovered (e.g. from a `lint --per-patch` warning) that the
- * threshold-tier override should be set but the patch body is already
- * correct. Avoiding the re-export saves the engine read + diff
- * regeneration roundtrip and leaves the `.patch` file's mtime alone.
+ * Companion to `fireforge re-export <name> --tier <tier>`. Re-export is the
+ * right tool when the patch body itself needs regenerating; this subcommand
+ * covers the metadata-only adjustment, where the operator has discovered
+ * (from a `lint --per-patch` warning, say) that the threshold-tier override
+ * should be set but the patch body is already correct. Avoiding the
+ * re-export saves the engine read + diff regeneration roundtrip and leaves
+ * the `.patch` file's mtime alone.
  *
  * Modes are mutually exclusive: exactly one of `--tier <branding>` or
  * `--clear` must be supplied per invocation.
@@ -24,7 +24,7 @@ import type { CommandContext } from '../../types/cli.js';
 import type { PatchTierOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
-import { pickDefined } from '../../utils/options.js';
+import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /**
@@ -99,7 +99,7 @@ export async function patchTierCommand(
     outro('Dry run complete — no changes made');
     return;
   }
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Cancelled — no changes made');
     return;
   }
@@ -109,7 +109,10 @@ export async function patchTierCommand(
   // routes through `unsetFields` so TypeScript's exact optional types
   // do not have to carry an explicit `undefined` on the `tier` field.
   if (after !== undefined) {
-    await updatePatchMetadata(paths.patches, target.filename, { tier: after });
+    await updatePatchMetadata(paths.patches, target.filename, { tier: after }, [], {
+      waitLockSeconds: resolveWaitLockSeconds(options.waitLock),
+      command: 'patch tier',
+    });
   } else {
     await updatePatchMetadata(paths.patches, target.filename, {}, ['tier']);
   }
@@ -143,7 +146,7 @@ export async function patchTierCommand(
  */
 export function registerPatchTier(parent: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
-  parent
+  const command = parent
     .command('tier <name>')
     .description(
       'Set or clear PatchMetadata.tier on a single patch (no .patch body rewrite). Use --tier <branding> to set, --clear to remove.'
@@ -156,19 +159,25 @@ export function registerPatchTier(parent: Command, context: CommandContext): voi
     )
     .option('--clear', 'Remove the tier override (restores tier auto-detection)')
     .option('--dry-run', 'Show what would change without writing')
-    .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
-    .action(
-      withErrorHandling(
-        async (
-          name: string,
-          options: { tier?: string; clear?: boolean; dryRun?: boolean; yes?: boolean }
-        ) => {
-          const { tier, ...rest } = options;
-          await patchTierCommand(getProjectRoot(), name, {
-            ...pickDefined(rest),
-            ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
-          });
+    .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (
+        name: string,
+        options: {
+          tier?: string;
+          clear?: boolean;
+          dryRun?: boolean;
+          yes?: boolean;
+          waitLock?: boolean | number;
         }
-      )
-    );
+      ) => {
+        const { tier, ...rest } = options;
+        await patchTierCommand(getProjectRoot(), name, {
+          ...pickDefined(rest),
+          ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
+        });
+      }
+    )
+  );
 }

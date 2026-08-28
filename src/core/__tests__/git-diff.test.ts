@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, writeFile: vi.fn(), mkdtemp: vi.fn(), rm: vi.fn(), stat: vi.fn() };
@@ -13,10 +15,7 @@ vi.mock('../../utils/process.js', () => ({
   exec: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../git-base.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../git-base.js')>();
@@ -35,6 +34,16 @@ vi.mock('../git-file-ops.js', () => ({
 vi.mock('../git-status.js', () => ({
   getUntrackedFiles: vi.fn(),
   getUntrackedFilesInDir: vi.fn(),
+}));
+
+// The private-index path is exercised against a real repository in
+// `binary-patch-index-isolation.test.ts`, where the whole point — that a
+// concurrent `git status` never observes the staging — is observable. These
+// mock-level cases describe the SHARED-index fallback, so the mint is stubbed
+// off by default and turned on only for the case that asserts it is preferred.
+vi.mock('../git-readonly-index.js', () => ({
+  readOnlyGitIndexEnv: vi.fn(() => undefined),
+  mintDisposableGitIndex: vi.fn(() => Promise.resolve(undefined)),
 }));
 
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
@@ -58,6 +67,7 @@ import {
   isBinaryFile,
   listTrackedInHead,
 } from '../git-file-ops.js';
+import { mintDisposableGitIndex } from '../git-readonly-index.js';
 import { getUntrackedFiles, getUntrackedFilesInDir } from '../git-status.js';
 
 const mockExec = vi.mocked(exec);
@@ -97,7 +107,7 @@ describe('getFileDiff', () => {
 
     const result = await getFileDiff('/repo', 'file.txt');
     expect(result).toBe('diff --git a/f b/f\n');
-    expect(mockGit).toHaveBeenCalledWith(['diff', 'HEAD', '--', 'file.txt'], '/repo');
+    expect(mockGit).toHaveBeenCalledWith(['diff', '--binary', 'HEAD', '--', 'file.txt'], '/repo');
   });
 
   it('throws when git diff fails', async () => {
@@ -523,12 +533,11 @@ describe('getDiffForFilesAgainstHead', () => {
   });
 
   it('expands a directory path without a trailing slash', async () => {
-    // Regression for the 2026-04-24 eval finding (Core canvas viewport):
-    // aggregate lint crashed with raw `EISDIR` when a directory entry
-    // reached this function without the trailing slash the caller-side
+    // Aggregate lint crashes with a raw `EISDIR` when a directory entry
+    // reaches this function without the trailing slash the caller-side
     // `expandUntrackedDirectoryEntries` would have emitted. The
-    // trailing-slash guard above misses it; the in-loop `stat` check
-    // expands it via the same helper.
+    // trailing-slash guard above misses it; the in-loop `stat` check expands
+    // it via the same helper.
     mockListTrackedInHead.mockResolvedValue(new Set());
     mockPathExists.mockResolvedValue(true);
     // Compare against the join()-built path the source computes so the
@@ -570,7 +579,7 @@ describe('getStagedDiffForFiles', () => {
     const result = await getStagedDiffForFiles('/repo', ['a.txt', 'b.txt']);
     expect(result).toBe('staged diff\n');
     expect(mockGit).toHaveBeenCalledWith(
-      ['diff', '--cached', 'HEAD', '--', 'a.txt', 'b.txt'],
+      ['diff', '--binary', '--cached', 'HEAD', '--', 'a.txt', 'b.txt'],
       '/repo'
     );
   });
@@ -593,7 +602,57 @@ describe('generateBinaryFilePatch', () => {
     });
   });
 
-  it('stages untracked file with intent-to-add and cleans up', async () => {
+  it('stages into a PRIVATE index when one can be minted, and restores nothing', async () => {
+    // The shared index is what a concurrent `fireforge test` fingerprints, so
+    // a visible stage/restore pair voids healthy verdicts. A private index
+    // makes the write unobservable — and makes the restore unnecessary,
+    // because nothing shared was touched.
+    const dispose = vi.fn(() => Promise.resolve());
+    vi.mocked(mintDisposableGitIndex).mockResolvedValueOnce({
+      env: { GIT_INDEX_FILE: '/tmp/private/index' },
+      dispose,
+    });
+    mockExec
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: 'untracked binary diff\n', stderr: '', exitCode: 0 });
+
+    const result = await generateBinaryFilePatch('/repo', 'new.png');
+
+    expect(result).toBe('untracked binary diff\n');
+    expect(mockExec).toHaveBeenCalledWith('git', ['add', '--intent-to-add', '--', 'new.png'], {
+      cwd: '/repo',
+      env: { GIT_INDEX_FILE: '/tmp/private/index' },
+    });
+    expect(mockExec).not.toHaveBeenCalledWith(
+      'git',
+      ['ls-files', '--stage', '--', 'new.png'],
+      expect.anything()
+    );
+    expect(mockExec).not.toHaveBeenCalledWith(
+      'git',
+      ['reset', 'HEAD', '--', 'new.png'],
+      expect.anything()
+    );
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('disposes the private index even when the diff throws', async () => {
+    const dispose = vi.fn(() => Promise.resolve());
+    vi.mocked(mintDisposableGitIndex).mockResolvedValueOnce({
+      env: { GIT_INDEX_FILE: '/tmp/private/index' },
+      dispose,
+    });
+    mockExec
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockRejectedValueOnce(new Error('diff failed'));
+
+    await expect(generateBinaryFilePatch('/repo', 'new.png')).rejects.toThrow('diff failed');
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('stages untracked file with intent-to-add and cleans up (shared-index fallback)', async () => {
     // First call: tracked diff returns empty
     mockExec
       .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })

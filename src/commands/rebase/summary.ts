@@ -39,7 +39,10 @@ export function printSummary(session: RebaseSession): void {
   info('='.repeat(55));
 
   for (const patch of session.patches) {
-    const label = statusLabel(patch.status, patch.fuzzFactor);
+    const label = statusLabel(
+      patch.status,
+      patch.status === 'applied-fuzz' ? patch.fuzzFactor : undefined
+    );
     info(
       `  ${patch.filename} ${'·'.repeat(Math.max(1, 45 - patch.filename.length - label.length))} ${label}`
     );

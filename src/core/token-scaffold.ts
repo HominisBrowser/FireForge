@@ -2,14 +2,14 @@
 /**
  * Scaffolds the default tokens CSS file consumed by `fireforge token add`.
  *
- * Before 0.16.0 `fireforge furnace init` wrote `furnace.json` but not the
- * tokens CSS — every project's first `fireforge token add` hit
+ * Without it, `fireforge furnace init` writes `furnace.json` but not the
+ * tokens CSS, and every project's first `fireforge token add` hits
  * `Token CSS file not found: browser/themes/shared/<binaryName>-tokens.css`.
- * The 0.16.0 init now calls into this module to write a canonical
- * `:root { … }` shell with a seed set of category headers that
- * `assertTokenCategoryExists` recognises, and registers the tokens CSS
- * path in `patchLint.rawColorAllowlist` so the first token that's an
- * actual color value does not instantly fail `fireforge lint`.
+ * Init calls into this module to write a canonical `:root { … }` shell with
+ * a seed set of category headers that `assertTokenCategoryExists`
+ * recognises, and registers the tokens CSS path in
+ * `patchLint.rawColorAllowlist` so the first token that is an actual color
+ * value does not instantly fail `fireforge lint`.
  */
 
 import type { ProjectLicense } from '../types/config.js';

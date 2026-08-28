@@ -2,9 +2,8 @@
 /**
  * Shared engine precondition ladder.
  *
- * Five commands carried their own copy, and `resolve.ts` and
- * `token-coverage.ts` were truncated: two rungs, no unborn-HEAD guard. Both
- * then enumerated working-tree status against an unborn HEAD, where the whole
+ * A truncated ladder — two rungs, no unborn-HEAD guard — lets a command
+ * enumerate working-tree status against an unborn HEAD, where the whole
  * ~300k-file Firefox tree reads as untracked.
  */
 import { mkdtemp, rm } from 'node:fs/promises';

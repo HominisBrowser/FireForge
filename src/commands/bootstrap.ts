@@ -2,41 +2,41 @@
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../core/config.js';
+import { assertEngineExists } from '../core/engine-precondition.js';
 import { ensureOriginRemote } from '../core/git.js';
 import { bootstrapWithOutput } from '../core/mach.js';
 import { GeneralError } from '../errors/base.js';
 import { BootstrapError } from '../errors/build.js';
 import { ExitCode } from '../errors/codes.js';
 import type { CommandContext } from '../types/cli.js';
-import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, warn } from '../utils/logger.js';
-import { detectBootstrapIssues, runPostBootstrapChecks } from './bootstrap-checks.js';
+import {
+  type BootstrapIssue,
+  detectBootstrapIssues,
+  runPostBootstrapChecks,
+} from './bootstrap-checks.js';
 import { reportDoctorResults } from './doctor.js';
 import { resolveDoctorSeverity } from './doctor-check-core.js';
+
+/** One sentence per detected issue, keyed by the scanner's own tags. */
+const BOOTSTRAP_FAILURE_SENTENCES: Record<BootstrapIssue, string> = {
+  'python-traceback': 'Bootstrap emitted a Python traceback.',
+  'sdk-fetch-403': 'Bootstrap hit an HTTP 403 while fetching dependencies.',
+  'missing-origin-remote':
+    'Bootstrap expected an "origin" git remote in the Firefox source checkout.',
+};
 
 /**
  * Builds a human-readable failure message for hard failures (non-zero exit).
  * Used only when mach bootstrap itself reports failure.
  */
 function buildBootstrapFailureMessage(output: string): string | undefined {
-  const normalized = output.replace(/\r\n/g, '\n');
-  const issues: string[] = [];
-
-  if (/traceback \(most recent call last\):/i.test(normalized)) {
-    issues.push('Bootstrap emitted a Python traceback.');
-  }
-
-  if (/\bhttp(?:\s+error)?\s*403\b/i.test(normalized) || /\b403\b.*forbidden/i.test(normalized)) {
-    issues.push('Bootstrap hit an HTTP 403 while fetching dependencies.');
-  }
-
-  if (
-    /no such remote ['"]origin['"]/i.test(normalized) ||
-    /remote ['"]origin['"] does not exist/i.test(normalized) ||
-    /missing git remote ['"]origin['"]/i.test(normalized)
-  ) {
-    issues.push('Bootstrap expected an "origin" git remote in the Firefox source checkout.');
-  }
+  // Delegates detection to the canonical scanner rather than keeping a
+  // second copy of its six regexes. The copies had already disagreed: this
+  // one reported a traceback AND a 403 separately, while
+  // `detectBootstrapIssues` collapses them, because a bootstrap traceback
+  // accompanying a 403 is just the stack trace from that HTTP error.
+  const issues = detectBootstrapIssues(output).map((issue) => BOOTSTRAP_FAILURE_SENTENCES[issue]);
 
   if (issues.length === 0) {
     return undefined;
@@ -59,9 +59,7 @@ export async function bootstrapCommand(projectRoot: string): Promise<ExitCode> {
   const paths = getProjectPaths(projectRoot);
 
   // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
+  await assertEngineExists(paths.engine);
 
   // Ensure the engine repo has an "origin" remote so Firefox's bootstrap
   // scripts don't emit noisy "No such remote" errors.
@@ -90,8 +88,8 @@ export async function bootstrapCommand(projectRoot: string): Promise<ExitCode> {
   if (issues.length > 0) {
     const checks = await runPostBootstrapChecks(issues);
     // Shares one resolver with reportDoctorResults so the two consumers of
-    // this same array cannot drift apart again — before 0.41.0 they
-    // disagreed on `passed: false, warning: true` with no severity.
+    // this same array cannot drift apart on how a check's severity is
+    // derived.
     const hasErrors = checks.some((c) => resolveDoctorSeverity(c) === 'error');
 
     info('');

@@ -15,22 +15,31 @@ import {
   isBinaryFile,
   listTrackedInHead,
 } from './git-file-ops.js';
-import { readOnlyGitIndexEnv } from './git-readonly-index.js';
+import { mintDisposableGitIndex, readOnlyGitIndexEnv } from './git-readonly-index.js';
 import { getUntrackedFiles, getUntrackedFilesInDir } from './git-status.js';
 
 async function execGitWithAllowedExitCodes(
   repoDir: string,
   args: string[],
-  allowedExitCodes: number[] = [0]
+  allowedExitCodes: number[] = [0],
+  envOverride?: Record<string, string>
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   // Honour a read-only command's private-index scope: the `--intent-to-add`
   // / `update-index` staging dance below is a genuine
   // index write, and inside a read-only command it must land on the
   // private index, not the primary checkout's.
+  //
+  // `envOverride` wins over that scope: a caller that minted an index for
+  // one specific invocation has said something more specific than the
+  // ambient scope did.
   const readOnlyIndexEnv = readOnlyGitIndexEnv(repoDir);
+  const env =
+    readOnlyIndexEnv !== undefined || envOverride !== undefined
+      ? { ...readOnlyIndexEnv, ...envOverride }
+      : undefined;
   const result = await exec('git', args, {
     cwd: repoDir,
-    ...(readOnlyIndexEnv !== undefined ? { env: readOnlyIndexEnv } : {}),
+    ...(env !== undefined ? { env } : {}),
   });
   if (allowedExitCodes.includes(result.exitCode)) {
     return result;
@@ -41,13 +50,19 @@ async function execGitWithAllowedExitCodes(
 
 /**
  * Gets the diff for a specific file.
+ *
+ * `--binary` is load-bearing: without it git degrades a binary file's section
+ * to the informational `Binary files a/x and b/x differ`, which carries none
+ * of the bytes and cannot be replayed by `git apply`. It only expands the
+ * BINARY section's index line to full hashes (text sections keep their
+ * abbreviated form), so text output stays byte-identical.
  * @param repoDir - Repository directory
  * @param filePath - Path to the file (relative to repo)
  * @returns Diff content
  */
 export async function getFileDiff(repoDir: string, filePath: string): Promise<string> {
   await ensureGit();
-  return git(['diff', 'HEAD', '--', filePath], repoDir);
+  return git(['diff', '--binary', 'HEAD', '--', filePath], repoDir);
 }
 
 /**
@@ -66,13 +81,14 @@ function abbreviateBlobHash(fullHash: string | undefined): string {
 }
 
 /**
- * Pure formatter for a new (untracked) file's unified diff. Extracted from
- * {@link generateNewFileDiff} so the batched cold-run path in
- * {@link getDiffForFilesAgainstHead} and the standalone path share one source of
- * truth — the only thing that differs between them is where `blobHash` comes
- * from (a single batched `git hash-object` vs a per-file one), never the
- * formatting. Preserves the empty-file form, the trailing-newline handling, and
- * the "No newline at end of file" marker byte-for-byte.
+ * Pure formatter for a new (untracked) file's unified diff. Shared by the
+ * batched cold-run path in {@link getDiffForFilesAgainstHead} and the
+ * standalone {@link generateNewFileDiff} — the only thing that differs is
+ * where `blobHash` comes from (a single batched `git hash-object` vs a
+ * per-file one), never the formatting. Preserves the empty-file form, the
+ * trailing-newline handling, and the "No newline at end of file" marker
+ * byte-for-byte.
+ *
  * @param filePath - Path to the file (relative to repo)
  * @param content - File content
  * @param blobHash - Abbreviated blob hash for the index line
@@ -129,12 +145,10 @@ function buildNewFileDiffBody(filePath: string, content: string, blobHash: strin
 export async function generateNewFileDiff(repoDir: string, filePath: string): Promise<string> {
   const fullPath = join(repoDir, filePath);
 
-  // Defensive check: a directory here means a caller bypassed the
-  // expansion layers and handed the leaf reader a path it cannot
-  // read. Surface it with an actionable message naming the offending
-  // path rather than the raw `EISDIR` that `readText` would throw —
-  // recurring bug class (see the belt-and-suspenders note in
-  // `getDiffForFilesAgainstHead`).
+  // Defensive check: a directory here means a caller bypassed the expansion
+  // layers and handed the leaf reader a path it cannot read. Surface it with
+  // an actionable message naming the offending path rather than the raw
+  // `EISDIR` that `readText` would throw.
   const fileStat = await stat(fullPath);
   if (fileStat.isDirectory()) {
     throw new GitError(
@@ -248,6 +262,10 @@ export async function generateModificationDiff(
 
 /**
  * Gets the diff for all modified files, including untracked (new) files.
+ *
+ * Tracked binary files round-trip through `git diff --binary`; untracked ones
+ * go through {@link generateBinaryFilePatch} below. Both arms must stay
+ * binary-aware — see {@link getFileDiff} for why.
  * @param repoDir - Repository directory
  * @returns Diff content
  */
@@ -255,18 +273,67 @@ export async function getAllDiff(repoDir: string): Promise<string> {
   await ensureGit();
 
   // Get diff for tracked files
-  const trackedDiff = await git(['diff', 'HEAD'], repoDir);
+  const trackedDiff = await git(['diff', '--binary', 'HEAD'], repoDir);
 
   // Get untracked files (properly expanded, not directories)
   const untrackedFiles = await getUntrackedFiles(repoDir);
 
-  // Generate diffs for untracked files
+  // Classify first. `isBinaryFile` reads the file's first 8 KB directly and
+  // spawns nothing, so the only per-file process in this loop is the
+  // `git hash-object` inside `generateNewFileDiff` — one spawn per untracked
+  // TEXT file, uncapped, against a Firefox tree where "untracked" can mean a
+  // very large number. Hence classify → one batched hash → render.
+  //
+  // Everything else here is deliberately untouched: `git diff HEAD` (with
+  // renames, unlike the `--no-renames` scoped sibling), the `ls-files`
+  // ordering, tracked-block-first emission, and the `'\n'` empty-result
+  // sentinel are all observable. `getAllDiff`'s output is SHA-256'd into
+  // every tree fingerprint (tree-store.ts) and written verbatim into `.patch`
+  // files (export-all.ts), so its bytes are a contract.
+  const binaryFiles: string[] = [];
+  const textFiles: string[] = [];
+  for (const file of untrackedFiles) {
+    if (await isBinaryFile(repoDir, file)) {
+      binaryFiles.push(file);
+    } else {
+      textFiles.push(file);
+    }
+  }
+
+  const textHashes = await hashObjectBatch(
+    repoDir,
+    textFiles.map((file) => join(repoDir, file))
+  );
+
+  // Binary patches stage into the index and must stay serial; text patches
+  // are pure formatting over the already-batched hashes.
+  const binaryDiffs = new Map<string, string>();
+  for (const file of binaryFiles) {
+    binaryDiffs.set(file, await generateBinaryFilePatch(repoDir, file));
+  }
+
   const untrackedDiffs: string[] = [];
   for (const file of untrackedFiles) {
-    const diff = (await isBinaryFile(repoDir, file))
-      ? await generateBinaryFilePatch(repoDir, file)
-      : await generateNewFileDiff(repoDir, file);
-    untrackedDiffs.push(diff);
+    const binary = binaryDiffs.get(file);
+    if (binary !== undefined) {
+      untrackedDiffs.push(binary);
+      continue;
+    }
+    const fullPath = join(repoDir, file);
+    // Same defensive directory check `generateNewFileDiff` carries: a
+    // directory here means a caller bypassed the expansion layers, and its
+    // comment records this as a recurring bug class.
+    const fileStat = await stat(fullPath);
+    if (fileStat.isDirectory()) {
+      throw new GitError(
+        `expected a file but found a directory at '${file}' — caller must expand directory entries before diffing`,
+        `hash-object ${file}`
+      );
+    }
+    const content = await readText(fullPath);
+    untrackedDiffs.push(
+      buildNewFileDiffBody(file, content, abbreviateBlobHash(textHashes.get(fullPath)))
+    );
   }
 
   // Combine all diffs — each already ends with \n, so concatenate directly
@@ -302,9 +369,15 @@ function splitDiffSections(combined: string): string[] {
 }
 
 /**
- * Runs one `git diff --no-renames HEAD` over the tracked files (chunked under
- * ARG_MAX) and returns a `Map<path, section>` whose sections are byte-identical
- * to the per-file `git diff HEAD -- <file>` they replace.
+ * Runs one `git diff --binary --no-renames HEAD` over the tracked files
+ * (chunked under ARG_MAX) and returns a `Map<path, section>` whose sections are
+ * byte-identical to the per-file `git diff --binary HEAD -- <file>` they
+ * replace.
+ *
+ * `--binary` is load-bearing: a tracked binary file would otherwise degrade to
+ * the un-appliable `Binary files a/x and b/x differ` stub. It expands only the
+ * binary section's index line to full hashes, so text sections are unaffected
+ * — see {@link getFileDiff}.
  *
  * `--no-renames` is load-bearing: a multi-path diff under a user's
  * `diff.renames=true`/`=copies` could otherwise emit a single 2-path rename
@@ -330,7 +403,10 @@ async function buildTrackedSections(
 ): Promise<Map<string, string>> {
   const sectionsByPath = new Map<string, string>();
   for (const chunk of chunkPathspecs(trackedFiles)) {
-    const combined = await git(['diff', '--no-renames', 'HEAD', '--', ...chunk], repoDir);
+    const combined = await git(
+      ['diff', '--binary', '--no-renames', 'HEAD', '--', ...chunk],
+      repoDir
+    );
     const namesOutput = await git(
       ['diff', '--no-renames', 'HEAD', '-z', '--name-only', '--', ...chunk],
       repoDir
@@ -360,16 +436,17 @@ async function buildTrackedSections(
 
 /**
  * Builds a combined diff against HEAD for the provided files without touching
- * the real git index. Tracked files use `git diff HEAD`; untracked files use
- * synthesized new-file diffs.
+ * the real git index. Tracked files use `git diff --binary HEAD` (binary
+ * sections included); untracked files use synthesized new-file diffs, or
+ * {@link generateBinaryFilePatch} when the file is binary.
  *
- * Performance: the work is batched into a handful of `git` invocations
- * (one `ls-tree` to classify, one `diff` over all tracked files, one
- * `hash-object` over all new text files) rather than the ~2 spawns per file the
- * previous per-file loop issued — that fan-out dominated the cold-run cost on a
- * Firefox-sized checkout (~700 serial spawns, ~99s). Binary, directory, and
- * recursion paths stay per-file because they are rare and (for binary) mutate
- * the index.
+ * Performance: the work is batched into a handful of `git` invocations (one
+ * `ls-tree` to classify, one `diff` over all tracked files, one `hash-object`
+ * over all new text files) rather than ~2 spawns per file, which dominates
+ * the cold-run cost on a Firefox-sized checkout. Binary, directory, and
+ * recursion paths stay per-file because they are rare and (for binary)
+ * mutate the index.
+ *
  * @param repoDir - Repository directory
  * @param files - File paths to diff (relative to repo root)
  * @returns Combined diff content
@@ -383,12 +460,10 @@ export async function getDiffForFilesAgainstHead(
   // Expand any directory entries (paths ending with `/`) into their
   // individual untracked files before diffing. `git status --porcelain=v1`
   // reports collapsed untracked directories as `?? dir/`, and every caller
-  // that feeds the aggregate working-tree state into this function must
-  // not trigger an EISDIR when the diff pass reads `dir/` as if it were a
-  // file. Belt-and-suspenders: the caller-side expansion in `lint.ts`
-  // and `export-all.ts` covers the common path, but a single bad call
-  // site re-introduced the bug in 0.17.0 — guarding here makes the
-  // regression impossible at this layer.
+  // that feeds the aggregate working-tree state into this function must not
+  // trigger an EISDIR when the diff pass reads `dir/` as if it were a file.
+  // The caller-side expansion in `lint.ts` and `export-all.ts` covers the
+  // common path; guarding here makes a single bad call site harmless.
   const expandedFiles: string[] = [];
   for (const file of files) {
     if (file.endsWith('/')) {
@@ -428,15 +503,13 @@ export async function getDiffForFilesAgainstHead(
       continue;
     }
 
-    // Second defence against the EISDIR regression: a non-HEAD path
-    // that exists on disk is usually a new file, but can also be a
-    // directory that arrived without the trailing slash
-    // `expandUntrackedDirectoryEntries` would have produced (caller
-    // stripped it, submodule entry, tracked-file-replaced-by-dir).
-    // Expand it via the same helper used by the slash branch and
-    // recurse so each contained file is diffed individually; fail
-    // loud when the directory has no readable content rather than
-    // silently skipping it.
+    // Second defence against EISDIR: a non-HEAD path that exists on disk is
+    // usually a new file, but can also be a directory that arrived without
+    // the trailing slash `expandUntrackedDirectoryEntries` would have
+    // produced (caller stripped it, submodule entry, tracked-file-replaced-
+    // by-dir). Expand it via the same helper used by the slash branch and
+    // recurse so each contained file is diffed individually; fail loud when
+    // the directory has no readable content rather than silently skipping it.
     const fileStat = await stat(fullPath);
     if (fileStat.isDirectory()) {
       const innerFiles = await getUntrackedFilesInDir(repoDir, file);
@@ -507,7 +580,7 @@ export async function getDiffForFilesAgainstHead(
  */
 export async function getStagedDiffForFiles(repoDir: string, files: string[]): Promise<string> {
   await ensureGit();
-  return git(['diff', '--cached', 'HEAD', '--', ...files], repoDir);
+  return git(['diff', '--binary', '--cached', 'HEAD', '--', ...files], repoDir);
 }
 
 /**
@@ -551,18 +624,55 @@ export async function generateBinaryFilePatch(repoDir: string, filePath: string)
   ]);
   if (result.stdout.trim()) return result.stdout;
 
-  // For untracked files, stage temporarily to produce a binary diff. The
-  // stage/unstage pair mutates the index, so it must not interleave with
-  // another concurrent binary patch (see runWithBinaryStagingLock).
+  // The diff for an untracked file has to come from an index entry, so one
+  // has to be written. Writing it to a PRIVATE index is what keeps that
+  // write invisible: the primary `.git/index` never moves, so a concurrent
+  // `fireforge test` fingerprinting `engine/` with `git status` cannot
+  // observe the transient `--intent-to-add` entry and void its own verdict
+  // on our bookkeeping. That was a real failure mode — parallel gate lanes
+  // killed three runs with `FAIL reason=inconclusive` on branding PNGs
+  // flapping between `A` and `??`.
+  //
+  // Nothing is restored afterwards because nothing shared was changed, and
+  // no lock is taken because two concurrent callers get two indexes. Both
+  // the restore dance and the in-process lock survive below purely for the
+  // fallback, where the primary index really is the one being written.
+  const disposable = await mintDisposableGitIndex(repoDir);
+  if (disposable !== undefined) {
+    try {
+      await execGitWithAllowedExitCodes(
+        repoDir,
+        ['add', '--intent-to-add', '--', filePath],
+        [0],
+        disposable.env
+      );
+      const diffResult = await execGitWithAllowedExitCodes(
+        repoDir,
+        ['diff', '--binary', '--', filePath],
+        [0],
+        disposable.env
+      );
+      return diffResult.stdout;
+    } finally {
+      await disposable.dispose();
+    }
+  }
+
+  // Fallback: no private index could be minted (a non-git directory, an
+  // unreadable index, no writable tmpdir). Degrading to the shared index is
+  // the pre-existing behaviour rather than a new risk, and refusing instead
+  // would fail an export over an optimisation. The stage/unstage pair
+  // mutates the index, so it must not interleave with another concurrent
+  // binary patch (see runWithBinaryStagingLock).
+  verbose(`Binary patch for ${filePath} is staging on the shared index (no private index).`);
   return runWithBinaryStagingLock(async () => {
-    // Snapshot the path's exact index entry before touching it. The cleanup
-    // used to be a blanket `git reset HEAD -- <file>`, which restores the
-    // path to its HEAD state — for a path absent from HEAD that means
-    // *removing* whatever entry the index carried, so any staged state that
-    // arrived between the read-only diff above and this staging block (a
-    // concurrent writer, or a staged-add whose worktree file was deleted)
-    // was silently discarded. Restoring the captured entry
-    // instead makes the cleanup exact regardless of how the entry got there.
+    // Snapshot the path's exact index entry before touching it. A blanket
+    // `git reset HEAD -- <file>` cleanup restores the path to its HEAD state
+    // — for a path absent from HEAD that means *removing* whatever entry the
+    // index carried, silently discarding any staged state that arrived
+    // between the read-only diff above and this staging block (a concurrent
+    // writer, or a staged-add whose worktree file was deleted). Restoring
+    // the captured entry is exact regardless of how the entry got there.
     const priorEntry = (
       await execGitWithAllowedExitCodes(repoDir, ['ls-files', '--stage', '--', filePath])
     ).stdout;

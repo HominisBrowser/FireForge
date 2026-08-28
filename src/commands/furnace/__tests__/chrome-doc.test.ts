@@ -175,7 +175,7 @@ describe('chrome-doc templates', () => {
   });
 });
 
-describe('generateBrowserWindowXhtml (0.34.0 --browser-window)', () => {
+describe('generateBrowserWindowXhtml (--browser-window)', () => {
   it('emits the browser.xhtml-like main-window skeleton', () => {
     const xhtml = generateBrowserWindowXhtml('mybrowser', 'MPL-2.0');
     // Root element and id platform C++ looks up before scripts run.
@@ -290,7 +290,7 @@ describe('furnaceChromeDocCreateCommand', () => {
     await writeText(join(engineDir, 'browser/locales/jar.mn'), '# existing locales\n');
   }
 
-  it('--browser-window writes the main-window skeleton with unchanged jar.mn registrations (0.34.0)', async () => {
+  it('--browser-window writes the main-window skeleton with unchanged jar.mn registrations', async () => {
     const engineDir = join(projectRoot, 'engine');
     await seedEngineJarTree(engineDir);
 
@@ -302,14 +302,13 @@ describe('furnaceChromeDocCreateCommand', () => {
     expect(xhtml).toContain('chromehidden=""');
     expect(xhtml).not.toContain('<window');
 
-    // jar.mn registrations are identical to the generic scaffold (the
-    // field report confirmed those were already correct).
+    // jar.mn registrations are identical to the generic scaffold.
     const jarMn = await readFile(join(engineDir, 'browser/base/jar.mn'), 'utf8');
     expect(jarMn).toContain('content/browser/mybrowser.xhtml');
     expect(jarMn).toContain('content/browser/mybrowser.js');
   });
 
-  it('hints at --browser-window when the target is a configured token-host document (0.34.0)', async () => {
+  it('hints at --browser-window when the target is a configured token-host document', async () => {
     const engineDir = join(projectRoot, 'engine');
     await seedEngineJarTree(engineDir);
     await writeText(
@@ -330,7 +329,7 @@ describe('furnaceChromeDocCreateCommand', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('--browser-window'));
   });
 
-  it('does not hint when the target is not a token-host document (0.34.0)', async () => {
+  it('does not hint when the target is not a token-host document', async () => {
     const engineDir = join(projectRoot, 'engine');
     await seedEngineJarTree(engineDir);
     await writeText(

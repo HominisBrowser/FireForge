@@ -121,10 +121,10 @@ export async function gatePlacementPlan(args: {
   const renameCount = placementPlan.renameMap.size;
 
   // Route through confirmDestructive when the operation is destructive
-  // enough to warrant a prompt (more than one rename) OR when the user
-  // asked for a dry-run. The dry-run branch must always print the
-  // placement summary — previously, single-rename/no-rename dry-runs
-  // exited silently with no filename or projected layout.
+  // enough to warrant a prompt (more than one rename) OR when the user asked
+  // for a dry-run. The dry-run branch must always print the placement
+  // summary; otherwise single-rename and no-rename dry-runs exit silently
+  // with no filename or projected layout.
   if (renameCount > 1 || isDryRun) {
     s.stop();
     const decision = await confirmDestructive({
@@ -140,7 +140,7 @@ export async function gatePlacementPlan(args: {
       outro('Dry run complete — no changes made');
       return 'stop';
     }
-    if (decision === 'cancelled') {
+    if (decision === 'declined') {
       outro('Export cancelled');
       return 'stop';
     }

@@ -2,20 +2,13 @@
 /**
  * Loud guard against silently reverting UNEXPORTED engine drift.
  *
- * `build-prepare` rewrites engine files from FireForge-owned sources
- * before every build: the branding tree, every Furnace-managed component,
- * and `mozconfig`. On a multi-session checkout that is a silent
- * destructive write. The recorded incident: one session edited a file in
- * `engine/` while another held the engine lock; the lock-holder's build
- * rewrote the file back to its patch baseline; the editing session's later
- * `re-export --wait-lock` then captured a HYBRID file — and every gate
- * passed on the hybrid capture. Only a hand-run grep of the patch body
- * caught it.
- *
- * The `setupBranding` half of this class was closed in `31fdf744` (the
- * branding writer preserves unmanaged lines). The general shape — any
- * build-prepare overwrite destroying local drift that no patch records —
- * stayed silent, and silence is what made the hybrid capture possible.
+ * `build-prepare` rewrites engine files from FireForge-owned sources before
+ * every build: the branding tree, every Furnace-managed component, and
+ * `mozconfig`. On a multi-session checkout that is a silent destructive
+ * write — one session edits a file in `engine/` while another holds the
+ * engine lock, the lock-holder's build rewrites it back to its patch
+ * baseline, and the editing session's later `re-export --wait-lock`
+ * captures a HYBRID file that every gate then passes.
  *
  * This guard runs BEFORE the writes, classifies the engine's dirty files
  * with the same classifier `fireforge status` uses, and reports the ones
@@ -85,20 +78,17 @@ function isOverwrittenByBuildPrepare(
  * expanding collapsed untracked directories on the way.
  *
  * Git reports a WHOLLY untracked directory as a single `?? dir/` entry
- * rather than listing the files under it. A directory entry has no
- * content to compare, so `classifyFiles` matched it against neither a
- * patch body nor the pristine baseline and bucketed it `unmanaged` — an
- * at-risk classification. 0.43.0 shipped the guard on the raw status and
- * so warned about every untracked branding subdirectory on every build,
- * while `status --unmanaged` (which expands) reported the same tree
- * clean. Expanding here is what makes the two agree by construction.
+ * rather than listing the files under it. A directory entry has no content
+ * to compare, so `classifyFiles` matches it against neither a patch body nor
+ * the pristine baseline and buckets it `unmanaged` — an at-risk
+ * classification. Expanding here is what keeps this guard and
+ * `status --unmanaged`, which expands, agreeing by construction.
  *
- * Expansion is scoped to build-prepare-owned prefixes on both sides of
- * the walk: a collapsed directory that merely CONTAINS an owned prefix
- * (`components/` when `components/custom/` is Furnace-managed) is
- * rewritten to the owned prefixes beneath it, so the enumeration never
- * walks an unrelated subtree — and never trips the per-directory
- * expansion cap on a tree whose owned prefixes are small.
+ * Expansion is scoped to build-prepare-owned prefixes on both sides of the
+ * walk: a collapsed directory that merely CONTAINS an owned prefix
+ * (`components/` when `components/custom/` is Furnace-managed) is rewritten
+ * to the owned prefixes beneath it, so the enumeration never walks an
+ * unrelated subtree and never trips the per-directory expansion cap.
  */
 async function collectOverwrittenEntries(
   engineDir: string,

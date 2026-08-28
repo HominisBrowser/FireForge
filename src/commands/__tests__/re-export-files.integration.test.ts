@@ -225,9 +225,14 @@ describe('re-export --files integration', () => {
     });
 
     expect(stdout).toContain('retained files (2)');
-    expect(stdout).toContain('projected files (2)');
+    // browser.css is DELETED, not dropped: it is tracked in engine HEAD, so
+    // the diff carries a `deleted file mode` section for it and the path
+    // stays in the projected scope alongside the two live files.
+    expect(stdout).toContain('projected files (3)');
     expect(stdout).toContain('newly included files (1): browser/base/content/new.js');
-    expect(stdout).toContain('missing on disk (will be dropped): browser/base/content/browser.css');
+    expect(stdout).toContain(
+      'deleted on disk (captured as deletions the patch will replay): browser/base/content/browser.css'
+    );
     expect(await pathExists(join(patchesDir, '.fireforge-history.jsonl'))).toBe(false);
   });
 
@@ -285,10 +290,19 @@ describe('re-export --files integration', () => {
     expect(await pathExists(join(patchesDir, '.fireforge-history.jsonl'))).toBe(false);
   });
 
-  it('--files drops missing paths from the persisted manifest, not just the diff', async () => {
-    // Regression: the command used to warn "missing on disk — will be
-    // dropped" and then write filesAffected: requested (including the
-    // missing path), leaving patches.json out of sync with the body.
+  it('--files captures a DELETION of a tracked file instead of silently dropping it', async () => {
+    // Regression, in two layers. The command first wrote filesAffected:
+    // requested while omitting the missing path from the body, desyncing
+    // patches.json from the patch. The fix for that dropped the path from
+    // BOTH — correct as bookkeeping, fatal as a capability: a deletion then
+    // had nowhere to go. `rm` on an upstream file left status "D" with
+    // classification "unmanaged", which `check-engine-clean` refuses, while
+    // a re-export naming the path reported success and wrote a patch that
+    // silently CLAIMED a file it did not restore. On a fresh clone that
+    // patch applies cleanly and resurrects exactly what the change removed.
+    //
+    // A path absent from disk but tracked in HEAD is a deletion, and
+    // `git diff HEAD` renders it. Only a never-tracked path is undiffable.
     await seedManifest(patchesDir, [
       {
         metadata: makeMetadata('001-infra-a.patch', 1, [
@@ -311,21 +325,30 @@ describe('re-export --files integration', () => {
     const manifest = JSON.parse(
       await readFile(join(patchesDir, 'patches.json'), 'utf-8')
     ) as PatchesManifest;
-    expect(manifest.patches[0]?.filesAffected).toEqual(['browser/base/content/browser.js']);
+    // The deleted path KEEPS its ownership — the patch is what performs the
+    // deletion, so dropping it would leave the body deleting a file the
+    // manifest says the patch has nothing to do with.
+    expect(manifest.patches[0]?.filesAffected).toEqual([
+      'browser/base/content/browser.css',
+      'browser/base/content/browser.js',
+    ]);
 
     const newBody = await readFile(join(patchesDir, '001-infra-a.patch'), 'utf-8');
     expect(newBody).toContain('browser/base/content/browser.js');
-    expect(newBody).not.toContain('browser/base/content/browser.css');
+    // The whole point: a real deletion hunk, not a claim without a body.
+    expect(newBody).toContain('browser/base/content/browser.css');
+    expect(newBody).toContain('deleted file mode');
 
-    // History payload should record both the persisted files and the
-    // missing-files-dropped audit trail.
     const history = await readFile(join(patchesDir, '.fireforge-history.jsonl'), 'utf-8');
     interface HistoryRecord {
-      args: { files?: string[]; missingFilesDropped?: string[] };
+      args: { files?: string[]; deletionsCaptured?: string[] };
     }
     const entry = JSON.parse(history.trim()) as HistoryRecord;
-    expect(entry.args.files).toEqual(['browser/base/content/browser.js']);
-    expect(entry.args.missingFilesDropped).toEqual(['browser/base/content/browser.css']);
+    expect(entry.args.files).toEqual([
+      'browser/base/content/browser.css',
+      'browser/base/content/browser.js',
+    ]);
+    expect(entry.args.deletionsCaptured).toEqual(['browser/base/content/browser.css']);
   });
 
   it('--files rejects unchanged requested paths instead of desyncing filesAffected', async () => {
@@ -428,20 +451,19 @@ describe('re-export --files integration', () => {
   });
 
   it('--files --force DOES block when the shrink introduces a NEW cross-patch error', async () => {
-    // Fix 2 negative: the regression-only gate must still fire when the
-    // shrink itself introduces an error. Otherwise we'd have traded one
-    // class of miss for another.
+    // The regression-only gate must still fire when the shrink itself
+    // introduces an error, or one class of miss is traded for another.
     //
     // Construction:
     //   001 claims browser.js with an EMPTY body (baseline has no added
     //       lines → no forward-import from 001)
     //   002 creates foo/Helper.sys.mjs (order 2)
     // On disk: modify browser.js to add `import "./Helper.sys.mjs"`.
-    // Shrinking 001 --files [browser.js] regenerates 001's diff from
-    // the dirty engine state, so 001's new modifiedFileAdditions now
-    // contains the import. Projected check: 001 (order 1) imports a
-    // leaf owned by 002 (order 2) → new forward-import error that the
-    // baseline did not have → regression → must reject.
+    // Shrinking 001 --files [browser.js] regenerates 001's diff from the
+    // dirty engine state, so 001's new modifiedFileAdditions now contains
+    // the import. Projected check: 001 (order 1) imports a leaf owned by
+    // 002 (order 2) → a new forward-import error the baseline did not have
+    // → regression → must reject.
     const targetCreatorDiff = [
       'diff --git a/foo/Helper.sys.mjs b/foo/Helper.sys.mjs',
       'new file mode 100644',

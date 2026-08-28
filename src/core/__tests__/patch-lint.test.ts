@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
 import {
   countNonBinaryDiffLines,
   detectNewFilesInDiff,
@@ -16,10 +17,7 @@ import {
   resolvePatchSizeTier,
 } from '../patch-lint.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../furnace-config.js', () => ({
   loadFurnaceConfig: vi.fn(),
@@ -330,14 +328,13 @@ describe('lintPatchedCss', () => {
     expect(issues.filter((i) => i.check === 'token-prefix-violation')).toHaveLength(0);
   });
 
-  it('does not flag pre-existing stock vars outside added diff lines (Finding #10)', async () => {
-    // Regression guard: a Furnace override of a stock component (e.g.
-    // moz-card) carries the upstream file's full `var(--moz-card-*)`
-    // vocabulary. The rule used to scan the whole file and flag every
-    // inherited reference as a prefix violation against the fork's
-    // tokenPrefix — effectively making any CSS-only override unable to
-    // pass lint. With diff context available, the scan is scoped to
-    // added lines only.
+  it('does not flag pre-existing stock vars outside added diff lines', async () => {
+    // A Furnace override of a stock component (e.g. moz-card) carries the
+    // upstream file's full `var(--moz-card-*)` vocabulary. Scanning the
+    // whole file flags every inherited reference as a prefix violation
+    // against the fork's tokenPrefix, making any CSS-only override unable to
+    // pass lint. With diff context available, the scan is scoped to added
+    // lines only.
     mockLoadFurnaceConfig.mockResolvedValue({
       version: 1,
       componentPrefix: 'ff-',
@@ -451,12 +448,11 @@ describe('lintPatchedCss', () => {
   });
 
   it('auto-exempts browser/branding/ CSS from raw-color-value', async () => {
-    // Eval regression: setup-generated branding copied from `unofficial/`
-    // keeps hex literals (about dialog, installer pages, branded chrome).
-    // Without this auto-exemption, every first-time fresh project's
-    // `fireforge lint` failed with `raw-color-value` on files the operator
-    // did not author and cannot migrate without rewriting the copied
-    // upstream assets.
+    // Setup-generated branding copied from `unofficial/` keeps hex literals
+    // (about dialog, installer pages, branded chrome). Without the
+    // auto-exemption, every first-time fresh project's `fireforge lint`
+    // fails with `raw-color-value` on files the operator did not author and
+    // cannot migrate without rewriting the copied upstream assets.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(':root { --bg: #2a2a2a; color: #ffffff; }');
 
@@ -594,12 +590,12 @@ describe('lintNewFileHeaders', () => {
   });
 
   it('auto-exempts browser/branding/ when any recognised license header is present', async () => {
-    // Eval regression: copied branding files under browser/branding/
-    // carry Mozilla's MPL-2.0 header (legitimate — the assets are
-    // Mozilla's). A fork with a different project license (0BSD / EUPL-1.2
-    // / GPL-2.0-or-later) previously failed `missing-license-header` on
-    // these files and had no actionable fix short of rewriting the copied
-    // upstream headers (misrepresenting authorship).
+    // Copied branding files under browser/branding/ carry Mozilla's MPL-2.0
+    // header, legitimately — the assets are Mozilla's. A fork with a
+    // different project license (0BSD / EUPL-1.2 / GPL-2.0-or-later) would
+    // otherwise fail `missing-license-header` on these files with no
+    // actionable fix short of rewriting the copied upstream headers, which
+    // misrepresents authorship.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
       `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
@@ -714,12 +710,11 @@ describe('lintNewFileHeaders', () => {
   });
 
   it('accepts the verbatim upstream MPL block header on a new CSS file regardless of project license', async () => {
-    // 0.35.0 residual (field verification, 2026-07-05): the upstream-MPL
-    // acceptance covered new JS files only, so a derived CSS file
-    // carrying the exact same three-line `/* … */` block header still
-    // errored on an EUPL project without a patch-level lintIgnore, while
-    // the derived JS on the same patch passed natively. The block form
-    // is valid CSS comment syntax, and the header text is identical.
+    // Restricting the upstream-MPL acceptance to JS leaves a derived CSS
+    // file carrying the exact same three-line `/* … */` block header
+    // erroring on an EUPL project, while the derived JS on the same patch
+    // passes. The block form is valid CSS comment syntax and the header text
+    // is identical.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
       `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
@@ -1267,9 +1262,9 @@ describe('lintPatchedJs', () => {
 
   it("flags a patch-owned chrome .js with no class JSDoc when chromeScriptJsDoc='warning'", async () => {
     // Chrome subscripts (script form, no `export` keyword) are loaded via
-    // Services.scriptloader.loadSubScript and used to be review-only —
-    // the .sys.mjs gate excluded them. The chromeScriptJsDoc knob now
-    // covers them via a parseScript-based validator.
+    // Services.scriptloader.loadSubScript, so the .sys.mjs gate excludes
+    // them. The chromeScriptJsDoc knob covers them via a parseScript-based
+    // validator.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('class MyBrowserDock {\n  constructor() {}\n}\n');
 
@@ -1451,9 +1446,8 @@ describe('lintPatchedJs', () => {
   });
 
   it('flags modified (non-new) test files that lost their last assertion', async () => {
-    // The pre-0.18.x rule only fired for new test files (`isNew` gate),
-    // which let a patch strip the final `Assert.equal` from an existing
-    // browser_*.js without surfacing the regression. The rule now fires
+    // An `isNew` gate lets a patch strip the final `Assert.equal` from an
+    // existing browser_*.js without surfacing the regression. The rule fires
     // for any patch-touched browser_*.js, new or modified.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('add_task(async function() {});\n');
@@ -1694,10 +1688,9 @@ describe('lintPatchSize', () => {
   });
 
   it('does not warn on file count when a branding-shaped patch has 6 files', () => {
-    // 2026-04-25 finding: the file-count check ignored the branding tier
-    // entirely. A real-world fresh-fork branding bundle is 56 files (icon
-    // assets in 7+ sizes, MSIX manifests, locale .ftl files); the >5
-    // threshold fired on every minimum branding diff.
+    // A file-count check that ignores the branding tier fires on every
+    // minimum branding diff: a real fresh-fork branding bundle is ~56 files
+    // (icon assets in 7+ sizes, MSIX manifests, locale .ftl files).
     const brandingFiles = [
       'browser/branding/mybrowser/content/aboutDialog.css',
       'browser/branding/mybrowser/locales/en-US/brand.ftl',
@@ -1711,8 +1704,7 @@ describe('lintPatchSize', () => {
   });
 
   it('does not warn on file count when a branding patch has 56 files (operator data point)', () => {
-    // The 2026-04-25 operator data point: a freshly-setup mybrowser branding
-    // patch landed at exactly 56 files. Pin this against regression so the
+    // A freshly-setup branding patch lands at ~56 files. Pinned so the
     // documented threshold actually accommodates the canonical floor.
     const brandingFiles = Array.from(
       { length: 56 },
@@ -1874,13 +1866,11 @@ describe('lintPatchSize', () => {
   });
 
   it('uses the branding tier when every file is under browser/branding/', () => {
-    // Eval regression: a first-export of setup-generated branding landed at
-    // 15904 lines (localized brand.ftl across many locales + SVG path data +
-    // copied upstream CSS). The general hard limit of 3000 fired an error,
-    // but the patch already represented the minimum branding diff. The
-    // 2026-04-25 calibration moves the bands to {8000/18000/30000} so the
-    // typical 15904-line baseline lands as a soft `notice` rather than a
-    // `warning`, matching the docstring's "loud but not actionable" intent.
+    // A first export of setup-generated branding lands around 15–16k lines
+    // (localized brand.ftl across many locales + SVG path data + copied
+    // upstream CSS). Under the general hard limit of 3000 that is an error,
+    // even though the patch is the minimum branding diff. The branding bands
+    // {8000/18000/30000} put that baseline at a soft `notice`.
     const brandingFiles = [
       'browser/branding/mybrowser/content/aboutDialog.css',
       'browser/branding/mybrowser/locales/en-US/brand.ftl',
@@ -1892,8 +1882,8 @@ describe('lintPatchSize', () => {
     expect(
       lintPatchSize(brandingFiles, 8001).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('notice');
-    // 15904 was the exact eval data point — must surface as `notice`, not
-    // `warning`, after the 2026-04-25 recalibration.
+    // Must surface as `notice`, not `warning`, at the canonical branding
+    // floor.
     expect(
       lintPatchSize(brandingFiles, 15904).find((i) => i.check === 'large-patch-lines')?.severity
     ).toBe('notice');
@@ -1906,13 +1896,12 @@ describe('lintPatchSize', () => {
   });
 
   it('uses the branding tier when branding files + browser/moz.configure registration', () => {
-    // 2026-04-21 external audit against FireForge 0.17.0: a real-world
-    // branding patch legitimately also touches `browser/moz.configure`
-    // to register the new branding flavor with the top-level configure.
-    // The strict "every file under browser/branding/" predicate returned
-    // false and fell through to the general tier, firing ERROR at 15665
-    // lines. The narrow registration-file allowlist keeps the invariant
-    // ("nothing outside branding + the one-line registration sibling")
+    // A real-world branding patch legitimately also touches
+    // `browser/moz.configure` to register the new branding flavor with the
+    // top-level configure. A strict "every file under browser/branding/"
+    // predicate returns false, falls through to the general tier, and fires
+    // ERROR. The narrow registration-file allowlist keeps the invariant —
+    // nothing outside branding plus the one-line registration sibling —
     // while tolerating the edit every real branding patch must make.
     const brandingWithRegistration = [
       'browser/branding/mybrowser/content/aboutDialog.css',
@@ -2188,8 +2177,7 @@ describe('lintExportedPatch', () => {
       ['browser/modules/moz.build'],
       diff,
       mockConfig,
-      undefined,
-      new Set(['mozbuild-unsorted-list'])
+      { ignoreChecks: new Set(['mozbuild-unsorted-list']) }
     );
     expect(suppressed.some((i) => i.check === 'mozbuild-unsorted-list')).toBe(false);
   });
@@ -2206,14 +2194,9 @@ describe('lintExportedPatch', () => {
       'diff --git a/style.css b/style.css\n--- a/style.css\n+++ b/style.css\n@@ -1 +1 @@\n-old\n+body { color: #ff0000; }\n';
 
     const ignore = new Set<string>(['raw-color-value']);
-    const issues = await lintExportedPatch(
-      '/engine',
-      ['new.js', 'style.css'],
-      diff,
-      mockConfig,
-      undefined,
-      ignore
-    );
+    const issues = await lintExportedPatch('/engine', ['new.js', 'style.css'], diff, mockConfig, {
+      ignoreChecks: ignore,
+    });
 
     // missing-license-header still surfaces because it is not ignored.
     expect(issues.some((i) => i.check === 'missing-license-header')).toBe(true);
@@ -2234,14 +2217,9 @@ describe('lintExportedPatch', () => {
     const withoutIgnore = await lintExportedPatch('/engine', ['a.js'], diff, mockConfig);
     expect(withoutIgnore.some((i) => i.check === 'large-patch-lines')).toBe(true);
 
-    const withIgnore = await lintExportedPatch(
-      '/engine',
-      ['a.js'],
-      diff,
-      mockConfig,
-      undefined,
-      new Set(['large-patch-lines'])
-    );
+    const withIgnore = await lintExportedPatch('/engine', ['a.js'], diff, mockConfig, {
+      ignoreChecks: new Set(['large-patch-lines']),
+    });
     expect(withIgnore.some((i) => i.check === 'large-patch-lines')).toBe(false);
   });
 
@@ -2252,14 +2230,9 @@ describe('lintExportedPatch', () => {
     const diff =
       'diff --git a/style.css b/style.css\n--- a/style.css\n+++ b/style.css\n@@ -1 +1 @@\n-old\n+body { color: #ff0000; }\n';
 
-    const issuesWithEmpty = await lintExportedPatch(
-      '/engine',
-      ['style.css'],
-      diff,
-      mockConfig,
-      undefined,
-      new Set<string>()
-    );
+    const issuesWithEmpty = await lintExportedPatch('/engine', ['style.css'], diff, mockConfig, {
+      ignoreChecks: new Set<string>(),
+    });
     const issuesWithUndefined = await lintExportedPatch('/engine', ['style.css'], diff, mockConfig);
 
     expect(issuesWithEmpty.map((i) => i.check).sort()).toEqual(

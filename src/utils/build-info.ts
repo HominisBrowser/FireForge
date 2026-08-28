@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Build identity for `--version`. Three distinct builds
- * shipped as plain "0.41.0" — consumers had to fingerprint tarballs by
- * sha256 to know which build a claim was verified against. `--version`
- * now reports `<semver>+g<short-sha>[.dirty[.<content-hash>]]`:
+ * Build identity for `--version`.
  *
- * - In a git checkout (dev runs via tsx), identity comes from live git —
- *   a stale `dist/build-info.json` from an old build must never win.
- * - In an installed package, it comes from `dist/build-info.json`,
- *   stamped by scripts/generate-build-info.mjs at build/pack time.
+ * Distinct builds shipping as the same plain semver leave consumers
+ * fingerprinting tarballs by sha256 to know which build a claim was verified
+ * against. `--version` reports `<semver>+g<short-sha>[.dirty[.<content-hash>]]`:
+ *
+ * - In a git checkout (dev runs via tsx), identity comes from live git — a
+ *   stale `dist/build-info.json` from an old build must never win.
+ * - In an installed package, it comes from `dist/build-info.json`, stamped
+ *   by scripts/generate-build-info.mjs at build/pack time.
  * - When neither yields an identity, `--version` degrades to the plain
  *   semver. Reading identity must never throw.
  *
- * Deliberately NOT wired into the per-patch lint cache key: identity
- * would churn the cache on every commit at the same semver for no
- * correctness gain (`getPackageVersion` stays the cache input).
+ * Deliberately NOT wired into the per-patch lint cache key: identity would
+ * churn the cache on every commit at the same semver for no correctness gain
+ * (`getPackageVersion` stays the cache input).
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -28,14 +29,13 @@ export interface BuildIdentity {
   shortCommit: string;
   dirty: boolean;
   /**
-   * Content hash of the uncommitted diff, present only for a DIRTY
-   * installed build. Two packs from the same HEAD with
-   * different uncommitted content share `shortCommit` and the `.dirty`
-   * marker, so without this they report byte-identical `--version`
-   * strings — which is what made a field report against
-   * `0.41.0+g<sha>.dirty` impossible to trace back to a specific pack.
-   * Absent in a git checkout: identity there comes from live git, and
-   * hashing the full diff on every `--version` call is not worth it.
+   * Content hash of the uncommitted diff, present only for a DIRTY installed
+   * build. Two packs from the same HEAD with different uncommitted content
+   * share `shortCommit` and the `.dirty` marker, so without this they report
+   * byte-identical `--version` strings and a report against
+   * `<semver>+g<sha>.dirty` cannot be traced back to a specific pack. Absent
+   * in a git checkout: identity there comes from live git, and hashing the
+   * full diff on every `--version` call is not worth it.
    */
   dirtyHash?: string;
 }

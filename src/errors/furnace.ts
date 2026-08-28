@@ -15,10 +15,10 @@ export class FurnaceError extends FireForgeError {
     options?: {
       /**
        * Suppresses the "run furnace validate" advice line. Set by callers
-       * whose message already tells the user to run validate (or that ARE
-       * the validate command) — an explicit flag, because the previous
-       * `message.includes('furnace validate')` sniffing dropped the advice
-       * from any error that merely MENTIONED the command.
+       * whose message already tells the user to run validate, or that ARE
+       * the validate command. An explicit flag rather than sniffing the
+       * message for `furnace validate`, which drops the advice from any
+       * error that merely MENTIONS the command.
        */
       omitValidateAdvice?: boolean;
     }

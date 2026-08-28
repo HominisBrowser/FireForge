@@ -3,16 +3,17 @@ import { basename, join } from 'node:path';
 
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { pathExists, readText } from '../utils/fs.js';
+import { warn } from '../utils/logger.js';
 import { escapeRegex } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
-import type { RegisterResult } from './manifest-register.js';
+import type { RegisterResult } from './moz-manifest-register.js';
 import {
   registerBrowserContent,
   registerFireForgeModule,
   registerSharedCSS,
   registerTestManifest,
   registerToolkitWidget,
-} from './manifest-register.js';
+} from './moz-manifest-register.js';
 import { isXpcshellTestRegistered, registerXpcshellTest } from './register-xpcshell-test.js';
 
 /** Pattern rules mapping file paths to manifest types */
@@ -30,6 +31,15 @@ export interface PatternRule {
   ) => Promise<RegisterResult>;
   /** Extract arguments from the regex match */
   extractArgs: (match: RegExpMatchArray) => string[];
+  /**
+   * Whether this rule's manifest supports `--after` placement.
+   *
+   * Four of the six rules ignore the flag entirely: the CLI accepts
+   * `--after`, the adapter takes it as `_after`, and the operator gets a
+   * silently alphabetical insertion with no indication their placement was
+   * dropped. Declaring it lets {@link registerFile} say so.
+   */
+  supportsAfter: boolean;
 }
 
 /**
@@ -48,40 +58,39 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
       register: (engineDir, after, dryRun, fileName) =>
         registerSharedCSS(engineDir, fileName, after, dryRun),
       extractArgs: (m) => [m[1] ?? ''],
+      supportsAfter: true,
     },
     {
       // `.inc.xhtml` fragments under browser/base/content/ are deliberately
       // excluded: they are consumed via `#include` from a registered chrome
-      // document (typically browser.xhtml) and do not get their own
-      // packaged chrome URI. Before this carve-out, `status` flagged every
-      // wired fragment as "potentially unregistered" and `register --dry-run`
-      // proposed a bogus jar.mn entry. The lookahead blocks the match so
-      // `getUnregistrableAdvice` gets a chance to emit the correct
-      // guidance for the `.inc.xhtml` case.
+      // document (typically browser.xhtml) and do not get their own packaged
+      // chrome URI. Without the carve-out, `status` flags every wired
+      // fragment as "potentially unregistered" and `register --dry-run`
+      // proposes a bogus jar.mn entry. The lookahead blocks the match so
+      // `getUnregistrableAdvice` can emit the correct guidance instead.
       //
       // Test implementation files under `browser/base/content/test/` are
       // also excluded: they belong in the nearest `browser.toml` manifest,
-      // not in jar.mn. 2026-04-23 eval 2: `status --unmanaged` proposed
-      // `fireforge register browser/base/content/test/<dir>/browser_*.js`
-      // which would have clutter-registered a test file as browser
-      // chrome content. The negative lookahead routes those paths to
-      // `getUnregistrableAdvice`, which returns the correct
-      // browser.toml-centric guidance.
+      // not in jar.mn. The negative lookahead routes those paths to
+      // `getUnregistrableAdvice`, which returns browser.toml-centric
+      // guidance rather than proposing a jar.mn entry for a test file.
       pattern: /^browser\/base\/content\/(?!.+\.inc\.xhtml$)(?!test\/)(.+\.(?:js|mjs|xhtml|css))$/,
       isRegistered: (engineDir, fileName) => isBrowserContentRegistered(engineDir, fileName),
       register: (engineDir, after, dryRun, fileName) =>
         registerBrowserContent(engineDir, fileName, after, undefined, dryRun),
       extractArgs: (m) => [m[1] ?? ''],
+      supportsAfter: true,
     },
     {
       // Fork-owned browser.toml manifests at ARBITRARY depth under
-      // browser/base/content/test/ (0.34.0 field report: only one level
-      // was supported, rejecting nested browser-chrome manifests).
+      // browser/base/content/test/ — a one-level pattern rejects nested
+      // browser-chrome manifests.
       pattern: /^browser\/base\/content\/test\/((?:[^/]+\/)*[^/]+)\/browser\.toml$/,
       isRegistered: (_engineDir, testDir) => isTestManifestRegistered(_engineDir, testDir),
       register: (_engineDir, _after, dryRun, testDir) =>
         registerTestManifest(_engineDir, testDir, dryRun),
       extractArgs: (m) => [m[1] ?? ''],
+      supportsAfter: false,
     },
     {
       pattern: new RegExp(`^browser/modules/${escapeRegex(binaryName)}/(.+\\.sys\\.mjs)$`),
@@ -90,6 +99,7 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
       register: (_engineDir, _after, dryRun, fileName) =>
         registerFireForgeModule(_engineDir, fileName, moduleDir, dryRun, createManifest),
       extractArgs: (m) => [m[1] ?? ''],
+      supportsAfter: false,
     },
     {
       pattern: /^toolkit\/content\/widgets\/([^/]+)\/(.+\.(?:mjs|css))$/,
@@ -98,14 +108,14 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
       register: (_engineDir, _after, dryRun, tagName, fileName) =>
         registerToolkitWidget(_engineDir, tagName, fileName, dryRun),
       extractArgs: (m) => [m[1] ?? '', m[2] ?? ''],
+      supportsAfter: false,
     },
     {
-      // xpcshell test files (0.34.0 field report: rejected as "Unknown
-      // file pattern"). Any `test_*.js` outside browser/base/content/test/
-      // (which stays browser-chrome territory with its browser.toml
-      // guidance) registers into the directory's xpcshell.toml; with
-      // --create-manifest a missing manifest is scaffolded and wired via
-      // XPCSHELL_TESTS_MANIFESTS.
+      // xpcshell test files. Any `test_*.js` outside
+      // browser/base/content/test/ (which stays browser-chrome territory
+      // with its browser.toml guidance) registers into the directory's
+      // xpcshell.toml; with --create-manifest a missing manifest is
+      // scaffolded and wired via XPCSHELL_TESTS_MANIFESTS.
       pattern: /^(?!browser\/base\/content\/test\/)(.+)\/(test_[^/]+\.js)$/,
       isRegistered: (engineDir, dirRel, fileName) =>
         isXpcshellTestRegistered(engineDir, dirRel, fileName),
@@ -114,6 +124,7 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
       // Both groups are guaranteed by the pattern; slice avoids dead
       // fallback branches.
       extractArgs: (m) => m.slice(1, 3),
+      supportsAfter: false,
     },
   ];
 }
@@ -227,9 +238,8 @@ function getUnregistrableAdvice(filePath: string): string | null {
   // scaffold intentionally does NOT auto-register — wiring
   // `XPCSHELL_TESTS_MANIFESTS` requires a deliberate choice about which
   // moz.build should own the entry. `register` surfaces that same guidance
-  // instead of falling through to browser.toml-centric advice, which was
-  // the eval finding (operator saw "register browser.toml" hint for a
-  // path that was xpcshell-shaped and contained no browser.toml).
+  // instead of falling through to browser.toml-centric advice for a path
+  // that is xpcshell-shaped and contains no browser.toml.
   if (filePath.endsWith('/xpcshell.toml')) {
     return (
       `xpcshell.toml manifests are not auto-registered by "fireforge register". ` +
@@ -327,6 +337,14 @@ export async function registerFile(
     const match = normalizedPath.match(rule.pattern);
     if (match) {
       const args = rule.extractArgs(match);
+      if (after !== undefined && !rule.supportsAfter) {
+        // Say so rather than inserting alphabetically and letting the
+        // operator believe their placement was honoured.
+        warn(
+          `--after is not supported for ${normalizedPath}: this manifest is ` +
+            'kept in sorted order, so the entry was inserted alphabetically.'
+        );
+      }
       return rule.register(engineDir, after, dryRun, ...args);
     }
   }

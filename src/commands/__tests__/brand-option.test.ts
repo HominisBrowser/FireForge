@@ -32,12 +32,12 @@ vi.mock('../../core/mach.js', () => ({
   buildUI: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' })),
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
   buildArtifactMismatchMessage: vi.fn(() => undefined),
-  // The package command switched to `machPackageCapture` in 0.16.0 so it
-  // can feed stderr through `explainMachError` (Finding #12). Tests only
-  // check "was it called?", so seed a clean zero-exit result.
+  // The package command uses `machPackageCapture` so it can feed stderr
+  // through `explainMachError`. Tests only check "was it called?", so seed a
+  // clean zero-exit result.
   machPackageCapture: vi.fn(() => Promise.resolve({ stdout: '', stderr: '', exitCode: 0 })),
-  // Build lock added in 0.16.0; pass through so downstream build/buildUI
-  // calls run exactly as they did before the lock was introduced.
+  // Pass the build lock through so downstream build/buildUI calls run
+  // unwrapped.
   withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
 }));
 
@@ -51,6 +51,10 @@ vi.mock('../../core/furnace-stories.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -70,6 +74,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),

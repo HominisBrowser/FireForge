@@ -7,12 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RebaseSession } from '../rebase-session.js';
 import {
-  clearRebaseSession,
   getRebaseSessionPath,
-  hasActiveRebaseSession,
-  loadRebaseSession,
   readRebaseSession,
   saveRebaseSession,
+  tryReadRebaseSession,
 } from '../rebase-session.js';
 
 // Override getProjectPaths to point at the tmp directory from each test
@@ -59,33 +57,14 @@ describe('rebase-session', () => {
   });
 
   it('returns null when no session exists', async () => {
-    expect(await loadRebaseSession(tmpRoot)).toBeNull();
+    expect(await tryReadRebaseSession(tmpRoot)).toBeNull();
   });
 
   it('round-trips a session through save and load', async () => {
     const session = makeSession();
     await saveRebaseSession(tmpRoot, session);
-    const loaded = await loadRebaseSession(tmpRoot);
+    const loaded = await tryReadRebaseSession(tmpRoot);
     expect(loaded).toEqual(session);
-  });
-
-  it('detects active session', async () => {
-    expect(await hasActiveRebaseSession(tmpRoot)).toBe(false);
-    await saveRebaseSession(tmpRoot, makeSession());
-    expect(await hasActiveRebaseSession(tmpRoot)).toBe(true);
-  });
-
-  it('clears session', async () => {
-    await saveRebaseSession(tmpRoot, makeSession());
-    await clearRebaseSession(tmpRoot);
-    expect(await loadRebaseSession(tmpRoot)).toBeNull();
-    expect(await hasActiveRebaseSession(tmpRoot)).toBe(false);
-  });
-
-  it('clearRebaseSession is a no-op when no session exists', async () => {
-    // Should not throw
-    await clearRebaseSession(tmpRoot);
-    expect(await hasActiveRebaseSession(tmpRoot)).toBe(false);
   });
 });
 
@@ -115,16 +94,6 @@ describe('readRebaseSession — absent vs corrupt', () => {
     await saveRebaseSession(tmpRoot, makeSession());
     const read = await readRebaseSession(tmpRoot);
     expect(read).toMatchObject({ present: true, valid: true });
-  });
-
-  it('distinguishes a present-but-invalid session from an absent one', async () => {
-    // Before 0.41.0 both collapsed to `null`, while hasActiveRebaseSession
-    // reported `true` from pathExists alone — the wedge.
-    await plant(JSON.stringify({ startedAt: 'x', currentIndex: 'not-a-number' }));
-
-    const read = await readRebaseSession(tmpRoot);
-    expect(read).toMatchObject({ present: true, valid: false });
-    expect(await hasActiveRebaseSession(tmpRoot)).toBe(true);
   });
 
   it('rejects sessions whose fields are the right TYPE but not a usable value', async () => {
@@ -199,11 +168,11 @@ describe('readRebaseSession — absent vs corrupt', () => {
     }
   });
 
-  it('keeps loadRebaseSession null for both unusable shapes', async () => {
+  it('keeps tryReadRebaseSession null for both unusable shapes', async () => {
     await plant('not json at all');
-    expect(await loadRebaseSession(tmpRoot)).toBeNull();
+    expect(await tryReadRebaseSession(tmpRoot)).toBeNull();
     await plant(JSON.stringify({ nope: true }));
-    expect(await loadRebaseSession(tmpRoot)).toBeNull();
+    expect(await tryReadRebaseSession(tmpRoot)).toBeNull();
   });
 
   it('names the session file so an operator can always find it', () => {
@@ -224,7 +193,7 @@ describe('readRebaseSession — absent vs corrupt', () => {
 
   it('reports an unreadable session directory as corrupt, not absent', async () => {
     // EACCES is "we cannot tell", which must never read as "no session":
-    // the same fail-closed rule readTreeMarkerState applies to tree markers.
+    // the same fail-closed rule readTreeMarker applies to tree markers.
     if (process.platform === 'win32' || process.getuid?.() === 0) return;
     await saveRebaseSession(tmpRoot, makeSession());
     const { chmod } = await import('node:fs/promises');
@@ -235,5 +204,68 @@ describe('readRebaseSession — absent vs corrupt', () => {
     } finally {
       await chmod(join(tmpRoot, '.fireforge'), 0o755);
     }
+  });
+
+  describe('on-disk compatibility', () => {
+    it('loads a 0.43.x session whose resolved entry still carries failure payload', async () => {
+      // `rebase --continue` can flip `status` to 'resolved' without clearing
+      // the failure's `error`/`conflictingFiles`, and persist that. The
+      // session file carries no schema version, so a validator tightened to
+      // match the new union would REFUSE such a file mid-rebase, where the
+      // only remedies discard the operator's conflict resolution. It is
+      // normalized on read instead.
+      const legacy = {
+        startedAt: new Date().toISOString(),
+        fromVersion: '140.9.0esr',
+        toVersion: '141.0',
+        preRebaseCommit: 'a'.repeat(40),
+        currentIndex: 1,
+        patches: [
+          {
+            filename: '001-a.patch',
+            status: 'resolved',
+            error: 'stale failure text',
+            conflictingFiles: ['browser/a.js'],
+          },
+          { filename: '002-b.patch', status: 'pending' },
+        ],
+      };
+      await plant(JSON.stringify(legacy));
+
+      const session = await tryReadRebaseSession(tmpRoot);
+      expect(session).not.toBeNull();
+      const resolved = session?.patches[0];
+      expect(resolved?.status).toBe('resolved');
+      // The stale payload is gone, not carried forward.
+      expect(resolved).not.toHaveProperty('error');
+      expect(resolved).not.toHaveProperty('conflictingFiles');
+    });
+
+    it('keeps failure payload on an entry that is still failed', async () => {
+      const onDisk = {
+        startedAt: new Date().toISOString(),
+        fromVersion: '140.9.0esr',
+        toVersion: '141.0',
+        preRebaseCommit: 'a'.repeat(40),
+        currentIndex: 0,
+        patches: [
+          {
+            filename: '001-a.patch',
+            status: 'failed',
+            error: 'hunk 2 failed',
+            conflictingFiles: ['browser/a.js'],
+          },
+        ],
+      };
+      await plant(JSON.stringify(onDisk));
+
+      const session = await tryReadRebaseSession(tmpRoot);
+      const failed = session?.patches[0];
+      expect(failed?.status).toBe('failed');
+      expect(failed).toMatchObject({
+        error: 'hunk 2 failed',
+        conflictingFiles: ['browser/a.js'],
+      });
+    });
   });
 });

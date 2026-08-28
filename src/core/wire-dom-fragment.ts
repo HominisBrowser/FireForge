@@ -15,7 +15,6 @@ import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { toRootRelativePath } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
-import { withParserFallback } from './parser-fallback.js';
 import { tokenizeXhtml } from './wire-utils.js';
 
 export const DEFAULT_DOM_TARGET = 'browser/base/content/browser.xhtml';
@@ -57,53 +56,16 @@ export function addDomFragmentTokenized(content: string, includeDirective: strin
 }
 
 /**
- * Legacy line-based implementation preserved as fallback.
- */
-export function legacyAddDomFragment(content: string, includeDirective: string): string {
-  const lines = content.split('\n');
-
-  let insertIndex = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    if (/browser-sets\.inc/.test(line)) {
-      insertIndex = i;
-      break;
-    }
-  }
-
-  if (insertIndex === -1) {
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] ?? '';
-      if (/<html:body/.test(line)) {
-        insertIndex = i + 1;
-        break;
-      }
-    }
-  }
-
-  if (insertIndex === -1) {
-    throw new GeneralError('Could not find insertion point in chrome document');
-  }
-
-  lines.splice(insertIndex, 0, includeDirective);
-  return lines.join('\n');
-}
-
-/**
- * Dry-run precheck for `addDomFragment`. Reads the resolved chrome
- * document and verifies it either already contains the `#include`
- * directive (the idempotent-skip case) OR offers a locatable insertion
- * point via {@link addDomFragmentTokenized} / {@link legacyAddDomFragment}.
- * Throws the same `Could not find insertion point in chrome document`
- * error the real run would throw when neither condition holds.
+ * Dry-run precheck for `addDomFragment`. Reads the resolved chrome document
+ * and verifies it either already contains the `#include` directive (the
+ * idempotent-skip case) OR offers a locatable insertion point via
+ * {@link addDomFragmentTokenized} / {@link legacyAddDomFragment}. Throws the
+ * same `Could not find insertion point in chrome document` error the real
+ * run would throw when neither condition holds.
  *
- * Motivating case (2026-04-21 eval, Finding #12): `fireforge wire ...
- * --dry-run` previewed a plausible mutation plan against
- * `tokenHostDocuments[0]`, then `fireforge wire ...` without
- * `--dry-run` threw `Could not find insertion point in chrome document`
- * on the same arguments. The real run had always called the insertion
- * helpers; dry-run did not. This helper runs the same check in the
- * preview pass so plan and execution disagree less.
+ * Without it, `wire --dry-run` previews a plausible mutation plan while the
+ * real run throws on the same arguments, because only the real run called
+ * the insertion helpers.
  */
 export async function probeDomFragmentInsertionPoint(
   engineDir: string,
@@ -134,11 +96,7 @@ export async function probeDomFragmentInsertionPoint(
   // Check the tokenised and legacy insertion paths symmetrically with
   // the real run. Either helper returning without throwing is sufficient
   // evidence that the real run can land the directive.
-  withParserFallback(
-    () => addDomFragmentTokenized(content, includeDirective),
-    () => legacyAddDomFragment(content, includeDirective),
-    targetPath
-  );
+  addDomFragmentTokenized(content, includeDirective);
 }
 
 /**
@@ -213,11 +171,7 @@ export async function addDomFragment(
   }
 
   // Normal insertion
-  const { value } = withParserFallback(
-    () => addDomFragmentTokenized(content, includeDirective),
-    () => legacyAddDomFragment(content, includeDirective),
-    targetPath
-  );
+  const value = addDomFragmentTokenized(content, includeDirective);
 
   await writeText(targetAbsPath, value);
   return true;

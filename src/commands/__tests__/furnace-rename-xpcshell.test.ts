@@ -5,14 +5,13 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn(() => Promise.resolve({ binaryName: 'mybrowser' })),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { loadConfig } from '../../core/config.js';
 import { createRollbackJournal } from '../../core/furnace-rollback.js';

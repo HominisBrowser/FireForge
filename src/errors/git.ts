@@ -146,17 +146,13 @@ export function isGitIndexLockConflict(error: unknown): boolean {
 }
 
 /**
- * Error thrown when `git add` (monolithic or chunked) exceeds the
- * configured timeout while indexing the Firefox source tree.
+ * Error thrown when `git add` (monolithic or chunked) exceeds the configured
+ * timeout while indexing the Firefox source tree.
  *
- * 2026-04-24 eval Finding 10: a 140.10.0esr bump on a previously-working
- * 140.9.0esr workspace aborted after ~854s with a generic
- * `AbortError: The operation was aborted`. The root cause was the
- * `git add` timeout firing, but the surfaced error was indistinguishable
- * from any other AbortError and gave the operator no actionable
- * direction. This typed error carries the elapsed budget and the
- * environment-variable override so the recovery path is
- * self-documenting.
+ * A bare `AbortError: The operation was aborted` after ~15 minutes is
+ * indistinguishable from any other AbortError and gives the operator no
+ * actionable direction. This typed error carries the elapsed budget and the
+ * environment-variable override so the recovery path is self-documenting.
  */
 export class GitIndexingTimeoutError extends GitError {
   constructor(

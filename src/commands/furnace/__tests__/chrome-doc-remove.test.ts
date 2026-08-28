@@ -2,12 +2,11 @@
 /**
  * `furnace chrome-doc remove` — the absent/failing half.
  *
- * The command sat at 86.1% line but **51.2% branch, the worst in the repo**.
- * The two existing round-trip cases in `chrome-doc.test.ts` only ever exercise
- * the happy path where every source file and every jar entry is present; every
- * "already gone", "refuses", "cancelled", and "rollback" arm was dark. Those
- * are the arms that matter on a destructive command that deletes engine
- * sources and rewrites three jar manifests.
+ * The round-trip cases in `chrome-doc.test.ts` only exercise the happy path
+ * where every source file and every jar entry is present, leaving every
+ * "already gone", "refuses", "cancelled", and "rollback" arm dark. Those are
+ * the arms that matter on a destructive command that deletes engine sources
+ * and rewrites three jar manifests.
  */
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,7 +15,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as config from '../../../core/config.js';
-import * as furnaceOperation from '../../../core/furnace-operation.js';
+import * as furnaceConfig from '../../../core/furnace-config.js';
 import * as furnaceRollback from '../../../core/furnace-rollback.js';
 import { setInteractiveMode } from '../../../test-utils/index.js';
 import { ensureDir, pathExists, writeText } from '../../../utils/fs.js';
@@ -104,7 +103,7 @@ describe('furnaceChromeDocRemoveCommand — absent, refused, and failing paths',
 
     await expect(
       furnaceChromeDocRemoveCommand(projectRoot, 'mybrowser', { yes: true })
-    ).rejects.toThrow(/Required jar file .*browser\/locales\/jar\.mn does not exist/);
+    ).rejects.toThrow(/Required jar file .*browser[\\/]locales[\\/]jar\.mn does not exist/);
 
     // The refusal comes from plan construction, so no source file is deleted
     // and the surviving jar files keep their entries.
@@ -287,16 +286,24 @@ describe('furnaceChromeDocRemoveCommand — absent, refused, and failing paths',
     vi.spyOn(furnaceRollback, 'restoreRollbackJournalOrThrow').mockRejectedValue(
       new Error('restore failed too')
     );
-    const record = vi.spyOn(furnaceOperation, 'recordFurnaceRollbackFailure').mockResolvedValue();
+    const persistSpy = vi.spyOn(furnaceConfig, 'updateFurnaceState').mockResolvedValue();
 
     await expect(
       furnaceChromeDocRemoveCommand(projectRoot, 'mybrowser', { yes: true })
     ).rejects.toThrow(/restore failed too/);
 
-    expect(record).toHaveBeenCalledWith(
-      projectRoot,
-      'chrome-doc-rollback',
-      expect.stringContaining('chrome-doc "mybrowser": restore failed too')
-    );
+    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
+    // state — rather than the internal call. The rollback sequence now lives
+    // in `completeJournalRollback`, whose call to the recorder is
+    // intra-module and so invisible to a module-level spy.
+    const updater = persistSpy.mock.calls.at(-1)?.[1] as
+      | ((state: Record<string, unknown>) => {
+          pendingRepair?: { operation: string; reason: string };
+        })
+      | undefined;
+    expect(updater).toBeTypeOf('function');
+    const pendingRepair = updater?.({}).pendingRepair;
+    expect(pendingRepair?.operation).toBe('chrome-doc-rollback');
+    expect(pendingRepair?.reason).toContain('chrome-doc "mybrowser": restore failed too');
   });
 });

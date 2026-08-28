@@ -5,8 +5,10 @@ import { loadConfig } from '../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
 import {
   addToken,
+  type AddTokenResult,
   getTokensCssPath,
-  type TokenMode,
+  isTokenMode,
+  TOKEN_MODES,
   validateTokenAdd,
 } from '../core/token-manager.js';
 import { InvalidArgumentError } from '../errors/base.js';
@@ -54,6 +56,33 @@ async function normalizeTokenNameForProject(
 }
 
 /**
+ * Reports a no-op add, naming WHERE the existing declaration lives.
+ *
+ * A variant skip has no category to name — the declaration lives in a
+ * `:root<selector>` block — so the location reads as that block. The
+ * variant path used to report no location at all, so a re-run meant to
+ * CHANGE a value exited 0 having silently changed nothing.
+ *
+ * @param tokenName - Full token name including prefix
+ * @param result - Result carrying the skip location, when known
+ * @param options - The invocation's options
+ */
+function reportSkippedToken(
+  tokenName: string,
+  result: AddTokenResult,
+  options: TokenAddOptions
+): void {
+  const scope =
+    options.variant !== undefined
+      ? `:root${options.variant}`
+      : `category "${result.skippedExisting?.category ?? options.category ?? ''}"`;
+  const where = result.skippedExisting
+    ? ` in ${scope} (line ${String(result.skippedExisting.line)}), unchanged`
+    : '';
+  info(`Token ${tokenName} already exists${where} (skipped)`);
+}
+
+/**
  * Adds a design token to the CSS file and documentation.
  *
  * @param projectRoot - Root directory of the project
@@ -69,13 +98,12 @@ export async function tokenAddCommand(
 ): Promise<void> {
   intro('Token Add');
 
-  // Finding #15: a fresh project without furnace.json failed deep inside
-  // the token-manager's `assertTokenCategoryExists` with "Token CSS file
-  // not found: browser/themes/shared/<binary>-tokens.css" — technically
-  // correct, but the operator's actual next step is to initialize
-  // Furnace (which scaffolds the tokens CSS file among other things).
-  // Catching the uninitialized case here gives the right guidance up-
-  // front before the generic "file not found" error fires.
+  // A fresh project without furnace.json otherwise fails deep inside the
+  // token-manager's `assertTokenCategoryExists` with "Token CSS file not
+  // found: browser/themes/shared/<binary>-tokens.css" — technically correct,
+  // but the operator's actual next step is to initialize Furnace, which
+  // scaffolds the tokens CSS file. Catching the uninitialized case here
+  // gives the right guidance before the generic "file not found" error.
   if (!(await furnaceConfigExists(projectRoot))) {
     throw new FurnaceError(
       'Token management requires Furnace to be initialized. ' +
@@ -88,11 +116,11 @@ export async function tokenAddCommand(
   // user supplied a bare token name like "canvas-gap".
   tokenName = await normalizeTokenNameForProject(projectRoot, tokenName);
 
-  // Validate mode
-  const validModes: TokenMode[] = ['auto', 'static', 'override'];
-  if (!validModes.includes(options.mode as TokenMode)) {
+  // Validate mode. The guard IS the runtime proof, so the three `as
+  // TokenMode` casts this replaced are gone with it.
+  if (!isTokenMode(options.mode)) {
     throw new InvalidArgumentError(
-      `Invalid mode "${options.mode}". Must be one of: ${validModes.join(', ')}`,
+      `Invalid mode "${options.mode}". Must be one of: ${TOKEN_MODES.join(', ')}`,
       'mode'
     );
   }
@@ -101,8 +129,8 @@ export async function tokenAddCommand(
     await validateTokenAdd(projectRoot, {
       tokenName,
       value,
-      category: options.category,
-      mode: options.mode as TokenMode,
+      mode: options.mode,
+      ...(options.category !== undefined ? { category: options.category } : {}),
       ...(options.description !== undefined ? { description: options.description } : {}),
       ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
       ...(options.createCategory === true ? { createCategory: true } : {}),
@@ -117,7 +145,7 @@ export async function tokenAddCommand(
       info(`  Variant: :root${options.variant}`);
     } else {
       info(
-        `  Category: ${options.category}${options.createCategory === true ? ' (created if missing)' : ''}`
+        `  Category: ${options.category ?? '(none)'}${options.createCategory === true ? ' (created if missing)' : ''}`
       );
     }
     info(`  Mode: ${options.mode}`);
@@ -130,8 +158,8 @@ export async function tokenAddCommand(
   const result = await addToken(projectRoot, {
     tokenName,
     value,
-    category: options.category,
-    mode: options.mode as TokenMode,
+    mode: options.mode,
+    ...(options.category !== undefined ? { category: options.category } : {}),
     ...(options.description !== undefined ? { description: options.description } : {}),
     ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
     ...(options.createCategory === true ? { createCategory: true } : {}),
@@ -139,14 +167,11 @@ export async function tokenAddCommand(
   });
 
   if (result.skipped) {
-    const where = result.skippedExisting
-      ? ` in category "${result.skippedExisting.category ?? options.category}" (line ${String(result.skippedExisting.line)})`
-      : '';
-    info(`Token ${tokenName} already exists${where} (skipped)`);
+    reportSkippedToken(tokenName, result, options);
   } else {
     const forgeConfig = await loadConfig(projectRoot);
     const tokensCssFile = getTokensCssPath(forgeConfig.binaryName).split('/').pop();
-    if (result.categoryCreated) success(`Created category "${options.category}"`);
+    if (result.categoryCreated) success(`Created category "${options.category ?? ''}"`);
     if (result.cssAdded) success(`Added ${tokenName} to ${tokensCssFile}`);
     if (result.docsAdded) success(`Added ${tokenName} to SRC_TOKENS.md`);
     if (result.unmappedAdded) info(`Added to unmapped tokens table (literal value)`);
@@ -164,12 +189,11 @@ export function registerToken(
   const token = program
     .command('token')
     .description('Design token management')
-    // Match `fireforge furnace`'s no-args contract: print the group's help and
-    // exit 0. Without this default action, commander routes `fireforge token`
-    // (no subcommand) through its own help-then-exit-1 path, so scripts that
-    // probe the CLI surface see a misleading non-zero exit for a purely
-    // informational invocation. The action prints the exact same help commander
-    // would otherwise print, but returns successfully.
+    // Match `fireforge furnace`'s no-args contract: print the group's help
+    // and exit 0. Without this default action, commander routes
+    // `fireforge token` (no subcommand) through its own help-then-exit-1
+    // path, so scripts probing the CLI surface see a misleading non-zero
+    // exit for a purely informational invocation.
     .action(() => {
       token.outputHelp();
     });
@@ -179,7 +203,12 @@ export function registerToken(
     .description(
       'Add a design token to CSS and documentation. The token name is a positional argument, but most tokens start with `--` (CSS custom property syntax), which Commander reads as an option flag. Use the standard `--` separator to mark the end of options before the token name, e.g. `fireforge token add --mode static --category Colors -- --my-token "#fff"`. Bare names without `--` are accepted directly and prefixed using the configured Furnace `tokenPrefix`.'
     )
-    .requiredOption('--category <cat>', 'Token category (e.g., "Colors — Canvas", "Spacing")')
+    .option(
+      '--category <cat>',
+      'Token category (e.g., "Colors — Canvas", "Spacing"). Required for a base declaration; ' +
+        'not required with --variant, which routes into a :root<selector> block where no ' +
+        'category applies'
+    )
     .addOption(
       // Use Commander's .choices() so invalid --mode values are rejected with
       // the built-in "argument must be one of …" message and --help lists the
@@ -201,8 +230,12 @@ export function registerToken(
     .option(
       '--variant <selector>',
       'Attribute selector fragment routing the declaration into a `:root<selector>` block ' +
-        "(e.g. '[data-skin=precision]' or '[data-private]'); creates or updates the block. " +
-        'CSS-only — cannot be combined with --mode override.'
+        "(e.g. '[data-skin=precision]', '[data-private]', a run such as " +
+        "'[data-skin=precision][data-theme=dark]', or one with a pseudo-class tail such as " +
+        "'[data-skin=precision]:not([data-private])'); creates or updates the block. " +
+        'CSS-only — cannot be combined with --mode override or --create-category. To author ' +
+        'a new category and its variants, add the BASE token first (with --create-category), ' +
+        'then add each variant with --variant.'
     )
     .option(
       '--create-category',
@@ -215,7 +248,7 @@ export function registerToken(
           tokenName: string,
           value: string,
           options: {
-            category: string;
+            category?: string;
             mode: string;
             description?: string;
             darkValue?: string;
@@ -225,9 +258,9 @@ export function registerToken(
           }
         ) => {
           await tokenAddCommand(getProjectRoot(), tokenName, value, {
-            category: options.category,
             mode: options.mode,
             ...pickDefined({
+              category: options.category,
               description: options.description,
               darkValue: options.darkValue,
               dryRun: options.dryRun,

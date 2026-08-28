@@ -26,18 +26,16 @@ export interface BuildBaseline {
    */
   binaryName: string;
   /**
-   * Content hash per packageable engine path that was dirty at build
-   * time (modified-against-HEAD or untracked). Used by
-   * `checkStaleBuildForTest` to distinguish "this file's content was
-   * already in `dist/` when the build completed" from "this file has
-   * been edited since". Missing on baselines written before 0.16.0; the
-   * stale-check falls back to the path-only comparison in that case,
-   * so older baselines retain their existing behavior.
+   * Content hash per packageable engine path that was dirty at build time
+   * (modified-against-HEAD or untracked). Used by `checkStaleBuildForTest`
+   * to distinguish "this file's content was already in `dist/` when the
+   * build completed" from "this file has been edited since". When absent,
+   * the stale-check falls back to a path-only comparison.
    *
-   * Keys are engine-relative POSIX paths. Values are hex-encoded
-   * SHA-256 digests of the file contents at the moment the baseline
-   * was recorded, or {@link DELETED_FILE_FINGERPRINT} when the successful
-   * build observed a tracked deletion.
+   * Keys are engine-relative POSIX paths. Values are hex-encoded SHA-256
+   * digests of the file contents at the moment the baseline was recorded,
+   * or {@link DELETED_FILE_FINGERPRINT} when the successful build observed
+   * a tracked deletion.
    */
   packageableFingerprints?: Record<string, string>;
   /**
@@ -53,9 +51,7 @@ export interface BuildBaseline {
    *   an `--allow-stale-build` run over uncovered paths is refused rather
    *   than dispatched into a hang.
    *
-   * Missing on baselines written before 0.37.0 — only `fireforge build`
-   * wrote baselines then, so "full" is the honest historical value and the
-   * stale-check treats an absent field as full coverage.
+   * An absent field is treated as full coverage.
    *
    * The record is project-scoped, which is also per-obj-dir: multi-objdir
    * checkouts are refused up-front (`AmbiguousBuildArtifactsError`), so at
@@ -65,26 +61,25 @@ export interface BuildBaseline {
    * general — every baseline write refreshes `packageableFingerprints` for
    * ALL dirty packageable paths, so a blind union would whitewash an
    * earlier scope's edited fixtures while `obj-*`/`_tests/` still holds its
-   * stale staging; coverage therefore REPLACES by default.
+   * stale staging. Coverage therefore REPLACES by default.
    *
-   * The one exception is `test --build --extend-coverage`, which
-   * unions only after proving the previous record's anchor still holds:
-   * same engine HEAD, same {@link BuildBaseline.mozconfigHash}, and every
-   * previously fingerprinted path byte-identical — i.e. the wholesale
-   * fingerprint refresh is a no-op for everything the earlier scope's
-   * staging depended on. Any divergence refuses fail-closed. See
-   * `src/core/coverage-extend.ts`, which also documents the one boundary
-   * that guard does not cover (dirty non-packageable fixtures).
+   * The one exception is `test --build --extend-coverage`, which unions only
+   * after proving the previous record's anchor still holds: same engine
+   * HEAD, same {@link BuildBaseline.mozconfigHash}, and every previously
+   * fingerprinted path byte-identical — i.e. the wholesale fingerprint
+   * refresh is a no-op for everything the earlier scope's staging depended
+   * on. Any divergence refuses fail-closed. See `src/core/coverage-extend.ts`
+   * for the one boundary that guard does not cover (dirty non-packageable
+   * fixtures).
    */
   testPackagingCoverage?: TestPackagingCoverage;
   /**
    * Hex-encoded SHA-256 of `engine/mozconfig` as it stood for this build.
    * Recorded because the mozconfig is REGENERATED from project-side
-   * `configs/*.mozconfig` templates plus `fireforge.json` on every build,
-   * so `engineHeadSha` does not cover it: two builds at the same engine SHA
-   * can configure differently. Consumed by the `--extend-coverage` anchor.
-   * Missing on pre-0.41.0 baselines, which `--extend-coverage` refuses
-   * (one plain build re-records it).
+   * `configs/*.mozconfig` templates plus `fireforge.json` on every build, so
+   * `engineHeadSha` does not cover it: two builds at the same engine SHA can
+   * configure differently. Consumed by the `--extend-coverage` anchor, which
+   * refuses when the field is absent (one plain build re-records it).
    */
   mozconfigHash?: string;
   /**
@@ -92,18 +87,17 @@ export interface BuildBaseline {
    * the last FULL-coverage build plus content fingerprints of the
    * `components.conf` manifests that were dirty at that moment. Written
    * fresh only on FULL-coverage baseline writes (`fireforge build`,
-   * `build --ui`, path-less `test --build`); a scoped `test --build`
-   * carries the previous record forward verbatim, because `mach build
-   * faster` does not rebake `components.conf` registrations into the
-   * compiled table. Missing on pre-0.38.0 baselines — the
-   * static-components stale check degrades to "fresh" in that case.
+   * `build --ui`, path-less `test --build`); a scoped `test --build` carries
+   * the previous record forward verbatim, because `mach build faster` does
+   * not rebake `components.conf` registrations into the compiled table. When
+   * absent, the static-components stale check degrades to "fresh".
    */
   staticComponentsBaseline?: StaticComponentsBaseline;
   /**
    * Invocation shape that recorded this baseline (`'fireforge build'`,
    * `'fireforge build --ui'`, `'fireforge test --build [paths]'`).
-   * Informational — surfaced by `fireforge status --test-coverage`.
-   * Missing on pre-0.39.0 baselines; render as "unknown".
+   * Informational — surfaced by `fireforge status --test-coverage`. Render
+   * as "unknown" when absent.
    */
   recordedBy?: string;
 }

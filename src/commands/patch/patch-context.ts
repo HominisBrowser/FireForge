@@ -2,9 +2,8 @@
 /**
  * Shared preamble for the patch subcommands: every mutation command starts
  * by loading the project paths and the patches manifest and (for the
- * single-patch commands) resolving the operator-supplied identifier. The
- * sequence and its error wording were previously copied into each command;
- * this module is the single source for both.
+ * single-patch commands) resolving the operator-supplied identifier. This
+ * module is the single source for that sequence and its error wording.
  */
 
 import { getProjectPaths } from '../../core/config.js';

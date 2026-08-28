@@ -6,8 +6,9 @@ import { Command } from 'commander';
 
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
-import { getStatusWithCodes, hasChanges, isGitRepository } from '../core/git.js';
+import { getStatusWithCodes, hasChanges } from '../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import {
   expandUntrackedDirectoryEntries,
@@ -16,7 +17,6 @@ import {
   getUntrackedFilesInDir,
   getWorkingTreeStatus,
 } from '../core/git-status.js';
-import { clearPerPatchLintCache } from '../core/lint-cache.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import {
   buildPatchQueueContext,
@@ -26,8 +26,9 @@ import {
   lintPatchQueue,
   lintPatchSize,
 } from '../core/patch-lint.js';
+import { clearPerPatchLintCache } from '../core/patch-lint-cache.js';
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
-import { GeneralError } from '../errors/base.js';
+import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { LintCommandOptions, PatchLintIssue } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
@@ -37,24 +38,21 @@ import { lintPerPatch } from './lint-per-patch.js';
 
 /**
  * Resolves the diff the lint command should run against. Returns `null` when
- * there is nothing to lint (e.g. no matching files, clean tree, or empty
- * diff content) — callers treat that as the early-exit signal and stop.
+ * there is nothing to lint (no matching files, clean tree, or empty diff
+ * content) — callers treat that as the early-exit signal and stop.
  *
  * Extracted from {@link lintCommand} so that function stays under the
- * per-function LOC budget as the command grows; the two file-mode and
- * aggregate-mode branches share no state with the post-lint reporting
- * pipeline, so the split is a pure rename rather than a refactor.
+ * per-function LOC budget; the two file-mode and aggregate-mode branches
+ * share no state with the post-lint reporting pipeline.
  *
- * When `binaryName` is provided, the aggregate-mode branch (no
- * explicit file list) excludes paths under `browser/branding/<binaryName>/`
- * from the diff. `status` classifies those paths as `branding` —
- * tool-managed material the operator did not author directly — and
- * the 2026-04-21 eval (Finding #2) reported that `fireforge lint` on
- * a fresh project immediately failed `large-patch-lines` /
- * `large-patch-files` / `missing-license-header` on the generated
- * branding tree. File-list mode (explicit paths) preserves the
- * previous behaviour: passing a branding file explicitly still lints
- * it, so operators who need to audit branding content can do so.
+ * When `binaryName` is provided, the aggregate-mode branch (no explicit file
+ * list) excludes paths under `browser/branding/<binaryName>/` from the diff.
+ * `status` classifies those paths as `branding` — tool-managed material the
+ * operator did not author directly — and without the exclusion
+ * `fireforge lint` on a fresh project immediately fails `large-patch-lines`
+ * / `large-patch-files` / `missing-license-header` on the generated branding
+ * tree. File-list mode (explicit paths) is unaffected: passing a branding
+ * file explicitly still lints it.
  */
 async function resolveLintDiff(
   engineDir: string,
@@ -68,12 +66,12 @@ async function resolveLintDiff(
     let untrackedFiles: string[] | undefined;
 
     // Strip a leading `engine/` segment up-front so the rest of the lookup
-    // pipeline (directory stat, modified-files-in-dir, status probe) all
-    // see the engine-relative form. Without this, passing
-    // `engine/browser/base/content/foo.js` fell through to "No modified
-    // files found in the specified paths." because git sees every path
+    // pipeline (directory stat, modified-files-in-dir, status probe) sees the
+    // engine-relative form. Without it, passing
+    // `engine/browser/base/content/foo.js` falls through to "No modified
+    // files found in the specified paths.", because git sees every path
     // relative to engine/. The same normalization runs in `register`,
-    // `test`, and `export` via `stripEnginePrefix`.
+    // `test`, and `export`.
     const normalizedFiles = files.map((inputPath) => stripEnginePrefix(inputPath));
 
     for (const inputPath of normalizedFiles) {
@@ -122,21 +120,18 @@ async function resolveLintDiff(
     return null;
   }
 
-  // Aggregate-mode branding exclusion. A fresh-setup workspace (after
-  // `fireforge setup` + `download` + `bootstrap` + `build`) carries a
-  // large tool-managed branding diff that the operator did not
-  // author; running the default lint against it fires size and
-  // license-header rules on content that was never intended to
-  // survive in the patch queue as-is. The exclusion mirrors the
-  // `branding` bucket in `fireforge status` so the two views stay
-  // consistent.
+  // Aggregate-mode branding exclusion. A fresh-setup workspace carries a
+  // large tool-managed branding diff the operator did not author; running
+  // the default lint against it fires size and license-header rules on
+  // content that was never intended to survive in the patch queue as-is. The
+  // exclusion mirrors the `branding` bucket in `fireforge status` so the two
+  // views stay consistent.
   //
-  // `expandUntrackedDirectoryEntries` promotes collapsed `?? dir/`
-  // status rows to individual file entries before the diff pass.
-  // Without it, a patch that introduces a new directory shows up as
-  // `?? browser/modules/<fork>/` and `getDiffForFilesAgainstHead`
-  // crashed with EISDIR reading the directory as if it were a file
-  // (eval finding: aggregate lint unusable on a real imported queue).
+  // `expandUntrackedDirectoryEntries` promotes collapsed `?? dir/` status
+  // rows to individual file entries before the diff pass. Without it, a
+  // patch that introduces a new directory shows up as
+  // `?? browser/modules/<fork>/` and `getDiffForFilesAgainstHead` crashes
+  // with EISDIR reading the directory as if it were a file.
   if (binaryName) {
     const rawStatus = await getWorkingTreeStatus(engineDir);
     const expanded = await expandUntrackedDirectoryEntries(engineDir, rawStatus);
@@ -144,12 +139,11 @@ async function resolveLintDiff(
     const nonBrandingPaths = allPaths.filter((path) => !isBrandingManagedPath(path, binaryName));
     const brandingExcluded = allPaths.length - nonBrandingPaths.length;
     // Drop Furnace-managed paths the same way branding is dropped: their
-    // contents are tool output (overrides, custom widgets, preview-
-    // generated stories) that the operator did not author and never
-    // intended to land on the patch queue. Without this carve-out, a
-    // post-`furnace preview` aggregate `lint` failed with one
-    // `missing-license-header` error per generated story file (eval
-    // Finding 19) — each story is intentionally header-less because it's
+    // contents are tool output (overrides, custom widgets, preview-generated
+    // stories) that the operator did not author and never intended to land
+    // on the patch queue. Without the carve-out, a post-`furnace preview`
+    // aggregate `lint` fails with one `missing-license-header` error per
+    // generated story file — each is intentionally header-less because it is
     // re-generated from component metadata on every preview run.
     const filteredPaths = furnacePrefixes
       ? nonBrandingPaths.filter((path) => ![...furnacePrefixes].some((p) => path.startsWith(p)))
@@ -179,10 +173,8 @@ async function resolveLintDiff(
     return diff;
   }
 
-  // Fallback path: no binaryName available (e.g. a legacy caller
-  // without a loaded config). Retain the pre-0.16.0 behaviour of
-  // linting the full diff so the lint surface is at least as broad
-  // as before.
+  // Fallback path: no binaryName available (a caller without a loaded
+  // config). Lint the full diff so the lint surface stays at least as broad.
   const diff = await getAllDiff(engineDir);
   if (!diff.trim()) {
     info('No diff content to lint.');
@@ -212,25 +204,24 @@ function buildMaxWarningsMessage(count: number, maxWarnings: number, scope?: str
 }
 
 /**
- * Filters aggregate-mode lint issues against per-patch `lintIgnore`
- * lists drawn from the manifest. An issue is dropped when at least one
- * patch whose `filesAffected` covers `issue.file` lists `issue.check`
- * in its `lintIgnore`.
+ * Filters aggregate-mode lint issues against per-patch `lintIgnore` lists
+ * drawn from the manifest. An issue is dropped when at least one patch whose
+ * `filesAffected` covers `issue.file` lists `issue.check` in its
+ * `lintIgnore`.
  *
- * Mirrors the per-patch contract: `--per-patch` mode threads each
- * patch's `lintIgnore` directly into `lintExportedPatch`, so a check
- * the operator explicitly waived in `patches.json` does not surface.
- * Aggregate `--since` mode previously rediscovered the suppressed
- * warning every CI run because the diff was treated as a single unit
- * with no patch-level scope. Attributing each issue's file to its
+ * Mirrors the per-patch contract: `--per-patch` mode threads each patch's
+ * `lintIgnore` directly into `lintExportedPatch`, so a check the operator
+ * explicitly waived in `patches.json` does not surface. Aggregate `--since`
+ * mode has no patch-level scope of its own and would otherwise rediscover
+ * the suppressed warning every CI run. Attributing each issue's file to its
  * owning patch via `filesAffected` re-establishes the same suppression
- * semantics. Cross-patch findings (forward-import, duplicate-creation)
- * still attribute via `issue.file` because the `file` field is the
- * offending site, which is owned by some patch.
+ * semantics. Cross-patch findings (forward-import, duplicate-creation) also
+ * attribute via `issue.file`, which is the offending site and is owned by
+ * some patch.
  *
- * Multiple owners: an issue is dropped if **any** owning patch waived
- * the rule. Conservative — never adds new findings, only drops
- * already-explicitly-waived ones.
+ * Multiple owners: an issue is dropped if **any** owning patch waived the
+ * rule. Conservative — never adds new findings, only drops already-waived
+ * ones.
  *
  * @param issues - Issues collected from the aggregate lint run.
  * @param ctx - Patch queue context used to attribute file → patch.
@@ -283,19 +274,22 @@ function validateLintFlags(options: LintCommandOptions): void {
     options.maxWarnings !== undefined &&
     (!Number.isInteger(options.maxWarnings) || options.maxWarnings < 0)
   ) {
-    throw new GeneralError('--max-warnings must be a non-negative integer.');
+    throw new InvalidArgumentError(
+      '--max-warnings must be a non-negative integer.',
+      '--max-warnings'
+    );
   }
 
   // `--patches` only means something in per-patch mode (it filters the
   // queue); in aggregate/file-list mode there is no patch loop to narrow.
   if (options.patches !== undefined && !options.perPatch) {
-    throw new GeneralError('--patches requires --per-patch.');
+    throw new InvalidArgumentError('--patches requires --per-patch.', '--patches');
   }
 
   // The JSON report is a per-patch artifact (per-patch size metrics and
   // suppressed issues); aggregate mode has no per-patch rows to report.
   if (options.report !== undefined && !options.perPatch) {
-    throw new GeneralError('--report requires --per-patch.');
+    throw new InvalidArgumentError('--report requires --per-patch.', '--report');
   }
 }
 
@@ -336,17 +330,16 @@ function downgradeAggregateSizeRules(
  * for an ad-hoc explicit-file-list lint, scoped to each file's **owning
  * patch** rather than the combined file list.
  *
- * The default file-list path used to feed every passed file to
- * `lintExportedPatch` as one synthetic patch, so a cross-patch selection of
- * eight files belonging to four patches reported `Patch affects 8 files`
- * even though no single owning patch was oversized. This helper instead
- * groups the affected files by their owning patch (via the manifest's
- * `filesAffected`), then runs `lintPatchSize` against each owner's real file
- * count + diff, honouring that owner's `tier` and `lintIgnore` — so
- * `lint <files>`, `lint --per-patch`, and `re-export --dry-run` agree on the
- * same size findings for the same files. Files no patch claims are evaluated
- * together as one prospective new patch, preserving the pre-export
- * oversized-change warning.
+ * Feeding every passed file to `lintExportedPatch` as one synthetic patch
+ * makes a cross-patch selection of eight files belonging to four patches
+ * report `Patch affects 8 files` even though no single owning patch is
+ * oversized. This helper groups the affected files by their owning patch
+ * (via the manifest's `filesAffected`), then runs `lintPatchSize` against
+ * each owner's real file count + diff, honouring that owner's `tier` and
+ * `lintIgnore` — so `lint <files>`, `lint --per-patch`, and
+ * `re-export --dry-run` agree on the same size findings for the same files.
+ * Files no patch claims are evaluated together as one prospective new patch,
+ * preserving the pre-export oversized-change warning.
  *
  * @param engineDir - Absolute engine directory
  * @param filesAffected - Engine-relative files touched by the ad-hoc diff
@@ -461,7 +454,7 @@ async function reportLintOutcome(
   // Exit-code scope: `--only-introduced` narrows the failure criterion to
   // issues tagged `introduced`. Cumulative errors still print so the
   // operator sees the full queue state, but do not fail lint — the
-  // motivating case is a branch whose own diff is clean but whose repo
+  // case this serves is a branch whose own diff is clean but whose repo
   // already carries pre-existing queue errors from older patches.
   const failingErrors = options.onlyIntroduced
     ? errors.filter((i) => i.tag === 'introduced')
@@ -485,13 +478,12 @@ async function reportLintOutcome(
     throw new GeneralError(buildMaxWarningsMessage(warnings.length, options.maxWarnings));
   }
 
-  // Notices are advisory and don't count as warnings — emitting "passed
+  // Notices are advisory and do not count as warnings — emitting "passed
   // with warnings" when only notices fired contradicts the preceding
-  // `0 warning(s)` summary line and reads as a regression. Distinguish
-  // the three pass states explicitly. Errors suppressed by
-  // --only-introduced still warrant the "with warnings" outro — they
-  // print as ERROR rows but no longer fail the run, which is the same
-  // contract the operator gets from a real warning.
+  // `0 warning(s)` summary line and reads as a regression. Errors suppressed
+  // by --only-introduced still warrant the "with warnings" outro: they print
+  // as ERROR rows but no longer fail the run, which is the same contract the
+  // operator gets from a real warning.
   const suppressedErrors = options.onlyIntroduced && errors.length > 0;
   if (warnings.length > 0 || suppressedErrors) {
     outro('Lint passed with warnings');
@@ -519,15 +511,7 @@ export async function lintCommand(
 
   const paths = getProjectPaths(projectRoot);
 
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
-
-  if (!(await isGitRepository(paths.engine))) {
-    throw new GeneralError(
-      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
-    );
-  }
+  await assertEngineGitReady(paths.engine);
 
   if (options.perPatch) {
     // Positional arguments in per-patch mode select PATCHES through the
@@ -540,11 +524,8 @@ export async function lintCommand(
     return;
   }
 
-  // Load the config before resolving the diff so we can pass
-  // `binaryName` into the aggregate-mode branding exclusion in
-  // `resolveLintDiff`. The config was previously loaded only after
-  // the diff was resolved; hoisting it is cheap and keeps the two
-  // call sites close together.
+  // Load the config before resolving the diff so `binaryName` can be passed
+  // into the aggregate-mode branding exclusion in `resolveLintDiff`.
   const config = await loadConfig(projectRoot);
   // Pull the Furnace-managed prefix set up-front so aggregate lint can
   // mirror the branding exclusion for Furnace material — without it,
@@ -570,16 +551,10 @@ export async function lintCommand(
   // selection synthesises a phantom oversized patch from the file count.
   const fileListMode = files.length > 0 && ctx !== undefined;
   let issues: PatchLintIssue[] = [
-    ...(await lintExportedPatch(
-      paths.engine,
-      filesAffected,
-      diff,
-      config,
-      ctx,
-      undefined,
-      undefined,
-      fileListMode ? { skipPatchSize: true } : undefined
-    )),
+    ...(await lintExportedPatch(paths.engine, filesAffected, diff, config, {
+      ...(ctx ? { patchQueueCtx: ctx } : {}),
+      ...(fileListMode ? { skipPatchSize: true } : {}),
+    })),
   ];
 
   if (files.length > 0 && ctx) {
@@ -594,11 +569,11 @@ export async function lintCommand(
   }
 
   // Honor per-patch `lintIgnore` in aggregate mode by attributing each
-  // issue's file to its owning patches via the manifest's
-  // `filesAffected`. Per-patch mode threads `lintIgnore` directly into
-  // `lintExportedPatch`; aggregate mode previously had no patch-level
-  // scope to consult, so a check an operator had explicitly waived in
-  // `patches.json` re-surfaced on every `--since` run (CI default).
+  // issue's file to its owning patches via the manifest's `filesAffected`.
+  // Per-patch mode threads `lintIgnore` directly into `lintExportedPatch`;
+  // aggregate mode has no patch-level scope to consult, so a check an
+  // operator explicitly waived in `patches.json` re-surfaces on every
+  // `--since` run (the CI default).
   if (ctx) {
     const result = applyAggregateLintIgnoreSuppression(issues, ctx);
     issues = result.issues;
@@ -685,7 +660,10 @@ export function registerLint(
           if (options.maxWarnings !== undefined) {
             const maxWarnings = Number(options.maxWarnings);
             if (!Number.isInteger(maxWarnings) || maxWarnings < 0) {
-              throw new GeneralError('--max-warnings must be a non-negative integer.');
+              throw new InvalidArgumentError(
+                '--max-warnings must be a non-negative integer.',
+                '--max-warnings'
+              );
             }
             lintOptions.maxWarnings = maxWarnings;
           }

@@ -5,6 +5,15 @@ export const CUSTOM_ELEMENTS_JS = 'toolkit/content/customElements.js';
 /** Path to jar.mn within the engine source tree (toolkit global) */
 export const JAR_MN = 'toolkit/content/jar.mn';
 
+/**
+ * Upstream home of the MozLitElement widget sources.
+ *
+ * The trailing slash is NOT included: `build-audit-transforms.ts` needs
+ * `${WIDGETS_DIR}/` and its ordered prefix table depends on that slash, so
+ * appending it at the one site that wants it keeps the others correct.
+ */
+export const WIDGETS_DIR = 'toolkit/content/widgets';
+
 /** Default Fluent localization directory for toolkit global components, relative to engine root */
 export const FTL_DIR = 'toolkit/locales/en-US/toolkit/global';
 
@@ -12,8 +21,8 @@ export const FTL_DIR = 'toolkit/locales/en-US/toolkit/global';
  * Suffix for the per-binary xpcshell scaffold parent directory. Components
  * created with `furnace create --with-tests --xpcshell` land at
  * `browser/base/content/test/<binaryName>${XPCSHELL_TEST_DIR_SUFFIX}/<component>/`.
- * Centralised so `create` / `remove` / `rename` / `validate` all agree on
- * the path template (2026-04-24 eval Finding 5).
+ * Centralised so `create` / `remove` / `rename` / `validate` all agree on the
+ * path template.
  */
 const XPCSHELL_TEST_DIR_SUFFIX = '-xpcshell';
 

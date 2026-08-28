@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -16,6 +15,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { readdir } from 'node:fs/promises';
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import {
   getComponentDetails,
@@ -135,10 +135,11 @@ describe('furnace-scanner helpers', () => {
 
   it('scans moz-* widget directories and annotates css, ftl, and registration status', async () => {
     vi.mocked(pathExists).mockImplementation((filePath) => {
-      if (filePath === '/engine/toolkit/content/widgets') return Promise.resolve(true);
-      if (filePath === '/engine/toolkit/content/customElements.js') return Promise.resolve(true);
+      if (filePath === nativePath('/engine/toolkit/content/widgets')) return Promise.resolve(true);
+      if (filePath === nativePath('/engine/toolkit/content/customElements.js'))
+        return Promise.resolve(true);
       return Promise.resolve(
-        filePath === '/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl'
+        filePath === nativePath('/engine/toolkit/locales/en-US/toolkit/global/moz-card.ftl')
       );
     });
     vi.mocked(readText).mockResolvedValue(
@@ -150,7 +151,7 @@ describe('furnace-scanner helpers', () => {
       ].join('\n')
     );
     vi.mocked(readdir).mockImplementation((dirPath) => {
-      if (dirPath === '/engine/toolkit/content/widgets') {
+      if (dirPath === nativePath('/engine/toolkit/content/widgets')) {
         return Promise.resolve([
           { name: 'moz-card', isDirectory: () => true },
           { name: 'moz-broken', isDirectory: () => true },
@@ -158,14 +159,14 @@ describe('furnace-scanner helpers', () => {
         ] as unknown as Awaited<ReturnType<typeof readdir>>);
       }
 
-      if (dirPath === '/engine/toolkit/content/widgets/moz-card') {
+      if (dirPath === nativePath('/engine/toolkit/content/widgets/moz-card')) {
         return Promise.resolve([
           { name: 'moz-card.mjs', isDirectory: () => false, isFile: () => true },
           { name: 'moz-card.css', isDirectory: () => false, isFile: () => true },
         ] as unknown as Awaited<ReturnType<typeof readdir>>);
       }
 
-      if (dirPath === '/engine/toolkit/content/widgets/moz-broken') {
+      if (dirPath === nativePath('/engine/toolkit/content/widgets/moz-broken')) {
         return Promise.resolve([
           { name: 'README.md', isDirectory: () => false, isFile: () => true },
         ] as unknown as Awaited<ReturnType<typeof readdir>>);
@@ -177,7 +178,7 @@ describe('furnace-scanner helpers', () => {
     await expect(scanWidgetsDirectory('/engine')).resolves.toEqual([
       {
         tagName: 'moz-card',
-        sourcePath: 'toolkit/content/widgets/moz-card',
+        sourcePath: nativePath('toolkit/content/widgets/moz-card'),
         hasCSS: true,
         hasFTL: true,
         isRegistered: true,
@@ -197,10 +198,12 @@ describe('furnace-scanner helpers', () => {
 
   it('returns component details with css, ftl, and registration status', async () => {
     vi.mocked(pathExists).mockImplementation((filePath) => {
-      if (filePath === '/engine/toolkit/content/widgets/moz-panel') return Promise.resolve(true);
-      if (filePath === '/engine/toolkit/content/customElements.js') return Promise.resolve(true);
+      if (filePath === nativePath('/engine/toolkit/content/widgets/moz-panel'))
+        return Promise.resolve(true);
+      if (filePath === nativePath('/engine/toolkit/content/customElements.js'))
+        return Promise.resolve(true);
       return Promise.resolve(
-        filePath === '/engine/toolkit/locales/en-US/toolkit/global/moz-panel.ftl'
+        filePath === nativePath('/engine/toolkit/locales/en-US/toolkit/global/moz-panel.ftl')
       );
     });
     vi.mocked(readdir).mockResolvedValue([
@@ -218,7 +221,7 @@ describe('furnace-scanner helpers', () => {
 
     await expect(getComponentDetails('/engine', 'moz-panel')).resolves.toEqual({
       tagName: 'moz-panel',
-      sourcePath: 'toolkit/content/widgets/moz-panel',
+      sourcePath: nativePath('toolkit/content/widgets/moz-panel'),
       hasCSS: true,
       hasFTL: true,
       isRegistered: true,
@@ -229,6 +232,6 @@ describe('furnace-scanner helpers', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
 
     await expect(isComponentInEngine('/engine', 'moz-card')).resolves.toBe(true);
-    expect(pathExists).toHaveBeenCalledWith('/engine/toolkit/content/widgets/moz-card');
+    expect(pathExists).toHaveBeenCalledWith(nativePath('/engine/toolkit/content/widgets/moz-card'));
   });
 });

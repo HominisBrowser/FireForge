@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
-import { tokenizeJarMn, tokenizeMozBuildList } from '../manifest-tokenizers.js';
+import { tokenizeJarMn, tokenizeMozBuildList } from '../moz-manifest-tokenizers.js';
 
 describe('tokenizeJarMn', () => {
   it('tokenizes a well-formed jar.mn file', () => {
@@ -168,7 +168,7 @@ describe('tokenizeMozBuildList', () => {
     expect(items[1]?.parsed?.value).toBe('Bar.sys.mjs');
   });
 
-  it('expands a single-line empty list into the canonical multi-line shape (Eval 2)', () => {
+  it('expands a single-line empty list into the canonical multi-line shape', () => {
     // Freshly scaffolded moz.build files sometimes write the empty
     // list as `EXTRA_JS_MODULES += []` on one line. Pre-fix, the
     // tokenizer returned null because no line started with `]`, so

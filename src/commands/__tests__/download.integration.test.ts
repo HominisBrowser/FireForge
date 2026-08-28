@@ -17,14 +17,18 @@ import {
 import { downloadCommand } from '../download.js';
 
 // The spinner mock tracks `message(...)` calls so tests can assert that
-// runGit-init progress flowed through the spinner — 0.16.0 removed the
-// redundant `step(...)` call that the resume/init paths used to make
-// alongside `spinner.message(...)`, because the non-TTY spinner fallback
-// already emits `p.log.step(msg)` from `.message()`. Recording the
-// per-handle `message` calls lets integration tests verify the contract
-// without coupling to internal fallback wiring.
+// git-init progress flowed through the spinner. The non-TTY spinner fallback
+// already emits `p.log.step(msg)` from `.message()`, so an explicit `step()`
+// alongside it double-prints; recording the per-handle `message` calls lets
+// integration tests verify the contract without coupling to that wiring.
 const spinnerMessageCalls: string[] = [];
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),

@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readJson: vi.fn(),
-  writeJson: vi.fn(),
-}));
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../state-file.js', () => ({
   withStateFileLock: vi.fn(async (_path: string, operation: () => Promise<unknown>) => operation()),
@@ -17,6 +13,7 @@ vi.mock('../state-file.js', () => ({
 }));
 
 import { FurnaceError } from '../../errors/furnace.js';
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readJson, writeJson } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 import {
@@ -47,12 +44,12 @@ describe('furnace-config helpers', () => {
 
   it('builds the expected furnace-related paths', () => {
     expect(getFurnacePaths('/project')).toEqual({
-      furnaceConfig: '/project/furnace.json',
-      componentsDir: '/project/components',
-      overridesDir: '/project/components/overrides',
-      customDir: '/project/components/custom',
-      sharedDir: '/project/components/shared',
-      furnaceState: '/project/.fireforge/furnace-state.json',
+      furnaceConfig: nativePath('/project/furnace.json'),
+      componentsDir: nativePath('/project/components'),
+      overridesDir: nativePath('/project/components/overrides'),
+      customDir: nativePath('/project/components/custom'),
+      sharedDir: nativePath('/project/components/shared'),
+      furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
     });
   });
 
@@ -300,7 +297,7 @@ describe('furnace-config helpers', () => {
     vi.mocked(pathExists).mockResolvedValue(true);
 
     await expect(furnaceConfigExists('/project')).resolves.toBe(true);
-    expect(pathExists).toHaveBeenCalledWith('/project/furnace.json');
+    expect(pathExists).toHaveBeenCalledWith(nativePath('/project/furnace.json'));
   });
 
   it('loads and validates furnace.json', async () => {
@@ -320,7 +317,7 @@ describe('furnace-config helpers', () => {
       overrides: {},
       custom: {},
     });
-    expect(readJson).toHaveBeenCalledWith('/project/furnace.json');
+    expect(readJson).toHaveBeenCalledWith(nativePath('/project/furnace.json'));
   });
 
   it('throws a helpful error when furnace.json is missing', async () => {
@@ -334,7 +331,10 @@ describe('furnace-config helpers', () => {
     vi.mocked(pathExists).mockResolvedValue(false);
 
     await expect(ensureFurnaceConfig('/project')).resolves.toEqual(createDefaultFurnaceConfig());
-    expect(writeJson).toHaveBeenCalledWith('/project/furnace.json', createDefaultFurnaceConfig());
+    expect(writeJson).toHaveBeenCalledWith(
+      nativePath('/project/furnace.json'),
+      createDefaultFurnaceConfig()
+    );
   });
 
   it('returns the existing config without rewriting when furnace.json already exists', async () => {
@@ -364,7 +364,7 @@ describe('furnace-config helpers', () => {
     await expect(loadFurnaceState('/project')).resolves.toEqual({});
     await expect(loadFurnaceState('/project')).resolves.toEqual({});
     expect(mockQuarantineStateFile).toHaveBeenCalledWith(
-      '/project/.fireforge/furnace-state.json',
+      nativePath('/project/.fireforge/furnace-state.json'),
       'invalid'
     );
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not be parsed: bad json'));
@@ -377,8 +377,12 @@ describe('furnace-config helpers', () => {
     await writeFurnaceConfig('/project', config);
     await saveFurnaceState('/project', state);
 
-    expect(writeJson).toHaveBeenNthCalledWith(1, '/project/furnace.json', config);
-    expect(writeJson).toHaveBeenNthCalledWith(2, '/project/.fireforge/furnace-state.json', state);
+    expect(writeJson).toHaveBeenNthCalledWith(1, nativePath('/project/furnace.json'), config);
+    expect(writeJson).toHaveBeenNthCalledWith(
+      2,
+      nativePath('/project/.fireforge/furnace-state.json'),
+      state
+    );
   });
 
   it('preserves existing furnace.json ordering while appending new component entries', async () => {
@@ -462,7 +466,7 @@ describe('furnace-config helpers', () => {
       },
     }));
 
-    expect(writeJson).toHaveBeenCalledWith('/project/.fireforge/furnace-state.json', {
+    expect(writeJson).toHaveBeenCalledWith(nativePath('/project/.fireforge/furnace-state.json'), {
       appliedChecksums: {
         'components/old.css': 'hash-a',
         'components/new.css': 'hash-b',
@@ -626,7 +630,7 @@ describe('furnace-config helpers', () => {
     ).toThrow('path traversal');
   });
 
-  it('accepts kind: "library" on a register: false custom component (0.37.0 item 6)', () => {
+  it('accepts kind: "library" on a register: false custom component', () => {
     const config = validateFurnaceConfig({
       version: 1,
       componentPrefix: 'moz-',
@@ -987,7 +991,7 @@ describe('furnace-config helpers', () => {
   });
 });
 
-describe('stampFurnaceOverrideBaseVersions (Finding #17)', () => {
+describe('stampFurnaceOverrideBaseVersions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWithStateFileLock.mockImplementation(async (_path, operation) => operation());

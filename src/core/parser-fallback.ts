@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { warn } from '../utils/logger.js';
 
@@ -10,10 +11,6 @@ export interface ParserFallbackEvent {
 const parserFallbackEvents: ParserFallbackEvent[] = [];
 
 /** Returns recorded parser fallback events without clearing the event buffer. */
-export function peekParserFallbackEvents(): ParserFallbackEvent[] {
-  return [...parserFallbackEvents];
-}
-
 /** Returns and clears the recorded parser fallback events. */
 export function consumeParserFallbackEvents(): ParserFallbackEvent[] {
   const events = [...parserFallbackEvents];
@@ -25,6 +22,24 @@ export function consumeParserFallbackEvents(): ParserFallbackEvent[] {
  * Result of a parser-with-fallback invocation, carrying both the computed
  * value and metadata about which code path produced it.
  */
+/**
+ * The `rethrowIf` predicate every AST-primary caller wants.
+ *
+ * Rethrows internal-invariant `GeneralError`s ("Unexpected empty …array"):
+ * those are programming bugs, and retrying the legacy scanner cannot fix a
+ * broken invariant — it just buries the stack. Everything else still falls
+ * back, which is load-bearing: the AST path raises a raw acorn SyntaxError
+ * on chrome sources acorn cannot parse (preprocessor directives), and
+ * BuildError when the file's shape is unexpected. Both are exactly what the
+ * legacy scanner is here to handle.
+ *
+ * @param error - The error the primary parser threw
+ * @returns True when the error must propagate instead of falling back
+ */
+export function isInternalInvariantFailure(error: unknown): boolean {
+  return error instanceof GeneralError;
+}
+
 export interface ParserResult<T> {
   /** The computed value (from either the primary or fallback path). */
   value: T;

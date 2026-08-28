@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Dry-run action builders for files deleted from a component workspace
- * since the last apply. Split out of `furnace-apply.ts` (at the per-file
- * line budget after the overwrite-warning wiring); the real
- * undeploy paths stay in `furnace-apply-helpers.ts`.
+ * Dry-run action builders for files deleted from a component workspace since
+ * the last apply. Split out of `furnace-apply.ts` to stay under the per-file
+ * line budget; the real undeploy paths stay in `furnace-apply-helpers.ts`.
  */
 
 import { join } from 'node:path';

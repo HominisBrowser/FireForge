@@ -47,27 +47,32 @@ describe('furnace rollback journal helpers', () => {
     expect(journal.createdDirs.size).toBe(0);
   });
 
-  it('restores original file content and mode from the first snapshot only', async () => {
-    const tempDir = await makeTempDir('fireforge-furnace-rollback-');
-    const filePath = join(tempDir, 'component.css');
-    const journal = createRollbackJournal();
+  // POSIX mode bits are the refusal mechanism here; NTFS ignores
+  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  it.skipIf(process.platform === 'win32')(
+    'restores original file content and mode from the first snapshot only',
+    async () => {
+      const tempDir = await makeTempDir('fireforge-furnace-rollback-');
+      const filePath = join(tempDir, 'component.css');
+      const journal = createRollbackJournal();
 
-    await writeFile(filePath, 'original\n');
-    await chmod(filePath, 0o640);
+      await writeFile(filePath, 'original\n');
+      await chmod(filePath, 0o640);
 
-    await snapshotFile(journal, filePath);
+      await snapshotFile(journal, filePath);
 
-    await writeFile(filePath, 'mutated\n');
-    await chmod(filePath, 0o600);
-    await snapshotFile(journal, filePath);
+      await writeFile(filePath, 'mutated\n');
+      await chmod(filePath, 0o600);
+      await snapshotFile(journal, filePath);
 
-    await restoreRollbackJournal(journal);
+      await restoreRollbackJournal(journal);
 
-    await expect(readFile(filePath, 'utf8')).resolves.toBe('original\n');
-    const restoredFileStat = await stat(filePath);
-    expect(typeof restoredFileStat.mode).toBe('number');
-    expect(restoredFileStat.mode & 0o777).toBe(0o640);
-  });
+      await expect(readFile(filePath, 'utf8')).resolves.toBe('original\n');
+      const restoredFileStat = await stat(filePath);
+      expect(typeof restoredFileStat.mode).toBe('number');
+      expect(restoredFileStat.mode & 0o777).toBe(0o640);
+    }
+  );
 
   it('removes files that did not exist at snapshot time and cleans created directories', async () => {
     const tempDir = await makeTempDir('fireforge-furnace-rollback-');
@@ -126,27 +131,32 @@ describe('furnace rollback journal helpers', () => {
     await expect(readFile(filePath, 'utf8')).resolves.toBe('original\n');
   });
 
-  it('cleans up the temp file when the atomic rename fails', async () => {
-    const tempDir = await makeTempDir('fireforge-furnace-rollback-rename-');
-    const filePath = join(tempDir, 'nested', 'deep', 'file.txt');
-    const journal = createRollbackJournal();
+  // POSIX mode bits are the refusal mechanism here; NTFS ignores
+  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  it.skipIf(process.platform === 'win32')(
+    'cleans up the temp file when the atomic rename fails',
+    async () => {
+      const tempDir = await makeTempDir('fireforge-furnace-rollback-rename-');
+      const filePath = join(tempDir, 'nested', 'deep', 'file.txt');
+      const journal = createRollbackJournal();
 
-    journal.files.set(filePath, {
-      existed: true,
-      content: new Uint8Array(Buffer.from('original\n')),
-      mode: 0o644,
-    });
+      journal.files.set(filePath, {
+        existed: true,
+        content: new Uint8Array(Buffer.from('original\n')),
+        mode: 0o644,
+      });
 
-    // Make the parent directory read-only so the temp file write fails with EACCES.
-    await mkdir(join(tempDir, 'nested', 'deep'), { recursive: true });
-    await writeFile(filePath, 'mutated\n');
-    await chmod(join(tempDir, 'nested', 'deep'), 0o444);
+      // Make the parent directory read-only so the temp file write fails with EACCES.
+      await mkdir(join(tempDir, 'nested', 'deep'), { recursive: true });
+      await writeFile(filePath, 'mutated\n');
+      await chmod(join(tempDir, 'nested', 'deep'), 0o444);
 
-    await expect(restoreRollbackJournal(journal)).rejects.toThrow();
+      await expect(restoreRollbackJournal(journal)).rejects.toThrow();
 
-    // Restore permissions for cleanup.
-    await chmod(join(tempDir, 'nested', 'deep'), 0o755);
-  });
+      // Restore permissions for cleanup.
+      await chmod(join(tempDir, 'nested', 'deep'), 0o755);
+    }
+  );
 
   it('restores an empty journal without errors', async () => {
     const journal = createRollbackJournal();

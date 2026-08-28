@@ -2,14 +2,13 @@
 /**
  * Hardcoded-text detection for the localization validator.
  *
- * Until 0.41.0 the symbol test exempted every code point above U+00FF, so all
- * CJK, Cyrillic, Greek, Arabic, Hebrew, Devanagari and Thai text was invisible
- * to a rule whose entire purpose is finding strings that need translating —
- * the scripts most likely to need it were the ones it could not see.
+ * A symbol test that exempts every code point above U+00FF makes all CJK,
+ * Cyrillic, Greek, Arabic, Hebrew, Devanagari and Thai text invisible to a
+ * rule whose entire purpose is finding strings that need translating.
  */
 import { describe, expect, it } from 'vitest';
 
-import { containsHardcodedTemplateText } from '../furnace-validate-helpers.js';
+import { containsHardcodedTemplateText } from '../furnace-validate-accessibility.js';
 
 /** Wraps text in a Lit template, the rule's primary detection path. */
 function litTemplate(text: string): string {

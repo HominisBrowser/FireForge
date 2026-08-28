@@ -12,7 +12,8 @@ export type TestDispatch = (
   engineDir: string,
   testPaths: string[],
   args: string[],
-  env?: Record<string, string>
+  env?: Record<string, string>,
+  fullOutput?: boolean
 ) => Promise<MachCommandResult>;
 
 /**
@@ -29,7 +30,8 @@ export async function retryAfterXpcshellSymlinkRepair(
   normalizedPaths: string[],
   extraArgs: string[],
   env?: Record<string, string>,
-  dispatch: TestDispatch = testWithOutput
+  dispatch: TestDispatch = testWithOutput,
+  fullOutput?: boolean
 ): Promise<MachCommandResult> {
   if (
     result.exitCode !== 0 &&
@@ -42,6 +44,11 @@ export async function retryAfterXpcshellSymlinkRepair(
       `${result.stdout}\n${result.stderr}`
     );
     if (repaired) {
+      // The repaired re-run is the same logical invocation, so it keeps
+      // the verbosity the run was started with.
+      if (fullOutput === true) {
+        return dispatch(engineDir, normalizedPaths, extraArgs, env, true);
+      }
       return env
         ? dispatch(engineDir, normalizedPaths, extraArgs, env)
         : dispatch(engineDir, normalizedPaths, extraArgs);

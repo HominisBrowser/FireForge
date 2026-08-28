@@ -24,32 +24,32 @@ import { pathExists, readText } from '../utils/fs.js';
 import type { SpinnerHandle } from '../utils/logger.js';
 import { cancel, info, isCancel, warn } from '../utils/logger.js';
 import {
+  describePatchNameProblem,
   normalizePatchDisplayName,
   PATCH_CATEGORIES,
-  validatePatchName,
 } from '../utils/validation.js';
 
 /**
- * Runs the full patch lint pipeline and reports results.
- * Warnings are always displayed. Errors block the export unless skipLint is true.
+ * Runs the full patch lint pipeline and reports results. Warnings are always
+ * displayed. Errors block the export unless skipLint is true.
  *
  * @param engineDir - Engine root directory
  * @param filesAffected - Files touched by the patch
  * @param diffContent - Raw unified diff string
  * @param config - Project configuration
  * @param skipLint - If true, downgrade errors to warnings
- * @param patchQueueCtx - Optional cross-patch context for ownership resolution
+ * @param patchQueueCtx - Optional cross-patch context for ownership
+ *   resolution
  * @param ignoreChecks - Optional per-patch set of `check` IDs to suppress
  *   (threaded from `PatchMetadata.lintIgnore`). Surgical alternative to
  *   `--skip-lint` when exactly one advisory rule does not apply to a
- *   specific patch — e.g. `large-patch-lines` on a cohesive branding
- *   bundle that genuinely cannot be split.
+ *   specific patch — e.g. `large-patch-lines` on a cohesive branding bundle
+ *   that genuinely cannot be split.
  * @param patchTier - Optional explicit tier override (threaded from
- *   `PatchMetadata.tier`). Forces the branding-tier thresholds when
- *   set, independent of the auto-detect allowlist. When the branding
- *   tier is applied (either via this opt-in or the auto-detect), a
- *   single `info()` line surfaces the choice so the tier decision is
- *   visible rather than silent.
+ *   `PatchMetadata.tier`). Forces the branding-tier thresholds when set,
+ *   independent of the auto-detect allowlist. When the branding tier is
+ *   applied, a single `info()` line surfaces the choice so the tier decision
+ *   is visible rather than silent.
  */
 export async function runPatchLint(
   engineDir: string,
@@ -61,12 +61,12 @@ export async function runPatchLint(
   ignoreChecks?: ReadonlySet<string>,
   patchTier?: 'branding'
 ): Promise<void> {
-  // Compute the tier decision independently of the lint pipeline so the
-  // decision can be surfaced even when the rule body emitted no issues
-  // (e.g. a branding patch under the soft threshold still benefits from
-  // operators knowing which tier governed the run). The same helper is
-  // reused inside `lintPatchSize`, so the surfaced tier and the tier
-  // that actually drove the thresholds never drift.
+  // Compute the tier decision independently of the lint pipeline so it can
+  // be surfaced even when the rule body emitted no issues — a branding patch
+  // under the soft threshold still benefits from operators knowing which
+  // tier governed the run. The same helper is reused inside `lintPatchSize`,
+  // so the surfaced tier and the tier that actually drove the thresholds
+  // never drift.
   const tierDecision = resolvePatchSizeTier(filesAffected, patchTier);
   if (tierDecision.tier === 'branding') {
     info(
@@ -85,16 +85,12 @@ export async function runPatchLint(
     ? resolvePatchOwnedSysMjs(detectNewFilesInDiff(diffContent))
     : undefined;
 
-  const issues = await lintExportedPatch(
-    engineDir,
-    filesAffected,
-    diffContent,
-    config,
-    patchQueueCtx,
-    ignoreChecks,
-    patchTier,
-    checkJsReportScope ? { checkJsReportScope } : undefined
-  );
+  const issues = await lintExportedPatch(engineDir, filesAffected, diffContent, config, {
+    ...(patchQueueCtx ? { patchQueueCtx } : {}),
+    ...(ignoreChecks ? { ignoreChecks } : {}),
+    ...(patchTier ? { patchTier } : {}),
+    ...(checkJsReportScope ? { checkJsReportScope } : {}),
+  });
   reportPatchLintOutcome(issues, skipLint);
 }
 
@@ -169,7 +165,7 @@ export async function promptExportPatchMetadata(
   let patchName = options.name?.trim().replace(/\.patch$/i, '');
 
   if (patchName) {
-    const validationError = validatePatchName(patchName);
+    const validationError = describePatchNameProblem(patchName);
     if (validationError) {
       throw new InvalidArgumentError(validationError, '--name');
     }
@@ -186,7 +182,7 @@ export async function promptExportPatchMetadata(
     const nameResult = await text({
       message: 'Enter a name for this patch:',
       placeholder: commandName === 'export' ? 'my-change' : 'my-changes',
-      validate: (value) => validatePatchName((value ?? '').trim()),
+      validate: (value) => describePatchNameProblem((value ?? '').trim()),
     });
 
     if (isCancel(nameResult)) {
@@ -307,18 +303,18 @@ export async function confirmSupersedePatches(
 /**
  * Detects new files missing license headers and offers to add them.
  *
- * In interactive mode the user is prompted before any files are modified.
- * In non-interactive mode the function is a no-op — the existing lint error
- * will block the export instead.
+ * In interactive mode the user is prompted before any files are modified. In
+ * non-interactive mode the function is a no-op — the existing lint error
+ * blocks the export instead.
  *
  * @param engineDir - Absolute path to engine directory
  * @param diffContent - Current unified diff
  * @param config - Project configuration
  * @param isInteractive - Whether interactive prompts are available
  * @param dryRun - When true, only REPORT missing headers, never prompt or
- *   write. Dry-run must stay read-only: before this flag existed, an
- *   interactive `export --dry-run` prompted (default Yes) and wrote license
- *   headers into engine/ files, then closed with "no changes made".
+ *   write. Dry-run must stay read-only: without this flag an interactive
+ *   `export --dry-run` prompts (default Yes), writes license headers into
+ *   engine/ files, and then closes with "no changes made".
  * @returns true if files were modified on disk (caller must regenerate diff)
  */
 export async function autoFixLicenseHeaders(
@@ -432,19 +428,17 @@ export function findPartialOwnershipOverlap(
 
 /**
  * Gate that refuses the default export path when the new patch would
- * silently claim files that are already tracked by other non-superseded
- * patches. `findAllPatchesForFiles` already catches the full-coverage
- * supersede case — this helper fills the gap for partial overlap, which
- * was the eval finding #12 scenario (two patches both claiming
- * `browser/themes/shared/jar.inc.mn` after a second export with
- * `--before`).
+ * silently claim files already tracked by other non-superseded patches.
+ * `findAllPatchesForFiles` catches the full-coverage supersede case; this
+ * fills the gap for PARTIAL overlap — two patches both claiming e.g.
+ * `browser/themes/shared/jar.inc.mn` after a second export with `--before`.
  *
  * Proceeds silently when there is no overlap, or when the caller passed
  * `--allow-overlap`. In interactive mode the caller is prompted to
  * acknowledge the overlap (the proper fix path is `re-export --files` to
  * repartition ownership, so the prompt surfaces that pointer). In
- * non-interactive mode the function throws — better to fail fast than
- * let the queue fall out of sync with verify.
+ * non-interactive mode it throws — better to fail fast than let the queue
+ * fall out of sync with verify.
  */
 export async function guardOwnershipOverlap(args: {
   patchesDir: string;
@@ -500,13 +494,12 @@ export async function guardOwnershipOverlap(args: {
 
 /**
  * Runs the two pre-commit gates shared by `export` and `export-all` in
- * order: the supersede confirmation, then the cross-patch ownership
- * overlap guard. The overlap guard receives the filenames of the patches
- * the export would fully supersede so it does not flag a file claimed by
- * a patch that is about to be removed (pre-0.16.0 `export` only caught
- * FULL-coverage supersedes, so a second export targeting a shared file
- * like `browser/themes/shared/jar.inc.mn` created a queue where two
- * patches both claimed the file and `verify` failed immediately).
+ * order: the supersede confirmation, then the cross-patch ownership overlap
+ * guard. The overlap guard receives the filenames of the patches the export
+ * would fully supersede so it does not flag a file claimed by a patch that
+ * is about to be removed. Catching only FULL-coverage supersedes leaves a
+ * second export targeting a shared file creating a queue where two patches
+ * both claim it and `verify` fails immediately.
  *
  * @param args - Gate inputs shared by both export commands
  * @param args.patchesDir - Absolute path of the patches directory
@@ -515,8 +508,8 @@ export async function guardOwnershipOverlap(args: {
  * @param args.allowOverlap - The command's `--allow-overlap` flag
  * @param args.isInteractive - Whether prompting the operator is possible
  * @param args.s - Active spinner, stopped before any prompt
- * @returns `true` when both gates passed; `false` when the operator
- *   declined (the caller returns without committing)
+ * @returns `true` when both gates passed; `false` when the operator declined
+ *   (the caller returns without committing)
  */
 export async function runSupersedeAndOverlapGates(args: {
   patchesDir: string;

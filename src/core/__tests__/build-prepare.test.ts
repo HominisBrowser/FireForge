@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../branding.js', () => ({
   setupBranding: vi.fn(),
   isBrandingSetup: vi.fn(),
@@ -29,6 +31,12 @@ vi.mock('../git-status.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   warn: vi.fn(),
   info: vi.fn(),
   notice: vi.fn(),
@@ -49,9 +57,7 @@ vi.mock('../furnace-config.js', () => ({
   })),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../furnace-apply.js', () => ({
   applyAllComponents: vi.fn(),

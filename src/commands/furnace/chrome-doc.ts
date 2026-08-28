@@ -3,18 +3,18 @@
  * `fireforge furnace chrome-doc create <name>` — scaffolds a top-level
  * chrome document (xhtml + js + css + ftl + jar.mn registrations).
  *
- * Motivation: `furnace create` covers custom elements under
- * `toolkit/content/widgets/`, but top-level chrome documents (the
- * `mybrowser.xhtml`-class entry points a fork adds alongside or instead
- * of `browser.xhtml`) are today hand-authored with error-prone jar.mn +
- * jar.inc.mn + locales/jar.mn glue. The `*` preprocessor flag, the
- * macOS titlebar-button carve-out, the startup-topic observer, and the
- * Fluent linkage each have silent-break failure modes.
+ * `furnace create` covers custom elements under `toolkit/content/widgets/`,
+ * but top-level chrome documents — the `mybrowser.xhtml`-class entry points
+ * a fork adds alongside or instead of `browser.xhtml` — are otherwise
+ * hand-authored with error-prone jar.mn + jar.inc.mn + locales/jar.mn glue.
+ * The `*` preprocessor flag, the macOS titlebar-button carve-out, the
+ * startup-topic observer, and the Fluent linkage each have silent-break
+ * failure modes.
  *
- * This command writes the four source files and appends three jar.mn
- * entries under a rollback journal identical in shape to `furnace create`.
- * A SIGINT mid-scaffold restores every touched file; a successful run
- * leaves the tree ready for `fireforge build`.
+ * This command writes the four source files and appends three jar.mn entries
+ * under a rollback journal identical in shape to `furnace create`. A SIGINT
+ * mid-scaffold restores every touched file; a successful run leaves the tree
+ * ready for `fireforge build`.
  */
 
 import { join } from 'node:path';
@@ -22,22 +22,21 @@ import { join } from 'node:path';
 import { loadConfig } from '../../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import {
+  completeJournalRollback,
   type FurnaceOperationContext,
-  recordFurnaceRollbackFailure,
   runFurnaceMutation,
 } from '../../core/furnace-operation.js';
+import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import {
   createRollbackJournal,
   recordCreatedDir,
-  restoreRollbackJournalOrThrow,
   snapshotFile,
 } from '../../core/furnace-rollback.js';
 import { DEFAULT_LICENSE, getLicenseHeader } from '../../core/license-headers.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { ProjectLicense } from '../../types/config.js';
-import { toError } from '../../utils/errors.js';
-import { pathExists, readText, writeText } from '../../utils/fs.js';
+import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { intro, note, outro, warn } from '../../utils/logger.js';
 import {
   generateBrowserWindowXhtml,
@@ -68,12 +67,11 @@ export interface FurnaceChromeDocCreateOptions {
   /**
    * Scaffold an xpcshell packaging-verification test alongside the chrome
    * document. The generated test probes `XCurProcD/chrome/browser/...` on
-   * disk rather than going through `chrome://` URI resolution — that
-   * bypasses xpcshell's limited browser-chrome manifest set (the
-   * motivating failure mode where `NetUtil.asyncFetch` returns
-   * `NS_ERROR_FILE_NOT_FOUND` against a file that IS packaged).
-   * Registration in `XPCSHELL_TESTS_MANIFESTS` is left to the operator
-   * because the owning moz.build depends on the fork's layout.
+   * disk rather than going through `chrome://` URI resolution, which
+   * bypasses xpcshell's limited browser-chrome manifest set — where
+   * `NetUtil.asyncFetch` returns `NS_ERROR_FILE_NOT_FOUND` against a file
+   * that IS packaged. Registration in `XPCSHELL_TESTS_MANIFESTS` is left to
+   * the operator because the owning moz.build depends on the fork's layout.
    */
   withTests?: boolean;
   /** Print the scaffold plan without writing files. */
@@ -311,7 +309,6 @@ async function performChromeDocMutations(args: {
     for (const dir of [contentDir, sharedThemeDir, localeDir]) {
       if (!(await pathExists(dir))) {
         recordCreatedDir(journal, dir);
-        const { ensureDir } = await import('../../utils/fs.js');
         await ensureDir(dir);
       }
     }
@@ -364,9 +361,9 @@ async function performChromeDocMutations(args: {
     // wildcard already pick up the scaffolded FTL automatically — appending
     // a per-file `locale/...` entry on top is at best dead weight and at
     // worst a build error when the fork has dropped the `% locale browser`
-    // registration the per-file entry depends on. The wildcard predicate
-    // is intentionally narrow: only `%browser/`-rooted globs that end in
-    // `*.ftl` count as a capture.
+    // registration the per-file entry depends on. The wildcard predicate is
+    // intentionally narrow: only `%browser/`-rooted globs ending in `*.ftl`
+    // count as a capture.
     if (await pathExists(localeJarMnPath)) {
       const existingLocaleJar = await readText(localeJarMnPath);
       if (localesFtlWildcardCapturesScaffoldedName(existingLocaleJar)) {
@@ -400,7 +397,6 @@ async function performChromeDocMutations(args: {
     if (args.withTests) {
       const testParentDir = `${args.binaryName}-xpcshell`;
       const testDir = join(args.engineDir, 'browser/base/content/test', testParentDir, args.name);
-      const { ensureDir } = await import('../../utils/fs.js');
       if (!(await pathExists(testDir))) {
         recordCreatedDir(journal, testDir);
       }
@@ -419,23 +415,12 @@ async function performChromeDocMutations(args: {
       written.push(`browser/base/content/test/${testParentDir}/${args.name}/xpcshell.toml`);
     }
   } catch (error: unknown) {
-    // This body owns its rollback end to end, so tell the lifecycle wrapper
-    // not to restore the same journal again on the way out.
-    args.operationContext.markRolledBack();
-    try {
-      await restoreRollbackJournalOrThrow(journal, `Failed to scaffold chrome-doc "${args.name}"`);
-    } catch (rollbackError) {
-      // Matches the seven sibling mutation sites: when the rollback itself
-      // fails the engine is in an unknown state, so leave a breadcrumb for
-      // `doctor --repair-furnace` and let the rollback error win.
-      await recordFurnaceRollbackFailure(
-        args.projectRoot,
-        'chrome-doc-rollback',
-        `chrome-doc "${args.name}": ${toError(rollbackError).message}`
-      );
-      throw rollbackError;
-    }
-    throw error;
+    return await completeJournalRollback(args.operationContext, journal, error, {
+      projectRoot: args.projectRoot,
+      operation: 'chrome-doc-rollback',
+      failureMessage: `Failed to scaffold chrome-doc "${args.name}"`,
+      subject: `chrome-doc "${args.name}"`,
+    });
   }
 
   return written;
@@ -460,11 +445,9 @@ export async function furnaceChromeDocCreateCommand(
   const license = forgeConfig.license ?? DEFAULT_LICENSE;
   const engineDir = join(projectRoot, 'engine');
 
-  if (!(await pathExists(engineDir))) {
-    throw new FurnaceError(
-      'Engine directory not found. Run "fireforge download" first to scaffold a chrome-doc.'
-    );
-  }
+  await assertFurnaceEngineReady(projectRoot, {
+    engineMissingSuffix: ' to scaffold a chrome-doc.',
+  });
 
   const browserWindow = options.browserWindow ?? false;
   // The browser-window skeleton always carries its own titlebar markup and
@@ -472,10 +455,10 @@ export async function furnaceChromeDocCreateCommand(
   const withTitlebar = browserWindow ? true : (options.titlebar ?? true);
   const withTests = options.withTests ?? false;
 
-  // Hint: when the scaffolded document is the configured token-host
-  // document (the fork's main browser window), the generic dialog-shaped
-  // scaffold is almost certainly wrong (0.34.0 field report: correct
-  // jar.mn registrations, wrong document body).
+  // Hint: when the scaffolded document is the configured token-host document
+  // (the fork's main browser window), the generic dialog-shaped scaffold is
+  // almost certainly wrong — correct jar.mn registrations, wrong document
+  // body.
   if (!browserWindow && (await furnaceConfigExists(projectRoot))) {
     try {
       const furnaceConfig = await loadFurnaceConfig(projectRoot);

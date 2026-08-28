@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Unit tests for the `--extend-coverage` anchor and union. The
- * union is pure; the anchor probes run against a real git engine fixture,
- * because "engine HEAD unchanged" and "previously fingerprinted files
+ * Unit tests for the `--extend-coverage` anchor and union. The union is
+ * pure; the anchor probes run against a real git engine fixture, because
+ * "engine HEAD unchanged" and "previously fingerprinted files
  * byte-identical" are exactly the properties a mocked git would not prove.
  */
 import { createHash } from 'node:crypto';

@@ -1,24 +1,23 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Maintains `compilerOptions.paths` entries in a consumer-owned jsconfig
- * so typed cross-module imports of multi-file Furnace components work
- * (field report D3).
+ * Maintains `compilerOptions.paths` entries in a consumer-owned jsconfig so
+ * typed cross-module imports of multi-file Furnace components work.
  *
  * When a main widget imports a sibling helper via its deployed chrome URL
- * (`chrome://global/content/elements/<helper>.mjs`), a wildcard module
- * shim swallows the import: value imports degrade to `any` and
+ * (`chrome://global/content/elements/<helper>.mjs`), a wildcard module shim
+ * swallows the import: value imports degrade to `any` and
  * `import(...).SomeType` typedefs fail with TS2694. The fix is a `paths`
- * mapping from the chrome URL to the real workspace source. Furnace
- * already owns the jar.mn side of that mapping, so it can maintain the
- * jsconfig side automatically on every deploy.
+ * mapping from the chrome URL to the real workspace source. Furnace already
+ * owns the jar.mn side of that mapping, so it maintains the jsconfig side
+ * automatically on every deploy.
  *
  * Ownership contract: only entries whose key starts with
  * `chrome://global/content/elements/` AND whose mapped path resolves into
  * the Furnace custom-components workspace are managed (added, updated,
- * pruned). Everything else in the jsconfig — including hand-written
- * `paths` entries pointing elsewhere — is preserved verbatim. No
- * `baseUrl` is required or written: relative `paths` resolve against the
- * config file's directory.
+ * pruned). Everything else in the jsconfig — including hand-written `paths`
+ * entries pointing elsewhere — is preserved verbatim. No `baseUrl` is
+ * required or written: relative `paths` resolve against the config file's
+ * directory.
  */
 
 import { readdir } from 'node:fs/promises';
@@ -31,7 +30,7 @@ import type { FurnaceConfig } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
-import { normalizePathSlashes } from '../utils/paths.js';
+import { isPathInsideRoot, normalizePathSlashes } from '../utils/paths.js';
 import { getFurnacePaths } from './furnace-config.js';
 
 /** Chrome URL prefix under which registered custom-element files deploy. */
@@ -121,8 +120,10 @@ function isManagedEntry(
 ): value is [string] {
   if (!key.startsWith(CHROME_ELEMENTS_URL_PREFIX)) return false;
   if (!Array.isArray(value) || value.length !== 1 || typeof value[0] !== 'string') return false;
-  const target = resolve(jsconfigDir, value[0]);
-  return target.startsWith(resolve(customDir) + '/') || target === resolve(customDir);
+  // Containment via `relative`, not a string prefix: a hard-coded `'/'`
+  // separator never matches the backslashes `resolve` emits on Windows, which
+  // demoted every managed entry to "unmanaged" there — no pruning, no updates.
+  return isPathInsideRoot(customDir, resolve(jsconfigDir, value[0]));
 }
 
 /**

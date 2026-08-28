@@ -10,16 +10,16 @@ import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
-import { findAlphabeticalPosition } from './manifest-helpers.js';
+import { insertJarMnEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
 export type { RegisterResult } from './register-result.js';
 
 // Re-export from split modules so existing import sites continue working
 export { registerBrowserContent } from './register-browser-content.js';
+export { deregisterTestManifest, registerTestManifest } from './register-browser-test.js';
 export { registerFireForgeModule } from './register-module.js';
 export { registerSharedCSS } from './register-shared-css.js';
-export { deregisterTestManifest, registerTestManifest } from './register-test-manifest.js';
 
 // ---------------------------------------------------------------------------
 // toolkit/content/jar.mn — widget registration
@@ -49,50 +49,26 @@ export async function registerToolkitWidget(
     '/'
   );
 
-  let content = await readText(manifestPath);
+  const content = await readText(manifestPath);
 
   // Idempotency check
   if (content.includes(`content/global/elements/${fileName}`)) {
     return { manifest, entry, skipped: true };
   }
 
-  const lines = content.split('\n');
+  // Tokenized like the other three jar.mn registrars. The hand-rolled
+  // line scan this replaced re-derived the section bounds and the sort
+  // key with its own regexes, so it was the one jar.mn target that did
+  // not inherit fixes made to the shared path.
+  const { result, previousEntry } = insertJarMnEntry(content, entry, {
+    sortPattern: /content\/global\/elements\/([^\s]+)/,
+    sortKey: fileName,
+    missingSectionMessage:
+      'Could not find content/global/elements/ section in toolkit/content/jar.mn',
+  });
 
-  // Find insertion point among existing content/global/elements/ lines
-  const extractKey = (line: string): string | undefined => {
-    const match = /^\s+content\/global\/elements\/([^\s]+)/.exec(line);
-    return match?.[1];
-  };
-
-  let sectionStart = -1;
-  let sectionEnd = lines.length;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === undefined) continue;
-    if (/^\s+content\/global\/elements\//.test(line)) {
-      if (sectionStart === -1) sectionStart = i;
-      sectionEnd = i + 1;
-    }
-  }
-
-  if (sectionStart === -1) {
-    throw new GeneralError(
-      'Could not find content/global/elements/ section in toolkit/content/jar.mn'
-    );
-  }
-
-  const { insertIndex, previousEntry } = findAlphabeticalPosition(
-    lines,
-    sectionStart,
-    sectionEnd,
-    fileName,
-    extractKey
-  );
-
-  lines.splice(insertIndex, 0, entry);
-  content = lines.join('\n');
   if (!dryRun) {
-    await writeText(manifestPath, content);
+    await writeText(manifestPath, result);
   }
 
   return { manifest, entry, previousEntry, skipped: false };

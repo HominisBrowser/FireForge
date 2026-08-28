@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Regression coverage for item B2 (0.32.0): `lint --per-patch` builds the
- * checkJs program once per run and attributes each finding to its owning
- * patch, instead of rebuilding the queue-wide program for every patch (which
- * duplicated a single type regression once per patch in the queue).
+ * `lint --per-patch` builds the checkJs program once per run and attributes
+ * each finding to its owning patch, instead of rebuilding the queue-wide
+ * program for every patch — which duplicates a single type regression once
+ * per patch in the queue.
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -26,6 +26,12 @@ import { warn } from '../../utils/logger.js';
 import { lintCommand } from '../lint.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -191,8 +197,8 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
 
   it('a warm (all-cache-hit) run still surfaces run-level checkJs errors', async () => {
     // A broken extra shim produces a GLOBAL checkJs error (no owning file).
-    // Global findings are never cached, so before the fix an all-cache-hit
-    // run dropped them entirely and reported fewer errors than a cold run.
+    // Global findings are never cached, so an all-cache-hit run that drops
+    // them reports fewer errors than a cold run.
     const { writeFireForgeConfig: rewriteConfig } = await import('../../test-utils/index.js');
     await rewriteConfig(projectRoot, {
       patchLint: { checkJs: true, checkJsExtraShim: 'does-not-exist.d.ts' },
@@ -219,10 +225,10 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
 });
 
 /**
- * Per-patch checkJs never included patch-adopted test `.js` files, so a
- * call to a harness member the consumer's shim does not
- * declare (the TS2339 on `TestUtils.waitForCondition`) was invisible at
- * the patch boundary and surfaced only in the downstream composed gate.
+ * Per-patch checkJs must include patch-adopted test `.js` files: otherwise a
+ * call to a harness member the consumer's shim does not declare (the TS2339
+ * on `TestUtils.waitForCondition`) is invisible at the patch boundary and
+ * surfaces only in the downstream composed gate.
  */
 describe('lint --per-patch checkJs over patch-owned test files', () => {
   let projectRoot: string;
@@ -272,7 +278,7 @@ describe('lint --per-patch checkJs over patch-owned test files', () => {
     await removeTempProject(projectRoot);
   });
 
-  it('pins the pre-0.40.0 gap: without checkJsTestFiles the test file is never checked', async () => {
+  it('without checkJsTestFiles the test file is never checked', async () => {
     await writeFireForgeConfig(projectRoot, { patchLint: { checkJs: true } });
 
     await lintCommand(projectRoot, [], { perPatch: true, noCache: true }).catch(() => undefined);

@@ -37,6 +37,7 @@ import type {
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import {
   composeShimSource,
   SHIM_FILENAME,
@@ -49,6 +50,21 @@ import {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Converts a native path into the form TypeScript uses for `fileName`.
+ *
+ * TypeScript normalizes every path it hands a `CompilerHost` to forward
+ * slashes on ALL platforms, while `resolve()` here yields the platform
+ * separator. On Windows that mismatch made every `ownedAbsolute.has(fileName)`
+ * and `relByAbsolute.get(fileName)` lookup miss, so the host served an empty
+ * source file for each owned file and the whole pass reported zero findings —
+ * silently, because "no diagnostics" is indistinguishable from "clean code".
+ * Every path that crosses the TS boundary goes through here.
+ */
+function toTsPath(path: string): string {
+  return normalizePathSlashes(path);
+}
 
 /**
  * Builds the host-side module resolver for the checkJs pass: maps an import
@@ -136,8 +152,15 @@ function createPathsResolver(
         captured = specifier.slice(prefix.length, specifier.length - suffix.length);
       }
       for (const target of targets) {
-        const rel = target.includes('*') ? target.replace('*', captured) : target;
-        const abs = resolve(baseDir, rel);
+        // A `paths` target carries at most one `*`, and TypeScript substitutes
+        // that one wildcard — spelled as index arithmetic (mirroring the
+        // prefix/suffix split on the pattern side above) rather than
+        // `replace('*', …)`, whose first-occurrence-only behaviour reads as an
+        // incomplete rewrite (CodeQL `js/incomplete-sanitization`).
+        const star = target.indexOf('*');
+        const rel =
+          star === -1 ? target : target.slice(0, star) + captured + target.slice(star + 1);
+        const abs = toTsPath(resolve(baseDir, rel));
         if (!fileExists(abs)) continue;
         onResolved(abs);
         return {
@@ -176,10 +199,10 @@ export interface GroupedCheckJsResult {
 /**
  * Builds the checkJs program **once** over `resolutionOwned` and returns its
  * diagnostics grouped by originating file. Callers slice the result by their
- * own report scope — per-patch lint attributes each file to its owning
- * patch, export/re-export keeps only the patch under export. Resolution
- * always spans every file in `resolutionOwned`, so cross-patch
- * `resource:///`/`chrome://` imports resolve to real sources.
+ * own report scope — per-patch lint attributes each file to its owning patch,
+ * export/re-export keeps only the patch under export. Resolution always spans
+ * every file in `resolutionOwned`, so cross-patch `resource:///`/`chrome://`
+ * imports resolve to real sources.
  *
  * @param repoDir - Absolute engine (repository) directory
  * @param resolutionOwned - Patch-owned `.sys.mjs` paths (relative to repoDir)
@@ -188,14 +211,14 @@ export interface GroupedCheckJsResult {
  *   the built-in Firefox-globals shim (from `patchLint.checkJsExtraShim`)
  * @param projectRoot - Absolute project root for resolving `extraShimPath`
  * @param mode - Strictness preset plus allowlisted compiler-option overrides
- * @param builtinShimSuffix - Optional shim text appended AFTER the consumer shim
+ * @param builtinShimSuffix - Optional shim text appended AFTER the consumer
+ *   shim
  * @param rootScope - When set, only these repo-relative files become program
  *   ROOTS; resolution (and the host allowlist) still spans all of
  *   `resolutionOwned`, so a subset root's cross-patch imports type-check
  *   against the real owning sources while unrelated owned files are never
  *   parsed. `.mjs` files are module-scoped, so a root's diagnostics are
- *   identical whether other owned files are roots or mere resolution
- * targets (pinned by the rootScope parity test).
+ *   identical whether other owned files are roots or mere resolution targets.
  * @returns Diagnostics grouped per owning file plus run-level errors
  */
 export async function runCheckJsGrouped(
@@ -238,7 +261,7 @@ export async function runCheckJsGrouped(
   const ownedAbsolute = new Set<string>();
   const relByAbsolute = new Map<string, string>();
   for (const rel of resolutionOwned) {
-    const abs = resolve(repoDir, rel);
+    const abs = toTsPath(resolve(repoDir, rel));
     if (await pathExists(abs)) {
       if (rootScope === undefined || rootScope.has(rel)) rootFiles.push(abs);
       ownedAbsolute.add(abs);
@@ -278,7 +301,7 @@ export async function runCheckJsGrouped(
     };
   }
 
-  const shimPath = resolve(repoDir, SHIM_FILENAME);
+  const shimPath = toTsPath(resolve(repoDir, SHIM_FILENAME));
   rootFiles.push(shimPath);
 
   const strict = mode?.strict === true;
@@ -626,15 +649,15 @@ export async function invokePatchLintCheckJsGrouped(
 }
 
 /**
- * Cheap probe reproducing the only run-level ("global") checkJs findings
- * the build path can produce — a missing `typescript` package and an
- * unreadable consumer shim (`checkJsExtraShim`, and `checkJsTestShim`
- * when `checkJsTestFiles` is on). The built program itself never
- * contributes globals (see {@link runCheckJsGrouped}), so a warm
- * all-cache-hit run can satisfy the "warm never reports less than cold"
- * invariant with this probe instead of building the whole
- * TypeScript program. Issue objects are byte-identical to the build
- * path's, deduplicated by message like {@link runCheckJsTestFilesGrouped}.
+ * Cheap probe reproducing the only run-level ("global") checkJs findings the
+ * build path can produce — a missing `typescript` package and an unreadable
+ * consumer shim (`checkJsExtraShim`, and `checkJsTestShim` when
+ * `checkJsTestFiles` is on). The built program itself never contributes
+ * globals (see {@link runCheckJsGrouped}), so a warm all-cache-hit run can
+ * satisfy the "warm never reports less than cold" invariant with this probe
+ * instead of building the whole TypeScript program. Issue objects are
+ * byte-identical to the build path's, deduplicated by message like
+ * {@link runCheckJsTestFilesGrouped}.
  */
 export async function probeCheckJsGlobalIssues(
   patchLint: PatchLintConfig,

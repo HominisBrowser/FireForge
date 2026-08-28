@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Tests for Furnace-maintained jsconfig `compilerOptions.paths` entries
- * (field report D3). Real temp directories — the module's contract is
- * mostly about what it writes and, just as importantly, what it refuses
- * to touch.
+ * Tests for Furnace-maintained jsconfig `compilerOptions.paths` entries.
+ * Real temp directories — the module's contract is mostly about what it
+ * writes and, just as importantly, what it refuses to touch.
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -180,8 +179,8 @@ describe('syncFurnaceJsconfigPaths', () => {
     // Deploy copies files and writes jar.mn `content/global/elements/…`
     // entries regardless of `register` (only the customElements.js
     // registration is gated), so an unregistered component's imports are
-    // just as real. Pre-0.41.0 the sync skipped them and their chrome
-    // imports silently degraded to the wildcard `any` shim.
+    // just as real. Skipping them silently degrades their chrome imports to
+    // the wildcard `any` shim.
     await seedComponent('moz-quiet', ['moz-quiet.mjs']);
     await writeFile(jsconfigPath, JSON.stringify({}) + '\n');
 
@@ -227,9 +226,9 @@ describe('syncFurnaceJsconfigPaths', () => {
   });
 
   it('keeps (never prunes) a hand-written mapping for an unregistered component', async () => {
-    // Pre-0.41.0 such an entry passed isManagedEntry but was absent from
-    // the desired set, so every sync pruned it as "stale" — a hand mapping
-    // was not a durable workaround.
+    // Such an entry passes isManagedEntry but is absent from the desired
+    // set, so a naive sync prunes it as "stale" and a hand mapping is not a
+    // durable workaround.
     await seedComponent('moz-shared', ['widget-base.mjs']);
     await writeFile(
       jsconfigPath,
@@ -402,7 +401,7 @@ describe('syncFurnaceJsconfigPaths', () => {
   });
 });
 
-// ── Item D (0.32.0): root-level jsconfig must emit ./-relative paths (TS5090) ──
+// A root-level jsconfig must emit ./-relative paths (TS5090).
 describe('syncFurnaceJsconfigPaths — root-level jsconfig (./-relative, TS5090)', () => {
   let projectRoot: string;
   let rootJsconfigPath: string;

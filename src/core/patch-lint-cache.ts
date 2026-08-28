@@ -12,24 +12,23 @@ import { getFurnacePaths } from './furnace-config.js';
 import { git } from './git-base.js';
 import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-lint.js';
 
-// Schema 2: entries additionally carry the lintIgnore-suppressed
-// issues and the measured non-binary line count, so a warm run can report
-// waived size measurements identically to a cold one (the F5-class hazard:
-// a cache hit must never surface LESS than a fresh lint).
+// Schema 2: entries additionally carry the lintIgnore-suppressed issues and
+// the measured non-binary line count, so a warm run can report waived size
+// measurements identically to a cold one — a cache hit must never surface
+// LESS than a fresh lint.
 // Schema 3: the key additionally content-hashes the
 // `patchLint.checkJsTestShim` file exactly as `checkJsExtraShim`'s already
-// was — before this, editing the test shim in place replayed every cached
-// verdict (the same warm-run-reports-less-than-cold hazard class).
-// Schema 4: each entry RECORDS the lint-ignore waiver set that
-// produced it, and a lookup whose effective waiver set differs is refused
-// even when the key matches. The key already hashes `patch.lintIgnore`, so
-// this is belt-and-braces on purpose: a waiver change is the one mutation
-// that makes a replayed verdict actively WRONG (an operator writes a
-// waiver, re-runs, and is shown the finding they just waived — or worse,
-// a pre-waiver verdict replayed under a post-waiver key), and the class
-// must not depend on every future key input staying complete. Bumping the
-// schema also discards every pre-4 entry, which is itself the cure for a
-// cache that already holds a mismatched verdict.
+// was; without it, editing the test shim in place replays every cached
+// verdict.
+// Schema 4: each entry RECORDS the lint-ignore waiver set that produced it,
+// and a lookup whose effective waiver set differs is refused even when the
+// key matches. The key already hashes `patch.lintIgnore`, so this is
+// belt-and-braces on purpose: a waiver change is the one mutation that makes
+// a replayed verdict actively WRONG (an operator writes a waiver, re-runs,
+// and is shown the finding they just waived), and the class must not depend
+// on every future key input staying complete. Bumping the schema also
+// discards every pre-4 entry, which is itself the cure for a cache that
+// already holds a mismatched verdict.
 export const LINT_CACHE_SCHEMA_VERSION = 4;
 const LINT_IMPLEMENTATION_VERSION = 1;
 
@@ -45,8 +44,8 @@ export interface PerPatchLintCacheEntry {
   /** Non-binary diff line count measured by the cached lint run. */
   lineCount: number;
   /**
-   * Sorted lint-ignore waiver ids in force when this entry was computed
-   *. A lookup presenting a different effective set misses.
+   * Sorted lint-ignore waiver ids in force when this entry was computed.
+   * A lookup presenting a different effective set misses.
    */
   lintIgnore: string[];
   updatedAt: string;
@@ -155,8 +154,7 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
   // Hash in parallel, then insert in sorted order. The sort is load-bearing:
   // `stableHash` below serialises this record, so insertion order is part of
   // the cache key — assigning as results land would make the key
-  // nondeterministic. Hashing was strictly sequential until 0.41.0, in the hot
-  // path of the cache whose entire purpose is making lint faster.
+  // nondeterministic.
   const sortedFiles = [...input.existingFiles].sort((a, b) => a.localeCompare(b));
   const hashes = await Promise.all(
     sortedFiles.map((file) => fileHash(join(input.engineDir, file)))
@@ -186,8 +184,8 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
     cacheSchemaVersion: LINT_CACHE_SCHEMA_VERSION,
     engineHeadSha: input.engineHeadSha ?? null,
     lintImplementationVersion: LINT_IMPLEMENTATION_VERSION,
-    // Deliberately the PLAIN semver, not the +g<sha> build identity
-    //: identity churns every commit at the same version and
+    // Deliberately the PLAIN semver, not the +g<sha> build identity:
+    // identity churns every commit at the same version and
     // would invalidate the cache for no correctness gain.
     packageVersion: input.packageVersion ?? getPackageVersion(),
     patchFile: await fileHash(join(input.patchesDir, input.patch.filename)),
@@ -281,9 +279,9 @@ function normalizeLintIgnoreSet(lintIgnore: Iterable<string> | undefined): strin
 
 /**
  * Returns the cached lint payload for a patch when the stored key still
- * matches AND the entry was computed under the same lint-ignore waiver set
- *. A waiver change makes a replayed verdict actively wrong, so
- * the waiver set is compared explicitly rather than trusted to the key.
+ * matches AND the entry was computed under the same lint-ignore waiver set.
+ * A waiver change makes a replayed verdict actively wrong, so the waiver set
+ * is compared explicitly rather than trusted to the key.
  */
 export function getCachedPerPatchLintIssues(
   cache: PerPatchLintCacheFile,

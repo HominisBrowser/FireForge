@@ -2,12 +2,12 @@
 /**
  * Transactional file-ownership move into an EXISTING patch.
  *
- * Before 0.39.0, `patch move-files <from> <to>` with an existing target was
- * preview-only: it printed two `re-export --files` commands whose real
- * execution cost three further refusals (`--allow-shrink`, `--yes`, and a
- * projected `duplicate-new-file-creation` unless the SHRINK landed first —
- * while the printed plan listed the grow first). This module performs the
- * same shrink→grow as one transaction under the patch-directory lock with
+ * A preview-only `patch move-files <from> <to>` prints two
+ * `re-export --files` commands whose real execution costs three further
+ * refusals (`--allow-shrink`, `--yes`, and a projected
+ * `duplicate-new-file-creation` unless the SHRINK lands first — while the
+ * printed plan lists the grow first). This module performs the same
+ * shrink→grow as one transaction under the patch-directory lock with
  * rollback, mirroring `patch split` / `move-files --create`.
  *
  * Preconditions match `re-export`: the engine worktree must currently
@@ -23,7 +23,6 @@ import {
   confirmDestructive,
   type ConflictReport,
 } from '../../core/destructive.js';
-import { computeProjectedLintRegressions } from '../../core/lint-projection.js';
 import { normalizePatchArtifact } from '../../core/patch-artifact-normalize.js';
 import {
   buildModifiedFileAdditionsFromDiff,
@@ -34,6 +33,7 @@ import {
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../../core/patch-lint.js';
+import { computeProjectedLintRegressions } from '../../core/patch-lint-projection.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
   loadPatchesManifest,
@@ -363,7 +363,7 @@ export async function runMoveFilesInto(args: {
     outro('Dry run complete — no changes made');
     return;
   }
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Move cancelled');
     return;
   }

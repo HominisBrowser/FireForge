@@ -27,16 +27,27 @@ import { createSiblingLockPath, withFileLock } from './file-lock.js';
 export type RebasePatchStatus =
   'pending' | 'applied-clean' | 'applied-fuzz' | 'failed' | 'resolved' | 'skipped';
 
-export interface RebasePatchEntry {
-  filename: string;
-  status: RebasePatchStatus;
-  /** Fuzz factor used when status is `applied-fuzz`. */
-  fuzzFactor?: number;
-  /** Error message when status is `failed`. */
-  error?: string;
-  /** Files that caused conflicts. */
-  conflictingFiles?: string[];
-}
+/**
+ * One patch's outcome in a rebase session.
+ *
+ * A discriminated union on `status`, so a payload can only be present on the
+ * status it belongs to. A flat-optionals shape makes
+ * `{ status: 'resolved', error, conflictingFiles }` representable, and
+ * `rebase --continue` will write it — flipping the status without clearing
+ * the failure payload, then persisting that to the session file.
+ *
+ * The on-disk validator (`isValidPatchEntry`) is deliberately NOT tightened
+ * to match. The session file carries no schema version, so a stricter
+ * validator would reject an older file mid-rebase, where the only remedies
+ * discard the operator's in-progress conflict resolution. Instead
+ * {@link normalizeEntry} drops payload that does not belong to the status on
+ * read, so an older file loads and is corrected rather than refused.
+ */
+export type RebasePatchEntry = { filename: string } & (
+  | { status: 'pending' | 'applied-clean' | 'skipped' | 'resolved' }
+  | { status: 'applied-fuzz'; fuzzFactor: number }
+  | { status: 'failed'; error?: string; conflictingFiles?: string[] }
+);
 
 export interface RebaseSession {
   /** ISO timestamp when the rebase started. */
@@ -75,6 +86,32 @@ const REBASE_PATCH_STATUSES: readonly RebasePatchStatus[] = [
 ];
 
 /** Validates one `patches[]` element to its declared shape. */
+/**
+ * Drops payload that does not belong to an entry's status.
+ *
+ * Applied on read so a session written by an older FireForge — where
+ * `rebase --continue` left `error`/`conflictingFiles` on a now-`resolved`
+ * entry — loads cleanly and is corrected, instead of being refused by a
+ * stricter validator mid-rebase.
+ *
+ * @param entry - A structurally valid entry, possibly carrying stale payload
+ * @returns The entry with only the fields its status permits
+ */
+function normalizeEntry(entry: RebasePatchEntry): RebasePatchEntry {
+  if (entry.status === 'applied-fuzz') {
+    return { filename: entry.filename, status: 'applied-fuzz', fuzzFactor: entry.fuzzFactor };
+  }
+  if (entry.status === 'failed') {
+    return {
+      filename: entry.filename,
+      status: 'failed',
+      ...(entry.error !== undefined ? { error: entry.error } : {}),
+      ...(entry.conflictingFiles !== undefined ? { conflictingFiles: entry.conflictingFiles } : {}),
+    };
+  }
+  return { filename: entry.filename, status: entry.status };
+}
+
 function isValidPatchEntry(value: unknown): value is RebasePatchEntry {
   if (!isObject(value)) return false;
   if (!isString(value['filename']) || value['filename'].length === 0) return false;
@@ -97,19 +134,19 @@ function isValidOptionalProduct(value: unknown): boolean {
  * Validates a session file against the shape the rebase commands actually
  * consume — not merely against broad field types.
  *
- * The looser predicate this replaces checked six `typeof`s and nothing else,
- * which admitted sessions the resume path then acted on. `patches: [null]`
- * reached `patch-loop.ts`, which reads `.filename` off each entry and hands it
- * to `stampPatchVersions`. A `currentIndex` of `NaN` (legal for
- * `typeof === 'number'`) made the resume loop run zero iterations and report
- * success; a negative one indexed out of range in `continue.ts`. `toVersion:
- * ""` passed `isString` and was stamped verbatim onto every Furnace override's
- * `baseVersion`. `fromProduct`/`toProduct` were not checked at all despite
- * being typed `FirefoxProduct`.
+ * A looser predicate that checks six `typeof`s and nothing else admits
+ * sessions the resume path then acts on. `patches: [null]` reaches
+ * `patch-loop.ts`, which reads `.filename` off each entry and hands it to
+ * `stampPatchVersions`. A `currentIndex` of `NaN` (legal for
+ * `typeof === 'number'`) makes the resume loop run zero iterations and
+ * report success; a negative one indexes out of range in `continue.ts`.
+ * `toVersion: ""` passes `isString` and is stamped verbatim onto every
+ * Furnace override's `baseVersion`. `fromProduct`/`toProduct` go unchecked
+ * despite being typed `FirefoxProduct`.
  *
- * The session file is written only by `rebase/index.ts` from validated CLI and
- * config values, so every one of these is a corrupt-file or hand-edit case —
- * which is exactly the case this predicate exists to catch.
+ * The session file is written only by `rebase/index.ts` from validated CLI
+ * and config values, so every one of these is a corrupt-file or hand-edit
+ * case — which is exactly what this predicate exists to catch.
  */
 function isValidSession(data: unknown): data is RebaseSession {
   if (!isObject(data)) return false;
@@ -140,12 +177,11 @@ function isValidSession(data: unknown): data is RebaseSession {
  * discriminated-union form rather than collapsing three states into `null`.
  *
  * Distinguishing `present: false` from `present: true, valid: false` is
- * load-bearing. Before 0.41.0 both returned `null` while
- * {@link hasActiveRebaseSession} reported liveness from `pathExists` alone, so
- * an invalid session file wedged the operator in a closed cycle: `rebase` said
- * "already in progress — use --continue or --abort", and both of those said
- * "no rebase session in progress". No CLI path deleted the file and no message
- * named it, so the only escape was knowing to `rm` it by hand.
+ * load-bearing. Collapsing both to `null` while reporting liveness from
+ * `pathExists` alone wedges the operator in a closed cycle: `rebase` says
+ * "already in progress — use --continue or --abort", and both of those say
+ * "no rebase session in progress", with no CLI path deleting the file and no
+ * message naming it.
  */
 export type RebaseSessionRead =
   | { present: false }
@@ -160,14 +196,15 @@ export function getRebaseSessionPath(projectRoot: string): string {
 /**
  * Reads the session file, reporting absent, valid, and corrupt as three
  * distinct outcomes. Never throws for a malformed file: `readJson` calls
- * `JSON.parse` with no guard of its own, so an interrupted write surfaced a
- * raw `SyntaxError` out of `--continue`/`--abort` before 0.41.0.
+ * `JSON.parse` with no guard of its own, so an interrupted write would
+ * otherwise surface a raw `SyntaxError` out of `--continue`/`--abort`.
  *
  * A single read determines liveness and validity: only ENOENT/ENOTDIR from
- * that read mean `absent`. A pathExists pre-probe both raced deletion (a file
- * removed between probe and read misreported an absent session as corrupt)
- * and swallowed EACCES (an unreadable `.fireforge/` misreported a session as
- * absent) — the same failure `readTreeMarkerState` fixed for tree markers.
+ * that read mean `absent`. A pathExists pre-probe both races deletion (a
+ * file removed between probe and read misreports an absent session as
+ * corrupt) and swallows EACCES (an unreadable `.fireforge/` misreports a
+ * session as absent) — the same failure `readTreeMarker` avoids for tree
+ * markers.
  */
 export async function readRebaseSession(projectRoot: string): Promise<RebaseSessionRead> {
   const path = sessionPath(projectRoot);
@@ -184,7 +221,16 @@ export async function readRebaseSession(projectRoot: string): Promise<RebaseSess
   if (!isValidSession(data)) {
     return { present: true, valid: false, reason: 'the file is not a valid rebase session' };
   }
-  return { present: true, valid: true, session: data };
+  // Normalize on read: an older session can carry a failure's
+  // `error`/`conflictingFiles` on an entry whose status has since been
+  // flipped to `resolved`. Correcting it here is what lets the validator
+  // stay permissive, so an in-flight rebase from an older FireForge still
+  // loads.
+  return {
+    present: true,
+    valid: true,
+    session: { ...data, patches: data.patches.map(normalizeEntry) },
+  };
 }
 
 /**
@@ -192,7 +238,7 @@ export async function readRebaseSession(projectRoot: string): Promise<RebaseSess
  * file on disk is unusable. Callers that must tell those two apart — every
  * command that reports to an operator — should use {@link readRebaseSession}.
  */
-export async function loadRebaseSession(projectRoot: string): Promise<RebaseSession | null> {
+export async function tryReadRebaseSession(projectRoot: string): Promise<RebaseSession | null> {
   const result = await readRebaseSession(projectRoot);
   return result.present && result.valid ? result.session : null;
 }
@@ -218,13 +264,4 @@ export async function clearRebaseSession(projectRoot: string): Promise<void> {
   if (await pathExists(path)) {
     await removeFile(path);
   }
-}
-
-/**
- * Returns `true` when a rebase session file exists on disk, valid or not.
- * Test-facing convenience — production code reads `readRebaseSession` once
- * instead, so liveness and validity come from the same read.
- */
-export async function hasActiveRebaseSession(projectRoot: string): Promise<boolean> {
-  return pathExists(sessionPath(projectRoot));
 }

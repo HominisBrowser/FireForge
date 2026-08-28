@@ -168,21 +168,19 @@ function normalizeCommentHead(content: string, style: CommentStyle): string {
  *
  * For `js` files, MPL-2.0 is also accepted in the upstream Mozilla block-
  * comment form (`/* ... *\/`) used by the Firefox source tree, not just the
- * `// ` line-comment form `getLicenseHeader` emits. Without that, a new JS
- * file copied from upstream Firefox (or written to match the surrounding
- * code's convention) hit `missing-license-header` even with a verbatim
- * standard MPL header — operators were forced to `--skip-lint` over a real
- * false positive.
+ * `// ` line-comment form `getLicenseHeader` emits — otherwise a new JS file
+ * copied from upstream Firefox hits `missing-license-header` even with a
+ * verbatim standard MPL header.
  *
  * Editor-directive block comments (`/* -*- ... -*- *\/`, `/* vim: ... *\/`)
- * leading the file are tolerated — Mozilla's canonical layout puts those
- * on lines 1–2 with the MPL header on lines 3+, which the raw
- * `startsWith` check would otherwise miss.
+ * leading the file are tolerated: Mozilla's canonical layout puts those on
+ * lines 1–2 with the MPL header on lines 3+, which a raw `startsWith` check
+ * would miss.
  *
- * The MPL-2.0 header is additionally matched on normalized whitespace
- * (see {@link normalizeCommentHead}) so upstream files using the older
- * Mozilla wrap — breaking after "file," instead of "with this" — are
- * accepted too; only the wrap position differs, never the wording.
+ * The MPL-2.0 header is additionally matched on normalized whitespace (see
+ * {@link normalizeCommentHead}) so upstream files using the older Mozilla
+ * wrap — breaking after "file," instead of "with this" — are accepted too;
+ * only the wrap position differs, never the wording.
  *
  * @param content - File content to check
  * @param style   - Comment syntax of the file
@@ -207,22 +205,18 @@ export function hasAnyLicenseHeader(content: string, style: CommentStyle): boole
 /**
  * Returns true if `content` starts with the verbatim upstream Mozilla
  * MPL-2.0 block header (`/* This Source Code Form … *\/`), optionally
- * preceded by editor-directive comments — the exact shape a JS file
- * copied from the Firefox source tree carries.
+ * preceded by editor-directive comments — the exact shape a JS file copied
+ * from the Firefox source tree carries.
  *
  * Deliberately independent of the project license: a new JS file that
- * legitimately keeps its upstream MPL block header (copied-from-upstream
- * provenance) is valid in an EUPL/GPL/0BSD project too. Before 0.35.0
- * this acceptance only existed behind a `license === 'MPL-2.0'` gate in
- * patch-lint, making it dead code for every other project license and
- * forcing repo-side audit workarounds.
+ * legitimately keeps its upstream MPL block header is valid in an
+ * EUPL/GPL/0BSD project too.
  *
  * Matching is wrap-agnostic: after the exact `startsWith` fast path, the
  * leading block comment is compared on normalized whitespace (see
- * {@link normalizeCommentHead}) so the older upstream wrap — breaking
- * after "file," instead of "with this", as `ext-browser.js` ships —
- * passes too. Only the line-break position may differ; altered wording
- * still rejects.
+ * {@link normalizeCommentHead}) so the older upstream wrap — breaking after
+ * "file," instead of "with this", as `ext-browser.js` ships — passes too.
+ * Only the line-break position may differ; altered wording still rejects.
  *
  * @param content - File content to check
  */

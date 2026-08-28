@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Manifest scaffolding for `fireforge register --create-manifest`
- * (0.34.0 field report): registering a module under a directory with no
- * moz.build used to fail with "Manifest not found" because `register`
- * only inserts into EXISTING manifests. This module owns the two
- * scaffolding primitives:
+ * Manifest scaffolding for `fireforge register --create-manifest`.
  *
- *  - creating a directory `moz.build` (license header + the requested
- *    list directive) and wiring the parent chain's `DIRS` entries up to
- *    the nearest existing moz.build;
+ * `register` only inserts into EXISTING manifests, so registering a module
+ * under a directory with no moz.build fails with "Manifest not found". This
+ * module owns the two scaffolding primitives:
+ *
+ *  - creating a directory `moz.build` (license header + the requested list
+ *    directive) and wiring the parent chain's `DIRS` entries up to the
+ *    nearest existing moz.build;
  *  - wiring an `XPCSHELL_TESTS_MANIFESTS` entry for a (possibly freshly
  *    created) `xpcshell.toml` into the nearest existing moz.build.
  *
@@ -22,8 +22,8 @@ import { dirname, join } from 'node:path';
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { getLicenseHeader } from './license-headers.js';
-import { findAlphabeticalMozBuildPosition } from './manifest-helpers.js';
-import { tokenizeMozBuildList } from './manifest-tokenizers.js';
+import { findAlphabeticalMozBuildPosition } from './moz-manifest-helpers.js';
+import { tokenizeMozBuildList } from './moz-manifest-tokenizers.js';
 
 /** One manifest mutation performed (or planned, on dry-run) by a scaffold. */
 export interface ScaffoldAction {

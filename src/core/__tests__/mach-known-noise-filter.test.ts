@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Echo-filter tests for the known mozsystemmonitor teardown traceback
- * (0.37.0 item 8). The filter only shapes what reaches the TERMINAL — the
- * capture path stays raw (asserted in mach.test.ts).
+ * Echo-filter tests for the known mozsystemmonitor teardown traceback. The
+ * filter only shapes what reaches the TERMINAL — the capture path stays raw
+ * (asserted in mach.test.ts).
  */
 
 import { describe, expect, it } from 'vitest';

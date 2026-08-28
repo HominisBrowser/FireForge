@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Real-filesystem lifecycle test for shared CSS fragments through
- * `applyAllComponents` (field report D2). The single most important
- * invariant: a deploy followed by an unchanged re-deploy must SKIP — if
- * the drift oracle compared the raw (un-expanded) workspace source against
- * the expanded engine copy, every fragment-using component would loop as
- * permanently drifted.
+ * `applyAllComponents`. The single most important invariant: a deploy
+ * followed by an unchanged re-deploy must SKIP — if the drift oracle
+ * compared the raw (un-expanded) workspace source against the expanded
+ * engine copy, every fragment-using component would loop as permanently
+ * drifted.
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -16,6 +16,12 @@ import { createTempProject, removeTempProject } from '../../test-utils/index.js'
 import { applyAllComponents } from '../furnace-apply.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),

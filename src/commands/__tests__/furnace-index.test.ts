@@ -387,7 +387,7 @@ describe('registerFurnace', () => {
     });
   });
 
-  it('threads --wait-lock <seconds> into the engine session lock wait budget', async () => {
+  it('threads --wait-lock <seconds> into BOTH locks the mutation takes', async () => {
     await runFurnaceCommand('apply', 'moz-button', '--wait-lock', '30');
 
     expect(withEngineSessionLock).toHaveBeenCalledWith(
@@ -396,8 +396,14 @@ describe('registerFurnace', () => {
       expect.any(Function),
       { waitLockSeconds: 30 }
     );
-    // The flag is a CLI-layer concern and must not leak into command options.
-    expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', 'moz-button', {});
+    // A furnace mutation takes the engine session lock and then
+    // `.fireforge/furnace.lock`. The budget reaching only the first is what
+    // made `--wait-lock 1800` die at the file lock's fixed 30 s having paid
+    // the entire wait, so the resolved value must reach the command options
+    // too — `runFurnaceMutation` turns it into the file lock's timeout.
+    expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', 'moz-button', {
+      waitLockSeconds: 30,
+    });
   });
 
   it('maps a bare --wait-lock to the 60-second default budget', async () => {
@@ -409,7 +415,15 @@ describe('registerFurnace', () => {
       expect.any(Function),
       { waitLockSeconds: 60 }
     );
-    expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', {});
+    expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', { waitLockSeconds: 60 });
+  });
+
+  it('leaves the furnace lock on its default budget when no --wait-lock is given', async () => {
+    await runFurnaceCommand('apply', 'moz-button');
+
+    // Absent the flag (and the env var), nothing is threaded: the file lock
+    // keeps its 30 s default and the ~1 s fail-fast path is untouched.
+    expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', 'moz-button', {});
   });
 
   it('rejects out-of-range --wait-lock values', async () => {

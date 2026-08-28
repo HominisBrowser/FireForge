@@ -58,10 +58,20 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set<string>())),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),

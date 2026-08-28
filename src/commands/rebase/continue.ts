@@ -29,7 +29,11 @@ import { runPatchLoop } from './patch-loop.js';
 /**
  * Handles `fireforge rebase --continue`.
  */
-export async function handleContinue(projectRoot: string, maxFuzz: number): Promise<void> {
+export async function handleContinue(
+  projectRoot: string,
+  maxFuzz: number,
+  waitLockSeconds?: number
+): Promise<void> {
   intro('FireForge Rebase — Continue');
 
   // A present-but-unreadable session is NOT "no session in progress" — that
@@ -52,7 +56,7 @@ export async function handleContinue(projectRoot: string, maxFuzz: number): Prom
   // there is no failed patch to resolve, but the session is still active.
   if (session.currentIndex >= session.patches.length) {
     info('All patches already applied; retrying post-apply re-export and version stamping.');
-    await runPatchLoop(projectRoot, session, paths, maxFuzz);
+    await runPatchLoop(projectRoot, session, paths, maxFuzz, waitLockSeconds);
     return;
   }
 
@@ -96,11 +100,10 @@ export async function handleContinue(projectRoot: string, maxFuzz: number): Prom
     }
 
     // Write the patch body and the manifest metadata atomically under the
-    // shared patch-directory lock. The previous lock-free sequence of
-    // updatePatch + updatePatchMetadata could interleave with a concurrent
-    // export / re-export / patch reorder / patch compact and leave the
-    // manifest disagreeing with the freshly-written patch body. Mirrors the
-    // v0.14.0 resolve.ts fix.
+    // shared patch-directory lock. A lock-free updatePatch +
+    // updatePatchMetadata sequence can interleave with a concurrent export /
+    // re-export / patch reorder / patch compact and leave the manifest
+    // disagreeing with the freshly-written patch body. Mirrors resolve.ts.
     await updatePatchAndMetadata(paths.patches, currentPatch.filename, diffContent, {
       sourceEsrVersion: session.toVersion,
       sourceVersion: session.toVersion,
@@ -117,7 +120,13 @@ export async function handleContinue(projectRoot: string, maxFuzz: number): Prom
   // clear is held until both writes land, matching the guarantee the apply
   // loop in patch-loop.ts provides.
   await runInSignalCriticalSection(`rebase-continue:${currentPatch.filename}`, async () => {
-    currentPatch.status = 'resolved';
+    // Replaced, not mutated: flipping `status` in place leaves the
+    // failure's `error` and `conflictingFiles` on a now-resolved entry, and
+    // persist that to the session file. The union makes it impossible.
+    session.patches[session.currentIndex] = {
+      filename: currentPatch.filename,
+      status: 'resolved',
+    };
     session.currentIndex++;
     await saveRebaseSession(projectRoot, session);
 
@@ -134,5 +143,5 @@ export async function handleContinue(projectRoot: string, maxFuzz: number): Prom
   success(`Resolved ${currentPatch.filename}`);
 
   // Continue applying remaining patches
-  await runPatchLoop(projectRoot, session, paths, maxFuzz);
+  await runPatchLoop(projectRoot, session, paths, maxFuzz, waitLockSeconds);
 }

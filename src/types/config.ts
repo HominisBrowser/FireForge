@@ -196,11 +196,10 @@ export interface TypecheckConfig {
    */
   projectOverrides?: Record<string, string | null>;
   /**
-   * How to report undefined free identifiers (TS2304/TS2552). These were
-   * historically suppressed as shim-gap noise, which also hid genuine
-   * missing imports until they crashed at runtime. Default
-   * `'warning'`: visible without failing the gate. `'error'` makes them
-   * blocking; `'off'` restores the historical suppression.
+   * How to report undefined free identifiers (TS2304/TS2552). Default
+   * `'warning'`: visible without failing the gate, since shim gaps produce
+   * the same diagnostic as a genuine missing import. `'error'` makes them
+   * blocking; `'off'` suppresses them.
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
 }
@@ -253,9 +252,9 @@ export interface PatchLintConfig {
   checkJs?: boolean;
   /**
    * When true with `checkJs: true`, run checkJs with `strict` and
-   * `noImplicitAny` enabled (CI-style). Default false preserves the
-   * historical loose preset. Optional {@link checkJsCompilerOptions}
-   * can relax individual strict flags (e.g. `strictNullChecks: false`).
+   * `noImplicitAny` enabled (CI-style). Default false uses the loose preset.
+   * Optional {@link checkJsCompilerOptions} can relax individual strict
+   * flags (e.g. `strictNullChecks: false`).
    */
   checkJsStrict?: boolean;
   /**
@@ -267,27 +266,26 @@ export interface PatchLintConfig {
    * Project-relative path to an additional `.d.ts` file whose contents
    * are concatenated to the built-in `FIREFOX_GLOBALS_SHIM` for the
    * `patchLint.checkJs` pass. Same semantics as `typecheck.extraShim`
-   * but scoped to the patch-hygiene flow. Default unset = current
-   * behaviour (built-in shim only).
+   * but scoped to the patch-hygiene flow. Default unset: built-in shim only.
    */
   checkJsExtraShim?: string;
   /**
    * Extend the checkJs pass to patch-owned test `.js` files
    * (`browser_*` / `test_*` / `xpcshell_*` basenames and files under a
-   * `/test/` path), each checked as its own small script-scope program
-   * with same-directory patch-owned `head*.js` helpers included (FORGE
-   * G5 — a harness global that does not exist should fail at the patch
-   * boundary where the test was authored, not in a downstream
-   * jsconfig-project run). Opt-in: it is a new failure surface with
-   * nonzero compile cost. Requires `checkJs: true`.
+   * `/test/` path), each checked as its own small script-scope program with
+   * same-directory patch-owned `head*.js` helpers included, so a call to a
+   * harness global that does not exist fails at the patch boundary where the
+   * test was authored rather than in a downstream jsconfig-project run.
+   * Opt-in: it is a new failure surface with nonzero compile cost. Requires
+   * `checkJs: true`.
    */
   checkJsTestFiles?: boolean;
   /**
    * Project-relative `.d.ts` appended to the built-in test-harness shim
    * (loose `TestUtils`/`BrowserTestUtils`/`add_task`/… declarations) for
-   * the `checkJsTestFiles` pass — a consumer-typed `TestUtils` here is
-   * what turns a call to a nonexistent harness member into a TS2339 at
-   * export time. Requires `checkJsTestFiles: true`.
+   * the `checkJsTestFiles` pass. A consumer-typed `TestUtils` here is what
+   * turns a call to a nonexistent harness member into a TS2339 at export
+   * time. Requires `checkJsTestFiles: true`.
    */
   checkJsTestShim?: string;
   /** File paths exempt from the raw-color-value check (exact or basename match) */
@@ -309,17 +307,22 @@ export interface PatchLintConfig {
   chromeScriptJsDoc?: PatchLintSeverityGate;
   /**
    * How the checkJs pass reports undefined free identifiers
-   * (TS2304/TS2552). Same semantics as `typecheck.undefinedIdentifiers`
-   *; the two flows share the suppression policy so a patch
+   * (TS2304/TS2552). Same semantics as `typecheck.undefinedIdentifiers`;
+   * the two flows share the suppression policy so a patch
    * cannot pass one and fail the other. Default: 'warning'.
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
 }
 
 /**
- * Build mode for mach.
+ * Build modes for mach.
+ *
+ * Derived from the list so the runtime allowlist cannot drift from the type.
  */
-export type BuildMode = 'dev' | 'debug' | 'release';
+export const BUILD_MODES = ['dev', 'debug', 'release'] as const;
+
+/** Build mode for mach. */
+export type BuildMode = (typeof BUILD_MODES)[number];
 
 /**
  * Runtime state stored in .fireforge/state.json.

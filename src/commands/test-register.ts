@@ -38,7 +38,10 @@ const TEST_HELP_TEXT = [
   '--doctor) ends with exactly one raw stdout line',
   '  FIREFORGE-VERDICT: PASS|FAIL [reason=crash|test-failures|',
   '  no-tests|preflight|inconclusive|lock-timeout] [checks=<n>]',
-  '  [unexpected=<n>] [shards=<p>/<t>] [(<note>)]',
+  '  [unexpected=<n>] [shards=<p>/<t>] [(<note>)] [log=<path>]',
+  "log=<path> names this run's complete output, written to",
+  '.fireforge/logs/ as the run streams, so a piped or truncated run',
+  'still leaves a re-readable artifact.',
   'The status follows the harness classifier, not the raw exit code:',
   'a crash-classified run says FAIL reason=crash even at exit 0, and',
   'a green-summary-override pass says PASS despite a non-zero mach',
@@ -68,6 +71,10 @@ export function registerTest(
     .command('test [paths...]')
     .description('Run tests via mach test')
     .option('--headless', 'Run tests in headless mode')
+    .option(
+      '--full-output',
+      "Pass mozbuild's full verbosity through for the TEST phase. mozbuild quiets terminal output to warnings and errors when it detects a coding agent, which removes TEST_START and console INFO — the lines a hang or stall diagnosis needs. This unsets that detection for test dispatches only; the build phase stays quiet."
+    )
     .option('--build', 'Run incremental UI build before testing')
     .option(
       '--build-only',
@@ -76,6 +83,10 @@ export function registerTest(
     .option(
       '--extend-coverage',
       'With --build/--build-only and explicit paths, union those paths into the recorded test-packaging coverage instead of replacing it, so an earlier scoped build stays covered. Refused when the build anchor moved (engine HEAD, mozconfig, or a previously fingerprinted packageable file changed).'
+    )
+    .option(
+      '--refuse-unexported-drift',
+      'With --build/--build-only, refuse (instead of warning) when the pre-test build would overwrite engine content recorded in neither a patch body nor the pristine baseline — the same belt as "fireforge build --refuse-unexported-drift", armable from the scripted "test --build" shape the hazard actually shows up in'
     )
     .option('--auto', 'Forward mach test --auto. Valid only when no explicit paths are provided.')
     .option(
@@ -144,9 +155,11 @@ export function registerTest(
         paths: string[],
         options: {
           headless?: boolean;
+          fullOutput?: boolean;
           build?: boolean;
           buildOnly?: boolean;
           extendCoverage?: boolean;
+          refuseUnexportedDrift?: boolean;
           auto?: boolean;
           allowStaleBuild?: boolean;
           allowStaleComponents?: boolean;

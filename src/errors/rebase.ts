@@ -44,11 +44,11 @@ export class NoRebaseSessionError extends RebaseError {
 /**
  * Thrown when the session file exists but cannot be used.
  *
- * This case had no error of its own before 0.41.0 and was reported as
+ * Without an error of its own, this case is reported as
  * {@link NoRebaseSessionError} by `--continue`/`--abort` while `rebase`
- * reported {@link RebaseSessionExistsError} — a closed cycle in which each
- * command pointed at the other two. The message names the file so an operator
- * always has a way out, and `--abort` now clears a corrupt session rather than
+ * reports {@link RebaseSessionExistsError} — a closed cycle in which each
+ * command points at the other two. The message names the file so an operator
+ * always has a way out, and `--abort` clears a corrupt session rather than
  * refusing to run against one.
  */
 export class CorruptRebaseSessionError extends RebaseError {

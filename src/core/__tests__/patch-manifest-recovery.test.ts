@@ -91,7 +91,12 @@ describe('patch manifest recovery paths', () => {
       'patches.json': '{"version": 1, "patches": [\n',
     });
 
-    const rebuilt = await rebuildPatchesManifest(patchesDir, '140.9.0esr');
+    // An unparseable manifest is the one case where nothing can be carried
+    // forward, so the rebuild refuses without an explicit opt-in. This test
+    // is about what the reinvention produces, so it opts in.
+    const rebuilt = await rebuildPatchesManifest(patchesDir, '140.9.0esr', {
+      allowMetadataLoss: true,
+    });
     const loaded = await loadPatchesManifest(patchesDir);
 
     expect(rebuilt.manifest).toEqual(loaded);

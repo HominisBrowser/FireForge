@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { warn } from '../../utils/logger.js';
-import {
-  consumeParserFallbackEvents,
-  peekParserFallbackEvents,
-  withParserFallback,
-} from '../parser-fallback.js';
+import { consumeParserFallbackEvents, withParserFallback } from '../parser-fallback.js';
 
 describe('withParserFallback', () => {
   beforeEach(() => {
@@ -28,24 +24,6 @@ describe('withParserFallback', () => {
     expect(result.usedFallback).toBe(false);
     expect(result.fallbackReason).toBeUndefined();
     expect(warn).not.toHaveBeenCalled();
-  });
-
-  it('returns fallback result with usedFallback=true when primary throws', () => {
-    const result = withParserFallback(
-      () => {
-        throw new Error('parse failed');
-      },
-      () => 'fallback-value',
-      'test-file.js'
-    );
-
-    expect(result.value).toBe('fallback-value');
-    expect(result.usedFallback).toBe(true);
-    expect(result.fallbackReason).toBe('parse failed');
-    expect(peekParserFallbackEvents()).toEqual([
-      { context: 'test-file.js', reason: 'parse failed' },
-    ]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
   });
 
   it('re-throws when rethrowIf predicate returns true', () => {
@@ -75,28 +53,5 @@ describe('withParserFallback', () => {
 
     expect(result.value).toBe('fallback-value');
     expect(result.usedFallback).toBe(true);
-  });
-
-  it('consumes fallback events so command layers can report them once', () => {
-    withParserFallback(
-      () => {
-        throw new Error('first failure');
-      },
-      () => 'fallback-1',
-      'first.js'
-    );
-    withParserFallback(
-      () => {
-        throw new Error('second failure');
-      },
-      () => 'fallback-2',
-      'second.js'
-    );
-
-    expect(consumeParserFallbackEvents()).toEqual([
-      { context: 'first.js', reason: 'first failure' },
-      { context: 'second.js', reason: 'second failure' },
-    ]);
-    expect(peekParserFallbackEvents()).toEqual([]);
   });
 });

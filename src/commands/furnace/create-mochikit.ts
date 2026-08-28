@@ -3,13 +3,12 @@
  * MochiKit (chrome://mochikit) test-harness scaffolder for
  * `fireforge furnace create --test-style=mochikit`.
  *
- * Motivation: browser-chrome mochitests require a `tabbrowser` to exist in
- * the top-level chrome document. Forks with a bespoke chrome document
- * (e.g. `mybrowser.xhtml`) that deliberately omits tabbrowser cannot run
- * browser-chrome tests today. MochiKit tests load the component module
- * directly via `chrome://global/` and assert against `customElements`, so
- * they work against any fork that registers the upstream toolkit test
- * manifest tree — including those without a tabbrowser.
+ * Browser-chrome mochitests require a `tabbrowser` in the top-level chrome
+ * document, so forks with a bespoke chrome document that deliberately omits
+ * one cannot run them. MochiKit tests load the component module directly via
+ * `chrome://global/` and assert against `customElements`, so they work
+ * against any fork that registers the upstream toolkit test manifest tree —
+ * including those without a tabbrowser.
  */
 
 import { join } from 'node:path';
@@ -61,8 +60,8 @@ export async function scaffoldMochikitTestFiles(
   const testFileName = mochikitTestFileName(componentName);
   const testFilePath = join(testDir, testFileName);
   if (await pathExists(testFilePath)) {
-    // Never clobber an existing test implementation (0.34.0 collision
-    // safety, matching the browser-chrome and xpcshell scaffolds).
+    // Never clobber an existing test implementation, matching the
+    // browser-chrome and xpcshell scaffolds.
     warn(
       `toolkit/content/tests/widgets/${testFileName} already exists — keeping the existing file.`
     );

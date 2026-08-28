@@ -121,18 +121,31 @@ export class MozconfigError extends BuildError {
  * safely choose one.
  */
 export class AmbiguousBuildArtifactsError extends BuildError {
-  constructor(public readonly objDirs: string[]) {
+  constructor(
+    public readonly objDirs: string[],
+    /**
+     * Objdir the active mozconfig declared, when one was declared and did
+     * not resolve to exactly one candidate. Reported because a declaration
+     * that names something the scan cannot see is the diagnosis, not noise.
+     */
+    public readonly declaredObjDir?: string
+  ) {
     super(`Multiple build artifact directories found: ${objDirs.join(', ')}`);
   }
 
   override get userMessage(): string {
+    const declared =
+      this.declaredObjDir !== undefined
+        ? `The mozconfig declares MOZ_OBJDIR=${this.declaredObjDir}, which does not match exactly one of these candidates — so it could not settle the choice.\n\n`
+        : '';
     return (
       'Build Error: Multiple build artifact directories were found.\n\n' +
       `Candidates: ${this.objDirs.join(', ')}\n\n` +
+      declared +
       'FireForge will not guess which build output to use.\n\n' +
       'To fix this:\n' +
       '  1. Remove stale obj-* directories you no longer need\n' +
-      '  2. Keep only the active build output directory\n' +
+      '  2. Keep only the active build output directory, or name it with MOZ_OBJDIR in the mozconfig\n' +
       '  3. Run the command again'
     );
   }

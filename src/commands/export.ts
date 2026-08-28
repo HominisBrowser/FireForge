@@ -5,11 +5,12 @@ import { join } from 'node:path';
 import { Command, Option } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import { appendHistory } from '../core/destructive.js';
+import { appendHistory, stdioIsInteractive } from '../core/destructive.js';
+import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
-import { getStatusWithCodes, isGitRepository } from '../core/git.js';
+import { getStatusWithCodes } from '../core/git.js';
 import { generateBinaryFilePatch, generateFullFilePatch } from '../core/git-diff.js';
 import { isBinaryFile } from '../core/git-file-ops.js';
 import {
@@ -66,11 +67,10 @@ async function collectExportFiles(
 
   // Accept both repo-root-relative (`engine/browser/...`) and engine-relative
   // (`browser/...`) paths for every input, matching `register`/`test`/`lint`.
-  // Previously, an `engine/`-prefixed path fell through to
-  // `File "engine/..." has no changes to export.` because the status lookup
-  // sees paths relative to `paths.engine` and the explicit prefix double-
-  // rooted the candidate. `stripEnginePrefix` makes that user-facing form
-  // a no-op for the lookup pipeline.
+  // Without the strip, an `engine/`-prefixed path falls through to
+  // `File "engine/..." has no changes to export.`: the status lookup sees
+  // paths relative to `paths.engine`, so the explicit prefix double-roots the
+  // candidate.
   for (const rawInputPath of files) {
     const inputPath = stripEnginePrefix(rawInputPath);
     const fullInputPath = join(paths.engine, inputPath);
@@ -129,13 +129,14 @@ async function collectExportFiles(
 }
 
 /**
- * Auto-excludes directory-derived files already owned by OTHER patches
- * (0.34.0 field report): a directory export used to plan files owned by
- * earlier patches into the new patch, and the duplicate-new-file-creation
- * refusal surfaced only at placement lint, suggesting --force-unsafe —
- * the wrong tool for "leave that file with its owner". Explicitly named
- * files are never excluded (the overlap gates still confront the operator
- * with those). Prints one notice per exclusion.
+ * Auto-excludes directory-derived files already owned by OTHER patches.
+ *
+ * A directory export otherwise plans files owned by earlier patches into the
+ * new patch, and the duplicate-new-file-creation refusal surfaces only at
+ * placement lint, suggesting `--force-unsafe` — the wrong tool for "leave
+ * that file with its owner". Explicitly named files are never excluded (the
+ * overlap gates still confront the operator with those). Prints one notice
+ * per exclusion.
  */
 async function excludeFilesOwnedByOtherPatches(
   patchesDir: string,
@@ -237,17 +238,7 @@ async function prepareExport(
 
   const paths = getProjectPaths(projectRoot);
 
-  // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
-
-  // Check if it's a git repository
-  if (!(await isGitRepository(paths.engine))) {
-    throw new GeneralError(
-      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
-    );
-  }
+  await assertEngineGitReady(paths.engine);
 
   const collected = await collectExportFiles(paths, files);
   let allFiles = await excludeFilesOwnedByOtherPatches(paths.patches, collected);
@@ -283,10 +274,10 @@ async function prepareExport(
     );
   }
 
-  // Stale-furnace-source gate (0.37.0 item 4): the export captures deployed
-  // engine copies; refuse (or warn under --allow-stale-furnace) when a
-  // covered component's source changed since the last furnace apply. Runs
-  // after --exclude-furnace so excluded furnace files never trigger it.
+  // Stale-furnace-source gate: the export captures deployed engine copies,
+  // so refuse (or warn under --allow-stale-furnace) when a covered
+  // component's source changed since the last furnace apply. Runs after
+  // --exclude-furnace so excluded furnace files never trigger it.
   await enforceFreshFurnaceSources(
     projectRoot,
     allFiles,
@@ -314,7 +305,7 @@ async function prepareExport(
   }
 
   const config = await loadConfig(projectRoot);
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
 
   // Auto-fix missing license headers on new files (interactive only;
   // report-only under --dry-run so the preview never mutates engine/)

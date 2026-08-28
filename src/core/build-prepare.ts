@@ -88,8 +88,8 @@ function extractMachConfigureError(result: MachCommandResult): string {
  * Describes an exit code in the shell's 128+N signal convention. Truncated
  * configure/build logs with a signal-shaped exit (e.g. 144 = 128+16, SIGURG
  * on macOS) are environmental interruptions, not compiler failures — naming
- * that in the failure text saves the operator a fruitless log hunt
- *. Returns undefined for codes <= 128 (regular failures) and
+ * that in the failure text saves the operator a fruitless log hunt.
+ * Returns undefined for codes <= 128 (regular failures) and
  * for codes past the conventional signal range, so callers append nothing.
  */
 export function describeSignalShapedExit(exitCode: number): string | undefined {
@@ -144,10 +144,10 @@ export function isBackendInvalidatingFile(path: string): boolean {
  *
  * Every write `prepareBuildEnvironment` performs — branding, Furnace
  * components, `mozconfig` — rewrites engine files from a FireForge-owned
- * source. Content recorded in neither a patch body nor the pristine
- * baseline is destroyed by that, and on a multi-session checkout the
- * destruction is what lets a later re-export capture a half-reverted
- * hybrid that every gate then passes.
+ * source. Content recorded in neither a patch body nor the pristine baseline
+ * is destroyed by that, and on a multi-session checkout the destruction is
+ * what lets a later re-export capture a half-reverted hybrid that every gate
+ * then passes.
  *
  * @param projectRoot - Project root
  * @param config - Loaded FireForge config
@@ -263,9 +263,8 @@ export async function prepareBuildEnvironment(
   // project license through so `buildConfigureScriptContent` /
   // `buildBrandPropertiesContent` / `buildBrandFtlContent` stamp the
   // generated files with a matching SPDX header — otherwise `patch-lint`
-  // flags them with `missing-license-header` on every subsequent export
-  // when the project is not MPL-2.0 (the eval finding: a 0BSD-licensed
-  // fork's first export failed `lint` on its own generated branding).
+  // flags them with `missing-license-header` on every subsequent export when
+  // the project is not MPL-2.0.
   const brandingConfig = {
     name: config.name,
     vendor: config.vendor,

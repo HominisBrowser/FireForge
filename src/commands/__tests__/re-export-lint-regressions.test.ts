@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Unit tests for `computeProjectedLintRegressions`, the baseline-vs-projected
- * diff helper used by `re-export --files` to decide which projected errors
- * are new regressions introduced by a shrink (vs. pre-existing errors
- * elsewhere in the queue that should not block).
+ * diff helper `re-export --files` uses to decide which projected errors are
+ * new regressions introduced by a shrink, versus pre-existing errors
+ * elsewhere in the queue that should not block.
  *
- * The helper now prefers `PatchLintIssue.fingerprint` when present, so
- * rules like cross-patch forward-import can ignore harmless message drift
- * without collapsing genuinely different findings in the same source file.
- * When no fingerprint exists the helper falls back to the full
- * (check|file|message) tuple.
+ * The helper prefers `PatchLintIssue.fingerprint` when present, so rules like
+ * cross-patch forward-import can ignore harmless message drift without
+ * collapsing genuinely different findings in the same source file. With no
+ * fingerprint it falls back to the full (check|file|message) tuple.
  */
 
 import { describe, expect, it } from 'vitest';
 
-import { computeProjectedLintRegressions } from '../../core/lint-projection.js';
+import { computeProjectedLintRegressions } from '../../core/patch-lint-projection.js';
 import type { PatchLintIssue } from '../../types/commands/index.js';
 
 function issue(

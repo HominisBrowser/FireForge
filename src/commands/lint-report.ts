@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Machine-readable per-patch lint report (`lint --per-patch --report
- * <path>`, + G10). One mechanism serves both observability
- * gaps: consumers get each patch's size metrics against the SAME
- * thresholds the size rules fire on (no more mirroring
- * `countNonBinaryDiffLines`), and lintIgnore-suppressed issues stay
- * visible with their measurements instead of vanishing.
+ * <path>`). One mechanism serves two observability gaps: consumers get each
+ * patch's size metrics against the SAME thresholds the size rules fire on,
+ * instead of mirroring `countNonBinaryDiffLines`, and lintIgnore-suppressed
+ * issues stay visible with their measurements rather than vanishing.
  *
- * Helper module consumed by lint-per-patch.ts; no registrar is exported
- * and none is wanted.
+ * Helper module consumed by lint-per-patch.ts; no registrar is exported and
+ * none is wanted.
  */
 import {
   getPatchSizeThresholds,

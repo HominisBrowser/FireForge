@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { confirm, multiselect, select } from '@clack/prompts';
 
-import { getProjectPaths } from '../../core/config.js';
+import { stdioIsInteractive } from '../../core/destructive.js';
 import {
   ensureFurnaceConfig,
   furnaceConfigExists,
@@ -9,16 +9,10 @@ import {
   loadFurnaceConfig,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
-import {
-  createRollbackJournal,
-  restoreRollbackJournalOrThrow,
-  snapshotFile,
-} from '../../core/furnace-rollback.js';
+import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
+import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
+import { createRollbackJournal, snapshotFile } from '../../core/furnace-rollback.js';
 import { DEEP_SCAN_PATHS, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
-import { FurnaceError } from '../../errors/furnace.js';
-import { toError } from '../../utils/errors.js';
-import { pathExists } from '../../utils/fs.js';
 import {
   cancel,
   info,
@@ -100,16 +94,15 @@ async function promptAddComponents(
 /**
  * Persists discovered component tag names into the `stock` section of
  * furnace.json. Shared by the interactive confirm flow and the
- * non-interactive `--track` flag (0.34.0 field report: scan printed a full
- * inventory but persisted nothing and said nothing about where the
- * inventory goes).
+ * non-interactive `--track` flag — without it, scan prints a full inventory
+ * but persists nothing and says nothing about where the inventory goes.
  *
  * Wraps the furnace.json mutation in the standard furnace lifecycle so the
  * write goes through the furnace-wide lock and is visible to the global
  * SIGINT/SIGTERM rollback pathway. The journal snapshots furnace.json
  * *before* `ensureFurnaceConfig` runs, so a failed run after the file is
- * auto-created cleans up after itself instead of leaving an unwanted
- * default config behind.
+ * auto-created cleans up after itself instead of leaving an unwanted default
+ * config behind.
  */
 async function persistStockComponents(projectRoot: string, names: string[]): Promise<void> {
   await runFurnaceMutation(projectRoot, 'scan-rollback', async (ctx) => {
@@ -132,29 +125,19 @@ async function persistStockComponents(projectRoot: string, names: string[]): Pro
       config.stock.push(...toAdd);
       await writeFurnaceConfig(projectRoot, config);
     } catch (error: unknown) {
-      // This body owns its rollback end to end, so tell the lifecycle wrapper
-      // not to restore the same journal again on the way out.
-      ctx.markRolledBack();
-      try {
-        await restoreRollbackJournalOrThrow(journal, 'Failed to update furnace.json during scan');
-      } catch (rollbackError) {
-        await recordFurnaceRollbackFailure(
-          projectRoot,
-          'scan-rollback',
-          `furnace.json update during scan: ${toError(rollbackError).message}`
-        );
-        throw rollbackError;
-      }
-      throw error;
+      return await completeJournalRollback(ctx, journal, error, {
+        projectRoot: projectRoot,
+        operation: 'scan-rollback',
+        failureMessage: 'Failed to update furnace.json during scan',
+        subject: `furnace.json update during scan`,
+      });
     }
   });
 }
 
 /**
- * Renders a component's discovered capabilities as a display suffix.
- * Written twice before 0.41.0 — once for the interactive multiselect labels
- * and once for the report rows — which is part of what pinned
- * `furnaceScanCommand` at complexity 30/30.
+ * Renders a component's discovered capabilities as a display suffix. Shared
+ * by the interactive multiselect labels and the report rows.
  */
 function formatComponentFeatures(component: {
   hasCSS: boolean;
@@ -179,11 +162,7 @@ export async function furnaceScanCommand(
 ): Promise<void> {
   intro(options.deep ? 'Furnace Scan (deep)' : 'Furnace Scan');
 
-  const paths = getProjectPaths(projectRoot);
-
-  if (!(await pathExists(paths.engine))) {
-    throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
-  }
+  const { paths } = await assertFurnaceEngineReady(projectRoot);
 
   // Load scan paths from config if available, merge with deep paths if requested
   const extraScanPaths: string[] = [];
@@ -225,8 +204,7 @@ export async function furnaceScanCommand(
     }
   }
 
-  // Partition once and reuse: the tracked/untracked split was computed twice
-  // (imperatively here, declaratively again for --track) before 0.41.0.
+  // Partition once and reuse across the report and the `--track` path.
   const untrackedComponentList = components.filter((c) => !tracked.has(c.tagName));
   const untrackedCount = untrackedComponentList.length;
   const trackedCount = components.length - untrackedCount;
@@ -260,7 +238,7 @@ export async function furnaceScanCommand(
     return;
   }
 
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
 
   if (isInteractive && untrackedCount > 0) {
     await promptAddComponents(components, tracked, projectRoot);

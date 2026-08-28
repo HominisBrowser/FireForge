@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Spawned-CLI regression for the `status --json --fail-on` refusal path
- *. Both halves of the defect are only visible across a real
- * process boundary with a real pipe:
+ * Spawned-CLI regression for the `status --json --fail-on` refusal path.
+ * Both halves of the defect are only visible across a real process boundary
+ * with a real pipe:
  *
- * - a >64 KiB JSON payload written to a PIPED stdout was truncated at
- *   exactly the kernel pipe buffer when the refusal exited non-zero
- *   (`process.exit` before Node's async stdout drained — a file redirect
- *   or an exit-0 run delivered everything);
- * - the styled refusal line landed on stdout AFTER the JSON instead of
- *   the stderr the 0.40.0 changelog promised.
+ * - a >64 KiB JSON payload written to a PIPED stdout is truncated at exactly
+ *   the kernel pipe buffer when the refusal exits non-zero (`process.exit`
+ *   before Node's async stdout drains — a file redirect or an exit-0 run
+ *   delivers everything);
+ * - the styled refusal line must land on stderr, not on stdout after the
+ *   JSON.
  *
  * The slow reader is a real shell pipeline (`… | { sleep; cat; }`): while
- * `sleep` runs, NOTHING consumes the pipe, so the payload genuinely backs
- * up in the 64 KiB kernel buffer. (A merely-paused Node stream is not a
- * slow reader — the parent process eagerly buffers the whole payload
- * internally and defeats the backpressure this test depends on.)
+ * `sleep` runs, NOTHING consumes the pipe, so the payload genuinely backs up
+ * in the 64 KiB kernel buffer. A merely-paused Node stream is not a slow
+ * reader — the parent process eagerly buffers the whole payload internally
+ * and defeats the backpressure this test depends on.
  */
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
@@ -65,11 +65,11 @@ describe('status --json --fail-on refusal through a real pipe', () => {
   });
 
   it('delivers the complete JSON on stdout and the refusal on stderr at exit 1', async () => {
-    // `set -o pipefail` makes the pipeline's exit code fireforge's own
-    // (not cat's 0); the pipeline exit code is what the consumer's gate
-    // keys on. During the sleep the pipe has NO reader at all, so the
-    // pre-fix CLI exits before Node flushes past the kernel buffer and
-    // stdout truncates at exactly 65 536 bytes.
+    // `set -o pipefail` makes the pipeline's exit code fireforge's own (not
+    // cat's 0); the pipeline exit code is what the consumer's gate keys on.
+    // During the sleep the pipe has NO reader at all, so a CLI that exits
+    // before Node flushes past the kernel buffer truncates stdout at exactly
+    // 65 536 bytes.
     const pipeline = [
       'set -o pipefail',
       `"${process.execPath}" "${tsxCli}" "${binEntry}" status --json --fail-on unmanaged | { sleep 0.5; cat; }`,

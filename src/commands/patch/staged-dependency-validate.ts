@@ -2,14 +2,14 @@
 /**
  * Shape validation for `patch staged-dependency --add`.
  *
- * `--creates`/`--file` take engine-relative FILE paths and `--owner`
- * takes a patch FILENAME, but all three were accepted as arbitrary
- * strings — a `--creates <patch-name>` mixup produced a declaration
- * nothing could ever discharge, surfacing only later as a
- * `staged-dependency-unused` warning. Refusals here fire only on a clear
- * patch-name shape (slash-free values that end in `.patch` or match a
- * queue patch filename/stem): legitimate engine paths always contain a
- * `/`, so deep paths can never false-positive.
+ * `--creates`/`--file` take engine-relative FILE paths and `--owner` takes a
+ * patch FILENAME. Accepting all three as arbitrary strings lets a
+ * `--creates <patch-name>` mixup produce a declaration nothing can ever
+ * discharge, surfacing only later as a `staged-dependency-unused` warning.
+ * Refusals here fire only on a clear patch-name shape (slash-free values
+ * that end in `.patch` or match a queue patch filename/stem): legitimate
+ * engine paths always contain a `/`, so deep paths can never
+ * false-positive.
  */
 import { InvalidArgumentError } from '../../errors/base.js';
 import type { PatchMetadata } from '../../types/commands/index.js';

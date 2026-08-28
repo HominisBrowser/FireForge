@@ -3,33 +3,25 @@
  * Registration-aware artifact resolution for the post-build dist-tree audit.
  *
  * The basename-plus-similarity heuristic in `build-audit-resolve.ts` cannot
- * distinguish two unrelated files that share a source basename. Motivating
- * case: one fork registers `content/mybrowser.js` in `browser/base/jar.mn`
- * (packaged under `chrome/browser/content/browser/mybrowser.js`) while an
- * unrelated patch registers a `mybrowser.js` pref file under
- * `browser/defaults/preferences/`. The basename walker surfaces both
- * candidates, `scoreCandidate` awards them an equal trailing-overlap score
- * (basename only, no meaningful mid-path match), and whichever the
- * directory walk hits first wins — frequently the wrong one.
+ * distinguish two unrelated files that share a source basename: one fork
+ * registers `content/mybrowser.js` in `browser/base/jar.mn` (packaged under
+ * `chrome/browser/content/browser/mybrowser.js`) while an unrelated patch
+ * registers a `mybrowser.js` pref file under `browser/defaults/preferences/`.
+ * The basename walker surfaces both, `scoreCandidate` awards them an equal
+ * trailing-overlap score, and whichever the directory walk hits first wins.
  *
- * This module anchors resolution to the `(source)` reference inside
- * `jar.mn`. For a source under audit we walk its ancestor directories for
- * an owning `jar.mn`, find the entry whose `(source)` resolves to our
- * path, and expose both the target path recorded in the entry and the
- * manifest that owns it. Callers in `build-audit.ts` prefer candidates
- * whose absolute dist-tree path ends with the registered target, and
- * report an unambiguous "registered but not packaged" miss when no such
- * candidate exists — rather than falling through to the heuristic which
- * would pick an unrelated same-basename file.
+ * This module anchors resolution to the `(source)` reference inside `jar.mn`.
+ * For a source under audit it walks the ancestor directories for an owning
+ * `jar.mn`, finds the entry whose `(source)` resolves to that path, and
+ * exposes both the registered target and the manifest that owns it. Callers
+ * prefer candidates whose dist-tree path ends with the registered target and
+ * report an unambiguous "registered but not packaged" miss when none exists.
  *
- * Fallback semantics: when no jar.mn registration is found, the caller
- * is expected to use the similarity heuristic. Registration wins when it
- * exists; the heuristic fills the gap for sources registered through
- * moz.build (`FINAL_TARGET_FILES`, `JS_PREFERENCE_FILES`, etc.) or
- * `package-manifest.in` entries, which this module intentionally does
- * not parse — supporting every Firefox registration surface would bloat
- * the audit, and the heuristic's remaining weak case (unrelated same-
- * basename hits) is surfaced to the operator in the warning copy.
+ * When no jar.mn registration is found, the caller falls back to the
+ * similarity heuristic — which covers sources registered through moz.build
+ * (`FINAL_TARGET_FILES`, `JS_PREFERENCE_FILES`) or `package-manifest.in`.
+ * Parsing every Firefox registration surface would bloat the audit, and the
+ * heuristic's weak case is surfaced to the operator in the warning copy.
  */
 
 import { basename, dirname, join, relative, sep } from 'node:path';

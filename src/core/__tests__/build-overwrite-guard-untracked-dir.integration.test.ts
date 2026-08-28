@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Git reports a wholly untracked directory as a single `?? dir/` entry
- * instead of listing the files under it. The guard passed raw status
- * entries to the classifier, a directory has no content to match against
- * a patch body or the pristine baseline, and so every untracked branding
- * subdirectory classified `unmanaged` and got named on every build —
- * while `fireforge status --unmanaged` (which expands) called the same
- * tree clean. `--refuse-unexported-drift` therefore hard-failed every
- * scripted build on such a checkout.
+ * instead of listing the files under it. Passing raw status entries to the
+ * classifier gives it a directory with no content to match against a patch
+ * body or the pristine baseline, so every untracked branding subdirectory
+ * classifies `unmanaged` and gets named on every build — while
+ * `fireforge status --unmanaged` (which expands) calls the same tree clean.
+ * `--refuse-unexported-drift` then hard-fails every scripted build on such a
+ * checkout.
  *
- * These tests run against a REAL git repository on purpose: git's
- * collapsing is the trigger, and it only happens when the WHOLE directory
- * is untracked. A fixture whose untracked files sit beside a tracked
- * sibling produces per-file entries, classifies fine, and never exercises
- * the path that shipped broken.
+ * These tests run against a REAL git repository on purpose: git's collapsing
+ * is the trigger, and it only happens when the WHOLE directory is untracked.
+ * A fixture whose untracked files sit beside a tracked sibling produces
+ * per-file entries and never exercises the path.
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

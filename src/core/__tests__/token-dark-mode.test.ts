@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Unit tests for the dark-mode insertion helpers exposed by
- * `src/core/token-dark-mode.ts`. The 2026-04-21 eval (Finding #7)
- * reproduced a scenario where `token add --mode override` landed the
- * dark declaration outside the nested `:root { }` inside the
- * `@media (prefers-color-scheme: dark)` block. These tests pin the
- * post-fix contract: the insertion index must fall between the
- * nested `:root {` and its matching `}`, not between that `}` and the
- * outer `@media {` close.
+ * Unit tests for the dark-mode insertion helpers in
+ * `src/core/token-dark-mode.ts`. `token add --mode override` must land the
+ * dark declaration between the nested `:root {` and its matching `}` inside
+ * the `@media (prefers-color-scheme: dark)` block — not between that `}` and
+ * the outer `@media` close, which puts the declaration outside any rule.
  */
 import { describe, expect, it } from 'vitest';
 

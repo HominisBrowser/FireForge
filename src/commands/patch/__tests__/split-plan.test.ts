@@ -8,7 +8,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { PatchMetadata, PatchStagedForwardImport } from '../../../types/commands/index.js';
+import { makePatch } from '../../../test-utils/index.js';
+import type { PatchStagedForwardImport } from '../../../types/commands/index.js';
 import type { PlacementPlan } from '../../export-flow.js';
 import {
   buildSplitSummary,
@@ -16,20 +17,6 @@ import {
   rewriteSplitOwners,
   type SplitPlan,
 } from '../split-plan.js';
-
-function makePatch(filename: string, overrides: Partial<PatchMetadata> = {}): PatchMetadata {
-  return {
-    filename,
-    order: 1,
-    category: 'infra',
-    name: 'p',
-    description: '',
-    createdAt: '2025-01-01T00:00:00.000Z',
-    sourceEsrVersion: '140.9.0esr',
-    filesAffected: [],
-    ...overrides,
-  };
-}
 
 const DECL: PatchStagedForwardImport = {
   file: 'a/Importer.sys.mjs',

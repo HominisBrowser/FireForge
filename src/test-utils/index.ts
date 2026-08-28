@@ -2,10 +2,11 @@
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { GitStatusEntry } from '../core/git-base.js';
+import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import type { ProjectPaths } from '../types/config.js';
 
@@ -22,6 +23,35 @@ export const DEFAULT_CONFIG: FireForgeConfig = {
   },
   license: 'EUPL-1.2',
 };
+
+/**
+ * Renders a POSIX-written fixture path in the host's native separator form.
+ *
+ * Assertions compare against values the code built with `join`/`resolve`, so a
+ * literal `'/project/engine'` only matches on POSIX — on Windows the code
+ * produces `\project\engine` and the expectation is the only thing that is
+ * wrong. Wrapping the literal keeps it readable while making the comparison
+ * separator-correct on every platform. Only ever wrap the EXPECTED side: a
+ * value derived from the code under test must never be laundered through this.
+ */
+export function nativePath(posixPath: string): string {
+  return posixPath.replace(/\//g, sep);
+}
+
+/**
+ * Renders a POSIX-written *absolute* fixture path the way the code under test
+ * renders it after a `resolve`.
+ *
+ * {@link nativePath} only swaps separators, which is not enough for a value
+ * the code passed through `resolve`: on Windows `resolve('/project/x')` also
+ * prefixes the current drive, so the expectation has to be `D:\\project\\x`
+ * rather than `\\project\\x`. Use this wrapper whenever the asserted value
+ * came out of `resolve`; {@link nativePath} stays correct for values built with
+ * plain `join`. Only ever wrap the EXPECTED side.
+ */
+export function nativeAbsPath(posixPath: string): string {
+  return resolve(posixPath);
+}
 
 /** Creates a temporary project root for integration-style tests. */
 export async function createTempProject(prefix = 'fireforge-test-'): Promise<string> {
@@ -107,6 +137,37 @@ export async function runGit(cwd: string, args: string[]): Promise<string> {
   return stdout;
 }
 
+/**
+ * Builds a `PatchMetadata` fixture.
+ *
+ * @param filename - Patch filename, e.g. `001-ui-toolbar.patch`
+ * @param overrides - Fields to override on the default metadata
+ * @returns A complete `PatchMetadata`
+ */
+export function makePatch(filename: string, overrides: Partial<PatchMetadata> = {}): PatchMetadata {
+  return {
+    filename,
+    order: Number.parseInt(filename.split('-')[0] ?? '0', 10) || 1,
+    category: 'infra',
+    name: 'p',
+    description: '',
+    createdAt: '2025-01-01T00:00:00.000Z',
+    sourceEsrVersion: '140.9.0esr',
+    filesAffected: [],
+    ...overrides,
+  };
+}
+
+/**
+ * Builds a `PatchesManifest` fixture around the supplied entries.
+ *
+ * @param patches - Patch metadata entries, in queue order
+ * @returns A version-1 manifest
+ */
+export function makeManifest(patches: PatchMetadata[] = []): PatchesManifest {
+  return { version: 1, patches };
+}
+
 /** Builds a synthetic ProjectPaths object rooted at the supplied directory. */
 export function makeProjectPaths(root = '/project'): ProjectPaths {
   return {
@@ -145,6 +206,11 @@ export async function initCommittedRepo(
   await runGit(repoDir, ['init']);
   await runGit(repoDir, ['config', 'user.email', 'fireforge@example.test']);
   await runGit(repoDir, ['config', 'user.name', 'FireForge Tests']);
+  // Pin line endings: on a Windows host the global `core.autocrlf=true`
+  // rewrites LF to CRLF on checkout, which changes the blob hashes and the
+  // exact bytes every patch round-trip asserts on.
+  await runGit(repoDir, ['config', 'core.autocrlf', 'false']);
+  await runGit(repoDir, ['config', 'core.eol', 'lf']);
   await runGit(repoDir, ['add', '-A']);
   await runGit(repoDir, ['commit', '-m', 'initial']);
 }

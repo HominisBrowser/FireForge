@@ -2,11 +2,10 @@
 /**
  * Real-fs integration test for `withConfigFileLock`.
  *
- * Pins the 2026-04-21 eval scenario: two concurrent `fireforge config`
- * writes to the same `fireforge.json` can silently clobber each other
- * when the read-modify-write sequence is not serialised behind a lock.
- * The test schedules two lock-guarded writers that each add a distinct
- * key, then asserts both keys survive on disk.
+ * Two concurrent `fireforge config` writes to the same `fireforge.json` can
+ * silently clobber each other when the read-modify-write sequence is not
+ * serialised behind a lock. The test schedules two lock-guarded writers that
+ * each add a distinct key, then asserts both keys survive on disk.
  */
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

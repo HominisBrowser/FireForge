@@ -9,33 +9,32 @@
  * The upstream xpcshell harness computes the manifest key for the appdir
  * override as `mozInfo["appname"] + "-appdir"`. On a stock Firefox build the
  * key is `firefox-appdir`, so the very common `firefox-appdir = "browser"`
- * directive is honoured. On a rebranded fork (appname=`mybrowser`, …) the
- * harness looks for `mybrowser-appdir`
- * — the literal `firefox-appdir` line is silently ignored, `appPath` falls
- * back to `xrePath`, and every `resource:///modules/…` import throws
- * `Failed to load resource:///modules/<name>.sys.mjs` because xpcshell now
- * resolves the `resource:///` prefix one level above the real app root.
+ * directive is honoured. On a rebranded fork (appname=`mybrowser`) the
+ * harness looks for `mybrowser-appdir` — the literal `firefox-appdir` line
+ * is silently ignored, `appPath` falls back to `xrePath`, and every
+ * `resource:///modules/…` import throws `Failed to load
+ * resource:///modules/<name>.sys.mjs` because xpcshell resolves the
+ * `resource:///` prefix one level above the real app root.
  *
  * ## Strategy
  *
  * 1. For each test path the operator handed us, find the nearest
  *    `xpcshell.toml`. If none exists, the test is not an xpcshell test and
- *    nothing to inject.
+ *    there is nothing to inject.
  * 2. Read the manifest's `[DEFAULT]` section. Look for `<appname>-appdir`
- *    first — if present, the harness already finds it and there's nothing to
- *    do. Fall back to `firefox-appdir`. This ordering matches upstream
- *    precedence and avoids overriding an operator who already migrated.
+ *    first — if present, the harness already finds it. Fall back to
+ *    `firefox-appdir`. This ordering matches upstream precedence and avoids
+ *    overriding an operator who already migrated.
  * 3. If only `firefox-appdir` is present and `appname != "firefox"`, compute
- *    the absolute app dir path against the active `obj-X/dist` tree
- *    (probing `dist/bin/<value>` first, then any `dist/<bundle>.app/Contents/
- *    Resources/<value>` for the macOS packaged layout) and return it as
- *    the value to pass to `--app-path`.
- * 4. If multiple test paths disagree on the resolved value (e.g. one
- *    manifest sets `browser`, another sets `xulrunner`), refuse injection
+ *    the absolute app dir path against the active `obj-X/dist` tree (probing
+ *    `dist/bin/<value>` first, then any
+ *    `dist/<bundle>.app/Contents/Resources/<value>` for the macOS packaged
+ *    layout) and return it as the value to pass to `--app-path`.
+ * 4. If multiple test paths disagree on the resolved value, refuse injection
  *    and return null — the operator can drop down to `--mach-arg`.
  *
- * Operator escape hatches: `--mach-arg=--app-path=…` always wins (handled in
- * test.ts; we skip injection when `--app-path=` already appears in the
+ * Operator escape hatch: `--mach-arg=--app-path=…` always wins (handled in
+ * test.ts, which skips injection when `--app-path=` already appears in the
  * forwarded args).
  */
 
@@ -127,15 +126,14 @@ function stripQuotes(raw: string): string | undefined {
  * returns the absolute path of the first sibling `xpcshell.toml` found.
  * Stops at `engineDir` (inclusive) and returns null on miss.
  *
- * Special-cases `startPath` itself when it already ends with
- * `xpcshell.toml` — operators sometimes pass a manifest path directly.
+ * Special-cases `startPath` itself when it already ends with `xpcshell.toml`
+ * — operators sometimes pass a manifest path directly.
  *
  * When `startPath` is a DIRECTORY, the walk starts at the directory itself
- * (checking `<dir>/xpcshell.toml` first) rather than at its parent. Field
- * report (0.34.0 cycle): a directory whose own manifest is an
- * `xpcshell.toml` was classified non-xpcshell — the walk began at the
- * parent, missed the manifest, and `fireforge test <dir>` dispatched to
- * the mochitest runner, which found no mochitests.
+ * (checking `<dir>/xpcshell.toml` first) rather than at its parent.
+ * Starting at the parent misses a directory's own manifest, so
+ * `fireforge test <dir>` classifies it non-xpcshell and dispatches to the
+ * mochitest runner, which finds no mochitests.
  */
 export async function findNearestXpcshellManifest(
   engineDir: string,
@@ -191,32 +189,27 @@ export async function readMozinfoAppname(objDirPath: string): Promise<string> {
 }
 
 /**
- * Probes the obj-dir's `dist/` subtree for the absolute path that the
- * harness would have computed if the manifest key had been honoured.
- * Returns null when no candidate exists — better to skip injection
- * silently than to point the harness at a path that doesn't exist
- * (which fails with a different error than the original `firefox-appdir`
- * symptom and confuses triage).
+ * Probes the obj-dir's `dist/` subtree for the absolute path the harness
+ * would have computed if the manifest key had been honoured. Returns null
+ * when no candidate exists — better to skip injection silently than to point
+ * the harness at a path that does not exist, which fails with a different
+ * error than the original symptom and confuses triage.
  *
  * Probe order differs by host platform:
  *
- * - **macOS (`darwin`)**: prefer `<objDir>/dist/<App>.app/Contents/Resources/
- *   <value>` FIRST, then fall back to `<objDir>/dist/bin/<value>`.
- *   2026-04-24 eval Finding 8: on macOS `dist/bin` is symlinked to
+ * - **macOS (`darwin`)**: prefer
+ *   `<objDir>/dist/<App>.app/Contents/Resources/<value>` FIRST, then fall
+ *   back to `<objDir>/dist/bin/<value>`. On macOS `dist/bin` is symlinked to
  *   `dist/<App>.app/Contents/MacOS/` (the *binaries* directory), so
- *   `dist/bin/browser` actually resolves to `<App>.app/Contents/MacOS/
- *   browser/`. That is NOT where `resource:///modules/` is rooted — on
- *   macOS, `-a` for xpcshell must point at the `.app/Contents/Resources/
- *   <value>` subtree where modules / chrome.manifest live. Returning
- *   `dist/bin/browser` caused the injected `--app-path` to look
- *   successful (the info log showed it) but pointed at a directory
- *   without the modules tree, so every `resource:///modules/…` import
- *   still threw.
- * - **non-macOS**: keep the historical order — `dist/bin/<value>` first,
+ *   `dist/bin/browser` resolves to `<App>.app/Contents/MacOS/browser/` —
+ *   NOT where `resource:///modules/` is rooted. Injecting that path looks
+ *   successful in the log but points at a directory with no modules tree, so
+ *   every `resource:///modules/…` import still throws.
+ * - **non-macOS**: `dist/bin/<value>` first,
  *   `.app/Contents/Resources/<value>` as fallback.
  *
- * On both platforms the final `.app` fallback iterates every `*.app`
- * entry because a rebranded fork may pick an arbitrary app name.
+ * On both platforms the final `.app` fallback iterates every `*.app` entry
+ * because a rebranded fork may pick an arbitrary app name.
  */
 export async function resolveAbsoluteAppPath(
   objDirAbs: string,

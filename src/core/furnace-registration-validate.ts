@@ -29,9 +29,29 @@ export const CUSTOM_ELEMENT_TAG_RULES =
  * @throws FurnaceError if the tag name is invalid
  */
 export function validateTagName(tagName: string): void {
-  if (!CUSTOM_ELEMENT_TAG_PATTERN.test(tagName)) {
-    throw new FurnaceError(`Invalid tag name "${tagName}": ${CUSTOM_ELEMENT_TAG_RULES}`, tagName);
+  const problem = describeTagNameProblem(tagName);
+  if (problem !== undefined) {
+    throw new FurnaceError(problem, tagName);
   }
+}
+
+/**
+ * Returns why `tagName` is invalid, or `undefined` when it is fine.
+ *
+ * The message-returning half of {@link validateTagName}, for callers that
+ * must not throw — specifically clack `validate` callbacks, which expect a
+ * returned string and re-prompt on it. Passing the THROWING form to one
+ * makes an invalid tag name escape clack's validation loop as a
+ * `FurnaceError`, killing the prompt instead of showing the rule inline.
+ *
+ * @param tagName - Candidate custom element tag name
+ * @returns The rule violation, or undefined when the name is valid
+ */
+export function describeTagNameProblem(tagName: string): string | undefined {
+  if (!CUSTOM_ELEMENT_TAG_PATTERN.test(tagName)) {
+    return `Invalid tag name "${tagName}": ${CUSTOM_ELEMENT_TAG_RULES}`;
+  }
+  return undefined;
 }
 
 /**

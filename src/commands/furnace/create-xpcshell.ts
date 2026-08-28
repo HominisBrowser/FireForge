@@ -65,8 +65,8 @@ export async function scaffoldXpcshellTestFiles(
   const testFileName = xpcshellTestFileName(componentName);
   const testFilePath = join(testDir, testFileName);
   if (await pathExists(testFilePath)) {
-    // Never clobber an existing test implementation (0.34.0 field report:
-    // the scaffold overwrote files owned by a different patch).
+    // Never clobber an existing test implementation: the scaffold must not
+    // overwrite files owned by a different patch.
     warn(`${testDirRel}/${testFileName} already exists — keeping the existing file.`);
   } else {
     if (journal) await snapshotFile(journal, testFilePath);

@@ -20,10 +20,13 @@ import { toError } from './utils/errors.js';
 import {
   cancel,
   error as logError,
+  isStdoutSealed,
+  isVerbose,
   setMachineOutputMode,
   setStdoutSealed,
   setVerbose,
 } from './utils/logger.js';
+import { emitMachineError } from './utils/machine-output.js';
 import { ensureWaitLockOptionEverywhere } from './utils/options.js';
 
 const brokenPipeInstalledKey = Symbol.for('fireforge.cli.brokenPipeHandlerInstalled');
@@ -55,6 +58,52 @@ function getBrokenPipeHandler(state: FireForgeProcess): (error: NodeJS.ErrnoExce
 
   state[brokenPipeListenerKey] = handler;
   return handler;
+}
+
+/**
+ * Stable machine-readable tag for an error class, for the `--json` envelope.
+ *
+ * Derived from the class name rather than hand-mapped: a new error class gets
+ * a sensible tag automatically, and the mapping cannot drift out of sync with
+ * the taxonomy. `ConfigNotFoundError` becomes `config-not-found`.
+ *
+ * @param error - The error being rendered
+ * @returns A kebab-case tag with the `Error` suffix stripped
+ */
+function machineErrorCode(error: FireForgeError): string {
+  return error.name
+    .replace(/Error$/, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase();
+}
+
+/**
+ * Prints an error's `cause` chain under `--verbose`.
+ *
+ * Nine error classes declare a `cause` and twenty-two throw sites pass one;
+ * without this the underlying git stderr, errno or parse failure never
+ * reaches the operator, because a `FireForgeError` renders as its
+ * `userMessage` and stops.
+ *
+ * Goes to stderr via console.error so a `--json` payload on stdout stays
+ * intact, matching the InternalInvariantError branch.
+ *
+ * @param error - The error whose chain to walk
+ */
+function printCauseChain(error: FireForgeError): void {
+  if (!isVerbose()) return;
+  let current: unknown = error.cause;
+  let depth = 0;
+  // Bounded: a self-referential cause chain must not hang the boundary.
+  while (current !== undefined && current !== null && depth < 8) {
+    const normalized = toError(current);
+    console.error(`Caused by: ${normalized.name}: ${normalized.message}`);
+    if (normalized.stack) {
+      console.error(normalized.stack);
+    }
+    current = normalized.cause;
+    depth += 1;
+  }
 }
 
 /**
@@ -135,6 +184,17 @@ export function withErrorHandling<T extends unknown[]>(
   handler: (...args: T) => Promise<void>
 ): (...args: T) => Promise<void> {
   return async (...args: T) => {
+    // Rule 3 of docs/machine-output.md: machine mode engages BEFORE any
+    // output. Anything that throws on the way in — most visibly
+    // `getProjectRoot`'s ConfigNotFoundError — would otherwise render a
+    // clack-styled block to stdout and leave a `--json` consumer with
+    // un-parseable output. Reading the flag from argv is blunt but exact: if
+    // the invocation asked for machine output, stdout belongs to the payload
+    // from the first byte.
+    const wantsMachineOutput = process.argv.includes('--json') || process.argv.includes('--raw');
+    if (wantsMachineOutput) {
+      setMachineOutputMode(true);
+    }
     try {
       await handler(...args);
     } catch (error: unknown) {
@@ -166,7 +226,17 @@ export function withErrorHandling<T extends unknown[]>(
       }
 
       if (error instanceof FireForgeError) {
+        // In machine mode the payload contract owes the consumer a parseable
+        // refusal on stdout, not just a non-zero exit. `logError` has already
+        // been routed to stderr by the mode, so the two do not collide.
         logError(error.userMessage);
+        printCauseChain(error);
+        // Not when a payload already owns stdout: `status --json --fail-on`
+        // writes its full document and THEN refuses, and appending an
+        // envelope would make that two JSON documents.
+        if (wantsMachineOutput && !isStdoutSealed()) {
+          emitMachineError(machineErrorCode(error), error.message, error.code);
+        }
         throw new CommandError(error.code);
       }
 
@@ -181,8 +251,8 @@ export function withErrorHandling<T extends unknown[]>(
       // ENGAGED while an error propagates (a mid-throw restore would route
       // the styled error to stdout, corrupting the `--json`/`--raw` payload
       // stream or displacing the FIREFORGE-VERDICT line); the reset happens
-      // here, after logError has picked its stream, so no state leaks into
-      // a subsequent in-process invocation.
+      // here, after logError has picked its stream, so no state leaks into a
+      // subsequent in-process invocation.
       setMachineOutputMode(false);
       setStdoutSealed(false);
     }
@@ -373,11 +443,10 @@ export function createProgram(): Command {
     entry.register(program, ctx);
   }
 
-  // Uniform `--wait-lock`: scripted sequences blanket-append the flag, and
-  // a subcommand that rejects it with "unknown option" kills the sequence
-  // with a usage error instead of a lock message. Applied after
-  // registration so it covers every subcommand at every depth without each
-  // registrar having to remember; commands that already declare the
+  // Uniform `--wait-lock`: scripted sequences blanket-append the flag, and a
+  // subcommand that rejects it with "unknown option" kills the sequence with
+  // a usage error instead of a lock message. Applied after registration so it
+  // covers every subcommand at every depth; commands that already declare the
   // honoring flag keep it untouched.
   ensureWaitLockOptionEverywhere(program);
 

@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Tests for engine-side orphan detection (field report D1): files a
- * previous deploy left in the engine whose workspace source was renamed
- * or removed must surface as `orphaned-engine-file` drift.
+ * Tests for engine-side orphan detection: files a previous deploy left in
+ * the engine whose workspace source was renamed or removed must surface as
+ * `orphaned-engine-file` drift.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -25,9 +24,10 @@ vi.mock('../config.js', () => ({
   })),
 }));
 
+import { nativePath } from '../../test-utils/index.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
-import { findOrphanedEngineFiles } from '../furnace-validate-helpers.js';
+import { findOrphanedEngineFiles } from '../furnace-validate.js';
 
 const FTL_DIR = 'toolkit/locales/en-US/toolkit/global';
 
@@ -63,7 +63,7 @@ describe('findOrphanedEngineFiles', () => {
     vi.mocked(pathExists).mockImplementation((p) =>
       // Workspace: main module still present, renamed helper gone.
       // Engine: the stale deployed helper still exists.
-      Promise.resolve(p !== '/project/components/custom/moz-panel/panel-helper-old.mjs')
+      Promise.resolve(p !== nativePath('/project/components/custom/moz-panel/panel-helper-old.mjs'))
     );
 
     const issues = await findOrphanedEngineFiles(
@@ -124,7 +124,7 @@ describe('findOrphanedEngineFiles', () => {
     const seen: string[] = [];
     vi.mocked(pathExists).mockImplementation((p) => {
       seen.push(p);
-      return Promise.resolve(!p.startsWith('/project/components/'));
+      return Promise.resolve(!p.startsWith(nativePath('/project/components/')));
     });
 
     const issues = await findOrphanedEngineFiles(
@@ -136,7 +136,7 @@ describe('findOrphanedEngineFiles', () => {
     );
 
     expect(issues).toHaveLength(1);
-    expect(seen).toContain(`/project/engine/${FTL_DIR}/moz-panel.ftl`);
+    expect(seen).toContain(nativePath(`/project/engine/${FTL_DIR}/moz-panel.ftl`));
   });
 
   it('returns empty for components without recorded state or config', async () => {

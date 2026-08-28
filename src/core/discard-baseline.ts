@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Patch-aware restore planning for `fireforge discard` (P0).
+ * Patch-aware restore planning for `fireforge discard`.
  *
  * The engine convention is: HEAD = pristine upstream Firefox, and the
  * applied patch queue lives as UNCOMMITTED worktree changes on top of it
  * (`git apply` without `--index` → patch-edited tracked files are unstaged
- * modifications, patch-created files are untracked). The pre-0.39.0
- * `discard` was purely git-mechanical — it restored to HEAD and deleted
- * untracked files, silently reverting patch-backed files PAST their owning
- * patch and deleting patch-created files outright.
+ * modifications, patch-created files are untracked). A purely git-mechanical
+ * discard — restore to HEAD, delete untracked files — therefore reverts
+ * patch-backed files PAST their owning patch and deletes patch-created files
+ * outright.
  *
  * This module classifies each status entry against the patch manifest's
  * ownership claims and plans the correct restore target: the PATCH-APPLIED
  * baseline (HEAD content folded through every affecting patch in order) for
- * claimed files, and the legacy git mechanics for unmanaged ones.
+ * claimed files, and the plain git mechanics for unmanaged ones.
  */
 
 import { join } from 'node:path';
@@ -63,8 +63,8 @@ export function planUpstreamDiscards(entries: readonly GitStatusEntry[]): Discar
 /**
  * Plans the restore target for each status entry. Entries claimed by the
  * patch manifest restore to the patch-applied baseline; unclaimed entries
- * keep the legacy git mechanics. A missing patches dir or empty manifest
- * degrades every plan to `unmanaged` (identical to pre-0.39.0 behavior).
+ * keep the plain git mechanics. A missing patches dir or empty manifest
+ * degrades every plan to `unmanaged`.
  *
  * A corrupt manifest or an unreconstructible patch baseline REFUSES with a
  * GeneralError naming `--to-upstream` — silently falling back to pristine
@@ -133,17 +133,18 @@ export async function planDiscardBaselines(
         try {
           sections = parseDiffSections(await readText(join(patchesDir, owner)));
         } catch (error: unknown) {
-          // Fail closed. Swallowing this yielded no sections, which falls
+          // Fail closed. Swallowing this yields no sections, which falls
           // through to `return false` — "not deleted at baseline" — so a path
           // the owning patch DELETES would be restored as present, i.e.
           // rewritten instead of removed: silent data loss on the command
-          // whose header promises a refusal for exactly this class of failure.
+          // whose header promises a refusal for exactly this class of
+          // failure.
           //
-          // In the current flow `computeExpected` above reads the same patch
-          // first and refuses, so this is defence-in-depth against a TOCTOU
-          // (the patch file removed or made unreadable mid-plan) rather than a
-          // reachable branch today. It refuses with the same remediation as
-          // its sibling so the two cannot drift into disagreeing.
+          // `computeExpected` above reads the same patch first and refuses,
+          // so this is defence-in-depth against a TOCTOU (the patch file
+          // removed or made unreadable mid-plan) rather than a reachable
+          // branch today. It uses the same remediation as its sibling so the
+          // two cannot drift into disagreeing.
           throw new GeneralError(
             `Cannot read the owning patch ${owner} to determine the baseline for ${path} ` +
               `(${toError(error).message}). ` +

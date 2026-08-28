@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Shared collector for "what changed in the engine tree since the last
- * successful build". Three preflight/audit paths previously carried their
- * own copy of this logic (`build-audit`, `build-prepare`,
- * `test-stale-check`), differing only in the verbose-log label; they all
- * call this module now.
+ * successful build", used by `build-audit`, `build-prepare` and
+ * `test-stale-check`.
  */
 
 import { toError } from '../utils/errors.js';

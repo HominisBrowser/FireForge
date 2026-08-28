@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 import { readText } from '../../utils/fs.js';
 import {
@@ -14,13 +13,13 @@ import {
 } from '../patch-files.js';
 
 /**
- * Exercises `getAllTargetFilesFromPatch` with real patch content so we can
- * assert that the underlying parser (now `extractAffectedFiles`) captures
- * both text hunks and `GIT binary patch` sections.
+ * Exercises `getAllTargetFilesFromPatch` with real patch content so the
+ * underlying parser (`extractAffectedFiles`) is asserted to capture both
+ * text hunks and `GIT binary patch` sections.
  *
  * The orchestration test in `patch-apply-orchestration.test.ts` mocks
  * `extractAffectedFiles`, so this file is the canonical place for the
- * binary-path regression from the 0.16.0 eval run.
+ * binary-path case.
  */
 describe('patch-files parsing', () => {
   it('returns text hunk targets in alphabetical order', async () => {

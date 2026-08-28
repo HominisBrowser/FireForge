@@ -198,6 +198,27 @@ describe('initRepository', () => {
       await rm(repoDir, { recursive: true, force: true });
     }
   });
+
+  // Git for Windows installs a global `core.autocrlf=true`. Patch bodies are
+  // byte diffs of the working tree and `hashObjectBatch` delegates hashing to
+  // git, so an engine checked out under that default hashes and exports
+  // differently from the same tree everywhere else. The repository pins it.
+  it('pins line endings on the repository so patch bytes do not depend on host git config', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'fireforge-git-eol-'));
+
+    try {
+      await writeFile(join(repoDir, 'tracked.txt'), 'initial\n', 'utf8');
+
+      await initRepository(repoDir, 'firefox');
+
+      await expect(runGit(repoDir, ['config', '--local', 'core.autocrlf'])).resolves.toBe(
+        'false\n'
+      );
+      await expect(runGit(repoDir, ['config', '--local', 'core.eol'])).resolves.toBe('lf\n');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resumeRepository', () => {

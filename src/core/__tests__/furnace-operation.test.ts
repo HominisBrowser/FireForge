@@ -22,10 +22,9 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../furnace-config.js', () => ({
   loadFurnaceState: vi.fn((): Promise<Record<string, unknown>> => Promise.resolve({})),
@@ -34,6 +33,7 @@ vi.mock('../furnace-config.js', () => ({
 
 import { writeFile } from 'node:fs/promises';
 
+import { nativePath } from '../../test-utils/index.js';
 import { loadFurnaceState, updateFurnaceState } from '../furnace-config.js';
 import {
   __resetFurnaceOperationStateForTests,
@@ -42,6 +42,7 @@ import {
   recordFurnaceRollbackFailure,
   rollbackActiveOperationsForSignal,
   runFurnaceMutation,
+  waitLockMutationOptions,
 } from '../furnace-operation.js';
 import { createRollbackJournal, snapshotFile } from '../furnace-rollback.js';
 
@@ -83,7 +84,7 @@ afterEach(async () => {
 
 describe('runFurnaceMutation', () => {
   it('resolves the furnace lock path under the .fireforge directory', () => {
-    expect(getFurnaceLockPath('/project')).toBe('/project/.fireforge/furnace.lock');
+    expect(getFurnaceLockPath('/project')).toBe(nativePath('/project/.fireforge/furnace.lock'));
   });
 
   it('returns the body result on the happy path', async () => {
@@ -145,7 +146,7 @@ describe('runFurnaceMutation', () => {
       runFurnaceMutation(root, 'apply-rollback', async () => 'unreachable', {
         lockTimeoutMs: 25,
       })
-    ).rejects.toThrow(/furnace lock/);
+    ).rejects.toThrow(/FURNACE lock/);
   });
 
   it('removes the signal listeners after a successful run', async () => {
@@ -609,5 +610,22 @@ describe('recordFurnaceRollbackFailure', () => {
     expect((next['pendingRepair'] as { timestamp: string }).timestamp).toMatch(
       /^\d{4}-\d{2}-\d{2}T/
     );
+  });
+});
+
+describe('waitLockMutationOptions', () => {
+  it('converts a wait budget in seconds to the furnace lock timeout in ms', () => {
+    // The half of `--wait-lock` that used to be missing: the flag reached
+    // the engine session lock and stopped there, so a contended mutation
+    // met `.fireforge/furnace.lock` with a fixed 30 s after paying the
+    // entire advertised wait.
+    expect(waitLockMutationOptions(1800)).toEqual({ lockTimeoutMs: 1_800_000 });
+  });
+
+  it('yields an empty object when no budget applies', () => {
+    // Spreadable unconditionally: assigning `lockTimeoutMs: undefined` is a
+    // type error under exactOptionalPropertyTypes, and would also override
+    // the default rather than defer to it.
+    expect(waitLockMutationOptions(undefined)).toEqual({});
   });
 });

@@ -6,7 +6,7 @@ import { FurnaceError } from '../errors/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
-import { validateTokenName } from '../utils/validation.js';
+import { describeTokenNameProblem, makeEnumGuard } from '../utils/validation.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { loadFurnaceConfig } from './furnace-config.js';
 import {
@@ -20,16 +20,28 @@ import {
 import { findDarkMediaCloseIndex, findDarkRootInsertionIndex } from './token-dark-mode.js';
 import { addTokenToDocs } from './token-docs.js';
 import {
+  findVariantBlockDeclaration,
   insertVariantDeclaration,
   validateVariantSelector,
   variantBlockExists,
   variantBlockHasToken,
+  variantBlockQualifier,
 } from './token-variant.js';
 
 /**
- * Dark mode behavior for a token.
+ * Dark mode behaviour for a token.
+ *
+ * Derived from {@link TOKEN_MODES} so the runtime allowlist and the type
+ * cannot drift: adding a member here without updating the list (or the
+ * reverse) is no longer possible, because there is only one list.
  */
-export type TokenMode = 'auto' | 'static' | 'override';
+export const TOKEN_MODES = ['auto', 'static', 'override'] as const;
+
+/** Dark mode behaviour for a token. */
+export type TokenMode = (typeof TOKEN_MODES)[number];
+
+/** Narrows an arbitrary string to a {@link TokenMode}. */
+export const isTokenMode = makeEnumGuard(TOKEN_MODES);
 
 /**
  * Options for adding a token.
@@ -39,8 +51,13 @@ export interface AddTokenOptions {
   tokenName: string;
   /** CSS value (e.g., "1px", "var(--space-small)", "light-dark(#fff, #000)") */
   value: string;
-  /** Token category matching section headers in the CSS file */
-  category: string;
+  /**
+   * Token category matching section headers in the CSS file. Required for a
+   * base declaration; ignored — and no longer required — under
+   * {@link AddTokenOptions.variant}, which routes into a `:root<selector>`
+   * block and never touches a category section.
+   */
+  category?: string | undefined;
   /** Dark mode behavior */
   mode: TokenMode;
   /** Comment description for the CSS file */
@@ -140,7 +157,7 @@ async function validateTokenPrefix(root: string, options: AddTokenOptions): Prom
 }
 
 function validateTokenNameSyntax(tokenName: string): void {
-  const error = validateTokenName(tokenName);
+  const error = describeTokenNameProblem(tokenName);
   if (error) {
     throw new InvalidArgumentError(error, 'tokenName');
   }
@@ -174,7 +191,9 @@ function normalizeVariantOption(options: AddTokenOptions): string | undefined {
   if (options.createCategory === true) {
     throw new InvalidArgumentError(
       '--create-category cannot be combined with --variant; variant declarations are routed ' +
-        'into a :root<selector> block, not a category section.',
+        'into a :root<selector> block, not a category section. Add the BASE token first ' +
+        '(with --create-category) to author the category, then add each variant with ' +
+        '--variant.',
       'variant'
     );
   }
@@ -183,6 +202,34 @@ function normalizeVariantOption(options: AddTokenOptions): string | undefined {
     throw new InvalidArgumentError(`--variant ${result.reason}.`, 'variant');
   }
   return result.value;
+}
+
+/**
+ * Narrows {@link AddTokenOptions.category} for the base-declaration path,
+ * which cannot proceed without one.
+ *
+ * `--category` used to be unconditionally required, INCLUDING under
+ * `--variant`, where the declaration is routed into a `:root<selector>`
+ * block and the category names nothing about where the token lands. The
+ * requirement existed so the argument would not be silently discarded —
+ * a fair goal that produced a mandatory argument describing nothing. Under
+ * a variant it is now optional; everywhere else this states the reason
+ * rather than leaving commander to print a bare "required option not
+ * specified".
+ *
+ * @param options - Token options
+ * @returns The category
+ */
+function requireCategory(options: AddTokenOptions): string {
+  if (options.category === undefined || options.category.trim() === '') {
+    throw new InvalidArgumentError(
+      'A base token declaration lands in a category section, so --category is required. ' +
+        'Pass --variant <selector> instead if this declaration belongs in a ' +
+        ':root<selector> block, where no category applies.',
+      'category'
+    );
+  }
+  return options.category;
 }
 
 /** Throws when the tokens CSS file is missing (variant mode skips category checks). */
@@ -195,19 +242,26 @@ async function assertTokensCssExists(engineDir: string, tokensCssPath: string): 
 /**
  * Routes a declaration into the top-level `:root<variant>` block — creating
  * the block after the base `:root` block if absent, or appending to it if
- * present. Idempotent within the block. Returns `{ added: false }` when the
- * token already lives in that block.
+ * present. Idempotent within the block.
+ *
+ * A skip carries the LOCATION of the existing declaration, mirroring
+ * {@link evaluateBaseTokenIdempotency}. The bare `{ added: false }` it used
+ * to return told the caller nothing, so a re-run intending to CHANGE a
+ * value exited 0 having changed nothing and said only "already exists" —
+ * while the base path had reported the category and line for the same
+ * situation all along.
  */
 async function addVariantTokenToCSS(
   engineDir: string,
   options: AddTokenOptions,
   tokensCssPath: string,
   variant: string
-): Promise<{ added: boolean }> {
+): Promise<{ added: boolean; existing?: TokenDeclarationLocation }> {
   await assertTokensCssExists(engineDir, tokensCssPath);
   const filePath = join(engineDir, tokensCssPath);
   const lines = (await readText(filePath)).split('\n');
-  if (variantBlockHasToken(lines, variant, options.tokenName)) return { added: false };
+  const declared = findVariantBlockDeclaration(lines, variant, options.tokenName);
+  if (declared !== undefined) return { added: false, existing: declared };
 
   const annotation = getModeAnnotation(options.mode, options.value);
   insertVariantDeclaration(
@@ -220,11 +274,10 @@ async function addVariantTokenToCSS(
 }
 
 /**
- * Evaluates base-`:root` idempotency for one add: a token
- * already declared in the TARGET category skips; a token declared
- * anywhere else in the base block refuses loud — the pre-0.40.0
- * whole-file substring check silently skipped (and discarded
- * `--create-category`) in that case, exit 0.
+ * Evaluates base-`:root` idempotency for one add: a token already declared
+ * in the TARGET category skips; a token declared anywhere else in the base
+ * block refuses loud. A whole-file substring check instead skips silently —
+ * discarding `--create-category` — and exits 0.
  */
 function evaluateBaseTokenIdempotency(
   lines: string[],
@@ -259,17 +312,20 @@ export async function validateTokenAdd(root: string, options: AddTokenOptions): 
   validateTokenNameSyntax(options.tokenName);
   await validateTokenPrefix(root, options);
   validateDarkValue(options);
-  // Variant mode targets a `:root<attr>` block, not a category section —
-  // but the required --category must still name a REAL category rather
-  // than being silently discarded (bypass 2).
+  // Variant mode targets a `:root<attr>` block, not a category section, so
+  // no category is consulted — and none is required. When one IS passed it
+  // is still checked, so a typo'd category is not silently accepted just
+  // because the flag happens to be inert here.
   if (normalizeVariantOption(options) !== undefined) {
-    await assertTokenCategoryExists(engineDir, tokensCssPath, options.category, false);
+    if (options.category !== undefined && options.category.trim() !== '') {
+      await assertTokenCategoryExists(engineDir, tokensCssPath, options.category, false);
+    }
     return;
   }
   await assertTokenCategoryExists(
     engineDir,
     tokensCssPath,
-    options.category,
+    requireCategory(options),
     options.createCategory === true
   );
 }
@@ -328,10 +384,12 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
   // docs row). Done before the base-CSS path so an override of an existing
   // base token is not short-circuited by the global idempotency check.
   if (normalizedVariant !== undefined) {
-    // The required --category must name a real category even though the
-    // declaration routes into the variant block (bypass 2).
-    await assertTokenCategoryExists(engineDir, tokensCssPath, options.category, false);
-    const { added } = await addVariantTokenToCSS(
+    // A category is optional here and names nothing about where the
+    // declaration lands, but a category that was passed is still verified.
+    if (options.category !== undefined && options.category.trim() !== '') {
+      await assertTokenCategoryExists(engineDir, tokensCssPath, options.category, false);
+    }
+    const { added, existing } = await addVariantTokenToCSS(
       engineDir,
       options,
       tokensCssPath,
@@ -343,6 +401,7 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
       unmappedAdded: false,
       countUpdated: false,
       skipped: !added,
+      ...(existing !== undefined ? { skippedExisting: existing } : {}),
     };
   }
 
@@ -365,9 +424,13 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
   }
 
   // --- Documentation ---
+  // Only the base path reaches here (variant declarations returned above),
+  // so a category is guaranteed — `requireCategory` already ran inside
+  // `addTokenToCSS`. Re-narrowing rather than asserting keeps the docs
+  // input's required `category` honest.
   const docsResult = await addTokenToDocs(
     engineDir,
-    options,
+    { ...options, category: requireCategory(options) },
     getModeAnnotation(options.mode, options.value)
   );
 
@@ -387,7 +450,7 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
  * pair the media query with `:root[data-theme="dark"]` /
  * `:root[data-theme="light"]` blocks (viewer-toggle theming) require every
  * themed list to declare identical token sets, so an override add that only
- * wrote the media block was a guaranteed half-finished edit.
+ * wrote the media block would be a guaranteed half-finished edit.
  */
 const THEME_ATTRIBUTE_VARIANTS = [
   { variant: '[data-theme="dark"]', pick: 'dark' },
@@ -410,6 +473,19 @@ function insertThemeAttributeOverrides(lines: string[], options: AddTokenOptions
     const value = pick === 'dark' ? options.darkValue : options.value;
     insertVariantDeclaration(lines, variant, `  ${options.tokenName}: ${value};`);
     written.push(`:root${variant}`);
+
+    // A qualified block is matched — skipping it is the worse failure, and
+    // the one that shipped — but the qualifier narrows where the token
+    // applies, so say which selector was written through rather than
+    // letting the operator meet the narrowing as a theme bug later.
+    const qualifier = variantBlockQualifier(lines, variant);
+    if (qualifier !== undefined && qualifier.length > 0) {
+      warn(
+        `Wrote ${options.tokenName} into the qualified block ":root${variant}${qualifier}". ` +
+          `The "${qualifier}" qualifier narrows where this override applies; ` +
+          'add an unqualified block if it should apply to every case.'
+      );
+    }
   }
   return written;
 }
@@ -449,10 +525,11 @@ async function addTokenToCSS(
   tokensCssPath: string
 ): Promise<{ added: boolean; categoryCreated: boolean; existing?: TokenDeclarationLocation }> {
   const filePath = join(engineDir, tokensCssPath);
+  const category = requireCategory(options);
   await assertTokenCategoryExists(
     engineDir,
     tokensCssPath,
-    options.category,
+    category,
     options.createCategory === true
   );
 
@@ -477,12 +554,12 @@ async function addTokenToCSS(
   // token insertion — the file is written exactly once, so a failure
   // between "banner declared" and "token inserted" cannot occur.
   let categoryCreated = false;
-  if (options.createCategory === true && !categoryHeaderExists(lines, options.category)) {
-    declareCategoryBanner(lines, options.category, tokensCssPath);
+  if (options.createCategory === true && !categoryHeaderExists(lines, category)) {
+    declareCategoryBanner(lines, category, tokensCssPath);
     categoryCreated = true;
   }
 
-  const { categoryLine, sectionEnd } = findCategorySection(lines, options.category, tokensCssPath);
+  const { categoryLine, sectionEnd } = findCategorySection(lines, category, tokensCssPath);
 
   // Build the insertion lines
   const insertLines: string[] = [];

@@ -8,10 +8,9 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { withFileLock } from '../file-lock.js';
 import {
@@ -53,26 +52,31 @@ async function exists(path: string): Promise<boolean> {
 }
 
 describe('permission error handling', () => {
-  it('file lock reports EACCES when lock directory parent is read-only', async () => {
-    const tempDir = await makeTempDir('perm-lock');
-    const lockParent = join(tempDir, 'lockdir');
-    await mkdir(lockParent);
+  // POSIX mode bits are the refusal mechanism here; NTFS ignores
+  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  it.skipIf(process.platform === 'win32')(
+    'file lock reports EACCES when lock directory parent is read-only',
+    async () => {
+      const tempDir = await makeTempDir('perm-lock');
+      const lockParent = join(tempDir, 'lockdir');
+      await mkdir(lockParent);
 
-    // Make the parent read-only so mkdir for the lock fails
-    await chmod(lockParent, 0o444);
+      // Make the parent read-only so mkdir for the lock fails
+      await chmod(lockParent, 0o444);
 
-    const lockPath = join(lockParent, 'subdir', 'furnace.lock');
+      const lockPath = join(lockParent, 'subdir', 'furnace.lock');
 
-    await expect(
-      withFileLock(lockPath, () => Promise.resolve('unreachable'), {
-        timeoutMs: 100,
-        pollMs: 10,
-      })
-    ).rejects.toThrow();
+      await expect(
+        withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+          timeoutMs: 100,
+          pollMs: 10,
+        })
+      ).rejects.toThrow();
 
-    // Restore permissions for cleanup
-    await chmod(lockParent, 0o755);
-  });
+      // Restore permissions for cleanup
+      await chmod(lockParent, 0o755);
+    }
+  );
 
   it('rollback journal snapshot handles files that become unreadable', async () => {
     const tempDir = await makeTempDir('perm-snapshot');
@@ -116,27 +120,32 @@ describe('permission error handling', () => {
     expect(await readFile(file2, 'utf-8')).toBe('content2');
   });
 
-  it('snapshot captures file mode and restores it', async () => {
-    const tempDir = await makeTempDir('perm-mode');
-    const testFile = join(tempDir, 'executable.sh');
-    await writeFile(testFile, '#!/bin/bash\necho hello');
-    await chmod(testFile, 0o755);
+  // POSIX mode bits are the refusal mechanism here; NTFS ignores
+  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  it.skipIf(process.platform === 'win32')(
+    'snapshot captures file mode and restores it',
+    async () => {
+      const tempDir = await makeTempDir('perm-mode');
+      const testFile = join(tempDir, 'executable.sh');
+      await writeFile(testFile, '#!/bin/bash\necho hello');
+      await chmod(testFile, 0o755);
 
-    const journal = createRollbackJournal();
-    await snapshotFile(journal, testFile);
+      const journal = createRollbackJournal();
+      await snapshotFile(journal, testFile);
 
-    // Overwrite with different content and mode
-    await writeFile(testFile, 'overwritten');
-    await chmod(testFile, 0o644);
+      // Overwrite with different content and mode
+      await writeFile(testFile, 'overwritten');
+      await chmod(testFile, 0o644);
 
-    await restoreRollbackJournal(journal);
+      await restoreRollbackJournal(journal);
 
-    const { readFile, stat } = await import('node:fs/promises');
-    expect(await readFile(testFile, 'utf-8')).toBe('#!/bin/bash\necho hello');
-    const stats = await stat(testFile);
-    // Check executable bit is restored (at least owner execute)
-    expect(stats.mode & 0o100).toBe(0o100);
-  });
+      const { readFile, stat } = await import('node:fs/promises');
+      expect(await readFile(testFile, 'utf-8')).toBe('#!/bin/bash\necho hello');
+      const stats = await stat(testFile);
+      // Check executable bit is restored (at least owner execute)
+      expect(stats.mode & 0o100).toBe(0o100);
+    }
+  );
 
   it('snapshot of nonexistent file causes deletion on restore', async () => {
     const tempDir = await makeTempDir('perm-nonexist');

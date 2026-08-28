@@ -107,23 +107,25 @@ export function generateChromeDocXhtml(
 }
 
 /**
- * browser.xhtml-like scaffold for the document that ships as the fork's
- * MAIN BROWSER WINDOW (0.34.0 field report): the generic dialog-shaped
- * `<window>` scaffold was wrong for the `tokenHostDocuments[0]` /
- * BROWSER_CHROME_URL target — platform C++ reads the root element BEFORE
- * any script runs, and expects the `browser.xhtml` shape:
+ * browser.xhtml-like scaffold for the document that ships as the fork's MAIN
+ * BROWSER WINDOW.
+ *
+ * The generic dialog-shaped `<window>` scaffold is wrong for the
+ * `tokenHostDocuments[0]` / BROWSER_CHROME_URL target: platform C++ reads
+ * the root element BEFORE any script runs, and expects the `browser.xhtml`
+ * shape:
  *
  * - `<html id="main-window">` root (not `<window id="<name>-window">`) —
  *   upstream code from nsXULWindow sizing to session restore looks up
  *   `main-window` by id;
  * - `windowtype="navigator:browser"`, `chromehidden=""` and the geometry
  *   `persist` allowlist declared as ROOT ATTRIBUTES so the platform's
- *   pre-script pass (window tracking, XULStore geometry, chrome flags)
- *   sees them;
+ *   pre-script pass (window tracking, XULStore geometry, chrome flags) sees
+ *   them;
  * - the same head/bootstrap wiring (customElements.js, per-doc subscript,
  *   CSS + Fluent links) and `data-furnace-chrome-doc` sentinel as the
- *   generic scaffold, so jar.mn registration and the platform-module
- *   guard pattern are unchanged.
+ *   generic scaffold, so jar.mn registration and the platform-module guard
+ *   pattern are unchanged.
  */
 export function generateBrowserWindowXhtml(name: string, license: string): string {
   return `<?xml version="1.0"?>
@@ -296,14 +298,13 @@ export function jarMnEntriesForChromeDoc(name: string): string[] {
 /**
  * jar.inc.mn entry that registers the scoped CSS under `content/browser/`.
  *
- * The source path is `../shared/<name>-chrome.css` because `jar.inc.mn`
- * is included from each theme-specific manifest (`browser/themes/osx/jar.mn`,
- * `browser/themes/linux/jar.mn`, `browser/themes/windows/jar.mn`), and every
- * existing entry in those manifests resolves paths relative to the including
- * manifest's directory. A bare `(shared/…)` path produced
- * `obj-.../browser/themes/osx/shared/<name>-chrome.css` which does not exist;
- * `(../shared/…)` matches the upstream pattern and resolves under
- * `browser/themes/shared/`.
+ * The source path is `../shared/<name>-chrome.css` because `jar.inc.mn` is
+ * included from each theme-specific manifest (`browser/themes/osx/jar.mn`,
+ * `.../linux/`, `.../windows/`), and every existing entry in those manifests
+ * resolves paths relative to the INCLUDING manifest's directory. A bare
+ * `(shared/…)` path resolves to
+ * `obj-.../browser/themes/osx/shared/<name>-chrome.css`, which does not
+ * exist.
  */
 export function jarIncMnEntryForChromeDoc(name: string): string {
   return `    content/browser/${name}-chrome.css           (../shared/${name}-chrome.css)`;
@@ -312,12 +313,11 @@ export function jarIncMnEntryForChromeDoc(name: string): string {
 /**
  * locales/jar.mn entry that registers the `.ftl` under the browser locale
  * bundle. The source path is resolved by mach-locale-jar relative to the
- * per-locale root (e.g. `engine/browser/locales/en-US/`), and the FTL
- * file is scaffolded at `browser/${name}.ftl` under that root — the `%`
- * prefix means "per-locale content" and the `browser/` subdirectory
- * matches the subdir the scaffolder writes into. Before this fix the
- * entry emitted `(%${name}.ftl)`, which pointed at `en-US/${name}.ftl`
- * and broke the first post-scaffold `fireforge build` with
+ * per-locale root (e.g. `engine/browser/locales/en-US/`), and the FTL file
+ * is scaffolded at `browser/${name}.ftl` under that root — the `%` prefix
+ * means "per-locale content" and the `browser/` subdirectory matches where
+ * the scaffolder writes. A bare `(%${name}.ftl)` points at
+ * `en-US/${name}.ftl` and breaks the first post-scaffold build with
  * "jar.mn: Cannot find ${name}.ftl".
  */
 export function localeJarMnEntryForChromeDoc(name: string): string {

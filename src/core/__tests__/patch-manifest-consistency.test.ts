@@ -232,12 +232,10 @@ describe('patch manifest consistency', () => {
   });
 
   it('preserves existing lintIgnore and tier fields when rebuilding', async () => {
-    // Without this preservation, a `doctor --repair-patches-manifest`
-    // run would silently strip both optional fields from every entry
-    // that had them. The next lint/re-export pass would then refire
-    // exactly the rules the operator had intentionally quieted via
-    // `lintIgnore` and the branding tier threshold-override set via
-    // `tier: "branding"`.
+    // Without this preservation, a `doctor --repair-patches-manifest` run
+    // silently strips both optional fields from every entry that had them,
+    // and the next lint/re-export pass refires exactly the rules the
+    // operator quieted via `lintIgnore` and the branding tier override.
     const patchesDir = await mkdtemp(join(tmpdir(), 'fireforge-manifest-'));
     tempDirs.push(patchesDir);
 

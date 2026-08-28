@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -14,8 +16,8 @@ vi.mock('../../core/config.js', () => ({
     componentsDir: '/project/components',
   })),
   // The run command resolves `config.binaryName` to probe the runnable
-  // bundle (Finding #13). Stub a fixed binary name so hasRunnableBundle
-  // has a stable probe target.
+  // bundle. Stub a fixed binary name so hasRunnableBundle has a stable probe
+  // target.
   loadConfig: vi.fn(() =>
     Promise.resolve({
       binaryName: 'mybrowser',
@@ -50,20 +52,15 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  removeDir: vi.fn(),
-  removeFile: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  info: vi.fn(),
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(),
   loadFurnaceConfig: vi.fn(),
   loadFurnaceState: vi.fn(),
@@ -103,6 +100,13 @@ import { pathExists, removeDir, removeFile } from '../../utils/fs.js';
 import { info, verbose, warn } from '../../utils/logger.js';
 import { registerRun, runCommand, SMOKE_EXIT_FAILURE, SMOKE_LAUNCH_FAILURE } from '../run.js';
 
+// `--smoke-exit` refuses on Windows (`runSmokeExit` in ../run.ts): killing a
+// process GROUP has no clean Windows equivalent, so the flag would leave
+// content processes orphaned. Its suites cannot run there; the refusal is
+// pinned by the platform-stubbed suite at the end of this file.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+const itPosix = process.platform === 'win32' ? it.skip : it;
+
 const FURNACE_PATHS = {
   furnaceConfig: '/project/furnace.json',
   componentsDir: '/project/components',
@@ -140,7 +144,7 @@ describe('runCommand', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it('fails with a bundle-specific message when obj-*/dist exists but the binary does not (Finding #13)', async () => {
+  it('fails with a bundle-specific message when obj-*/dist exists but the binary does not', async () => {
     vi.mocked(hasRunnableBundle).mockResolvedValue({
       runnable: false,
       expectedPath: 'obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser',
@@ -387,7 +391,7 @@ describe('runCommand', () => {
 
   // --- smoke-exit coverage ---
 
-  describe('--smoke-exit', () => {
+  describePosix('--smoke-exit', () => {
     it('routes through runMachSmoke and succeeds when the deadline fires with no findings', async () => {
       vi.mocked(runMachSmoke).mockResolvedValue({
         stdout: '',
@@ -453,12 +457,11 @@ describe('runCommand', () => {
     });
 
     it('reports non-error allowlist matches in the "total allowlisted lines" counter', async () => {
-      // Finding #15: pre-0.16.0, `--console-allow RSLoader:` matching a
-      // `console.warn: RSLoader:...` line still reported 0 hits because
-      // the allowlist was only consulted AFTER `matchesSmokeError`. The
-      // summary now distinguishes suppressed errors from total allowlist
-      // matches, so the operator sees both numbers and can tell whether
-      // the allowlist pattern actually matched anything.
+      // `--console-allow RSLoader:` matching a `console.warn: RSLoader:...`
+      // line reports 0 hits when the allowlist is only consulted AFTER
+      // `matchesSmokeError`. The summary distinguishes suppressed errors
+      // from total allowlist matches, so the operator sees both numbers and
+      // can tell whether the pattern matched anything.
       const infoCalls: string[] = [];
       vi.mocked(info).mockImplementation((msg: string) => {
         infoCalls.push(msg);
@@ -669,10 +672,9 @@ describe('runCommand', () => {
     });
 
     it('warns about input contamination when a headed smoke window launches on a non-CI host', async () => {
-      // Drill finding: a human interacted with a headed --smoke-exit
-      // window mid-run; the resulting console errors failed the run and
-      // initially read as a product regression. The launch must say so
-      // up front on interactive hosts.
+      // A human interacting with a headed --smoke-exit window mid-run
+      // produces console errors that fail the run and read as a product
+      // regression. The launch says so up front on interactive hosts.
       const { warn } = await import('../../utils/logger.js');
       vi.stubEnv('CI', undefined);
       vi.mocked(runMachSmoke).mockResolvedValue({
@@ -748,7 +750,7 @@ describe('runCommand', () => {
       expect(run).toHaveBeenCalled();
     });
 
-    it('parses --smoke-exit as a positive integer and forwards it', async () => {
+    itPosix('parses --smoke-exit as a positive integer and forwards it', async () => {
       const program = new Command();
       vi.mocked(runMachSmoke).mockResolvedValue({
         stdout: '',
@@ -804,7 +806,7 @@ describe('runCommand', () => {
       ).rejects.toThrow(/positive integer/);
     });
 
-    it('parses --headless and forwards it to the browser in both launch modes', async () => {
+    itPosix('parses --headless and forwards it to the browser in both launch modes', async () => {
       const program = new Command();
       vi.mocked(run).mockResolvedValue(0);
       vi.mocked(runMachSmoke).mockResolvedValue({
@@ -830,7 +832,7 @@ describe('runCommand', () => {
       );
     });
 
-    it('accumulates repeated --console-allow values and passes them through', async () => {
+    itPosix('accumulates repeated --console-allow values and passes them through', async () => {
       const program = new Command();
       vi.mocked(runMachSmoke).mockResolvedValue({
         stdout: '',
@@ -862,5 +864,29 @@ describe('runCommand', () => {
       // uncalled when the parser silently drops repeats).
       expect(runMachSmoke).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('--smoke-exit POSIX-only refusal', () => {
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(readdir).mockResolvedValue([]);
+    vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
+
+  it('refuses the flag on Windows and never launches a smoke run', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+    await expect(runCommand('/project', { smokeExit: 30 })).rejects.toThrow(
+      /--smoke-exit is POSIX-only/
+    );
+    expect(runMachSmoke).not.toHaveBeenCalled();
   });
 });

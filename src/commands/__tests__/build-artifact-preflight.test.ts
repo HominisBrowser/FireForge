@@ -31,26 +31,25 @@ vi.mock('../../core/mach.js', () => ({
   watchWithOutput: vi.fn(() => Promise.resolve({ stdout: '', stderr: '', exitCode: 130 })),
   hasBuildArtifacts: vi.fn(),
   buildArtifactMismatchMessage: vi.fn(),
-  // `packageCommand` now uses the capturing variant so it can surface
-  // `explainMachError` hints (Finding #12). Keep the legacy `machPackage`
-  // mock for any path that still references it; both resolve to a
-  // clean-exit shape for these preflight tests which gate on the
-  // `hasBuildArtifacts` outcome, never on the package result.
+  // `packageCommand` uses the capturing variant so it can surface
+  // `explainMachError` hints. The legacy `machPackage` mock stays for any
+  // path that still references it; both resolve to a clean-exit shape,
+  // since these preflight tests gate on the `hasBuildArtifacts` outcome and
+  // never on the package result.
   machPackage: vi.fn(),
   machPackageCapture: vi.fn(() => Promise.resolve({ stdout: '', stderr: '', exitCode: 0 })),
-  // Finding #13 adds a bundle-readiness probe that `run` and `watch`
-  // consult. Default to "runnable" so the preflight tests still hit the
-  // branch they actually care about (mismatch reasons, watchman failures);
-  // dedicated bundle-agreement coverage lives in run.test.ts /
-  // watch.test.ts.
+  // `run` and `watch` consult a bundle-readiness probe. Default to
+  // "runnable" so the preflight tests hit the branch they care about
+  // (mismatch reasons, watchman failures); dedicated bundle-agreement
+  // coverage lives in run.test.ts / watch.test.ts.
   hasRunnableBundle: vi.fn(() =>
     Promise.resolve({ runnable: true, expectedPath: 'obj-debug/dist/bin/mybrowser' })
   ),
   test: vi.fn(),
   testWithOutput: vi.fn(),
   buildUI: vi.fn(),
-  // Build lock added in 0.16.0; pass through so the preflight tests
-  // still exercise the downstream mach calls exactly as before.
+  // Pass the build lock through so the preflight tests still exercise the
+  // downstream mach calls.
   withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
 }));
 
@@ -75,16 +74,20 @@ vi.mock('../../core/tree-store.js', () => ({
 }));
 
 vi.mock('../../utils/process.js', () => ({
-  // `watch` uses `findExecutable` to resolve watchman's absolute path
-  // so it can prepend the directory to the mach subprocess PATH
-  // (2026-04-24 eval Finding 12). Other callers still use
-  // `executableExists` for a simple "is it available" probe.
+  // `watch` uses `findExecutable` to resolve watchman's absolute path so it
+  // can prepend the directory to the mach subprocess PATH. Other callers
+  // still use `executableExists` for a simple "is it available" probe.
   executableExists: vi.fn(() => Promise.resolve(true)),
   findExecutable: vi.fn(() => Promise.resolve('/opt/homebrew/bin/watchman')),
   exec: vi.fn(() => Promise.resolve({ stdout: '2024.01.15.00\n', stderr: '', exitCode: 0 })),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+
   setStdoutSealed: vi.fn(),
   intro: vi.fn(),
   outro: vi.fn(),

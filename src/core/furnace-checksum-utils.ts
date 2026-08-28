@@ -52,3 +52,20 @@ export function diffDeletedFiles(
   }
   return deleted.sort();
 }
+
+/**
+ * Canonical content normalization for every FireForge component checksum.
+ *
+ * Strips a leading BOM and folds CRLF to LF, so a file that differs from its
+ * deployed copy only by line endings or a byte-order mark is not reported as
+ * drift. Every comparison that decides "has this component changed?" must
+ * use it — otherwise `furnace status` and `furnace validate` can disagree
+ * with `apply`'s skip fast-path about the same pair of files on a CRLF
+ * checkout.
+ *
+ * @param content - Raw file content
+ * @returns Content with the BOM removed and CRLF folded to LF
+ */
+export function normalizeForChecksum(content: string): string {
+  return content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+}

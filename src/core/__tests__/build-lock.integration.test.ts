@@ -2,17 +2,15 @@
 /**
  * Real-fs integration test for `withBuildLock`.
  *
- * 2026-04-21 eval (Finding #3): a `fireforge build --ui` launched
- * while a full `fireforge build` was still running against the same
- * engine tree raced the obj-dir and failed with a cryptic
- * `No rule to make target 'XUL'` error. The lock intercepts the
- * second invocation before it reaches mach, and the refusal fires
- * with a targeted message naming the holder PID.
+ * A `fireforge build --ui` launched while a full `fireforge build` is still
+ * running against the same engine tree races the obj-dir and fails with a
+ * cryptic `No rule to make target 'XUL'`. The lock intercepts the second
+ * invocation before it reaches mach and refuses with a message naming the
+ * holder PID.
  *
- * These tests pin the lock behaviour without touching the actual
- * mach process — the operation passed into `withBuildLock` is a
- * trivial async block that lets us observe lock acquisition order
- * and timeouts.
+ * These tests pin the lock behaviour without touching the actual mach
+ * process — the operation passed into `withBuildLock` is a trivial async
+ * block that lets us observe lock acquisition order and timeouts.
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

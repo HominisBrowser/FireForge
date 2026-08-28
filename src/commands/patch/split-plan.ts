@@ -11,7 +11,6 @@ import { join } from 'node:path';
 
 import { type ConflictReport } from '../../core/destructive.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
-import { computeProjectedLintRegressions } from '../../core/lint-projection.js';
 import { extractAffectedFiles } from '../../core/patch-apply.js';
 import {
   buildModifiedFileAdditionsFromDiff,
@@ -22,6 +21,7 @@ import {
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../../core/patch-lint.js';
+import { computeProjectedLintRegressions } from '../../core/patch-lint-projection.js';
 import { rewriteStagedDependencyOwners } from '../../core/patch-manifest.js';
 import { applyRenameMapToManifest, buildProjectedManifest } from '../../core/patch-policy.js';
 import { buildPatchSourceMetadata } from '../../core/patch-source-metadata.js';

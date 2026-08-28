@@ -53,10 +53,12 @@ vi.mock('../../core/patch-manifest.js', async () => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', async () => {
+  // Imported inside the factory: `vi.mock` is hoisted above the
+  // import block, so a top-level binding is not yet initialised here.
+  const { createLoggerMock } = await import('../../test-utils/module-mocks.js');
+  return createLoggerMock();
+});
 
 function makeMetadata(filename: string, order: number, filesAffected: string[]): PatchMetadata {
   return {
@@ -537,8 +539,8 @@ describe('projectPlacementForLint', () => {
 
   it('classifies an error introduced between existing patches by the renumber as a renumbering consequence', async () => {
     // A uniform ordinal shift preserves relative order, so a renumbering
-    // casualty needs policy interplay (e.g. a category-range violation on
-    // a shifted patch) that is expensive to stage end-to-end. Pin the
+    // casualty needs policy interplay (a category-range violation on a
+    // shifted patch) that is expensive to stage end-to-end. Pin the
     // attribution contract directly through the helper: an error that
     // implicates only existing (renamed) patches and is absent from the
     // baseline renders under the renumbering header with the
@@ -793,13 +795,12 @@ describe('commitPlacementExport rollback', () => {
   });
 
   it('swallows onCommitted hook failures so a failed audit log append does not fail the export', async () => {
-    // Regression for the export --order history-append contract: the
-    // hook runs INSIDE the patch directory lock after the mutation has
-    // committed, so a throw in the hook (e.g. history jsonl write fails
-    // on a readonly filesystem) must not leak out. By the time the hook
-    // runs, the new patch file is on disk and the manifest row is
-    // written — surfacing the hook error would misrepresent a committed
-    // export as failed.
+    // The export --order history-append hook runs INSIDE the patch
+    // directory lock after the mutation has committed, so a throw in the
+    // hook (a history jsonl write failing on a readonly filesystem) must
+    // not leak out: by then the new patch file is on disk and the manifest
+    // row is written, and surfacing the hook error would misrepresent a
+    // committed export as failed.
     await seedTwoPatchQueue();
 
     const expectedPlan = computePlacementPlan(

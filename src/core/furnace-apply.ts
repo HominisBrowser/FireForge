@@ -40,6 +40,7 @@ import { CUSTOM_ELEMENTS_JS, JAR_MN, resolveFtlDir } from './furnace-constants.j
 import { topologicalSortCustom } from './furnace-graph-utils.js';
 import { resolveFurnaceMarkerComment } from './furnace-marker.js';
 import { type FurnaceOperationContext, recordFurnaceRollbackFailure } from './furnace-operation.js';
+import { assertFurnaceEngineDirReady } from './furnace-precondition.js';
 import {
   addJarMnEntries,
   removeCustomElementRegistration,
@@ -56,10 +57,7 @@ import { runPostApplyConsistencyChecks } from './furnace-validate-registration.j
 
 export {
   computeComponentChecksums,
-  extractComponentChecksums,
   hasComponentChanged,
-  hasCustomEngineDrift,
-  hasOverrideEngineDrift,
   prefixChecksums,
 } from './furnace-apply-helpers.js';
 
@@ -113,10 +111,8 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
         // checksum record alone cannot detect that.
         const cachedEngine = extractComponentChecksums(state.engineChecksums, 'override', name);
         const drifted = await hasOverrideEngineDrift(
-          engineDir,
-          componentDir,
+          { engineDir, componentDir, ftlDir },
           overrideConfig,
-          ftlDir,
           cachedEngine
         );
         if (!drifted) {
@@ -155,7 +151,7 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
       if (!dryRun) {
         // Runs unconditionally — including when the component source
         // changed — because the lost-work case is precisely a deployed
-        // engine edit that the incoming copy is about to replace (J6).
+        // engine edit that the incoming copy is about to replace.
         recordOverwriteWarnings(
           result,
           await findPatchOwnedOverwrites({
@@ -171,11 +167,8 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
       }
 
       const { affectedPaths: filesAffected, actions } = await applyOverrideComponent(
-        engineDir,
-        name,
-        componentDir,
+        { engineDir, name, componentDir, ftlDir },
         overrideConfig,
-        ftlDir,
         dryRun,
         rollbackJournal
       );
@@ -328,7 +321,10 @@ async function applyCustomBatch(
         // As with overrides, the checksum record is not sufficient on its
         // own: a reset/download that cleared the engine must trigger a
         // re-apply even though the workspace is unchanged.
-        const drifted = await hasCustomEngineDrift(root, name, componentDir, customConfig, ftlDir);
+        const drifted = await hasCustomEngineDrift(
+          { root, name, componentDir, ftlDir },
+          customConfig
+        );
         if (!drifted) {
           result.skipped.push({ name, reason: 'No changes since last apply' });
           Object.assign(newChecksums, prefixChecksums(previous, 'custom', name));
@@ -384,11 +380,8 @@ async function applyCustomBatch(
         stepErrors,
         actions,
       } = await applyCustomComponent(
-        engineDir,
-        name,
-        componentDir,
+        { engineDir, name, componentDir, ftlDir },
         customConfig,
-        ftlDir,
         dryRun,
         rollbackJournal,
         markerComment !== undefined ? { markerComment } : {}
@@ -436,10 +429,8 @@ async function applyCustomBatch(
 /**
  * Result of {@link applyAllComponents}.
  *
- * Named because the anonymous intersection this replaced forced eight
- * `Awaited<ReturnType<typeof applyAllComponents>>` indirections across
- * `furnace/deploy.ts`, `furnace/preview.ts`, `furnace-state-persist.ts` and
- * `build-prepare.ts` — none of which could be read without opening this file.
+ * Named so consumers can refer to the shape directly instead of going
+ * through `Awaited<ReturnType<typeof applyAllComponents>>`.
  *
  * `actions` is populated only on a dry run; `rollbackJournal` only when
  * `persistState: false` hands journal ownership back to the caller.
@@ -487,20 +478,15 @@ export async function applyAllComponents(
   const { engine: engineDir } = getProjectPaths(root);
   const furnacePaths = getFurnacePaths(root);
   const ftlDir = resolveFtlDir(config.ftlBasePath);
-  // 2026-04-26 eval Finding 6: when `markerComment` is unset in
-  // fireforge.json, default it to `binaryName.toUpperCase()` so the
-  // furnace-emitted edits to upstream files (e.g. customElements.js)
-  // carry a marker that satisfies `lintModificationComments` — that
-  // rule keys on `${binaryName.toUpperCase()}:` and was firing
-  // `[missing-modification-comment]` on every furnace-applied
-  // upstream edit because the implicit default was `undefined`. An
-  // explicit `markerComment` in fireforge.json still wins.
+  // When `markerComment` is unset in fireforge.json, default it to
+  // `binaryName.toUpperCase()` so the furnace-emitted edits to upstream
+  // files (e.g. customElements.js) carry a marker that satisfies
+  // `lintModificationComments` — that rule keys on
+  // `${binaryName.toUpperCase()}:`. An explicit `markerComment` still wins.
   const forgeConfig = await loadConfig(root).catch(() => undefined);
   const markerComment = resolveFurnaceMarkerComment(forgeConfig);
 
-  if (!(await pathExists(engineDir))) {
-    throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
-  }
+  await assertFurnaceEngineDirReady(engineDir);
 
   const rollbackJournal = dryRun ? undefined : createRollbackJournal();
   if (rollbackJournal && operationContext) {
@@ -574,10 +560,10 @@ export async function applyAllComponents(
 
   // Recompute AFTER the consistency checks: they MUTATE entry.stepErrors
   // when the applied output is inconsistent (e.g. a jar.mn entry that
-  // silently mis-landed). Reading the pre-check snapshot meant those
-  // failures skipped rollback and persisted checksums for a component
-  // known to be inconsistent — while the CLI simultaneously reported
-  // "failed to apply cleanly".
+  // silently mis-landed). Reading the pre-check snapshot lets those failures
+  // skip rollback and persist checksums for a component known to be
+  // inconsistent, while the CLI simultaneously reports "failed to apply
+  // cleanly".
   const hasStepErrors = result.applied.some((entry) => hasBlockingStepErrors(entry));
 
   // --- Rollback on failure, persist on success (skip for dry-run) ---
@@ -628,9 +614,8 @@ export async function applyAllComponents(
 } /**
  * Shared context threaded through the batch apply loops. Bundles the state
  * both loops mutate (result/actions/checksums) with the immutable run
- * parameters — the previous 12–13 positional parameters let call sites
- * drift (the named-apply state-wipe bug) and made every new parameter a
- * two-signature change.
+ * parameters; the 12–13 positional parameters this replaced let call sites
+ * drift and made every new parameter a two-signature change.
  */
 interface ApplyBatchContext {
   config: FurnaceConfigData;

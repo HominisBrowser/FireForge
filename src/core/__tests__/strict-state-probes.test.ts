@@ -3,11 +3,11 @@
  * Authoritative-state existence probes must surface permission errors
  * instead of treating EACCES/EPERM as "missing". A manifest or .git
  * directory that cannot be probed is an error condition, not an empty
- * project — silently returning false used to make commands proceed as if
- * no state existed (e.g. "0 patches", "not a git repository").
+ * project — silently returning false makes commands proceed as if no state
+ * existed ("0 patches", "not a git repository").
  *
- * chmod-based EACCES cannot be produced on Windows or as root, so the
- * whole suite skips there; the Ubuntu/macOS CI runs cover it.
+ * chmod-based EACCES cannot be produced on Windows or as root, so the whole
+ * suite skips there; the Ubuntu/macOS CI runs cover it.
  */
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';

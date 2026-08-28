@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeTextIfChanged: vi.fn(),
-}));
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../../utils/platform.js', () => ({
   getPlatform: vi.fn(() => 'linux'),
@@ -16,11 +14,13 @@ vi.mock('../../errors/build.js', async (importOriginal) => {
   return actual;
 });
 
+import { nativePath } from '../../test-utils/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { pathExists, readText, writeTextIfChanged } from '../../utils/fs.js';
 import { BrandingMozconfigMismatchError } from '../branding.js';
 import {
   assertBrandingMozconfigAgreement,
+  extractMozObjdirName,
   extractWithBrandingPath,
   generateMozconfig,
 } from '../mach-mozconfig.js';
@@ -159,7 +159,7 @@ function stubReadTemplates(common: string, platform: string): void {
     if (
       probedPath.endsWith('.mozconfig') &&
       !probedPath.endsWith('common.mozconfig') &&
-      probedPath.includes('/configs/')
+      probedPath.includes(nativePath('/configs/'))
     ) {
       // A platform template (e.g. linux.mozconfig).
       return Promise.resolve(platform);
@@ -179,11 +179,11 @@ describe('generateMozconfig', () => {
     await generateMozconfig('/configs', '/engine', config);
 
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/engine/mozconfig',
+      nativePath('/engine/mozconfig'),
       expect.stringContaining('COMMON_OPT=TestBrowser')
     );
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/engine/mozconfig',
+      nativePath('/engine/mozconfig'),
       expect.stringContaining('PLATFORM_OPT=TestVendor')
     );
   });
@@ -199,7 +199,7 @@ describe('generateMozconfig', () => {
     await generateMozconfig('/configs', '/engine', config);
 
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/engine/mozconfig',
+      nativePath('/engine/mozconfig'),
       expect.stringContaining('ac_add_options --with-distribution-id=test.browser\n')
     );
   });
@@ -250,5 +250,37 @@ describe('generateMozconfig', () => {
     await expect(generateMozconfig('/configs', '/engine', config)).rejects.toBeInstanceOf(
       BrandingMozconfigMismatchError
     );
+  });
+});
+
+describe('extractMozObjdirName', () => {
+  it('reads the documented mk_add_options form', () => {
+    expect(extractMozObjdirName('mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-hominis-release')).toBe(
+      'obj-hominis-release'
+    );
+  });
+
+  it('reads a bare export and a quoted value', () => {
+    expect(extractMozObjdirName('export MOZ_OBJDIR="./obj-dev"')).toBe('obj-dev');
+    expect(extractMozObjdirName("MOZ_OBJDIR='obj-dev'")).toBe('obj-dev');
+  });
+
+  it('takes the LAST declaration, because a mozconfig is shell', () => {
+    const body = ['mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-first', 'MOZ_OBJDIR=obj-second'].join(
+      '\n'
+    );
+    expect(extractMozObjdirName(body)).toBe('obj-second');
+  });
+
+  it('reduces an absolute path to its trailing segment', () => {
+    expect(extractMozObjdirName('MOZ_OBJDIR=/elsewhere/builds/obj-x')).toBe('obj-x');
+  });
+
+  it('tolerates a trailing slash', () => {
+    expect(extractMozObjdirName('MOZ_OBJDIR=@TOPSRCDIR@/obj-x/')).toBe('obj-x');
+  });
+
+  it('returns undefined when nothing is declared', () => {
+    expect(extractMozObjdirName('ac_add_options --enable-release\n')).toBeUndefined();
   });
 });

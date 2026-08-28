@@ -162,4 +162,26 @@ describe('classifyBinaryOwnedFile', () => {
     });
     expect(result).toBeNull();
   });
+
+  it('refuses to trust the index hash of a "Binary files … differ" stub', async () => {
+    // The stub carries the CORRECT new-side hash, so a hash-only comparison
+    // would report patch-backed for a body that cannot rebuild the file.
+    // Regression guard for the re-export degradation this shipped alongside.
+    await seedPatch(
+      [
+        `diff --git a/${PNG} b/${PNG}`,
+        `index ${'1'.repeat(40)}..${await liveHash()} 100644`,
+        `Binary files a/${PNG} and b/${PNG} differ`,
+        '',
+      ].join('\n')
+    );
+    const result = await classifyBinaryOwnedFile({
+      entry: { status: ' M', file: PNG },
+      engineDir,
+      patchesDir,
+      matchClassification: 'patch-backed',
+      owner: '001-ui-img.patch',
+    });
+    expect(result?.classification).toBe('binary-unsupported');
+  });
 });

@@ -51,7 +51,7 @@ describe('check-worktree-whitespace script', () => {
     const result = await execFileAsync(process.execPath, [scriptPath], {
       cwd: root,
     });
-    expect(result.stdout).toContain('Worktree whitespace check passed.');
+    expect(result.stdout).toContain('Whitespace check passed (worktree and index).');
   });
 
   it('fails on non-patch trailing whitespace', async () => {

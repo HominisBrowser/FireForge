@@ -3,6 +3,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import { nativePath } from '../../test-utils/index.js';
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import { furnaceCreateCommand } from '../furnace/create.js';
 
 vi.mock('@clack/prompts', () => ({
@@ -20,14 +22,14 @@ vi.mock('../../utils/fs.js', () => ({
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
-    engine: '/project/engine',
-    config: '/project/fireforge.json',
-    fireforgeDir: '/project/.fireforge',
-    state: '/project/.fireforge/state.json',
-    patches: '/project/patches',
-    configs: '/project/configs',
-    src: '/project/src',
-    componentsDir: '/project/components',
+    engine: nativePath('/project/engine'),
+    config: nativePath('/project/fireforge.json'),
+    fireforgeDir: nativePath('/project/.fireforge'),
+    state: nativePath('/project/.fireforge/state.json'),
+    patches: nativePath('/project/patches'),
+    configs: nativePath('/project/configs'),
+    src: nativePath('/project/src'),
+    componentsDir: nativePath('/project/components'),
   })),
   loadConfig: vi.fn(() => ({
     name: 'TestBrowser',
@@ -40,6 +42,10 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
   detectComposesCycles: vi.fn(),
   loadFurnaceConfig: vi.fn(() =>
@@ -60,11 +66,11 @@ vi.mock('../../core/furnace-config.js', () => ({
   })),
   writeFurnaceConfig: vi.fn(),
   getFurnacePaths: vi.fn(() => ({
-    furnaceConfig: '/project/furnace.json',
-    componentsDir: '/project/components',
-    customDir: '/project/components/custom',
-    overridesDir: '/project/components/overrides',
-    furnaceState: '/project/.fireforge/furnace-state.json',
+    furnaceConfig: nativePath('/project/furnace.json'),
+    componentsDir: nativePath('/project/components'),
+    customDir: nativePath('/project/components/custom'),
+    overridesDir: nativePath('/project/components/overrides'),
+    furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
 }));
 
@@ -84,7 +90,11 @@ vi.mock('../../core/furnace-rollback.js', () => ({
   restoreRollbackJournalOrThrow: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -109,7 +119,7 @@ vi.mock('../../core/furnace-scanner.js', () => ({
   scanWidgetsDirectory: vi.fn(() => Promise.resolve([])),
 }));
 
-vi.mock('../../core/manifest-register.js', () => ({
+vi.mock('../../core/moz-manifest-register.js', () => ({
   registerTestManifest: vi.fn(() => ({
     manifest: 'browser/base/moz.build',
     entry: '    "content/test/moz-test-widget/browser.toml",',
@@ -117,15 +127,7 @@ vi.mock('../../core/manifest-register.js', () => ({
   })),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  cancel: vi.fn(),
-  isCancel: vi.fn(() => false),
-  warn: vi.fn(),
-  note: vi.fn(),
-  success: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import {
   createDefaultFurnaceConfig,
@@ -134,7 +136,7 @@ import {
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { isComponentInEngine, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
-import { registerTestManifest } from '../../core/manifest-register.js';
+import { registerTestManifest } from '../../core/moz-manifest-register.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { success, warn } from '../../utils/logger.js';
 
@@ -154,14 +156,13 @@ const mockWarn = vi.mocked(warn);
 beforeEach(() => {
   vi.clearAllMocks();
   mockFurnaceConfigExists.mockResolvedValue(false);
-  // 0.16.0 added a defensive read-back after `writeFurnaceConfig` in
-  // `performCreateMutations` so the command fails loudly if the write did
-  // not persist. To keep the unit-test flow realistic, mirror writes into
-  // subsequent reads: the first `loadFurnaceConfig` observes the initial
-  // config, and after the command calls `writeFurnaceConfig(..., config)`
-  // a later read returns exactly that written config. Without this, every
-  // `--with-tests` / `--localized` / composes case would fail the readback
-  // guard even though the real code path is correct.
+  // `performCreateMutations` runs a defensive read-back after
+  // `writeFurnaceConfig` so the command fails loudly if the write did not
+  // persist. Mirror writes into subsequent reads: the first
+  // `loadFurnaceConfig` observes the initial config, and after the command
+  // calls `writeFurnaceConfig(..., config)` a later read returns exactly
+  // that. Without this, every `--with-tests` / `--localized` / composes case
+  // fails the readback guard even though the real code path is correct.
   mockLoadFurnaceConfig.mockResolvedValue({
     version: 1,
     componentPrefix: 'moz-',
@@ -177,8 +178,9 @@ beforeEach(() => {
   mockScanWidgetsDirectory.mockResolvedValue([]);
   // Simulate: engine exists, component dir doesn't exist yet
   mockPathExists.mockImplementation((path: string) => {
-    if (path === '/project/engine') return Promise.resolve(true);
-    if (path.includes('components/custom/moz-test-widget')) return Promise.resolve(false);
+    if (path === nativePath('/project/engine')) return Promise.resolve(true);
+    if (path.includes(nativePath('components/custom/moz-test-widget')))
+      return Promise.resolve(false);
     return Promise.resolve(false);
   });
 });
@@ -201,7 +203,9 @@ describe('furnaceCreateCommand --with-tests', () => {
 
     // Check that test directory was created using binaryName from fireforge.json
     const ensureDirCalls = mockEnsureDir.mock.calls.map((c) => c[0]);
-    const testDirCall = ensureDirCalls.find((p: string) => p.includes('content/test/testbrowser'));
+    const testDirCall = ensureDirCalls.find((p: string) =>
+      p.includes(nativePath('content/test/testbrowser'))
+    );
     expect(testDirCall).toBeDefined();
 
     // Check that test files were written
@@ -240,7 +244,10 @@ describe('furnaceCreateCommand --with-tests', () => {
     expect(headCall?.[1] ?? '').toContain('document.createElement(tag);');
 
     // Check that moz.build registration was called with binaryName
-    expect(mockRegisterTestManifest).toHaveBeenCalledWith('/project/engine', 'testbrowser');
+    expect(mockRegisterTestManifest).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'testbrowser'
+    );
   });
 
   it('avoids double-prefixed test filename when component name contains binaryName', async () => {
@@ -249,8 +256,9 @@ describe('furnaceCreateCommand --with-tests', () => {
 
     // Override pathExists to allow the new component name
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path.includes('components/custom/moz-testbrowser-foo')) return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path.includes(nativePath('components/custom/moz-testbrowser-foo')))
+        return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -280,14 +288,14 @@ describe('furnaceCreateCommand --with-tests', () => {
   });
 
   it('throws when --with-tests is set and the engine directory does not exist', async () => {
-    // Regression guard: previously the command would unconditionally
-    // ensureDir under engine/browser/base/content/test/..., fabricating a
-    // partial engine tree. It now refuses.
+    // The command must refuse rather than unconditionally ensureDir under
+    // engine/browser/base/content/test/..., fabricating a partial engine
+    // tree.
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -305,7 +313,9 @@ describe('furnaceCreateCommand --with-tests', () => {
 
     // Crucially, nothing under engine/ should have been created.
     const ensureDirCalls = mockEnsureDir.mock.calls.map((c) => c[0]);
-    expect(ensureDirCalls.find((p: string) => p.includes('content/test'))).toBeUndefined();
+    expect(
+      ensureDirCalls.find((p: string) => p.includes(nativePath('content/test')))
+    ).toBeUndefined();
     expect(mockRegisterTestManifest).not.toHaveBeenCalled();
   });
 
@@ -317,7 +327,7 @@ describe('furnaceCreateCommand --with-tests', () => {
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -351,7 +361,7 @@ describe('furnaceCreateCommand --with-tests', () => {
 
     // No test directory created
     const ensureDirCalls = mockEnsureDir.mock.calls.map((c) => c[0]);
-    const testDirCall = ensureDirCalls.find((p: string) => p.includes('content/test'));
+    const testDirCall = ensureDirCalls.find((p: string) => p.includes(nativePath('content/test')));
     expect(testDirCall).toBeUndefined();
 
     // moz.build registration not called
@@ -363,12 +373,13 @@ describe('furnaceCreateCommand --with-tests', () => {
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path.includes('components/custom/moz-test-widget')) return Promise.resolve(false);
-      if (path.endsWith('/browser/base/content/test/testbrowser/browser.toml')) {
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path.includes(nativePath('components/custom/moz-test-widget')))
+        return Promise.resolve(false);
+      if (path.endsWith(nativePath('/browser/base/content/test/testbrowser/browser.toml'))) {
         return Promise.resolve(true);
       }
-      if (path.endsWith('/browser/base/content/test/testbrowser/head.js')) {
+      if (path.endsWith(nativePath('/browser/base/content/test/testbrowser/head.js'))) {
         return Promise.resolve(true);
       }
       return Promise.resolve(false);
@@ -582,7 +593,7 @@ describe('furnaceCreateCommand --xpcshell', () => {
     // not mix with browser-chrome tests.
     const xpcshellDir = mockEnsureDir.mock.calls
       .map((c) => c[0])
-      .find((p: string) => p.includes('testbrowser-xpcshell/moz-storage-widget'));
+      .find((p: string) => p.includes(nativePath('testbrowser-xpcshell/moz-storage-widget')));
     expect(xpcshellDir).toBeDefined();
 
     const manifest = writeTextCalls.find(
@@ -599,14 +610,13 @@ describe('furnaceCreateCommand --xpcshell', () => {
       c[0].includes('test_moz_storage_widget_packaged.js')
     );
     const testContent = testCall?.[1] ?? '';
-    // The scaffold probes the packaged tree rather than loading the
-    // module. `ChromeUtils.importESModule` pulls in Lit, which references
-    // `window` at module-load — xpcshell has no `window` global, so the
-    // old module-load path reliably failed with
-    // `ReferenceError: window is not defined` for every Lit-based
-    // component. Assert there is no `await ChromeUtils.importESModule(`
-    // CALL (the explanatory header comment can still name the
-    // now-avoided API).
+    // The scaffold probes the packaged tree rather than loading the module.
+    // `ChromeUtils.importESModule` pulls in Lit, which references `window`
+    // at module-load — xpcshell has no `window` global, so a module-load
+    // path reliably fails with `ReferenceError: window is not defined` for
+    // every Lit-based component. Assert there is no
+    // `await ChromeUtils.importESModule(` CALL; the explanatory header
+    // comment may still name the now-avoided API.
     expect(testContent).not.toMatch(/await\s+ChromeUtils\.importESModule\(/);
     expect(testContent).toContain('Services.dirsvc.get("XCurProcD"');
     // Both the primary (dist/bin/browser) and fallback (app-bundle)
@@ -626,7 +636,7 @@ describe('furnaceCreateCommand --xpcshell', () => {
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(false);
+      if (path === nativePath('/project/engine')) return Promise.resolve(false);
       return Promise.resolve(false);
     });
 
@@ -764,8 +774,9 @@ describe('furnaceCreateCommand validation', () => {
     process.stdin.isTTY = false;
 
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
-      if (path === '/project/components/custom/moz-test-widget') return Promise.resolve(true);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-test-widget'))
+        return Promise.resolve(true);
       return Promise.resolve(false);
     });
 
@@ -778,13 +789,12 @@ describe('furnaceCreateCommand validation', () => {
     }
   });
 
-  it('refuses when name does not match componentPrefix (post-0.16.0 hard refusal)', async () => {
-    // Pre-0.16.0 this was a warn + continue, which could land a
-    // partially-scaffolded component that follow-up commands (list,
-    // rename, status) then failed to recognise. The post-0.16.0
+  it('refuses when name does not match componentPrefix', async () => {
+    // A warn-and-continue here lands a partially-scaffolded component that
+    // follow-up commands (list, rename, status) then fail to recognise. The
     // contract is an up-front `InvalidArgumentError` that leaves the
-    // workspace untouched. `--allow-prefix-mismatch` is the escape
-    // hatch for intentional mismatches.
+    // workspace untouched, with `--allow-prefix-mismatch` as the escape
+    // hatch.
     const origTTY = process.stdin.isTTY;
     process.stdin.isTTY = false;
 
@@ -887,7 +897,7 @@ describe('furnaceCreateCommand validation', () => {
         furnaceCreateCommand('/project', 'moz-test-widget', {
           description: 'Shared-ftl widget',
           localized: false,
-          sharedFtl: 'browser/mybrowser-dock.ftl',
+          sharedFtl: nativePath('browser/mybrowser-dock.ftl'),
         })
       ).rejects.toThrow(
         '--shared-ftl requires localization. Remove --no-localized or drop --shared-ftl.'
@@ -896,7 +906,7 @@ describe('furnaceCreateCommand validation', () => {
         furnaceCreateCommand('/project', 'moz-test-widget', {
           description: 'Shared-ftl widget',
           localized: false,
-          sharedFtl: 'browser/mybrowser-dock.ftl',
+          sharedFtl: nativePath('browser/mybrowser-dock.ftl'),
         })
       ).rejects.toThrow(InvalidArgumentError);
     } finally {
@@ -947,7 +957,7 @@ describe('interactive mode', () => {
     vi.mocked(multiselect).mockResolvedValueOnce(['register']); // features
     mockIsComponentInEngine.mockResolvedValue(false);
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
       return Promise.resolve(false);
     });
 
@@ -985,7 +995,7 @@ describe('interactive mode', () => {
     vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
     mockIsComponentInEngine.mockResolvedValue(false);
     mockPathExists.mockImplementation((path: string) => {
-      if (path === '/project/engine') return Promise.resolve(true);
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
       return Promise.resolve(false);
     });
 

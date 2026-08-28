@@ -48,6 +48,12 @@ function makeChild(): MockChildProcess {
   return child;
 }
 
+/** The environment handed to the most recent `spawn`, typed for assertions. */
+function spawnEnvFromLastCall(): NodeJS.ProcessEnv {
+  const options = mockSpawn.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+  return options?.env ?? {};
+}
+
 describe('exec', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -69,6 +75,58 @@ describe('exec', () => {
       stdoutTruncated: false,
       stderrTruncated: false,
     });
+  });
+
+  it('removes envUnset keys from the inherited environment', async () => {
+    // `env` can only add or overwrite, and mozbuild's coding-agent check
+    // reads CLAUDECODE for its PRESENCE — setting it empty would not unset
+    // it. The delete has to actually delete.
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+    process.env['FIREFORGE_TEST_MARKER'] = '1';
+
+    try {
+      const promise = exec('echo', ['hi'], { envUnset: ['FIREFORGE_TEST_MARKER'] });
+      child.emit('close', 0);
+      await promise;
+
+      const spawnEnv = spawnEnvFromLastCall();
+      expect('FIREFORGE_TEST_MARKER' in spawnEnv).toBe(false);
+    } finally {
+      delete process.env['FIREFORGE_TEST_MARKER'];
+    }
+  });
+
+  it('applies envUnset AFTER env, so an explicit set is still removed', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = exec('echo', ['hi'], {
+      env: { FIREFORGE_TEST_MARKER: 'set-by-caller' },
+      envUnset: ['FIREFORGE_TEST_MARKER'],
+    });
+    child.emit('close', 0);
+    await promise;
+
+    const spawnEnv = spawnEnvFromLastCall();
+    expect('FIREFORGE_TEST_MARKER' in spawnEnv).toBe(false);
+  });
+
+  it('leaves the environment untouched when envUnset is absent', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+    process.env['FIREFORGE_TEST_MARKER'] = '1';
+
+    try {
+      const promise = exec('echo', ['hi']);
+      child.emit('close', 0);
+      await promise;
+
+      const spawnEnv = spawnEnvFromLastCall();
+      expect(spawnEnv['FIREFORGE_TEST_MARKER']).toBe('1');
+    } finally {
+      delete process.env['FIREFORGE_TEST_MARKER'];
+    }
   });
 
   it('truncates oversized stdout safely and reports it via stdoutTruncated', async () => {
@@ -465,7 +523,7 @@ describe('findExecutable', () => {
   });
 });
 
-describe('process-group reaping (0.37.0 item 9a)', () => {
+describe('process-group reaping', () => {
   const ORPHAN_LINE =
     '4243 /usr/bin/python3 -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=12)';
 

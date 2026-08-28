@@ -9,21 +9,20 @@ import { loadFurnaceConfig } from '../../core/furnace-config.js';
 import { FurnaceError } from '../../errors/furnace.js';
 
 /**
- * Asserts that the just-written furnace.json contains the expected
- * custom component entry. The eval run's finding #9 observed a
- * scenario where `furnace create --allow-prefix-mismatch` reported
- * success and wrote the component files, but the subsequent
- * `furnace status` found `custom: {}` in furnace.json — an invariant
- * violation with no clear smoking gun in the code path. Local repros
- * do not trigger it, so the defensive readback is the safest recovery
- * contract we can offer: if the new entry is not visible on the next
- * load, throw a `FurnaceError` so the rollback journal restores the
- * pre-command state and the operator sees the failure instead of a
- * phantom success.
+ * Asserts that the just-written furnace.json contains the expected custom
+ * component entry.
+ *
+ * A `furnace create` that reports success and writes the component files
+ * while the next `furnace status` finds `custom: {}` is an invariant
+ * violation with no obvious smoking gun in the code path. This defensive
+ * readback is the recovery contract: if the new entry is not visible on the
+ * next load, throw a `FurnaceError` so the rollback journal restores the
+ * pre-command state and the operator sees the failure instead of a phantom
+ * success.
  *
  * @param projectRoot - Root of the FireForge project
- * @param componentName - Custom-element tag name that must be present
- *   in `config.custom` after the write. Throws when absent.
+ * @param componentName - Custom-element tag name that must be present in
+ *   `config.custom` after the write. Throws when absent.
  */
 export async function assertCustomEntryPersisted(
   projectRoot: string,

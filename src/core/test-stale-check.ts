@@ -4,24 +4,23 @@
  *
  * Without this preflight, an operator who edits engine chrome / packaged
  * resources (`jar.mn` entries, `.xhtml`/`.mjs`/`.css` under chrome trees,
- * pref files) and then runs `fireforge test <path>` only discovers the
- * build is stale AFTER xpcshell / mach test starts and errors out with
- * `NS_ERROR_FILE_NOT_FOUND` against a `chrome://browser/content/…` URI
- * — which reads as a test bug, not a rebuild prompt. The motivating case
- * was scaffolding a new top-level chrome document + BrowserGlue-style
- * xpcshell test: the test file existed, the manifests were registered,
- * but `dist/` still held the pre-edit bundle and chrome URIs resolved
- * to nothing.
+ * pref files) and then runs `fireforge test <path>` only discovers the build
+ * is stale AFTER xpcshell / mach test starts and errors out with
+ * `NS_ERROR_FILE_NOT_FOUND` against a `chrome://browser/content/…` URI —
+ * which reads as a test bug, not a rebuild prompt. Scaffolding a new
+ * top-level chrome document plus an xpcshell test is the canonical case: the
+ * test file exists, the manifests are registered, but `dist/` still holds
+ * the pre-edit bundle and chrome URIs resolve to nothing.
  *
  * This preflight diffs engine HEAD (or workdir) against the last-build
  * baseline (`.fireforge/last-build.json`), filters to paths that imply
  * packaging, and returns a compact summary. `fireforge test` prints a
- * warning up-front so the operator sees "you edited X, Y, Z since the
- * last build — rerun with `--build` to refresh" BEFORE mach test
- * launches. Detection stays advisory (warn-only) because a fork that
- * rebuilds out-of-band (a separate `./mach build` invocation, an IDE
- * plugin, etc.) can legitimately have a fresh `dist/` with no
- * FireForge-recorded baseline update.
+ * warning up-front so the operator sees "you edited X, Y, Z since the last
+ * build — rerun with `--build` to refresh" BEFORE mach test launches.
+ * Detection stays advisory (warn-only) because a fork that rebuilds
+ * out-of-band (a separate `./mach build` invocation, an IDE plugin) can
+ * legitimately have a fresh `dist/` with no FireForge-recorded baseline
+ * update.
  */
 
 import { toError } from '../utils/errors.js';
@@ -86,17 +85,16 @@ export async function checkStaleBuildForTest(
 
   // Content-hash comparison: when the baseline carries a fingerprint set,
   // fold each candidate path through a live re-hash and drop paths whose
-  // current content matches the baseline. Pre-0.16.0 baselines have no
-  // `packageableFingerprints` field; those fall through and the
-  // path-only comparison behaves as before (every workdir-dirty
-  // packageable path is reported as stale). The concrete motivating
-  // case: a project with imported patches + Furnace-applied components
-  // always has a persistent workdir diff against HEAD. Before the
-  // fingerprint layer, `git diff --name-only HEAD` returned that diff
-  // on every build, so the stale check fired immediately after a
-  // successful build even though nothing had actually changed. The
-  // fingerprints capture "these files had this content when the build
-  // ran"; a path stays stale only when its live hash diverges.
+  // current content matches the baseline. Baselines without
+  // `packageableFingerprints` fall through to the path-only comparison,
+  // where every workdir-dirty packageable path reports as stale.
+  //
+  // This matters because a project with imported patches plus
+  // Furnace-applied components always has a persistent workdir diff against
+  // HEAD, so `git diff --name-only HEAD` returns that diff on every build
+  // and the stale check fires immediately after a successful one. The
+  // fingerprints capture "these files had this content when the build ran";
+  // a path stays stale only when its live hash diverges.
   const fingerprints = baseline.packageableFingerprints;
   if (fingerprints) {
     const staleAfterHashCheck: string[] = [];
@@ -147,16 +145,16 @@ export const FULL_SUITE_REQUEST = '(entire suite)';
  * packaging does NOT cover — the runs that would dispatch against missing
  * `_tests/` support fixtures and hang rather than fail.
  *
- * Coverage semantics: `undefined` (pre-0.37.0 baseline) and `'full'` cover
- * everything. A scoped list covers a request path when the request equals a
- * covered entry, sits beneath a covered directory entry, or shares a
- * manifest granule with a covered entry ({@link toManifestGranule} — a
- * scoped `test --build` packages the whole manifest directory, so a
- * same-manifest sibling of a covered file is packaged too). Both sides are
- * normalized to forward slashes so Windows-style CLI input cannot defeat
- * the prefix rule (baseline paths are POSIX by convention). A request with
- * no paths is a full-suite run and is never covered by a scoped list — the
- * {@link FULL_SUITE_REQUEST} sentinel is returned so the refusal can name it.
+ * Coverage semantics: an absent claim and `'full'` cover everything. A
+ * scoped list covers a request path when the request equals a covered entry,
+ * sits beneath a covered directory entry, or shares a manifest granule with
+ * a covered entry ({@link toManifestGranule} — a scoped `test --build`
+ * packages the whole manifest directory, so a same-manifest sibling of a
+ * covered file is packaged too). Both sides are normalized to forward
+ * slashes so Windows-style CLI input cannot defeat the prefix rule (baseline
+ * paths are POSIX by convention). A request with no paths is a full-suite
+ * run and is never covered by a scoped list — the {@link FULL_SUITE_REQUEST}
+ * sentinel is returned so the refusal can name it.
  */
 export function findUncoveredRequestPaths(
   coverage: TestPackagingCoverage | undefined,
@@ -217,9 +215,19 @@ export function formatTestCoverageRefusal(uncovered: string[], coverage: string[
     return head.join(', ') + (truncated > 0 ? `, … (+${truncated} more)` : '');
   };
   const rebuildTargets = uncovered.filter((p) => p !== FULL_SUITE_REQUEST);
+  // Name --extend-coverage here or it is undiscoverable: a scoped build
+  // REPLACES the claim, so under several concurrent sessions a peer's build
+  // for an unrelated path erases coverage you legitimately still hold, and
+  // the union that fixes it is a flag the operator has no reason to know
+  // exists at the moment they need it. The anchor conditions are stated
+  // because they are what decides whether it will work.
+  const extendHint =
+    rebuildTargets.length > 0
+      ? ` Add --extend-coverage to that rebuild to UNION the new paths onto the recorded claim instead of replacing it — it holds while engine HEAD and engine/mozconfig are unchanged since the recorded build.`
+      : '';
   const rebuildHint =
     rebuildTargets.length > 0
-      ? `Rerun "fireforge test --build ${rebuildTargets.slice(0, STALE_PATHS_LIMIT).join(' ')}" to package them, or run "fireforge build" for full coverage.`
+      ? `Rerun "fireforge test --build ${rebuildTargets.slice(0, STALE_PATHS_LIMIT).join(' ')}" to package them, or run "fireforge build" for full coverage.${extendHint}`
       : 'Run "fireforge build" (or a path-less "fireforge test --build") for full coverage first.';
   return (
     `The packaged test runtime was produced by a scoped "fireforge test --build" covering only: ${cap(coverage)}.\n` +
@@ -246,17 +254,17 @@ export interface StaticComponentsStaleResult {
  * Probes whether any `components.conf` changed since the last FULL
  * `fireforge build` — i.e. since the compiled StaticComponents table was
  * last regenerated. `components.conf` entries bake into compiled code; a
- * scoped `test --build` packages the file but the child process resolves
- * the OLD table and fails with `NS_ERROR_MALFORMED_URI` that reads as a
- * test bug.
+ * scoped `test --build` packages the file but the child process resolves the
+ * OLD table and fails with `NS_ERROR_MALFORMED_URI` that reads as a test
+ * bug.
  *
  * The diff anchors to the baseline's `staticComponentsBaseline` (the last
- * full build's engine HEAD SHA), NOT the baseline's own `engineHeadSha`
+ * full build's engine HEAD SHA), NOT the baseline's own `engineHeadSha`,
  * which a scoped `test --build` advances. Dirty candidates are hash-checked
  * against the anchor's fingerprints so only genuine content divergence
- * counts. No baseline / no anchor (pre-0.38.0 marker) → fresh. Never
- * throws — the probes it composes degrade to verbose lines and empty
- * results on git failure, matching {@link checkStaleBuildForTest}.
+ * counts. No baseline or no anchor means fresh. Never throws — the probes it
+ * composes degrade to verbose lines and empty results on git failure,
+ * matching {@link checkStaleBuildForTest}.
  */
 export async function checkStaticComponentsStale(
   engineDir: string,

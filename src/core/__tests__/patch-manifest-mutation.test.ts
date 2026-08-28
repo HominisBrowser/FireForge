@@ -265,22 +265,18 @@ describe('renumberPatchesInManifest', () => {
   });
 
   it('rolls the queue back to the pre-operation state when phase 2 fails', async () => {
-    // Phase 2 rollback regression: previously a partial phase-2 failure
-    // left some files at their final names and the rest at staging
-    // names, and asked the operator to reach for
-    // `doctor --repair-patches-manifest`. That still works as a
-    // last-resort rebuild, but it is a blunt instrument — the new
-    // phase-2 rollback reverses every completed rename back to the
-    // pre-operation state so the directory and manifest stay in
+    // Phase 2 rollback: a partial phase-2 failure otherwise leaves some
+    // files at their final names and the rest at staging names, and asks the
+    // operator to reach for `doctor --repair-patches-manifest` — a blunt
+    // last-resort rebuild. The rollback reverses every completed rename back
+    // to the pre-operation state so the directory and manifest stay in
     // agreement without a separate recovery pass.
     //
-    // Force phase 2 to fail on the SECOND rename by planting a
-    // pre-existing file at the would-be target (`006-infra-b.patch`):
-    // phase 2 checks `pathExists(targetPath)` before each rename and
-    // throws when it hits the conflict. By that point phase 2 has
-    // already renamed the first staged file to its final name, so
-    // rollback must revert both: the completed rename AND the
-    // remaining staging.
+    // Force phase 2 to fail on the SECOND rename by planting a pre-existing
+    // file at the would-be target (`006-infra-b.patch`): phase 2 checks
+    // `pathExists(targetPath)` before each rename and throws on the
+    // conflict. By then it has already renamed the first staged file to its
+    // final name, so rollback must revert both.
     await seed(patchesDir, [
       { filename: '003-infra-a.patch', order: 3, body: 'A' },
       { filename: '004-infra-b.patch', order: 4, body: 'B' },

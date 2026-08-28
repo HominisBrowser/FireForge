@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
@@ -72,7 +74,11 @@ vi.mock('../../core/furnace-rollback.js', () => ({
   restoreRollbackJournalOrThrow: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -97,11 +103,15 @@ vi.mock('../../core/furnace-validate.js', () => ({
   validateComponent: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -753,13 +763,13 @@ describe('furnaceDeployCommand', () => {
   });
 
   it('persists named-deploy state under the requested component name when apply succeeds', async () => {
-    // Sanity-check the happy path that the new applied[0].name assertion
-    // is designed to protect: when apply succeeds for the requested
-    // component, persistence runs under that exact name. The negative
-    // case (applied[0] for a *different* component) cannot be triggered
-    // from outside the deploy module without monkey-patching its
-    // internal accumulator — it is guarded by an `assert`-style throw in
-    // getPersistableAppliedEntry that future refactors must not strip.
+    // Sanity-check the happy path the `applied[0].name` assertion protects:
+    // when apply succeeds for the requested component, persistence runs
+    // under that exact name. The negative case (applied[0] for a *different*
+    // component) cannot be triggered from outside the deploy module without
+    // monkey-patching its internal accumulator — it is guarded by an
+    // assert-style throw in getPersistableAppliedEntry that future refactors
+    // must not strip.
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Stale-furnace export gate tests (0.37.0 item 4) — the export/re-export
- * refusal when a component source changed since the last furnace apply.
+ * Stale-furnace export gate: the export/re-export refusal when a component
+ * source changed since the last furnace apply.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../furnace-config.js', () => ({
   furnaceConfigExists: vi.fn(),
@@ -22,10 +24,7 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { GeneralError } from '../../errors/base.js';
 import { verbose, warn } from '../../utils/logger.js';

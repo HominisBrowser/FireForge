@@ -24,37 +24,49 @@ jobs:
     name: quality (ubuntu)
     runs-on: ubuntu-latest
     steps:
+      # Full history: `whitespace:check` diffs the PR range, which needs the
+      # base commit present. A depth-1 checkout would silently degrade it to
+      # the tip-commit form.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.22.1'
+          node-version-file: '.nvmrc'
           cache: 'npm'
       - name: Pin npm to the packageManager version
         run: |
           NPM_VERSION="$(node -p "require('./package.json').packageManager.split('@')[1]")"
           npm install -g "npm@${NPM_VERSION}"
       - run: npm ci
+      - name: Guard against comment punctuation stranded by a ticket-ID scrub
+        run: |
+          if grep -rnE '^[[:space:]]*(//|\*)[[:space:]]*[.,;:] ' src --include='*.ts'; then
+            echo "Comment lines beginning with stranded sentence punctuation (see above)." >&2
+            echo "Join each to the end of the preceding comment line." >&2
+            exit 1
+          fi
       - run: npm run release:check
+        env:
+          WHITESPACE_CHECK_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
   smoke:
-    name: smoke (${{ matrix.os }}, node ${{ matrix.node-version }})
+    # Stable name, for the same reason `quality (ubuntu)` above carries one:
+    # the branch-protection ruleset requires these exact check contexts, and
+    # embedding the Node version made every Node bump silently invalidate
+    # all three of them.
+    name: smoke (${{ matrix.os }})
     needs: quality
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            node-version: '22.22.1'
-          - os: macos-latest
-            node-version: '22.22.1'
-          - os: windows-latest
-            node-version: '22.22.1'
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version-file: '.nvmrc'
           cache: 'npm'
       - name: Pin npm to the packageManager version
         shell: bash
@@ -64,18 +76,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:package
-      # Cross-platform unit subset: the path/fs/git/process/lock helpers do
-      # the platform-sensitive work (path handling, spawning, git orchestration),
-      # so they run on every OS in the matrix, not just the Ubuntu quality gate.
-      - run: >-
-          npm test --
-          src/utils/__tests__/assert.test.ts
-          src/utils/__tests__/fs.test.ts
-          src/utils/__tests__/paths.test.ts
-          src/utils/__tests__/process.test.ts
-          src/core/__tests__/git.test.ts
-          src/core/__tests__/git-diff.test.ts
-          src/core/__tests__/git-index-lock.test.ts
-          src/core/__tests__/git-performance.test.ts
-          src/core/__tests__/file-lock.test.ts
-      - run: npm test -- src/commands/__tests__/firefox-workflows.integration.test.ts
+      # The whole suite runs on every OS in the matrix. It was previously a
+      # hand-listed 10-file subset that nothing kept in sync: 15 of the 17
+      # test files that branch on `win32` had drifted out of it, so the
+      # platform-specific code paths this leg exists to cover were the ones
+      # not running. The full suite takes ~35s, which is cheaper than
+      # maintaining the list.
+      - run: npm test

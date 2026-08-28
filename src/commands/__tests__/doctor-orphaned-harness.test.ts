@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Orphaned-harness-worker doctor check tests (0.37.0 item 9b). The parser
- * runs against planted fixture `ps` lines — never a real spun orphan.
+ * Orphaned-harness-worker doctor check tests. The parser runs against
+ * planted fixture `ps` lines — never a real spun orphan.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -113,8 +113,9 @@ describe('ORPHANED_HARNESS_DOCTOR_CHECK', () => {
       ['-axo', 'pid=,ppid=,time=,command='],
       expect.anything()
     );
+    // 'warning' IS the report-only assertion now: it is the single field that
+    // decides the outcome, so a separate `passed` check would restate it.
     expect(check.severity).toBe('warning');
-    expect(check.passed).toBe(true); // report-only: doctor must not fail on it
     expect(check.message).toContain('PID 4242');
     expect(check.message).toContain('26-03:14:12');
     expect(check.fix).toContain('kill 4242 4243');

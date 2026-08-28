@@ -165,9 +165,10 @@ describe('planDiscardBaselines', () => {
     ).rejects.toThrow(/patches\.json is unreadable.*--to-upstream/s);
   });
 
-  // chmod 0o000 does not bar root (some CI containers) — skip there, matching
-  // the unreadable-marker test in tree-store.integration.test.ts.
-  it.skipIf(process.getuid?.() === 0)(
+  // chmod 0o000 bars neither root (some CI containers) nor Windows, which
+  // ignores POSIX mode bits outright — skip both, matching the
+  // unreadable-marker test in tree-store.integration.test.ts.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'refuses on an unreadable owning patch instead of degrading to upstream',
     async () => {
       // Both reads of the owning patch — the baseline reconstruction and the

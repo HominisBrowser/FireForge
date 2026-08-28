@@ -101,17 +101,17 @@ export async function fileExistsInHead(repoDir: string, filePath: string): Promi
 }
 
 /**
- * Batched equivalent of {@link fileExistsInHead}: returns the subset of `files`
- * that are tracked in HEAD, using a single `git ls-tree` per ARG_MAX chunk
- * instead of one spawn per file. This is the cold-run hot path — a Firefox-sized
- * checkout has hundreds of affected files, and the old per-file fan-out spent
- * ~99s in serial `git ls-tree`/`git diff` spawns.
+ * Batched equivalent of {@link fileExistsInHead}: returns the subset of
+ * `files` that are tracked in HEAD, using a single `git ls-tree` per ARG_MAX
+ * chunk instead of one spawn per file. This is the cold-run hot path — a
+ * Firefox-sized checkout has hundreds of affected files.
  *
- * `-r` lists nested blobs by full repo-relative path; `--name-only -z` makes the
- * output a trivial NUL-split with no quoting to undo. Membership in the returned
- * Set is exactly `await fileExistsInHead(repoDir, file)` for any non-directory
- * `file`. Throws (via {@link git}) when HEAD itself is unresolvable, matching the
- * per-file helper's failure mode.
+ * `-r` lists nested blobs by full repo-relative path; `--name-only -z` makes
+ * the output a trivial NUL-split with no quoting to undo. Membership in the
+ * returned Set is exactly `await fileExistsInHead(repoDir, file)` for any
+ * non-directory `file`. Throws (via {@link git}) when HEAD itself is
+ * unresolvable, matching the per-file helper's failure mode.
+ *
  * @param repoDir - Repository directory
  * @param files - Repo-relative paths to classify
  * @returns The subset of `files` present in HEAD
@@ -145,15 +145,15 @@ export async function listTrackedInHead(repoDir: string, files: string[]): Promi
  *
  * Uses {@link import('../utils/process.js').exec} rather than {@link git}
  * (which throws on a non-zero exit) because `git hash-object f1 f2 …` is
- * all-or-nothing: it aborts at the first unreadable path and emits nothing for
- * the rest. To preserve the old per-file contract — where one bad path zeroed
- * only its own index line — a chunk that does not return exactly one hash per
- * input falls back to hashing that chunk's paths individually. A path that is
- * still unhashable is simply left out of the map; the caller applies the
- * `0000000000` zero-hash fallback (and the same verbose log) for any miss, so
- * the blob hash is byte-identical to `git hash-object` (filters/.gitattributes
- * are applied per path) without the risk of in-process hashing, which would
- * diverge under `core.autocrlf`/`text` attributes.
+ * all-or-nothing: it aborts at the first unreadable path and emits nothing
+ * for the rest. To keep the per-file contract — where one bad path zeroes
+ * only its own index line — a chunk that does not return exactly one hash
+ * per input falls back to hashing that chunk's paths individually. A path
+ * that is still unhashable is left out of the map; the caller applies the
+ * `0000000000` zero-hash fallback for any miss. Hashing stays in git rather
+ * than in-process so filters and `.gitattributes` are applied per path and
+ * the result cannot diverge under `core.autocrlf`/`text` attributes.
+ *
  * @param repoDir - Repository directory
  * @param fullPaths - Absolute file paths to hash
  * @returns Map from each input path to its full blob hash (misses omitted)

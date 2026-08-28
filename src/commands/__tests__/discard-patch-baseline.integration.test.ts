@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * (P0 data loss): `fireforge discard` on a patch-claimed path must
- * restore the PATCH-APPLIED baseline, not pristine upstream HEAD — and must
- * re-materialize (not delete) patch-created files. The pre-0.39.0 command
- * was purely git-mechanical: it printed "File restored to original state"
- * while reverting 15 engine files past their owning patch, deleting
- * patch-created files outright.
+ * `fireforge discard` on a patch-claimed path must restore the
+ * PATCH-APPLIED baseline, not pristine upstream HEAD — and must
+ * re-materialize (not delete) patch-created files. A purely git-mechanical
+ * discard prints "File restored to original state" while reverting engine
+ * files past their owning patch and deleting patch-created files outright.
  *
  * Real temp repo; the patch queue is applied through the production
  * `applyPatchesWithContinue` path so the worktree convention (patch edits =

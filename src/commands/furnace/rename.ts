@@ -15,7 +15,7 @@ import {
   resolveFtlLocaleJarMnPath,
   tagNameToClassName,
 } from '../../core/furnace-constants.js';
-import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
+import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
   addCustomElementRegistration,
   addJarMnEntries,
@@ -31,7 +31,6 @@ import {
 import {
   createRollbackJournal,
   recordCreatedDir,
-  restoreRollbackJournalOrThrow,
   snapshotDir,
   snapshotFile,
 } from '../../core/furnace-rollback.js';
@@ -138,15 +137,14 @@ async function renameTestFiles(
 }
 
 /**
- * Removes the deployed custom-widget directory at the old target path so
- * a subsequent `furnace apply` is the single writer of the new name's
+ * Removes the deployed custom-widget directory at the old target path so a
+ * subsequent `furnace apply` is the single writer of the new name's
  * deployment. Best-effort: logs a warning but never blocks the rename.
  *
- * 2026-04-21 eval: renaming `ff-chip-row` → `ff-chip-stack` registered
- * and deployed the new name correctly but left `engine/toolkit/content/
- * widgets/ff-chip-row/` in place. Subsequent `furnace sync` runs could
- * not clear the stale widget, and packaging would have pulled in both
- * copies. The snapshot is taken before the remove so the rollback
+ * Without it, a rename registers and deploys the new name correctly but
+ * leaves `engine/toolkit/content/widgets/<old>/` in place — subsequent
+ * `furnace sync` runs cannot clear the stale widget, and packaging pulls in
+ * both copies. The snapshot is taken before the remove so the rollback
  * journal restores the old directory if any later step in
  * `performRenameMutations` fails.
  */
@@ -171,19 +169,18 @@ async function removeStaleDeployedComponentDir(
 
 /**
  * Renames the mochikit test scaffold produced by `furnace create
- * --with-tests` when the default test style is used. The scaffold lives
- * at `engine/toolkit/content/tests/widgets/test_<name>.html`, and the
- * accompanying `chrome.toml` entry names the same file. Neither piece
- * was handled by the pre-0.16.0 rename, so operators were left with a
- * `test_<old>.html` file that still imported `chrome://global/content/
- * elements/<old>.mjs` and referenced `customElements.whenDefined("<old>")`
- * — the test ran against a component that no longer existed under that
- * name and either failed or (if the old component was still deployed)
- * passed for the wrong reason.
+ * --with-tests` when the default test style is used. The scaffold lives at
+ * `engine/toolkit/content/tests/widgets/test_<name>.html`, and the
+ * accompanying `chrome.toml` entry names the same file. Leaving both
+ * unhandled produces a `test_<old>.html` that still imports
+ * `chrome://global/content/elements/<old>.mjs` and references
+ * `customElements.whenDefined("<old>")` — running against a component that
+ * no longer exists under that name, and either failing or (if the old
+ * component is still deployed) passing for the wrong reason.
  *
- * Best-effort: individual failures log a warning. The same journal used
- * for the rest of the rename snapshots every touched file so a later
- * failure rolls the pair back together.
+ * Best-effort: individual failures log a warning. The same journal used for
+ * the rest of the rename snapshots every touched file so a later failure
+ * rolls the pair back together.
  */
 async function renameMochikitTestFiles(
   engineDir: string,
@@ -342,13 +339,13 @@ async function performRenameMutations(args: {
 
         const oldFileName = entry.name;
         // Rename only when the filename starts with the component name — the
-        // scaffolding convention for both create and override is `${name}.ext`.
-        // A plain `replace(oldName, newName)` produced wrong results when the
-        // old name occurred more than once (e.g. `foo-foo.mjs` renamed `foo` →
-        // `bar` became `bar-foo.mjs` instead of `bar-bar.mjs`) and also when
-        // the old name appeared inside a file that was not the component
-        // scaffold itself (e.g. a sibling helper). Unrelated files (stray
-        // assets, editor backups) are copied verbatim.
+        // scaffolding convention for both create and override is
+        // `${name}.ext`. A plain `replace(oldName, newName)` produces wrong
+        // results when the old name occurs more than once (`foo-foo.mjs`
+        // renamed `foo` → `bar` becomes `bar-foo.mjs` instead of
+        // `bar-bar.mjs`) and when the old name appears inside a file that is
+        // not the component scaffold itself. Unrelated files (stray assets,
+        // editor backups) are copied verbatim.
         const newFileName = renameComponentFileName(oldFileName, oldName, newName);
         const oldPath = join(oldDir, oldFileName);
         const newPath = join(newDir, newFileName);
@@ -411,28 +408,25 @@ async function performRenameMutations(args: {
       // 7. Rename test files created by `furnace create --with-tests` (custom only).
       if (isCustom && (await pathExists(args.engineDir))) {
         await renameTestFiles(args.engineDir, projectRoot, oldName, newName, journal);
-        // Mochikit scaffold + widgets/chrome.toml live in a different
+        // The mochikit scaffold and widgets/chrome.toml live in a different
         // tree than browser.toml-registered browser-chrome tests, so
-        // renameTestFiles doesn't reach them. 2026-04-21 eval: a rename
-        // left `engine/toolkit/content/tests/widgets/test_<old>.html`
-        // and its `chrome.toml` entry pointing at the old name, which
-        // either failed the test run outright or (worse) passed for the
-        // wrong component.
+        // renameTestFiles does not reach them — leaving
+        // `engine/toolkit/content/tests/widgets/test_<old>.html` and its
+        // `chrome.toml` entry pointing at the old name, which either fails
+        // the test run outright or passes for the wrong component.
         await renameMochikitTestFiles(args.engineDir, oldName, newName, journal);
-        // 2026-04-24 eval Finding 5: xpcshell scaffolds live in yet
-        // another tree (`browser/base/content/test/<binary>-xpcshell/
-        // <name>/`). Before this call, renaming a component scaffolded
-        // with `--with-tests --xpcshell` left a directory whose name
-        // still referenced the pre-rename component, plus a test file
-        // whose underscored name referenced the old tag — both of
-        // which then failed to match the new component.
+        // xpcshell scaffolds live in yet another tree
+        // (`browser/base/content/test/<binary>-xpcshell/<name>/`). Without
+        // this call, renaming a component scaffolded with
+        // `--with-tests --xpcshell` leaves a directory whose name still
+        // references the pre-rename component, plus a test file whose
+        // underscored name references the old tag.
         await renameXpcshellTestFiles(args.engineDir, projectRoot, oldName, newName, journal);
         // Clear the stale deployed component directory so the next
-        // `furnace apply` is the single writer of the new name's
-        // deployment. Without this, eval runs showed the old widget
-        // still living at `engine/toolkit/content/widgets/<old>/`
-        // alongside the newly-deployed `engine/toolkit/content/
-        // widgets/<new>/`, with no signal to `status` / `verify`.
+        // `furnace apply` is the single writer of the new name's deployment.
+        // Without it the old widget stays at
+        // `engine/toolkit/content/widgets/<old>/` alongside the
+        // newly-deployed `<new>/`, with no signal to `status` / `verify`.
         if (oldCustomTargetPath) {
           await removeStaleDeployedComponentDir(args.engineDir, oldCustomTargetPath, journal);
         }
@@ -440,9 +434,9 @@ async function performRenameMutations(args: {
 
       info(`Renamed ${componentType} component: ${oldName} → ${newName}`);
     } catch (error: unknown) {
-      // This body owns its rollback end to end, so tell the lifecycle wrapper
-      // not to restore the same journal again on the way out.
-      ctx.markRolledBack();
+      // Extra best-effort step this site owns: the half-created new
+      // directory is not in the journal, so drop it before the shared
+      // restore puts the old one back.
       try {
         if (await pathExists(newDir)) {
           await removeDir(newDir);
@@ -450,20 +444,12 @@ async function performRenameMutations(args: {
       } catch {
         // Best effort cleanup
       }
-      try {
-        await restoreRollbackJournalOrThrow(
-          journal,
-          `Failed to rename component "${oldName}" to "${newName}"`
-        );
-      } catch (rollbackError) {
-        await recordFurnaceRollbackFailure(
-          projectRoot,
-          'rename-rollback',
-          `rename "${oldName}" → "${newName}": ${toError(rollbackError).message}`
-        );
-        throw rollbackError;
-      }
-      throw error;
+      return await completeJournalRollback(ctx, journal, error, {
+        projectRoot,
+        operation: 'rename-rollback',
+        failureMessage: `Failed to rename component "${oldName}" to "${newName}"`,
+        subject: `rename "${oldName}" → "${newName}"`,
+      });
     }
   });
 }
@@ -514,11 +500,10 @@ async function updateEngineRegistrations(
   }
 
   // Re-wire the locale jar.mn chrome registration when the component is
-  // localized. Before this, `updateEngineRegistrations` renamed the .ftl
-  // file on disk but left the locale jar.mn pointing at
-  // `locale/.../${oldName}.ftl`, so `furnace validate` passed while the
-  // engine still carried a stale registration for the now-missing file
-  // (eval finding: stale old-name registration after rename).
+  // localized. `updateEngineRegistrations` renames the .ftl file on disk but
+  // leaves the locale jar.mn pointing at `locale/.../${oldName}.ftl`, so
+  // `furnace validate` passes while the engine still carries a stale
+  // registration for the now-missing file.
   if (isLocalized) {
     const chromeSubPath = resolveFtlChromeSubPath(ftlDir);
     const localeJarRel = resolveFtlLocaleJarMnPath(ftlDir);
@@ -583,13 +568,11 @@ export async function furnaceRenameCommand(
   // `componentType` is the furnace-state key (singular: `custom` /
   // `override`); the on-disk directory label differs — custom components
   // live under `components/custom/` (singular) while overrides live under
-  // `components/overrides/` (plural). Before 0.16.0, every rename
-  // user-facing message appended an `s` to `componentType`, which
-  // produced the wrong label `components/customs/` for custom components
-  // and was technically correct for overrides only by coincidence.
-  // `componentDirLabel` centralises the singular/plural pick so every
-  // operator-facing string names the directory that actually exists on
-  // disk.
+  // `components/overrides/` (plural). Appending an `s` to `componentType`
+  // produces the wrong label `components/customs/` for custom components
+  // and is correct for overrides only by coincidence. `componentDirLabel`
+  // centralises the pick so every operator-facing string names the
+  // directory that actually exists on disk.
   const componentDirLabel = isCustom ? 'custom' : 'overrides';
   const baseDir = isCustom ? furnacePaths.customDir : furnacePaths.overridesDir;
   const oldDir = join(baseDir, oldName);

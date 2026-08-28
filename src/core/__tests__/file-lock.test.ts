@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
@@ -7,20 +8,21 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-import { access, mkdir, mkdtemp, rm, utimes } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { FireForgeError, LockContentionError } from '../../errors/base.js';
 import { warn } from '../../utils/logger.js';
-import { createSiblingLockPath, withFileLock } from '../file-lock.js';
+import {
+  createSiblingLockPath,
+  forceReleaseHeldLocksForSignal,
+  withFileLock,
+} from '../file-lock.js';
 
 const cleanupPaths: string[] = [];
 
@@ -49,6 +51,8 @@ async function exists(path: string): Promise<boolean> {
 
 describe('file-lock', () => {
   it('derives a sibling lock path', () => {
+    // Pure suffix concatenation — no join/resolve, so the separators of the
+    // input survive verbatim on every platform.
     expect(createSiblingLockPath('/tmp/fireforge/state.json')).toBe(
       '/tmp/fireforge/state.json.fireforge.lock'
     );
@@ -177,12 +181,11 @@ describe('file-lock', () => {
   });
 
   it('removes a young lock whose PID file points at a dead process', async () => {
-    // Eval regression: after SIGINT of `furnace preview`, `withFileLock`'s
-    // `finally { rm }` is skipped because the signal handler calls
-    // `process.exit`. The next command used to wait the full staleness
-    // window (5 minutes) before removing the orphan lock — even though the
-    // lock's PID file already pointed at a dead process. The PID-first
-    // check unblocks immediately when the owner is explicitly gone.
+    // After SIGINT of `furnace preview`, `withFileLock`'s `finally { rm }`
+    // is skipped because the signal handler calls `process.exit`. Age-gating
+    // makes the next command wait the full staleness window (5 minutes)
+    // before removing the orphan lock, even though the PID file already
+    // points at a dead process. The PID-first check unblocks immediately.
     const { writeFile } = await import('node:fs/promises');
     const tempDir = await makeTempDir('fireforge-dead-pid-lock-');
     const lockPath = join(tempDir, 'state.json.fireforge.lock');
@@ -275,10 +278,10 @@ describe('file-lock', () => {
   });
 
   it('two waiters recovering the same stale lock still exclude each other', async () => {
-    // TOCTOU regression: with rm-by-path recovery, two waiters could both
-    // observe the dead owner, one re-acquires, and the other's rm deleted
-    // the fresh lock — two processes in the critical section at once. The
-    // rename-aside reap lets exactly one reaper win; the loser re-polls.
+    // TOCTOU: with rm-by-path recovery, two waiters can both observe the
+    // dead owner, one re-acquires, and the other's rm deletes the fresh lock
+    // — two processes in the critical section at once. The rename-aside reap
+    // lets exactly one reaper win; the loser re-polls.
     const { writeFile } = await import('node:fs/promises');
     const { spawn } = await import('node:child_process');
     const tempDir = await makeTempDir('fireforge-reap-race-');
@@ -478,5 +481,187 @@ describe('file-lock', () => {
     }
 
     expect(await exists(lockPath)).toBe(true);
+  });
+});
+
+describe('a wait whose queue position keeps improving', () => {
+  /**
+   * Plants a live waiter file ahead of `selfStartedAt`. The registry keys on
+   * the filename (`<startedAtMs>-<pid>-<uuid>`) and drops entries whose PID
+   * is not alive, so the file must name this process to count.
+   */
+  async function plantWaiterAhead(lockPath: string, startedAtMs: number): Promise<string> {
+    const dir = `${lockPath}.waiters`;
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, `${String(startedAtMs)}-${String(process.pid)}-${String(startedAtMs)}`);
+    await writeFile(file, `${String(process.pid)}\n`, 'utf-8');
+    return file;
+  }
+
+  /**
+   * Runs a wait against a queue that retires one waiter per probe. The
+   * drain deliberately takes LONGER than `timeoutMs`, so the outcome is
+   * decided by whether an advance renews the budget.
+   */
+  async function runAdvancingQueue(extend: boolean): Promise<string> {
+    const tempDir = await makeTempDir('fireforge-advancing-lock-');
+    const lockPath = join(tempDir, 'engine-session.lock');
+    await mkdir(lockPath);
+    const ahead = [
+      await plantWaiterAhead(lockPath, Date.now() - 60_000),
+      await plantWaiterAhead(lockPath, Date.now() - 50_000),
+      await plantWaiterAhead(lockPath, Date.now() - 40_000),
+    ];
+
+    // The budget must span at least TWO probes: the first only seeds the
+    // best-seen position (it is not an advance), so the earliest genuine
+    // extension can be observed at the second.
+    return withFileLock(lockPath, () => Promise.resolve('acquired'), {
+      timeoutMs: 100,
+      pollMs: 10,
+      staleMs: 60_000,
+      waitProgressMs: 40,
+      onWaitProgress: (): void => {
+        const retiring = ahead.shift();
+        if (retiring !== undefined) void rm(retiring, { force: true });
+        // Free the lock only once the queue has drained, so acquiring
+        // proves the wait outlived its original budget.
+        if (ahead.length === 0) void rm(lockPath, { recursive: true, force: true });
+      },
+      onTimeoutMessage: 'the engine lock is held',
+      ...(extend ? { extendWhileAdvancing: { maxWaitMs: 10_000 } } : {}),
+    });
+  }
+
+  it('survives a drain longer than its budget while the queue keeps moving', async () => {
+    await expect(runAdvancingQueue(true)).resolves.toBe('acquired');
+  });
+
+  it('expires on the same queue without the extension — the behaviour is the extension', async () => {
+    await expect(runAdvancingQueue(false)).rejects.toThrow(LockContentionError);
+  });
+
+  it('still starves on a queue that never moves', async () => {
+    const tempDir = await makeTempDir('fireforge-stalled-lock-');
+    const lockPath = join(tempDir, 'engine-session.lock');
+    await mkdir(lockPath);
+    await plantWaiterAhead(lockPath, Date.now() - 60_000);
+
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('never'), {
+        timeoutMs: 150,
+        pollMs: 10,
+        staleMs: 60_000,
+        waitProgressMs: 30,
+        onWaitProgress: (): void => undefined,
+        extendWhileAdvancing: { maxWaitMs: 10_000 },
+        onTimeoutMessage: 'the engine lock is held',
+      })
+    ).rejects.toThrow(LockContentionError);
+  });
+
+  it('does not hand out a free budget on the FIRST probe of a stalled queue', async () => {
+    // Regression: `bestAhead` started `undefined`, so the opening probe
+    // always counted as an advance and granted a fresh full budget. A
+    // `--wait-lock 300` run therefore waited ~600s against a queue that
+    // never moved once. The wait must expire on roughly the budget asked
+    // for, not on double it.
+    const tempDir = await makeTempDir('fireforge-firstprobe-lock-');
+    const lockPath = join(tempDir, 'engine-session.lock');
+    await mkdir(lockPath);
+    await plantWaiterAhead(lockPath, Date.now() - 60_000);
+
+    const extensions: { ahead: number; budgetMs: number }[] = [];
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('never'), {
+        timeoutMs: 200,
+        pollMs: 10,
+        staleMs: 60_000,
+        waitProgressMs: 40,
+        onWaitProgress: (): void => undefined,
+        onWaitExtended: (extension): void => {
+          extensions.push(extension);
+        },
+        extendWhileAdvancing: { maxWaitMs: 10_000 },
+        onTimeoutMessage: 'the engine lock is held',
+      })
+    ).rejects.toThrow(LockContentionError);
+    // Asserted on the callback rather than on elapsed time: the observation
+    // is deterministic, where a wall-clock bound tight enough to separate
+    // 200ms from 240ms would be flaky under load.
+    expect(extensions).toEqual([]);
+  });
+
+  it('reports an extension when the queue actually advances', async () => {
+    const tempDir = await makeTempDir('fireforge-extnotice-lock-');
+    const lockPath = join(tempDir, 'engine-session.lock');
+    await mkdir(lockPath);
+    const ahead = [
+      await plantWaiterAhead(lockPath, Date.now() - 60_000),
+      await plantWaiterAhead(lockPath, Date.now() - 50_000),
+    ];
+    const extensions: { ahead: number; budgetMs: number }[] = [];
+
+    await withFileLock(lockPath, () => Promise.resolve('acquired'), {
+      timeoutMs: 100,
+      pollMs: 10,
+      staleMs: 60_000,
+      waitProgressMs: 40,
+      onWaitProgress: (): void => {
+        const retiring = ahead.shift();
+        if (retiring !== undefined) void rm(retiring, { force: true });
+        if (ahead.length === 0) void rm(lockPath, { recursive: true, force: true });
+      },
+      onWaitExtended: (extension): void => {
+        extensions.push(extension);
+      },
+      extendWhileAdvancing: { maxWaitMs: 10_000 },
+      onTimeoutMessage: 'the engine lock is held',
+    });
+
+    expect(extensions.length).toBeGreaterThan(0);
+    // The reported budget is the new TOTAL from the start of the wait, so it
+    // can be compared directly against what the operator asked for.
+    expect(extensions[0]?.budgetMs).toBeGreaterThan(100);
+  });
+
+  it('names the queue position the expired wait reached', async () => {
+    const tempDir = await makeTempDir('fireforge-position-lock-');
+    const lockPath = join(tempDir, 'engine-session.lock');
+    await mkdir(lockPath);
+    await plantWaiterAhead(lockPath, Date.now() - 60_000);
+    await plantWaiterAhead(lockPath, Date.now() - 50_000);
+
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('never'), {
+        timeoutMs: 120,
+        pollMs: 10,
+        staleMs: 60_000,
+        waitProgressMs: 20,
+        onWaitProgress: (): void => undefined,
+        onTimeoutMessage: 'the engine lock is held',
+      })
+    ).rejects.toThrow(/still 2 from the head of a queue of 3/);
+  });
+});
+
+describe('forceReleaseHeldLocksForSignal', () => {
+  it('releases a lock this process still holds, as the signal path must', async () => {
+    const tempDir = await makeTempDir('fireforge-signal-lock-');
+    const lockPath = join(tempDir, 'engine-session.lock');
+
+    // `withFileLock`'s finally never runs across process.exit; the sweep is
+    // what keeps `status --lock` from reporting a dead holder.
+    let released: string[] = [];
+    await withFileLock(lockPath, async () => {
+      released = await forceReleaseHeldLocksForSignal();
+    });
+
+    expect(released).toEqual([lockPath]);
+    expect(await exists(lockPath)).toBe(false);
+  });
+
+  it('is a no-op when this process holds nothing', async () => {
+    await expect(forceReleaseHeldLocksForSignal()).resolves.toEqual([]);
   });
 });

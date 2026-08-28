@@ -7,8 +7,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { rename } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readdir, rename } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 
 import type { FirefoxProduct } from '../types/config.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
@@ -55,11 +55,11 @@ export function getTarballFilename(
 
 /**
  * Lifecycle phase reported by {@link downloadFirefoxSource}. The download
- * CLI command uses this to swap spinners between the bytes-on-the-wire
- * phase and the silent tar-xz decompression phase that follows — before
- * this, a single spinner stuck at "Downloading Firefox … 100%" covered
- * both phases, making the first-run setup look hung precisely when the
- * archive was already on disk and `tar` was the long pole.
+ * CLI command uses this to swap spinners between the bytes-on-the-wire phase
+ * and the silent tar-xz decompression phase that follows: a single spinner
+ * covering both sticks at "Downloading Firefox … 100%" and makes first-run
+ * setup look hung precisely when the archive is already on disk and `tar` is
+ * the long pole.
  */
 export type FirefoxSourcePhase = 'download' | 'extract';
 
@@ -104,8 +104,6 @@ function isLikelyArchiveCorruptionError(error: unknown): boolean {
  * @returns names of the directories that were removed
  */
 export async function sweepOrphanedEngineWorkDirs(destDir: string): Promise<string[]> {
-  const { readdir } = await import('node:fs/promises');
-  const { basename, dirname } = await import('node:path');
   const parent = dirname(destDir);
   const enginePrefixTmp = `${basename(destDir)}.tmp-`;
   const enginePrefixReplacement = `${basename(destDir)}.replacement-`;
@@ -139,6 +137,8 @@ export async function sweepOrphanedEngineWorkDirs(destDir: string): Promise<stri
  * @param onPhase - Optional callback fired when the function transitions
  *   between phases (`'download'` → `'extract'`). Fires exactly once per
  *   phase even if the cached archive path skips the wire entirely.
+ * @param expectedSha256 - Expected archive checksum; verified after download when supplied
+ * @param onPhaseProgress - Called with byte progress within the current phase
  * @param candidate - Optional release-candidate build directory (e.g.
  *   "build2") resolving the archive under `candidates/` instead of
  *   `releases/`.
@@ -183,7 +183,6 @@ export async function downloadFirefoxSource(
 
   // Firefox source extracts to a subdirectory (e.g., firefox-140.0/)
   // Find it dynamically since ESR versions may have different naming
-  const { readdir } = await import('node:fs/promises');
   const entries = await readdir(tempDir, { withFileTypes: true });
   const extractedSubdir = entries.find(
     (entry) => entry.isDirectory() && entry.name.startsWith('firefox-')

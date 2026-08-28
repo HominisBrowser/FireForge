@@ -4,6 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { InvalidArgumentError } from '../../errors/base.js';
 import type { FirefoxProduct } from '../../types/config.js';
 import {
+  describePatchNameProblem,
+  describeProductVersionIncompatibility,
+  describeTokenNameProblem,
   FIREFOX_PRODUCTS,
   inferProductFromVersion,
   isArray,
@@ -21,9 +24,6 @@ import {
   normalizePatchDisplayName,
   normalizeTokenName,
   parsePositiveIntegerFlag,
-  validateFirefoxProductVersionCompatibility,
-  validatePatchName,
-  validateTokenName,
 } from '../validation.js';
 
 describe('type guards', () => {
@@ -136,108 +136,108 @@ describe('normalizeTokenName', () => {
   });
 });
 
-describe('validatePatchName', () => {
+describe('describePatchNameProblem', () => {
   it('rejects empty names, long names, and unsupported characters', () => {
-    expect(validatePatchName('')).toBe('Name is required');
-    expect(validatePatchName('a'.repeat(51))).toBe('Name must be 50 characters or less');
-    expect(validatePatchName('bad/name')).toBe(
+    expect(describePatchNameProblem('')).toBe('Name is required');
+    expect(describePatchNameProblem('a'.repeat(51))).toBe('Name must be 50 characters or less');
+    expect(describePatchNameProblem('bad/name')).toBe(
       'Name can only contain letters, numbers, hyphens, underscores, and spaces'
     );
   });
 
   it('accepts well-formed patch names', () => {
-    expect(validatePatchName('UI polish 01')).toBeUndefined();
-    expect(validatePatchName('privacy_hardening')).toBeUndefined();
+    expect(describePatchNameProblem('UI polish 01')).toBeUndefined();
+    expect(describePatchNameProblem('privacy_hardening')).toBeUndefined();
   });
 });
 
-describe('validateFirefoxProductVersionCompatibility', () => {
+describe('describeProductVersionIncompatibility', () => {
   it('accepts ESR product with ESR version', () => {
-    expect(validateFirefoxProductVersionCompatibility('140.9.0esr', 'firefox-esr')).toBeUndefined();
-    expect(validateFirefoxProductVersionCompatibility('128.0.1esr', 'firefox-esr')).toBeUndefined();
+    expect(describeProductVersionIncompatibility('140.9.0esr', 'firefox-esr')).toBeUndefined();
+    expect(describeProductVersionIncompatibility('128.0.1esr', 'firefox-esr')).toBeUndefined();
   });
 
   it('accepts stable product with stable version', () => {
-    expect(validateFirefoxProductVersionCompatibility('140.9.0', 'firefox')).toBeUndefined();
-    expect(validateFirefoxProductVersionCompatibility('140.9.1', 'firefox')).toBeUndefined();
+    expect(describeProductVersionIncompatibility('140.9.0', 'firefox')).toBeUndefined();
+    expect(describeProductVersionIncompatibility('140.9.1', 'firefox')).toBeUndefined();
   });
 
   it('accepts beta product with beta version', () => {
-    expect(validateFirefoxProductVersionCompatibility('147.0b1', 'firefox-beta')).toBeUndefined();
-    expect(validateFirefoxProductVersionCompatibility('147.0b2', 'firefox-beta')).toBeUndefined();
+    expect(describeProductVersionIncompatibility('147.0b1', 'firefox-beta')).toBeUndefined();
+    expect(describeProductVersionIncompatibility('147.0b2', 'firefox-beta')).toBeUndefined();
   });
 
   it('rejects ESR product with beta version', () => {
-    const result = validateFirefoxProductVersionCompatibility('147.0b1', 'firefox-esr');
+    const result = describeProductVersionIncompatibility('147.0b1', 'firefox-esr');
     expect(result).toContain('firefox-esr');
     expect(result).toContain('ESR version');
   });
 
   it('rejects ESR product with stable version', () => {
-    const result = validateFirefoxProductVersionCompatibility('140.9.0', 'firefox-esr');
+    const result = describeProductVersionIncompatibility('140.9.0', 'firefox-esr');
     expect(result).toBeDefined();
     expect(result).toContain('ESR version');
   });
 
   it('rejects stable product with ESR version', () => {
-    const result = validateFirefoxProductVersionCompatibility('140.9.0esr', 'firefox');
+    const result = describeProductVersionIncompatibility('140.9.0esr', 'firefox');
     expect(result).toContain('firefox-esr');
   });
 
   it('rejects stable product with beta version', () => {
-    const result = validateFirefoxProductVersionCompatibility('147.0b1', 'firefox');
+    const result = describeProductVersionIncompatibility('147.0b1', 'firefox');
     expect(result).toContain('firefox-beta');
   });
 
   it('rejects beta product with ESR version', () => {
-    const result = validateFirefoxProductVersionCompatibility('140.9.0esr', 'firefox-beta');
+    const result = describeProductVersionIncompatibility('140.9.0esr', 'firefox-beta');
     expect(result).toBeDefined();
     expect(result).toContain('beta version');
   });
 
   it('rejects beta product with stable version', () => {
-    const result = validateFirefoxProductVersionCompatibility('140.9.0', 'firefox-beta');
+    const result = describeProductVersionIncompatibility('140.9.0', 'firefox-beta');
     expect(result).toBeDefined();
     expect(result).toContain('beta version');
   });
 });
 
-describe('validateTokenName', () => {
+describe('describeTokenNameProblem', () => {
   it('accepts valid CSS custom property names', () => {
-    expect(validateTokenName('my-token')).toBeUndefined();
-    expect(validateTokenName('--my-token')).toBeUndefined();
-    expect(validateTokenName('mybrowser-canvas-dot-size')).toBeUndefined();
-    expect(validateTokenName('color_primary')).toBeUndefined();
+    expect(describeTokenNameProblem('my-token')).toBeUndefined();
+    expect(describeTokenNameProblem('--my-token')).toBeUndefined();
+    expect(describeTokenNameProblem('mybrowser-canvas-dot-size')).toBeUndefined();
+    expect(describeTokenNameProblem('color_primary')).toBeUndefined();
   });
 
   it('rejects names with spaces', () => {
-    expect(validateTokenName('bad token')).toContain('whitespace');
-    expect(validateTokenName('--bad token')).toContain('whitespace');
+    expect(describeTokenNameProblem('bad token')).toContain('whitespace');
+    expect(describeTokenNameProblem('--bad token')).toContain('whitespace');
   });
 
   it('rejects names with */ (comment-breaking)', () => {
-    expect(validateTokenName('bad*/token')).toContain('*/');
-    expect(validateTokenName('--bad*/token')).toContain('*/');
+    expect(describeTokenNameProblem('bad*/token')).toContain('*/');
+    expect(describeTokenNameProblem('--bad*/token')).toContain('*/');
   });
 
   it('rejects names with newlines and control characters', () => {
-    expect(validateTokenName('bad\nname')).toContain('whitespace');
-    expect(validateTokenName('bad\tname')).toContain('whitespace');
-    expect(validateTokenName('bad\x00name')).toContain('control');
-    expect(validateTokenName('bad\x1fname')).toContain('control');
+    expect(describeTokenNameProblem('bad\nname')).toContain('whitespace');
+    expect(describeTokenNameProblem('bad\tname')).toContain('whitespace');
+    expect(describeTokenNameProblem('bad\x00name')).toContain('control');
+    expect(describeTokenNameProblem('bad\x1fname')).toContain('control');
   });
 
   it('rejects names with CSS-breaking characters', () => {
-    expect(validateTokenName('bad{name')).toContain('corrupt CSS');
-    expect(validateTokenName('bad}name')).toContain('corrupt CSS');
-    expect(validateTokenName('bad;name')).toContain('corrupt CSS');
-    expect(validateTokenName('bad(name')).toContain('corrupt CSS');
-    expect(validateTokenName('bad)name')).toContain('corrupt CSS');
+    expect(describeTokenNameProblem('bad{name')).toContain('corrupt CSS');
+    expect(describeTokenNameProblem('bad}name')).toContain('corrupt CSS');
+    expect(describeTokenNameProblem('bad;name')).toContain('corrupt CSS');
+    expect(describeTokenNameProblem('bad(name')).toContain('corrupt CSS');
+    expect(describeTokenNameProblem('bad)name')).toContain('corrupt CSS');
   });
 
   it('rejects empty names', () => {
-    expect(validateTokenName('')).toContain('empty');
-    expect(validateTokenName('--')).toContain('empty');
+    expect(describeTokenNameProblem('')).toContain('empty');
+    expect(describeTokenNameProblem('--')).toContain('empty');
   });
 });
 
@@ -311,12 +311,12 @@ describe('FIREFOX_PRODUCTS', () => {
   });
 
   it('stays in lock-step with the FirefoxProduct union (drift guard)', () => {
-    // `satisfies readonly FirefoxProduct[]` catches additions to the const that
-    // are not in the union. The reverse — a union member with no entry in the
-    // const — needs an exhaustive switch, which is what this is. The previous
-    // version claimed to be one but was a hand-written list of `assertCovered`
-    // calls plus `seen.size === 4`: adding a fifth union member compiled fine
-    // and only tripped the size assertion, naming nothing.
+    // `satisfies readonly FirefoxProduct[]` catches additions to the const
+    // that are not in the union. The reverse — a union member with no entry
+    // in the const — needs an exhaustive switch, which is what this is. A
+    // hand-written list of `assertCovered` calls plus a `seen.size` check is
+    // not one: adding a member compiles fine and only trips the size
+    // assertion, naming nothing.
     //
     // Here, a new union member makes `product` non-`never` in the default
     // branch, so `tsc` fails at BUILD time and names the missing member.

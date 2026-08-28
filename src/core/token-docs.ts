@@ -50,6 +50,8 @@ function stripInlineCode(cell: string): string {
  * against a freshly parsed view of the document so that splice indices
  * stay valid as rewrites are layered.
  *
+ * @param engineDir - Absolute path to the engine checkout
+ * @param options - Token name, category and description to document
  * @param annotation - The mode annotation string the caller already computed
  *   (kept here as a parameter so this module needs no dependency on
  *   token-manager's `getModeAnnotation`).
@@ -74,7 +76,7 @@ export async function addTokenToDocs(
   let countUpdated = false;
 
   const isLiteral = !options.value.startsWith('var(');
-  const mapsTo = isLiteral ? '—' : options.value.replace(/var\(([^)]+)\)/, '$1');
+  const mapsTo = isLiteral ? '—' : options.value.replace(/^var\(([^)]+)\)/, '$1');
   const tokenCell = `\`${options.tokenName}\``;
   const valueCell = `\`${options.value}\``;
 

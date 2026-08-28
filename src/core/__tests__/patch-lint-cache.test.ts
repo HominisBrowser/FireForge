@@ -19,7 +19,7 @@ import {
   loadPerPatchLintCache,
   savePerPatchLintCache,
   setCachedPerPatchLintIssues,
-} from '../lint-cache.js';
+} from '../patch-lint-cache.js';
 import type { PatchQueueContext } from '../patch-lint-cross.js';
 
 describe('per-patch lint cache', () => {
@@ -222,8 +222,8 @@ describe('per-patch lint cache', () => {
     });
     const before = await key({ config: withTestShim });
 
-    // Content edit in place — the adoption-workflow shape that replayed
-    // stale findings on 0.40.0: the config block only carried the PATH.
+    // Content edit in place — the adoption-workflow shape that replays stale
+    // findings when the config block carries only the PATH.
     await writeFiles(projectRoot, {
       'types/test-shim.d.ts': 'declare var HominisTestHarness: number;\n',
     });

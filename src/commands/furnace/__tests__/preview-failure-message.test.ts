@@ -5,13 +5,12 @@ import { buildStorybookFailureMessage } from '../preview.js';
 
 describe('buildStorybookFailureMessage', () => {
   it('classifies missing chrome-map.json as a backend-build failure', () => {
-    // Finding #11: the eval log reported
-    // `FileNotFoundError: [...] chrome-map.json` AFTER a successful npm
-    // install. The pre-0.16.0 heuristic matched "No such file" but the
-    // second clause only looked for the literal "backend" string, so
-    // chrome-map.json failures were misdiagnosed as dep failures and
-    // operators were sent back to `--install`. The 0.16.0 pattern list
-    // explicitly recognises backend-artifact filenames.
+    // A `FileNotFoundError: [...] chrome-map.json` AFTER a successful npm
+    // install is a backend-artifact failure, not a dependency one. A
+    // heuristic that matches "No such file" but only looks for the literal
+    // "backend" string misdiagnoses it and sends operators back to
+    // `--install`; the pattern list explicitly recognises backend-artifact
+    // filenames.
     const output = [
       'FileNotFoundError: [Errno 2] No such file or directory:',
       "'/project/engine/obj-aarch64-apple-darwin25.4.0/chrome-map.json'",
@@ -20,8 +19,8 @@ describe('buildStorybookFailureMessage', () => {
     const message = buildStorybookFailureMessage(output, false);
     expect(message).toMatch(/Firefox build backend artifacts are missing/);
     expect(message).toMatch(/Rerun "fireforge build"/);
-    // Must NOT suggest `--install` — that is the wrong recovery for a
-    // missing backend artifact and was the eval's reported misdirection.
+    // Must NOT suggest `--install` — the wrong recovery for a missing
+    // backend artifact.
     expect(message).not.toMatch(/fireforge furnace preview --install/);
   });
 
@@ -33,8 +32,8 @@ describe('buildStorybookFailureMessage', () => {
 
   it('keeps the dep-failure hint for generic missing-Storybook-workspace errors', () => {
     // The second branch (not a backend artifact) still points at the
-    // `--install` workflow — that path covers the original "missing
-    // Storybook packages" symptom that pre-dated finding #11.
+    // `--install` workflow, which covers the genuine "missing Storybook
+    // packages" symptom.
     const output = 'ENOENT: Storybook workspace file missing';
     const message = buildStorybookFailureMessage(output, false);
     expect(message).toMatch(/missing Storybook workspace files/);

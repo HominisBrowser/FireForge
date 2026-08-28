@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Process-group kill and post-run sweep helpers for the exec layer
- * (0.37.0 item 9a). Split out of `process.ts` to keep that file within the
- * per-file line budget; deliberately spawn-based (not `exec`-based) so the
- * two modules do not import each other cyclically.
+ * Process-group kill and post-run sweep helpers for the exec layer. Split
+ * out of `process.ts` to keep that file within the per-file line budget;
+ * deliberately spawn-based (not `exec`-based) so the two modules do not
+ * import each other cyclically.
  */
 
 import { type ChildProcess, spawn } from 'node:child_process';
@@ -17,6 +17,11 @@ import { verbose, warn } from './logger.js';
  * chains), or a `taskkill /T /F` tree kill plus a direct `child.kill`
  * fallback on Windows. No-ops once the direct child has exited (group
  * survivors after exit are the post-run sweep's job, not this function's).
+ *
+ * A failed group kill falls through to a direct `child.kill` on POSIX too:
+ * ESRCH/EPERM on the negative PID means the group is gone or was never
+ * created, and signalling the direct child is strictly better than
+ * returning silently.
  */
 export function killProcessTree(
   child: ChildProcess,
@@ -31,7 +36,15 @@ export function killProcessTree(
       // Negative PID routes to the process group, killing the Python
       // wrapper, the firefox it forked, and every content process
       // that inherited the group.
-      process.kill(-targetPid, signal);
+      try {
+        process.kill(-targetPid, signal);
+      } catch {
+        // ESRCH/EPERM: the group is gone, or was never created because the
+        // platform ignored `detached`. Signal the direct child rather than
+        // doing nothing — it may well still be alive. Without this
+        // fall-through a failed group kill left the child running.
+        child.kill(signal);
+      }
     } else {
       // No process group on Windows — taskkill /T walks the descendant
       // tree instead. Always forced (/F): there is no SIGTERM analogue,

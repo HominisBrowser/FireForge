@@ -6,7 +6,7 @@ import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository } from '../../core/git.js';
 import { getUntrackedFilesInDir } from '../../core/git-status.js';
-import { isFileRegistered, matchesRegistrablePattern } from '../../core/manifest-rules.js';
+import { isFileRegistered, matchesRegistrablePattern } from '../../core/moz-manifest-rules.js';
 import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../../core/patch-lint.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { GeneralError } from '../../errors/base.js';
@@ -42,6 +42,10 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set())),
 }));
 
@@ -49,8 +53,8 @@ vi.mock('../../core/git.js', () => ({
   getStatusWithCodes: vi.fn(),
   isGitRepository: vi.fn(),
   // Default: engine has a baseline commit so the unborn-HEAD early return
-  // does not fire in the common test cases. The specific regression test
-  // for that branch rebinds getHead to throw.
+  // does not fire in the common cases. The regression test for that branch
+  // rebinds getHead to throw.
   getHead: vi.fn().mockResolvedValue('base-commit'),
   isMissingHeadError: vi.fn(
     (err: unknown) =>
@@ -66,7 +70,7 @@ vi.mock('../../core/git-status.js', () => ({
   getUntrackedFilesInDir: vi.fn(),
 }));
 
-vi.mock('../../core/manifest-rules.js', () => ({
+vi.mock('../../core/moz-manifest-rules.js', () => ({
   matchesRegistrablePattern: vi.fn(),
   isFileRegistered: vi.fn(),
 }));
@@ -104,14 +108,18 @@ vi.mock('../../core/patch-lint.js', () => ({
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
   readText: vi.fn(),
-  // Finding #18 added this filter pattern so status can strip atomic-
-  // write temps. Export the real regex here so status's filter behaves
-  // identically to production — tests for the filter rely on the same
-  // exact pattern.
+  // Export the real regex so status's atomic-write-temp filter behaves
+  // identically to production — the filter tests rely on the same pattern.
   FIREFORGE_TMP_PATH_PATTERN: /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9a-f-]{36}$/i,
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -189,12 +197,11 @@ describe('statusCommand', () => {
     });
 
     it('surfaces a single recovery banner when HEAD is unborn', async () => {
-      // Eval regression: interrupting a `fireforge download` mid-indexing
-      // leaves engine/ extracted but git has no HEAD. `fireforge status`
-      // would then flood the output with hundreds of thousands of
-      // untracked entries plus a truncation warning — correct but
-      // unhelpful. Emit a single actionable banner pointing at
-      // `fireforge download --force` instead.
+      // Interrupting a `fireforge download` mid-indexing leaves engine/
+      // extracted but git with no HEAD. `fireforge status` then floods the
+      // output with hundreds of thousands of untracked entries plus a
+      // truncation warning — correct but unhelpful. Emit a single
+      // actionable banner pointing at `fireforge download --force` instead.
       vi.mocked(getHead).mockRejectedValueOnce(
         new Error(
           "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree"
@@ -597,11 +604,11 @@ describe('statusCommand', () => {
     });
 
     it('classifies a furnace-deployed file as patch-owned drift when it diverges from its owning patch', async () => {
-      // 0.38.0 friction item 1: exporting a deployed component and then
-      // re-deploying an edited workspace source leaves the engine copy
-      // with content the owning patch's body lacks. The furnace prefix
-      // short-circuit used to run before the single-owner content
-      // comparison and silently bucketed the drift as `furnace`.
+      // Exporting a deployed component and then re-deploying an edited
+      // workspace source leaves the engine copy with content the owning
+      // patch's body lacks. A furnace-prefix short-circuit running before
+      // the single-owner content comparison silently buckets that drift as
+      // `furnace`.
       vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValueOnce(
         new Set(['toolkit/content/widgets/moz-button/'])
       );
@@ -817,14 +824,14 @@ describe('statusCommand', () => {
       expect(outro).toHaveBeenCalledWith('No unmanaged changes');
     });
 
-    // 2026-04-24 eval Finding 2: a new engine module directory whose parent
-    // `browser/modules/<binary>/moz.build` does not yet exist used to fail
-    // `status --unmanaged` with exit code 1 because `isFileRegistered`
-    // throws `GeneralError("Manifest not found: …")` synchronously and the
-    // `Promise.all` in `printUnregisteredWarnings` re-threw it out of the
-    // command. Status is a read-only reporter; it should surface the
-    // missing-manifest case as a warning line and still exit cleanly so it
-    // remains usable in scripted discovery workflows.
+    // A new engine module directory whose parent
+    // `browser/modules/<binary>/moz.build` does not yet exist must not fail
+    // `status --unmanaged` with exit 1: `isFileRegistered` throws
+    // `GeneralError("Manifest not found: …")` synchronously and the
+    // `Promise.all` in `printUnregisteredWarnings` re-throws it out of the
+    // command. Status is a read-only reporter; it surfaces the
+    // missing-manifest case as a warning line and still exits cleanly so it
+    // stays usable in scripted discovery workflows.
     it('tolerates a missing parent moz.build when reporting new unmanaged files', async () => {
       vi.mocked(getStatusWithCodes).mockResolvedValue([
         { status: '??', file: 'browser/modules/freshforge/FreshQA.sys.mjs' },
@@ -971,12 +978,10 @@ describe('statusCommand', () => {
     });
 
     it('flags a duplicate-new-file-creation conflict that verify would catch', async () => {
-      // Alignment fix regression: two patches both hit `/dev/null →
-      // b/foo.js` in their bodies but only one lists the path in its
-      // `filesAffected` row. Previously status --ownership walked
-      // only filesAffected and reported the queue clean, while
-      // verify correctly rejected it. Now status --ownership
-      // consumes the same structured map verify does and agrees.
+      // Two patches both hit `/dev/null → b/foo.js` in their bodies but only
+      // one lists the path in its `filesAffected` row. Walking only
+      // filesAffected reports the queue clean while verify correctly rejects
+      // it; status --ownership consumes the same structured map verify does.
       vi.mocked(loadPatchesManifest).mockResolvedValue({
         version: 1,
         patches: [
@@ -1246,14 +1251,13 @@ describe('statusCommand', () => {
     });
   });
 
-  describe('FireForge temp-file filtering (Finding #18)', () => {
+  describe('FireForge temp-file filtering', () => {
     it('omits .fireforge-tmp-<pid>-<uuid> entries from every status mode', async () => {
-      // Finding #18 regression guard. `writeFileAtomic` names its
-      // rename-target `.<filename>.fireforge-tmp-<pid>-<uuid>`; a
-      // concurrent `status` run during a brand.ftl or mozconfig write
-      // briefly saw those entries in the raw git output. The filter
-      // in status.ts excises them before classification so no mode
-      // leaks the temp path.
+      // `writeFileAtomic` names its rename target
+      // `.<filename>.fireforge-tmp-<pid>-<uuid>`, and a concurrent `status`
+      // run during a brand.ftl or mozconfig write briefly sees those entries
+      // in the raw git output. The filter excises them before
+      // classification so no mode leaks the temp path.
       const tempFile = '.mozconfig.fireforge-tmp-12345-11111111-2222-3333-4444-555555555555';
       vi.mocked(getStatusWithCodes).mockResolvedValue([
         { status: '??', file: tempFile },
@@ -1281,13 +1285,12 @@ describe('statusCommand', () => {
     });
   });
 
-  describe('clean-tree output shape (Finding #3)', () => {
+  describe('clean-tree output shape', () => {
     it('emits the documented JSON object via stdout when --json is set and the tree is clean', async () => {
-      // Regression guard for the clean-tree `--json` branch. Pre-0.16.0
-      // the empty-files early-return ran before the `--json` check and
-      // printed "No modified files" / "Working tree clean" human text,
-      // so a pipe through `jq` broke on the most common clean-workspace
-      // invocation.
+      // Regression guard for the clean-tree `--json` branch: an empty-files
+      // early return that precedes the `--json` check prints "No modified
+      // files" / "Working tree clean" human text, breaking a pipe through
+      // `jq` on the most common clean-workspace invocation.
       vi.mocked(getStatusWithCodes).mockResolvedValue([]);
       vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
       const writes: string[] = [];
@@ -1318,10 +1321,9 @@ describe('statusCommand', () => {
     });
 
     it('writes nothing to stdout when --raw is set and the tree is clean', async () => {
-      // Raw consumers parse `git status --porcelain`-shaped output. A
-      // clean tree produces no lines there, and `fireforge status --raw`
-      // now matches that — the "No modified files" / "Working tree
-      // clean" human banner previously contaminated the pipe.
+      // Raw consumers parse `git status --porcelain`-shaped output. A clean
+      // tree produces no lines there, so `fireforge status --raw` must match
+      // — a "No modified files" human banner contaminates the pipe.
       vi.mocked(getStatusWithCodes).mockResolvedValue([]);
       vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
       const writes: string[] = [];
@@ -1343,13 +1345,13 @@ describe('statusCommand', () => {
     });
   });
 
-  describe('cross-patch ownership conflicts surface in --json (Finding #15)', () => {
+  describe('cross-patch ownership conflicts surface in --json', () => {
     it('classifies files claimed by two patches as "conflict" with a claimedBy list', async () => {
-      // Pre-0.16.0 `--json` treated conflicted files as `unmanaged`, so
-      // scripts downstream of the JSON view mis-diagnosed the true
-      // ownership state and took the wrong corrective action. The
-      // ownership multimap now feeds the classifier so JSON and
-      // `--ownership` agree on the same drift semantics.
+      // Treating conflicted files as `unmanaged` in `--json` makes scripts
+      // downstream of the JSON view mis-diagnose the ownership state and
+      // take the wrong corrective action. The ownership multimap feeds the
+      // classifier so JSON and `--ownership` agree on the same drift
+      // semantics.
       vi.mocked(getStatusWithCodes).mockResolvedValue([
         { status: ' M', file: 'browser/base/jar.mn' },
       ]);
@@ -1415,9 +1417,9 @@ describe('statusCommand', () => {
     });
 
     it('leaves single-owner patch-backed entries without a claimedBy field', async () => {
-      // Non-conflict entries must stay byte-identical to the pre-0.16.0
-      // JSON shape so parsers that do not know about the new `claimedBy`
-      // field continue to work.
+      // Non-conflict entries must stay byte-identical to the earlier JSON
+      // shape so parsers that do not know about the `claimedBy` field
+      // continue to work.
       vi.mocked(getStatusWithCodes).mockResolvedValue([
         { status: ' M', file: 'browser/base/foo.js' },
       ]);
@@ -1572,10 +1574,10 @@ describe('statusCommand', () => {
       const payload = JSON.parse(writes.join('')) as { schemaVersion: number };
       expect(payload.schemaVersion).toBe(1);
 
-      // Machine mode must SURVIVE the refusal's propagation: withErrorHandling
-      // (not statusCommand) resets it after routing the message to stderr. A
-      // mid-throw restore here put clack's styled refusal on stdout after the
-      // JSON, breaking the 0.40.0 stderr promise.
+      // Machine mode must SURVIVE the refusal's propagation:
+      // withErrorHandling (not statusCommand) resets it after routing the
+      // message to stderr. A mid-throw restore puts clack's styled refusal
+      // on stdout after the JSON.
       expect(setMachineOutputMode).toHaveBeenCalledTimes(1);
       expect(setMachineOutputMode).toHaveBeenCalledWith(true);
     });
@@ -1954,16 +1956,15 @@ describe('statusCommand', () => {
     });
   });
 
-  describe('--json error paths emit exactly one JSON line (Finding 1)', () => {
+  describe('--json error paths emit exactly one JSON line', () => {
     it('engine-missing: stdout carries only the JSON object, never the human banner', async () => {
-      // Pre-fix: emitJsonError wrote the JSON line and then threw a
-      // GeneralError. withErrorHandling routed that through `logError`
-      // (clack `p.log.error`), which prints the styled "■ Firefox source
-      // not found …" banner to stdout. Scripts piping `status --json` to
-      // jq broke on every engine-missing exit. The fix throws a
-      // CommandError instead, which withErrorHandling does not log —
-      // bin/fireforge.ts catches the CommandError and exits with the
-      // carried code, so stdout stays a single JSON line.
+      // Writing the JSON line and then throwing a GeneralError routes
+      // through `logError` (clack `p.log.error`), which prints the styled
+      // "■ Firefox source not found …" banner to stdout — breaking every
+      // script that pipes `status --json` to jq on an engine-missing exit.
+      // Throwing a CommandError instead is not logged by withErrorHandling;
+      // bin/fireforge.ts catches it and exits with the carried code, so
+      // stdout stays a single JSON line.
       vi.mocked(pathExists).mockImplementation((path: string) => {
         // engine/ missing — every other path is irrelevant for the
         // engine-missing branch.

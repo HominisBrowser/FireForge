@@ -22,9 +22,15 @@ import {
 } from './mach-known-noise-filter.js';
 import { getPython } from './mach-python.js';
 import { installMachResourceGuard } from './mach-resource-shim.js';
+import { teeToRunLog, writeToActiveRunLog } from './run-log.js';
 import { detectHarnessCrashSignature, type HarnessCrashSignature } from './test-harness-crash.js';
 
 // Re-export sub-modules so existing `from './mach.js'` imports keep working.
+// This block is a frozen compatibility list, not a barrel to grow: every name
+// here already had a `from './mach.js'` import when the module was split.
+// New helpers belong in their own sub-module and are imported from it
+// directly — adding to this list pulls the whole sub-module into every suite
+// that mocks `mach.js`.
 export {
   attemptMozinfoRewrite,
   buildArtifactMismatchMessage,
@@ -63,6 +69,11 @@ export interface MachOptions {
    * the test dispatchers only.
    */
   annotateKnownTeardownNoise?: boolean;
+  /**
+   * Environment variables to unset for this dispatch. Threaded to the exec
+   * layer's {@link ExecOptions.envUnset}.
+   */
+  envUnset?: readonly string[];
 }
 
 /**
@@ -152,15 +163,22 @@ export async function runMachCapture(
   const exitCode = await execStream(python, [machPath, ...args], {
     cwd: engineDir,
     ...(options.env ? { env: options.env } : {}),
+    ...(options.envUnset ? { envUnset: options.envUnset } : {}),
     // Every capture dispatch (test suites, protected builds, package,
     // storybook) runs as a process-group leader and is group-reaped on
-    // exit/abort — see ExecOptions.processGroup (0.37.0 item 9a).
+    // exit/abort — see ExecOptions.processGroup.
     processGroup: true,
     onStdout: (data) => {
       stdout += data;
       if (stdout.length > CAPTURE_TAIL_LIMIT) {
         stdout = stdout.slice(-CAPTURE_TAIL_LIMIT);
       }
+      // RAW into the log, filtered into the echo. The log exists to be
+      // re-read after the fact by whoever is diagnosing the run, and the
+      // echo filter's whole purpose is to shorten what a HUMAN scrolls
+      // past — collapsing a traceback in the artifact would reintroduce
+      // the loss this log exists to prevent.
+      writeToActiveRunLog(data);
       process.stdout.write(stdoutFilter ? stdoutFilter.transform(data) : data);
     },
     onStderr: (data) => {
@@ -168,6 +186,7 @@ export async function runMachCapture(
       if (stderr.length > CAPTURE_TAIL_LIMIT) {
         stderr = stderr.slice(-CAPTURE_TAIL_LIMIT);
       }
+      writeToActiveRunLog(data);
       process.stderr.write(stderrFilter ? stderrFilter.transform(data) : data);
     },
   });
@@ -202,6 +221,10 @@ export async function runMachInheritCapture(
   return execInheritCapture(python, [machPath, ...args], {
     cwd: engineDir,
     ...(options.env ? { env: options.env } : {}),
+    ...(options.envUnset ? { envUnset: options.envUnset } : {}),
+    // This path streams through the collectors' mirror rather than per-chunk
+    // callbacks, so the run-log tee rides the mirror. `mach build` is here.
+    mirror: { stdout: teeToRunLog(process.stdout), stderr: teeToRunLog(process.stderr) },
     processGroup: true,
   });
 }
@@ -225,18 +248,16 @@ export async function bootstrapWithOutput(engineDir: string): Promise<MachComman
 }
 
 /**
- * Prints any matched {@link MachErrorHint} hints for the captured mach output.
- * No-op when nothing matches. Always called before a non-zero exit propagates
- * so the hint sits immediately below the raw mach error in the operator's
- * terminal.
+ * Prints any matched {@link MachErrorHint} hints for the captured mach
+ * output. No-op when nothing matches. Always called before a non-zero exit
+ * propagates so the hint sits immediately below the raw mach error in the
+ * operator's terminal.
  *
  * The scanner is passed the concatenation of stderr AND stdout because mach
  * streams its subcommand output through a timestamp-prefixing wrapper that
- * writes both streams to whatever FD the subprocess chose — in practice,
- * `rustc` errors from `mach build` can land on stdout rather than stderr,
- * and the eval run's Darwin 25 `_CharT` hint pattern matched the captured
- * text but our pre-0.16 code only fed `result.stderr` into the scanner, so
- * the hint never fired.
+ * writes both streams to whatever FD the subprocess chose — `rustc` errors
+ * from `mach build` can land on stdout, so feeding only `result.stderr`
+ * silently loses the match.
  */
 function surfaceMachErrorHints(result: MachCommandResult): void {
   const combined = `${result.stderr}\n${result.stdout}`;
@@ -278,21 +299,20 @@ export interface ProtectedMachBuildResult extends MachCommandResult {
 
 /**
  * The single protected path every FireForge mach build dispatch routes
- * through (field report: `build --ui` and the pre-test `--build` step died
- * on the resource-monitor crash family while plain `build` survived,
- * because only some entries were protected and retry budgets differed):
+ * through — `build`, `build --ui`, and the pre-test `--build` step all use
+ * it, so no entry point is left unprotected with a different retry budget:
  *
  *  1. installs the resource-monitor degrade guard IN the mach virtualenvs
- *     (plus the PYTHONPATH fallback) — re-installed before every attempt,
- *     so a venv materialized by a crashed first attempt is guarded on the
- *     next one instead of every retry dying on the same wedged state;
+ *     (plus the PYTHONPATH fallback) — re-installed before every attempt, so
+ *     a venv materialized by a crashed first attempt is guarded on the next
+ *     one instead of every retry dying on the same wedged state;
  *  2. spawns a fresh mach process per attempt;
  *  3. retries ONLY the recognized harness-crash family (resource monitor /
  *     psutil startup tracebacks) up to the uniform budget — an ordinary
  *     compile error is never retried.
  *
- * The protected path never runs `mach configure`, never clobbers, and
- * never widens the requested build kind — a `faster` dispatch retries as
+ * The protected path never runs `mach configure`, never clobbers, and never
+ * widens the requested build kind — a `faster` dispatch retries as
  * `mach build faster`, so it cannot invalidate more of the objdir than the
  * command the operator asked for.
  */
@@ -360,32 +380,27 @@ export async function buildUI(engineDir: string): Promise<ProtectedMachBuildResu
 }
 
 /**
- * Runs an operation while holding a sidecar build lock keyed on the
- * project root. Concurrent `fireforge build` / `fireforge build --ui`
- * invocations against the same tree serialise instead of racing through
- * the mach obj-dir.
+ * Runs an operation while holding a sidecar build lock keyed on the project
+ * root. Concurrent `fireforge build` / `fireforge build --ui` invocations
+ * against the same tree serialise instead of racing through the mach
+ * obj-dir.
  *
- * Motivating case (2026-04-21 eval): a `fireforge build --ui` run
- * kicked off while a full `fireforge build` was still in flight against
- * the same engine tree accepted the command and handed off to `mach
- * build faster`, which failed almost immediately with `No rule to make
- * target 'XUL'`. The real problem is that the first build had not yet
- * materialised the full backend; the operator was left staring at a
- * low-level make error with no link to the actual cause (a concurrent
- * build in flight). The lock intercepts the second invocation before
- * it touches mach, and the refusal message names the PID currently
- * holding the lock so the operator can decide whether to wait or
- * investigate a hung process.
+ * Without it, a `build --ui` started while a full `build` is still in flight
+ * hands off to `mach build faster` and fails almost immediately with `No
+ * rule to make target 'XUL'` — the real problem being that the first build
+ * has not yet materialised the full backend, with nothing in the low-level
+ * make error pointing at the concurrent run. The lock intercepts the second
+ * invocation before it touches mach, and the refusal names the PID holding
+ * the lock so the operator can decide whether to wait or investigate.
  *
  * Stale-lock recovery: the lock stores the owner PID; a crashed build
- * (SIGINT, SIGTERM, or a kernel kill) leaves the lock dir behind but
- * not the owning process, and `withFileLock` removes the lock on the
- * next attempt when `process.kill(pid, 0)` shows the owner is gone.
+ * (SIGINT, SIGTERM, or a kernel kill) leaves the lock dir behind but not the
+ * owning process, and `withFileLock` removes the lock on the next attempt
+ * when `process.kill(pid, 0)` shows the owner is gone.
  *
- * The project-root variant is the right granularity: a single machine
- * may have several FireForge projects side by side, and nothing says
- * they cannot build in parallel. The lock serialises *within* one
- * project, not across unrelated ones.
+ * The project-root variant is the right granularity: a single machine may
+ * have several FireForge projects side by side and nothing says they cannot
+ * build in parallel. The lock serialises *within* one project.
  *
  * Returns whatever the inner operation returns.
  */
@@ -494,18 +509,17 @@ export async function watch(engineDir: string): Promise<number> {
 
 /**
  * Runs mach watch while preserving stdin and capturing emitted output.
- * @param engineDir - Path to the engine directory
- * @param options - Optional environment overrides merged into the mach subprocess env
- * @returns Captured output and exit code
  *
- * 2026-04-24 eval Finding 12: the pre-0.18.1 shape accepted no options
- * and so never forwarded the detected watchman path into the mach
- * subprocess env. `fireforge watch` could locate `watchman` via PATH
- * (the probe's `which` succeeded) but the mach subprocess spawned with
- * the parent's PATH only — on macOS that typically omits
- * `/opt/homebrew/bin`, so `mach watch` failed at the `watch-project`
- * subscription step. Accepting `env` here lets the caller prepend the
- * resolved watchman directory to PATH in a way mach inherits.
+ * `env` is threaded through so the caller can prepend the resolved watchman
+ * directory to PATH in a way mach inherits: `fireforge watch` can locate
+ * `watchman` via `which`, but the mach subprocess spawns with the parent's
+ * PATH only — on macOS that typically omits `/opt/homebrew/bin`, so
+ * `mach watch` fails at the `watch-project` subscription step.
+ *
+ * @param engineDir - Path to the engine directory
+ * @param options - Optional environment overrides merged into the mach
+ *   subprocess env
+ * @returns Captured output and exit code
  */
 export async function watchWithOutput(
   engineDir: string,
@@ -530,8 +544,38 @@ export async function test(
 }
 
 /**
+ * Environment markers mozbuild reads to decide it is running under a coding
+ * agent (`mozbuild.util.is_running_under_coding_agent`), which quiets
+ * terminal output to warnings and errors.
+ *
+ * The quieting is genuinely useful for BUILDS — that is most of what an
+ * agent session prints — but it applies to test runs too, where it removes
+ * `TEST_START` and console INFO: exactly the lines a hang or stall
+ * diagnosis needs, and the ones FireForge's own classifier reads
+ * (`Ran N checks`, `Unexpected results:`, `TEST-UNEXPECTED-*`). Unsetting
+ * the variable globally would give up the build half as well, so the
+ * dispatchers below unset it per TEST dispatch and leave the build path
+ * alone.
+ */
+const CODING_AGENT_ENV_MARKERS = ['CLAUDECODE'] as const;
+
+/**
+ * The `envUnset` list for a test dispatch: the coding-agent markers when
+ * full verbosity was requested, nothing otherwise.
+ *
+ * Opt-in rather than unconditional: this changes how much a third party
+ * prints, and an operator who wants mozbuild's quieting should keep it.
+ */
+function testVerbosityEnvUnset(fullOutput: boolean | undefined): readonly string[] | undefined {
+  return fullOutput === true ? CODING_AGENT_ENV_MARKERS : undefined;
+}
+
+/**
  * Runs mach test while capturing streamed output for better diagnostics.
  *
+ * @param engineDir - Absolute path to the engine checkout
+ * @param testPaths - Test paths to pass to `mach test`; empty runs the default set
+ * @param args - Extra `mach test` arguments appended after the paths
  * @param env - Optional extra environment variables for the mach process
  *   (merged over `process.env` by the exec layer). Used by
  *   `fireforge test --perf-samples` to publish the artifact-path contract.
@@ -540,11 +584,14 @@ export async function testWithOutput(
   engineDir: string,
   testPaths: string[] = [],
   args: string[] = [],
-  env?: Record<string, string>
+  env?: Record<string, string>,
+  fullOutput?: boolean
 ): Promise<MachCommandResult> {
   const guard = await installMachResourceGuard(engineDir);
+  const envUnset = testVerbosityEnvUnset(fullOutput);
   return runMachCapture(['test', ...testPaths, ...args], engineDir, {
     env: { ...guard.env, ...env },
+    ...(envUnset ? { envUnset } : {}),
     annotateKnownTeardownNoise: true,
   });
 }
@@ -554,7 +601,7 @@ export async function testWithOutput(
  * capturing output. Unlike the generic `mach test`, the suite-specific
  * commands degrade a broken mozlog resource monitor to a warning instead of
  * crashing at startup, so `fireforge test` dispatches single-suite runs here
- * to stay resilient to the host psutil failure (field report E1).
+ * to stay resilient to the host psutil failure.
  *
  * Signature mirrors {@link testWithOutput} so the two are interchangeable in
  * the dispatch path.
@@ -563,11 +610,14 @@ export async function xpcshellTestWithOutput(
   engineDir: string,
   testPaths: string[] = [],
   args: string[] = [],
-  env?: Record<string, string>
+  env?: Record<string, string>,
+  fullOutput?: boolean
 ): Promise<MachCommandResult> {
   const guard = await installMachResourceGuard(engineDir);
+  const envUnset = testVerbosityEnvUnset(fullOutput);
   return runMachCapture(['xpcshell-test', ...testPaths, ...args], engineDir, {
     env: { ...guard.env, ...env },
+    ...(envUnset ? { envUnset } : {}),
     annotateKnownTeardownNoise: true,
   });
 }
@@ -581,11 +631,14 @@ export async function mochitestWithOutput(
   engineDir: string,
   testPaths: string[] = [],
   args: string[] = [],
-  env?: Record<string, string>
+  env?: Record<string, string>,
+  fullOutput?: boolean
 ): Promise<MachCommandResult> {
   const guard = await installMachResourceGuard(engineDir);
+  const envUnset = testVerbosityEnvUnset(fullOutput);
   return runMachCapture(['mochitest', ...testPaths, ...args], engineDir, {
     env: { ...guard.env, ...env },
+    ...(envUnset ? { envUnset } : {}),
     annotateKnownTeardownNoise: true,
   });
 }

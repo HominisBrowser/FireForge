@@ -2,11 +2,11 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { DoctorCheck } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
-import { pathExists, readText } from '../../utils/fs.js';
-import type { DoctorCheckContext, DoctorCheckDefinition } from '../doctor-check-core.js';
-import { ok, warning } from '../doctor-check-core.js';
+import type { DoctorCheck } from '../types/commands/index.js';
+import { toError } from '../utils/errors.js';
+import { pathExists, readText } from '../utils/fs.js';
+import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
+import { ok, warning } from './doctor-check-core.js';
 
 async function readEngineText(engineDir: string, relativePath: string): Promise<string | null> {
   const fullPath = join(engineDir, relativePath);

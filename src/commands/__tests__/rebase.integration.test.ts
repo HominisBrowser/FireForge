@@ -5,11 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadState } from '../../core/config.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
-import {
-  getRebaseSessionPath,
-  hasActiveRebaseSession,
-  loadRebaseSession,
-} from '../../core/rebase-session.js';
+import { getRebaseSessionPath, tryReadRebaseSession } from '../../core/rebase-session.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
   createTempProject,
@@ -19,12 +15,19 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
+import { pathExists } from '../../utils/fs.js';
 import { escapeRegex } from '../../utils/regex.js';
 import { exportCommand } from '../export.js';
 import { rebaseCommand } from '../rebase.js';
 import { setupCommand } from '../setup.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -50,6 +53,17 @@ async function initCommittedRepo(repoDir: string, files: Record<string, string>)
   await runGit(repoDir, ['config', 'user.name', 'FireForge Tests']);
   await runGit(repoDir, ['add', '-A']);
   await runGit(repoDir, ['commit', '-m', 'initial']);
+}
+
+/**
+ * Whether a rebase session file exists on disk.
+ *
+ * Local to these tests: production reads `readRebaseSession` once, so
+ * liveness and validity come from the same read and no shared helper is
+ * needed.
+ */
+async function sessionFileExists(projectRoot: string): Promise<boolean> {
+  return await pathExists(getRebaseSessionPath(projectRoot));
 }
 
 describe('rebase integration', () => {
@@ -116,7 +130,7 @@ describe('rebase integration', () => {
     }
 
     // Session should be cleared
-    await expect(hasActiveRebaseSession(projectRoot)).resolves.toBe(false);
+    await expect(sessionFileExists(projectRoot)).resolves.toBe(false);
   });
 
   it('absorbs upstream context drift via git apply -C (fuzz-like) instead of conflicting', async () => {
@@ -182,7 +196,7 @@ describe('rebase integration', () => {
     // ...versions were stamped and the session cleared (full success path).
     const manifestAfter = await loadPatchesManifest(join(projectRoot, 'patches'));
     expect(manifestAfter?.patches[0]?.sourceEsrVersion).toBe('141.0esr');
-    await expect(hasActiveRebaseSession(projectRoot)).resolves.toBe(false);
+    await expect(sessionFileExists(projectRoot)).resolves.toBe(false);
   });
 
   it('pauses on a conflicting patch and resumes with --continue', async () => {
@@ -219,7 +233,7 @@ describe('rebase integration', () => {
     await rebaseCommand(projectRoot, { yes: true });
 
     // Session should exist with failed patch
-    const session = await loadRebaseSession(projectRoot);
+    const session = await tryReadRebaseSession(projectRoot);
     expect(session).not.toBeNull();
     expect(session?.patches[0]?.status).toBe('failed');
 
@@ -237,7 +251,7 @@ describe('rebase integration', () => {
     await rebaseCommand(projectRoot, { continue: true });
 
     // Session should be cleared (rebase complete)
-    await expect(hasActiveRebaseSession(projectRoot)).resolves.toBe(false);
+    await expect(sessionFileExists(projectRoot)).resolves.toBe(false);
 
     // pendingResolution should be cleared
     const stateAfter = await loadState(projectRoot);
@@ -278,13 +292,13 @@ describe('rebase integration', () => {
 
     // Start rebase — fails on conflict
     await rebaseCommand(projectRoot, { yes: true });
-    expect(await hasActiveRebaseSession(projectRoot)).toBe(true);
+    expect(await sessionFileExists(projectRoot)).toBe(true);
 
     // Abort
     await rebaseCommand(projectRoot, { abort: true, yes: true });
 
     // Session should be cleared
-    expect(await hasActiveRebaseSession(projectRoot)).toBe(false);
+    expect(await sessionFileExists(projectRoot)).toBe(false);
 
     // pendingResolution should be cleared
     const state = await loadState(projectRoot);
@@ -310,10 +324,10 @@ describe('rebase integration', () => {
     await rebaseCommand(projectRoot, { yes: true });
 
     // No session should be created
-    expect(await hasActiveRebaseSession(projectRoot)).toBe(false);
+    expect(await sessionFileExists(projectRoot)).toBe(false);
   });
 
-  it('recovers from a corrupt session file instead of wedging (0.41.0)', async () => {
+  it('recovers from a corrupt session file instead of wedging', async () => {
     // The wedge: with an unreadable session file, `rebase` reported "already
     // in progress — use --continue or --abort", and BOTH of those reported
     // "no rebase session in progress". No CLI path deleted the file and no
@@ -345,7 +359,7 @@ describe('rebase integration', () => {
 
     // --abort is the escape hatch and must succeed against the corrupt file.
     await rebaseCommand(projectRoot, { abort: true, yes: true });
-    expect(await hasActiveRebaseSession(projectRoot)).toBe(false);
+    expect(await sessionFileExists(projectRoot)).toBe(false);
 
     // And a fresh rebase is no longer blocked by the session check: it now
     // reaches the manifest, failing on the empty queue instead of claiming a

@@ -116,13 +116,12 @@ async function cleanPatchTouchedFiles(
 
 /**
  * Prints a one-line nudge pointing at `fireforge import` when the project
- * carries a non-empty patch queue but the just-downloaded engine has not
- * yet had any patches applied. The post-download spinner closes with
+ * carries a non-empty patch queue but the just-downloaded engine has not yet
+ * had any patches applied. The post-download spinner closes with
  * "Patch-touched files already match baseline" because a fresh tree IS at
- * baseline, but the 2026-04-25 eval saw operators read that as "patches
- * are restored" and skip the import step. The note is suppressed when
- * patches/ is missing or the manifest is empty so unconfigured projects
- * stay quiet.
+ * baseline, which reads as "patches are restored" and invites skipping the
+ * import step. Suppressed when patches/ is missing or the manifest is empty
+ * so unconfigured projects stay quiet.
  */
 async function noteUnappliedPatches(patchesDir: string): Promise<void> {
   if (!(await pathExists(patchesDir))) return;
@@ -138,12 +137,8 @@ async function noteUnappliedPatches(patchesDir: string): Promise<void> {
  * Stops `restoreSpinner` with a message that reflects what actually
  * happened. Three branches: empty queue → explicit no-op; queue present but
  * nothing dirty → "already clean"; queue with dirty files → the usual
- * "Patch-touched files restored" success line.
- *
- * Before 0.16.0 the spinner always closed with "Patch-touched files
- * restored", so a fresh project with zero patches saw a claim of restore
- * work that had not happened — misleading and easy to mistake for a
- * silent retry.
+ * "Patch-touched files restored" success line. Always closing with the third
+ * claims restore work that did not happen on a project with zero patches.
  */
 function closeRestoreSpinner(
   restoreSpinner: ReturnType<typeof spinner>,
@@ -273,12 +268,11 @@ async function downloadAndExtractFirefox(args: {
 }
 
 /**
- * Prints the major-version-hop toolchain nudge when this download moved
- * the engine across a Firefox MAJOR version (152.0b7 → 153.0b8 drill:
- * the first post-hop build died in `mach configure` on a moved cbindgen
- * minimum, and nothing in the download output suggested re-running
- * `fireforge bootstrap`). Quiet on first downloads and same-major
- * re-downloads.
+ * Prints the major-version-hop toolchain nudge when this download moved the
+ * engine across a Firefox MAJOR version — the first post-hop build otherwise
+ * dies in `mach configure` on a moved cbindgen minimum with nothing in the
+ * download output suggesting `fireforge bootstrap`. Quiet on first downloads
+ * and same-major re-downloads.
  */
 function noteMajorVersionHop(previousVersion: string | undefined, version: string): void {
   const hopNotice = formatMajorVersionHopNotice(previousVersion, version);
@@ -306,9 +300,9 @@ async function initializeDownloadedEngine(args: {
     backupEngineDir,
   } = args;
 
-  // Finding #17: the git indexing phase of `download` can block for
-  // minutes on a ~600 MB Firefox tree. Emit a one-line heads-up banner
-  // before the spinner starts so CI logs show the expected duration.
+  // The git indexing phase of `download` can block for minutes on a ~600 MB
+  // Firefox tree. Emit a one-line heads-up banner before the spinner starts
+  // so CI logs show the expected duration.
   try {
     info(
       'Indexing downloaded source into git (one-time; typically 3–5 minutes on a ~600 MB Firefox tree)...'
@@ -397,11 +391,11 @@ export async function downloadCommand(
   await checkDiskSpace(projectRoot, 5 * 1024 * 1024 * 1024, warn);
 
   // A legitimate holder of this lock runs for 10+ minutes (download +
-  // extract + git indexing). The previous default 30 s timeout failed the
-  // second invocation with "remove the lock directory if it is stale" advice
-  // while the lock was actively held — dangerous guidance mid-extraction.
-  // Wait generously instead: a dead holder is reaped within seconds by the
-  // PID-based stale probe, so a long timeout only ever waits on real work.
+  // extract + git indexing). A 30 s timeout fails the second invocation with
+  // "remove the lock directory if it is stale" advice while the lock is
+  // actively held — dangerous guidance mid-extraction. Wait generously
+  // instead: a dead holder is reaped within seconds by the PID-based stale
+  // probe, so a long timeout only ever waits on real work.
   const downloadLockOptions = {
     timeoutMs: 30 * 60_000,
     onTimeoutMessage:
@@ -457,11 +451,9 @@ export async function downloadCommand(
                     // The non-TTY spinner fallback in `src/utils/logger.ts`
                     // already calls `p.log.step(msg)` from `message()`, so
                     // forwarding the progress message is the single authority
-                    // in both TTY and non-TTY modes. Before 0.16.0 this
-                    // callback also invoked `step(message)` explicitly when
-                    // stdio was not a TTY, which printed the same step line
-                    // twice in CI logs (once from the fallback, once from
-                    // the explicit call).
+                    // in both TTY and non-TTY modes. Calling `step(message)`
+                    // explicitly here as well prints the same line twice in
+                    // CI logs.
                     onProgress: (message) => {
                       resumeSpinner.message(message);
                     },
@@ -490,17 +482,14 @@ export async function downloadCommand(
                   return;
                 } catch (error: unknown) {
                   resumeSpinner.error('Resume failed');
-                  // Preserve the underlying cause so the user sees *why* the
-                  // resume failed (timeout, permission denied, corrupted object,
-                  // disk full, …) instead of only the generic "partial engine
-                  // exists" story. Verbose mode prints the stack for deeper
-                  // triage.
-                  const cause = toError(error);
-                  verbose(`Resume failure detail: ${cause.message}`);
-                  if (cause.stack) {
-                    verbose(cause.stack);
-                  }
-                  throw new PartialEngineExistsError(paths.engine, cause);
+                  // Preserve the underlying cause so the operator sees *why*
+                  // the resume failed (timeout, permission denied, corrupted
+                  // object, disk full) instead of only the generic "partial
+                  // engine exists" story. The cause reaches them through the
+                  // CLI boundary's chain walk under --verbose (src/cli.ts),
+                  // which is what makes PartialEngineExistsError's "re-run
+                  // with --verbose" promise true.
+                  throw new PartialEngineExistsError(paths.engine, toError(error));
                 }
               }
               // Re-throw unexpected git errors (corrupted objects, permission
@@ -508,12 +497,7 @@ export async function downloadCommand(
               // both narratives: "we detected a partial engine and attempted
               // resume" AND the underlying git failure. Without the wrap the
               // raw git error loses the context that resume was in flight.
-              const cause = toError(error);
-              verbose(`Partial-engine probe failed with unexpected error: ${cause.message}`);
-              if (cause.stack) {
-                verbose(cause.stack);
-              }
-              throw new PartialEngineExistsError(paths.engine, cause);
+              throw new PartialEngineExistsError(paths.engine, toError(error));
             }
           }
 

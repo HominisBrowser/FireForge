@@ -124,14 +124,14 @@ async function restoreFile(filePath: string, snapshot: FileSnapshot): Promise<vo
 
   await mkdir(dirname(filePath), { recursive: true });
 
-  // Write to a sibling temp file and atomically rename it over the target.
-  // A direct writeFile would race with any in-flight write by the body (e.g. a
+  // Write to a sibling temp file and atomically rename it over the target. A
+  // direct writeFile would race with any in-flight write by the body (e.g. a
   // signal-handler-driven rollback landing on top of a still-running
-  // `writeFile('corrupted')` from the body), producing interleaved byte
-  // sequences like `"pristined"` where the first 8 bytes come from the
-  // rollback write and the trailing byte from the body write. rename(2) is
-  // atomic within a filesystem, so either the body's write or the rollback's
-  // rename wins outright and the target is never left in a hybrid state.
+  // `writeFile('corrupted')`), producing interleaved byte sequences like
+  // `"pristined"` where the first 8 bytes come from the rollback write and
+  // the trailing byte from the body write. rename(2) is atomic within a
+  // filesystem, so either write wins outright and the target is never left
+  // in a hybrid state.
   const tempPath = `${filePath}.rollback-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     await writeFile(tempPath, snapshot.content ?? new Uint8Array());

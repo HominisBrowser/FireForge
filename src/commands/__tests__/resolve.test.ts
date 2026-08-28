@@ -8,15 +8,16 @@ import { getStagedDiffForFiles } from '../../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../../core/git-file-ops.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
 import { resolveCommand } from '../resolve.js';
 
 /**
- * Returns a minimal unified-diff body that `extractAffectedFiles` parses
- * into the supplied file list. `resolve` now derives `filesAffected` from
- * the diff content itself (eval finding #16), so the mock needs to supply
- * a real diff shape rather than a bare placeholder string.
+ * Returns a minimal unified-diff body that `extractAffectedFiles` parses into
+ * the supplied file list. `resolve` derives `filesAffected` from the diff
+ * content itself, so the mock has to supply a real diff shape rather than a
+ * bare placeholder string.
  */
 function fakeUnifiedDiff(files: string[]): string {
   return files
@@ -51,6 +52,12 @@ vi.mock('../../core/patch-export.js');
 vi.mock('../../core/patch-manifest.js');
 vi.mock('../../utils/fs.js');
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -133,7 +140,12 @@ describe('resolveCommand', () => {
       expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
-      })
+      }),
+      undefined,
+      undefined,
+      // `resolve` honours `--wait-lock`: it rewrites a patch body and its
+      // metadata under the patch-directory lock.
+      expect.objectContaining({ command: 'resolve' })
     );
     // updateState is called with a transactional updater that deletes
     // pendingResolution; exercise the updater to confirm the delete.
@@ -200,7 +212,9 @@ describe('resolveCommand', () => {
       ],
     });
     vi.mocked(pathExists).mockImplementation((targetPath) =>
-      Promise.resolve(targetPath.endsWith('file1.js') || !targetPath.includes('/fake/engine/'))
+      Promise.resolve(
+        targetPath.endsWith('file1.js') || !targetPath.includes(nativePath('/fake/engine/'))
+      )
     );
     const diff = fakeUnifiedDiff(['file1.js']);
     vi.mocked(getStagedDiffForFiles).mockResolvedValue(diff);
@@ -216,7 +230,12 @@ describe('resolveCommand', () => {
       expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
-      })
+      }),
+      undefined,
+      undefined,
+      // `resolve` honours `--wait-lock`: it rewrites a patch body and its
+      // metadata under the patch-directory lock.
+      expect.objectContaining({ command: 'resolve' })
     );
   });
 
@@ -276,7 +295,9 @@ describe('resolveCommand', () => {
       ],
     });
     vi.mocked(pathExists).mockImplementation((targetPath) =>
-      Promise.resolve(targetPath.endsWith('file1.js') || !targetPath.includes('/fake/engine/'))
+      Promise.resolve(
+        targetPath.endsWith('file1.js') || !targetPath.includes(nativePath('/fake/engine/'))
+      )
     );
     vi.mocked(getStagedDiffForFiles).mockResolvedValue(fakeUnifiedDiff(['file1.js']));
     vi.mocked(updatePatchAndMetadata).mockRejectedValue(new Error('disk full'));
@@ -287,18 +308,17 @@ describe('resolveCommand', () => {
   });
 
   it('derives filesAffected from the diff body even when all files remain on disk', async () => {
-    // Eval finding #16: the user's manual fix eliminated every hunk for
-    // `file2.js` but the file still existed on disk. Pre-0.16.0 resolve
-    // kept the stale `filesAffected: [file1, file2]` in the manifest
-    // because `activeFiles.length === existingFiles.length`, so the next
-    // import failed the patch-manifest consistency check. The fix
-    // recomputes `filesAffected` from the diff itself every time.
+    // A manual fix can eliminate every hunk for a file while the file still
+    // exists on disk. Keeping the stale `filesAffected` because
+    // `activeFiles.length === existingFiles.length` then fails the next
+    // import's patch-manifest consistency check; `filesAffected` is
+    // recomputed from the diff itself every time.
     //
     // Reset updatePatchAndMetadata explicitly: `vi.clearAllMocks()` only
     // clears recorded calls, not the rejected implementation a preceding
     // test installed.
     vi.mocked(updatePatchAndMetadata).mockReset();
-    vi.mocked(updatePatchAndMetadata).mockResolvedValue(undefined);
+    vi.mocked(updatePatchAndMetadata).mockResolvedValue(true);
     const patchFilename = '001-test.patch';
     vi.mocked(loadState).mockResolvedValue({
       pendingResolution: { patchFilename, originalError: 'error' },
@@ -334,11 +354,16 @@ describe('resolveCommand', () => {
       expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
-      })
+      }),
+      undefined,
+      undefined,
+      // `resolve` honours `--wait-lock`: it rewrites a patch body and its
+      // metadata under the patch-directory lock.
+      expect.objectContaining({ command: 'resolve' })
     );
   });
 
-  describe('non-interactive --yes flag (Finding #18/#19)', () => {
+  describe('non-interactive --yes flag', () => {
     const patchFilename = '001-test.patch';
 
     beforeEach(() => {
@@ -374,10 +399,9 @@ describe('resolveCommand', () => {
     });
 
     it('completes in non-interactive mode when --yes is passed', async () => {
-      // 2026-04-21 eval: scripted recovery flows hit the unconditional
-      // TTY refusal even after the operator had manually merged. The
-      // `--yes` escape hatch lets the same flow continue without
-      // forcing the operator back into a terminal.
+      // Scripted recovery flows hit the unconditional TTY refusal even after
+      // the operator has manually merged; `--yes` lets the same flow
+      // continue without forcing them back into a terminal.
       process.stdin.isTTY = false;
       try {
         await resolveCommand(projectRoot, { yes: true });
@@ -400,10 +424,9 @@ describe('resolveCommand', () => {
     });
 
     it('surfaces clearer two-step continuation messaging on success', async () => {
-      // The post-fix info line must name the second-step command and
-      // explain explicitly that resolve does not continue the queue
-      // itself — the help text previously read "...and continue" which
-      // implied a one-step flow.
+      // The info line must name the second-step command and say explicitly
+      // that resolve does not continue the queue itself — help text reading
+      // "...and continue" implies a one-step flow.
       process.stdin.isTTY = false;
       try {
         await resolveCommand(projectRoot, { yes: true });

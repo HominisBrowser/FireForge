@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Tests for `register --create-manifest` scaffolding (0.34.0 field
- * report): directory moz.build creation, parent DIRS wiring, and
- * XPCSHELL_TESTS_MANIFESTS wiring.
+ * Tests for `register --create-manifest` scaffolding: directory moz.build
+ * creation, parent DIRS wiring, and XPCSHELL_TESTS_MANIFESTS wiring.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

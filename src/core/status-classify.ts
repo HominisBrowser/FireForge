@@ -20,38 +20,34 @@ import { classifyBinaryOwnedFile } from './status-binary.js';
 
 /**
  * Classification buckets for engine file changes:
- * - `patch-backed`: content matches the expected post-patch state —
- *   normal after `fireforge import`.
- * - `patch-owned-drift`: the file is claimed by exactly one patch, but
- *   the live engine content no longer matches that patch's expected
- *   post-apply content. This includes furnace-prefixed paths: a path
- *   can be both Furnace-managed and patch-claimed (export a deployed
- *   component, then edit the workspace source and `furnace deploy`
- *   again — the deployed copy now has content the patch body lacks).
- *   Before 0.38.0 the furnace prefix check ran first and silently
- *   bucketed such files as `furnace`, so `status` reported the stale
- *   patch as owned.
- * - `unmanaged`: edits not explained by any patch or tool — local
- *   drift to export or discard.
+ * - `patch-backed`: content matches the expected post-patch state — normal
+ *   after `fireforge import`.
+ * - `patch-owned-drift`: the file is claimed by exactly one patch, but the
+ *   live engine content no longer matches that patch's expected post-apply
+ *   content. This includes furnace-prefixed paths: a path can be both
+ *   Furnace-managed and patch-claimed (export a deployed component, then
+ *   edit the workspace source and `furnace deploy` again — the deployed copy
+ *   now has content the patch body lacks). Checking the furnace prefix first
+ *   would bucket such files as `furnace` and report the stale patch as
+ *   owned.
+ * - `unmanaged`: edits not explained by any patch or tool — local drift to
+ *   export or discard.
  * - `branding`: files under tool-managed branding paths, written by
  *   FireForge's branding pipeline.
- * - `furnace`: files under Furnace-managed component prefixes. When
- *   exactly one patch also claims the path, this bucket asserts the
- *   live content matches that patch's expected post-apply content —
- *   a mismatch is reported as `patch-owned-drift` instead (see above).
+ * - `furnace`: files under Furnace-managed component prefixes. When exactly
+ *   one patch also claims the path, this bucket asserts the live content
+ *   matches that patch's expected post-apply content — a mismatch is
+ *   reported as `patch-owned-drift` instead (see above).
  * - `conflict`: the file is claimed by two or more patches in
- *   `patches.json`. The human `--ownership` mode already surfaces
- *   this bucket as `CONFLICT`; the classification is carried through
- *   the JSON pipeline so machine consumers can detect the same
- *   ownership breakage the human output shows. Before 0.16.0,
- *   cross-patch conflicts silently rolled into the `unmanaged` bucket
- *   in `--json`, which misled scripts built on top of the JSON view
- *   into treating the file as routine local drift.
+ *   `patches.json`. The human `--ownership` mode surfaces this bucket as
+ *   `CONFLICT`; carrying the classification through the JSON pipeline lets
+ *   machine consumers detect the same ownership breakage rather than seeing
+ *   it rolled into `unmanaged` as routine local drift.
  * - `binary-unsupported`: the file's comparison is binary and the owning
- *   patch body records no usable blob hash to compare against — an
- *   honest "binary — comparison unsupported" instead of a permanent
- *   false `patch-owned-drift`. Deliberately NOT in the default
- *   `--check` fail set; opt in with `--fail-on binary-unsupported`.
+ *   patch body records no usable blob hash to compare against — an honest
+ *   "binary — comparison unsupported" instead of a permanent false
+ *   `patch-owned-drift`. Deliberately NOT in the default `--check` fail set;
+ *   opt in with `--fail-on binary-unsupported`.
  */
 export type FileClassification =
   | 'patch-backed'
@@ -211,14 +207,12 @@ async function classifySingleOwnerFile(
  * Classifies files into patch-backed, unmanaged, branding, furnace, or
  * conflict buckets.
  *
- * Tracks patch ownership as a `Map<file, patchFilename[]>` rather than
- * a plain `Set<file>` so the classifier can surface cross-patch
- * ownership conflicts the same way the human `--ownership` mode does.
- * The 2026-04-21 eval's `status --json` run reported
- * `classification: "unmanaged"` on two files (`browser/base/jar.mn`,
- * `browser/themes/shared/jar.inc.mn`) that `--ownership` correctly
- * flagged as `CONFLICT`; the JSON output was effectively lying to
- * machine consumers about the nature of the drift.
+ * Tracks patch ownership as a `Map<file, patchFilename[]>` rather than a
+ * plain `Set<file>` so the classifier can surface cross-patch ownership
+ * conflicts the same way the human `--ownership` mode does. With only a Set,
+ * `status --json` reports `classification: "unmanaged"` on files that
+ * `--ownership` correctly flags as `CONFLICT`, which lies to machine
+ * consumers about the nature of the drift.
  */
 export async function classifyFiles(
   files: StatusFile[],
@@ -233,13 +227,12 @@ export async function classifyFiles(
   // engine edit session).
   const ctx = await createPatchedContentContext(patchesDir, engineDir);
 
-  // Build a multimap from file path → list of claiming patch
-  // filenames so we can detect cross-patch ownership conflicts. The
-  // previous `Set<string>` captured only whether a path was claimed,
-  // not by whom, and collapsed multi-owner files into the single-owner
-  // branch where the expected-vs-actual content comparison then routed
-  // them into `unmanaged` when the content didn't match either owner's
-  // expectation.
+  // Build a multimap from file path → list of claiming patch filenames so
+  // cross-patch ownership conflicts are detectable. A plain `Set<string>`
+  // captures only whether a path was claimed, not by whom, and collapses
+  // multi-owner files into the single-owner branch where the
+  // expected-vs-actual content comparison then routes them into `unmanaged`
+  // when the content matches neither owner's expectation.
   const patchClaims = buildPatchClaims(ctx.manifestPatches);
 
   const deps: ClassifyEntryDeps = {
@@ -288,11 +281,10 @@ async function classifyEntry(entry: StatusFile, deps: ClassifyEntryDeps): Promis
   }
 
   // Branding paths are tool-managed for generated edits, but a brand-new
-  // unowned branding asset must not disappear from `status --unmanaged`.
-  // The Hominis Firefox 152 side-grade added Assets.car under the active
-  // branding tree; classifying every branding path before checking
-  // ownership hid that new patch candidate as "branding" even though no
-  // patch claimed it yet.
+  // unowned branding asset must not disappear from `status --unmanaged`:
+  // classifying every branding path before checking ownership hides a new
+  // patch candidate (an Assets.car appearing under the active branding tree,
+  // for instance) as "branding" even though no patch claims it yet.
   const isUnownedNewFile = owners === undefined && (primaryCode === '?' || primaryCode === 'A');
   if (
     isBrandingManagedPath(entry.file, binaryName) &&
@@ -312,12 +304,11 @@ async function classifyEntry(entry: StatusFile, deps: ClassifyEntryDeps): Promis
     }
     if (isFurnace) {
       // A furnace path claimed by exactly one patch gets the same
-      // expected-vs-actual comparison as any other single-owner path:
-      // after a `furnace deploy` of an edited component the deployed
-      // copy has content the owning patch's body lacks, and the old
-      // unconditional short-circuit silently bucketed that drift as
-      // `furnace`. Multi-owner and unowned furnace paths keep the
-      // short-circuit.
+      // expected-vs-actual comparison as any other single-owner path: after
+      // a `furnace deploy` of an edited component the deployed copy has
+      // content the owning patch's body lacks, and an unconditional
+      // short-circuit here would silently bucket that drift as `furnace`.
+      // Multi-owner and unowned furnace paths keep the short-circuit.
       if (owners && owners.length === 1 && owners[0] !== undefined) {
         return classifySingleOwnerFile(entry, engineDir, patchesDir, 'furnace', owners[0], ctx);
       }

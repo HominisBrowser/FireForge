@@ -17,14 +17,12 @@ function makePatch(filename: string, name: string, order: number): PatchMetadata
   };
 }
 
-describe('formatPatchNotFoundError (Finding 12)', () => {
+describe('formatPatchNotFoundError', () => {
   it('does not enumerate the full queue inline on a 29-patch manifest', () => {
-    // Pre-fix: every patch subcommand built `Available: 001-foo, 002-bar, …`
-    // by joining every queued patch's filename and (optional) manifest
-    // name into a single comma-separated tail. On a 29-patch queue
-    // the message ran ~1500 characters and buried the actual error
-    // in CI logs. The helper never inlines more than three closest
-    // suggestions.
+    // Building `Available: 001-foo, 002-bar, …` from every queued patch's
+    // filename and manifest name runs ~1500 characters on a 29-patch queue
+    // and buries the actual error in CI logs. The helper never inlines more
+    // than three closest suggestions.
     const patches: PatchMetadata[] = Array.from({ length: 29 }, (_, i) =>
       makePatch(`${String(i + 1).padStart(3, '0')}-foo-${i}.patch`, `foo-${i}`, i + 1)
     );

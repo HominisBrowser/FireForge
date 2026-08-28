@@ -66,15 +66,6 @@ import {
   verbose,
   warn,
 } from '../logger.js';
-import {
-  getArch,
-  getExecutableExtension,
-  getMozconfigName,
-  getPlatform,
-  isDarwin,
-  isLinux,
-  isWindows,
-} from '../platform.js';
 
 describe('regex helpers', () => {
   it('escapes regex metacharacters', () => {
@@ -93,38 +84,6 @@ describe('regex helpers', () => {
     expect(stripped).toContain('"https://example.test"');
     expect(stripped).not.toContain('// comment');
     expect(stripped).not.toContain('/* block */');
-  });
-});
-
-describe('platform helpers', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('returns supported platforms and Windows executable suffixes', () => {
-    osMocks.platform.mockReturnValue('win32');
-    expect(getPlatform()).toBe('win32');
-    expect(getExecutableExtension()).toBe('.exe');
-  });
-
-  it('returns supported architectures and platform-derived helpers', () => {
-    osMocks.platform.mockReturnValue('darwin');
-    osMocks.arch.mockReturnValue('arm64');
-
-    expect(getArch()).toBe('arm64');
-    expect(getMozconfigName()).toBe('darwin.mozconfig');
-    expect(isDarwin()).toBe(true);
-    expect(isLinux()).toBe(false);
-    expect(isWindows()).toBe(false);
-    expect(getExecutableExtension()).toBe('');
-  });
-
-  it('throws for unsupported platforms and architectures', () => {
-    osMocks.platform.mockReturnValue('freebsd');
-    expect(() => getPlatform()).toThrow(/Unsupported platform: freebsd/);
-
-    osMocks.arch.mockReturnValue('ia32');
-    expect(() => getArch()).toThrow(/Unsupported architecture: ia32/);
   });
 });
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Browser-chrome test scaffolding for `furnace create --with-tests`,
- * including the 0.34.0 `--test-dir` redirect and collision safety
- * (existing manifests are appended to; head.js and test implementations
- * are never overwritten). Split out of `create.ts` to keep that command
- * file within the per-file line budget.
+ * including the `--test-dir` redirect and collision safety (existing
+ * manifests are appended to; head.js and test implementations are never
+ * overwritten). Split out of `create.ts` to keep that command file within
+ * the per-file line budget.
  */
 
 import { join } from 'node:path';
@@ -15,7 +15,7 @@ import {
   snapshotFile,
 } from '../../core/furnace-rollback.js';
 import { getLicenseHeader } from '../../core/license-headers.js';
-import { registerTestManifest } from '../../core/manifest-register.js';
+import { registerTestManifest } from '../../core/moz-manifest-register.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import type { ProjectLicense } from '../../types/config.js';
 import type { ResolvedTestStyle } from '../../types/furnace.js';
@@ -103,9 +103,9 @@ export async function scaffoldTestFiles(
     : strippedName;
   const underscored = withoutBinaryPrefix.replace(/-/g, '_');
   const testFileName = `browser_${binaryName}_${underscored}.js`;
-  // --test-dir redirects the scaffold (0.34.0 field report: the hardcoded
-  // .../test/<binaryName>/ target collided with a test suite owned by a
-  // different patch). The manifest-registration name is the path below
+  // --test-dir redirects the scaffold: the hardcoded
+  // `.../test/<binaryName>/` target can collide with a test suite owned by a
+  // different patch. The manifest-registration name is the path below
   // browser/base/content/test/ (nested manifests are supported).
   const testDirRel = testDirOverride ?? `${TEST_SCAFFOLD_ROOT}${binaryName}`;
   const testDirName = testDirRel.slice(TEST_SCAFFOLD_ROOT.length);

@@ -5,9 +5,9 @@
  *   1. clean queue → exits 0
  *   2. duplicate /dev/null creation → errors
  *   3. forward import from earlier to later patch → errors
- * Plus the end-to-end fork-regression repair scenario: build a broken
- * queue, run verify (expect failure), use patch delete + re-export --files
- * + patch reorder to fix it, re-run verify (expect clean).
+ * Plus the end-to-end repair scenario: build a broken queue, run verify
+ * (expect failure), use patch delete + re-export --files + patch reorder to
+ * fix it, re-run verify (expect clean).
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -270,13 +270,12 @@ describe('verify command', () => {
     );
   });
 
-  // 2026-04-24 eval Finding 1: `export-all --exclude-furnace` landed a
-  // patch that registered `moz-qa-panel` via jar.mn / customElements.js
-  // edits but excluded the widget source files themselves. Verify used
-  // to report "Verify clean" because the manifest was internally
-  // consistent. The new dangling-registration check walks each patch
-  // body, extracts component-shaped references, and fails when the
-  // referenced path is not supplied by any patch AND does not exist in
+  // `export-all --exclude-furnace` can land a patch that registers a widget
+  // via jar.mn / customElements.js edits while excluding the widget source
+  // files themselves. Verify reports "Verify clean" for it, because the
+  // manifest is internally consistent. The dangling-registration check walks
+  // each patch body, extracts component-shaped references, and fails when
+  // the referenced path is supplied by no patch AND does not exist in
   // engine/.
   it('fails on a patch that registers a widget it does not itself carry', async () => {
     const registrationBody = [
@@ -329,6 +328,50 @@ describe('verify command', () => {
       {
         metadata: makeMetadata('002-ui-registration.patch', 2, ['toolkit/content/jar.mn']),
         body: registrationBody,
+      },
+    ]);
+
+    await expect(verifyCommand(projectRoot)).resolves.toBeUndefined();
+  });
+
+  it('fails on a binary body that carries no reconstructable payload', async () => {
+    // A "Binary files … differ" body still carries a correct index line, so
+    // every hash-keyed check reports the file as backed while the bytes are
+    // gone. Verify is the gate that reads the body itself.
+    const cert = 'toolkit/certs/release_primary.der';
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-certs.patch', 1, [cert]),
+        body: [
+          `diff --git a/${cert} b/${cert}`,
+          'index 1d94f88ad7..37ae6960c3 100644',
+          `Binary files a/${cert} and b/${cert} differ`,
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await expect(verifyCommand(projectRoot)).rejects.toThrow(/fireforge verify found/i);
+    expect(stdout).toContain('binary-body-not-reconstructable');
+    expect(stdout).toContain(cert);
+  });
+
+  it('passes on the same patch once the body carries a GIT binary patch delta', async () => {
+    const cert = 'toolkit/certs/release_primary.der';
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-certs.patch', 1, [cert]),
+        body: [
+          `diff --git a/${cert} b/${cert}`,
+          'index 1d94f88ad7bb4e5e1b1a0c9a0f0e6d4c3b2a1908..37ae6960c3aa1b2c3d4e5f60718293a4b5c6d7e8 100644',
+          'GIT binary patch',
+          'literal 8',
+          'PcmZQzWX><iNG$>Y29N?L',
+          '',
+          'literal 9',
+          'QcmZQzWJ=1+ODw7c00^)Gi2wiq',
+          '',
+        ].join('\n'),
       },
     ]);
 

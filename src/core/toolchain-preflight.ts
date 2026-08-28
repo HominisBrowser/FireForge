@@ -2,30 +2,29 @@
 /**
  * Toolchain-minimum awareness for Firefox source hops.
  *
- * When `fireforge download --force` moves the engine to a new Firefox
- * MAJOR version, the tree's declared toolchain minimums (cbindgen, Rust)
- * frequently move with it — and the first `fireforge build` then dies a
- * few seconds into `mach configure` with a message whose remediation
- * text names `./mach bootstrap`, the wrong tool for a FireForge-managed
- * repo (152.0b7 → 153.0b8 source-refresh drill: `ERROR: cbindgen version
- * 0.29.1 is too old. At least version 0.29.4 is required.`).
+ * When `fireforge download --force` moves the engine to a new Firefox MAJOR
+ * version, the tree's declared toolchain minimums (cbindgen, Rust)
+ * frequently move with it — and the first `fireforge build` then dies a few
+ * seconds into `mach configure` with a message whose remediation text names
+ * `./mach bootstrap`, the wrong tool for a FireForge-managed repo (e.g.
+ * `ERROR: cbindgen version 0.29.1 is too old. At least version 0.29.4 is
+ * required.`).
  *
  * Two layers:
- *  1. {@link formatMajorVersionHopNotice} — a post-download nudge when
- *     the downloaded major differs from the previously downloaded one.
- *  2. {@link runToolchainPreflight} — a cheap pre-build probe comparing
- *     the minimums the tree itself declares against the host binaries
+ *  1. {@link formatMajorVersionHopNotice} — a post-download nudge when the
+ *     downloaded major differs from the previously downloaded one.
+ *  2. {@link runToolchainPreflight} — a cheap pre-build probe comparing the
+ *     minimums the tree itself declares against the host binaries
  *     `mach configure` will resolve, probing configure's own candidate
- *     order: env override first, then the `~/.mozbuild` state-directory
- *     copy bootstrap installs, then PATH (0.35.0 probed env-or-PATH
- *     only, blocking builds whose current tool lived in the state dir
- *     behind a stale PATH copy). Deliberately FAIL-SOFT: it reports a
- *     mismatch only when a minimum was positively parsed AND at least
- *     one candidate resolved AND every resolved candidate is
- *     definitively lower. Any uncertainty (file moved upstream,
- *     unparseable output, no candidate found) skips silently — the
- *     mach-error-hints translator still catches the real configure
- *     failure downstream.
+ *     order: env override first, then the `~/.mozbuild` state-directory copy
+ *     bootstrap installs, then PATH. Probing env-or-PATH alone blocks builds
+ *     whose current tool lives in the state dir behind a stale PATH copy.
+ *     Deliberately FAIL-SOFT: it reports a mismatch only when a minimum was
+ *     positively parsed AND at least one candidate resolved AND every
+ *     resolved candidate is definitively lower. Any uncertainty (file moved
+ *     upstream, unparseable output, no candidate found) skips silently — the
+ *     mach-error-hints translator still catches the real configure failure
+ *     downstream.
  */
 
 import { execFile } from 'node:child_process';
@@ -69,16 +68,14 @@ const MINIMUM_DECLARATIONS: Record<ToolchainTool, { relPath: string; pattern: Re
 /**
  * How each tool's host binary is resolved and its version parsed.
  *
- * `stateDirRelPaths` are the mach-state-directory locations `fireforge
- * bootstrap` (via mozboot) installs the tool to. mach's configure tries
- * the state directory BEFORE the PATH candidates (bindgen.configure's
- * toolchain search path lists `~/.mozbuild/cbindgen/cbindgen` first — a
- * configure log shows `trying cbindgen: ~/.mozbuild/cbindgen/cbindgen`
- * ahead of PATH), so the probe must too. 0.35.0 probed only env-or-PATH,
- * which failed a build configure would have accepted whenever an old
- * `~/.cargo/bin/cbindgen` shadowed a current bootstrap-installed copy
- * (field report: PATH 0.29.1 vs mozbuild 0.29.4, minimum 0.29.4). Rust
- * has no state-dir install — rustup owns it — so its list is empty.
+ * `stateDirRelPaths` are the mach-state-directory locations
+ * `fireforge bootstrap` (via mozboot) installs the tool to. mach's configure
+ * tries the state directory BEFORE the PATH candidates —
+ * bindgen.configure's toolchain search path lists `~/.mozbuild/cbindgen/
+ * cbindgen` first — so the probe must too. Probing only env-or-PATH fails a
+ * build configure would have accepted whenever an old `~/.cargo/bin/
+ * cbindgen` shadows a current bootstrap-installed copy. Rust has no
+ * state-dir install — rustup owns it — so its list is empty.
  */
 const HOST_PROBES: Record<
   ToolchainTool,

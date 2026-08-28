@@ -2,21 +2,23 @@
 /**
  * `fireforge tree` — copy-on-write verification clones.
  *
- * Trees enable concurrent READ-MOSTLY verification (lint, typecheck,
- * status, verify, doctor, export dry-runs) beside a busy primary tree.
- * Exports and every other mutation stay strictly serial in the primary —
- * a tree's patches/components are snapshots with no merge model, and the
- * tree guard (cli.ts preAction + core/tree-guard.ts) refuses mutating
- * commands inside a tree. `create --with-objdir` additionally clones the
- * primary's built obj-* directory, rewrites its mozinfo.json to the
- * tree, and runs `mach configure` inside the tree so the remaining
- * configure output (config.status, backend.mk, Makefile,
- * config/autoconf.mk — the verified set) stops naming the primary
- * (fail-closed — mach objdirs embed absolute source paths, and an
- * unrelocated clone would silently operate against the primary), which
- * is what admits build-less `fireforge test` inside that tree.
+ * Trees enable concurrent READ-MOSTLY verification (lint, typecheck, status,
+ * verify, doctor, export dry-runs) beside a busy primary tree. Exports and
+ * every other mutation stay strictly serial in the primary — a tree's
+ * patches/components are snapshots with no merge model, and the tree guard
+ * (cli.ts preAction + core/tree-guard.ts) refuses mutating commands inside a
+ * tree.
+ *
+ * `create --with-objdir` additionally clones the primary's built obj-*
+ * directory, rewrites its mozinfo.json to the tree, and runs `mach configure`
+ * inside the tree so the remaining configure output (config.status,
+ * backend.mk, Makefile, config/autoconf.mk) stops naming the primary. That is
+ * fail-closed by design — mach objdirs embed absolute source paths, and an
+ * unrelocated clone would silently operate against the primary — and it is
+ * what admits build-less `fireforge test` inside that tree.
  */
 import { spawn } from 'node:child_process';
+import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Command } from 'commander';
@@ -34,12 +36,13 @@ import {
   computePrimaryFingerprint,
   getTreeMarkerPath,
   getTreesDir,
-  readTreeMarkerState,
+  readTreeMarker,
   withTreeLifecycleLock,
 } from '../core/tree-store.js';
-import { GeneralError } from '../errors/base.js';
+import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import {
   info,
@@ -50,6 +53,7 @@ import {
   success,
   warn,
 } from '../utils/logger.js';
+import { emitMachineError, MACHINE_OUTPUT_SCHEMA_VERSION } from '../utils/machine-output.js';
 import { addWaitLockOption, resolveWaitLockSeconds } from '../utils/options.js';
 
 function assertPosix(): void {
@@ -146,7 +150,7 @@ export async function treeCreateCommand(
   // A marker we cannot parse still means "something claims this is a tree", so
   // it must block nesting too — otherwise a corrupt marker is a licence to
   // clone a snapshot into itself.
-  const markerState = await readTreeMarkerState(projectRoot);
+  const markerState = await readTreeMarker(projectRoot);
   if (markerState.kind !== 'absent') {
     throw new GeneralError(
       markerState.kind === 'valid'
@@ -164,7 +168,6 @@ export async function treeCreateCommand(
         `A tree named "${name}" already exists. Remove it first (fireforge tree remove ${name}) — refresh is remove + create.`
       );
     }
-    const { mkdir } = await import('node:fs/promises');
     await mkdir(treesDir, { recursive: true });
 
     const capability = await detectCowSupport(treesDir);
@@ -224,7 +227,6 @@ export async function treeCreateCommand(
               )
             : await clone();
         } catch (error: unknown) {
-          const { rm } = await import('node:fs/promises');
           await rm(treeRoot, { recursive: true, force: true });
           throw error;
         }
@@ -259,9 +261,21 @@ export async function treeListCommand(
     // any diagnostic — including a listTrees failure rendered later by
     // withErrorHandling, which also resets the mode — routes to stderr.
     setMachineOutputMode(true);
-    const trees = await listTrees(projectRoot);
-    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, trees }, null, 2)}\n`);
-    setMachineOutputMode(false);
+    try {
+      const trees = await listTrees(projectRoot);
+      process.stdout.write(
+        `${JSON.stringify({ schemaVersion: MACHINE_OUTPUT_SCHEMA_VERSION, trees }, null, 2)}\n`
+      );
+      // Payload written: stdout is now spoken for. See docs/machine-output.md.
+      setStdoutSealed(true);
+    } catch (error: unknown) {
+      // Same failure envelope `status --json` emits. Without it a scripted
+      // consumer got a parseable refusal from one command and a bare
+      // non-zero exit from the other. See docs/machine-output.md.
+      emitMachineError('tree-list-failed', toError(error).message);
+    } finally {
+      setMachineOutputMode(false);
+    }
     return;
   }
   const trees = await listTrees(projectRoot);
@@ -286,7 +300,7 @@ export async function treeRemoveCommand(
   assertPosix();
   intro('FireForge Tree Remove');
   if (options.all !== true && name === undefined) {
-    throw new GeneralError('Pass a tree name, or --all to remove every tree.');
+    throw new InvalidArgumentError('Pass a tree name, or --all to remove every tree.', '--all');
   }
   await withTreeLifecycleLock(projectRoot, async () => {
     const targets =
@@ -308,7 +322,7 @@ async function treeExecCommand(projectRoot: string, name: string, args: string[]
   assertPosix();
   assertValidTreeName(name);
   const treeRoot = join(getTreesDir(projectRoot), name);
-  const state = await readTreeMarkerState(treeRoot);
+  const state = await readTreeMarker(treeRoot);
   if (state.kind === 'corrupt') {
     // Collapsing corrupt into "no such tree" misdiagnoses: the directory IS
     // there, claiming to be a tree, and "no tree named X" points the operator
@@ -322,6 +336,9 @@ async function treeExecCommand(projectRoot: string, name: string, args: string[]
     throw new GeneralError(
       `No verification tree named "${name}". List trees with: fireforge tree list`
     );
+  }
+  if (state.kind === 'unsupported') {
+    throw new GeneralError(`Cannot inspect tree "${name}": ${state.reason}`);
   }
   const marker = state.marker;
   const current = await computePrimaryFingerprint(projectRoot);
@@ -350,14 +367,13 @@ async function treeExecCommand(projectRoot: string, name: string, args: string[]
       resolvePromise(code ?? 1);
     });
   }).finally(() => {
-    // With `stdio: 'inherit'` the child owned stdout — including
-    // any FIREFORGE-VERDICT line it emitted as its LAST stdout write. From
-    // here on the parent must not write stdout again, or its own refusal
-    // text (the GeneralError below rendered by withErrorHandling) would
-    // print AFTER the child's verdict and break the "verdict is the run's
-    // last stdout line" contract at the tree-exec boundary. Sealing routes
-    // the parent's remaining output to stderr; withErrorHandling's finally
-    // clears the seal.
+    // With `stdio: 'inherit'` the child owned stdout — including any
+    // FIREFORGE-VERDICT line it emitted as its LAST stdout write. From here
+    // on the parent must not write stdout again, or its own refusal text
+    // (the GeneralError below, rendered by withErrorHandling) prints AFTER
+    // the child's verdict and breaks the "verdict is the run's last stdout
+    // line" contract at the tree-exec boundary. Sealing routes the parent's
+    // remaining output to stderr; withErrorHandling's finally clears it.
     setStdoutSealed(true);
   });
   if (exitCode !== 0) {

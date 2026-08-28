@@ -454,10 +454,10 @@ describe('lintPatchQueueForwardImports', () => {
     expect(issues[0]?.severity).toBe('warning');
   });
 
-  // ── 0.37.0 item 5: registration-kind staged dependencies — a jar.mn
-  //    packaging line (or customElements/actor registration) referencing a
-  //    later-created file has no import to match; the declaration is used
-  //    when the declared line appears in the patch's added content. ──
+  // Registration-kind staged dependencies: a jar.mn packaging line (or
+  // customElements/actor registration) referencing a later-created file has
+  // no import to match; the declaration is used when the declared line
+  // appears in the patch's added content.
 
   it('accepts a registration-kind entry whose jar.mn line the patch adds (item 5 acc 1)', () => {
     const jarLine =
@@ -774,7 +774,7 @@ describe('lintPatchQueueForwardImports', () => {
     // Fix 1: before this change the rule only scanned `newFiles`, so a
     // patch that modifies browser.js to add `import "./B.sys.mjs"` was
     // silently waved through even if the matching file was created by a
-    // later patch. This is the exact shape of bug the review flagged.
+    // later patch.
     const modifyBrowserDiff = [
       'diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js',
       'index aaaaaaa..bbbbbbb 100644',
@@ -972,9 +972,8 @@ describe('collectNewFileCreatorsByPath', () => {
 describe('extractImportSpecifiers — adversarial shapes', () => {
   it('captures side-effect imports (`import "..."` with no `from` clause)', () => {
     // Side-effect imports are a valid ES module form Firefox uses for
-    // observer-registration modules. The optional `from` group in the
-    // regex means this matches, but the review pointed out the lack
-    // of an explicit test — add one so a future regression is caught.
+    // observer-registration modules. The optional `from` group in the regex
+    // is what makes this match.
     const source = `import "resource:///modules/Side.sys.mjs";\nexport const X = 1;`;
     expect(extractImportSpecifiers(source)).toContain('resource:///modules/Side.sys.mjs');
   });
@@ -1074,16 +1073,14 @@ describe('lintPatchQueueForwardImports — suppression marker', () => {
 
 describe('lintPatchQueueForwardImports — same-patch self-imports', () => {
   it('does not flag a patch that both creates a module and imports it from another file in the same patch', () => {
-    // Intentional non-case: a single patch may legitimately create a
-    // new `.sys.mjs` module AND, in the same body, modify a pre-existing
-    // file to add an import targeting that module. Both sites belong to
-    // the same patch, so there is no forward reference across patch
-    // boundaries — the creator and the importer commit atomically. The
-    // forward-import rule's filter (`owner.order > entry.order ||
-    // (owner.order === entry.order && owner.filename > entry.filename)`)
-    // excludes the entry from being its own later owner; this test pins
-    // that behaviour so a future refactor of the filter cannot regress
-    // same-patch self-imports into false positives.
+    // Intentional non-case: a single patch may legitimately create a new
+    // `.sys.mjs` module AND, in the same body, modify a pre-existing file to
+    // add an import targeting that module. Both sites belong to the same
+    // patch, so there is no forward reference across patch boundaries — the
+    // creator and the importer commit atomically. The forward-import rule's
+    // filter excludes an entry from being its own later owner; this pins
+    // that so a refactor of the filter cannot regress same-patch
+    // self-imports into false positives.
     const ctx: PatchQueueContext = {
       entries: [
         makeEntry(
@@ -1101,13 +1098,12 @@ describe('lintPatchQueueForwardImports — same-patch self-imports', () => {
   });
 
   it('still flags a same-order import when the owner is lexicographically later', () => {
-    // Tiebreaker case: two patches happen to share an order but have
-    // different filenames. The rule breaks the tie by filename so the
-    // forward direction is unambiguous. A patch with the lexicographically
-    // earlier filename importing from the lexicographically later one
-    // is a forward-import; the reverse is not. This pins the tiebreaker
-    // direction so the self-import fix does not accidentally exempt
-    // genuine same-order cross-patch forward references.
+    // Tiebreaker: two patches sharing an order but with different
+    // filenames. The rule breaks the tie by filename so the forward
+    // direction is unambiguous — a patch with the lexicographically earlier
+    // filename importing from the later one is a forward-import; the reverse
+    // is not. Pinned so the self-import exclusion does not accidentally
+    // exempt genuine same-order cross-patch forward references.
     const ctx: PatchQueueContext = {
       entries: [
         makeEntry('001-infra-early.patch', 1, CREATE_A_DIFF, {

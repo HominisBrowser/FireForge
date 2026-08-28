@@ -5,12 +5,13 @@ import { confirm } from '@clack/prompts';
 import { Command, Option } from 'commander';
 
 import { configExists } from '../core/config.js';
+import { stdioIsInteractive } from '../core/destructive.js';
 import { ConfigError } from '../errors/config.js';
 import type { CommandContext } from '../types/cli.js';
 import type { SetupOptions } from '../types/commands/index.js';
 import { cancel, intro, isCancel, note, outro, spinner } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
-import { PROJECT_LICENSES } from '../utils/validation.js';
+import { FIREFOX_PRODUCTS, PROJECT_LICENSES } from '../utils/validation.js';
 import {
   buildSetupConfig,
   parseFirefoxProductOption,
@@ -30,7 +31,7 @@ export async function setupCommand(projectRoot: string, options: SetupOptions = 
   validateSetupOptions(options);
 
   // Determine if we can run interactively
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
 
   intro('FireForge Setup');
 
@@ -90,16 +91,14 @@ export function registerSetup(program: Command, { withErrorHandling }: CommandCo
     .option('--app-id <appId>', 'Application ID (reverse-domain format)')
     .option('--binary-name <binaryName>', 'Binary name (executable name)')
     .option('--firefox-version <version>', 'Firefox version to base on')
-    .addOption(
-      new Option('--product <product>', 'Firefox product').choices([
-        'firefox',
-        'firefox-esr',
-        'firefox-beta',
-        'firefox-devedition',
-      ])
-    )
+    .addOption(new Option('--product <product>', 'Firefox product').choices([...FIREFOX_PRODUCTS]))
     .addOption(new Option('--license <license>', 'Project license').choices([...PROJECT_LICENSES]))
     .option('-f, --force', 'Overwrite existing configuration without prompting')
+    // `--yes` is a plain alias here: `setup`'s only bypass is the overwrite
+    // prompt, so the two flags mean exactly the same thing. Seventeen other
+    // commands spell this bypass `--yes`; accepting it means a scripted
+    // sequence can use one spelling throughout.
+    .option('-y, --yes', 'Alias for --force: skip the overwrite confirmation')
     .action(
       withErrorHandling(
         async (options: {
@@ -111,9 +110,12 @@ export function registerSetup(program: Command, { withErrorHandling }: CommandCo
           product?: string;
           license?: string;
           force?: boolean;
+          yes?: boolean;
         }) => {
-          const { product, license, ...rest } = options;
+          const { product, license, yes, ...rest } = options;
           const setupOptions: SetupOptions = { ...pickDefined(rest) };
+          // `--yes` is an alias, so either flag sets the same bypass.
+          if (yes === true) setupOptions.force = true;
 
           if (product !== undefined) {
             const parsedProduct = parseFirefoxProductOption(product);

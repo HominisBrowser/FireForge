@@ -53,15 +53,10 @@ export async function patchDeleteCommand(
   // without re-parsing for the dependency check below.
   const baseCtx = await buildPatchQueueContext(paths.patches);
 
-  // Hard refusal: run the forward-import rule against the projected state.
-  // Any issue that names the target patch in its message still applies; any
-  // new forward-import that appears *only because the target is gone* means
-  // another patch was depending on the target's newly-created files.
-  // Simpler check: run the rule on the *original* context and look for
-  // imports that resolve into the target's new files from earlier patches.
-  // Even simpler: an import owned by a later patch pointing at any of the
-  // target's newly-created files is a dependency on the target. We build
-  // that check directly from baseCtx.
+  // Hard refusal: an import owned by a LATER patch that points at any of
+  // the target's newly-created files is a dependency on the target. That
+  // check is built directly from `baseCtx` rather than by diffing lint runs
+  // over a projected state.
   const targetEntry = baseCtx.entries.find((e) => e.filename === target.filename);
   const targetNewFileLeaves = new Set<string>();
   if (targetEntry) {
@@ -72,17 +67,15 @@ export async function patchDeleteCommand(
 
   // Scan every later patch's new files AND its added lines on pre-existing
   // files for import specifiers that resolve to a leaf owned by the target.
-  // Uses the shared specifier extractor so dynamic import() and
-  // ChromeUtils.defineESModuleGetters are picked up — the forward-import
-  // lint rule already covers those forms and delete safety must match the
+  // Uses the shared specifier extractor so dynamic `import()` and
+  // `ChromeUtils.defineESModuleGetters` are picked up — the forward-import
+  // lint rule already covers those forms, and delete safety must match the
   // same set or it silently drops dependencies.
   //
-  // We cover both source-site maps: `newFiles` (files the later patch
+  // Both source-site maps are covered: `newFiles` (files the later patch
   // creates) and `modifiedFileAdditions` (added lines against files that
-  // already exist). Scanning only newFiles was the second-degree miss
-  // that motivated this change — a later patch could add
-  // `import "./TargetHelper.sys.mjs"` to an existing file and the delete
-  // guard would never see the dependency.
+  // already exist). Scanning only newFiles misses a later patch adding
+  // `import "./TargetHelper.sys.mjs"` to an existing file.
   const dependents: string[] = [];
   const scanSite = (entryFilename: string, sitePath: string, content: string): boolean => {
     if (!isForwardImportableFile(sitePath)) return false;
@@ -142,14 +135,13 @@ export async function patchDeleteCommand(
     dependents.length > 0
       ? {
           // Wording deliberately clarifies the *runtime* impact: `git apply`
-          // doesn't resolve imports and will succeed even when a later patch
-          // imports a file the target created (the eval observed this
-          // directly — forcing the delete and re-importing the remaining
-          // 20-patch queue was clean). The breakage surfaces at browser
-          // startup when `ChromeUtils.importESModule` can't locate the
-          // deleted module. Operators who deliberately plan to re-introduce
-          // the imported files (rename, refactor) need to know this is the
-          // impact model, not a patch-application failure.
+          // does not resolve imports and succeeds even when a later patch
+          // imports a file the target created, so the queue re-imports
+          // cleanly. The breakage surfaces at browser startup when
+          // `ChromeUtils.importESModule` cannot locate the deleted module.
+          // Operators who deliberately plan to re-introduce the imported
+          // files (rename, refactor) need to know this is the impact model,
+          // not a patch-application failure.
           reason: `${dependents.length} later patch(es) contain import statements that reference files created by ${target.filename}. Patch application itself will still succeed, but runtime imports will fail at browser startup until those files are re-introduced.`,
           details: dependents,
         }
@@ -178,20 +170,19 @@ export async function patchDeleteCommand(
     outro('Dry run complete — no changes made');
     return;
   }
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Delete cancelled');
     return;
   }
 
   // Proceed: remove under the patch directory lock so concurrent exports
   // cannot race us into the same manifest row. The history append lives
-  // inside the same lock so two concurrent deletes cannot interleave
-  // history records beyond what POSIX O_APPEND atomicity guarantees for a
-  // single record, and so a crash between mutation and history write
-  // cannot leave a committed mutation with no audit trail alongside a
-  // concurrent mutation's record appearing first. A history append
-  // failure is warned but not re-thrown: by that point the mutation
-  // has committed and reporting failure to the caller would mislead.
+  // inside the same lock so two concurrent deletes cannot interleave history
+  // records beyond what POSIX O_APPEND guarantees for a single record, and
+  // so a crash between mutation and history write cannot leave a committed
+  // mutation with no audit trail. A history append failure is warned but not
+  // re-thrown: by that point the mutation has committed, and reporting
+  // failure to the caller would mislead.
   await withPatchDirectoryLock(
     paths.patches,
     async () => {

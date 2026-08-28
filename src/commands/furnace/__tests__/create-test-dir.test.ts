@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Tests for `furnace create --test-dir` and the collision safety added in
- * 0.34.0 (field report: the scaffold targeted .../test/<binaryName>/
- * unconditionally and would have overwritten an existing
- * browser.toml/head.js owned by a different patch).
+ * Tests for `furnace create --test-dir` and its collision safety: the
+ * scaffold must not target `.../test/<binaryName>/` unconditionally, or it
+ * overwrites an existing browser.toml/head.js owned by a different patch.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

@@ -34,15 +34,27 @@ export function generateMjsContent(
   ftlChromeSubPath: string | undefined,
   sharedFtl: string | undefined
 ): string {
+  // A `*/` in the operator-supplied description would close the JSDoc block
+  // early and leave the remainder as stray code. Escaped here rather than
+  // rejected at input, because the same text is also rendered by
+  // create-dry-run.ts, where no escaping is wanted.
+  const jsDocDescription = (description || name).replace(/\*\//g, '*\\/');
+
   const ftlPath =
     sharedFtl !== undefined
       ? sharedFtl
       : ftlChromeSubPath !== undefined
         ? `${ftlChromeSubPath}/${name}.ftl`
         : `${name}.ftl`;
+  // Escape at the SINK, not at the validator. `ftlPath` reaches here from
+  // three sources — the `--shared-ftl` flag, the furnace.json `ftlBasePath`,
+  // and a derived `<name>.ftl` — and only the first passes through
+  // `validateSharedFtl`. `JSON.stringify` produces a correctly-escaped JS
+  // string literal for all of them, including the `"` and raw-newline cases
+  // that would otherwise break the generated module into a syntax error.
   const ftlModulePreamble = localized
     ? `
-window.MozXULElement?.insertFTLIfNeeded("${ftlPath}");
+window.MozXULElement?.insertFTLIfNeeded(${JSON.stringify(ftlPath)});
 `
     : '';
 
@@ -72,7 +84,7 @@ import { html } from "chrome://global/content/vendor/lit.all.mjs";
 import { MozLitElement } from "chrome://global/content/lit-utils.mjs";
 ${ftlModulePreamble}
 /**
- * ${description || name}
+ * ${jsDocDescription}
  *
  * @tagname ${name}
  */
@@ -124,19 +136,18 @@ export function xpcshellTestFileName(name: string): string {
  * xpcshell cannot execute a component module that imports
  * `chrome://global/content/vendor/lit.all.mjs` — the Lit bundle touches
  * `window` at module-load time and the xpcshell harness has no `window`
- * global. Before 0.16.0 the scaffold called `ChromeUtils.importESModule`
- * on the component's MJS, which reliably failed with
- * `ReferenceError: window is not defined` for every Lit-based fork
- * component. FireForge's diagnostics then misrouted the failure to the
- * "stale build artifacts" branch, sending operators on a rebuild loop
- * that couldn't fix a runtime-environment incompatibility.
+ * global. A scaffold that calls `ChromeUtils.importESModule` on the
+ * component's MJS therefore fails with `ReferenceError: window is not
+ * defined` for every Lit-based fork component, and FireForge's diagnostics
+ * misroute that to the "stale build artifacts" branch, sending operators on
+ * a rebuild loop that cannot fix a runtime-environment incompatibility.
  *
- * The rewrite here mirrors the chrome-doc packaging test: XCurProcD is
+ * This template mirrors the chrome-doc packaging test instead: XCurProcD is
  * probed at a pair of candidate layouts (dist/bin/browser and the macOS
- * .app-bundle / ESR layout) to confirm the `.mjs` and `.css` files
- * landed where jar.mn promised. That's the assertion xpcshell CAN make.
- * Functional tests that need DOM/shadow-root/keyboard behaviour belong
- * in a browser-chrome mochitest — scaffolded via
+ * .app-bundle / ESR layout) to confirm the `.mjs` and `.css` files landed
+ * where jar.mn promised. That is the assertion xpcshell CAN make. Functional
+ * tests that need DOM/shadow-root/keyboard behaviour belong in a
+ * browser-chrome mochitest — scaffolded via
  * `fireforge furnace create --test-style browser-chrome`.
  */
 export function generateXpcshellTestContent(name: string, header: string): string {
@@ -244,26 +255,21 @@ export function mochikitTestFileName(name: string): string {
  * MochiKit tests load the component module directly via the global chrome
  * URI and assert that `customElements.get(<tag>)` returns a constructor.
  * They run on forks whose top-level chrome document lacks a `tabbrowser`
- * (the class of bug that forces `--xpcshell` for storage code) because
- * they do not traverse `URILoadingHelper.openLinkIn`.
+ * because they do not traverse `URILoadingHelper.openLinkIn`.
  *
- * The scaffold here is a smoke test — the component is defined and the
- * constructor is a function. Real UI assertions (render output, l10n
- * wiring, keyboard interactions) are intentionally left out because they
- * depend on the component's shape; operators can extend the test using
- * the same SimpleTest APIs upstream toolkit widgets (moz-button, etc.)
- * rely on.
+ * The scaffold is a smoke test — the component is defined and the
+ * constructor is a function. Real UI assertions (render output, l10n wiring,
+ * keyboard interactions) are left out because they depend on the
+ * component's shape; operators can extend the test using the same SimpleTest
+ * APIs upstream toolkit widgets rely on.
  *
  * The template deliberately omits `SimpleTest.waitForExplicitFinish()`.
- * `add_task` owns the test lifecycle: when every queued task resolves,
- * the task harness calls `SimpleTest.finish()` on its own. Combining
- * `waitForExplicitFinish()` with `add_task` *and* no explicit
- * `SimpleTest.finish()` inside the task body makes the harness wait
- * forever, which the 2026-04-21 eval run tripped into as an indefinite
- * hang on a `fireforge test --headless` against a scaffolded widget
- * test. Leaving `waitForExplicitFinish()` out matches the convention
- * upstream toolkit widget tests use (see `test_moz-button.html` and
- * siblings under `toolkit/content/tests/widgets/`).
+ * `add_task` owns the test lifecycle: when every queued task resolves, the
+ * task harness calls `SimpleTest.finish()` itself. Combining
+ * `waitForExplicitFinish()` with `add_task` and no explicit
+ * `SimpleTest.finish()` in the task body makes the harness wait forever —
+ * an indefinite hang on `fireforge test --headless`. Omitting it matches the
+ * convention upstream toolkit widget tests use.
  */
 export function generateMochikitTestContent(name: string): string {
   return `<!DOCTYPE html>

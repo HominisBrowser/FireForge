@@ -3,14 +3,13 @@ import { EventEmitter } from 'node:events';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../mach.js', () => ({
   ensureMach: vi.fn(() => Promise.resolve()),
@@ -204,13 +203,12 @@ describe('runMarionettePreflight', () => {
   });
 
   it('destroys the stderr pipe in the finally block', async () => {
-    // Eval regression: Firefox (grandchild of the Python mach wrapper)
-    // inherited the stderr pipe FD and kept Node's event loop alive after
-    // a passing preflight — `fireforge test --doctor` printed PASS and
-    // then hung indefinitely in `uv__io_poll`. The fix destroys the
-    // stderr stream in the finally block so the local end of the pipe
-    // closes regardless of what the grandchild does with its inherited
-    // handle.
+    // Firefox (grandchild of the Python mach wrapper) inherits the stderr
+    // pipe FD and keeps Node's event loop alive after a passing preflight, so
+    // `fireforge test --doctor` prints PASS and then hangs indefinitely in
+    // `uv__io_poll`. Destroying the stderr stream in the finally block closes
+    // the local end of the pipe regardless of what the grandchild does with
+    // its inherited handle.
     vi.useFakeTimers();
     const child = makeChild();
     const stderr = child.stderr;

@@ -7,9 +7,7 @@ import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
-import { findAlphabeticalMozBuildPosition, findAlphabeticalPosition } from './manifest-helpers.js';
-import { tokenizeMozBuildList } from './manifest-tokenizers.js';
-import { withParserFallback } from './parser-fallback.js';
+import { insertMozBuildListEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 import { scaffoldModuleMozBuild } from './register-scaffold.js';
 
@@ -21,63 +19,11 @@ function registerFireForgeModuleTokenized(
   fileName: string,
   entry: string
 ): { result: string; previousEntry: string | undefined } {
-  const lines = content.split('\n');
-  const listResult = tokenizeMozBuildList(lines, /EXTRA_JS_MODULES/);
-
-  if (!listResult) {
-    throw new GeneralError('Could not find EXTRA_JS_MODULES in moz.build');
-  }
-
-  const { insertIndex, previousEntry } = findAlphabeticalMozBuildPosition(
-    listResult.tokens,
-    fileName
-  );
-
-  lines.splice(insertIndex, 0, entry);
-  return { result: lines.join('\n'), previousEntry };
-}
-
-/**
- * Legacy line-based implementation preserved as fallback.
- */
-function legacyRegisterFireForgeModule(
-  content: string,
-  fileName: string,
-  entry: string,
-  moduleDir: string
-): { result: string; previousEntry: string | undefined } {
-  const lines = content.split('\n');
-
-  const extractKey = (line: string): string | undefined => {
-    const match = /^\s+"([^"]+\.sys\.mjs)"/.exec(line);
-    return match?.[1];
-  };
-
-  let sectionStart = -1;
-  let sectionEnd = lines.length;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === undefined) continue;
-    if (/^\s+"[^"]+\.sys\.mjs"/.test(line)) {
-      if (sectionStart === -1) sectionStart = i;
-      sectionEnd = i + 1;
-    }
-  }
-
-  if (sectionStart === -1) {
-    throw new GeneralError(`Could not find module list section in ${moduleDir}/moz.build`);
-  }
-
-  const { insertIndex, previousEntry } = findAlphabeticalPosition(
-    lines,
-    sectionStart,
-    sectionEnd,
-    fileName,
-    extractKey
-  );
-
-  lines.splice(insertIndex, 0, entry);
-  return { result: lines.join('\n'), previousEntry };
+  return insertMozBuildListEntry(content, entry, {
+    listPattern: /EXTRA_JS_MODULES/,
+    sortKey: fileName,
+    missingListMessage: 'Could not find EXTRA_JS_MODULES in moz.build',
+  });
 }
 
 /**
@@ -98,9 +44,9 @@ export async function registerFireForgeModule(
 
   if (!(await pathExists(manifestPath))) {
     if (createManifest) {
-      // 0.34.0 field report: registering a module under a directory with
-      // no moz.build failed with "Manifest not found". Scaffold the
-      // directory manifest and wire the parent DIRS chain.
+      // Registering a module under a directory with no moz.build otherwise
+      // fails with "Manifest not found". Scaffold the directory manifest and
+      // wire the parent DIRS chain.
       const scaffoldActions = await scaffoldModuleMozBuild(engineDir, moduleDir, fileName, dryRun);
       return {
         manifest,
@@ -123,11 +69,7 @@ export async function registerFireForgeModule(
     return { manifest, entry, skipped: true };
   }
 
-  const { value } = withParserFallback(
-    () => registerFireForgeModuleTokenized(content, fileName, entry),
-    () => legacyRegisterFireForgeModule(content, fileName, entry, moduleDir),
-    manifest
-  );
+  const value = registerFireForgeModuleTokenized(content, fileName, entry);
 
   if (!dryRun) {
     await writeText(manifestPath, value.result);

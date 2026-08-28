@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import {
   deregisterTestManifest,
   registerBrowserContent,
@@ -8,19 +9,15 @@ import {
   registerSharedCSS,
   registerTestManifest,
   registerToolkitWidget,
-} from '../manifest-register.js';
+} from '../moz-manifest-register.js';
 import {
   getRules,
   isFileRegistered,
   matchesRegistrablePattern,
   registerFile,
-} from '../manifest-rules.js';
+} from '../moz-manifest-rules.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -45,27 +42,24 @@ vi.mock('../config.js', () => ({
   ),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
-vi.mock('../manifest-tokenizers.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../manifest-tokenizers.js')>();
+vi.mock('../moz-manifest-tokenizers.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../moz-manifest-tokenizers.js')>();
   return {
     ...actual,
     tokenizeJarMn: vi.fn(actual.tokenizeJarMn),
   };
 });
 
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, writeText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
-import { tokenizeJarMn } from '../manifest-tokenizers.js';
 
 const mockPathExists = vi.mocked(pathExists);
 const mockReadText = vi.mocked(readText);
 const mockWriteText = vi.mocked(writeText);
 const mockWarn = vi.mocked(warn);
-const mockTokenizeJarMn = vi.mocked(tokenizeJarMn);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -256,23 +250,6 @@ BROWSER_CHROME_MANIFESTS += [
     expect(widgetIdx).toBeLessThan(generalIdx);
   });
 
-  it('falls back to the legacy inserter with an explicit warning when tokenization cannot find the list header', async () => {
-    mockReadText.mockResolvedValue(
-      [
-        '    "content/test/about/browser.toml",',
-        '    "content/test/general/browser.toml",',
-        '',
-      ].join('\n')
-    );
-
-    const result = await registerTestManifest('/engine', 'custom-widget');
-
-    expect(result.skipped).toBe(false);
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    expect(written).toContain('"content/test/custom-widget/browser.toml"');
-  });
-
   it('is idempotent — skips if already registered', async () => {
     mockReadText.mockResolvedValue(MOCK_MOZ_BUILD);
 
@@ -282,7 +259,7 @@ BROWSER_CHROME_MANIFESTS += [
     expect(mockWriteText).not.toHaveBeenCalled();
   });
 
-  it('registers a NESTED test directory (0.34.0: arbitrary-depth browser.toml)', async () => {
+  it('registers a NESTED test directory at arbitrary depth', async () => {
     mockReadText.mockResolvedValue(MOCK_MOZ_BUILD);
 
     const result = await registerTestManifest('/engine', 'mybrowser/settings');
@@ -424,7 +401,12 @@ describe('registerFile', () => {
   });
 
   it('dispatches test manifests to registerTestManifest', async () => {
-    mockReadText.mockResolvedValue('    "content/test/aaa/browser.toml",\n');
+    // A real moz.build list, header included. A bare list body only parses
+    // under the lax legacy regex scanner; the tokenizer, now the only path,
+    // needs the header.
+    mockReadText.mockResolvedValue(
+      ['BROWSER_CHROME_MANIFESTS += [', '    "content/test/aaa/browser.toml",', ']', ''].join('\n')
+    );
 
     const result = await registerFile(
       '/project',
@@ -434,7 +416,9 @@ describe('registerFile', () => {
   });
 
   it('dispatches fireforge modules to registerFireForgeModule', async () => {
-    mockReadText.mockResolvedValue('    "Aaa.sys.mjs",\n');
+    mockReadText.mockResolvedValue(
+      ['EXTRA_JS_MODULES += [', '    "Aaa.sys.mjs",', ']', ''].join('\n')
+    );
 
     const result = await registerFile('/project', 'browser/modules/testbrowser/Overlay.sys.mjs');
     expect(result.manifest).toBe('browser/modules/testbrowser/moz.build');
@@ -444,14 +428,16 @@ describe('registerFile', () => {
     await expect(registerFile('/project', 'some/random/path.txt')).rejects.toThrow(
       'Unknown file pattern'
     );
-    // The supported-pattern list names the 0.34.0 additions.
+    // The supported-pattern list must name every registrable shape.
     await expect(registerFile('/project', 'some/random/path.txt')).rejects.toThrow(
       /test_\*\.js.*xpcshell\.toml/s
     );
   });
 
-  it('dispatches nested browser.toml manifests to registerTestManifest (0.34.0)', async () => {
-    mockReadText.mockResolvedValue('    "content/test/aaa/browser.toml",\n');
+  it('dispatches nested browser.toml manifests to registerTestManifest', async () => {
+    mockReadText.mockResolvedValue(
+      ['BROWSER_CHROME_MANIFESTS += [', '    "content/test/aaa/browser.toml",', ']', ''].join('\n')
+    );
 
     const result = await registerFile(
       '/project',
@@ -461,7 +447,7 @@ describe('registerFile', () => {
     expect(result.entry).toContain('content/test/custom-widget/settings/browser.toml');
   });
 
-  it('dispatches xpcshell test files to the xpcshell.toml writer (0.34.0)', async () => {
+  it('dispatches xpcshell test files to the xpcshell.toml writer', async () => {
     // The directory's xpcshell.toml exists and already lists another test.
     mockReadText.mockResolvedValue('[DEFAULT]\n\n["test_aaa.js"]\n');
 
@@ -473,7 +459,7 @@ describe('registerFile', () => {
     expect(result.skipped).toBe(false);
   });
 
-  it('xpcshell test files without a manifest fail with a --create-manifest hint (0.34.0)', async () => {
+  it('xpcshell test files without a manifest fail with a --create-manifest hint', async () => {
     mockPathExists.mockResolvedValue(false);
     await expect(
       registerFile('/project', 'browser/components/testbrowser/test/unit/test_store.js')
@@ -507,14 +493,13 @@ describe('registerFile', () => {
   });
 
   it('throws xpcshell-specific advice for xpcshell.toml manifests', async () => {
-    // Eval regression: `fireforge furnace create --test-style xpcshell`
-    // and `fireforge furnace chrome-doc create --with-tests` scaffold
-    // `xpcshell.toml` under a dedicated subdirectory, but
-    // `fireforge register <path>/xpcshell.toml` then routed through the
-    // generic testMatch branch and suggested registering browser.toml —
-    // wrong manifest type AND a path that does not exist. The dedicated
-    // xpcshell branch points operators at XPCSHELL_TESTS_MANIFESTS in
-    // the appropriate moz.build.
+    // `furnace create --test-style xpcshell` and `furnace chrome-doc create
+    // --with-tests` scaffold `xpcshell.toml` under a dedicated
+    // subdirectory. Routing `register <path>/xpcshell.toml` through the
+    // generic testMatch branch suggests registering browser.toml — wrong
+    // manifest type AND a path that does not exist. The dedicated xpcshell
+    // branch points operators at XPCSHELL_TESTS_MANIFESTS in the appropriate
+    // moz.build.
     await expect(
       registerFile(
         '/project',
@@ -530,13 +515,12 @@ describe('registerFile', () => {
   });
 
   it('throws helpful advice for .inc.xhtml fragments under browser/base/content', async () => {
-    // Finding #10: the browser-content pattern previously matched every
-    // .xhtml under browser/base/content/, including `.inc.xhtml`
-    // fragments consumed via `#include`. Status then flagged them as
-    // "potentially unregistered" and register proposed a bogus jar.mn
-    // entry. The fix narrows the pattern to exclude `.inc.xhtml` and
-    // routes the call through getUnregistrableAdvice so the operator
-    // sees the `wire` guidance instead of a packaging entry.
+    // A browser-content pattern matching every .xhtml under
+    // browser/base/content/ also matches `.inc.xhtml` fragments consumed via
+    // `#include`, so status flags them as "potentially unregistered" and
+    // register proposes a bogus jar.mn entry. The narrowed pattern excludes
+    // `.inc.xhtml` and routes the call through getUnregistrableAdvice so the
+    // operator sees the `wire` guidance instead.
     await expect(
       registerFile('/project', 'browser/base/content/my-fragment.inc.xhtml')
     ).rejects.toThrow(/`?\.inc\.xhtml`? fragments are consumed via `#include`/);
@@ -590,7 +574,7 @@ describe('isFileRegistered', () => {
     ).rejects.toThrow(/\.inc\.xhtml/);
   });
 
-  it('checks xpcshell test files against their xpcshell.toml (0.34.0)', async () => {
+  it('checks xpcshell test files against their xpcshell.toml', async () => {
     mockReadText.mockResolvedValue('[DEFAULT]\n\n["test_store.js"]\n');
     await expect(
       isFileRegistered('/project', 'browser/components/testbrowser/test/unit/test_store.js')
@@ -601,14 +585,14 @@ describe('isFileRegistered', () => {
     ).resolves.toBe(false);
   });
 
-  it('checks nested browser.toml manifests (0.34.0)', async () => {
+  it('checks nested browser.toml manifests', async () => {
     mockReadText.mockResolvedValue('    "content/test/widget/inner/browser.toml",\n');
     await expect(
       isFileRegistered('/project', 'browser/base/content/test/widget/inner/browser.toml')
     ).resolves.toBe(true);
   });
 
-  it('mentions the register-based scaffold path in xpcshell.toml advice (0.34.0)', async () => {
+  it('mentions the register-based scaffold path in xpcshell.toml advice', async () => {
     await expect(
       isFileRegistered('/project', 'browser/components/testbrowser/test/unit/xpcshell.toml')
     ).rejects.toThrow(/--create-manifest/);
@@ -616,14 +600,14 @@ describe('isFileRegistered', () => {
 });
 
 // ---------------------------------------------------------------------------
-// registerFile --create-manifest threading (0.34.0)
+// registerFile --create-manifest threading
 // ---------------------------------------------------------------------------
 
 describe('registerFile with createManifest', () => {
   it('scaffolds a missing module moz.build instead of failing', async () => {
     // No manifests exist anywhere except the parent browser/modules/moz.build.
     mockPathExists.mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/engine/browser/modules/moz.build')
+      Promise.resolve(filePath === nativePath('/project/engine/browser/modules/moz.build'))
     );
     mockReadText.mockResolvedValue('DIRS += [\n    "newtab",\n]\n');
 
@@ -640,14 +624,16 @@ describe('registerFile with createManifest', () => {
       true
     );
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/project/engine/browser/modules/testbrowser/moz.build',
+      nativePath('/project/engine/browser/modules/testbrowser/moz.build'),
       expect.stringContaining('EXTRA_JS_MODULES.testbrowser')
     );
   });
 
-  it('creates the xpcshell.toml and wires XPCSHELL_TESTS_MANIFESTS (0.34.0)', async () => {
+  it('creates the xpcshell.toml and wires XPCSHELL_TESTS_MANIFESTS', async () => {
     mockPathExists.mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === '/project/engine/browser/components/testbrowser/moz.build')
+      Promise.resolve(
+        filePath === nativePath('/project/engine/browser/components/testbrowser/moz.build')
+      )
     );
     mockReadText.mockResolvedValue('EXTRA_JS_MODULES.testbrowser += [\n    "Store.sys.mjs",\n]\n');
 
@@ -661,11 +647,11 @@ describe('registerFile with createManifest', () => {
 
     expect(result.manifest).toBe('browser/components/testbrowser/test/unit/xpcshell.toml');
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/project/engine/browser/components/testbrowser/test/unit/xpcshell.toml',
+      nativePath('/project/engine/browser/components/testbrowser/test/unit/xpcshell.toml'),
       expect.stringContaining('["test_store.js"]')
     );
     expect(mockWriteText).toHaveBeenCalledWith(
-      '/project/engine/browser/components/testbrowser/moz.build',
+      nativePath('/project/engine/browser/components/testbrowser/moz.build'),
       expect.stringContaining('XPCSHELL_TESTS_MANIFESTS')
     );
   });
@@ -677,11 +663,11 @@ describe('registerFile with createManifest', () => {
 
 describe('matchesRegistrablePattern — .inc.xhtml carve-out', () => {
   it('returns false for .inc.xhtml fragments so status does not flag them', () => {
-    // This is the direct gate for the status-command finding: `status`
-    // iterates new files through matchesRegistrablePattern to decide
-    // what to surface as "potentially unregistered". Before the pattern
-    // narrowed, every wired `.inc.xhtml` fragment lit up the warning,
-    // even though the file is intentionally consumed via `#include`.
+    // The direct gate for the status-command case: `status` iterates new
+    // files through matchesRegistrablePattern to decide what to surface as
+    // "potentially unregistered". A broader pattern lights up every wired
+    // `.inc.xhtml` fragment, even though the file is intentionally consumed
+    // via `#include`.
     expect(
       matchesRegistrablePattern('browser/base/content/my-fragment.inc.xhtml', 'mybrowser')
     ).toBe(false);
@@ -693,14 +679,13 @@ describe('matchesRegistrablePattern — .inc.xhtml carve-out', () => {
     );
   });
 
-  it('returns false for browser-chrome test files (Eval 2)', () => {
-    // `status --unmanaged` used to flag `browser_<fork>_<case>.js`
-    // under `browser/base/content/test/<dir>/` as "potentially
-    // unregistered", and `register` would then add it to jar.mn as
-    // chrome content — the wrong manifest (the right one is the
-    // sibling browser.toml). The pattern now excludes the test
-    // subtree so these paths fall through to the browser.toml advice
-    // in `getUnregistrableAdvice`.
+  it('returns false for browser-chrome test files', () => {
+    // `status --unmanaged` must not flag `browser_<fork>_<case>.js` under
+    // `browser/base/content/test/<dir>/` as "potentially unregistered" —
+    // `register` would then add it to jar.mn as chrome content, the wrong
+    // manifest (the right one is the sibling browser.toml). The pattern
+    // excludes the test subtree so these paths fall through to the
+    // browser.toml advice in `getUnregistrableAdvice`.
     expect(
       matchesRegistrablePattern(
         'browser/base/content/test/forgeqa/browser_forgeqa_qa_browser.js',
@@ -1192,183 +1177,6 @@ describe('getRules extractArgs fallback branches', () => {
 });
 
 // ---------------------------------------------------------------------------
-// registerBrowserContent — legacy fallback coverage
-// ---------------------------------------------------------------------------
-
-describe('registerBrowserContent (legacy fallback)', () => {
-  let realTokenize: typeof tokenizeJarMn;
-
-  beforeAll(async () => {
-    const actual = await vi.importActual<typeof import('../manifest-tokenizers.js')>(
-      '../manifest-tokenizers.js'
-    );
-    realTokenize = actual.tokenizeJarMn;
-  });
-
-  beforeEach(() => {
-    mockTokenizeJarMn.mockImplementation(() => {
-      throw new Error('tokenizer failure');
-    });
-  });
-
-  afterEach(() => {
-    mockTokenizeJarMn.mockImplementation((...args) => realTokenize(...args));
-  });
-
-  const LEGACY_JAR_MN = `browser.jar:
-%  content/browser %content/browser/
-        content/browser/aboutDialog.js    (content/aboutDialog.js)
-        content/browser/browser-init.js   (content/browser-init.js)
-        content/browser/browser.js        (content/browser.js)
-`;
-
-  it('inserts in alphabetical order via the legacy path', async () => {
-    mockReadText.mockResolvedValue(LEGACY_JAR_MN);
-
-    const result = await registerBrowserContent('/engine', 'browser-custom.js');
-
-    expect(result.skipped).toBe(false);
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const customIdx = lines.findIndex((l: string) => l.includes('browser-custom.js'));
-    const aboutIdx = lines.findIndex((l: string) => l.includes('aboutDialog.js'));
-    const initIdx = lines.findIndex((l: string) => l.includes('browser-init.js'));
-
-    expect(customIdx).toBeGreaterThan(aboutIdx);
-    expect(customIdx).toBeLessThan(initIdx);
-  });
-
-  it('inserts after --after target via the legacy path', async () => {
-    mockReadText.mockResolvedValue(LEGACY_JAR_MN);
-
-    const result = await registerBrowserContent('/engine', 'custom.js', 'aboutDialog.js');
-
-    expect(result.skipped).toBe(false);
-    expect(result.afterFallback).toBeFalsy();
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const aboutIdx = lines.findIndex((l: string) => l.includes('aboutDialog.js'));
-    const customIdx = lines.findIndex((l: string) => l.includes('custom.js'));
-    expect(customIdx).toBe(aboutIdx + 1);
-  });
-
-  it('falls back to alphabetical when --after target is not found via the legacy path', async () => {
-    mockReadText.mockResolvedValue(LEGACY_JAR_MN);
-
-    const result = await registerBrowserContent('/engine', 'custom.js', 'nonexistent.js');
-
-    expect(result.skipped).toBe(false);
-    expect(result.afterFallback).toBe(true);
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const customIdx = lines.findIndex((l: string) => l.includes('custom.js'));
-    const browserIdx = lines.findIndex((l: string) => l.includes('browser.js'));
-    expect(customIdx).toBeGreaterThan(browserIdx);
-  });
-
-  it('throws when content/browser/ section is missing via the legacy path', async () => {
-    mockReadText.mockResolvedValue('browser.jar:\n% some-directive\n');
-
-    await expect(registerBrowserContent('/engine', 'custom.js')).rejects.toThrow(
-      /Could not find content\/browser\/ section/
-    );
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// registerSharedCSS — legacy fallback coverage
-// ---------------------------------------------------------------------------
-
-describe('registerSharedCSS (legacy fallback)', () => {
-  let realTokenize: typeof tokenizeJarMn;
-
-  beforeAll(async () => {
-    const actual = await vi.importActual<typeof import('../manifest-tokenizers.js')>(
-      '../manifest-tokenizers.js'
-    );
-    realTokenize = actual.tokenizeJarMn;
-  });
-
-  beforeEach(() => {
-    mockTokenizeJarMn.mockImplementation(() => {
-      throw new Error('tokenizer failure');
-    });
-  });
-
-  afterEach(() => {
-    mockTokenizeJarMn.mockImplementation((...args) => realTokenize(...args));
-  });
-
-  const LEGACY_JAR_INC_MN = `\
-  skin/classic/browser/autocomplete.css    (../shared/autocomplete.css)
-  skin/classic/browser/browser.css         (../shared/browser.css)
-  skin/classic/browser/zoom.css            (../shared/zoom.css)
-`;
-
-  it('inserts in alphabetical order via the legacy path', async () => {
-    mockReadText.mockResolvedValue(LEGACY_JAR_INC_MN);
-
-    const result = await registerSharedCSS('/engine', 'custom.css');
-
-    expect(result.skipped).toBe(false);
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const customIdx = lines.findIndex((l: string) => l.includes('custom.css'));
-    const browserIdx = lines.findIndex((l: string) => l.includes('browser.css'));
-    const zoomIdx = lines.findIndex((l: string) => l.includes('zoom.css'));
-
-    expect(customIdx).toBeGreaterThan(browserIdx);
-    expect(customIdx).toBeLessThan(zoomIdx);
-  });
-
-  it('inserts after --after target via the legacy path', async () => {
-    mockReadText.mockResolvedValue(LEGACY_JAR_INC_MN);
-
-    const result = await registerSharedCSS('/engine', 'custom.css', 'autocomplete.css');
-
-    expect(result.skipped).toBe(false);
-    expect(result.afterFallback).toBeFalsy();
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const autoIdx = lines.findIndex((l: string) => l.includes('autocomplete.css'));
-    const customIdx = lines.findIndex((l: string) => l.includes('custom.css'));
-    expect(customIdx).toBe(autoIdx + 1);
-  });
-
-  it('falls back to alphabetical when --after target is not found via the legacy path', async () => {
-    mockReadText.mockResolvedValue(LEGACY_JAR_INC_MN);
-
-    const result = await registerSharedCSS('/engine', 'custom.css', 'nonexistent.css');
-
-    expect(result.skipped).toBe(false);
-    expect(result.afterFallback).toBe(true);
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const customIdx = lines.findIndex((l: string) => l.includes('custom.css'));
-    const browserIdx = lines.findIndex((l: string) => l.includes('browser.css'));
-    const zoomIdx = lines.findIndex((l: string) => l.includes('zoom.css'));
-    expect(customIdx).toBeGreaterThan(browserIdx);
-    expect(customIdx).toBeLessThan(zoomIdx);
-  });
-
-  it('throws when skin/classic/browser/ section is missing via the legacy path', async () => {
-    mockReadText.mockResolvedValue('% some-directive\n# a comment\n');
-
-    await expect(registerSharedCSS('/engine', 'custom.css')).rejects.toThrow(
-      /Could not find skin\/classic\/browser\/ section/
-    );
-    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('falling back to legacy'));
-  });
-});
-
-// ---------------------------------------------------------------------------
 // deregisterTestManifest
 // ---------------------------------------------------------------------------
 
@@ -1412,5 +1220,59 @@ BROWSER_CHROME_MANIFESTS += [
 
     expect(result).toBe(false);
     expect(mockWriteText).not.toHaveBeenCalled();
+  });
+});
+
+describe('--after support', () => {
+  it('warns when --after is passed to a manifest that cannot honour it', async () => {
+    // The visible half: an accepted-but-ignored flag is taken as `_after`
+    // and the entry inserted alphabetically, with no indication the
+    // operator's placement was dropped.
+    mockReadText.mockResolvedValue(
+      ['EXTRA_JS_MODULES += [', '    "Aaa.sys.mjs",', ']', ''].join('\n')
+    );
+
+    await registerFile(
+      '/project',
+      'browser/modules/testbrowser/Overlay.sys.mjs',
+      false,
+      'Aaa.sys.mjs'
+    );
+
+    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('--after is not supported'));
+  });
+
+  it('does not warn when --after is passed to a manifest that honours it', async () => {
+    mockWarn.mockClear();
+    mockReadText.mockResolvedValue('        content/browser/aaa.js    (content/aaa.js)\n');
+
+    await registerFile('/project', 'browser/base/content/custom.js', false, 'aaa.js');
+
+    const afterWarnings = mockWarn.mock.calls.filter((c) =>
+      c[0].includes('--after is not supported')
+    );
+    expect(afterWarnings).toHaveLength(0);
+  });
+
+  it('declares which manifests honour --after, so the discard is never silent', () => {
+    // Four of the six rules took `--after` as `_after` and inserted
+    // alphabetically anyway, so an operator who asked for placement got none
+    // and no indication of it.
+    const rules = getRules('mybrowser');
+    const ignoring = rules.filter((r) => !r.supportsAfter);
+    const honouring = rules.filter((r) => r.supportsAfter);
+
+    // Both groups exist: this is a real split, not a blanket capability.
+    expect(ignoring.length).toBeGreaterThan(0);
+    expect(honouring.length).toBeGreaterThan(0);
+
+    // Every adapter that names its `after` parameter `_after` must declare
+    // `supportsAfter: false`, or the warning goes missing again.
+    for (const rule of ignoring) {
+      expect(String(rule.register)).toMatch(/_after/);
+    }
+    for (const rule of honouring) {
+      expect(String(rule.register)).not.toMatch(/_after/);
+    }
   });
 });

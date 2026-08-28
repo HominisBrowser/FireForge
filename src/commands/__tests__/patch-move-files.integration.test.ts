@@ -673,8 +673,8 @@ describe('patch move-files projection lint runs with the whole-queue context', (
     };
     await writeFile(join(patchesDir, 'patches.json'), JSON.stringify(manifest, null, 2));
 
-    // Re-spy with capture: clack renders warnings through stdout, so the
-    // spurious pre-fix diagnostic is observable in the captured writes.
+    // Re-spy with capture: clack renders warnings through stdout, so a
+    // spurious diagnostic is observable in the captured writes.
     const writes: string[] = [];
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array): boolean => {
       writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));

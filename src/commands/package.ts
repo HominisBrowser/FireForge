@@ -4,14 +4,13 @@ import { Command } from 'commander';
 import { validateBrandOverride } from '../core/brand-validation.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { assertEngineExists } from '../core/engine-precondition.js';
 import { hasBuildArtifacts, machPackageCapture } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import { explainMachError } from '../core/mach-error-hints.js';
-import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PackageOptions } from '../types/commands/index.js';
-import { pathExists } from '../utils/fs.js';
 import { error, info, intro, outro, verbose } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 
@@ -30,9 +29,7 @@ export async function packageCommand(projectRoot: string, options: PackageOption
   validateBrandOverride(config.binaryName, options.brand);
 
   // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
+  await assertEngineExists(paths.engine);
 
   const buildCheck = await hasBuildArtifacts(paths.engine);
   assertBuildArtifacts(paths.engine, buildCheck, {
@@ -60,12 +57,10 @@ export async function packageCommand(projectRoot: string, options: PackageOption
 
   try {
     // `machPackageCapture` streams output live AND captures the tail for
-    // post-run diagnostics. Previously `machPackage` inherited stdio
-    // only, so a targeted hint translator could not see the failure text.
-    // The captured stderr is fed through `explainMachError` below so
-    // recognised failure modes (notably the `packager.py` NoneType trip
-    // the evaluator hit on `mybrowser/`) get an actionable hint prepended
-    // to the raw mach output the operator already saw.
+    // post-run diagnostics; an inherit-only dispatch leaves the hint
+    // translator unable to see the failure text. The captured stderr is fed
+    // through `explainMachError` below so recognised failure modes get an
+    // actionable hint prepended to the raw mach output.
     result = await machPackageCapture(paths.engine);
   } catch (error: unknown) {
     throw new BuildError(

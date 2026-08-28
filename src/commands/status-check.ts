@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `status --check` enforcement policy. Turns the classified
- * status view into a CI-enforceable non-zero exit: the default policy
- * fails on any classification outside {patch-backed, branding, furnace},
- * and `--fail-on <class,...>` replaces that set for finer control.
+ * `status --check` enforcement policy. Turns the classified status view into
+ * a CI-enforceable non-zero exit: the default policy fails on any
+ * classification outside {patch-backed, branding, furnace}, and
+ * `--fail-on <class,...>` replaces that set for finer control.
  *
- * Helper module consumed by status.ts (which sits at the max-lines
- * budget); no top-level registrar is exported and none is wanted.
+ * Helper module consumed by status.ts (which sits at the max-lines budget);
+ * no top-level registrar is exported and none is wanted.
  */
 import type { ClassifiedFile, FileClassification } from '../core/status-classify.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';

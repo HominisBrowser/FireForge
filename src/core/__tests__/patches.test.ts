@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import {
   pathExists,
@@ -39,9 +40,7 @@ vi.mock('../../utils/fs.js', () => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();

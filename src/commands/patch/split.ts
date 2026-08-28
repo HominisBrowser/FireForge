@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * `fireforge patch split <source> --files <p...> --name <n>` — moves files
- * out of an existing patch into a brand-new patch as one transaction
- * (field report A4).
+ * out of an existing patch into a brand-new patch as one transaction.
  *
- * Before this command, splitting a patch whose files have inbound
- * forward-imports required a precise manual order: re-point each
- * staged-dependency owner at a not-yet-created patch, shrink the source
- * via `re-export --files --allow-shrink`, then `export --order` — any
- * other order refused or needed `--force-unsafe`. Split performs the
- * shrink, the new-patch creation, and the dependent owner rewrites under
- * one patch-directory lock with rollback, validating only the final
- * projection.
+ * Splitting a patch whose files have inbound forward-imports otherwise
+ * requires a precise manual order: re-point each staged-dependency owner at
+ * a not-yet-created patch, shrink the source via
+ * `re-export --files --allow-shrink`, then `export --order` — any other
+ * order refuses or needs `--force-unsafe`. Split performs the shrink, the
+ * new-patch creation, and the dependent owner rewrites under one
+ * patch-directory lock with rollback, validating only the final projection.
  *
  * Preconditions match `re-export`: the engine worktree must currently
  * reflect both patches' content, because both bodies are regenerated from
@@ -369,7 +367,7 @@ export async function patchSplitCommand(
     outro('Dry run complete — no changes made');
     return;
   }
-  if (decision === 'cancelled') {
+  if (decision === 'declined') {
     outro('Split cancelled');
     return;
   }

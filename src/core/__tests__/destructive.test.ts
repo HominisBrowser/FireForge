@@ -14,7 +14,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { InvalidArgumentError } from '../../errors/base.js';
+import { CancellationError, InvalidArgumentError } from '../../errors/base.js';
+import { ExitCode } from '../../errors/codes.js';
 import {
   createTempProject,
   removeTempProject,
@@ -23,6 +24,16 @@ import {
 import * as logger from '../../utils/logger.js';
 import { appendHistory, confirmDestructive, HISTORY_LOG_FILENAME } from '../destructive.js';
 
+/**
+ * Stand-in for clack's cancellation sentinel. The real one is
+ * `Symbol('clack:cancel')`, module-private inside `@clack/core` and therefore
+ * unreachable from a test. `isCancel` is overridden below to recognise this
+ * marker too, which is enough to drive the interrupt branch — `utils/logger.ts`
+ * imports `* as p from '@clack/prompts'`, so the override reaches
+ * `logger.isCancel`, which is what `confirmDestructive` actually calls.
+ */
+const CANCEL_MARKER = Symbol('test:clack-cancel');
+
 // Mock @clack/prompts so we can control the confirm() return value in
 // interactive-path tests without a real stdin.
 vi.mock('@clack/prompts', async () => {
@@ -30,6 +41,7 @@ vi.mock('@clack/prompts', async () => {
   return {
     ...actual,
     confirm: vi.fn(),
+    isCancel: (value: unknown): boolean => value === CANCEL_MARKER || actual.isCancel(value),
   };
 });
 
@@ -138,7 +150,7 @@ describe('confirmDestructive', () => {
     expect(result).toBe('proceed');
   });
 
-  it('interactive with confirm=false returns cancelled', async () => {
+  it('interactive with confirm=false returns declined (a "no" is not an interrupt)', async () => {
     restoreTTY = setInteractiveMode(true);
     vi.mocked(confirm).mockResolvedValue(false);
     const result = await confirmDestructive({
@@ -148,7 +160,25 @@ describe('confirmDestructive', () => {
       yes: false,
       dryRun: false,
     });
-    expect(result).toBe('cancelled');
+    expect(result).toBe('declined');
+  });
+
+  it('interactive interrupt (Esc/Ctrl+C) throws CancellationError, which exits 130', async () => {
+    // Answering "no" is a successful run that chose not to proceed (exit 0);
+    // Esc/Ctrl+C is an interrupt (exit 130 = 128+SIGINT). Collapsing both
+    // into one outcome leaves a script unable to tell them apart.
+    restoreTTY = setInteractiveMode(true);
+    vi.mocked(confirm).mockResolvedValue(CANCEL_MARKER);
+    await expect(
+      confirmDestructive({
+        operation: 'test-op',
+        title: 'Test',
+        summary: [],
+        yes: false,
+        dryRun: false,
+      })
+    ).rejects.toBeInstanceOf(CancellationError);
+    expect(new CancellationError().code).toBe(ExitCode.USER_CANCELLED);
   });
 });
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Harness-crash classification for `fireforge test` (field reports C1/C2).
+ * Harness-crash classification for `fireforge test`.
  *
  * The wrapped mach harness exhibits flaky non-test failures that an exit
  * code (or a "did it print a summary" grep) cannot distinguish from real
@@ -11,30 +11,33 @@
  *    'poll_interval'`, `host_statistics64(HOST_VM_INFO64) syscall failed`,
  *    `(ipc/mig) array not large enough` — a psutil/macOS mismatch) which
  *    abort the run before any test executes;
- *  - hangs after browser startup that die at the no-output timeout yet
- *    still emit a `Passed: 0` summary;
- *  - post-green shutdown re-entry, where a fully green run stalls on
- *    "must wait for focus" and records "Application shut down (without
- *    crashing) in the middle of a test!" as the only unexpected failure.
+ *  - hangs after browser startup that die at the no-output timeout yet still
+ *    emit a `Passed: 0` summary;
+ *  - post-green shutdown re-entry, where a fully green run stalls on "must
+ *    wait for focus" and records "Application shut down (without crashing)
+ *    in the middle of a test!" as the only unexpected failure.
  *
  * Classification therefore keys on `TEST-START` presence — summary lines
  * never count as proof that tests ran — and recognizes the crash shapes
- * above so the command layer can retry them with a bounded budget instead
- * of reporting phantom test failures (or phantom passes).
+ * above so the command layer can retry them with a bounded budget instead of
+ * reporting phantom test failures (or phantom passes).
  */
 
-import type { DisplaySleepState } from './display-state.js';
 import { hasKnownTeardownNoise } from './mach-known-noise-filter.js';
+// Defined in a leaf module so this file and `test-stall-triage.ts` can both
+// name it without forming an import cycle; re-exported here because the
+// command layer imports its harness diagnostics from this module.
+export type { HarnessCrashSignature } from './test-harness-signature.js';
+import type { HarnessCrashSignature } from './test-harness-signature.js';
+
+// The no-output-stall triage text lives in `test-stall-triage.ts` (it is
+// operator advice, not classification) and is re-exported here so the
+// command layer keeps importing its harness diagnostics from one module.
+export { headedDisplayAsleepVerdictNote, headedNoOutputTimeoutHint } from './test-stall-triage.js';
 
 /** How a completed harness run should be interpreted. */
 export type HarnessRunClassification =
   'tests-ran-ok' | 'test-failures' | 'harness-crash' | 'no-tests';
-
-/** A recognized harness-crash shape with its evidence line. */
-export interface HarnessCrashSignature {
-  reason: string;
-  line: string;
-}
 
 /** Numeric counts parsed from the harness's embedded result summary. */
 export interface HarnessSummaryCounts {
@@ -69,10 +72,10 @@ export interface HarnessRunVerdict extends HarnessSummaryCounts {
   /**
    * Set when the output embeds a green-LOOKING summary that was REJECTED:
    * crash or truncation evidence proves the suite never completed, so the
-   * "green" counts only cover the files that ran before the run died
-   * (field report: a SIGSEGV at the second of eight files left a
-   * `Passed: 2 / Failed: 0` summary that 0.35.0 green-washed into a pass).
-   * Callers must fail the run and surface the evidence.
+   * "green" counts only cover the files that ran before the run died — a
+   * SIGSEGV at the second of eight files leaves a `Passed: 2 / Failed: 0`
+   * summary that reads as a pass. Callers must fail the run and surface the
+   * evidence.
    */
   greenSummaryRejected?: GreenSummaryRejection;
   /**
@@ -111,16 +114,36 @@ const NONZERO_UNEXPECTED_SUMMARY_PATTERN = /\bUnexpected results:\s*[1-9]/;
  * single-file xpcshell run prints a result-summary block instead
  * (`TEST_END: Test PASS`, `Ran 16 checks`, `Unexpected results: 0`), so
  * keying execution purely on `TEST-START` mis-reads a green xpcshell run as
- * "no tests started" (field report: a single-file xpcshell pass exited 1).
+ * "no tests started".
  *
- * These markers are xpcshell-specific on purpose: the bare
- * `Passed: 0` / `Failed: 0` summary that the no-output hang shape prints is
- * deliberately NOT matched here — that case must still read as `no-tests`.
+ * These markers are xpcshell-specific on purpose: the bare `Passed: 0` /
+ * `Failed: 0` summary that the no-output hang shape prints is deliberately
+ * NOT matched here — that case must still read as `no-tests`.
  */
 const XPCSHELL_RESULT_SUMMARY_PATTERN = /\bTEST_END\b|\bRan \d+ checks?\b|\bResult summary:/i;
 const UNEXPECTED_LINE_PATTERN = /^.*\bTEST-UNEXPECTED-[A-Z-]+\b.*$/gm;
-const FAIL_LINE_PATTERN = /^.*\bFAIL\b.*$/gm;
-const ASSERTION_LINE_PATTERN = /^.*\b(?:Assertion failure|MOZ_ASSERT|ASSERTION)\b.*$/gim;
+/**
+ * A `FAIL` token that is HARNESS-SHAPED. Deliberately not a bare `\bFAIL\b`
+ * word match: that matched any output line containing the ordinary English
+ * word, so a test's own passing diagnostic could manufacture a red run (see
+ * {@link realUnexpectedFailureLines}). It also matched `TEST-KNOWN-FAIL` —
+ * an EXPECTED failure — and counted it as a real one.
+ *
+ * The `TEST-` prefix is what makes the token the harness's rather than
+ * prose, and the negative lookahead is what keeps a known-fail annotation
+ * out of the evidence set.
+ */
+const FAIL_LINE_PATTERN = /^.*\bTEST-(?!KNOWN-FAIL\b)[A-Z-]*FAIL\b.*$/gm;
+/**
+ * The three concrete shapes Gecko prints for a real assertion failure.
+ * Case-SENSITIVE and punctuation-anchored on purpose: the previous
+ * `/\b(?:Assertion failure|MOZ_ASSERT|ASSERTION)\b/gim` was
+ * case-insensitive, so the ordinary English word "assertion" in a passing
+ * diagnostic ("If an assertion below times out, this is why") was read as
+ * a failure — and the verdict then named that diagnostic as the first real
+ * test failure, pointing the reader at the wrong line.
+ */
+const ASSERTION_LINE_PATTERN = /^.*(?:Assertion failure:|MOZ_ASSERT\(|###!!! ASSERTION).*$/gm;
 const SHUTDOWN_REENTRY_PATTERN =
   /Application shut down \(without crashing\) in the middle of a test/i;
 const FOCUS_STALL_PATTERN = /must wait for focus/i;
@@ -128,13 +151,12 @@ const TRACEBACK_PATTERN = /Traceback \(most recent call last\)/;
 const NO_OUTPUT_TIMEOUT_PATTERN = /timed out after \d+ seconds with no output/i;
 
 /**
- * Crash-marker lines mozcrash / the mochitest harness print when the
- * browser process itself died. Matched against the RAW output (never
- * noise-stripped): any of these proves the run was truncated by a crash,
- * so an embedded green summary is under-reporting, not a result (field
- * report: `Main app process: killed by SIGSEGV` at the second of eight
- * files, summary `Passed: 2 / Failed: 0`, mach exit 1 — 0.35.0 accepted
- * it as passed and masked a real regression for a whole drill).
+ * Crash-marker lines mozcrash / the mochitest harness print when the browser
+ * process itself died. Matched against the RAW output (never noise-stripped):
+ * any of these proves the run was truncated by a crash, so an embedded green
+ * summary is under-reporting, not a result. `Main app process: killed by
+ * SIGSEGV` at the second of eight files with a `Passed: 2 / Failed: 0`
+ * summary is the shape this exists to catch.
  */
 const CRASH_MARKER_PATTERNS: readonly RegExp[] = [
   /Main app process: killed by SIG\w+/,
@@ -151,13 +173,13 @@ const CRASH_MARKER_PATTERNS: readonly RegExp[] = [
  * on macOS. Each is matched per-line so the evidence line in the report is
  * the concrete failure, not the whole traceback.
  */
-// Downstream report (0.34.0 cycle): a pre-fix _DegradedReading fallback that
-// wasn't a real namedtuple duck type crashed mozsystemmonitor on the fallback
-// itself (`_build_meta` subscripts the reading; `_collect` unpacks it); a
-// startup abort with zero TEST-START lines from this family is a crash, not
-// a test failure. The `_collect failed` variant is caught-and-logged, so it
-// carries no Traceback header — it gets its own zero-TEST-START check in
-// `detectHarnessCrashSignature` besides joining the traceback cluster.
+// A `_DegradedReading` fallback that is not a real namedtuple duck type
+// crashes mozsystemmonitor on the fallback itself (`_build_meta` subscripts
+// the reading; `_collect` unpacks it); a startup abort with zero TEST-START
+// lines from this family is a crash, not a test failure. The `_collect
+// failed` variant is caught-and-logged, so it carries no Traceback header —
+// it gets its own zero-TEST-START check in `detectHarnessCrashSignature`
+// besides joining the traceback cluster.
 const DEGRADED_READING_CRASH_SIGNALS: readonly RegExp[] = [
   /'_DegradedReading' object is not subscriptable/,
   /'_DegradedReading' object is not iterable/,
@@ -171,12 +193,12 @@ const STARTUP_TRACEBACK_SIGNALS: readonly RegExp[] = [
   /HOST_VM_INFO64/,
   /\(ipc\/mig\) array not large enough/,
   /psutil\.[A-Za-z]*Error/,
-  // Field report (0.34.1): on a degraded host every collector sample is
-  // rejected, aggregation has nothing, and mozbuild's log_resource_usage
-  // dies on usage["io"].read_bytes AFTER a fully successful compile
-  // ("Error running mach" with complete artifacts). Environmental, not a
-  // build regression — the protected build retries it (incremental retry
-  // is cheap and the guard keeps the retry green).
+  // On a degraded host every collector sample is rejected, aggregation has
+  // nothing, and mozbuild's log_resource_usage dies on
+  // usage["io"].read_bytes AFTER a fully successful compile ("Error running
+  // mach" with complete artifacts). Environmental, not a build regression —
+  // the protected build retries it, since an incremental retry is cheap and
+  // the guard keeps the retry green.
   /AttributeError: 'NoneType' object has no attribute 'read_bytes'/,
   ...DEGRADED_READING_CRASH_SIGNALS,
 ];
@@ -189,12 +211,11 @@ function findLine(output: string, patterns: readonly RegExp[]): string | undefin
 }
 
 /**
- * Non-signal noise lines: the resource-monitor degrade path (FireForge's
- * own guard plus mozlog's `_collect failed`) prints warnings on runs that
- * then complete green. Field report (0.34.0 cycle): every multi-file suite
- * was reported CRASH because these lines matched the startup-traceback
- * signals even though the embedded summary was fully green. They are
- * excluded from crash evidence entirely.
+ * Non-signal noise lines: the resource-monitor degrade path (FireForge's own
+ * guard plus mozlog's `_collect failed`) prints warnings on runs that then
+ * complete green. Without excluding them, every multi-file suite reports
+ * CRASH because these lines match the startup-traceback signals even though
+ * the embedded summary is fully green.
  */
 const NOISE_LINE_PATTERNS: readonly RegExp[] = [
   /\bUserWarning\b/,
@@ -206,10 +227,10 @@ const NOISE_LINE_PATTERNS: readonly RegExp[] = [
   /_collect failed(?!.*_DegradedReading)/i,
   /FireForge: host resource monitor degraded/i,
   /warnings\.warn\(/,
-  // mozsystemmonitor's parent-side drain loop rejecting a malformed sample
-  // (field report 0.34.1); mach sometimes reprints the warning text without
-  // the `UserWarning:` token, and a run that completes despite the stream
-  // must never classify as crash on it.
+  // mozsystemmonitor's parent-side drain loop rejecting a malformed sample.
+  // mach sometimes reprints the warning text without the `UserWarning:`
+  // token, and a run that completes despite the stream must never classify
+  // as crash on it.
   /failed to read the received data/i,
 ];
 
@@ -293,16 +314,16 @@ function hasGreenShapedSummary(output: string): boolean {
 }
 
 /**
- * True when the output embeds a COMPLETED, GREEN suite summary: an
- * execution signal, `Unexpected results: 0` (and no non-zero unexpected
- * count), a `SUITE_END` marker, no real `TEST-UNEXPECTED-*` lines — and
- * NO crash marker. Such a run finished its suite; any startup-traceback-
- * shaped noise in the same output is by definition non-fatal, so this
- * vetoes signature-based crash classification (field report: fully green
- * sharded runs reported `CRASH (N attempts)` because degradation warnings
- * matched the psutil signals). A summary printed after a crash marker is
- * NOT "completed" — it only covers the files that ran before the crash
- * (0.35.0 green-wash field report). Exported for direct unit testing.
+ * True when the output embeds a COMPLETED, GREEN suite summary: an execution
+ * signal, `Unexpected results: 0` (and no non-zero unexpected count), a
+ * `SUITE_END` marker, no real `TEST-UNEXPECTED-*` lines — and NO crash
+ * marker. Such a run finished its suite, so any startup-traceback-shaped
+ * noise in the same output is by definition non-fatal and this vetoes
+ * signature-based crash classification; without the veto, fully green
+ * sharded runs report `CRASH (N attempts)` because degradation warnings
+ * match the psutil signals. A summary printed after a crash marker is NOT
+ * "completed" — it only covers the files that ran before the crash.
+ * Exported for direct unit testing.
  */
 export function hasCompletedGreenSummary(output: string): boolean {
   return hasGreenShapedSummary(output) && findCrashMarkerLine(output) === undefined;
@@ -565,18 +586,18 @@ export function classifyHarnessRun(
   const failureBlocks = collectUnexpectedFailureBlocks(output);
   const secondaryHarnessSignature =
     firstRealFailure !== undefined ? detectSecondaryHarnessNoise(output) : undefined;
-  // Checked BEFORE signature detection: a suite that ran clean
-  // and then died in KNOWN upstream teardown noise is a PASS, not a crash.
-  // The teardown traceback matches the startup-traceback cluster, and the
-  // existing green-summary veto over that cluster requires a `SUITE_END`
-  // marker — which this very traceback is what prevents from printing. So
-  // a substantively green suite (`Ran N checks` / `Unexpected results: 0`,
-  // no unexpected lines) was reported CRASH, indistinguishable at the
-  // summary level from a red run. Every hard-evidence veto still applies:
-  // a crash marker, a non-zero unexpected count, any real TEST-UNEXPECTED
-  // line, the shutdown-re-entry shape, or a requested file that never
-  // started keeps the run failing. Only the missing shutdown marker is
-  // forgiven, and only when the recognized teardown traceback explains it.
+  // Checked BEFORE signature detection: a suite that ran clean and then died
+  // in KNOWN upstream teardown noise is a PASS, not a crash. The teardown
+  // traceback matches the startup-traceback cluster, and the green-summary
+  // veto over that cluster requires a `SUITE_END` marker — which this very
+  // traceback is what prevents from printing. Without this check a
+  // substantively green suite (`Ran N checks` / `Unexpected results: 0`, no
+  // unexpected lines) reports CRASH, indistinguishable at the summary level
+  // from a red run. Every hard-evidence veto still applies: a crash marker,
+  // a non-zero unexpected count, any real TEST-UNEXPECTED line, the
+  // shutdown-re-entry shape, or a requested file that never started keeps
+  // the run failing. Only the missing shutdown marker is forgiven, and only
+  // when the recognized teardown traceback explains it.
   if (isGreenSuiteEndedByKnownTeardownNoise(output, counts, realFailures, requestedPaths)) {
     return { kind: 'tests-ran-ok', note: 'harness teardown noise ignored', ...counts };
   }
@@ -595,16 +616,14 @@ export function classifyHarnessRun(
     return { kind: 'tests-ran-ok', ...counts };
   }
   // Exit codes follow the corrected verdict: a run whose embedded summary
-  // completed green is a pass even when the wrapper exit code went
-  // non-zero on harness noise (field report: a fully green --no-shard run
-  // exited 1). Real failures always carry a non-zero unexpected count or
-  // TEST-UNEXPECTED lines, both of which fail the green-summary check.
+  // completed green is a pass even when the wrapper exit code went non-zero
+  // on harness noise. Real failures always carry a non-zero unexpected count
+  // or TEST-UNEXPECTED lines, both of which fail the green-summary check.
   //
-  // The override must never win over crash or truncation evidence
-  // (0.35.0 green-wash field report: a SIGSEGV at the second of eight
-  // files produced a "green" `Passed: 2 / Failed: 0` summary and mach
-  // exit 1 — the summary was green only because the crash prevented the
-  // other six files from producing any results). A crash marker or an
+  // The override must never win over crash or truncation evidence: a SIGSEGV
+  // at the second of eight files produces a "green" `Passed: 2 / Failed: 0`
+  // summary and mach exit 1, green only because the crash prevented the
+  // other six files from producing any results. A crash marker or an
   // unpaired/never-started requested file rejects the override with the
   // evidence attached, so the caller can say why.
   if (hasGreenShapedSummary(output)) {
@@ -630,13 +649,40 @@ export function classifyHarnessRun(
     }
     return { kind: 'tests-ran-ok', greenSummaryOverride: true, ...counts };
   }
+  const wordMatchNote = unmarkedFailureEvidenceNote(counts, realFailures);
   return {
     kind: 'test-failures',
     ...counts,
     ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
     ...(failureBlocks.length > 0 ? { realFailureBlocks: failureBlocks } : {}),
     ...(secondaryHarnessSignature !== undefined ? { secondaryHarnessSignature } : {}),
+    ...(wordMatchNote !== undefined ? { note: wordMatchNote } : {}),
   };
+}
+
+/**
+ * Belt for the residual case the tightened {@link FAIL_LINE_PATTERN} /
+ * {@link ASSERTION_LINE_PATTERN} cannot reach: the summary reported
+ * `Unexpected results: 0`, yet the run is still classified `test-failures`
+ * on evidence lines that carry NO `TEST-UNEXPECTED-*` marker.
+ *
+ * `unexpected=0` printed beside `reason=test-failures` is the tell that the
+ * verdict rests on pattern matching rather than on a harness result, and a
+ * reader who cannot see that spends hours attributing a red run to the
+ * change under test. The note says so on the verdict line itself.
+ *
+ * Deliberately a NOTE and not a reclassification: a non-zero exit with no
+ * green-shaped summary is still a failing run, and inventing a new `reason`
+ * would break the `FIREFORGE-VERDICT:` contract its consumers parse.
+ */
+function unmarkedFailureEvidenceNote(
+  counts: HarnessSummaryCounts,
+  realFailures: readonly string[]
+): string | undefined {
+  if (counts.unexpected !== 0) return undefined;
+  if (realFailures.length === 0) return undefined;
+  if (realFailures.some((line) => UNEXPECTED_LINE_SINGLE.test(line))) return undefined;
+  return 'summary reported 0 unexpected; no TEST-UNEXPECTED marker in the matched evidence';
 }
 
 /**
@@ -782,84 +828,6 @@ export function buildHarnessCrashMessage(
     'If it persists across many runs, inspect the mach virtualenv (mach resyncs psutil on its own; ' +
     'patching it manually does not stick).'
   );
-}
-
-/**
- * The three recorded causes of the `timed out … with no output` / `Ran 0
- * checks` signature, ordered so one stall points at the discriminating
- * next step. Printed verbatim under the hint.
- */
-const NO_OUTPUT_STALL_TRIAGE = [
-  '  1. A sleeping or locked display on an unattended HEADED run (macOS). The browser never ' +
-    'paints and never reaches its first test.',
-  '  2. A headless SWGL compositor failure — re-run with --headless to separate this from (1): ' +
-    'if --headless passes, the stall was display/compositor-side, not product-side.',
-  '  3. A broken `chrome://` image on the startup page, which stalls first paint. Run a ' +
-    'known-good control test first; if the control stalls too, the cause is not the test ' +
-    'under investigation.',
-];
-
-/**
- * Optional hint appended to the harness-crash message when a HEADED run on
- * macOS died at the no-output timeout.
- *
- * When `displayState` names a MEASURED display state, the hint states it
- * as fact rather than as one of three possibilities — that is the whole
- * point of probing: an operator staring at a bare test failure should not
- * have to rediscover that their machine dimmed. `caffeinate` is described
- * accurately (it prevents sleep; it cannot wake an already-sleeping
- * display), because the previous wording sent operators to a command that
- * could not have helped them.
- *
- * Pure — the platform and the probed state are injected so unit tests need
- * no mocking.
- *
- * @param signature - The recognized crash shape
- * @param context - Run mode, platform, and the probed display state
- * @returns The hint text, or undefined when the shape does not apply
- */
-export function headedNoOutputTimeoutHint(
-  signature: HarnessCrashSignature,
-  context: { headless: boolean; platform: string; displayState?: DisplaySleepState }
-): string | undefined {
-  if (context.platform !== 'darwin' || context.headless) return undefined;
-  if (!signature.reason.includes('no-output timeout')) return undefined;
-
-  const lead =
-    context.displayState === 'asleep'
-      ? 'Hint: this was a HEADED run on macOS and the display was MEASURED ASLEEP ' +
-        '(IODisplayWrangler below its awake power state). A headed browser on a sleeping ' +
-        'display never paints and never starts a test, so this stall is environmental — not a ' +
-        'product or test failure.'
-      : context.displayState === 'awake'
-        ? 'Hint: this was a HEADED run on macOS that died at the no-output timeout. The display ' +
-          'was measured AWAKE, so the sleeping-display cause below is ruled out for this run.'
-        : 'Hint: this was a HEADED run on macOS that died at the no-output timeout. The display ' +
-          'state could not be measured, so all three causes below remain open.';
-
-  const remedy =
-    'Note that `caffeinate -disu` PREVENTS sleep; it cannot WAKE a display that is already ' +
-    'asleep. Wake the display (or run on an attended machine), or pass --headless.';
-
-  return `${lead}\n\nKnown causes of this exact signature:\n${NO_OUTPUT_STALL_TRIAGE.join(
-    '\n'
-  )}\n\n${remedy}`;
-}
-
-/**
- * Verdict-line note for a headed no-output stall whose display was
- * measured asleep. Returned as the parenthetical the verdict line carries,
- * so the one greppable line an automated consumer reads already names the
- * environmental cause instead of a bare `FAIL reason=crash`.
- */
-export function headedDisplayAsleepVerdictNote(
-  signature: HarnessCrashSignature,
-  context: { headless: boolean; platform: string; displayState: DisplaySleepState }
-): string | undefined {
-  if (context.platform !== 'darwin' || context.headless) return undefined;
-  if (context.displayState !== 'asleep') return undefined;
-  if (!signature.reason.includes('no-output timeout')) return undefined;
-  return 'headed run stalled with the display asleep';
 }
 
 /**

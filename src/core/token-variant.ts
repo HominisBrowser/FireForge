@@ -3,14 +3,15 @@
  * Attribute-variant block helpers for the tokens CSS scaffold.
  *
  * `fireforge token add --mode` can author the base `:root { }` block and the
- * dark `@media (prefers-color-scheme: dark)` block, but there was no way to
- * target an attribute-keyed selector such as `:root[data-skin="precision"]`
- * or `:root[data-private]` — forcing those override blocks to be hand-edited.
- * These helpers locate (or compute the insertion point for) a top-level
+ * dark `@media (prefers-color-scheme: dark)` block, but not an
+ * attribute-keyed selector such as `:root[data-skin="precision"]` or
+ * `:root[data-private]`, which would otherwise have to be hand-edited. These
+ * helpers locate (or compute the insertion point for) a top-level
  * `:root<variant>` block so `token-manager.ts` can splice a declaration into
  * it, keeping all token authoring in the CLI.
  */
 
+import type { TokenDeclarationLocation } from './token-category.js';
 import { findBlockCloseIndex, stripBlockCommentsInLines } from './token-dark-mode.js';
 
 /**
@@ -66,10 +67,70 @@ function canonicalSelector(selector: string): string {
   return selector.replace(/\s+/g, '').replace(/["']/g, '');
 }
 
-/** A located `:root<variant>` block: `open`/`close` are line indices. */
+/**
+ * A `:root[…]` selector split at the end of its attribute run.
+ */
+interface RootSelectorParts {
+  /** `:root` plus every consecutive `[…]` group that directly follows it. */
+  attributes: string;
+  /**
+   * Whatever sits between the attribute run and the block's `{` — a
+   * pseudo-class qualifier such as `:not([data-private])`, or `''`.
+   */
+  qualifier: string;
+}
+
+/**
+ * Splits the `:root[…]` selector on `line` into its attribute run and any
+ * trailing qualifier, or `null` when the line carries none.
+ *
+ * Index arithmetic rather than `/:root\[[^{]*\]/`: `[^{]` also matches `]`,
+ * so that pattern backtracks quadratically on a line repeating `:root[`
+ * (CodeQL `js/polynomial-redos`). This walk is linear and allocation-free
+ * per group.
+ *
+ * It consumes CONSECUTIVE `[…]` groups and stops at the first character that
+ * is not `[`. The previous implementation instead sliced to the LAST `]`
+ * before the brace, which kept multi-attribute selectors comparing as a
+ * whole — that property is preserved here, since consecutive groups are all
+ * consumed — but it also swallowed a pseudo-class tail. On
+ * `:root[data-theme="light"]:not([data-private]) {` the last `]` is the one
+ * inside `:not(…)`, so the computed fragment was
+ * `:root[data-theme="light"]:not([data-private]` and the canonical
+ * comparison could never match. The unqualified
+ * `:root[data-theme="dark"] { }` beside it matched fine, and that asymmetry
+ * WAS the bug: an override add mirrored itself into the dark block and
+ * silently skipped the light one, which is precisely the half-finished
+ * themed edit `THEME_ATTRIBUTE_VARIANTS` exists to prevent.
+ */
+function rootAttributeSelector(line: string): RootSelectorParts | null {
+  const start = line.indexOf(':root[');
+  if (start === -1) return null;
+  const brace = line.indexOf('{', start);
+  const limit = brace === -1 ? line.length : brace;
+
+  let cursor = start + ':root'.length;
+  let end = cursor;
+  while (cursor < limit && line[cursor] === '[') {
+    const close = line.indexOf(']', cursor);
+    if (close === -1 || close >= limit) break;
+    cursor = close + 1;
+    end = cursor;
+  }
+  if (end === start + ':root'.length) return null;
+
+  return { attributes: line.slice(start, end), qualifier: line.slice(end, limit).trim() };
+}
+
+/**
+ * A located `:root<variant>` block: `open`/`close` are line indices,
+ * `qualifier` is the pseudo-class tail the selector carried (`''` when
+ * unqualified).
+ */
 interface VariantBlock {
   open: number;
   close: number;
+  qualifier: string;
 }
 
 /**
@@ -87,8 +148,8 @@ function findVariantBlock(lines: string[], variant: string): VariantBlock | null
 
   for (let i = 0; i < stripped.length; i++) {
     const line = stripped[i] ?? '';
-    const match = /:root\[[^{]*\]/.exec(line);
-    if (!match || canonicalSelector(match[0]) !== want) continue;
+    const selector = rootAttributeSelector(line);
+    if (selector === null || canonicalSelector(selector.attributes) !== want) continue;
 
     let openLine = /\{/.test(line) ? i : -1;
     if (openLine === -1) {
@@ -105,7 +166,7 @@ function findVariantBlock(lines: string[], variant: string): VariantBlock | null
 
     const close = findBlockCloseIndex(stripped, openLine);
     if (close === -1) continue;
-    return { open: openLine, close };
+    return { open: openLine, close, qualifier: selector.qualifier };
   }
   return null;
 }
@@ -137,15 +198,68 @@ export function variantBlockExists(lines: string[], variant: string): boolean {
   return findVariantBlock(lines, variant) !== null;
 }
 
+/**
+ * The pseudo-class qualifier on the matched `:root<variant>` block, or
+ * `undefined` when no block matched. `''` for an unqualified block.
+ *
+ * A qualifier such as `:not([data-private])` is semantically LOAD-BEARING:
+ * writing into that block scopes the declaration to the qualified case, and
+ * that may not be what the operator meant. Matching it is still the right
+ * call — silently skipping it is the worse failure, and the one that
+ * shipped — but the override path uses this to say out loud which selector
+ * it wrote through, so the narrowing is a visible decision rather than a
+ * theme bug discovered later.
+ *
+ * @param lines - Tokens CSS split into lines
+ * @param variant - Attribute selector fragment, e.g. `[data-theme="light"]`
+ * @returns The qualifier, or undefined when no block matched
+ */
+export function variantBlockQualifier(lines: string[], variant: string): string | undefined {
+  return findVariantBlock(lines, variant)?.qualifier;
+}
+
 /** True when the `:root<variant>` block already declares `tokenName`. */
 export function variantBlockHasToken(lines: string[], variant: string, tokenName: string): boolean {
+  return findVariantBlockDeclaration(lines, variant, tokenName) !== undefined;
+}
+
+/**
+ * Locates an existing declaration of `tokenName` inside the
+ * `:root<variant>` block, or `undefined` when the block has none (or does
+ * not exist).
+ *
+ * The located form of {@link variantBlockHasToken}: the variant add path
+ * reports a skip the way the base path does — naming the block and the
+ * line — instead of returning a bare boolean that leaves a no-op re-run
+ * indistinguishable from a write.
+ *
+ * @param lines - Tokens CSS split into lines
+ * @param variant - Attribute selector fragment
+ * @param tokenName - Full token name including prefix
+ * @returns The declaration's 1-based line, or undefined
+ */
+export function findVariantBlockDeclaration(
+  lines: string[],
+  variant: string,
+  tokenName: string
+): TokenDeclarationLocation | undefined {
   const block = findVariantBlock(lines, variant);
-  if (!block) return false;
-  const blockText = lines
-    .slice(block.open, block.close + 1)
+  if (!block) return undefined;
+  // Comments are stripped across the WHOLE block before scanning, matching
+  // what the boolean form always did: a `/* … */` spanning several lines
+  // must not leave its tail looking like a declaration.
+  const blockLines = lines.slice(block.open, block.close + 1);
+  // Blank the comment's CHARACTERS rather than deleting it: removing a
+  // multi-line comment outright collapses its lines and shifts every line
+  // number after it, which is the one thing this function exists to report.
+  const stripped = blockLines
     .join('\n')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
-  return blockText.includes(`${tokenName}:`);
+    .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, ' '))
+    .split('\n');
+  for (let i = 0; i < stripped.length; i++) {
+    if ((stripped[i] ?? '').includes(`${tokenName}:`)) return { line: block.open + i + 1 };
+  }
+  return undefined;
 }
 
 /**

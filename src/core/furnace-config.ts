@@ -8,6 +8,7 @@ import type {
   FurnacePendingRepairOperation,
   FurnaceState,
 } from '../types/furnace.js';
+import { FURNACE_PENDING_REPAIR_OPERATIONS } from '../types/furnace.js';
 import type { JsonObject } from '../types/json.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
@@ -197,9 +198,8 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
   // Warn when two custom components share a targetPath. Nothing technically
   // prevents co-location, but per-component removal and orphan detection
   // both reason about "files this component deployed into its directory" —
-  // shared directories make those judgements ambiguous, and historically a
-  // shared targetPath meant `furnace remove` of one component deleted the
-  // other's deployed files.
+  // shared directories make those judgements ambiguous, and can lead to
+  // `furnace remove` of one component deleting the other's deployed files.
   const targetPathOwners = new Map<string, string[]>();
   for (const [name, custom_] of Object.entries(custom)) {
     const owners = targetPathOwners.get(custom_.targetPath) ?? [];
@@ -248,18 +248,11 @@ function validateFurnaceState(data: unknown): FurnaceState {
   return result.state;
 }
 
-const PENDING_REPAIR_OPERATIONS: readonly FurnacePendingRepairOperation[] = [
-  'preview-teardown',
-  'apply-rollback',
-  'deploy-rollback',
-  'remove-rollback',
-  'create-rollback',
-  'chrome-doc-rollback',
-  'override-rollback',
-  'scan-rollback',
-  'rename-rollback',
-  'refresh-rollback',
-];
+// Single source of truth: the list the union is derived from. The copy
+// this replaced was annotated, not linked — it caught a member REMOVED
+// from the union but never one ADDED to it, and listed them in a
+// different order.
+const PENDING_REPAIR_OPERATIONS = FURNACE_PENDING_REPAIR_OPERATIONS;
 
 function parsePendingRepair(data: unknown): FurnacePendingRepair | { error: string } {
   if (!isObject(data)) {
@@ -455,8 +448,7 @@ export async function loadFurnaceConfig(root: string): Promise<FurnaceConfig> {
  * reset, rebase, rebase --abort): every applied checksum describes content
  * that no longer exists, but pendingRepair tracks authoring-side rollback
  * issues in the component WORKSPACE and must survive an engine refresh.
- * No-ops when the state file does not exist. Centralized because the same
- * reset logic had drifted into four separate command files.
+ * No-ops when the state file does not exist.
  */
 export async function clearAppliedFurnaceState(root: string): Promise<void> {
   const paths = getFurnacePaths(root);
@@ -491,20 +483,15 @@ export async function writeFurnaceConfig(root: string, config: FurnaceConfig): P
 
 /**
  * Stamps every override's `baseVersion` to the supplied version. Used by
- * `fireforge rebase` after a successful patch re-export so a successful
- * ESR bump does not leave Furnace overrides in a doctor-failing drift
- * state. Returns the number of overrides stamped (zero if furnace.json
- * has no overrides, or if the file is missing).
+ * `fireforge rebase` after a successful patch re-export, so an ESR bump does
+ * not leave Furnace overrides in a doctor-failing drift state: `rebase`
+ * stamps patch `sourceEsrVersion` via `stampPatchVersions`, and without the
+ * matching override stamp `doctor` fails Furnace component validation on
+ * every override.
  *
- * Motivating case: a 140.9.0esr → 140.9.1esr rebase stamps patch
- * `sourceEsrVersion` via `stampPatchVersions`, but before 0.16.0 no
- * equivalent stamping ran for Furnace override `baseVersion`. `doctor`
- * then immediately failed Furnace component validation on every
- * override. The stamp is deliberately unconditional — `fireforge
- * furnace validate` is the right tool for "does this override still
- * apply", and rebase already attested that the patch layer re-validated
- * against the new ESR; the per-override health check belongs in a
- * separate pass, not inline with the stamp.
+ * The stamp is deliberately unconditional — `fireforge furnace validate` is
+ * the right tool for "does this override still apply", and rebase has
+ * already attested that the patch layer re-validated against the new ESR.
  *
  * @param root - Root directory of the project
  * @param version - Firefox version string to stamp onto every override
@@ -534,23 +521,20 @@ export async function stampFurnaceOverrideBaseVersions(
  * Creates a default furnace configuration.
  *
  * When a `binaryName` is provided, the default config carries a
- * `tokenPrefix` derived as `--<binaryName>-`. Without that default,
- * `fireforge token coverage` on a fresh project reports `0 tokens` and
- * labels every custom-property reference as `unknown` — the scan has
- * no prefix to key off. The 2026-04-21 eval walked directly into this
- * state (`furnace init` → `token add` → `token coverage` → zero
- * tokens), and only recovered after hand-editing furnace.json. Deriving
- * the prefix from the binary name matches the convention the scaffolded
- * tokens CSS already uses for its `--<binaryName>-*` declarations.
+ * `tokenPrefix` derived as `--<binaryName>-`. Without it, `fireforge token
+ * coverage` on a fresh project reports `0 tokens` and labels every
+ * custom-property reference as `unknown`, because the scan has no prefix to
+ * key off. Deriving the prefix from the binary name matches the convention
+ * the scaffolded tokens CSS already uses for its `--<binaryName>-*`
+ * declarations.
  *
- * `validateFurnaceConfig` treats `tokenPrefix` as optional, so callers
- * on the legacy no-arg call shape (existing tests, programmatic callers
- * bootstrapping from a not-yet-loaded config) still get a valid config
- * without a prefix; the CLI init path always has a `binaryName` from
- * `fireforge.json` and always sets one.
+ * `validateFurnaceConfig` treats `tokenPrefix` as optional, so callers on
+ * the no-arg call shape still get a valid config without a prefix; the CLI
+ * init path always has a `binaryName` from `fireforge.json` and always sets
+ * one.
  *
- * @param options - Optional init context; pass `{ binaryName }` to
- *   derive the token prefix.
+ * @param options - Optional init context; pass `{ binaryName }` to derive
+ *   the token prefix.
  * @returns A valid FurnaceConfig
  */
 export function createDefaultFurnaceConfig(options: { binaryName?: string } = {}): FurnaceConfig {
@@ -625,15 +609,9 @@ export async function updateFurnaceState(
 /**
  * Engine-relative path of the directory `furnace preview` writes its
  * generated Storybook story files into. Treated as Furnace-managed so
- * `status` does not flag them as unmanaged and `lint` does not fail on
- * their (intentionally bare) license headers.
- *
- * 2026-04-25 eval Finding 19: a successful `furnace preview` run synced
- * 23 stories under this prefix; afterwards `status` showed all 23 as
- * untracked unmanaged changes and aggregate `lint` failed with 23
- * `missing-license-header` errors. The files are tool output — operators
- * are not expected to commit or hand-edit them — so the right shape is
- * to bucket them with the rest of Furnace's managed material.
+ * `status` does not flag them as unmanaged and `lint` does not fail on their
+ * (intentionally bare) license headers — they are tool output, not files an
+ * operator commits or hand-edits.
  */
 const FURNACE_STORYBOOK_STORIES_PREFIX = 'browser/components/storybook/stories/furnace/';
 

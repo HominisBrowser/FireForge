@@ -22,30 +22,28 @@ interface StatusFile {
 }
 
 /**
- * Builds the flat ownership table from the manifest, worktree status, and
- * the duplicate-new-file-creation map produced by cross-patch lint.
+ * Builds the flat ownership table from the manifest, worktree status, and the
+ * duplicate-new-file-creation map produced by cross-patch lint.
  *
  * Populated from three sources:
  *
- *   1. Every path in every patch's `filesAffected` — so managed paths
- *      show up even when they are not currently modified on disk.
+ *   1. Every path in every patch's `filesAffected` — so managed paths show up
+ *      even when they are not currently modified on disk.
  *   2. Any worktree status entries not claimed by any patch (flagged as
  *      `unmanaged`).
- *   3. Paths created by more than one patch in `new file mode`,
- *      surfaced as ownership conflicts with
- *      `conflictReason = 'duplicate-create'`. This is the alignment
- *      fix between `status --ownership` and `fireforge verify`: a
- *      queue that `verify` rejects for duplicate `/dev/null → b/foo.js`
- *      creations was previously reported as clean here because the
- *      check only walked `filesAffected`, not the patch bodies.
+ *   3. Paths created by more than one patch in `new file mode`, surfaced as
+ *      ownership conflicts with `conflictReason = 'duplicate-create'`. This
+ *      is what keeps `status --ownership` aligned with `fireforge verify`:
+ *      walking only `filesAffected` reports a queue clean that `verify`
+ *      rejects for duplicate `/dev/null → b/foo.js` creations.
  *
- * A path claimed by more than one patch (either via `filesAffected` or
- * as a duplicate creation) is flagged as `conflict` with the origin
- * recorded in `conflictReason` so the output can disambiguate.
+ * A path claimed by more than one patch (either via `filesAffected` or as a
+ * duplicate creation) is flagged as `conflict` with the origin recorded in
+ * `conflictReason` so the output can disambiguate.
  *
  * @param manifestPatches - Manifest rows, each with its `filesAffected`
- * @param worktreeFiles - Raw worktree status entries; untracked and
- *   modified both acceptable
+ * @param worktreeFiles - Raw worktree status entries; untracked and modified
+ *   both acceptable
  * @param newFileCreatorsByPath - Map produced by
  *   {@link import('../core/patch-lint.js').collectNewFileCreatorsByPath};
  *   paths with a `.length > 1` owner list become duplicate-create conflicts

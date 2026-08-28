@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(() => ({
     root: '/project',
@@ -52,7 +54,11 @@ vi.mock('../../core/furnace-rollback.js', () => ({
   restoreRollbackJournal: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock('../../core/furnace-operation.js', () => ({
+vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
+  // `completeJournalRollback` is pure orchestration over the journal and
+  // the pending-repair marker — the behaviour these suites assert — so it
+  // comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (
       _root: string,
@@ -82,18 +88,21 @@ vi.mock('../../core/furnace-stories.js', () => ({
 vi.mock('../../core/mach.js', () => ({
   runMach: vi.fn(),
   runMachCapture: vi.fn(),
-  // The preview preflight (Finding #9) consults hasBuildArtifacts to
-  // refuse fast when no dist/ exists. Default to "build complete" so the
-  // pre-existing tests keep testing the staging + storybook path; the
-  // specific preflight tests below override per-case.
+  // The preview preflight consults hasBuildArtifacts to refuse fast when no
+  // dist/ exists. Default to "build complete" so the other tests exercise
+  // the staging + storybook path; the preflight tests override per-case.
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -109,6 +118,7 @@ import { updateFurnaceState } from '../../core/furnace-config.js';
 import { restoreRollbackJournal } from '../../core/furnace-rollback.js';
 import { cleanStories, syncStories } from '../../core/furnace-stories.js';
 import { hasBuildArtifacts, runMach, runMachCapture } from '../../core/mach.js';
+import { nativePath } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { furnacePreviewCommand } from '../furnace/preview.js';
 
@@ -117,9 +127,9 @@ describe('furnacePreviewCommand', () => {
     vi.clearAllMocks();
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/.cargo/config.toml'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/.cargo/config.toml')
       )
     );
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
@@ -128,7 +138,7 @@ describe('furnacePreviewCommand', () => {
 
   it('fails early when the Firefox checkout lacks Storybook support', async () => {
     vi.mocked(pathExists).mockImplementation((path: string) =>
-      Promise.resolve(path === '/project/engine')
+      Promise.resolve(path === nativePath('/project/engine'))
     );
 
     await expect(furnacePreviewCommand('/project')).rejects.toThrow(
@@ -142,23 +152,21 @@ describe('furnacePreviewCommand', () => {
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 130 });
 
     await expect(furnacePreviewCommand('/project')).resolves.toBeUndefined();
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 
-  // 2026-04-24 eval Finding 13: `mach storybook` runs an ~1000-package
-  // `npm install` when the Storybook workspace's node_modules/ is
-  // absent, and its raw stderr prints a wall of `UNMET DEPENDENCY`
-  // lines that look like a failure before the install completes.
-  // Preview now emits a framing banner when it detects the missing
-  // node_modules so the npm noise is clearly identified as expected
-  // first-run progress rather than an error.
+  // `mach storybook` runs an ~1000-package `npm install` when the Storybook
+  // workspace's node_modules/ is absent, and its raw stderr prints a wall of
+  // `UNMET DEPENDENCY` lines that look like a failure before the install
+  // completes. Preview emits a framing banner when it detects the missing
+  // node_modules so the npm noise reads as expected first-run progress.
   it('prints a first-run banner when the Storybook workspace has no node_modules', async () => {
     const { info } = await import('../../utils/logger.js');
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/.cargo/config.toml'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/.cargo/config.toml')
         // Note: '/project/engine/browser/components/storybook/node_modules' absent.
       )
     );
@@ -180,10 +188,10 @@ describe('furnacePreviewCommand', () => {
     const { info } = await import('../../utils/logger.js');
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/browser/components/storybook/node_modules' ||
-          path === '/project/engine/.cargo/config.toml'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/browser/components/storybook/node_modules') ||
+          path === nativePath('/project/engine/.cargo/config.toml')
       )
     );
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 130 });
@@ -220,7 +228,7 @@ describe('furnacePreviewCommand', () => {
     );
 
     expect(syncStories).toHaveBeenCalled();
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 
   it('stages workspace components and restores them on teardown', async () => {
@@ -241,7 +249,7 @@ describe('furnacePreviewCommand', () => {
     );
     /* eslint-enable @typescript-eslint/no-unsafe-assignment */
     expect(syncStories).toHaveBeenCalled();
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(restoreRollbackJournal).toHaveBeenCalled();
   });
 
@@ -275,7 +283,7 @@ describe('furnacePreviewCommand', () => {
 
     await expect(furnacePreviewCommand('/project')).rejects.toThrow(/disk full mid-write/i);
 
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
     // Staging rollback must still run too.
     expect(restoreRollbackJournal).toHaveBeenCalled();
   });
@@ -326,7 +334,7 @@ describe('furnacePreviewCommand', () => {
     expect(next.pendingRepair?.reason).toContain('EACCES');
     // cleanStories must still have run even though the journal restore
     // is the failing step — both teardown steps are independent.
-    expect(cleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 
   it('records a pendingRepair marker when cleanStories fails but still attempts journal restore', async () => {
@@ -365,25 +373,25 @@ describe('furnacePreviewCommand', () => {
   });
 });
 
-describe('furnacePreviewCommand — build-artefact preflight (Finding #9)', () => {
+describe('furnacePreviewCommand — build-artefact preflight', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/.cargo/config.toml'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/.cargo/config.toml')
       )
     );
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
   });
 
   it('refuses fast when no obj-*/dist/ is present', async () => {
-    // Pre-0.16.0 the preview staged components and then launched
+    // Without the preflight, preview stages components and then launches
     // `mach storybook upgrade` (an npm install of ~1000 packages) before
-    // `mach storybook` failed on missing backend artefacts. The preflight
-    // short-circuits on hasBuildArtifacts so the operator never pays
-    // the npm-install tax on an unbuilt engine.
+    // `mach storybook` fails on missing backend artefacts. Short-circuiting
+    // on hasBuildArtifacts means the operator never pays the npm-install tax
+    // on an unbuilt engine.
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: false });
 
     await expect(furnacePreviewCommand('/project')).rejects.toThrow(
@@ -398,21 +406,21 @@ describe('furnacePreviewCommand — build-artefact preflight (Finding #9)', () =
   });
 
   it('refuses when .cargo/config.toml and .cargo/config.toml.in are both missing', async () => {
-    // `mach storybook` compiles Rust helpers via the engine's Cargo
-    // config. When bootstrap hasn't run or was partial, the install
-    // completes and then the Rust step fails with a cryptic error. The
-    // preflight catches that explicitly.
+    // `mach storybook` compiles Rust helpers via the engine's Cargo config.
+    // When bootstrap has not run or was partial, the install completes and
+    // the Rust step then fails with a cryptic error, so the preflight
+    // catches it explicitly.
     //
-    // Post-0.16.0 the preflight accepts either `.cargo/config.toml`
-    // (post-configure) or `.cargo/config.toml.in` (post-bootstrap
-    // template, consumed at `mach configure` time) — neither-present is
-    // the only shape that should refuse. A missing-toml but present-`.in`
-    // workspace represents a successful `fireforge bootstrap` that
-    // hasn't yet reached configure, and preview should not block on that.
+    // The preflight accepts either `.cargo/config.toml` (post-configure) or
+    // `.cargo/config.toml.in` (post-bootstrap template, consumed at
+    // `mach configure` time) — neither-present is the only shape that should
+    // refuse. A missing-toml but present-`.in` workspace is a successful
+    // `fireforge bootstrap` that has not yet reached configure.
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' || path === '/project/engine/browser/components/storybook'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook')
         // both .cargo/config.toml and .cargo/config.toml.in intentionally missing
       )
     );
@@ -429,9 +437,9 @@ describe('furnacePreviewCommand — build-artefact preflight (Finding #9)', () =
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(pathExists).mockImplementation((path: string) =>
       Promise.resolve(
-        path === '/project/engine' ||
-          path === '/project/engine/browser/components/storybook' ||
-          path === '/project/engine/.cargo/config.toml.in'
+        path === nativePath('/project/engine') ||
+          path === nativePath('/project/engine/browser/components/storybook') ||
+          path === nativePath('/project/engine/.cargo/config.toml.in')
       )
     );
 

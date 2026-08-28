@@ -7,12 +7,11 @@
  * puts the PREFIX in `--with-distribution-id` — and upstream
  * `toolkit/moz.configure` composes `CFBundleIdentifier` as
  * `<distribution-id>.<MOZ_MACBUNDLE_ID>`. Each half is unit-tested in its
- * own file; nothing pinned the COMPOSITION, which is the property that
- * actually broke (shipped: `org.hominis.org.hominis.browser`).
+ * own file; nothing pins the COMPOSITION, which is the property that
+ * actually breaks.
  *
- * This test recomposes the two halves the way upstream does and asserts
- * the result is the configured `appId` exactly — the one statement that
- * would have failed for the shipped defect.
+ * This test recomposes the two halves the way upstream does and asserts the
+ * result is the configured `appId` exactly.
  */
 import { describe, expect, it } from 'vitest';
 

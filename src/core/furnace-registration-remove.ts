@@ -3,16 +3,15 @@
  * Removal of custom element registrations from customElements.js.
  *
  * Uses the same AST parser as the add path (`furnace-registration-ast.ts`) to
- * locate and delete registration entries. The earlier implementation walked
- * the file line-by-line with a 20-line scan bound for bracket matching, which
- * only worked against Firefox's stock formatting and silently failed on any
- * hand-reformatted customElements.js. AST-based bracket matching is format-
- * agnostic by construction.
+ * locate and delete registration entries. A line-by-line scan with a bounded
+ * bracket match only works against Firefox's stock formatting and fails
+ * silently on a hand-reformatted customElements.js; AST-based bracket
+ * matching is format-agnostic by construction.
  *
  * Contract:
  * - Idempotent: if the tag is not registered, the file is left unchanged.
  * - Non-destructive on parse failure: if customElements.js cannot be parsed,
- *   the file is left untouched rather than fall through to a line-based
+ *   the file is left untouched rather than falling through to a line-based
  *   heuristic that could delete the wrong range.
  * - Two registration shapes are recognised:
  *     (A) Standalone statement:
@@ -42,7 +41,7 @@ interface RemovalRange {
  * to (and including) the next newline. This keeps the surrounding file
  * layout stable: deleting a list entry should not leave a dangling comma
  * behind, and deleting an expression statement should not leave a blank
- * line where the statement used to be.
+ * line where the statement stood.
  */
 function expandRemovalRange(content: string, start: number, end: number): RemovalRange {
   let expandedEnd = end;

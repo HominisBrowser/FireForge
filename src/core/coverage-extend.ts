@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `test --build/--build-only --extend-coverage`: unions the
- * requested paths into the recorded `testPackagingCoverage` instead of
- * replacing it, under an anchor guard.
+ * `test --build/--build-only --extend-coverage`: unions the requested paths
+ * into the recorded `testPackagingCoverage` instead of replacing it, under
+ * an anchor guard.
  *
- * Coverage REPLACES by default for a documented reason
- * (`build-baseline-types.ts`): every baseline write refreshes
+ * Coverage REPLACES by default for a reason documented in
+ * `build-baseline-types.ts`: every baseline write refreshes
  * `packageableFingerprints` for ALL dirty packageable paths, so a blind
  * union would whitewash an earlier scope's edited fixtures while
  * `obj-*`/`_tests/` still holds that scope's stale staging. Extending is
@@ -15,9 +15,10 @@
  *
  *   1. engine HEAD is unchanged — every committed edit is excluded;
  *   2. every path the previous baseline fingerprinted still hashes to the
- *      recorded digest — the earlier scope's staging inputs are byte-identical.
- *      Files that became dirty SINCE that build are fine: the current
- *      whole-tree `mach build faster` repackages `dist/` and vouches for them;
+ *      recorded digest, so the earlier scope's staging inputs are
+ *      byte-identical. Files that became dirty SINCE that build are fine:
+ *      the current whole-tree `mach build faster` repackages `dist/` and
+ *      vouches for them;
  *   3. the generated `engine/mozconfig` is unchanged. Engine HEAD does not
  *      cover this — the mozconfig is regenerated from project-side
  *      `configs/*.mozconfig` templates plus `fireforge.json` on every build,
@@ -30,8 +31,8 @@
  * fixtures under previously covered paths (plain test files, manifests
  * `isPackageablePath` rejects) are invisible to check 2. Editing one
  * uncommitted between two builds leaves the earlier scope's `_tests/`
- * staging stale while extend still vouches for it. Plain REPLACE has no
- * such window, because the earlier scope simply stops being covered.
+ * staging stale while extend still vouches for it. Plain REPLACE has no such
+ * window, because the earlier scope simply stops being covered.
  */
 
 import { createHash } from 'node:crypto';
@@ -137,9 +138,10 @@ export async function checkExtendMozconfigAnchor(
 }
 
 /**
- * Unions the newly built paths onto the recorded claim. A `'full'` claim
- * (or a pre-0.37.0 absent one, which means full historically) stays
- * `'full'` — it already covers everything.
+ * Unions the newly built paths onto the recorded claim. A `'full'` claim, or
+ * an absent one (which means full), stays `'full'` — it already covers
+ * everything.
+ *
  * @param previous - Coverage recorded by the previous build
  * @param requested - Normalized request paths this build packaged
  */

@@ -80,6 +80,10 @@ export default tseslint.config(
       // this stops the untyped-dictionary contract from re-accreting on
       // exported functions.
       'fireforge/no-untyped-json-document': 'error',
+      // The TTY pair check was open-coded at eighteen sites with nine
+      // different non-TTY refusal strings between them; `stdioIsInteractive()`
+      // in core/destructive.ts is now the single spelling.
+      'fireforge/no-open-coded-tty-check': 'error',
       // `X as unknown as Y` launders any type into any other. The two
       // sanctioned bridge casts (ast-utils.toPositionedProgram,
       // furnace-config-order's FurnaceConfig→JsonObject re-entry) carry
@@ -186,6 +190,16 @@ export default tseslint.config(
       },
     },
     rules: {
+      // `check-param-names` catches an @param list that has drifted from the
+      // signature — 37 doc blocks had, including two attached to the wrong
+      // declaration. Destructured-property checking is OFF deliberately: with
+      // it on the rule demands an `@param options.x` line for every field of
+      // every options bag, which is 29 complaints about a convention this
+      // codebase does not follow and never claimed to.
+      'jsdoc/check-param-names': ['error', { checkDestructured: false, checkRestProperty: false }],
+      // Cheap and independent: flags a documented @returns on a function that
+      // returns nothing.
+      'jsdoc/require-returns-check': 'error',
       'jsdoc/require-jsdoc': [
         'error',
         {

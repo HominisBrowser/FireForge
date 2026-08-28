@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { text } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { stdioIsInteractive } from '../../core/destructive.js';
 import {
   createDefaultFurnaceConfig,
   furnaceConfigExists,
@@ -11,20 +12,24 @@ import {
   loadFurnaceConfig,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { resolveFtlChromeSubPath, tagNameToClassName } from '../../core/furnace-constants.js';
 import {
+  resolveFtlChromeSubPath,
+  tagNameToClassName,
+  WIDGETS_DIR,
+} from '../../core/furnace-constants.js';
+import {
+  completeJournalRollback,
   type FurnaceOperationContext,
-  recordFurnaceRollbackFailure,
   runFurnaceMutation,
 } from '../../core/furnace-operation.js';
 import {
   CUSTOM_ELEMENT_TAG_PATTERN,
   CUSTOM_ELEMENT_TAG_RULES,
+  describeTagNameProblem,
 } from '../../core/furnace-registration-validate.js';
 import {
   createRollbackJournal,
   recordCreatedDir,
-  restoreRollbackJournalOrThrow,
   type RollbackJournal,
   snapshotFile,
 } from '../../core/furnace-rollback.js';
@@ -36,7 +41,6 @@ import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceCreateOptions } from '../../types/commands/index.js';
 import type { ProjectLicense } from '../../types/config.js';
 import type { FurnaceConfig, ResolvedTestStyle } from '../../types/furnace.js';
-import { toError } from '../../utils/errors.js';
 import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
 import { cancel, intro, isCancel, note, outro } from '../../utils/logger.js';
 import { resolveValidatedTestDir, scaffoldTestFiles } from './create-browser-test.js';
@@ -105,6 +109,8 @@ function validateTagName(name: string): string | undefined {
  * @param description - Human-readable component description
  * @param localized - Whether to include a Fluent file
  * @param license - Project license used for generated headers
+ * @param ftlChromeSubPath - chrome:// sub-path for the generated FTL reference, when localized
+ * @param sharedFtl - Explicit shared FTL path from `--shared-ftl`, when supplied
  * @param journal - Optional rollback journal that snapshots files before writes
  * @returns Relative filenames written for the component
  */
@@ -266,7 +272,7 @@ async function performCreateMutations(args: {
 
     const customEntry: import('../../types/furnace.js').CustomComponentConfig = {
       description: args.description,
-      targetPath: `toolkit/content/widgets/${args.componentName}`,
+      targetPath: `${WIDGETS_DIR}/${args.componentName}`,
       register: args.register,
       localized: args.localized,
     };
@@ -317,21 +323,16 @@ async function performCreateMutations(args: {
       testFiles.push(...mochikitFiles);
     }
   } catch (error: unknown) {
-    // This body owns its rollback end to end, so tell the lifecycle wrapper
-    // not to restore the same journal again on the way out.
-    args.operationContext?.markRolledBack();
-    try {
-      await restoreRollbackJournalOrThrow(
-        journal,
-        `Failed to create custom component "${args.componentName}"`
-      );
-    } catch (rollbackError) {
-      await recordFurnaceRollbackFailure(
-        args.projectRoot,
-        'create-rollback',
-        `component "${args.componentName}": ${toError(rollbackError).message}`
-      );
-      throw rollbackError;
+    // `operationContext` is optional here (the dry-run and no-journal paths
+    // pass none), so the shared handler only applies when there is a
+    // lifecycle wrapper to tell.
+    if (args.operationContext) {
+      return await completeJournalRollback(args.operationContext, journal, error, {
+        projectRoot: args.projectRoot,
+        operation: 'create-rollback',
+        failureMessage: `Failed to create custom component "${args.componentName}"`,
+        subject: `component "${args.componentName}"`,
+      });
     }
     throw error;
   }
@@ -372,7 +373,7 @@ export async function furnaceCreateCommand(
   name?: string,
   options: FurnaceCreateOptions = {}
 ): Promise<void> {
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
   const isDryRun = options.dryRun ?? false;
 
   intro(isDryRun ? 'Furnace Create (dry run)' : 'Furnace Create');
@@ -406,7 +407,9 @@ export async function furnaceCreateCommand(
     const nameResult = await text({
       message: 'Component tag name:',
       placeholder: 'moz-my-widget',
-      validate: (value) => validateTagName(value ?? ''),
+      // Message-returning form: the throwing `validateTagName` escaped
+      // clack's validation loop and killed the prompt on a bad name.
+      validate: (value) => describeTagNameProblem(value ?? ''),
     });
 
     if (isCancel(nameResult)) {
@@ -463,6 +466,11 @@ export async function furnaceCreateCommand(
   // partial mutation behind.
   const testStyle = resolveTestStyle(options);
   const testDir = resolveValidatedTestDir(options.testDir, testStyle);
+  // Not routed through assertFurnaceEngineReady: this rung is CONDITIONAL on
+  // a test style being requested, and it names the component so the refusal
+  // identifies which create failed. Both are outside the shared helper's
+  // shape, and a scaffold without --with-tests must keep working with no
+  // engine present.
   if (testStyle !== 'none' && !(await pathExists(paths.engine))) {
     throw new FurnaceError(
       'Engine directory not found. Run "fireforge download" first to use --with-tests, --xpcshell, or --test-style.',
@@ -482,13 +490,13 @@ export async function furnaceCreateCommand(
     );
   }
 
-  // --- Normalize and validate --shared-ftl ahead of any writes. Shares the
+  // Normalize and validate --shared-ftl ahead of any writes. Shares the
   // structural rules with furnace-config.ts so the command and the on-disk
-  // schema cannot diverge. Pass the resolved `localized` rather than a
-  // `true` literal so the validator's cross-field check stays anchored to
-  // the real feature selection — `resolveCreateFeatures` promotes localized
-  // upstream, but hard-coding `true` here would hide a regression if that
-  // promotion ever moved or dropped.
+  // schema cannot diverge. Pass the resolved `localized` rather than a `true`
+  // literal so the validator's cross-field check stays anchored to the real
+  // feature selection — `resolveCreateFeatures` promotes localized upstream,
+  // and hard-coding `true` here would hide a regression if that promotion
+  // ever moved or dropped.
   let sharedFtl: string | undefined;
   if (options.sharedFtl !== undefined) {
     const result = validateSharedFtl(options.sharedFtl, { localized });
@@ -515,6 +523,10 @@ export async function furnaceCreateCommand(
       testStyle,
       description,
       binaryName: forgeConfig.binaryName,
+      // The plan must name the directory the scaffolder will actually use:
+      // an omitted override here is how the printed path came to disagree
+      // with the files a real run wrote.
+      ...(testDir !== undefined ? { testDir } : {}),
     });
     note(plan, componentName);
     outro('Dry run complete (no files modified)');
@@ -555,6 +567,7 @@ export async function furnaceCreateCommand(
       testFiles,
       testStyle,
       binaryName: forgeConfig.binaryName,
+      ...(testDir !== undefined ? { testDir } : {}),
     }),
     componentName
   );

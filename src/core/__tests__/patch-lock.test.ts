@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Behavioural tests for the patch directory lock's `--wait-lock` plumbing
- *: the wait budget overrides the default timeout, the timeout
- * message leads with the wait remedy instead of `rm -rf`, and the default
- * (no options) path stays untouched for the existing callers.
+ * Behavioural tests for the patch directory lock's `--wait-lock` plumbing:
+ * the wait budget overrides the default timeout, the timeout message leads
+ * with the wait remedy instead of `rm -rf`, and the default (no options)
+ * path stays untouched for existing callers.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

@@ -137,13 +137,10 @@ export class InvalidArgumentError extends FireForgeError {
  * Error thrown when a spawned command exceeds its `timeout` option.
  *
  * Every `exec*` helper in `src/utils/process.ts` rejects with this type
- * (instead of Node's bare `AbortError: The operation was aborted`) when the
- * caller-supplied timeout fires. The bare AbortError bit an operator during
- * the 2026-04-24 eval (see {@link GitIndexingTimeoutError} in errors/git.ts):
- * an 854 s git indexing pass died with no command name, no elapsed time, and
- * no hint that a timeout — not git — was responsible. The git path gained a
- * site-local typed error then; this class extends the same courtesy to every
- * other `timeout` caller.
+ * instead of Node's bare `AbortError: The operation was aborted`, which
+ * carries no command name, no elapsed time, and no hint that a timeout —
+ * not the command — was responsible. See {@link GitIndexingTimeoutError} in
+ * errors/git.ts for the git-specific variant.
  */
 export class ExecTimeoutError extends FireForgeError {
   readonly code = ExitCode.GENERAL_ERROR;
@@ -173,24 +170,49 @@ export class ExecTimeoutError extends FireForgeError {
 }
 
 /**
- * Error thrown when a file-lock wait times out because another process
- * holds the lock.
+ * Error thrown when a file-lock wait times out because another process holds
+ * the lock.
  *
  * Dedicated subclass so the CLI boundary renders lock contention as the
- * one-line reason-first/remedy-second refusal it is — before this, the
- * timeout surfaced as a plain `Error`, which `withErrorHandling` treats
- * as an internal failure and prints with a five-frame stack. The refusal
- * was always correct; the presentation made it look like a crash.
+ * one-line reason-first/remedy-second refusal it is. As a plain `Error` it
+ * is treated by `withErrorHandling` as an internal failure and printed with
+ * a five-frame stack — a correct refusal that looks like a crash.
+ *
+ * Exit code 15, not 1: the run never started. A script that retries on
+ * failure wants to re-queue this one, not treat it as a failure of the work
+ * it asked for. Every lock in FireForge shares the class and therefore the
+ * code — the fact is the same whichever lock was contended.
  */
 export class LockContentionError extends FireForgeError {
-  readonly code = ExitCode.GENERAL_ERROR;
+  readonly code = ExitCode.LOCK_TIMEOUT;
 }
 
 /**
- * Error thrown when the user cancels an interactive prompt.
+ * Error thrown when a test run completed but its verdict cannot be trusted,
+ * because `engine/` changed (or stopped being probeable) while the harness
+ * was running.
+ *
+ * Dedicated subclass for its exit code alone: as a `GeneralError` this
+ * refusal exited 1 beside real test failures' 5, and a summary line reading
+ * `FAIL — exit 1` next to `FAIL — exit 5` invites treating them as the same
+ * kind of fact. They are opposites — one suite failed, the other's result
+ * was discarded — and only a distinct code makes "unknown, re-run"
+ * mechanically separable from "red".
+ */
+export class InconclusiveVerdictError extends FireForgeError {
+  readonly code = ExitCode.INCONCLUSIVE;
+}
+
+/**
+ * Error thrown when the user INTERRUPTS an interactive prompt — Esc or
+ * Ctrl+C, i.e. `isCancel(...)`.
+ *
+ * Not for a prompt the operator deliberately answered "no" to: 130 is
+ * 128+SIGINT, which claims an interrupt. A declined confirmation is a
+ * successful run that chose not to proceed, and exits 0.
  */
 export class CancellationError extends FireForgeError {
-  readonly code = ExitCode.GENERAL_ERROR;
+  readonly code = ExitCode.USER_CANCELLED;
   constructor() {
     super('cancelled');
   }

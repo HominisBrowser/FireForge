@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { stdioIsInteractive } from '../../core/destructive.js';
 import {
   getFurnacePaths,
   loadFurnaceConfig,
@@ -13,16 +14,15 @@ import {
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { resolveFtlDir, xpcshellTestParentDir } from '../../core/furnace-constants.js';
-import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
+import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
   createRollbackJournal,
-  restoreRollbackJournalOrThrow,
   type RollbackJournal,
   snapshotDir,
   snapshotFile,
 } from '../../core/furnace-rollback.js';
 import { isGitRepository } from '../../core/git.js';
-import { deregisterTestManifest } from '../../core/manifest-register.js';
+import { deregisterTestManifest } from '../../core/moz-manifest-register.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceRemoveOptions } from '../../types/commands/index.js';
 import type { FurnaceState } from '../../types/furnace.js';
@@ -188,23 +188,23 @@ async function cleanupCustomTestFiles(
 }
 
 /**
- * Removes the MochiKit test scaffold a `furnace create --with-tests
- * --test-style mochikit` produced for the component (matches the rename
- * counterpart in `rename.ts`). The test file is `test_<name>.html` under
- * `engine/toolkit/content/tests/widgets/` and the registration is the
- * `["test_<name>.html"]` entry in the same directory's `chrome.toml`.
+ * Removes the MochiKit test scaffold a
+ * `furnace create --with-tests --test-style mochikit` produced for the
+ * component (matches the rename counterpart in `rename.ts`). The test file is
+ * `test_<name>.html` under `engine/toolkit/content/tests/widgets/` and the
+ * registration is the `["test_<name>.html"]` entry in the same directory's
+ * `chrome.toml`.
  *
- * 2026-04-25 eval Finding 13: the prior cleanup only handled the
- * browser-chrome mochitest layout under `browser/base/content/test/
- * <binary>/`, which left mochikit-style scaffolds and their toml entries
- * orphaned after `furnace remove`. The post-rename name passed in here
- * is the canonical one written to disk by deploy/rename, so the file
- * basenames match without needing to re-derive from the old name.
+ * Cleanup that only handles the browser-chrome mochitest layout under
+ * `browser/base/content/test/<binary>/` leaves mochikit-style scaffolds and
+ * their toml entries orphaned after `furnace remove`. The post-rename name
+ * passed in here is the canonical one written to disk by deploy/rename, so
+ * the file basenames match without re-deriving from the old name.
  *
- * Best-effort: each step warns on failure rather than throwing so the
- * rest of the remove transaction proceeds. The journal still snapshots
- * touched files so the outer rollback can restore them on a later
- * failure in the same operation.
+ * Best-effort: each step warns on failure rather than throwing so the rest
+ * of the remove transaction proceeds. The journal still snapshots touched
+ * files so the outer rollback can restore them on a later failure in the
+ * same operation.
  */
 async function cleanupCustomMochikitTestFiles(
   name: string,
@@ -254,14 +254,13 @@ async function cleanupCustomMochikitTestFiles(
 
 /**
  * Removes generated xpcshell test scaffolds associated with a custom
- * component. 2026-04-24 eval Finding 5: `furnace remove` handled
- * browser mochitests via `cleanupCustomTestFiles` but never touched the
- * xpcshell scaffold tree, so an operator who ran
- * `furnace create --with-tests --xpcshell` followed by `furnace remove`
- * was left with orphan `xpcshell.toml` + `test_<name>_packaged.js`
- * files still referencing the removed component. This cleanup pass
- * mirrors the mochitest one — snapshot before removal, warn-and-
- * continue semantics, explicit summary when partial failures occur.
+ * component. Cleanup that handles browser mochitests via
+ * `cleanupCustomTestFiles` but never touches the xpcshell scaffold tree
+ * leaves an operator who ran `furnace create --with-tests --xpcshell`
+ * followed by `furnace remove` with orphan `xpcshell.toml` +
+ * `test_<name>_packaged.js` files still referencing the removed component.
+ * This pass mirrors the mochitest one — snapshot before removal,
+ * warn-and-continue semantics, explicit summary on partial failures.
  */
 async function cleanupCustomXpcshellTestFiles(
   name: string,
@@ -422,7 +421,7 @@ export async function furnaceRemoveCommand(
   name: string,
   options: FurnaceRemoveOptions = {}
 ): Promise<void> {
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
 
   intro('Furnace Remove');
 
@@ -527,20 +526,12 @@ export async function furnaceRemoveCommand(
         );
       }
     } catch (error: unknown) {
-      // This body owns its rollback end to end, so tell the lifecycle wrapper
-      // not to restore the same journal again on the way out.
-      ctx.markRolledBack();
-      try {
-        await restoreRollbackJournalOrThrow(journal, `Failed to remove component "${name}"`);
-      } catch (rollbackError) {
-        await recordFurnaceRollbackFailure(
-          projectRoot,
-          'remove-rollback',
-          `component "${name}": ${toError(rollbackError).message}`
-        );
-        throw rollbackError;
-      }
-      throw error;
+      return await completeJournalRollback(ctx, journal, error, {
+        projectRoot: projectRoot,
+        operation: 'remove-rollback',
+        failureMessage: `Failed to remove component "${name}"`,
+        subject: `component "${name}"`,
+      });
     }
   });
 

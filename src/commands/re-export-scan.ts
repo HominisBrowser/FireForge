@@ -4,8 +4,8 @@ import { dirname, join } from 'node:path';
 import { confirm } from '@clack/prompts';
 
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
+import { listTrackedInHead } from '../core/git-file-ops.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
-import { computeProjectedLintRegressions } from '../core/lint-projection.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import {
   buildModifiedFileAdditionsFromDiff,
@@ -13,6 +13,7 @@ import {
   detectNewFilesInDiff,
   lintPatchQueue,
 } from '../core/patch-lint.js';
+import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { getClaimedFiles } from '../core/patch-manifest.js';
 import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -144,7 +145,10 @@ async function scanPatchFilesTargeted(args: {
   for (const [index, file] of scanFiles.entries()) {
     if (exists[index] !== true) {
       throw new InvalidArgumentError(
-        `--scan-file path not found in engine/: ${file}`,
+        `--scan-file path not found in engine/: ${file}. ` +
+          '--scan-file brings a path INTO patch ownership, which needs content to diff. ' +
+          'If the path was deleted and the patch already owns it, a plain re-export now ' +
+          'captures the deletion — no scan flag is needed.',
         '--scan-file'
       );
     }
@@ -155,11 +159,23 @@ async function scanPatchFilesTargeted(args: {
   return reportScanResult(currentFilesAffected, patchFilename, isDryRun, added.sort(), removed);
 }
 
+/**
+ * Paths that have genuinely left the patch's ownership: absent from disk AND
+ * untracked in engine HEAD.
+ *
+ * An absent path that IS tracked in HEAD is a DELETION, not a de-ownership.
+ * The diff carries it as a `deleted file mode` section, so it must stay in
+ * `filesAffected` — pruning it desynchronises the manifest from the patch
+ * body in the direction that hurts: the body says "delete this file", the
+ * file list says the patch has nothing to do with it.
+ */
 async function findRemovedFiles(files: readonly string[], engineDir: string): Promise<string[]> {
   const exists = await mapWithConcurrency(files, PATH_PROBE_CONCURRENCY, (file) =>
     pathExists(join(engineDir, file))
   );
-  return files.filter((_, index) => exists[index] !== true).sort();
+  const absent = files.filter((_, index) => exists[index] !== true);
+  const trackedAbsent = await listTrackedInHead(engineDir, absent);
+  return absent.filter((file) => !trackedAbsent.has(file)).sort();
 }
 
 function reportScanResult(

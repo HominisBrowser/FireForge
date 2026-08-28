@@ -85,12 +85,12 @@ async function detectDanglingRegistrations(
   engineDir: string,
   patches: ReadonlyArray<{ filename: string; filesAffected: string[] }>
 ): Promise<DanglingRegistrationIssue[]> {
-  // Aggregate the set of all paths that any patch in the queue is
-  // responsible for (per `filesAffected`). We deliberately do NOT parse
-  // individual patch bodies for new-file creations here: `filesAffected`
-  // is already the contract manifest callers rely on, and
-  // `validatePatchesManifestConsistency` has already ensured the two
-  // are in sync. Using that list keeps this validator fast.
+  // Aggregate the set of all paths any patch in the queue is responsible for
+  // (per `filesAffected`). Individual patch bodies are deliberately NOT
+  // parsed for new-file creations here: `filesAffected` is already the
+  // contract manifest callers rely on, and
+  // `validatePatchesManifestConsistency` has already ensured the two are in
+  // sync. Using that list keeps this validator fast.
   const coveredByPatches = new Set<string>();
   for (const patch of patches) {
     for (const file of patch.filesAffected) {
@@ -117,12 +117,11 @@ async function detectDanglingRegistrations(
 
     for (const ref of refs) {
       if (coveredByPatches.has(ref.targetPath)) continue;
-      // Engine existence check: if the target file is already present
-      // in engine/ (e.g. upstream Firefox ships it, or a separate
-      // baseline branch has it), the registration is not dangling.
-      // We cannot sanely probe "is this tracked by git" without a git
-      // round-trip; existence on disk is a close-enough proxy for
-      // verify's read-only context.
+      // Engine existence check: if the target file is already present in
+      // engine/ (upstream Firefox ships it, or a separate baseline branch
+      // has it), the registration is not dangling. "Is this tracked by git"
+      // cannot be probed without a git round-trip; existence on disk is a
+      // close-enough proxy for verify's read-only context.
       if (await pathExists(join(engineDir, ref.targetPath))) continue;
       issues.push({
         patchFilename: patch.filename,
@@ -242,9 +241,8 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
 
     // Engine-aware module-resolution preflight. The queue-level
     // `unregistered-system-module` rule only sees modules a patch NEWLY
-    // CREATES; this asks the same question of the engine, so an import
-    // ADDED to an existing module — the shape that recurred and cost a
-    // rebuild cycle — is named as text instead of surfacing later as a
+    // CREATES; this asks the same question of the engine, so an import ADDED
+    // to an existing module is named as text instead of surfacing later as a
     // bare `xpcshell return code: -11` with zero output.
     if (await pathExists(paths.engine)) {
       const unresolved = await findUnresolvedSystemModuleImports(

@@ -23,9 +23,9 @@ export async function handleAbort(projectRoot: string, yes?: boolean): Promise<v
 
   // Abort is the escape hatch, so it deliberately does NOT require a *valid*
   // session — only that one is present. Nothing below reads the session
-  // object (the restore works off `paths.engine` and `resetChanges`), and the
-  // pre-0.41.0 `if (!session) throw` refused to run against a corrupt file,
-  // which was the only command that could have cleared it.
+  // object (the restore works off `paths.engine` and `resetChanges`), and an
+  // `if (!session) throw` would refuse to run against a corrupt file, which
+  // is the only thing that could have cleared it.
   const read = await readRebaseSession(projectRoot);
   if (!read.present) throw new NoRebaseSessionError();
   if (!read.valid) {

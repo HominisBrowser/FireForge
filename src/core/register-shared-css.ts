@@ -7,10 +7,7 @@ import { basename, join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
-import { escapeRegex } from '../utils/regex.js';
-import { findAlphabeticalPosition, findAlphabeticalTokenPosition } from './manifest-helpers.js';
-import { tokenizeJarMn } from './manifest-tokenizers.js';
-import { withParserFallback } from './parser-fallback.js';
+import { insertJarMnEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
 /**
@@ -27,125 +24,28 @@ function registerSharedCSSTokenized(
   previousEntry: string | undefined;
   afterFallback: boolean;
 } {
-  const lines = content.split('\n');
-  const tokens = tokenizeJarMn(lines);
-  let afterFallback = false;
-
-  let insertIndex: number;
-  let previousEntry: string | undefined;
-
-  if (after) {
-    const afterPattern = new RegExp(`(?:^|/)${escapeRegex(after)}(?:\\s|\\)|$)`);
-    const afterToken = tokens.find((t) => afterPattern.test(t.raw));
-    if (afterToken) {
-      insertIndex = afterToken.lineIndex + 1;
-      previousEntry = afterToken.raw.trim();
-    } else {
-      afterFallback = true;
-      ({ insertIndex, previousEntry } = findAlphabeticalTokenPosition(
-        tokens,
-        /skin\/classic\/browser\/([^.]+)\.css/,
-        name
-      ));
-    }
-  } else {
-    ({ insertIndex, previousEntry } = findAlphabeticalTokenPosition(
-      tokens,
-      /skin\/classic\/browser\/([^.]+)\.css/,
-      name
-    ));
-  }
-
-  if (insertIndex === -1) {
-    throw new GeneralError('Could not find skin/classic/browser/ section in jar.inc.mn');
-  }
-
-  lines.splice(insertIndex, 0, entry);
-  return { result: lines.join('\n'), insertIndex, previousEntry, afterFallback };
-}
-
-/**
- * Legacy line-based implementation preserved as fallback.
- */
-function legacyRegisterSharedCSS(
-  content: string,
-  name: string,
-  entry: string,
-  after?: string
-): { result: string; previousEntry: string | undefined; afterFallback: boolean } {
-  const lines = content.split('\n');
-  let afterFallback = false;
-
-  const extractKey = (line: string): string | undefined => {
-    const match = /skin\/classic\/browser\/([^.]+)\.css/.exec(line);
-    return match?.[1];
-  };
-
-  let insertIndex: number;
-  let previousEntry: string | undefined;
-
-  // Find skin/classic/browser/ section boundaries
-  let sectionStart = -1;
-  let sectionEnd = lines.length;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === undefined) continue;
-    if (/skin\/classic\/browser\//.test(line)) {
-      if (sectionStart === -1) sectionStart = i;
-      sectionEnd = i + 1;
-    }
-  }
-
-  if (sectionStart === -1) {
-    throw new GeneralError('Could not find skin/classic/browser/ section in jar.inc.mn');
-  }
-
-  if (after) {
-    const afterLineIdx = lines.findIndex((l) => l.includes(after));
-    if (afterLineIdx !== -1) {
-      insertIndex = afterLineIdx + 1;
-      previousEntry = lines[afterLineIdx]?.trim();
-    } else {
-      afterFallback = true;
-      ({ insertIndex, previousEntry } = findAlphabeticalPosition(
-        lines,
-        sectionStart,
-        sectionEnd,
-        name,
-        extractKey
-      ));
-    }
-  } else {
-    ({ insertIndex, previousEntry } = findAlphabeticalPosition(
-      lines,
-      sectionStart,
-      sectionEnd,
-      name,
-      extractKey
-    ));
-  }
-
-  lines.splice(insertIndex, 0, entry);
-  return { result: lines.join('\n'), previousEntry, afterFallback };
+  return insertJarMnEntry(content, entry, {
+    sortPattern: /skin\/classic\/browser\/([^.]+)\.css/,
+    sortKey: name,
+    missingSectionMessage: 'Could not find skin/classic/browser/ section in jar.inc.mn',
+    after,
+  });
 }
 
 /** Minimum gap between the target path and the source parenthesis. */
 const MIN_SOURCE_GAP = 4;
 
 /**
- * Measures the column at which the `(source)` parenthesis opens in
- * adjacent `skin/classic/browser/<x>.css (...)` entries inside an
- * existing jar.inc.mn body, and returns the maximum so a newly inserted
- * entry can align its source column to match.
+ * Measures the column at which the `(source)` parenthesis opens in adjacent
+ * `skin/classic/browser/<x>.css (...)` entries inside an existing
+ * jar.inc.mn body, and returns the maximum so a newly inserted entry can
+ * align its source column to match.
  *
- * 2026-04-26 eval Finding 3: pre-fix `registerSharedCSS` always emitted
- * a four-space gap between the target path and the parenthesis,
- * regardless of how the rest of the file was aligned. Adjacent Firefox
- * entries are typically padded to a wider column, so a freshly
- * registered file landed at the wrong column and produced avoidable
- * formatting churn. Returns `undefined` when no existing entries
- * provide an alignment signal — callers fall back to the four-space
- * default in that case.
+ * A fixed four-space gap regardless of the surrounding alignment lands a
+ * freshly registered file at the wrong column and produces avoidable
+ * formatting churn, since adjacent Firefox entries are typically padded to a
+ * wider column. Returns `undefined` when no existing entries provide an
+ * alignment signal — callers fall back to the four-space default.
  */
 export function measureSourceColumn(content: string): number | undefined {
   const lines = content.split('\n');
@@ -224,11 +124,7 @@ export async function registerSharedCSS(
     return { manifest, entry, skipped: true };
   }
 
-  const { value } = withParserFallback(
-    () => registerSharedCSSTokenized(content, name, entry, after),
-    () => legacyRegisterSharedCSS(content, name, entry, after),
-    manifest
-  );
+  const value = registerSharedCSSTokenized(content, name, entry, after);
 
   if (!dryRun) {
     await writeText(manifestPath, value.result);

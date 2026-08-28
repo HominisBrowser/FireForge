@@ -196,13 +196,12 @@ export const SUPPRESSED_DIAGNOSTIC_CODES: ReadonlySet<number> = new Set([
 
 /**
  * Undefined-free-identifier codes, split out of
- * {@link SUPPRESSED_DIAGNOSTIC_CODES}. Unconditional
- * suppression let a module reference a name with no import or declaration
- * anywhere and still typecheck with 0 errors — the failure then surfaced
- * as a runtime `ReferenceError`. Both flows now report these at a
- * configurable severity (default `'warning'`: visible without breaking
- * gates; genuine shim gaps are silenced by adding the global to
- * `extraShim`, or per-run via the `'off'` setting).
+ * {@link SUPPRESSED_DIAGNOSTIC_CODES}. Suppressing them unconditionally lets
+ * a module reference a name with no import or declaration anywhere and still
+ * typecheck with 0 errors, so the failure surfaces as a runtime
+ * `ReferenceError`. Both flows report these at a configurable severity
+ * (default `'warning'`: visible without breaking gates; genuine shim gaps
+ * are silenced by adding the global to `extraShim`, or per-run via `'off'`).
  */
 export const UNDEFINED_IDENTIFIER_CODES: ReadonlySet<number> = new Set([
   2304, // Cannot find name '{0}'.
@@ -267,25 +266,25 @@ async function inlineTripleSlashReferences(
 }
 
 /**
- * Composes the synthetic shim source by concatenating the built-in
- * Firefox globals shim with the contents of an optional user-supplied
- * `.d.ts` file. The user file is appended verbatim — the augment
- * direction is intentional (declarations later in concat order
- * augment earlier ones), so a project that wants to refine `Services`
- * with a more specific type can do so by declaring it in the extra
- * shim, and members can be ADDED to the structured globals by merging
- * their interfaces (`interface ChromeUtilsShim { newMember(): any }` —
- * see the module doc comment). Any triple-slash
- * `/// <reference path="…">` directives inside the
- * extra shim are inlined (resolved against the extra shim's own directory)
- * so they are not silently dropped at the synthetic shim path.
+ * Composes the synthetic shim source by concatenating the built-in Firefox
+ * globals shim with the contents of an optional user-supplied `.d.ts` file.
+ * The user file is appended verbatim — the augment direction is intentional
+ * (declarations later in concat order augment earlier ones), so a project
+ * that wants to refine `Services` with a more specific type can do so in the
+ * extra shim, and members can be ADDED to the structured globals by merging
+ * their interfaces (`interface ChromeUtilsShim { newMember(): any }` — see
+ * the module doc comment). Any triple-slash `/// <reference path="…">`
+ * directives inside the extra shim are inlined (resolved against the extra
+ * shim's own directory) so they are not silently dropped at the synthetic
+ * shim path.
  *
- * Missing extra-shim files raise a clear error rather than failing
- * silently with a confusing "type not found" downstream — this is the
- * one config-driven path where a user typo in `fireforge.json`
- * produces a runtime error, so it needs to be unmistakable.
+ * Missing extra-shim files raise a clear error rather than failing silently
+ * with a confusing "type not found" downstream — this is the one
+ * config-driven path where a user typo in `fireforge.json` produces a
+ * runtime error, so it needs to be unmistakable.
  *
- * @param projectRoot - Absolute project root, used to resolve the relative shim path
+ * @param projectRoot - Absolute project root, used to resolve the relative
+ *   shim path
  * @param extraShimPath - Optional project-relative path to an extra `.d.ts`
  */
 export async function composeShimSource(

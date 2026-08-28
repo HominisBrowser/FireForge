@@ -5,6 +5,7 @@
 
 import { confirm } from '@clack/prompts';
 
+import { stdioIsInteractive } from '../../core/destructive.js';
 import { hasChanges } from '../../core/git.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import { cancel, isCancel, warn } from '../../utils/logger.js';
@@ -50,7 +51,7 @@ export async function confirmDirtyEngineReset({
     return true;
   }
 
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
   if (!isInteractive) {
     throw new InvalidArgumentError(
       `Engine has uncommitted changes and interactive confirmation is not available. Run: ${nonInteractiveCommand}`,

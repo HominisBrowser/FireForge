@@ -3,20 +3,27 @@
  * Binary-aware drift classification for patch-owned files.
  *
  * The text classifier compares utf-8 decoded content against
- * `computePatchedContent`, which cannot apply `GIT binary patch` bodies —
- * so a binary file exported into a patch classified as `patch-owned-drift`
+ * `computePatchedContent`, which cannot apply `GIT binary patch` bodies — so
+ * a binary file exported into a patch classifies as `patch-owned-drift`
  * forever, keeping the engine-clean gate permanently red with nothing
- * actually un-durable. Binary sections DO carry the ground truth, though:
- * `git diff --binary` always records full blob hashes on the section's
+ * actually un-durable. A `GIT binary patch` section DOES carry the ground
+ * truth: `git diff --binary` always records full blob hashes on the section's
  * `index <old>..<new>` line. Comparing the live file's `git hash-object`
- * against the last owning section's new-side hash settles the
- * classification exactly. Bodies without a usable hash (hand-written
- * diffs, `Binary files … differ`) classify as `binary-unsupported` —
- * an honest "cannot compare" instead of a false "not durable".
+ * against the last owning section's new-side hash settles the classification
+ * exactly. Bodies without a usable hash (hand-written diffs) classify as
+ * `binary-unsupported` — an honest "cannot compare" instead of a false "not
+ * durable".
  *
- * Lives in its own module (not `status-classify.ts`) so the classifier
- * stays within the per-file line budget and this module never has to
- * import it back (dpdm-clean: the dependency edge points one way).
+ * That hash is trusted ONLY when the section carries a replayable payload
+ * (`hasBinaryDelta`). A `Binary files … differ` stub carries a correct index
+ * line too, so hashing against it reports `patch-backed` for a body that
+ * cannot rebuild the file at all — precisely the dishonesty this module
+ * exists to avoid. Such a body is `binary-unsupported` here, and an error
+ * from the `binary-body-not-reconstructable` queue lint.
+ *
+ * Lives in its own module (not `status-classify.ts`) so the classifier stays
+ * within the per-file line budget and this module never has to import it
+ * back: the dependency edge points one way, which keeps dpdm clean.
  */
 
 import { join } from 'node:path';
@@ -146,7 +153,7 @@ export async function classifyBinaryOwnedFile(args: {
       return { ...entry, classification: 'patch-owned-drift', owner };
     }
 
-    if (section.indexNewHash !== undefined) {
+    if (section.hasBinaryDelta && section.indexNewHash !== undefined) {
       const fullPath = join(engineDir, entry.file);
       const live = (await hashObjectBatch(engineDir, [fullPath])).get(fullPath);
       if (live !== undefined) {

@@ -8,6 +8,7 @@
  * `test.ts` to keep both files within the per-file line budget.
  */
 
+import { describeChangedPrefNoise } from '../core/test-changed-prefs.js';
 import {
   buildGreenSummaryRejectedMessage,
   buildHarnessCrashMessage,
@@ -57,13 +58,12 @@ function buildStaleBuildMessage(postRebuild: boolean): string {
 }
 
 function hasStaleBuildArtifactsSignal(output: string): boolean {
-  // Deliberately narrow: only fire on branding-specific resource paths
-  // that are always a stale-artifact symptom. The earlier pattern also
-  // matched `resource:///modules/distribution.sys.mjs`, which surfaced on
-  // real packaging / module-resolution failures too (e.g. a fork's
-  // `MyBrowserStore.sys.mjs` missing from the installed app dir after a
-  // successful build). That false-positive pushed operators toward
-  // "rebuild" advice for what was actually a module-registration issue.
+  // Deliberately narrow: only fire on branding-specific resource paths that
+  // are always a stale-artifact symptom. A pattern that also matches
+  // `resource:///modules/distribution.sys.mjs` fires on real packaging and
+  // module-resolution failures too — a fork's own `.sys.mjs` missing from
+  // the installed app dir after a successful build — pushing operators
+  // toward "rebuild" advice for a module-registration issue.
   return (
     /chrome:\/\/branding\/locale\/brand\.properties/i.test(output) ||
     /browser\/branding\/[^/\s]+\/moz\.build/i.test(output)
@@ -71,24 +71,23 @@ function hasStaleBuildArtifactsSignal(output: string): boolean {
 }
 
 /**
- * Fork-module-not-registered signal. 2026-04-21 eval Finding #14:
- * a fork's test failed with `Failed to load resource:///modules/mybrowser/
- * MyBrowserStore.sys.mjs`. The branding pattern happened to also match
- * because the test harness printed a branding warning during its
- * teardown, and the stale-build branch won by precedence — telling the
- * operator to rebuild when the real fix is to register the module in
- * the fork's `browser/modules/<binary>/moz.build`. Match a
- * `resource:///modules/<binaryName>/` pattern so fork-owned module
- * failures surface the right diagnosis.
+ * Fork-module-not-registered signal.
+ *
+ * A fork's test failing with `Failed to load
+ * resource:///modules/<binary>/Store.sys.mjs` can also match the branding
+ * pattern, because the harness prints a branding warning during teardown —
+ * and the stale-build branch then wins by precedence, telling the operator
+ * to rebuild when the real fix is to register the module in the fork's
+ * `browser/modules/<binary>/moz.build`. Matching a
+ * `resource:///modules/<binaryName>/` pattern surfaces the right diagnosis.
  */
 function hasForkModuleSignal(output: string, binaryName: string): boolean {
-  // `binaryName` comes from fireforge.json, and config validation
-  // (`config-validate.ts:59-70`) bars only `..`, path separators, NUL and
-  // absolute paths — regex metacharacters get through. The inline escape
-  // this replaced wrote its character class as `[.*+?^${}()|[\\]\\\\]`,
-  // which closes early after the escaped backslash, so it escaped nothing:
-  // `my.browser` matched `myXbrowser`, and an unbalanced `(` or `[` threw a
-  // SyntaxError out of the failure-diagnosis path, replacing the real test
+  // `binaryName` comes from fireforge.json, and config validation bars only
+  // `..`, path separators, NUL and absolute paths — regex metacharacters get
+  // through. A hand-written character class is easy to get wrong (one that
+  // closes early after an escaped backslash escapes nothing), which makes
+  // `my.browser` match `myXbrowser` and lets an unbalanced `(` or `[` throw
+  // a SyntaxError out of the failure-diagnosis path, replacing the real test
   // failure with an opaque regex error.
   const pattern = new RegExp(
     `Failed to load resource:\\/\\/\\/modules\\/${escapeRegex(binaryName)}\\/`,
@@ -176,8 +175,8 @@ function buildMochitestHttp3ServerMessage(): string {
  * captured output supports, throwing it as a domain error.
  *
  * The branch order is load-bearing: narrower signals are checked before
- * broader ones so, for example, a fork-owned module failure is not reported as
- * a stale build (2026-04-21 eval Finding #14).
+ * broader ones, so a fork-owned module failure is not reported as a stale
+ * build.
  */
 function handleNonZeroTestExit(
   result: { stdout: string; stderr: string; exitCode: number },
@@ -210,24 +209,21 @@ function handleNonZeroTestExit(
     throwGeneral(buildHarnessEarlyExitMessage(earlyExit, normalizedPaths));
   }
   // Fork-owned module load failures must beat the branding stale-build
-  // branch: 2026-04-21 eval (Finding #14) saw a fork's test fail with
-  // `Failed to load resource:///modules/mybrowser/MyBrowserStore.sys.mjs`
-  // while the harness teardown printed a branding warning that the old
-  // stale-build pattern matched, so the operator was told to rebuild
-  // when the real fix is to register the missing module.
+  // branch: a test failing with `Failed to load
+  // resource:///modules/<binary>/Store.sys.mjs` while the harness teardown
+  // prints a branding warning would otherwise be told to rebuild, when the
+  // real fix is to register the missing module.
   if (hasForkModuleSignal(combinedOutput, binaryName)) {
     throwGeneral(buildForkModuleMessage(binaryName));
   }
   // Branding-specific stale-build signals keep priority over the broader
   // xpcshell-appdir hint: when `chrome://branding/locale/brand.properties`
   // fails to resolve, the fix really is "rebuild", not "pass --app-path".
-  // But the stale-build check is now narrower — it no longer matches
-  // `resource:///modules/distribution.sys.mjs` alone, which was producing
-  // false-positive rebuild advice on fork-custom module-load failures
-  // (the eval saw this for `MyBrowserStore.sys.mjs`). Cases that once
-  // landed on `distribution.sys.mjs` fall through to xpcshell-appdir,
-  // which is the more useful diagnosis in practice for `Failed to load
-  // resource:///modules/…`.
+  // The stale-build check is narrow enough not to match
+  // `resource:///modules/distribution.sys.mjs` alone, which produced
+  // false-positive rebuild advice on fork-custom module-load failures; those
+  // cases fall through to xpcshell-appdir, the more useful diagnosis for
+  // `Failed to load resource:///modules/…`.
   if (hasStaleBuildArtifactsSignal(combinedOutput)) {
     throwGeneral(buildStaleBuildMessage(Boolean(failureContext)));
   }
@@ -250,9 +246,14 @@ function handleNonZeroTestExit(
     info('Hint: The test file may not be registered in browser.toml or jar.mn.');
     info('Run "fireforge register <test-path>" to register it.');
   }
+  // Last, and additive rather than a branch of its own: the run really did
+  // fail (exit code stays 5), so this only says WHICH KIND of failure it is.
+  // Every branch above is a different diagnosis and outranks it.
+  const changedPrefNoise = describeChangedPrefNoise(combinedOutput);
   throw new BuildError(
     withContext(
-      `Tests failed with exit code ${result.exitCode}. Check the output above for details.`
+      `Tests failed with exit code ${result.exitCode}. Check the output above for details.` +
+        (changedPrefNoise !== undefined ? `\n\n${changedPrefNoise}` : '')
     ),
     'mach test'
   );
@@ -299,10 +300,10 @@ function applySingleRunOutcome(
     throw new GeneralError(hint ? `${base}\n\n${hint}` : base);
   }
   if (outcome.verdict.kind === 'tests-ran-ok') {
-    // The verdict is authoritative over the raw exit code: a completed
-    // green embedded summary overrides a non-zero exit caused by harness
-    // noise (field report: fully green --no-shard runs exited 1, forcing
-    // operators to parse embedded summaries by hand).
+    // The verdict is authoritative over the raw exit code: a completed green
+    // embedded summary overrides a non-zero exit caused by harness noise,
+    // which would otherwise leave operators parsing embedded summaries by
+    // hand.
     if (outcome.verdict.greenSummaryOverride) {
       info(
         `Note: mach exited ${outcome.result.exitCode}, but the embedded suite summary completed ` +
@@ -319,8 +320,7 @@ function applySingleRunOutcome(
   }
   // A green-LOOKING summary rejected on crash/truncation evidence gets its
   // own explanation instead of the generic exit-code message — the operator
-  // must see WHY the green counts were not trusted (0.35.0 green-wash
-  // field report: SIGSEGV at file 2 of 8, `Passed: 2 / Failed: 0`).
+  // must see WHY the green counts were not trusted.
   if (outcome.verdict.greenSummaryRejected) {
     throw new GeneralError(
       buildGreenSummaryRejectedMessage(

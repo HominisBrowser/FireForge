@@ -40,10 +40,10 @@ describe('explainMachError', () => {
   });
 
   it('surfaces the packager NoneType hint when packager.py trips on None.open', () => {
-    // Finding #12: `mach package` dereferences a None sink inside
-    // packager.py when the obj-*/dist/ tree is incomplete. The hint
-    // explicitly points at running a full `fireforge build` before
-    // `fireforge package`, which is the real-world recovery path.
+    // `mach package` dereferences a None sink inside packager.py when the
+    // obj-*/dist/ tree is incomplete. The hint points at running a full
+    // `fireforge build` before `fireforge package`, which is the real-world
+    // recovery path.
     const stderr = [
       'Traceback (most recent call last):',
       '  File "/engine/python/mozbuild/mozpack/packager.py", line 241, in package_fastload',
@@ -87,12 +87,11 @@ describe('explainMachError', () => {
   });
 
   it('surfaces the gecko-profiler bindgen hint on the _CharT alias compile error', () => {
-    // Finding #12: upstream bindgen emits
+    // Upstream bindgen emits
     // `pub type basic_string___self_view = …<_CharT>;` into gecko-profiler's
     // generated bindings.rs against some macOS libc++ SDKs, and the Rust
-    // compile fails with "cannot find type `_CharT` in this scope". The
-    // hint points operators at the 990-infra-bindgen workaround
-    // patch + the file-level recovery.
+    // compile fails with "cannot find type `_CharT` in this scope". The hint
+    // points operators at the workaround patch and the file-level recovery.
     const stderr = [
       'error[E0425]: cannot find type `_CharT` in this scope',
       ' --> /Users/you/workspace/obj-debug/release/build/gecko-profiler-abc123/out/gecko/bindings.rs:1877:67',
@@ -133,12 +132,11 @@ describe('explainMachError', () => {
   });
 
   it('surfaces the post-failure "Configure complete!" clarification hint', () => {
-    // Finding #6: after `mach build` fails, mach's own shutdown pipeline
-    // runs a configure summary that prints the three-line
-    // "Config object not found by mach. / Configure complete! / Be sure
-    // to run |mach build|..." block. Operators were double-checking
-    // whether the build had actually failed. The hint clarifies that
-    // the trailing block is cosmetic post-failure output.
+    // After `mach build` fails, mach's own shutdown pipeline runs a
+    // configure summary printing the three-line "Config object not found by
+    // mach. / Configure complete! / Be sure to run |mach build|..." block,
+    // which reads as a success banner. The hint clarifies that the trailing
+    // block is cosmetic post-failure output.
     const output = [
       ' 2:22.36 W 87 compiler warnings present.',
       ' Config object not found by mach.',
@@ -210,5 +208,29 @@ describe('explainMachError', () => {
 
     const hints = explainMachError(stderr);
     expect(hints.some((hint) => hint.includes('fireforge bootstrap'))).toBe(false);
+  });
+
+  it('translates a mozbuild UnsortedError into the case-insensitive rule', () => {
+    const stderr = [
+      'Traceback (most recent call last):',
+      '  File "browser/modules/hominis/moz.build", line 12, in <module>',
+      'mozbuild.util.UnsortedError: An attempt was made to add an unsorted sequence to a list.',
+      "We expected 'HominisEditorFilePaths.sys.mjs' but got 'HominisEditorFiles.sys.mjs'",
+    ].join('\n');
+
+    const hints = explainMachError(stderr);
+
+    expect(hints.length).toBeGreaterThanOrEqual(1);
+    const joined = hints.join('\n');
+    // The rule is the part operators get wrong, and the ASCII reading is
+    // the wrong one: mozbuild lowercases before comparing.
+    expect(joined).toContain('CASE-INSENSITIVELY');
+    expect(joined).toContain('mozbuild-unsorted-list');
+  });
+
+  it('does NOT fire the sort hint on unrelated mozbuild output', () => {
+    expect(explainMachError('mozbuild.util.ReadOnlyDict: cannot mutate').join('\n')).not.toContain(
+      'CASE-INSENSITIVELY'
+    );
   });
 });

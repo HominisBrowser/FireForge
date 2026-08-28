@@ -66,9 +66,9 @@ const HANG_WITH_FALSE_SUMMARY = [
 // Captured shape of a passing single-file `mach xpcshell-test` dispatch.
 // The suite-specific xpcshell command prints a result-summary block and a
 // per-test `TEST_END: Test PASS` line, but NO `TEST-START` line — so a
-// TEST-START-only execution heuristic mis-reads this green run as no-tests
-// (the wrapper then appended "finished without starting any tests" and
-// exited 1). Strings mirror the runxpcshelltests output, no live build.
+// TEST-START-only execution heuristic mis-reads this green run as no-tests,
+// appends "finished without starting any tests", and exits 1. Strings mirror
+// the runxpcshelltests output; no live build.
 const XPCSHELL_PASS_RUN = [
   ' 0:00.41 INFO | Running tests sequentially.',
   ' 0:00.42 INFO | TEST-INFO | (xpcshell/tests/toolkit/.../test_settings.js)',
@@ -192,13 +192,12 @@ describe('classifyHarnessRun', () => {
   });
 });
 
-// ── 0.34.0 field report: fully green sharded runs reported CRASH ──
-//
 // A completed multi-file xpcshell suite whose output ALSO carries the
 // non-fatal resource-monitor degradation warnings and a caught telemetry
 // traceback. The embedded summary is green (Unexpected results: 0,
-// SUITE_END), yet the signature strings (psutil, _collect) matched the
-// startup-traceback cluster and every suite was classified CRASH.
+// SUITE_END), yet the signature strings (psutil, _collect) match the
+// startup-traceback cluster — without the green-summary veto every such
+// suite classifies CRASH.
 const GREEN_XPCSHELL_WITH_DEGRADATION_NOISE = [
   ' 0:00.30 SUITE_START',
   ' 0:00.41 INFO | Running tests sequentially.',
@@ -294,7 +293,7 @@ describe('formatFireforgeVerdictLine', () => {
   });
 });
 
-describe('green-summary veto and noise exclusion (0.34.0)', () => {
+describe('green-summary veto and noise exclusion', () => {
   it('does not classify a completed green suite with degradation noise as a crash', () => {
     expect(detectHarnessCrashSignature(GREEN_XPCSHELL_WITH_DEGRADATION_NOISE)).toBeUndefined();
   });
@@ -375,10 +374,8 @@ describe('green-summary veto and noise exclusion (0.34.0)', () => {
   });
 });
 
-// ── 0.34.0 downstream report (Hominis): _DegradedReading fallback ──
-//
-// The pre-fix degraded psutil fallback only survived attribute access, so
-// mozsystemmonitor crashed on the fallback itself in two shapes, both
+// A degraded psutil fallback that only survives attribute access makes
+// mozsystemmonitor crash on the fallback itself, in two shapes, both
 // aborting mach mochitest at startup with zero TEST-START lines.
 const DEGRADED_SUBSCRIPT_STARTUP_ABORT = [
   ' 0:00.81 INFO Checking for orphan ssltunnel processes...',
@@ -395,7 +392,7 @@ const DEGRADED_ITERABLE_STARTUP_ABORT = [
   'Error running mach',
 ].join('\n');
 
-describe('_DegradedReading fallback crash signatures (0.34.0 downstream report)', () => {
+describe('_DegradedReading fallback crash signatures', () => {
   it('classifies the not-subscriptable startup abort as harness-crash', () => {
     const sig = detectHarnessCrashSignature(DEGRADED_SUBSCRIPT_STARTUP_ABORT);
     expect(sig?.line).toContain("'_DegradedReading' object is not subscriptable");
@@ -435,12 +432,10 @@ describe('_DegradedReading fallback crash signatures (0.34.0 downstream report)'
   });
 });
 
-// ── 0.34.1 field report: degraded-host drain-loop noise + post-success
-// log_resource_usage crash ──
-//
-// On a flapping host, mozsystemmonitor's parent rejects malformed collector
-// samples ("failed to read the received data") — chatter on runs that then
-// complete — and mozbuild's log_resource_usage can die on
+// Degraded-host drain-loop noise plus a post-success log_resource_usage
+// crash: on a flapping host, mozsystemmonitor's parent rejects malformed
+// collector samples ("failed to read the received data") — chatter on runs
+// that then complete — and mozbuild's log_resource_usage can die on
 // usage["io"].read_bytes AFTER a fully successful compile, failing a build
 // whose artifacts are complete.
 const DRAIN_LOOP_WARNING_LINES = [
@@ -457,7 +452,7 @@ const POST_SUCCESS_LOG_RESOURCE_USAGE_CRASH = [
   'Error running mach',
 ].join('\n');
 
-describe('degraded-host drain-loop and log_resource_usage shapes (0.34.1 field report)', () => {
+describe('degraded-host drain-loop and log_resource_usage shapes', () => {
   it('strips the drain-loop rejection warning from crash evidence, with or without the UserWarning token', () => {
     const stripped = stripNonSignalNoise(DRAIN_LOOP_WARNING_LINES);
     expect(stripped).not.toContain('failed to read the received data');
@@ -492,14 +487,12 @@ describe('degraded-host drain-loop and log_resource_usage shapes (0.34.1 field r
   });
 });
 
-// ── 0.35.0 field report: crash green-wash ──
-//
-// A browser-chrome manifest of 8 files whose parent process SIGSEGVed at
-// the second file's TEST_START. The remaining six files never started, so
-// the embedded summary was "green" (`Passed: 2 / Failed: 0, Unexpected
-// results: 0`) only because the crash prevented them from producing any
-// results — and 0.35.0's green-summary override reported the mach-exit-1
-// run as PASSED. Log lines below are verbatim from the field log.
+// Crash green-wash: a browser-chrome manifest of 8 files whose parent
+// process SIGSEGVed at the second file's TEST_START. The remaining six
+// never started, so the embedded summary is "green" (`Passed: 2 / Failed:
+// 0, Unexpected results: 0`) only because the crash prevented them from
+// producing any results — and an unguarded green-summary override reports
+// the mach-exit-1 run as PASSED.
 const HOMINIS_DIR = 'browser/base/content/test/hominis';
 const HOMINIS_FILES = [
   `${HOMINIS_DIR}/browser_hominis_first.js`,
@@ -580,7 +573,7 @@ const GREEN_PAIRED_WITH_MONITOR_NOISE = [
 
 const TWO_HOMINIS_FILES = HOMINIS_FILES.slice(0, 2);
 
-describe('green-summary rejection on crash/truncation evidence (0.35.0 field report)', () => {
+describe('green-summary rejection on crash/truncation evidence', () => {
   it('fails the SIGSEGV-truncated run despite the green summary, naming the signal and the never-started files', () => {
     const verdict = classifyHarnessRun(1, SIGSEGV_TRUNCATED_RUN, HOMINIS_FILES);
     expect(verdict.kind).toBe('test-failures');
@@ -706,7 +699,7 @@ describe('green-summary rejection on crash/truncation evidence (0.35.0 field rep
   });
 });
 
-describe('collectUnexpectedFailureBlocks (0.37.0 item 7)', () => {
+describe('collectUnexpectedFailureBlocks', () => {
   // Chrome-suite shape: the TEST-UNEXPECTED line is followed by the Assert
   // diff the operator needs to diagnose a non-reproducing one-off.
   const CHROME_FAILURE_RUN = [
@@ -908,6 +901,58 @@ describe('known teardown noise on a clean suite', () => {
     ).not.toBe('tests-ran-ok');
   });
 
+  it('passes a green suite whose diagnostic contains the ordinary word "assertion"', () => {
+    // Regression: the assertion arm used to be a case-INSENSITIVE word match,
+    // so a test's own passing diagnostic manufactured a red run and the
+    // verdict then named that diagnostic as the first real test failure.
+    const output = [
+      'TEST_START: browser/base/content/test/test_a.js',
+      'If an assertion below times out, this is why: the delivery guard is armed.',
+      'TEST_END: Test PASS',
+      'Ran 894 checks (894 subtests, 0 errors)',
+      'Unexpected results: 0',
+      'OK',
+      TEARDOWN_TRACEBACK,
+    ].join('\n');
+    const verdict = classifyHarnessRun(1, output, ['browser/base/content/test/test_a.js']);
+    expect(verdict.kind).toBe('tests-ran-ok');
+    expect(verdict.note).toBe('harness teardown noise ignored');
+  });
+
+  it('passes a green suite carrying a non-vacuousness note that says "assertion"', () => {
+    const output = [
+      greenSuiteWithoutSuiteEnd,
+      'TEST-PASS | test_a.js | the assertion above is not vacuous',
+      TEARDOWN_TRACEBACK,
+    ].join('\n');
+    expect(classifyHarnessRun(1, output, ['browser/base/content/test/test_a.js']).kind).toBe(
+      'tests-ran-ok'
+    );
+  });
+
+  it('still fails on a REAL Gecko assertion failure', () => {
+    for (const line of [
+      'Assertion failure: !mDestroyed, at /x/nsDocShell.cpp:1234',
+      "###!!! ASSERTION: bad state: 'mState == eIdle', file nsFoo.cpp, line 99",
+    ]) {
+      const output = [greenSuiteWithoutSuiteEnd, line, TEARDOWN_TRACEBACK].join('\n');
+      expect(classifyHarnessRun(1, output, ['browser/base/content/test/test_a.js']).kind).not.toBe(
+        'tests-ran-ok'
+      );
+    }
+  });
+
+  it('does not count TEST-KNOWN-FAIL, an EXPECTED failure, as a real failure', () => {
+    const output = [
+      greenSuiteWithoutSuiteEnd,
+      'TEST-KNOWN-FAIL | test_a.js | known to fail on macOS',
+      TEARDOWN_TRACEBACK,
+    ].join('\n');
+    expect(classifyHarnessRun(1, output, ['browser/base/content/test/test_a.js']).kind).toBe(
+      'tests-ran-ok'
+    );
+  });
+
   it('does not forgive a suite whose summary never printed a zero unexpected count', () => {
     const noSummary = [
       'TEST_START: browser/base/content/test/test_a.js',
@@ -918,6 +963,37 @@ describe('known teardown noise on a clean suite', () => {
         'browser/base/content/test/test_a.js',
       ]).kind
     ).not.toBe('tests-ran-ok');
+  });
+});
+
+describe('unmarked failure evidence note', () => {
+  it('says so when a test-failures verdict rests on evidence with no TEST-UNEXPECTED marker', () => {
+    // `unexpected=0` beside `reason=test-failures` is the tell that the
+    // classification rests on pattern matching rather than a harness result.
+    const output = [
+      'TEST_START: browser/base/content/test/test_a.js',
+      'Assertion failure: !mDestroyed, at /x/nsDocShell.cpp:1234',
+      'Ran 12 checks (12 subtests, 0 errors)',
+      'Unexpected results: 0',
+    ].join('\n');
+    const verdict = classifyHarnessRun(1, output, ['browser/base/content/test/test_a.js']);
+    expect(verdict.kind).toBe('test-failures');
+    expect(formatFireforgeVerdictLine(verdict)).toBe(
+      'FIREFORGE-VERDICT: FAIL reason=test-failures checks=12 unexpected=0 ' +
+        '(summary reported 0 unexpected; no TEST-UNEXPECTED marker in the matched evidence)'
+    );
+  });
+
+  it('adds no note when a TEST-UNEXPECTED marker is present', () => {
+    const output = [
+      'TEST_START: browser/base/content/test/test_a.js',
+      'TEST-UNEXPECTED-FAIL | test_a.js | boom',
+      'Ran 12 checks (12 subtests, 0 errors)',
+      'Unexpected results: 1',
+    ].join('\n');
+    expect(classifyHarnessRun(1, output, ['browser/base/content/test/test_a.js']).note).toBe(
+      undefined
+    );
   });
 });
 
@@ -932,14 +1008,51 @@ describe('headedNoOutputTimeoutHint', () => {
       headless: false,
       platform: 'darwin',
     });
-    // The pre-0.43.0 wording sent operators to `caffeinate`, which
-    // PREVENTS sleep and cannot WAKE an already-sleeping display — it
-    // could not have cured the incident it was recommended for. The hint
-    // now says so and lists all three recorded causes of the shape.
+    // Recommending `caffeinate` is wrong for this shape: it PREVENTS sleep
+    // and cannot WAKE an already-sleeping display. The hint says so and
+    // lists all three known causes.
     expect(hint).toContain('sleeping or locked display');
     expect(hint).toContain('SWGL compositor');
     expect(hint).toContain('chrome://');
     expect(hint).toContain('cannot WAKE a display that is already asleep');
+  });
+
+  // The control test is the correct opening move for ALL three causes, so
+  // it belongs above the list. While it lived inside cause 3, reaching
+  // cause 3 told the operator nothing they did not already have.
+  it('hoists the known-good control step above the cause list', () => {
+    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
+      headless: false,
+      platform: 'darwin',
+    });
+    expect(hint).toContain('run a known-good control test');
+    expect(hint?.indexOf('known-good control')).toBeLessThan(
+      hint?.indexOf('Known causes of this exact signature') ?? -1
+    );
+  });
+
+  // Cause 3 came from ONE downstream report that never root-caused the
+  // mechanism. The census must state the correlation, not assert a cause,
+  // and must carry a probe that discriminates it from (1) and (2) the way
+  // --headless does for (2).
+  it('states cause 3 as an un-root-caused correlation, not a mechanism', () => {
+    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
+      headless: false,
+      platform: 'darwin',
+    });
+    expect(hint).toContain('never root-caused');
+    expect(hint).toContain('a lead, not an explanation');
+    // The discredited mechanism claim must not come back without a cause.
+    expect(hint).not.toContain('stalls first paint');
+  });
+
+  it('gives cause 3 a discriminating probe', () => {
+    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
+      headless: false,
+      platform: 'darwin',
+    });
+    expect(hint).toContain('fireforge run --smoke-exit');
+    expect(hint).toContain('OUTSIDE the test harness');
   });
 
   it('states a MEASURED asleep display as fact', () => {

@@ -3,6 +3,8 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import {
+  describePatchNameProblem,
+  describeTokenNameProblem,
   inferProductFromVersion,
   isValidAppId,
   isValidFirefoxProduct,
@@ -10,8 +12,6 @@ import {
   isValidPatchCategory,
   isValidProjectLicense,
   normalizeTokenName,
-  validatePatchName,
-  validateTokenName,
 } from '../validation.js';
 
 // ---------------------------------------------------------------------------
@@ -287,11 +287,11 @@ describe('property: normalizeTokenName', () => {
   });
 });
 
-describe('property: validateTokenName', () => {
+describe('property: describeTokenNameProblem', () => {
   it('never crashes on arbitrary input', () => {
     fc.assert(
       fc.property(fc.string(), (s) => {
-        const result = validateTokenName(s);
+        const result = describeTokenNameProblem(s);
         expect(result === undefined || typeof result === 'string').toBe(true);
       })
     );
@@ -300,17 +300,17 @@ describe('property: validateTokenName', () => {
   it('accepts all valid CSS-safe idents', () => {
     fc.assert(
       fc.property(validTokenIdent, (name) => {
-        expect(validateTokenName(name)).toBeUndefined();
+        expect(describeTokenNameProblem(name)).toBeUndefined();
       })
     );
   });
 });
 
-describe('property: validatePatchName', () => {
+describe('property: describePatchNameProblem', () => {
   it('returns undefined (valid) for all well-formed names', () => {
     fc.assert(
       fc.property(validPatchName, (name) => {
-        expect(validatePatchName(name)).toBeUndefined();
+        expect(describePatchNameProblem(name)).toBeUndefined();
       })
     );
   });
@@ -318,7 +318,7 @@ describe('property: validatePatchName', () => {
   it('rejects names longer than 50 characters', () => {
     fc.assert(
       fc.property(fc.stringMatching(/^[a-zA-Z0-9]{51,100}$/), (name) => {
-        expect(validatePatchName(name)).toBe('Name must be 50 characters or less');
+        expect(describePatchNameProblem(name)).toBe('Name must be 50 characters or less');
       })
     );
   });
@@ -328,7 +328,7 @@ describe('property: validatePatchName', () => {
       fc.property(
         fc.stringMatching(/^[ \t]*$/).filter((s) => s.length <= 50),
         (name) => {
-          const result = validatePatchName(name);
+          const result = describePatchNameProblem(name);
           expect(result).toBeDefined();
         }
       )
@@ -338,7 +338,7 @@ describe('property: validatePatchName', () => {
   it('never crashes on arbitrary input', () => {
     fc.assert(
       fc.property(fc.string(), (s) => {
-        const result = validatePatchName(s);
+        const result = describePatchNameProblem(s);
         expect(result === undefined || typeof result === 'string').toBe(true);
       })
     );

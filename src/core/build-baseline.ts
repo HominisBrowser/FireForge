@@ -25,7 +25,12 @@ import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
-import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
+import {
+  isBuildInputPath,
+  isJarManifestPath,
+  isPackageablePath,
+  isXpcomManifestPath,
+} from './build-audit.js';
 import {
   type BuildBaseline,
   DELETED_FILE_FINGERPRINT,
@@ -43,6 +48,16 @@ import { getUntrackedFiles } from './git-status.js';
  * of dirty packageable paths and serial reads add directly to every build.
  */
 const FINGERPRINT_IO_CONCURRENCY = 16;
+
+/**
+ * Which mach build produced the baseline being written. Decides whether
+ * the `jar.mn` half of {@link BuildBaseline.buildInputFingerprints} is
+ * refreshed (`'full'`) or carried forward from the previous record
+ * (`'faster'`). `fireforge build --ui` and a non-escalated `test --build`
+ * are `'faster'`; `fireforge build` and an escalated `test --build` are
+ * `'full'`.
+ */
+export type BaselineBuildKind = 'full' | 'faster';
 
 /** Name of the last-build marker file under `.fireforge/`. */
 export const BUILD_BASELINE_FILENAME = 'last-build.json';
@@ -81,6 +96,7 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
  * engine HEAD SHA (or an empty string when the engine has no HEAD yet) and
  * the current binaryName. Caller is responsible for only invoking this
  * after the build exit code was zero.
+ *
  * @param projectRoot - Root directory of the project
  * @param engineDir - Path to the engine directory
  * @param binaryName - Current `binaryName` from fireforge.json
@@ -96,10 +112,16 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
  * @param staticComponentsHandling - `'auto'` (default) refreshes the
  *   static-components anchor whenever the coverage claim is `'full'` or
  *   absent. `'refresh'` records it even for a scoped coverage claim whose
- *   implementation escalated to a full build. `'carry-forward'` always keeps the previous anchor: needed by
- * `--extend-coverage`, whose union can EVALUATE to `'full'`
- *   while the build that produced it was still a scoped `mach build
- *   faster` that did not rebake the compiled table.
+ *   implementation escalated to a full build. `'carry-forward'` always
+ *   keeps the previous anchor: needed by `--extend-coverage`, whose union
+ *   can EVALUATE to `'full'` while the build that produced it was still a
+ *   scoped `mach build faster` that did not rebake the compiled table.
+ * @param buildKind - Which mach build produced this baseline (default
+ *   `'full'`). A `'faster'` write carries the previous record's `jar.mn`
+ *   fingerprints forward instead of refreshing them — see
+ *   {@link BuildBaseline.buildInputFingerprints}. Every caller that ran
+ *   `mach build faster` MUST say so, or the next pre-test build skips an
+ *   escalation no full build has honoured.
  */
 export async function writeBuildBaseline(
   projectRoot: string,
@@ -108,7 +130,8 @@ export async function writeBuildBaseline(
   testPackagingCoverage?: TestPackagingCoverage,
   previousBaseline?: BuildBaseline,
   recordedBy?: string,
-  staticComponentsHandling: 'auto' | 'refresh' | 'carry-forward' = 'auto'
+  staticComponentsHandling: 'auto' | 'refresh' | 'carry-forward' = 'auto',
+  buildKind: BaselineBuildKind = 'full'
 ): Promise<void> {
   let engineHeadSha = '';
   try {
@@ -124,6 +147,11 @@ export async function writeBuildBaseline(
   }
 
   const packageableFingerprints = await collectPackageableFingerprints(engineDir);
+  const buildInputFingerprints = await collectBuildInputFingerprints(
+    engineDir,
+    previousBaseline,
+    buildKind
+  );
 
   // A full-coverage write (and the legacy no-claim `fireforge build` shape)
   // just recompiled the StaticComponents table, so it anchors the table to
@@ -143,6 +171,7 @@ export async function writeBuildBaseline(
     builtAt: new Date().toISOString(),
     binaryName,
     ...(packageableFingerprints !== undefined ? { packageableFingerprints } : {}),
+    ...(buildInputFingerprints !== undefined ? { buildInputFingerprints } : {}),
     ...(testPackagingCoverage !== undefined ? { testPackagingCoverage } : {}),
     ...(mozconfigHash !== undefined ? { mozconfigHash } : {}),
     ...(staticComponentsBaseline !== undefined ? { staticComponentsBaseline } : {}),
@@ -152,22 +181,56 @@ export async function writeBuildBaseline(
 }
 
 /**
- * Reads the current engine workdir and computes a SHA-256 fingerprint
- * for every packageable path that is either modified against HEAD or
- * untracked. The stale-build preflight (`checkStaleBuildForTest`)
- * compares the live fingerprint for each packageable-dirty file to
- * the baseline's entry — paths where the hash matches are "the build
- * already saw this exact content", paths where it differs (or that
- * are new since the baseline) are genuinely stale.
+ * Reads the current engine workdir and computes a SHA-256 fingerprint for
+ * every packageable path that is either modified against HEAD or untracked.
+ * The stale-build preflight (`checkStaleBuildForTest`) compares the live
+ * fingerprint for each packageable-dirty file to the baseline's entry: a
+ * matching hash means the build already saw this exact content, a differing
+ * or new one means the file is genuinely stale.
  *
- * Returns `undefined` on any git failure so a broken probe never
- * corrupts the on-disk baseline with `{}`; the stale-check then falls
- * back to the pre-0.16.0 "path-only" behavior on the next test run.
+ * Returns `undefined` on any git failure so a broken probe never corrupts
+ * the on-disk baseline with `{}`; the stale-check then falls back to a
+ * path-only comparison.
  */
 async function collectPackageableFingerprints(
   engineDir: string
 ): Promise<Record<string, string> | undefined> {
   return collectDirtyFingerprints(engineDir, isPackageablePath, 'packageable fingerprint');
+}
+
+/**
+ * Content fingerprints of the dirty build-input manifests
+ * ({@link isBuildInputPath}) this build consumed. Backend inputs
+ * (`moz.build` & co) are always taken from the live tree: the
+ * auto-configure preflight reconfigured against them before this build
+ * ran. `jar.mn` entries are taken from the live tree only after a FULL
+ * build; a `faster` write carries the previous record's `jar.mn` entries
+ * forward verbatim, because `mach build faster` is exactly the build the
+ * `jar.mn` escalation exists to bypass, and recording a `jar.mn` it did
+ * not install would silence the next escalation. Returns `undefined` on
+ * probe failure so the field is omitted rather than written as `{}`.
+ */
+async function collectBuildInputFingerprints(
+  engineDir: string,
+  previousBaseline: BuildBaseline | undefined,
+  buildKind: BaselineBuildKind
+): Promise<Record<string, string> | undefined> {
+  const live = await collectDirtyFingerprints(
+    engineDir,
+    isBuildInputPath,
+    'build-input fingerprint'
+  );
+  if (live === undefined || buildKind === 'full') {
+    return live;
+  }
+  const fingerprints: Record<string, string> = {};
+  for (const [path, hash] of Object.entries(live)) {
+    if (!isJarManifestPath(path)) fingerprints[path] = hash;
+  }
+  for (const [path, hash] of Object.entries(previousBaseline?.buildInputFingerprints ?? {})) {
+    if (isJarManifestPath(path)) fingerprints[path] = hash;
+  }
+  return fingerprints;
 }
 
 /**

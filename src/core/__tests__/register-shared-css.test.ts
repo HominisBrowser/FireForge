@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../parser-fallback.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../parser-fallback.js')>();
@@ -103,16 +101,14 @@ describe('registerSharedCSS', () => {
     expect(result.afterFallback).toBe(true);
   });
 
-  it('aligns the (source) column to match adjacent entries (Finding 3)', async () => {
-    // Pre-fix: registerSharedCSS hardcoded a 4-space gap between the
-    // target path and the source parenthesis, regardless of the
-    // surrounding manifest's alignment. Real Firefox jar.inc.mn files
-    // pad to a wider column, so a freshly registered entry landed at
-    // the wrong column and produced avoidable formatting churn.
-    // The MOCK_JAR_INC_MN fixture aligns every `(` at column 43; the
-    // newly inserted line for `custom.css` (target length 33 with the
-    // two-space indent) should pad with 10 spaces so its `(` lands at
-    // column 43 too.
+  it('aligns the (source) column to match adjacent entries', async () => {
+    // A hardcoded 4-space gap between the target path and the source
+    // parenthesis ignores the surrounding manifest's alignment. Real Firefox
+    // jar.inc.mn files pad to a wider column, so a freshly registered entry
+    // lands at the wrong column and produces avoidable formatting churn. The
+    // MOCK_JAR_INC_MN fixture aligns every `(` at column 43; the newly
+    // inserted line for `custom.css` (target length 33 with the two-space
+    // indent) should pad with 10 spaces so its `(` lands at column 43 too.
     const result = await registerSharedCSS('/engine', 'custom.css');
 
     expect(result.skipped).toBe(false);
@@ -161,14 +157,13 @@ describe('registerSharedCSS', () => {
   });
 
   it('preserves a four-space minimum when adjacent entries use a tighter column', async () => {
-    // Defensive floor for the alignment heuristic: when adjacent
-    // entries already align tighter than the four-space minimum
-    // (unlikely in real Firefox checkouts, but possible after a hand
-    // edit), the new entry must not collapse to a one- or two-space
-    // gap that would smush the source against the target. Construct a
-    // manifest whose only existing entry has parens at column 25 — well
-    // below the target's column 33 — and assert the inserted entry
-    // still leaves the four-space MIN_SOURCE_GAP.
+    // Defensive floor for the alignment heuristic: when adjacent entries
+    // already align tighter than the four-space minimum (unlikely in real
+    // Firefox checkouts, but possible after a hand edit), the new entry must
+    // not collapse to a one- or two-space gap that smushes the source
+    // against the target. This manifest's only existing entry has parens at
+    // column 25 — well below the target's column 33 — and the inserted entry
+    // must still leave the four-space MIN_SOURCE_GAP.
     mockReadText.mockResolvedValue('  skin/classic/browser/a.css (../shared/a.css)\n');
     const result = await registerSharedCSS('/engine', 'custom.css');
 

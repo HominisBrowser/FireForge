@@ -16,14 +16,14 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 - **Wiring and registration** Add chrome scripts, DOM fragments, modules, styles, tests and manifest entries through commands built by learning from existing Firefox conventions.
 - **Furnace components** Create or override `MozLitElement` widgets easily to add new or adapt existing UI components to your needs.
 - **Quality** `lint`, `typecheck`, `verify` and `doctor` catch common issues early.
-- **Tests** Fireforge was build by taking apart and applying patches of all sorts to original Firefox source code across different versions and products, learning what works vs doesn't and creating some quite extensive tests based on that covering all manner of scenarios. Yes, we mock quite a bit, but when building a tool that modifies a separate code base, I think it's a solid compromise for the time being. Full end-to-end runs are currently run locally on my MacBook, as they require about 30 GB of disk and significant compute for multiple full builds. Full end-to-end via Actions will be added soonishlyTM but might need a different runner...
+- **Tests** FireForge was built by taking apart and applying patches of all sorts to original Firefox source code across different versions and products, learning what works vs doesn't and creating some quite extensive tests based on that covering all manner of scenarios. Yes, we mock quite a bit, but when building a tool that modifies a separate code base, I think it's a solid compromise for the time being. Full end-to-end runs are currently run locally on my MacBook, as they require about 30 GB of disk and significant compute for multiple full builds. Full end-to-end via Actions will be added soonishlyTM but might need a different runner...
 
 ## Requirements
 
-- Node.js 22.22.1+
+- Node.js 22.22.2+
 - Python 3
 - Git
-- The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows (never tested on Windows tbh — smoke-run process cleanup there uses `taskkill /T /F` and is best-effort)
+- The normal Firefox platform build tools: Xcode command line tools on macOS, `build-essential`-style packages on Linux, Visual Studio Build Tools on Windows.
 - Watchman, if you want `fireforge watch` (optional)
 
 ## Getting Started
@@ -55,113 +55,15 @@ After setup you should have a `fireforge.json`, an `engine/` directory containin
 npx fireforge status
 npx fireforge export browser/base/content/browser.js --name custom-toolbar --category ui
 npx fireforge re-export custom-toolbar
-npx fireforge re-export --scan --scan-files generated-assets.json --dry-run
 npx fireforge lint --per-patch
-npx fireforge lint --per-patch --max-warnings 0
 npx fireforge verify
-npm run whitespace:check
 npx fireforge build
 npx fireforge test browser/base/content/test/browser/
 ```
 
-Use `fireforge --help` for the full set of commands.
-
-For large generated asset batches, `re-export --scan --scan-files <manifest>` assigns files to
-their owner patches without broad directory scanning. The manifest is JSON:
-
-```json
-{
-  "assignments": [
-    { "patch": "002-branding-runtime-icons.patch", "files": ["browser/branding/hominis/icon.svg"] }
-  ]
-}
-```
-
-The command is dry-runnable, refuses ambiguous ownership, and reports each file-to-patch
-assignment before refreshing the patch. For release whitespace checks, use
-`npm run whitespace:check`; it still checks source diffs while excluding generated
-`patches/*.patch` diff syntax.
-
-Queue maintenance lives under `fireforge patch`: `patch compact` closes ordinal gaps
-(range-aware when `patchPolicy.ranges` is configured), `patch reorder` moves a patch, and
-`patch split <source> --files <paths...> --name <name>` carves files out of a patch into a
-new one as a single transaction — including staged-dependency owner rewrites — with
-`--dry-run` support. `patch rename` also supports `--category` and `--order`; every
-queue-mutating patch command accepts `--wait-lock [seconds]`.
-
-`fireforge test <directory>` runs exactly that directory: FireForge enumerates the
-directory's test files and passes the explicit file list to mach in one invocation, so
-mach's prefix-based path matching cannot silently sweep in sibling directories sharing the
-name prefix (excluded siblings are echoed with their test-file counts). Multiple path
-arguments run as sequential shards by default — one browser instance per argument, with a
-directory argument keeping its files together — announced with a notice, since isolated
-instances do not exercise cross-argument state (`--no-shard` restores one combined
-invocation). Recognized harness crashes retry up to `--harness-retries <n>` times (default
-2), and `--perf-samples <path>` publishes a perf-sample artifact path to the harness
-(exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
-Every test run ends with one machine-readable `FIREFORGE-VERDICT: PASS|FAIL ...` line;
-automation should use it instead of the raw process code and treat a missing verdict as
-failure.
-Pathless test runs must choose a mode: `--auto` forwards mach's own auto-selection,
-`--doctor` runs the Marionette preflight only, and `--canary [path]` runs one short
-browser-chrome canary (`test.canaryPath` / `test.canaryTimeoutSeconds` in `fireforge.json`
-provide defaults). When packageable engine files changed since the last successful
-FireForge build, `test` fails before launching stale artifacts; use `--build` to refresh
-or `--allow-stale-build` only for intentional out-of-band rebuilds. `--build-only`
-packages mixed-harness paths once; `--extend-coverage` safely retains prior scoped
-coverage. `--kill-stale-marionette` terminates recognized stale browsers. In dev builds,
-files under `obj-*/dist/bin`
-may be symlinks back into the source tree (notably prefs), so edit source prefs directly
-and keep a backup before bisection experiments.
-
-Patch names are normalized on export/rename: `window-chrome-tests`,
-`ui-window-chrome-tests`, and `235-ui-window-chrome-tests` all resolve to the same
-`<order>-ui-window-chrome-tests.patch` shape. For focused queue checks,
-`lint --per-patch --patches` accepts repeated flags, comma lists, full filenames/stems,
-manifest names, category-prefixed slugs, and bare slugs.
-
-Projects with generated asset prerequisites can declare opt-in `externalToolchains` in
-`fireforge.json`; `fireforge doctor` reports missing required tools as errors and missing
-optional tools as warnings. Seasonal branding on macOS, for example, can declare Apple's
-Icon Composer tool at
-`/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool`,
-plus `actool` via `xcrun`, `sips`, and `iconutil`.
-Design tokens are managed with `fireforge token add`; pass `--create-category` to declare a
-new category banner and insert the token in one step.
-
-For unattended smoke checks, `fireforge run --smoke-exit <s> --headless` launches the
-browser headless — a headed smoke window on a shared desktop absorbs live input, which
-contaminates the console capture (headed non-CI launches print a warning saying so).
-
-Per-patch lint type-checks plain Firefox JS against a built-in Firefox-globals shim that
-tracks upstream WebIDL additions per release; a project's `patchLint.checkJsExtraShim` can
-add members to the structured shim globals via TypeScript interface merging (e.g.
-`interface ChromeUtilsShim { newApi(): any }`). Opting into
-`patchLint.checkJsTestFiles: true` extends the pass to patch-owned test `.js` files
-(`browser_*`/`test_*`/`xpcshell_*` and `/test/` paths), each checked as its own small
-script-scope program against a loose built-in harness shim; `patchLint.checkJsTestShim`
-points at a project `.d.ts` whose typed declarations (e.g. a real `TestUtils` interface)
-override the loose baseline so calls to nonexistent harness members fail at export time.
-
-For CI enforcement, `fireforge status --check` exits non-zero when any unmanaged,
-drifted, or conflicted file exists (`--fail-on <class,...>` tunes the policy set, and
-`--json` composes — the JSON stays parseable and its `files[]` entries name the owning
-`patch`). `--include-ownership` adds ownership rows to JSON status output. Scan-less
-`re-export` previews drift; `--refuse-foreign-drift --expect <path>` restricts it to
-intended files. `lint --per-patch --report <path>` writes a machine-readable JSON report with
-each patch's line count, tier, active size thresholds, issues, and lintIgnore-suppressed
-issues; the size metrics (`countNonBinaryDiffLines`, `resolvePatchSizeTier`,
-`getPatchSizeThresholds`) are also exported on the programmatic API.
-
-For concurrent read-mostly verification beside a busy primary checkout,
-`fireforge tree create <name>` snapshots the project — applied engine tree included,
-`obj-*` excluded — into `.fireforge/trees/<name>` using filesystem copy-on-write (APFS
-clonefile / btrfs-XFS reflink; ~3 s for a 156 MB applied browser tree). Read-only commands
-and export/re-export dry runs work inside a tree; mutations are refused. `--with-objdir`
-adds a safely relocated build for build-less tests. `tree list` reports staleness,
-`tree remove` deletes (refusing active locks), and `tree exec <name> -- <cmd>` runs a
-command inside a tree. Filesystems without CoW support refuse unless `--force-copy`
-explicitly accepts a full physical copy.
+Use `fireforge --help` for the full set of commands, and
+[`docs/patch-workflow.md`](docs/patch-workflow.md) for what the loop actually
+guarantees.
 
 ## Rebasing Firefox Source
 
@@ -188,16 +90,22 @@ npx fireforge furnace status
 npx fireforge furnace preview
 ```
 
-Use `fireforge furnace --help` for the full set of component commands.
+Use `fireforge furnace --help` for the full set of component commands, and
+[`docs/furnace.md`](docs/furnace.md) for shared CSS fragments and typed
+cross-module imports.
 
-Cross-widget CSS can be single-sourced as shared fragments: place the fragment in
-`components/shared/` and reference it from a widget stylesheet with a
-`/* @fireforge-include <fragment>.css */` comment — deploy expands it into the deployed
-copy only, and editing the fragment surfaces as component drift until the next deploy.
-For typed cross-module imports of multi-file components, set
-`furnace.json#typecheckJsconfig` to a consumer-owned jsconfig and deploy will maintain
-`compilerOptions.paths` entries mapping each deployed
-`chrome://global/content/elements/<file>.mjs` URL to its workspace source.
+## Documentation
+
+[`docs/`](docs/README.md) holds the reference material:
+
+- [Patch workflow](docs/patch-workflow.md) — export, re-export, queue maintenance, per-patch lint, CI gating
+- [Testing](docs/testing.md) — `fireforge test` scope, modes, build freshness, the verdict line
+- [Furnace](docs/furnace.md) — components, shared CSS fragments, typed imports
+- [Verification trees](docs/verification-trees.md) — CoW snapshots for concurrent verification
+- [Configuration](docs/configuration.md) — `fireforge.json`, design tokens, lock waits, environment variables
+- [Exit codes](docs/exit-codes.md) and [machine-readable output](docs/machine-output.md) — the contract for scripts and CI
+- [Run logs](docs/run-logs.md) — what `test` and `build` leave behind
+- [Lifecycle invariants](docs/lifecycle-invariants.md) — locking, rollback and signal handling internals
 
 ## Roadmap
 

@@ -109,8 +109,20 @@ describe('validatePatchesManifest', () => {
     ).toThrow('patches[0].order must be a non-negative integer');
   });
 
-  it('rejects unsupported manifest versions and missing patch arrays', () => {
+  it('names the upgrade remedy for a manifest from a newer FireForge', () => {
+    // Not "version must be 1": a newer manifest is not damaged, and the bare
+    // message sent the operator looking for corruption in a file that only
+    // needed a newer build to read it.
     expect(() => validatePatchesManifest({ version: 2, patches: [] })).toThrow(
+      /newer FireForge \(schema version 2; this build understands 1\)/
+    );
+    expect(() => validatePatchesManifest({ version: 2, patches: [] })).toThrow(/do not delete/);
+  });
+
+  it('rejects a malformed version and a missing patch array', () => {
+    // Below 1 or non-integer is genuinely malformed, and keeps the plain
+    // message.
+    expect(() => validatePatchesManifest({ version: 0, patches: [] })).toThrow(
       'patches.json version must be 1'
     );
     expect(() => validatePatchesManifest({ version: 1 })).toThrow(
@@ -157,13 +169,11 @@ describe('validatePatchesManifest', () => {
   });
 
   it('preserves lintIgnore when present as a string array', () => {
-    // Pre-0.17.0 regression: `lintIgnore` was silently stripped on every
-    // manifest load because validatePatchMetadata returned a fresh
-    // object enumerating only the documented required fields. An
-    // operator who added the escape hatch by hand saw their
-    // suppression evaporate the next time the validator ran, and
-    // the `large-patch-lines` / `large-patch-files` rules they
-    // intentionally quieted re-fired without warning.
+    // `lintIgnore` is silently stripped on every manifest load when
+    // validatePatchMetadata returns a fresh object enumerating only the
+    // documented required fields. An operator who adds the escape hatch by
+    // hand sees their suppression evaporate the next time the validator
+    // runs, and the rules they quieted re-fire without warning.
     const result = validatePatchesManifest({
       version: 1,
       patches: [
@@ -224,12 +234,11 @@ describe('validatePatchesManifest', () => {
   });
 
   it('preserves tier when present as "branding"', () => {
-    // The 0.17.0 explicit branding-threshold opt-in. An operator
-    // declaring `tier: "branding"` on a branding patch that also
-    // touches a non-allowlisted sibling (e.g. a fork-specific theme
-    // override) expects lintPatchSize to apply the branding tier
-    // regardless of filesAffected. Schema round-trip is load-bearing
-    // for that contract.
+    // The explicit branding-threshold opt-in. An operator declaring
+    // `tier: "branding"` on a branding patch that also touches a
+    // non-allowlisted sibling expects lintPatchSize to apply the branding
+    // tier regardless of filesAffected, so the schema round-trip is
+    // load-bearing for that contract.
     const result = validatePatchesManifest({
       version: 1,
       patches: [
@@ -366,7 +375,7 @@ describe('validatePatchesManifest', () => {
     ).toThrow('patches[0].stagedDependencies.forwardImports[0].specifier must be a string');
   });
 
-  it('preserves registration-kind staged dependencies when present (0.37.0 item 5)', () => {
+  it('preserves registration-kind staged dependencies when present', () => {
     const result = validatePatchesManifest({
       version: 1,
       patches: [

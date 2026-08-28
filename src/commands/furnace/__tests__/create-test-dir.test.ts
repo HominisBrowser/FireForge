@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Tests for `furnace create --test-dir` and the collision safety added in
- * 0.34.0 (field report: the scaffold targeted .../test/<binaryName>/
- * unconditionally and would have overwritten an existing
- * browser.toml/head.js owned by a different patch).
+ * Tests for `furnace create --test-dir` and its collision safety: the
+ * scaffold must not target `.../test/<binaryName>/` unconditionally, or it
+ * overwrites an existing browser.toml/head.js owned by a different patch.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,9 +10,22 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { ensureDir, readText, writeText } from '../../../utils/fs.js';
+import { ensureDir, pathExists, readText, writeText } from '../../../utils/fs.js';
 import { resolveTestDirOverride, scaffoldTestFiles } from '../create-browser-test.js';
+import { formatDryRunPlan, formatSuccessNote } from '../create-dry-run.js';
 import { scaffoldXpcshellTestFiles } from '../create-xpcshell.js';
+
+/**
+ * Extracts the `engine/...` directory a formatter printed for the test
+ * files. Used to pin the printed path to the directory the scaffolder
+ * really wrote — the two used to be computed independently and disagreed
+ * under `--test-dir`.
+ */
+function printedTestRoot(text: string): string {
+  const match = /test files in (engine\/[^\s:]+)\/:?/i.exec(text);
+  if (!match?.[1]) throw new Error(`no test root printed in:\n${text}`);
+  return match[1].slice('engine/'.length);
+}
 
 describe('resolveTestDirOverride', () => {
   it('accepts engine-relative directories under browser/base/content/test/', () => {
@@ -99,6 +111,104 @@ describe('scaffoldTestFiles (browser-chrome)', () => {
     const mozBuild = await readText(join(engine, 'browser/base/moz.build'));
     expect(mozBuild).toContain('"content/test/mybrowser/widgets/browser.toml",');
   });
+});
+
+describe('printed test directory matches the scaffolded one', () => {
+  let projectRoot: string;
+  let engine: string;
+  const forgeConfig = { binaryName: 'mybrowser' };
+
+  beforeEach(async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), 'ff-create-printed-dir-'));
+    engine = join(projectRoot, 'engine');
+    await ensureDir(engine);
+  });
+
+  afterEach(async () => {
+    await rm(projectRoot, { recursive: true, force: true });
+  });
+
+  const browserCases: Array<{ label: string; testDir?: string }> = [
+    { label: 'default' },
+    { label: 'override', testDir: 'browser/base/content/test/mybrowser-tiles' },
+  ];
+
+  for (const { label, testDir } of browserCases) {
+    it(`browser-chrome (${label}): dry-run plan and success note name the real directory`, async () => {
+      const testFiles = await scaffoldTestFiles(
+        'moz-panel',
+        'MPL-2.0',
+        forgeConfig,
+        { engine },
+        undefined,
+        testDir
+      );
+      const plan = formatDryRunPlan({
+        componentName: 'moz-panel',
+        localized: false,
+        register: true,
+        composes: undefined,
+        testStyle: 'browser-chrome',
+        description: '',
+        binaryName: 'mybrowser',
+        ...(testDir !== undefined ? { testDir } : {}),
+      });
+      const note = formatSuccessNote({
+        componentName: 'moz-panel',
+        files: [],
+        testFiles,
+        testStyle: 'browser-chrome',
+        binaryName: 'mybrowser',
+        ...(testDir !== undefined ? { testDir } : {}),
+      });
+      const printedByPlan = printedTestRoot(plan);
+      const printedByNote = printedTestRoot(note);
+      expect(printedByNote).toBe(printedByPlan);
+      expect(await pathExists(join(engine, printedByPlan, 'browser.toml'))).toBe(true);
+      expect(await pathExists(join(engine, printedByPlan, 'browser_mybrowser_panel.js'))).toBe(
+        true
+      );
+    });
+  }
+
+  const xpcshellCases: Array<{ label: string; testDir?: string }> = [
+    { label: 'default' },
+    { label: 'override', testDir: 'browser/base/content/test/mybrowser-storage' },
+  ];
+
+  for (const { label, testDir } of xpcshellCases) {
+    it(`xpcshell (${label}): dry-run plan and success note name the real directory`, async () => {
+      const testFiles = await scaffoldXpcshellTestFiles(
+        'moz-panel',
+        'MPL-2.0',
+        forgeConfig,
+        { engine },
+        undefined,
+        testDir
+      );
+      const plan = formatDryRunPlan({
+        componentName: 'moz-panel',
+        localized: false,
+        register: true,
+        composes: undefined,
+        testStyle: 'xpcshell',
+        description: '',
+        binaryName: 'mybrowser',
+        ...(testDir !== undefined ? { testDir } : {}),
+      });
+      const note = formatSuccessNote({
+        componentName: 'moz-panel',
+        files: [],
+        testFiles,
+        testStyle: 'xpcshell',
+        binaryName: 'mybrowser',
+        ...(testDir !== undefined ? { testDir } : {}),
+      });
+      const printedByPlan = printedTestRoot(plan);
+      expect(printedTestRoot(note)).toBe(printedByPlan);
+      expect(await pathExists(join(engine, printedByPlan, 'xpcshell.toml'))).toBe(true);
+    });
+  }
 });
 
 describe('scaffoldXpcshellTestFiles collision safety', () => {

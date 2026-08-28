@@ -4,79 +4,64 @@
  *
  * mozbuild's build resource monitor calls `psutil.virtual_memory()` at
  * startup (`start_resource_recording`) and again later from
- * `mozbuild.base._run_make`. On some hosts (psutil vs Darwin 27) those
- * raise `RuntimeError: host_statistics64(HOST_VM_INFO64) syscall failed`,
- * and a `SystemResourceMonitor.__init__` that fails partway leaves an
- * instance without `poll_interval`, so later polling dies with
- * `AttributeError: ... poll_interval`. Any of these aborts `mach build` /
- * `mach build faster` before the compiler ever runs.
+ * `mozbuild.base._run_make`. On some hosts those raise `RuntimeError:
+ * host_statistics64(HOST_VM_INFO64) syscall failed`, and a
+ * `SystemResourceMonitor.__init__` that fails partway leaves an instance
+ * without `poll_interval`, so later polling dies with `AttributeError: ...
+ * poll_interval`. Any of these aborts `mach build` / `mach build faster`
+ * before the compiler ever runs.
  *
- * 0.33.0 injected a `sitecustomize.py` via the mach subprocess PYTHONPATH.
- * Field report (0.34.0 cycle): mach re-execs itself into its private
- * virtualenv and drops PYTHONPATH, so the env-var route never loads and
- * the crash family escaped on every protected entry point. FireForge now
- * owns the guard in-process on its mach dispatches by installing a
- * `fireforge_mach_guard.pth` + module pair directly into every discovered
- * mach virtualenv site-packages directory: `.pth` files execute at
- * interpreter startup from the venv's own site-packages, which survives
- * the re-exec. The PYTHONPATH `sitecustomize.py` is retained only as a
- * belt-and-suspenders for the pre-venv bootstrap phase (first build, no
- * `_virtualenvs` on disk yet).
+ * The guard is installed as a `fireforge_mach_guard.pth` + module pair in
+ * every discovered mach virtualenv site-packages directory. A PYTHONPATH
+ * `sitecustomize.py` is NOT sufficient on its own: mach re-execs itself into
+ * its private virtualenv and drops PYTHONPATH, so that route never loads.
+ * `.pth` files execute at interpreter startup from the venv's own
+ * site-packages, which survives the re-exec. The PYTHONPATH copy is retained
+ * only for the pre-venv bootstrap phase (first build, no `_virtualenvs` on
+ * disk yet).
  *
- * The guard itself covers the whole crash family:
+ * The guard covers the whole crash family:
  *  - wraps `psutil.virtual_memory` / `swap_memory` / `cpu_percent` /
  *    `cpu_times` / `disk_io_counters` module-wide, so every call site —
  *    including the direct `psutil.virtual_memory()` in
  *    `mozbuild.base._run_make` — degrades to a `UserWarning` and a zeroed
- *    reading instead of aborting. Downstream report (0.34.0 cycle):
- *    mozsystemmonitor subscripts (`_build_meta` does
- *    `psutil.virtual_memory()[0]`) and iterates/unpacks the reading, so the
- *    zeroed fallback is a full namedtuple duck type; `cpu_percent` degrades
- *    to `0.0` because callers do arithmetic on it. Field report (0.34.1,
- *    flapping host): the fallback must ALSO be per-function arity-correct
- *    and reconstructible — mozsystemmonitor's parent captures reading types
- *    at `__init__` (`self._swap_type = type(psutil.swap_memory())`) and
- *    rebuilds each collector sample via `self._swap_type(*swap_mem)`, and an
- *    svmem-shaped (8-field) fallback in the swap (6-field `sswap`) position
- *    made the parent reject every sample ("failed to read the received
- *    data") and BREAK its drain loop, so the pipe filled, the collector
- *    child blocked in `send()` and never read the terminate sentinel, and
- *    mach hung forever in its atexit `waitpid`. Each wrapped function now
- *    degrades to a zeroed instance of psutil's own result namedtuple where
- *    resolvable, else a module-level guard-owned namedtuple with the exact
- *    macOS field order/arity for THAT function (module-level so readings
- *    pickle by reference across the collector pipe); `_DegradedReading`
- *    remains only as a documented last resort and now tolerates
- *    `type(reading)(*values)` reconstruction;
+ *    reading instead of aborting.
+ *
+ *    The fallback must be per-function ARITY-CORRECT and reconstructible:
+ *    mozsystemmonitor captures reading types at `__init__`
+ *    (`self._swap_type = type(psutil.swap_memory())`) and rebuilds each
+ *    collector sample via `self._swap_type(*swap_mem)`. An svmem-shaped
+ *    (8-field) fallback in the swap (6-field `sswap`) position makes the
+ *    parent reject every sample and break its drain loop, so the pipe fills,
+ *    the collector child blocks in `send()` and never reads the terminate
+ *    sentinel, and mach hangs forever in its atexit `waitpid`. Each wrapped
+ *    function therefore degrades to a zeroed instance of psutil's own result
+ *    namedtuple where resolvable, else a module-level guard-owned namedtuple
+ *    with the exact field order and arity for THAT function (module-level so
+ *    readings pickle by reference across the collector pipe).
+ *    `_DegradedReading` remains only as a documented last resort and
+ *    tolerates `type(reading)(*values)` reconstruction. Guard-owned fallback
+ *    classes never depend on psutil internals resolving, which also makes
+ *    them safe when two guard copies load (PYTHONPATH `sitecustomize` in the
+ *    bootstrap phase plus the in-venv `.pth`), each with its own classes;
  *  - guards `SystemResourceMonitor` CONSTRUCTION via an import hook:
  *    `poll_interval` is pre-populated before the real `__init__` runs, a
- *    failing `__init__` marks the instance degraded instead of raising,
- *    and every monitor method no-ops on a degraded instance — so a
+ *    failing `__init__` marks the instance degraded instead of raising, and
+ *    every monitor method no-ops on a degraded instance — so a
  *    partially-constructed monitor can never surface the
  *    `AttributeError: poll_interval` variant. Degraded aggregate methods
  *    return zeroed shapes (not `None`) where callers subscript the result
- *    (`aggregate_io` → zeroed io reading, so mozbuild's
- *    `log_resource_usage` no longer dies on `usage["io"].read_bytes` after
- *    a fully successful compile);
+ *    (`aggregate_io` → zeroed io reading, so mozbuild's `log_resource_usage`
+ *    does not die on `usage["io"].read_bytes` after a successful compile);
  *  - suppresses the mozsystemmonitor collector child on degradation: once
  *    any psutil degradation is observed in the process, monitors are kept
  *    inert (`start` never spawns the collector), and a degraded transition
  *    or raising `stop` best-effort terminates a live collector child and
- *    drains the pipe — so a malformed sample stream can never wedge mach's
+ *    drains the pipe, so a malformed sample stream cannot wedge mach's
  *    shutdown even if a future shape mismatch slips through;
- *  - additionally wraps `mozbuild.controller.building.BuildMonitor
- *    .log_resource_usage` to warn-and-continue on any exception, so
- *    end-of-build resource reporting can never fail a build whose
- *    artifacts are complete.
- *
- * Why the 0.34.1 report saw `_DegradedReading` in the collector child even
- * though the psutil result classes resolve when probed directly: two guard
- * copies can load (PYTHONPATH `sitecustomize` in the bootstrap phase plus
- * the in-venv `.pth`), each with its own factory/classes, and flapping at
- * guard-import time can perturb `psutil._psplatform` attribute resolution
- * in the spawn child specifically. The fix is robust to either mechanism:
- * the guard-owned fallback classes never depend on psutil internals
- * resolving and are arity-correct in every position.
+ *  - wraps `mozbuild.controller.building.BuildMonitor.log_resource_usage` to
+ *    warn-and-continue on any exception, so end-of-build resource reporting
+ *    can never fail a build whose artifacts are complete.
  */
 
 import { readdir } from 'node:fs/promises';
@@ -130,9 +115,9 @@ class _DegradedReading(object):
     # Last-resort duck type of psutil's namedtuple results (svmem field
     # order): mozsystemmonitor subscripts, iterates, and unpacks readings,
     # so the degraded fallback must survive r[0], list(r), len(r), r._fields
-    # and r._asdict(), not just attribute access. Field report (0.34.1): the
-    # parent also reconstructs readings via type(reading)(*values), so the
-    # constructor must tolerate the full positional field list. Normal
+    # and r._asdict(), not just attribute access. The parent also reconstructs
+    # readings via type(reading)(*values), so the constructor must tolerate
+    # the full positional field list. Normal
     # degraded paths use the per-function namedtuple fallbacks below; this
     # class only backstops a fallback that itself raised.
     _fields = ("total", "available", "percent", "used", "free", "active", "inactive", "wired")
@@ -165,10 +150,9 @@ class _DegradedReading(object):
 # orders/arities. Module-level on purpose: readings cross the
 # mozsystemmonitor collector pipe via pickle (by reference), and the parent
 # rebuilds each sample with type(reading)(*values) — so a swap fallback must
-# be 6-field sswap-shaped in every position (field report 0.34.1: an
-# svmem-shaped fallback in the swap position made the parent reject every
-# sample, fill the pipe, block the collector child in send(), and wedge
-# mach's atexit join forever).
+# be 6-field sswap-shaped in every position. An svmem-shaped fallback there
+# makes the parent reject every sample, fill the pipe, block the collector
+# child in send(), and wedge mach's atexit join forever.
 _FallbackVmem = collections.namedtuple(
     "_FallbackVmem",
     ("total", "available", "percent", "used", "free", "active", "inactive", "wired"),
@@ -328,9 +312,8 @@ def _monitor_per_cpu_requested(args, kwargs):
 def _monitor_degraded_result(name, args, kwargs):
     # Degraded aggregate methods return zeroed shapes, not None, where
     # callers subscript the result: mozbuild's log_resource_usage does
-    # usage["io"].read_bytes after a successful compile (field report
-    # 0.34.1: 'NoneType' object has no attribute 'read_bytes' failed the
-    # build with complete artifacts).
+    # usage["io"].read_bytes after a successful compile, so None there fails
+    # the build with complete artifacts already on disk.
     if name == "aggregate_io":
         return _zeroed(_FallbackDiskIO)
     if name == "aggregate_cpu_percent":

@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { makeProjectPaths } from '../../test-utils/index.js';
+import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
 
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn(),
@@ -17,9 +17,8 @@ vi.mock('../../core/mach.js', () => ({
   buildArtifactMismatchMessage: vi.fn(),
   attemptMozinfoRewrite: vi.fn(),
   runMach: vi.fn(),
-  // Build lock added in 0.16.0; the tests below exercise buildCommand
-  // which wraps build/buildUI in `withBuildLock`. A pass-through stub
-  // keeps focus on the command-level behaviour — dedicated lock tests
+  // `buildCommand` wraps build/buildUI in `withBuildLock`; a pass-through
+  // stub keeps focus on the command-level behaviour. Dedicated lock tests
   // live in `src/core/__tests__/build-lock.integration.test.ts`.
   withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
 }));
@@ -30,6 +29,12 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -171,8 +176,8 @@ describe('buildCommand', () => {
 
     await expect(buildCommand('/project', { rewriteMozinfo: true })).resolves.toBeUndefined();
 
-    expect(attemptMozinfoRewrite).toHaveBeenCalledWith('/project/engine', 'obj-debug');
-    expect(runMach).toHaveBeenCalledWith(['configure'], '/project/engine');
+    expect(attemptMozinfoRewrite).toHaveBeenCalledWith(nativePath('/project/engine'), 'obj-debug');
+    expect(runMach).toHaveBeenCalledWith(['configure'], nativePath('/project/engine'));
     expect(prepareBuildEnvironment).toHaveBeenCalled();
     expect(build).toHaveBeenCalled();
   });
@@ -226,7 +231,7 @@ describe('buildCommand', () => {
       expect.objectContaining({ binaryName: 'mybrowser' }),
       expect.objectContaining({ previousBaseline: undefined })
     );
-    expect(buildUI).toHaveBeenCalledWith('/project/engine');
+    expect(buildUI).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(build).not.toHaveBeenCalled();
     expect(verbose).toHaveBeenCalledWith('Building with brand: beta');
     expect(info).toHaveBeenCalledWith('Brand: beta');
@@ -234,28 +239,33 @@ describe('buildCommand', () => {
   });
 
   it('records a full-coverage baseline after a successful build (full and --ui alike)', async () => {
-    // 0.37.0 item 3: `fireforge build` packages the full test set, so the
-    // baseline claims full packaging coverage for the --allow-stale-build
-    // coverage gate.
+    // `fireforge build` packages the full test set, so the baseline claims
+    // full packaging coverage for the --allow-stale-build coverage gate.
     await expect(buildCommand('/project', {})).resolves.toBeUndefined();
     expect(writeBuildBaseline).toHaveBeenCalledWith(
       '/project',
-      '/project/engine',
+      nativePath('/project/engine'),
       'mybrowser',
       'full',
       undefined,
-      'fireforge build'
+      'fireforge build',
+      'auto',
+      'full'
     );
 
     vi.mocked(writeBuildBaseline).mockClear();
     await expect(buildCommand('/project', { ui: true })).resolves.toBeUndefined();
     expect(writeBuildBaseline).toHaveBeenCalledWith(
       '/project',
-      '/project/engine',
+      nativePath('/project/engine'),
       'mybrowser',
       'full',
       undefined,
-      'fireforge build --ui'
+      'fireforge build --ui',
+      'auto',
+      // --ui is a `mach build faster`: its jar.mn fingerprints must be
+      // carried forward, never refreshed.
+      'faster'
     );
   });
 
@@ -283,7 +293,7 @@ describe('buildCommand', () => {
 
     await expect(buildCommand('/project', {})).resolves.toBeUndefined();
 
-    expect(build).toHaveBeenCalledWith('/project/engine', 12);
+    expect(build).toHaveBeenCalledWith(nativePath('/project/engine'), 12);
     expect(info).toHaveBeenCalledWith('Using 12 parallel jobs');
   });
 
@@ -296,7 +306,7 @@ describe('buildCommand', () => {
 
     await expect(buildCommand('/project', { jobs: 6 })).resolves.toBeUndefined();
 
-    expect(build).toHaveBeenCalledWith('/project/engine', 6);
+    expect(build).toHaveBeenCalledWith(nativePath('/project/engine'), 6);
     expect(info).toHaveBeenCalledWith('Using 6 parallel jobs');
   });
 
@@ -330,10 +340,10 @@ describe('buildCommand', () => {
     expect((failure as Error).message).toContain('Captured stderr tail:');
     expect((failure as Error).message).toContain('Assets.car: No such file or directory');
     expect((failure as Error).message).toContain(
-      'Verbose rerun: cd /project/engine && ./mach build -v'
+      `Verbose rerun: cd ${nativePath('/project/engine')} && ./mach build -v`
     );
 
-    expect(build).toHaveBeenCalledWith('/project/engine', 8);
+    expect(build).toHaveBeenCalledWith(nativePath('/project/engine'), 8);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Build failed after'));
   });
 
@@ -399,11 +409,11 @@ describe('buildCommand', () => {
   });
 
   it('annotates a successful build whose captured output warns about a stale config.status', async () => {
-    // Eval finding (E1-#2, E2): mach prints "config.status is out of
-    // date … Be sure to run |mach build|" at the tail of a successful
-    // build when tool-managed branding edits landed on moz.configure
-    // before the build. Operators read that as "build is incomplete"
-    // and either rebuilt unnecessarily or doubted the Fireforge footer.
+    // mach prints "config.status is out of date … Be sure to run |mach
+    // build|" at the tail of a SUCCESSFUL build when tool-managed branding
+    // edits landed on moz.configure beforehand. Operators read that as
+    // "build is incomplete" and either rebuild unnecessarily or doubt the
+    // FireForge footer.
     const staleStdout = [
       'Your build was successful!',
       'config.status is out of date with respect to browser/moz.configure',
@@ -424,15 +434,12 @@ describe('buildCommand', () => {
     );
   });
 
-  it('annotates a successful build whose tail is mach\'s "Config object not found" banner (Finding 8)', async () => {
-    // 2026-04-26 eval Finding 8: a successful build can end with
-    // mach's "Config object not found by mach. / Configure complete! /
-    // Be sure to run |mach build|" banner without the
-    // "config.status is out of date" line that the 0.18.0 fix keyed
-    // on. Operators on this path saw the contradictory tail
-    // unannotated. Both shapes now route through the same info
-    // banner so the explanation always appears before FireForge's
-    // own outro.
+  it('annotates a successful build whose tail is mach\'s "Config object not found" banner', async () => {
+    // A successful build can end with mach's "Config object not found by
+    // mach. / Configure complete! / Be sure to run |mach build|" banner
+    // WITHOUT the "config.status is out of date" line. Both shapes must
+    // route through the same info banner so the explanation always appears
+    // before FireForge's own outro.
     const staleStdout = [
       'Your build was successful!',
       'Config object not found by mach.',
@@ -453,15 +460,12 @@ describe('buildCommand', () => {
     );
   });
 
-  it('emits the configure-banner annotation BEFORE the FireForge "Build completed" outro (Finding 8)', async () => {
-    // The pre-fix order on the merged tail read:
+  it('emits the configure-banner annotation BEFORE the FireForge "Build completed" outro', async () => {
+    // Unannotated, the merged tail reads:
     //   [mach's confusing banner] / [FireForge's "Build completed" outro]
-    // with the explanation either missing (Finding 8 second shape) or
-    // landing in a less prominent spot. The fix guarantees that when
-    // the annotation fires it lands BEFORE the outro so the operator's
-    // very last terminal line is the explanation, not the unannotated
-    // confusing tail. Asserts the recorded mock-call order: the info
-    // call must precede the outro call.
+    // The annotation must land BEFORE the outro so the operator's very last
+    // terminal line is the explanation, not the confusing tail. Asserts the
+    // recorded mock-call order: the info call must precede the outro call.
     const staleStdout = [
       'Your build was successful!',
       'Config object not found by mach.',
@@ -503,12 +507,12 @@ describe('buildCommand', () => {
   });
 
   it('halts before mach build when Furnace apply fails during preflight', async () => {
-    // Pins the user-facing guarantee in the v0.11.0 CHANGELOG: "fireforge
-    // build now halts when Furnace apply fails instead of warning and
-    // continuing to mach build." Building a browser that silently dropped
-    // requested component changes is worse than failing early, so a
-    // regression here would be a real correctness bug even though the
-    // underlying prepareBuildEnvironment unit tests still pass.
+    // Pins the user-facing guarantee that `fireforge build` HALTS when
+    // Furnace apply fails instead of warning and continuing to mach build.
+    // Building a browser that silently dropped requested component changes
+    // is worse than failing early, so a regression here is a real
+    // correctness bug even though the underlying prepareBuildEnvironment
+    // unit tests still pass.
     const { FurnaceError } = await import('../../errors/furnace.js');
     vi.mocked(prepareBuildEnvironment).mockRejectedValue(
       new FurnaceError('2 components failed to apply cleanly')
@@ -552,7 +556,7 @@ describe('buildCommand', () => {
   it('proceeds to the build when the toolchain preflight passes (fail-soft default)', async () => {
     await buildCommand('/project', {});
 
-    expect(runToolchainPreflight).toHaveBeenCalledWith('/project/engine');
+    expect(runToolchainPreflight).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(build).toHaveBeenCalled();
   });
 });
@@ -586,7 +590,7 @@ describe('registerBuild', () => {
     await program.parseAsync(['node', 'test', 'build', '--ui', '--jobs', '4', '--brand', 'beta']);
 
     expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'beta');
-    expect(buildUI).toHaveBeenCalledWith('/project/engine');
+    expect(buildUI).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(build).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledWith('Using 4 parallel jobs');
   });

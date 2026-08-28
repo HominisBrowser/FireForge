@@ -13,6 +13,8 @@ vi.mock('../../utils/logger.js', async (importOriginal) => ({
   warn: vi.fn(),
 }));
 
+import { InconclusiveVerdictError } from '../../errors/base.js';
+import { ExitCode } from '../../errors/codes.js';
 import { info, warn } from '../../utils/logger.js';
 import {
   assertEngineGenerationUnchanged,
@@ -148,7 +150,7 @@ describe('withEngineSessionLock', () => {
     await expect(first).resolves.toBeUndefined();
 
     // Typed as a FireForgeError so the CLI boundary prints ONE line, no
-    // stack — the raw five-frame trace was the field report.
+    // stack.
     expect(rejection).toBeInstanceOf(LockContentionError);
     expect(rejection).toBeInstanceOf(FireForgeError);
     const message = (rejection as Error).message;
@@ -176,12 +178,12 @@ describe('engine generation guard', () => {
   });
 
   it('warns instead of silently passing when the probe cannot measure the engine', async () => {
-    // `dir` is not a git checkout, so both probes fail with the SAME message.
-    // Before 0.41.0 the failure tokens compared EQUAL, took the
-    // `after === before` early return, and blessed a verdict the guard had
-    // never verified — with no output at all. engine/ legitimately may not be
-    // a git checkout (download extracts a tarball), so this must not throw;
-    // it must not be silent either.
+    // `dir` is not a git checkout, so both probes fail with the SAME
+    // message. Comparing failure tokens for equality makes them compare
+    // EQUAL, take the `after === before` early return, and bless a verdict
+    // the guard never verified — with no output at all. engine/ legitimately
+    // may not be a git checkout (download extracts a tarball), so this must
+    // not throw; it must not be silent either.
     const before = await snapshotEngineGeneration(dir);
     expect(before).toMatch(/^unavailable:/);
 
@@ -192,8 +194,8 @@ describe('engine generation guard', () => {
   });
 
   it('does not report an unmeasurable engine as a detected change', async () => {
-    // Two differing failure messages previously fell through to the mutation
-    // branch and reported a spurious "engine/ changed".
+    // Two differing failure messages must not fall through to the mutation
+    // branch and report a spurious "engine/ changed".
     const before = `unavailable:some earlier failure`;
     await expect(assertEngineGenerationUnchanged(dir, before)).resolves.toBeUndefined();
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('engine/ changed while'));
@@ -213,11 +215,24 @@ describe('engine generation guard', () => {
     expect(before).not.toMatch(/^unavailable:/);
     await expect(assertEngineGenerationUnchanged(dir, before)).resolves.toBeUndefined();
 
-    // A real mutation is still detected as a change.
+    // A real mutation is still detected as a change, and the refusal NAMES
+    // it — reconstructing the writer by hand (`find -newermt` against the
+    // run window, minus the objdir, minus git's own bookkeeping) is the
+    // cost this diagnostic exists to remove.
     await writeFile(join(dir, 'b.txt'), 'y');
-    await expect(assertEngineGenerationUnchanged(dir, before)).rejects.toThrow(
-      /engine\/ changed while/
-    );
+    let refusal: unknown;
+    try {
+      await assertEngineGenerationUnchanged(dir, before);
+      expect.unreachable('should have refused');
+    } catch (error: unknown) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(InconclusiveVerdictError);
+    const inconclusive = refusal as InconclusiveVerdictError;
+    expect(inconclusive.message).toMatch(/engine\/ changed while/);
+    expect(inconclusive.message).toContain('What moved:');
+    expect(inconclusive.message).toContain('b.txt');
+    expect(inconclusive.code).toBe(ExitCode.INCONCLUSIVE);
   });
 
   it('throws when a measurable engine becomes unmeasurable mid-run', async () => {

@@ -4,22 +4,22 @@
  * `re-export`.
  *
  * The dominant fixed cost of patch lint is one `ts.createProgram` over the
- * queue's patch-owned `.sys.mjs` files (~37 s on a 290-patch consumer
- * queue). This controller builds that program at most ONCE per command
- * invocation (lazily, promise-memoised) and lets callers slice per-patch
- * findings out of the grouped result. Three levers keep the cost paid only
- * when it buys something:
+ * queue's patch-owned `.sys.mjs` files — tens of seconds on a large queue.
+ * This controller builds that program at most ONCE per command invocation
+ * (lazily, promise-memoised) and lets callers slice per-patch findings out of
+ * the grouped result. Three levers keep the cost paid only when it buys
+ * something:
  *
  * - **Lazy build**: nothing is built until the first cache miss asks.
  * - **Root scoping** (`rootScopePatches`): with `--patches <subset>` the
- *   program's roots are only the subset's owned files; the full queue
- *   stays resolvable, so cross-patch imports type-check identically while
- * unrelated files are never parsed.
- * - **Warm-run probe**: run-level ("global") checkJs findings come only
- *   from a missing `typescript` package or an unreadable shim — never
- *   from the built program — so an all-cache-hit run satisfies "warm
- * never reports less than cold" via
- *   `probeCheckJsGlobalIssues` instead of building anything.
+ *   program's roots are only the subset's owned files; the full queue stays
+ *   resolvable, so cross-patch imports type-check identically while
+ *   unrelated files are never parsed.
+ * - **Warm-run probe**: run-level ("global") checkJs findings come only from
+ *   a missing `typescript` package or an unreadable shim — never from the
+ *   built program — so an all-cache-hit run satisfies "warm never reports
+ *   less than cold" via `probeCheckJsGlobalIssues` instead of building
+ *   anything.
  */
 
 import type { getProjectPaths, loadConfig } from '../core/config.js';

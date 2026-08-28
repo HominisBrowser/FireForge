@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Runtime regression tests for the generated Python guard (downstream
- * report, 0.34.0 cycle; field report, 0.34.1): with a degraded host, the
- * wrapped psutil calls must return readings that survive mozsystemmonitor's
- * subscripting, iteration/unpacking, len(), `_fields`, and `_asdict()` —
- * AND (0.34.1) be per-function arity-correct, picklable across the
- * collector pipe, and reconstructible via `type(reading)(*values)`: the
+ * Runtime regression tests for the generated Python guard: on a degraded
+ * host the wrapped psutil calls must return readings that survive
+ * mozsystemmonitor's subscripting, iteration/unpacking, len(), `_fields`,
+ * and `_asdict()` — and be per-function arity-correct, picklable across the
+ * collector pipe, and reconstructible via `type(reading)(*values)`. The
  * parent rebuilds each collector sample with `self._swap_type(*swap_mem)`,
- * so an svmem-shaped (8-field) fallback in the swap (6-field sswap)
- * position rejected every sample, filled the pipe, blocked the collector
- * child in send(), and wedged mach's atexit join forever.
+ * so an svmem-shaped (8-field) fallback in the swap (6-field sswap) position
+ * rejects every sample, fills the pipe, blocks the collector child in
+ * send(), and wedges mach's atexit join forever.
  *
  * Unlike the string-matching tests in mach.test.ts, these execute
  * GUARD_PYTHON_SOURCE with python3 against fake psutil/monitor modules,
@@ -94,8 +93,8 @@ def disk_io_counters(perdisk=False):
 
 /**
  * Fake FLAPPING psutil for the monitor harness: healthy until the harness
- * flips `_state["fail"]`, mimicking the 0.34.1 field host whose vm/swap
- * syscalls flap between working and degraded.
+ * flips `_state["fail"]`, mimicking a host whose vm/swap syscalls flap
+ * between working and degraded.
  */
 const FAKE_PSUTIL_FLAPPING = `
 from collections import namedtuple
@@ -208,10 +207,9 @@ class SystemResourceMonitor(object):
 
 /**
  * Stub mozbuild.controller.building.BuildMonitor whose log_resource_usage
- * raises the field AttributeError (usage["io"] is None → .read_bytes) —
- * post-compile resource reporting must warn-and-continue, not fail the
- * build (field report 0.34.1: "Error running mach" with complete
- * artifacts).
+ * raises the AttributeError (usage["io"] is None → .read_bytes) —
+ * post-compile resource reporting must warn-and-continue, not fail a build
+ * whose artifacts are complete.
  */
 const FAKE_BUILDING = `
 class BuildMonitor(object):
@@ -468,8 +466,8 @@ const DISK_FIELDS = [
 /**
  * Shape assertions shared by both fallback paths (psutil result classes
  * resolvable or absent): per-function arity, `type(reading)(*values)`
- * reconstruction, and pickling across the collector pipe (field report
- * 0.34.1: an svmem-shaped fallback in the swap position wedged mach).
+ * reconstruction, and pickling across the collector pipe. An svmem-shaped
+ * fallback in the swap position wedges mach.
  */
 function expectPerFunctionShapes(report: GuardHarnessReport): void {
   expect(report.first).toBe(0);

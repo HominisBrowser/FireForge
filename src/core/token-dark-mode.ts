@@ -2,18 +2,33 @@
 /**
  * Dark-mode insertion helpers for the tokens CSS scaffold.
  *
- * The 2026-04-21 eval reproduced a bug where `fireforge token add
- * --mode override --dark-value ...` landed the dark declaration
- * AFTER the nested `:root { }` inside the
- * `@media (prefers-color-scheme: dark)` block had already closed,
- * producing a declaration outside any rule block. The helpers here
- * scan the comment-stripped source lines to find the *inner* `:root`
- * block's closing `}` and return a line index the caller can splice
- * into. When the inner `:root` is missing (a scaffold that drifted
- * from the default), the fallback helper returns the outer `@media`
- * block's close so the caller can materialise a fresh `:root` wrapper
- * rather than dropping the dark value.
+ * `fireforge token add --mode override --dark-value ...` must land the dark
+ * declaration INSIDE the nested `:root { }` of the
+ * `@media (prefers-color-scheme: dark)` block; landing after that block has
+ * closed produces a declaration outside any rule. The helpers here scan the
+ * comment-stripped source lines to find the *inner* `:root` block's closing
+ * `}` and return a line index the caller can splice into. When the inner
+ * `:root` is missing (a scaffold that drifted from the default), the
+ * fallback helper returns the outer `@media` block's close so the caller can
+ * materialise a fresh `:root` wrapper rather than dropping the dark value.
  */
+
+/**
+ * True when `line` carries a `:root` selector whose opening brace is on the
+ * same line, with no intervening brace of either kind.
+ *
+ * Index arithmetic rather than `/:root[^{}]*\{/`: that pattern restarts at
+ * every `:root` in the line, which is quadratic on a line repeating the
+ * selector (CodeQL `js/polynomial-redos`). `tokens.css` comes from a
+ * consumer's engine tree, so such a line needs no attacker to arrive.
+ */
+function rootOpensBraceOnLine(line: string): boolean {
+  const brace = line.indexOf('{');
+  if (brace === -1) return false;
+  const root = line.lastIndexOf(':root', brace - ':root'.length);
+  if (root === -1 || root + ':root'.length > brace) return false;
+  return !line.slice(root + ':root'.length, brace).includes('}');
+}
 
 /**
  * Strips the content of `/* ... *\/` block comments from an array of
@@ -87,9 +102,9 @@ export function findDarkRootInsertionIndex(lines: string[]): number | null {
   let rootOpenLine = -1;
   for (let i = darkMediaLine; i < stripped.length; i++) {
     const line = stripped[i] ?? '';
-    if (/(^|[\s,{])\s*:root\b/.test(line)) {
+    if (/(?:^|[\s,{]):root\b/.test(line)) {
       // Brace on the same line?
-      if (/:root[^{}]*\{/.test(line)) {
+      if (rootOpensBraceOnLine(line)) {
         rootOpenLine = i;
         break;
       }

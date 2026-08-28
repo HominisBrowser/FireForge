@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('@clack/prompts', () => ({
   text: vi.fn(),
   select: vi.fn(),
@@ -50,12 +52,7 @@ vi.mock('../../utils/fs.js', () => ({
   readText: vi.fn(() => Promise.resolve('const x = 1;\n')),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  cancel: vi.fn(),
-  isCancel: vi.fn(() => false),
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import * as clack from '@clack/prompts';
 
@@ -68,6 +65,7 @@ import {
 } from '../../core/patch-lint.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
+import { nativePath } from '../../test-utils/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import type { SpinnerHandle } from '../../utils/logger.js';
@@ -382,7 +380,11 @@ describe('autoFixLicenseHeaders', () => {
     const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true);
 
     expect(result).toBe(true);
-    expect(addLicenseHeaderToFile).toHaveBeenCalledWith('/engine/new.js', 'MPL-2.0', 'js');
+    expect(addLicenseHeaderToFile).toHaveBeenCalledWith(
+      nativePath('/engine/new.js'),
+      'MPL-2.0',
+      'js'
+    );
   });
 
   it('skips files that already have the correct header', async () => {
@@ -443,6 +445,32 @@ describe('autoFixLicenseHeaders', () => {
     );
   });
 
+  it('never offers a project header on a CC0 public-domain upstream test file', async () => {
+    // Firefox test files carry a CC0 dedication, not the MPL header. Before
+    // CC0 was recognized this file was neither "acceptable" nor "vendored",
+    // so `export -y` prepended the PROJECT's license header onto code
+    // Mozilla dedicated to the public domain — the mislicensing the
+    // vendored carve-out exists to prevent.
+    const cc0Test =
+      '/* Any copyright is dedicated to the Public Domain.\n' +
+      '   http://creativecommons.org/publicdomain/zero/1.0/ */\n' +
+      '"use strict";\n' +
+      'add_task(async function () {});\n';
+    vi.mocked(detectNewFilesInDiff).mockReturnValueOnce(
+      new Set(['browser/base/content/test/foo/browser_copied.js'])
+    );
+    vi.mocked(readText).mockResolvedValue(cc0Test);
+
+    const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true);
+
+    expect(result).toBe(false);
+    expect(clack.confirm).not.toHaveBeenCalled();
+    expect(addLicenseHeaderToFile).not.toHaveBeenCalled();
+    expect(vi.mocked(info)).toHaveBeenCalledWith(
+      expect.stringContaining('third-party permissive license banner')
+    );
+  });
+
   it('reports vendored files separately from fixable ones under dry-run', async () => {
     vi.mocked(detectNewFilesInDiff).mockReturnValueOnce(new Set(['vendored/d3.js', 'new.js']));
     vi.mocked(readText).mockImplementation((path: string) =>
@@ -471,9 +499,9 @@ describe('autoFixLicenseHeaders', () => {
   });
 
   it('never prompts or writes under dry-run — reports the missing headers instead', async () => {
-    // Dry-run purity regression: an interactive `export --dry-run` used to
-    // prompt (default Yes) and write license headers into engine/, then
-    // close with "no changes made".
+    // Dry-run purity: an interactive `export --dry-run` must not prompt
+    // (default Yes) and write license headers into engine/, then close with
+    // "no changes made".
     vi.mocked(detectNewFilesInDiff).mockReturnValueOnce(new Set(['new.js']));
 
     const result = await autoFixLicenseHeaders('/engine', newFileDiff, mockConfig, true, true);
@@ -486,9 +514,9 @@ describe('autoFixLicenseHeaders', () => {
 });
 
 describe('findPartialOwnershipOverlap', () => {
-  // Finding #12: eval showed two exports both claiming
-  // `browser/themes/shared/jar.inc.mn`. `findAllPatchesForFiles` only
-  // catches FULL supersedes; partial overlap needs its own detector.
+  // Two exports can both claim `browser/themes/shared/jar.inc.mn`.
+  // `findAllPatchesForFiles` only catches FULL supersedes; partial overlap
+  // needs its own detector.
   it('returns an empty map when nothing overlaps', () => {
     const manifest = {
       version: 1 as const,

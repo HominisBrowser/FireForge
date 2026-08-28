@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 
+import { hasKnownTeardownNoise, isKnownTeardownNoiseLine } from './mach-known-noise-filter.js';
+
 export type HarnessEarlyExitKind = 'startup' | 'zero-tests';
 
 export interface HarnessEarlyExit {
@@ -27,23 +29,53 @@ function findFirstMatchingLine(
   return lines.find((line) => patterns.some((pattern) => pattern.test(line)));
 }
 
-/** Finds the first high-signal failure line from captured mach test output. */
+const FAILURE_LINE_PATTERNS: readonly RegExp[] = [
+  /\bTEST-UNEXPECTED-[A-Z-]+\b/,
+  /\bPROCESS-CRASH\b/i,
+  /\bTIMEOUT\b/i,
+  /timed out/i,
+  /HominisBrowserUnavailableError/i,
+  /Marionette.*(?:session|startup|start).*fail/i,
+  /(?:failed|unable) to (?:start|create|open).*Marionette/i,
+  /SessionNotCreatedException/i,
+  /Browser process exited during spawn/i,
+  /Failed to load (?:resource|chrome):\/\//i,
+  /\b(?:Error|Exception|TypeError|ReferenceError|SyntaxError):\s+/,
+  /AttributeError:\s+/,
+];
+
+/**
+ * Finds the first high-signal failure line from captured mach test output.
+ *
+ * Selection is FIRST-MATCHING-LINE, not first-matching-pattern, so the bare
+ * `AttributeError:` arm above has exactly the same standing as
+ * `TEST-UNEXPECTED-FAIL` — whichever appears earlier in the text wins. That
+ * is how a run whose real defect was an export shard's file-count assertion
+ * got diagnosed as the recognized mozsystemmonitor teardown crash: the
+ * information was present and the SELECTION was wrong, which is the
+ * expensive kind of wrong, because the named cause is a real, documented,
+ * unrelated upstream defect and therefore reads as an answer.
+ *
+ * So a capture carrying the recognized teardown incident gets two passes:
+ * candidates excluding its `AttributeError` header first, and only if that
+ * finds nothing does the full set apply. The narrowness the rest of the
+ * codebase maintains is preserved exactly — the exclusion is gated on
+ * `hasKnownTeardownNoise` for the WHOLE capture, so it requires both the
+ * closed attribute allowlist and a `resourcemonitor.py` frame. A novel
+ * attribute, or a traceback from anywhere else, stays a real failure and is
+ * still eligible to be reported.
+ *
+ * @param output - Raw captured stdout/stderr from the run
+ * @returns The chosen failure line, or the first non-empty line
+ */
 export function findFirstUsefulFailureLine(output: string): string | undefined {
   const lines = getNonEmptyOutputLines(output);
-  const matched = findFirstMatchingLine(lines, [
-    /\bTEST-UNEXPECTED-[A-Z-]+\b/,
-    /\bPROCESS-CRASH\b/i,
-    /\bTIMEOUT\b/i,
-    /timed out/i,
-    /HominisBrowserUnavailableError/i,
-    /Marionette.*(?:session|startup|start).*fail/i,
-    /(?:failed|unable) to (?:start|create|open).*Marionette/i,
-    /SessionNotCreatedException/i,
-    /Browser process exited during spawn/i,
-    /Failed to load (?:resource|chrome):\/\//i,
-    /\b(?:Error|Exception|TypeError|ReferenceError|SyntaxError):\s+/,
-    /AttributeError:\s+/,
-  ]);
+  if (hasKnownTeardownNoise(output)) {
+    const withoutNoise = lines.filter((line) => !isKnownTeardownNoiseLine(line));
+    const preferred = findFirstMatchingLine(withoutNoise, FAILURE_LINE_PATTERNS);
+    if (preferred !== undefined) return preferred;
+  }
+  const matched = findFirstMatchingLine(lines, FAILURE_LINE_PATTERNS);
   return matched ?? lines[0];
 }
 

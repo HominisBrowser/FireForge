@@ -48,7 +48,7 @@ describe('validateStructure', () => {
     expect(issues.some((i) => i.check === 'missing-css')).toBe(true);
   });
 
-  it('does not warn about a missing .css for library-kind components (0.37.0 item 6)', async () => {
+  it('does not warn about a missing .css for library-kind components', async () => {
     // A kind: "library" component renders nothing and needs no stylesheet.
     mockPathExists.mockImplementation((path: string) => Promise.resolve(path.endsWith('.mjs')));
     mockReaddir.mockResolvedValue([] as never);

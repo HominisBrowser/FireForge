@@ -5,22 +5,20 @@
  * There are exactly two sanctioned ways checksums land in
  * furnace-state.json:
  *
- *  1. The BATCH path inside `applyAllComponents` (persistState: true),
- *     which replaces `appliedChecksums` wholesale — correct only when the
- *     run covered every component.
+ *  1. The BATCH path inside `applyAllComponents` (persistState: true), which
+ *     replaces `appliedChecksums` wholesale — correct only when the run
+ *     covered every component.
  *  2. The per-component MERGE in this module, which rewrites only the
  *     `<type>/<name>/…` keys of the component that was applied.
  *
  * Every targeted (named) apply/deploy MUST use path 2 with
  * `persistState: false`. Routing a named run through the batch path wipes
  * every other component's checksum state: the batch loops filter to the
- * named component, so the wholesale replace persists a state file
- * containing only that component. Downstream, `diffDeletedFiles` and
+ * named component, so the wholesale replace persists a state file containing
+ * only that component. Downstream, `diffDeletedFiles` and
  * `findOrphanedEngineFiles` both key on `appliedChecksums`, so the wiped
  * components' stale engine files become undetectable by apply AND by
- * `furnace validate` (2026-07-05 review, finding F1 — `furnace apply
- * <name>` had exactly this bug while `furnace deploy <name>` documented
- * and avoided it).
+ * `furnace validate`.
  */
 
 import { join } from 'node:path';

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Shared CSS fragments for Furnace widgets (field report D2).
+ * Shared CSS fragments for Furnace widgets.
  *
  * Shadow-DOM isolation forces each widget stylesheet to carry its own copy
- * of genuinely shared CSS (keyframes, resets). Hand-syncing those copies
+ * of genuinely shared CSS (keyframes, resets), and hand-syncing those copies
  * drifts. Instead, a workspace stylesheet declares an include directive
  * (a CSS block comment on its own line):
  *
@@ -15,9 +15,9 @@
  * `@fireforge-end-include` marker so re-deploys can refresh it idempotently.
  *
  * Drift contract: the apply fast-path and `furnace validate` compare the
- * *expanded* workspace source against the engine copy, so editing a
- * fragment surfaces as ordinary component drift and the next deploy
- * refreshes every consuming widget.
+ * *expanded* workspace source against the engine copy, so editing a fragment
+ * surfaces as ordinary component drift and the next deploy refreshes every
+ * consuming widget.
  */
 
 import { readdir } from 'node:fs/promises';

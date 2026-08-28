@@ -18,7 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { GeneralError } from '../errors/base.js';
 import {
   getTreeMarkerPath,
-  readTreeMarkerState,
+  readTreeMarker,
   type TreeMarker,
   type TreeMarkerRead,
 } from './tree-store.js';
@@ -177,7 +177,7 @@ export async function runTreeGuardHook(
     let current = resolve(process.cwd());
     for (let depth = 0; depth < 50; depth++) {
       if (existsSync(join(current, 'fireforge.json'))) {
-        return { root: current, state: await readTreeMarkerState(current) };
+        return { root: current, state: await readTreeMarker(current) };
       }
       const parent = dirname(current);
       if (parent === current) break;
@@ -194,6 +194,18 @@ export async function runTreeGuardHook(
   // evidence that we cannot tell. Treating it as "not a tree" would grant the
   // full mutating command set to a snapshot on the strength of a file that
   // failed to parse, which is exactly backwards for a default-deny guard.
+  // A marker from a NEWER FireForge is not damaged, so the corrupt branch's
+  // remedies — recreate the tree, delete the stray marker — are actively
+  // wrong for it. Refuse with the upgrade instruction instead, and do NOT
+  // offer --ignore-corrupt-tree-marker: proceeding would mean acting on a
+  // marker whose fields this build does not understand.
+  if (state.kind === 'unsupported') {
+    if (TREE_COMMAND_VERDICTS[commandName] === 'allowed') return;
+    throw new GeneralError(
+      `Refusing "${[commandName, ...subcommands].join(' ')}": ${state.reason}`
+    );
+  }
+
   if (state.kind === 'corrupt') {
     if (options['ignoreCorruptTreeMarker'] === true) return;
     // Unconditionally-allowed commands never consult marker fields — their

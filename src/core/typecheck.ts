@@ -26,6 +26,7 @@ import type { TypecheckIssue, TypecheckProjectResult } from '../types/typecheck.
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import {
   composeShimSource,
   SHIM_FILENAME,
@@ -106,8 +107,8 @@ export async function runTypecheck(
   // override (a path, or `null` to opt out) when present, else the shared
   // top-level extraShim. A project that narrows `lib`/`types` can opt out of
   // a Gecko-lib shim hub that another project needs, so the composed shim is
-  // no longer injected identically everywhere. Compositions are cached by the
-  // resolved extraShim path so projects sharing a shim don't recompose it.
+  // not injected identically everywhere. Compositions are cached by the
+  // resolved extraShim path so projects sharing a shim do not recompose it.
   const shimCache = new Map<string, string>();
   const composeForProject = async (extraShim: string | undefined): Promise<string> => {
     const key = extraShim ?? '';
@@ -262,12 +263,12 @@ async function runTypecheckForProject(
     noEmit: true,
     allowJs: parsed.options.allowJs ?? true,
     checkJs: parsed.options.checkJs ?? true,
-    // No incremental sidecar, ever. A user jsconfig under `engine/` that
-    // sets `incremental` (or names a `tsBuildInfoFile`)
-    // would have this command drop a `.tsbuildinfo` inside the primary
-    // engine checkout — a second writer that invalidates a concurrent
-    // `fireforge test`'s engine fingerprint. This command emits nothing,
-    // so the sidecar buys nothing either.
+    // No incremental sidecar, ever. A user jsconfig under `engine/` that sets
+    // `incremental` (or names a `tsBuildInfoFile`) would have this command
+    // drop a `.tsbuildinfo` inside the primary engine checkout — a second
+    // writer that invalidates a concurrent `fireforge test`'s engine
+    // fingerprint. This command emits nothing, so the sidecar buys nothing
+    // either.
     incremental: false,
     // skipLibCheck is not forced; the user owns it via their jsconfig.
   };
@@ -280,7 +281,12 @@ async function runTypecheckForProject(
   // file — and never write it to disk. The CompilerHost below serves
   // it from `shimSource` for `fileExists`/`readFile`/`getSourceFile`.
   const projectDir = dirname(absConfig);
-  const shimPath = resolve(projectDir, `.fireforge-${SHIM_FILENAME}`);
+  // Forward slashes deliberately: TypeScript normalizes every `fileName` it
+  // hands a CompilerHost, on every platform. A shim path carrying Windows
+  // separators never matches those callbacks, so the shim is not served (its
+  // globals report as undefined identifiers) and its own diagnostics are not
+  // filtered out below — the pass reports failures that do not exist.
+  const shimPath = normalizePathSlashes(resolve(projectDir, `.fireforge-${SHIM_FILENAME}`));
 
   const rootFiles = [...parsed.fileNames, shimPath];
   const defaultHost = ts.createCompilerHost(options);

@@ -348,7 +348,7 @@ describe('validateExportJsDoc — class-method enforcement', () => {
     expect(paramIssues[0]?.message).toContain('key');
   });
 
-  it('accepts inline object types with nested generics in @param (field report B4)', () => {
+  it('accepts inline object types with nested generics in @param', () => {
     // The exact reported doc shape: nested braces inside the type used to
     // truncate the flat-regex scan at the first inner "}", losing the
     // param name and firing "@param message missing or misnamed".

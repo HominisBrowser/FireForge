@@ -21,10 +21,9 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-  warn: vi.fn(),
-}));
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../furnace-config.js', () => ({
   loadFurnaceState: vi.fn((): Promise<Record<string, unknown>> => Promise.resolve({})),

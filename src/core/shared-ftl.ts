@@ -9,11 +9,19 @@
  */
 
 /**
- * Characters that must not appear in `sharedFtl`:
- *  - Backticks close the MJS template literal the scaffold writes.
+ * Characters that must not appear in `sharedFtl`.
+ *
+ * A POLICY rule about what a sensible FTL path looks like, not the safety
+ * boundary for the generated `.mjs`: the scaffold escapes the value at its
+ * sink with `JSON.stringify` (`commands/furnace/create-templates.ts`), which
+ * is what actually makes interpolation safe and what covers the two inputs
+ * this rule never catches — a `"` and a raw newline.
+ *
+ * Kept because each remains a real sign of a malformed path:
  *  - `\` is a path-escape we do not want to interpret.
- *  - `${` opens a template expression and turns the FTL path into
- *    executable code.
+ *  - Backticks and `${` are inert in the current double-quoted sink, but a
+ *    template-literal sink is one refactor away and they are not valid in a
+ *    chrome:// FTL path regardless.
  */
 const UNSAFE_CHARS = /[`\\]|\$\{/;
 

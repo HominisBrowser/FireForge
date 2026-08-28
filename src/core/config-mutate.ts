@@ -24,24 +24,18 @@ function cloneConfigDocument(config: FireForgeConfig | JsonObject): JsonObject {
 }
 
 /**
- * Key segments that would walk into or rewrite the object prototype chain
- * if used as plain property names. Blocked up-front so the descent in
- * {@link mutateConfig} cannot be weaponized to mutate `Object.prototype`
- * process-wide — e.g. `fireforge config __proto__.polluted 1 --force`
- * would otherwise land in `getOrCreateChildRecord(raw, "__proto__")`.
+ * The error every sentinel-segment refusal raises. Only the MESSAGE lives
+ * here: the comparison itself is spelled inline at each write site, because
+ * that is what both a reader and CodeQL's `js/prototype-pollution-utility`
+ * barrier detection need — the latter is not interprocedural, so a check
+ * hidden behind a helper leaves the descent below looking unguarded.
  */
-const SENTINEL_KEY_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
-
-function assertNoSentinelSegments(key: string, parts: string[]): void {
-  for (const part of parts) {
-    if (SENTINEL_KEY_SEGMENTS.has(part)) {
-      throw new ConfigError(
-        `Config key "${key}" contains a reserved segment "${part}". ` +
-          'Segments "__proto__", "constructor", and "prototype" are not permitted ' +
-          'because they would mutate the object prototype chain.'
-      );
-    }
-  }
+function sentinelSegmentError(key: string, part: string): ConfigError {
+  return new ConfigError(
+    `Config key "${key}" contains a reserved segment "${part}". ` +
+      'Segments "__proto__", "constructor", and "prototype" are not permitted ' +
+      'because they would mutate the object prototype chain.'
+  );
 }
 
 function getOrCreateChildRecord(parent: JsonObject, key: string): JsonObject {
@@ -83,22 +77,27 @@ export function mutateConfig(
   skipValidation = false
 ): FireForgeConfig | JsonObject {
   const parts = key.split('.');
-  // Reject prototype-chain sentinel segments before any write so
-  // `--force` cannot be used to mutate Object.prototype. This guard must
-  // run against the original key parts, not any subset — the final leaf
-  // assignment `current[lastPart] = value` would otherwise stay vulnerable.
-  assertNoSentinelSegments(key, parts);
-
   const raw = cloneConfigDocument(config);
 
+  // Every segment is checked at the point it is USED as a property name —
+  // the descent below and the leaf assignment — rather than once up front,
+  // so `--force` cannot be used to mutate Object.prototype and neither write
+  // can drift out from behind the guard. `raw` is a private clone, so a
+  // refusal here has mutated nothing the caller can observe.
   let current: JsonObject = raw;
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i];
     if (part === undefined) continue;
+    if (part === '__proto__' || part === 'constructor' || part === 'prototype') {
+      throw sentinelSegmentError(key, part);
+    }
     current = getOrCreateChildRecord(current, part);
   }
   const lastPart = parts[parts.length - 1];
   if (lastPart !== undefined) {
+    if (lastPart === '__proto__' || lastPart === 'constructor' || lastPart === 'prototype') {
+      throw sentinelSegmentError(key, lastPart);
+    }
     current[lastPart] = value;
   }
 

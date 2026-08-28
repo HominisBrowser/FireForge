@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
 vi.mock('../branding.js', () => ({
   setupBranding: vi.fn(),
   isBrandingSetup: vi.fn(),
@@ -28,7 +30,20 @@ vi.mock('../git-status.js', () => ({
   getUntrackedFiles: vi.fn(() => Promise.resolve([] as string[])),
 }));
 
+// The fingerprint comparison reads engine files through hashEngineFile;
+// stub it so a "dirty but byte-identical" build input can be simulated
+// without a real engine tree.
+vi.mock('../coverage-extend.js', () => ({
+  hashEngineFile: vi.fn(() => Promise.resolve(undefined)),
+}));
+
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   warn: vi.fn(),
   info: vi.fn(),
   notice: vi.fn(),
@@ -49,9 +64,7 @@ vi.mock('../furnace-config.js', () => ({
   })),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../furnace-apply.js', () => ({
   applyAllComponents: vi.fn(),
@@ -73,6 +86,7 @@ import { pathExists } from '../../utils/fs.js';
 import { info, notice, spinner, warn } from '../../utils/logger.js';
 import { isBrandingSetup, setupBranding } from '../branding.js';
 import { prepareBuildEnvironment, requiresFullBuildForIncrementalTest } from '../build-prepare.js';
+import { hashEngineFile } from '../coverage-extend.js';
 import { applyAllComponents } from '../furnace-apply.js';
 import { furnaceConfigExists, loadFurnaceConfig, loadFurnaceState } from '../furnace-config.js';
 import { runFurnaceMutation } from '../furnace-operation.js';
@@ -401,6 +415,139 @@ describe('prepareBuildEnvironment auto-configure', () => {
     });
 
     expect(result.fullBuildRequired).toBe(true);
+  });
+
+  it('does not escalate for a dirty jar.mn byte-identical to the last successful build', async () => {
+    // A fork's worktree is permanently dirty (imported patches, Furnace
+    // components), so `git diff HEAD` names the patched jar.mn on every
+    // run. Before the baseline carried buildInputFingerprints that meant
+    // every `test --build` after a full build paid a second full build
+    // for a manifest the first one had already installed.
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(hashEngineFile).mockResolvedValue('ab'.repeat(32));
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+        buildInputFingerprints: { 'toolkit/content/jar.mn': 'ab'.repeat(32) },
+      },
+    });
+
+    expect(result.fullBuildRequired).toBe(false);
+    expect(hashEngineFile).toHaveBeenCalledWith('/project/engine', 'toolkit/content/jar.mn');
+  });
+
+  it('still escalates when the dirty jar.mn no longer matches its recorded fingerprint', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(hashEngineFile).mockResolvedValue('cd'.repeat(32));
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+        buildInputFingerprints: { 'toolkit/content/jar.mn': 'ab'.repeat(32) },
+      },
+    });
+
+    expect(result.fullBuildRequired).toBe(true);
+  });
+
+  it('treats an unhashable jar.mn as changed rather than proven unchanged', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(hashEngineFile).mockResolvedValue(undefined);
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+        buildInputFingerprints: { 'toolkit/content/jar.mn': 'ab'.repeat(32) },
+      },
+    });
+
+    expect(result.fullBuildRequired).toBe(true);
+  });
+
+  it('escalates for a dirty jar.mn the last successful build never fingerprinted', async () => {
+    // The record covers OTHER inputs but has no entry for this manifest —
+    // it was clean at build time and is dirty now — so nothing can prove
+    // it unchanged, and no hash is even attempted.
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
+    vi.mocked(hasChanges).mockResolvedValue(true);
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+        buildInputFingerprints: { 'browser/base/moz.build': 'ab'.repeat(32) },
+      },
+    });
+
+    expect(result.fullBuildRequired).toBe(true);
+    expect(hashEngineFile).not.toHaveBeenCalled();
+  });
+
+  it('escalates on a legacy baseline that carries no buildInputFingerprints', async () => {
+    // A marker written before the field existed cannot prove anything
+    // about the manifest, so the path-only rule applies unchanged.
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(hashEngineFile).mockResolvedValue('ab'.repeat(32));
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+      },
+    });
+
+    expect(result.fullBuildRequired).toBe(true);
+    expect(hashEngineFile).not.toHaveBeenCalled();
+  });
+
+  it('skips mach configure for a dirty moz.build byte-identical to the last successful build', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMachCapture } = await import('../mach.js');
+    vi.mocked(git).mockImplementation((args: string[]) => {
+      if (args.includes('abc..HEAD')) return Promise.resolve('');
+      return Promise.resolve('browser/moz.build\nbrowser/base/browser.js\n');
+    });
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(hashEngineFile).mockResolvedValue('ab'.repeat(32));
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: {
+        engineHeadSha: 'abc',
+        builtAt: new Date().toISOString(),
+        binaryName: 'testbrowser',
+        buildInputFingerprints: { 'browser/moz.build': 'ab'.repeat(32) },
+      },
+    });
+
+    expect(result.reconfigured).toBe(false);
+    expect(runMachCapture).not.toHaveBeenCalled();
+    // Only build inputs are hashed — the packageable .js path is not this
+    // preflight's business.
+    expect(hashEngineFile).not.toHaveBeenCalledWith('/project/engine', 'browser/base/browser.js');
   });
 
   it('limits full-build escalation to jar.mn manifests', () => {

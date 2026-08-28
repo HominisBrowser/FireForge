@@ -2,11 +2,11 @@
 /**
  * Manifest-sync repair against a REAL filesystem and a real furnace lock.
  *
- * The unit suite in `doctor.test.ts` mocks `node:fs/promises` wholesale, which
- * is why it could not catch that the empty-custom-orphan cleanup used
- * `rm(dir)` without `{ recursive: true }` — that throws EISDIR on a directory,
- * so the "Deleted N empty custom orphan directories" branch was unreachable in
- * production while the mocked test reported it working. Nor could it catch the
+ * The unit suite in `doctor.test.ts` mocks `node:fs/promises` wholesale,
+ * which is why it cannot catch an empty-custom-orphan cleanup using `rm(dir)`
+ * without `{ recursive: true }` — that throws EISDIR on a directory, so the
+ * "Deleted N empty custom orphan directories" branch is unreachable in
+ * production while the mocked test reports it working. Nor can it catch the
  * decide-before-lock window, since nothing concurrent runs there.
  */
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { FurnaceConfig, OverrideComponentConfig } from '../../types/furnace.js';
 import type { DoctorCheckContext } from '../doctor-check-core.js';
-import { furnaceManifestSyncCheck } from '../doctor-furnace-manifest-sync.js';
+import { furnaceConfigSyncCheck } from '../doctor-furnace-config-sync.js';
 
 const SIDECAR: OverrideComponentConfig = {
   type: 'css-only',
@@ -65,7 +65,7 @@ describe('furnace manifest sync repair (real filesystem)', () => {
     await writeFurnaceJson(emptyConfig());
     await mkdir(join(root, 'components', 'custom', 'moz-empty'), { recursive: true });
 
-    const result = await furnaceManifestSyncCheck.run(context(emptyConfig()));
+    const result = await furnaceConfigSyncCheck.run(context(emptyConfig()));
     const messages = (Array.isArray(result) ? result : [result]).map((r) => r.message).join(' ');
 
     expect(messages).toContain('Deleted 1 empty custom orphan directory (moz-empty)');
@@ -78,7 +78,7 @@ describe('furnace manifest sync repair (real filesystem)', () => {
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'widget.css'), 'body {}', 'utf-8');
 
-    const result = await furnaceManifestSyncCheck.run(context(emptyConfig()));
+    const result = await furnaceConfigSyncCheck.run(context(emptyConfig()));
     const messages = (Array.isArray(result) ? result : [result]).map((r) => r.message).join(' ');
 
     expect(messages).toContain('requires manual action (moz-lived-in)');
@@ -99,7 +99,7 @@ describe('furnace manifest sync repair (real filesystem)', () => {
     live.overrides['moz-widget'] = { ...SIDECAR, description: 'written by the concurrent command' };
     await writeFurnaceJson(live);
 
-    const result = await furnaceManifestSyncCheck.run(context(staleSnapshot));
+    const result = await furnaceConfigSyncCheck.run(context(staleSnapshot));
     const messages = (Array.isArray(result) ? result : [result]).map((r) => r.message).join(' ');
 
     expect(messages).toContain('Skipped 1 name (moz-widget)');
@@ -109,9 +109,9 @@ describe('furnace manifest sync repair (real filesystem)', () => {
   });
 
   it('never leaves a name in both custom and overrides', async () => {
-    // A concurrent `furnace create` registering the orphan name under `custom`
-    // used to be overwritten into `overrides` as well, producing a name in
-    // BOTH maps — a state nothing in furnace-config.ts rejects.
+    // A concurrent `furnace create` registering the orphan name under
+    // `custom` must not be overwritten into `overrides` as well, producing a
+    // name in BOTH maps — a state nothing in furnace-config.ts rejects.
     const staleSnapshot = emptyConfig();
     const overrideDir = join(root, 'components', 'overrides', 'moz-widget');
     await mkdir(overrideDir, { recursive: true });
@@ -126,7 +126,7 @@ describe('furnace manifest sync repair (real filesystem)', () => {
     };
     await writeFurnaceJson(live);
 
-    await furnaceManifestSyncCheck.run(context(staleSnapshot));
+    await furnaceConfigSyncCheck.run(context(staleSnapshot));
 
     const written = await readFurnaceJson();
     expect(Object.keys(written.overrides)).not.toContain('moz-widget');
@@ -135,8 +135,8 @@ describe('furnace manifest sync repair (real filesystem)', () => {
 
   it('reconciles a name orphaned in both trees once, not once per tree', async () => {
     // Both the override half and the custom-cleanup half re-check orphans
-    // against the fresh config; a name present in both orphan lists used to be
-    // pushed into `reconciled` twice, reporting "Skipped 2 names (x, x)".
+    // against the fresh config; a name present in both orphan lists must not
+    // be pushed into `reconciled` twice, reporting "Skipped 2 names (x, x)".
     const staleSnapshot = emptyConfig();
     const overrideDir = join(root, 'components', 'overrides', 'moz-widget');
     await mkdir(overrideDir, { recursive: true });
@@ -147,7 +147,7 @@ describe('furnace manifest sync repair (real filesystem)', () => {
     live.overrides['moz-widget'] = { ...SIDECAR, description: 'written by the concurrent command' };
     await writeFurnaceJson(live);
 
-    const result = await furnaceManifestSyncCheck.run(context(staleSnapshot));
+    const result = await furnaceConfigSyncCheck.run(context(staleSnapshot));
     const messages = (Array.isArray(result) ? result : [result]).map((r) => r.message).join(' ');
 
     expect(messages).toContain('Skipped 1 name (moz-widget)');
@@ -160,7 +160,7 @@ describe('furnace manifest sync repair (real filesystem)', () => {
     await mkdir(overrideDir, { recursive: true });
     await writeFile(join(overrideDir, 'override.json'), JSON.stringify(SIDECAR), 'utf-8');
 
-    const result = await furnaceManifestSyncCheck.run(context(emptyConfig()));
+    const result = await furnaceConfigSyncCheck.run(context(emptyConfig()));
     const messages = (Array.isArray(result) ? result : [result]).map((r) => r.message).join(' ');
 
     expect(messages).toContain('Re-registered 1 override (moz-widget)');

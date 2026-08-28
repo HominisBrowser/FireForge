@@ -3,19 +3,18 @@
  * Patch-owned overwrite warnings for `furnace apply`.
  *
  * For Furnace-managed components, apply OVERWRITES the deployed engine
- * copies with the `components/` sources. A fix made directly in `engine/`
- * and exported into a patch — but never back-ported to the component
- * source — is silently undone by the next apply, and the only prior
- * signal was a drift line that read like "someone's uncommitted work".
- * This module detects that exact case BEFORE the copy: the deployed
- * bytes differ from the component source AND the file is patch-owned,
- * and produces a loud per-file warning naming the file, the owning
+ * copies with the `components/` sources. A fix made directly in `engine/` and
+ * exported into a patch — but never back-ported to the component source — is
+ * silently undone by the next apply, and a plain drift line reads like
+ * "someone's uncommitted work". This module detects that exact case BEFORE
+ * the copy (deployed bytes differ from the component source AND the file is
+ * patch-owned) and produces a per-file warning naming the file, the owning
  * patch, and the consequence.
  *
  * The per-file byte comparison already exists —
  * `checkRegistrationConsistency` for custom components (fragment- and
- * ftl-aware) and the copy-candidate walk for overrides — this module
- * only surfaces what was previously computed and thrown away.
+ * ftl-aware) and the copy-candidate walk for overrides — so this module only
+ * surfaces what was previously computed and thrown away.
  */
 
 import { readdir } from 'node:fs/promises';

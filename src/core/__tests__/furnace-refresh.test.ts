@@ -162,20 +162,25 @@ describe('refreshOverrideFile', () => {
     ).resolves.toEqual({ fileName: 'widget.css', status: 'unchanged' });
   });
 
-  it('preserves existing executable mode when it writes upstream content directly', async () => {
-    const repoDir = await initRepo();
-    await writeFile(join(repoDir, 'widget.sh'), 'echo base\n');
-    const baseCommit = await commitAll(repoDir, 'base');
-    await writeFile(join(repoDir, 'widget.sh'), 'echo upstream\n');
-    await commitAll(repoDir, 'upstream');
+  // POSIX mode bits are the refusal mechanism here; NTFS ignores
+  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  it.skipIf(process.platform === 'win32')(
+    'preserves existing executable mode when it writes upstream content directly',
+    async () => {
+      const repoDir = await initRepo();
+      await writeFile(join(repoDir, 'widget.sh'), 'echo base\n');
+      const baseCommit = await commitAll(repoDir, 'base');
+      await writeFile(join(repoDir, 'widget.sh'), 'echo upstream\n');
+      await commitAll(repoDir, 'upstream');
 
-    const overridePath = join(await makeTempDir('fireforge-refresh-override-'), 'widget.sh');
-    await writeFile(overridePath, 'echo base\n');
-    await chmod(overridePath, 0o755);
+      const overridePath = join(await makeTempDir('fireforge-refresh-override-'), 'widget.sh');
+      await writeFile(overridePath, 'echo base\n');
+      await chmod(overridePath, 0o755);
 
-    await expect(
-      refreshOverrideFile(repoDir, overridePath, 'widget.sh', baseCommit, 'widget.sh')
-    ).resolves.toEqual({ fileName: 'widget.sh', status: 'merged' });
-    expect((await stat(overridePath)).mode & 0o777).toBe(0o755);
-  });
+      await expect(
+        refreshOverrideFile(repoDir, overridePath, 'widget.sh', baseCommit, 'widget.sh')
+      ).resolves.toEqual({ fileName: 'widget.sh', status: 'merged' });
+      expect((await stat(overridePath)).mode & 0o777).toBe(0o755);
+    }
+  );
 });

@@ -2,38 +2,33 @@
 /**
  * Marionette port probe.
  *
- * Gecko's Marionette control channel binds `127.0.0.1:2828` when a
- * Firefox / ForgeFresh / fork instance is launched with
- * `-marionette`. The `fireforge test` harness spawns the browser with
- * that flag, so any test run needs the port to be free at start.
+ * Gecko's Marionette control channel binds `127.0.0.1:2828` when a browser
+ * is launched with `-marionette`. The `fireforge test` harness spawns the
+ * browser with that flag, so any test run needs the port free at start.
  *
- * Motivating case (2026-04-21 eval, Finding #20): an interrupted
- * `fireforge test --headless` left an orphan
- * `ForgeFresh.app/Contents/MacOS/forgefresh -marionette` process
- * listening on 2828 with parent PID 1. The next `fireforge test` run
- * — in a *different* FireForge project — failed immediately with a
- * Marionette bind error, and FireForge's generic "re-run build" hint
- * did not mention the stale listener. The probe in this module runs
- * before every test launch, detects when the port is held, and —
- * when the holder is a browser process (by command-line `-marionette`
- * flag or by basename matching a known browser binary) — throws a
- * targeted `GeneralError` naming the PID and the exact `kill` command
- * to run.
+ * An interrupted `fireforge test` can leave an orphan browser process
+ * listening on 2828 with parent PID 1, and the next test run — possibly in a
+ * *different* FireForge project — then fails with a bare Marionette bind
+ * error. This probe runs before every test launch, detects when the port is
+ * held, and — when the holder is a browser process (by command-line
+ * `-marionette` flag or by basename matching a known browser binary) —
+ * throws a targeted `GeneralError` naming the PID and the exact `kill`
+ * command to run.
  *
  * Cross-platform implementation:
  *   - POSIX (macOS / Linux): `lsof -i tcp:<port> -P -n -sTCP:LISTEN`
- *   - Windows: `Get-NetTCPConnection` via PowerShell, then
- *     `Get-Process` to resolve the PID into a command line.
+ *   - Windows: `Get-NetTCPConnection` via PowerShell, then `Get-Process` to
+ *     resolve the PID into a command line.
  *
- * Both paths tolerate missing tooling: if `lsof` / PowerShell isn't
- * installed, the probe returns `{ inUse: false }` rather than failing
- * the test run itself — the probe is a best-effort friendliness
- * check, not a prerequisite.
+ * Both paths tolerate missing tooling: if `lsof` / PowerShell is not
+ * installed the probe returns `{ inUse: false }` rather than failing the
+ * test run — it is a best-effort friendliness check, not a prerequisite.
  */
 import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { getPlatform } from '../utils/platform.js';
 import { exec } from '../utils/process.js';
+import { formatPsDuration, parsePsDuration } from '../utils/ps-duration.js';
 
 /** Default Marionette control port set by `-marionette`. */
 export const DEFAULT_MARIONETTE_PORT = 2828;
@@ -81,6 +76,13 @@ export interface MarionettePortProbeResult {
 export interface RunningBundleProcess {
   pid: number;
   commandLine: string;
+  /**
+   * Elapsed wall-clock seconds since the process started, from `ps
+   * etime=`. `NaN` when the field was absent or unparseable — callers must
+   * omit the clause rather than print a zero, because "started 0s ago" is
+   * exactly the wrong attribution for a peer session's long-lived browser.
+   */
+  elapsedSeconds: number;
 }
 
 /**
@@ -98,7 +100,8 @@ async function findRunningBundleProcesses(
       const escapedPath = launchableBinary.replaceAll("'", "''");
       const script =
         `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '${escapedPath}' } | ` +
-        'ForEach-Object { Write-Output ("$($_.ProcessId) $($_.CommandLine)") }';
+        'ForEach-Object { Write-Output ("$($_.ProcessId) ' +
+        '$([int]((Get-Date) - $_.CreationDate).TotalSeconds)s $($_.CommandLine)") }';
       const result = await exec('powershell.exe', [
         '-NoProfile',
         '-NonInteractive',
@@ -108,22 +111,41 @@ async function findRunningBundleProcesses(
       return parseProcessList(result.stdout, launchableBinary);
     }
 
-    const result = await exec('ps', ['-axo', 'pid=,args=']);
+    // `etime=` is what makes the refusal attributable on a shared checkout:
+    // a browser that started as YOUR run was finishing is not yours.
+    const result = await exec('ps', ['-axo', 'pid=,etime=,args=']);
     return parseProcessList(result.stdout, launchableBinary);
   } catch {
     return [];
   }
 }
 
-/** Pure parser kept exported so platform output handling is regression-testable. */
+/**
+ * Pure parser kept exported so platform output handling is
+ * regression-testable.
+ *
+ * Reads `pid etime args` where the middle field is a `ps` duration. The
+ * elapsed field is parsed OPTIMISTICALLY: a listing produced without
+ * `etime=` still parses, with the duration reported as `NaN` and the whole
+ * second field folded back into the command line, so a caller that lost the
+ * column degrades to the old behaviour instead of dropping the process.
+ */
 export function parseProcessList(stdout: string, launchableBinary: string): RunningBundleProcess[] {
   const matches: RunningBundleProcess[] = [];
   for (const line of stdout.split(/\r?\n/)) {
-    const match = /^\s*(\d+)\s+(.+)$/.exec(line);
-    if (!match?.[1] || !match[2]?.includes(launchableBinary)) continue;
+    const match = /^\s*(\d+)\s+(\S+)\s+(.+)$/.exec(line);
+    if (!match?.[1]) continue;
     const pid = Number(match[1]);
     if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
-    matches.push({ pid, commandLine: match[2] });
+    const maybeElapsed = match[2] ?? '';
+    const elapsedSeconds = parsePsDuration(maybeElapsed);
+    // Without an `etime` column the second field is the head of the command
+    // line, so put it back rather than swallowing it.
+    const commandLine = Number.isNaN(elapsedSeconds)
+      ? `${maybeElapsed} ${match[3] ?? ''}`.trim()
+      : (match[3] ?? '');
+    if (!commandLine.includes(launchableBinary)) continue;
+    matches.push({ pid, commandLine, elapsedSeconds });
   }
   return matches;
 }
@@ -165,14 +187,69 @@ export async function ensureLaunchableBrowserNotRunning(
     }
   }
 
+  throw new GeneralError(describeRunningBundleRefusal(holder));
+}
+
+/**
+ * True when the process was launched BY a test harness — its command line
+ * carries `-marionette` (the control channel every `fireforge test` browser
+ * is started with) or a harness `-profile`.
+ *
+ * This is the distinction the refusal turns on. The objdir-bundle probe
+ * matches any process running this project's binary, which on a shared
+ * checkout includes a peer session's LIVE browser and a developer's own
+ * interactive one. Only a marionette-driven browser is safely
+ * attributable to an interrupted run.
+ */
+function isHarnessDrivenBrowser(commandLine: string): boolean {
+  return /\s-marionette(?:\s|$)/.test(commandLine) || /\s-profile(?:\s|=)/.test(commandLine);
+}
+
+/**
+ * Builds the refusal for a running objdir browser.
+ *
+ * Reports the EVIDENCE rather than a bare PID: the elapsed time and the
+ * command line are what let an operator on a shared checkout decide whose
+ * process it is, without reconstructing PID ancestry by hand. A downstream
+ * fork hit exactly this — the message named a PID belonging to a peer
+ * session's live browser and offered a flag that would have killed a
+ * multi-hour evaluation run.
+ *
+ * So `--kill-stale-marionette` is offered ONLY for a marionette-driven
+ * browser. For a bare launch the message says what it found and stops:
+ * FireForge cannot tell a dead run's orphan from someone's live window, and
+ * the flag is the right MANUAL clear once ownership is verified, never an
+ * automatic one.
+ *
+ * Exported for direct unit testing.
+ */
+export function describeRunningBundleRefusal(holder: RunningBundleProcess): string {
   const killHint =
     process.platform === 'win32'
       ? `Stop-Process -Id ${holder.pid} -Force`
       : `kill ${holder.pid}  # or "kill -9 ${holder.pid}" if it doesn't exit`;
-  throw new GeneralError(
-    `A browser from this project's objdir is already running (PID ${holder.pid}). ` +
-      'It may have survived a previously timed-out or interrupted "fireforge test" run and can wedge the next headed launch. ' +
-      `Stop it with "${killHint}", or retry with "--kill-stale-marionette".`
+  const elapsed = formatPsDuration(holder.elapsedSeconds);
+  const age = elapsed !== undefined ? ` running for ${elapsed}` : '';
+  const harnessDriven = isHarnessDrivenBrowser(holder.commandLine);
+  const evidence =
+    `A browser from this project's objdir is already running (PID ${holder.pid}${age}).\n` +
+    `  command: ${holder.commandLine}\n`;
+
+  if (harnessDriven) {
+    return (
+      evidence +
+      '  This one carries harness arguments (-marionette/-profile), so it is very likely an orphan ' +
+      'of a timed-out or interrupted "fireforge test" run, and it can wedge the next headed launch.\n' +
+      `  Stop it with "${killHint}", or retry with "--kill-stale-marionette".`
+    );
+  }
+  return (
+    evidence +
+    '  This one carries NO harness arguments (-marionette/-profile), so it is not a test browser — ' +
+    "it is more likely a developer's own window, or another session sharing this checkout.\n" +
+    '  "--kill-stale-marionette" is deliberately NOT suggested here: FireForge cannot tell an orphan ' +
+    "from someone else's live browser. Confirm the owner (start time above, and the command line), " +
+    `then stop it yourself with "${killHint}" if it is in fact yours.`
   );
 }
 

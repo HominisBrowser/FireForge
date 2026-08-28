@@ -74,8 +74,8 @@ export interface BuildOptions {
   rewriteMozinfo?: boolean;
   /**
    * Refuse the build (rather than warn) when it would overwrite engine
-   * content recorded in neither a patch body nor the pristine baseline
-   *. The default is a loud warning, because an interactive
+   * content recorded in neither a patch body nor the pristine baseline.
+   * The default is a loud warning, because an interactive
    * operator often means to discard the drift; a scripted gate on a
    * multi-session checkout wants the hard stop.
    */
@@ -179,8 +179,7 @@ export interface ResetOptions {
 export interface DiscardOptions {
   /**
    * Restore to pristine upstream (HEAD) instead of the patch-applied
-   * baseline; deletes patch-created files (the pre-0.39.0 semantics —
-   *).
+   * baseline, deleting patch-created files.
    */
   toUpstream?: boolean;
   /** Show what would be discarded without doing it */
@@ -201,6 +200,11 @@ export interface PackageOptions {
  * Options for the import command.
  */
 export interface ImportOptions {
+  /**
+   * Answer the engine-drift prompt non-interactively. Unlike `force`,
+   * this does NOT waive the patch-integrity gate.
+   */
+  yes?: boolean;
   /** Specific patches to apply (by name) */
   patches?: string[];
   /** Continue applying patches even if one fails */
@@ -284,13 +288,10 @@ export interface ReExportOptions {
    */
   tier?: 'branding';
   /**
-   * Lint check IDs to suppress, **appended** (union) to the patch's
-   * existing `lintIgnore` list. De-duplicated. Mutually exclusive with
-   * `--all`. To remove an entry or clear the list entirely, use the
-   * `fireforge patch lint-ignore` subcommand (which has explicit
-   * `--add` / `--remove` / `--clear` modes); re-export's append-only
-   * semantics match the operator's most common intent ("I want this
-   * patch to also suppress X").
+   * Lint check IDs to suppress, **appended** (union) to the patch's existing
+   * `lintIgnore` list. De-duplicated. Mutually exclusive with `--all`. To
+   * remove an entry or clear the list, use `fireforge patch lint-ignore`,
+   * which has explicit `--add` / `--remove` / `--clear` modes.
    */
   lintIgnore?: string[];
   /**
@@ -310,10 +311,9 @@ export interface ReExportOptions {
    */
   refuseAdjacentUnmanaged?: boolean;
   /**
-   * Bypass per-patch lint result cache reads AND writes for this
-   * invocation (`--no-cache`). The cache is what makes a repeat
-   * re-export of an unchanged patch skip the checkJs program build
-   * entirely.
+   * Bypass per-patch lint result cache reads AND writes for this invocation
+   * (`--no-cache`). The cache is what lets a repeat re-export of an unchanged
+   * patch skip the checkJs program build entirely.
    */
   noCache?: boolean;
   /**
@@ -329,9 +329,9 @@ export interface ReExportOptions {
    * Engine-relative files whose drift is EXPECTED (`--expect`, repeatable;
    * requires `--refuse-foreign-drift`). The content-based drift detector
    * cannot tell the exporting session's own slice edits from another
-   * session's, so a real slice export under the refusal flag
-   * names its intended files here: drift confined to expected files
-   * proceeds, drift anywhere else still refuses.
+   * session's, so a slice export under the refusal flag names its intended
+   * files here: drift confined to expected files proceeds, drift anywhere
+   * else still refuses.
    */
   expect?: string[];
 }
@@ -342,6 +342,11 @@ export interface ReExportOptions {
  * `.patch` file body — the manifest is the only thing that changes.
  */
 export interface PatchTierOptions {
+  /**
+   * Seconds to wait for the patch directory lock. This command mutates patch
+   * metadata under that lock.
+   */
+  waitLock?: number | boolean;
   /** Force the named tier on the patch. Only `"branding"` is recognised. */
   tier?: 'branding';
   /** Remove the `tier` override entirely, restoring auto-detection. */
@@ -358,6 +363,11 @@ export interface PatchTierOptions {
  * be set per invocation.
  */
 export interface PatchLintIgnoreOptions {
+  /**
+   * Seconds to wait for the patch directory lock. This command mutates patch
+   * metadata under that lock.
+   */
+  waitLock?: number | boolean;
   /** Lint check IDs to add to the patch's `lintIgnore` list (union, de-duped). */
   add?: string[];
   /** Lint check IDs to remove from the patch's `lintIgnore` list. */
@@ -376,6 +386,11 @@ export interface PatchLintIgnoreOptions {
  * declarations, or clear all staged dependencies from the patch.
  */
 export interface PatchStagedDependencyOptions {
+  /**
+   * Seconds to wait for the patch directory lock. This command mutates patch
+   * metadata under that lock.
+   */
+  waitLock?: number | boolean;
   /** Add a staged dependency declaration. */
   add?: boolean;
   /** Remove matching staged dependency declarations. */
@@ -473,6 +488,11 @@ export interface PatchMoveFilesOptions {
  * Options for the rebase command.
  */
 export interface RebaseOptions {
+  /**
+   * Seconds to wait for the patch directory lock. The rebase loop rewrites
+   * patch bodies under that lock.
+   */
+  waitLock?: number | boolean;
   /** Resume a previously interrupted rebase session */
   continue?: boolean;
   /** Cancel the current rebase session and restore engine */
@@ -539,26 +559,41 @@ export interface RunOptions {
 export interface TestOptions {
   /** Run tests in headless mode */
   headless?: boolean;
+  /**
+   * Pass mozbuild's full verbosity through for the TEST phase by unsetting
+   * the coding-agent markers it quiets output on. Off by default, because
+   * that quieting is worth keeping for builds.
+   */
+  fullOutput?: boolean;
   /** Run incremental UI build before testing */
   build?: boolean;
   /**
    * Run the scoped pre-test build (packaging exactly the requested paths,
    * MIXED harnesses allowed) and exit without dispatching tests. One
    * ~10-minute build then covers both an xpcshell and a browser-chrome
-   * half of a slice; run each harness afterwards without `--build`
-   *. Emits `FIREFORGE-VERDICT: PASS` on success.
+   * half of a slice; run each harness afterwards without `--build`.
+   * Emits `FIREFORGE-VERDICT: PASS` on success.
    */
   buildOnly?: boolean;
   /**
    * Union the paths this build packages onto the recorded coverage claim
-   * instead of REPLACING it, so successive scoped builds
-   * accumulate and an earlier slice's build-less runs stay covered. Valid
-   * only with `--build`/`--build-only` and explicit paths. Refused
-   * fail-closed unless the build anchor is unchanged: same engine HEAD,
-   * same `engine/mozconfig`, and every previously fingerprinted packageable
-   * file byte-identical. See `src/core/coverage-extend.ts`.
+   * instead of REPLACING it, so successive scoped builds accumulate and an
+   * earlier slice's build-less runs stay covered. Valid only with
+   * `--build`/`--build-only` and explicit paths. Refused fail-closed unless
+   * the build anchor is unchanged: same engine HEAD, same `engine/mozconfig`,
+   * and every previously fingerprinted packageable file byte-identical. See
+   * `src/core/coverage-extend.ts`.
    */
   extendCoverage?: boolean;
+  /**
+   * Forwarded to the PRE-TEST build: refuse (rather than warn) when that
+   * build would overwrite engine content recorded in neither a patch body
+   * nor the pristine baseline. Same meaning as `fireforge build`'s flag of
+   * the same name — a scripted `test --build` is exactly the shape the
+   * multi-session hazard shows up in, and until now it was the one shape
+   * that could not arm the refusal. Valid only with `--build`/`--build-only`.
+   */
+  refuseUnexportedDrift?: boolean;
   /** Forward mach's pathless auto-selection mode. Valid only with no explicit paths. */
   auto?: boolean;
   /**
@@ -611,7 +646,7 @@ export interface TestOptions {
    * single-suite run auto-selects. Escape hatch for the rare case where a
    * suite-specific command misbehaves; on a healthy host the generic command
    * is equivalent. The default (auto suite dispatch) skips the mozlog
-   * resource monitor that crashes `mach test` on a broken host (E1).
+   * resource monitor that crashes `mach test` on a broken host.
    */
   genericMachTest?: boolean;
   /**
@@ -644,6 +679,12 @@ export interface FurnaceApplyOptions {
   force?: boolean;
   /** Watch component directories and re-apply on changes */
   watch?: boolean;
+  /**
+   * Resolved `--wait-lock` budget in seconds, or undefined for the default.
+   * Threaded to the furnace lock `runFurnaceMutation` takes INSIDE the
+   * engine session lock, so one flag governs both.
+   */
+  waitLockSeconds?: number;
 }
 
 /**
@@ -664,6 +705,12 @@ export interface FurnaceDeployOptions {
   force?: boolean;
   /** Skip the validation step (apply only, no accessibility/compatibility checks) */
   skipValidate?: boolean;
+  /**
+   * Resolved `--wait-lock` budget in seconds, or undefined for the default.
+   * Threaded to the furnace lock `runFurnaceMutation` takes INSIDE the
+   * engine session lock, so one flag governs both.
+   */
+  waitLockSeconds?: number;
 }
 
 /**
@@ -688,6 +735,12 @@ export interface FurnaceSyncOptions {
   dryRun?: boolean;
   /** Conflict resolution strategy for three-way merge (ours = keep local, theirs = accept upstream) */
   strategy?: 'ours' | 'theirs';
+  /**
+   * Resolved `--wait-lock` budget in seconds, or undefined for the default.
+   * Threaded to the furnace lock `runFurnaceMutation` takes INSIDE the
+   * engine session lock, so one flag governs both.
+   */
+  waitLockSeconds?: number;
 }
 
 /**
@@ -837,13 +890,11 @@ export interface PatchDeleteOptions {
 }
 
 /**
- * Options for the `fireforge patch rename` subcommand. Updates the
- * patch's filename, manifest `name`, and (optionally) `description`
- * atomically without rewriting the `.patch` file body. Companion to
- * `re-export --files` for the case where the body is already correct
- * but the patch's identity (filename + description) describes a
- * pre-shrink scope; before this verb existed the only workaround was
- * `delete` + re-export, which briefly dropped the patch from the queue.
+ * Options for the `fireforge patch rename` subcommand. Updates the patch's
+ * filename, manifest `name`, and (optionally) `description` atomically
+ * without rewriting the `.patch` file body. Companion to `re-export --files`
+ * for the case where the body is already correct but the patch's identity
+ * describes a pre-shrink scope.
  */
 export interface PatchRenameOptions {
   /**
@@ -951,9 +1002,9 @@ export interface StatusOptions {
    * `ownership` block — the flat path→owning-patch rows plus
    * managed/unmanaged/conflict counts — so a gate reads ownership,
    * classification, and the check verdict from ONE scan instead of three
-   * back-to-back `status` invocations. A modifier, not a mode:
-   * exit semantics are unchanged, so ownership conflicts still fail only
-   * the human `--ownership` mode. Refused without `--json`.
+   * back-to-back `status` invocations. A modifier, not a mode: exit
+   * semantics are unchanged, so ownership conflicts still fail only the
+   * human `--ownership` mode. Refused without `--json`.
    */
   includeOwnership?: boolean;
   /**
@@ -975,7 +1026,12 @@ export interface StatusOptions {
  * Options for the token add command.
  */
 export interface TokenAddOptions {
-  category: string;
+  /**
+   * Required for a base declaration; optional under
+   * {@link TokenAddOptions.variant}, which routes into a `:root<selector>`
+   * block where no category applies.
+   */
+  category?: string;
   mode: string;
   description?: string;
   darkValue?: string;
@@ -993,7 +1049,35 @@ export interface TokenAddOptions {
  * Options for the doctor command.
  */
 export interface DoctorOptions {
+  /**
+   * Seconds to wait for the patch directory lock. This command can mutate
+   * the patch manifest under that lock.
+   */
+  waitLock?: number | boolean;
+  /**
+   * Rebuild patches.json from the on-disk patch files, preserving every
+   * field the patch bodies cannot express. Refused when patches.json exists
+   * but cannot be parsed, unless `allowMetadataLoss` is also set.
+   */
   repairPatchesManifest?: boolean;
+  /**
+   * Repair only the `filesAffected` lists that disagree with their patch
+   * body. Narrower than `repairPatchesManifest`: it rewrites one field on the
+   * drifted rows and leaves every other row byte-identical, and it needs no
+   * project config, so it works on a project whose fireforge.json is broken.
+   */
+  repairFilesAffected?: boolean;
+  /**
+   * Accept the whole-manifest metadata reinvention that rebuilding an
+   * unparseable patches.json implies. Only meaningful with
+   * `repairPatchesManifest`.
+   */
+  allowMetadataLoss?: boolean;
+  /**
+   * Project what a requested repair would change and write nothing. Refused
+   * without a repair flag rather than accepted as a silent no-op.
+   */
+  dryRun?: boolean;
   /**
    * Clear a stale `pendingResolution` marker, but only after the same
    * read-only queue health checks used by `fireforge verify` report no
@@ -1015,14 +1099,6 @@ export interface DoctorOptions {
   postRebaseAudit?: boolean;
 }
 
-/**
- * Global CLI options available to all commands.
- */
-export interface GlobalOptions {
-  /** Enable verbose/debug output */
-  verbose?: boolean;
-}
-
 /** Options controlling how the lint command filters and tags its output. */
 export interface LintCommandOptions {
   /**
@@ -1035,38 +1111,31 @@ export interface LintCommandOptions {
   since?: string;
   /**
    * When set together with {@link since}, scope the exit code to issues
-   * tagged `introduced`. Cumulative pre-existing errors still print (so
-   * the operator can still see the full queue state) but do not fail
-   * lint. Motivating case: a branch whose diff is clean but whose repo
-   * already carries unrelated `raw-color` / license-header errors from
-   * older patches. Without this flag, CI treats the clean branch as
-   * failing; with it, a branch "breaks the build" only when its own diff
-   * introduced a new error.
+   * tagged `introduced`. Cumulative pre-existing errors still print, so the
+   * operator sees the full queue state, but do not fail lint. This is for a
+   * branch whose own diff is clean but whose repo carries unrelated
+   * `raw-color` / license-header errors from older patches.
    *
-   * Requires {@link since}: without a revision to diff against there is
-   * no distinction between introduced and cumulative, so the flag is
-   * rejected up-front rather than silently ignored.
+   * Requires {@link since}: without a revision to diff against there is no
+   * distinction between introduced and cumulative, so the flag is rejected
+   * up-front rather than silently ignored.
    */
   onlyIntroduced?: boolean;
   /**
-   * Lint each patch in the queue as its own isolated diff, rather than
-   * the aggregate `git diff HEAD` across all applied patches.
+   * Lint each patch in the queue as its own isolated diff, rather than the
+   * aggregate `git diff HEAD` across all applied patches.
    *
-   * Motivating case: running `fireforge lint` (no args) on a repo where
-   * `fireforge import` or `fireforge rebase` has just applied the full
-   * patch queue produces an aggregate diff (every patch's changes
-   * summed). The patch-size advisory rules (`large-patch-lines`,
-   * `large-patch-files`) then fire against the sum — e.g. "Patch is
-   * 37529 lines" on a queue of 22 individually-fine patches — which
-   * reads as a task-specific regression when it is really an artefact
-   * of the aggregation. `--per-patch` rescopes the diff to each patch's
-   * own `filesAffected`, honours the patch's own `lintIgnore`, and runs
-   * the cross-patch rules once over the whole queue so queue-level
-   * findings (duplicate creations, forward imports) still surface.
+   * On a repo where `import` or `rebase` has just applied the full queue,
+   * the aggregate diff sums every patch's changes, and the patch-size
+   * advisory rules (`large-patch-lines`, `large-patch-files`) fire against
+   * that sum — "Patch is 37529 lines" for a queue of individually-fine
+   * patches. `--per-patch` rescopes the diff to each patch's own
+   * `filesAffected`, honours the patch's own `lintIgnore`, and runs the
+   * cross-patch rules once over the whole queue so queue-level findings
+   * still surface.
    *
-   * Positional file arguments change meaning under this flag: they are
-   * PATCH selectors resolved like {@link patches} entries, not engine
-   * file paths.
+   * Positional file arguments change meaning under this flag: they are PATCH
+   * selectors resolved like {@link patches} entries, not engine file paths.
    */
   perPatch?: boolean;
   /**

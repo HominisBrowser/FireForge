@@ -11,11 +11,9 @@ let verboseMode = false;
  * In machine mode, stdout belongs EXCLUSIVELY to the machine-readable
  * payload: all human-facing diagnostics (intro/outro banners, info, warn,
  * error, steps, notes) are routed to stderr as plain unstyled lines.
- * Before this mode existed, clack's log helpers wrote styled warnings to
- * stdout *before* the JSON body — a truncated-directory warning during
- * `status --json` broke every `JSON.parse(stdout)` consumer, and error
- * objects on the machine contract were followed by a styled duplicate on
- * the same stream.
+ * Otherwise clack's log helpers write styled warnings to stdout *before* the
+ * JSON body — a truncated-directory warning during `status --json` breaks
+ * every `JSON.parse(stdout)` consumer.
  */
 let machineOutputMode = false;
 
@@ -58,6 +56,19 @@ export function setStdoutSealed(sealed: boolean): void {
   stdoutSealed = sealed;
 }
 
+/**
+ * True when a machine-readable payload already owns stdout.
+ *
+ * The CLI error boundary consults this before emitting a `--json` error
+ * envelope: a command that wrote its payload and THEN refused (e.g.
+ * `status --json --fail-on`) must not have a second JSON document appended,
+ * which would break the "exactly one document" half of the contract in
+ * docs/machine-output.md.
+ */
+export function isStdoutSealed(): boolean {
+  return stdoutSealed;
+}
+
 /** True when human output must avoid stdout. */
 function routeToStderr(): boolean {
   return machineOutputMode || stdoutSealed;
@@ -70,9 +81,13 @@ function writeDiagnostic(prefix: string, message: string): void {
 
 /**
  * Checks if verbose mode is enabled.
+ *
+ * Exported so the CLI error boundary can decide whether to walk an error's
+ * `cause` chain.
+ *
  * @returns True if verbose mode is enabled
  */
-function isVerbose(): boolean {
+export function isVerbose(): boolean {
   return verboseMode;
 }
 
@@ -156,13 +171,13 @@ export const NOTICE_PREFIX = '[FireForge] NOTICE:';
  *
  * These lines are not warnings about the operator's code — they explain a
  * decision FireForge just made (escalating an incremental build to a full
- * one, sharding a run, skipping a step). Emitted through `info` they were
+ * one, sharding a run, skipping a step). Emitted through `info` they are
  * silently dropped by agent-facing output filters that keep only warnings
  * and errors, leaving a multi-minute build with no explanation and reading
  * as a hang. There are very few such lines and they are exactly the ones a
- * non-interactive operator needs, so they ride the warning channel and
- * carry {@link NOTICE_PREFIX} so a reader can still tell them apart from a
- * real warning.
+ * non-interactive operator needs, so they ride the warning channel and carry
+ * {@link NOTICE_PREFIX} so a reader can still tell them apart from a real
+ * warning.
  */
 export function notice(message: string): void {
   if (routeToStderr()) {
@@ -276,12 +291,10 @@ export function cancel(message: string): void {
  * Checks whether a prompt result represents a user cancellation.
  *
  * Narrows to `symbol` — clack returns its cancel sentinel as a symbol and
- * `p.isCancel` is itself a type predicate. This wrapper erased that narrowing
- * by returning plain `boolean` until 0.41.0, which forced eleven `as string`
- * / `as PatchCategory` / `as OverrideType` casts across six command modules
- * on the *non*-cancelled branch, where the value is already known not to be
- * the sentinel. Keep the predicate form: it is the single highest-leverage
- * signature in the codebase for escape-hatch count.
+ * `p.isCancel` is itself a type predicate. Returning plain `boolean` erases
+ * that narrowing and forces `as string` / `as PatchCategory` casts across
+ * the command modules on the *non*-cancelled branch, where the value is
+ * already known not to be the sentinel. Keep the predicate form.
  */
 export function isCancel(value: unknown): value is symbol {
   return p.isCancel(value);

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { FurnaceError } from '../../errors/furnace.js';
 import {
   CUSTOM_ELEMENT_TAG_PATTERN,
+  describeTagNameProblem,
   validateRegistrationPlacement,
   validateTagName,
 } from '../furnace-registration-validate.js';
@@ -158,6 +159,33 @@ ${dclBlock}`;
 
     expect(() => {
       validateRegistrationPlacement(result, 'my-legacy', false);
+    }).not.toThrow();
+  });
+});
+
+describe('describeTagNameProblem', () => {
+  it('returns the rule instead of throwing, so a prompt can re-ask', () => {
+    // `furnace create`'s interactive tag prompt passed the THROWING
+    // `validateTagName` to clack's `validate` callback, which expects a
+    // returned message. An invalid name escaped clack's validation loop as a
+    // FurnaceError and killed the prompt instead of showing the rule inline.
+    const problem = describeTagNameProblem('NotAValidTag');
+    expect(problem).toBeTypeOf('string');
+    expect(problem).toContain('NotAValidTag');
+  });
+
+  it('returns undefined for a valid tag name', () => {
+    expect(describeTagNameProblem('moz-my-widget')).toBeUndefined();
+  });
+
+  it('agrees with the throwing sibling', () => {
+    // The two must never disagree: `validateTagName` is implemented in terms
+    // of this one precisely so they cannot drift.
+    expect(() => {
+      validateTagName('NotAValidTag');
+    }).toThrow(/NotAValidTag/);
+    expect(() => {
+      validateTagName('moz-my-widget');
     }).not.toThrow();
   });
 });

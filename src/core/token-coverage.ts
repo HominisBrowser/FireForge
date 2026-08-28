@@ -10,17 +10,17 @@ import { loadFurnaceConfig } from './furnace-config.js';
 
 /**
  * Default platform prefixes treated as allowlisted upstream vars. Any
- * `var(--moz-*)` usage in a fork's CSS is a Firefox platform variable
- * that the fork does not own and should not be counted as an unknown.
- * 2026-04-21 eval (Finding #5): a `furnace override moz-button -t
- * css-only` + one fork token produced 1% coverage because the 84
- * upstream `--moz-*` vars in the copied baseline counted as unknown.
+ * `var(--moz-*)` usage in a fork's CSS is a Firefox platform variable the
+ * fork does not own and must not count as an unknown — otherwise a
+ * `furnace override moz-button -t css-only` plus one fork token reports 1%
+ * coverage, because the ~84 upstream `--moz-*` vars in the copied baseline
+ * all count against it.
  *
  * Forks that want to opt out can override this via
- * `furnace.json.platformPrefixes = []`; forks that want more can
- * extend it (e.g. `['--moz-', '--in-content-']`). The config is
- * additive — nothing is removed from the defaults unless the operator
- * explicitly writes a shorter list.
+ * `furnace.json.platformPrefixes = []`; forks that want more can extend it
+ * (e.g. `['--moz-', '--in-content-']`). The config is additive — nothing is
+ * removed from the defaults unless the operator explicitly writes a shorter
+ * list.
  */
 const DEFAULT_PLATFORM_PREFIXES: readonly string[] = ['--moz-'];
 

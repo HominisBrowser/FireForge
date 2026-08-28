@@ -8,6 +8,11 @@
  * independently of the mutation plumbing.
  */
 
+import {
+  BROWSER_TEST_SCAFFOLD_ROOT,
+  resolveBrowserChromeTestDir,
+  resolveXpcshellTestDir,
+} from '../../core/furnace-constants.js';
 import type { ResolvedTestStyle } from '../../types/furnace.js';
 
 export interface DryRunPlanInput {
@@ -26,6 +31,14 @@ export interface DryRunPlanInput {
   testStyle: ResolvedTestStyle;
   description: string;
   binaryName: string;
+  /**
+   * Resolved `--test-dir` override (engine-relative, already validated by
+   * `resolveValidatedTestDir`). Omit for the default `<binaryName>`-derived
+   * scaffold directory. The formatters MUST receive the same value the
+   * scaffolders get — the plan used to recompute the default from
+   * `binaryName` and named a directory the real run never wrote to.
+   */
+  testDir?: string;
 }
 
 /**
@@ -38,8 +51,9 @@ function formatTestSection(args: {
   testStyle: ResolvedTestStyle;
   componentName: string;
   binaryName: string;
+  testDir?: string | undefined;
 }): string {
-  const { testStyle, componentName, binaryName } = args;
+  const { testStyle, componentName, binaryName, testDir } = args;
   if (testStyle === 'none') return '';
 
   const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;
@@ -49,17 +63,21 @@ function formatTestSection(args: {
   const underscored = withoutBinaryPrefix.replace(/-/g, '_');
 
   if (testStyle === 'browser-chrome') {
-    const testRoot = `engine/browser/base/content/test/${binaryName}/`;
+    // Same resolver as scaffoldTestFiles: the registration name is the
+    // path below browser/base/content/test/, which under --test-dir is
+    // NOT the binary name.
+    const testDirRel = resolveBrowserChromeTestDir(binaryName, testDir);
+    const manifestName = testDirRel.slice(BROWSER_TEST_SCAFFOLD_ROOT.length);
     return (
-      `\n\nWould create test files in ${testRoot}:\n` +
+      `\n\nWould create test files in engine/${testDirRel}/:\n` +
       `  browser.toml\n  head.js\n  browser_${binaryName}_${underscored}.js` +
-      `\n\nWould register ${binaryName}/browser.toml in engine/browser/base/moz.build`
+      `\n\nWould register ${manifestName}/browser.toml in engine/browser/base/moz.build`
     );
   }
 
   if (testStyle === 'xpcshell') {
-    const testRoot = `engine/browser/base/content/test/${binaryName}-xpcshell/${componentName}/`;
-    return `\n\nWould create xpcshell test files in ${testRoot}`;
+    const testDirRel = resolveXpcshellTestDir(binaryName, componentName, testDir);
+    return `\n\nWould create xpcshell test files in engine/${testDirRel}/`;
   }
 
   // testStyle === 'mochikit' (last remaining branch in ResolvedTestStyle).
@@ -78,8 +96,10 @@ export function formatSuccessNote(args: {
   testFiles: string[];
   testStyle: ResolvedTestStyle;
   binaryName: string;
+  /** Resolved `--test-dir` override; see {@link DryRunPlanInput.testDir}. */
+  testDir?: string | undefined;
 }): string {
-  const { componentName, files, testFiles, testStyle, binaryName } = args;
+  const { componentName, files, testFiles, testStyle, binaryName, testDir } = args;
 
   let note =
     `Files created in components/custom/${componentName}/:\n` +
@@ -88,11 +108,11 @@ export function formatSuccessNote(args: {
   if (testFiles.length > 0) {
     let testRoot: string;
     if (testStyle === 'xpcshell') {
-      testRoot = `engine/browser/base/content/test/${binaryName}-xpcshell/${componentName}/`;
+      testRoot = `engine/${resolveXpcshellTestDir(binaryName, componentName, testDir)}/`;
     } else if (testStyle === 'mochikit') {
       testRoot = 'engine/toolkit/content/tests/widgets/';
     } else {
-      testRoot = `engine/browser/base/content/test/${binaryName}/`;
+      testRoot = `engine/${resolveBrowserChromeTestDir(binaryName, testDir)}/`;
     }
     note += `\n\nTest files in ${testRoot}:\n` + testFiles.map((f) => `  ${f}`).join('\n');
   }
@@ -126,6 +146,7 @@ export function formatDryRunPlan(args: DryRunPlanInput): string {
     testStyle,
     description,
     binaryName,
+    testDir,
   } = args;
 
   const componentFiles: string[] = [`${componentName}.mjs`, `${componentName}.css`];
@@ -137,7 +158,7 @@ export function formatDryRunPlan(args: DryRunPlanInput): string {
     `Would create files in components/custom/${componentName}/:\n` +
     componentFiles.map((f) => `  ${f}`).join('\n');
 
-  plan += formatTestSection({ testStyle, componentName, binaryName });
+  plan += formatTestSection({ testStyle, componentName, binaryName, testDir });
 
   plan += `\n\nWould add custom entry to furnace.json:`;
   plan += `\n  name: ${componentName}`;

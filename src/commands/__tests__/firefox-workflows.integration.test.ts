@@ -23,6 +23,12 @@ import { reExportCommand } from '../re-export.js';
 import { setupCommand } from '../setup.js';
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -127,7 +133,7 @@ describe('Firefox workflow fixtures', () => {
     await runGit(join(projectRoot, 'engine'), ['commit', '-m', 'upstream drift']);
 
     await expect(importCommand(projectRoot, {})).rejects.toThrow(
-      'Engine HEAD has drifted from base commit. Re-run with --force to bypass drift check.'
+      /Re-run with --yes to accept the drift, or --force to also bypass the patch-integrity gate/
     );
   });
 

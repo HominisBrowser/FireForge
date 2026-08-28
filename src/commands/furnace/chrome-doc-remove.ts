@@ -10,19 +10,15 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 
 import { loadConfig } from '../../core/config.js';
+import { stdioIsInteractive } from '../../core/destructive.js';
 import {
+  completeJournalRollback,
   type FurnaceOperationContext,
-  recordFurnaceRollbackFailure,
   runFurnaceMutation,
 } from '../../core/furnace-operation.js';
-import {
-  createRollbackJournal,
-  restoreRollbackJournalOrThrow,
-  snapshotDir,
-  snapshotFile,
-} from '../../core/furnace-rollback.js';
+import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
+import { createRollbackJournal, snapshotDir, snapshotFile } from '../../core/furnace-rollback.js';
 import { FurnaceError } from '../../errors/furnace.js';
-import { toError } from '../../utils/errors.js';
 import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro } from '../../utils/logger.js';
 import { buildChromeDocPlan, type ChromeDocPlan, validateChromeDocName } from './chrome-doc.js';
@@ -141,23 +137,12 @@ async function performChromeDocRemoveMutations(args: {
       journal
     );
   } catch (error: unknown) {
-    // This body owns its rollback end to end, so tell the lifecycle wrapper
-    // not to restore the same journal again on the way out.
-    args.operationContext.markRolledBack();
-    try {
-      await restoreRollbackJournalOrThrow(journal, `Failed to remove chrome-doc "${args.name}"`);
-    } catch (rollbackError) {
-      // Matches the seven sibling mutation sites: a failed rollback leaves the
-      // engine in an unknown state, so record the repair breadcrumb and let
-      // the rollback error win rather than discarding it.
-      await recordFurnaceRollbackFailure(
-        args.projectRoot,
-        'chrome-doc-rollback',
-        `chrome-doc "${args.name}": ${toError(rollbackError).message}`
-      );
-      throw rollbackError;
-    }
-    throw error;
+    return await completeJournalRollback(args.operationContext, journal, error, {
+      projectRoot: args.projectRoot,
+      operation: 'chrome-doc-rollback',
+      failureMessage: `Failed to remove chrome-doc "${args.name}"`,
+      subject: `chrome-doc "${args.name}"`,
+    });
   }
 
   return { removedFiles, removedJarEntries, removedTestDir };
@@ -175,11 +160,9 @@ export async function furnaceChromeDocRemoveCommand(
 
   const forgeConfig = await loadConfig(projectRoot);
   const engineDir = join(projectRoot, 'engine');
-  if (!(await pathExists(engineDir))) {
-    throw new FurnaceError(
-      'Engine directory not found. Run "fireforge download" first before removing a chrome-doc.'
-    );
-  }
+  await assertFurnaceEngineReady(projectRoot, {
+    engineMissingSuffix: ' before removing a chrome-doc.',
+  });
 
   const plan = await buildChromeDocPlan({
     engineDir,
@@ -195,7 +178,7 @@ export async function furnaceChromeDocRemoveCommand(
     return;
   }
 
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
   if (!options.yes && !isInteractive) {
     throw new FurnaceError(
       `Cannot remove chrome-doc "${name}" in non-interactive mode without --yes flag.`,

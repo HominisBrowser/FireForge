@@ -1,14 +1,24 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Command-level tests for the engine-generation guard's verdict ordering
- *: a run invalidated by a concurrent `engine/` mutation must
- * emit `FAIL reason=inconclusive` as its single verdict line — the sharded
+ * Command-level tests for the engine-generation guard's verdict ordering: a
+ * run invalidated by a concurrent `engine/` mutation must emit
+ * `FAIL reason=inconclusive` as its single verdict line — the sharded
  * aggregate `PASS shards=N/N` must never print first, and single runs must
  * not end verdict-less. Kept separate from `test.test.ts`, which
  * deliberately leaves `engine-session-lock.js` unmocked (its probes fail
  * against the fake `/project/engine` and take the warn-only branch).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The run log is opened before any preflight and its path rides the
+// FIREFORGE-VERDICT line as ` log=<path>`, so these exact-string verdict
+// assertions require no log to be open. Stating that here replaces the
+// accident they used to rely on: `/project` is a filesystem root on POSIX,
+// so the best-effort open failed and degraded to "no log" — while on
+// Windows the same path resolves against the current drive and succeeds.
+vi.mock('../../core/run-log.js', async () =>
+  (await import('../../test-utils/module-mocks.js')).createRunLogMock()
+);
 
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn(() =>
@@ -83,6 +93,11 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+
   setStdoutSealed: vi.fn(),
   intro: vi.fn(),
   info: vi.fn(),

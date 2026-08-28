@@ -18,8 +18,10 @@ import {
   findAllPatchesForFilesWithDetails,
   type SupersedeCoverageDetail,
 } from './patch-export-coverage.js';
+import type { PatchDirectoryLockOptions } from './patch-lock.js';
 import {
   addPatchToManifest,
+  findPatchesAffectingFile,
   loadPatchesManifestForWrite,
   PATCHES_MANIFEST,
   savePatchesManifest,
@@ -78,11 +80,11 @@ export function sanitizeName(name: string): string {
 /**
  * Strips a leading `NNN-<category>-` prefix from a sanitized name slug.
  * Operators frequently pass the DESIRED FILENAME stem to `--name`
- * (`--name 203-ui-foo --category ui`), which 0.33.0 double-prefixed into
- * `203-ui-203-ui-foo.patch`. The filename builders prepend the order and
- * category themselves, so a matching prefix in the name is always
- * redundant. Applied repeatedly so a twice-prefixed slug (from a previous
- * double-prefix incident) also collapses. Exported for direct testing.
+ * (`--name 203-ui-foo --category ui`), which would otherwise double-prefix
+ * into `203-ui-203-ui-foo.patch`. The filename builders prepend the order
+ * and category themselves, so a matching prefix in the name is always
+ * redundant. Applied repeatedly so a twice-prefixed slug also collapses.
+ * Exported for direct testing.
  */
 export function stripRedundantCategoryPrefix(sanitizedName: string, category: string): string {
   const prefixes = [
@@ -109,9 +111,9 @@ export function stripRedundantCategoryPrefix(sanitizedName: string, category: st
  * A single trailing `.patch` extension is stripped before sanitisation:
  * operators frequently pass a full patch FILENAME where a name is expected
  * (`move-files <from> 348-ui-foo.patch --create`, `rename --to foo.patch`),
- * and 0.38.0 slugged the extension into `-patch`, producing double-suffixed
- * `...-patch.patch` files. A name that deliberately ends in a literal
- * `-patch` slug segment must now be written without the dot form.
+ * and slugging the extension produces double-suffixed `...-patch.patch`
+ * files. A name that deliberately ends in a literal `-patch` slug segment
+ * must be written without the dot form.
  */
 export function patchNameSlug(name: string, category: string): string {
   const stem = name.replace(/\.patch$/i, '');
@@ -156,6 +158,12 @@ export interface CommitExportedPatchInput {
   policyCommand?: string;
   /** Whether --force-unsafe was supplied by the mutating command. */
   forceUnsafe?: boolean;
+  /**
+   * `--wait-lock` budget and the command name recorded in the lock's owner
+   * metadata. Threaded from the CLI so a caller that asked to wait is not
+   * silently given the default budget.
+   */
+  lockOptions?: PatchDirectoryLockOptions;
 }
 
 export interface CommitExportedPatchResult {
@@ -175,92 +183,96 @@ export interface CommitExportedPatchResult {
 export async function commitExportedPatch(
   input: CommitExportedPatchInput
 ): Promise<CommitExportedPatchResult> {
-  return withPatchDirectoryLock(input.patchesDir, async () => {
-    const plan = await computeExportPlanUnderLock({
-      patchesDir: input.patchesDir,
-      category: input.category,
-      name: input.name,
-      description: input.description,
-      filesAffected: input.filesAffected,
-      sourceEsrVersion: input.sourceEsrVersion,
-      ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
-      ...(input.sourceVersion !== undefined ? { sourceVersion: input.sourceVersion } : {}),
-      ...(input.tier !== undefined ? { tier: input.tier } : {}),
-      ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
-      ...(input.config !== undefined ? { config: input.config } : {}),
-    });
-
-    if (input.config !== undefined) {
-      enforcePatchPolicy({
-        config: input.config,
-        manifest: plan.manifestAfter,
-        command: input.policyCommand ?? 'export',
-        forceUnsafe: input.forceUnsafe === true,
+  return withPatchDirectoryLock(
+    input.patchesDir,
+    async () => {
+      const plan = await computeExportPlanUnderLock({
+        patchesDir: input.patchesDir,
+        category: input.category,
+        name: input.name,
+        description: input.description,
+        filesAffected: input.filesAffected,
+        sourceEsrVersion: input.sourceEsrVersion,
+        ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
+        ...(input.sourceVersion !== undefined ? { sourceVersion: input.sourceVersion } : {}),
+        ...(input.tier !== undefined ? { tier: input.tier } : {}),
+        ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
+        ...(input.config !== undefined ? { config: input.config } : {}),
       });
-    }
 
-    const patchPath = plan.patchPath;
-    const originalPatchContent = (await pathExists(patchPath)) ? await readText(patchPath) : null;
-    const removedPatchContents = new Map<string, string>();
-
-    for (const oldPatch of plan.supersededPatches) {
-      if (await pathExists(oldPatch.path)) {
-        removedPatchContents.set(oldPatch.path, await readText(oldPatch.path));
+      if (input.config !== undefined) {
+        enforcePatchPolicy({
+          config: input.config,
+          manifest: plan.manifestAfter,
+          command: input.policyCommand ?? 'export',
+          forceUnsafe: input.forceUnsafe === true,
+        });
       }
-    }
 
-    try {
-      await writeText(patchPath, normalizePatchArtifact(input.diff));
-
-      await addPatchToManifest(
-        input.patchesDir,
-        plan.metadata,
-        plan.supersededPatches.map((p) => p.filename)
-      );
+      const patchPath = plan.patchPath;
+      const originalPatchContent = (await pathExists(patchPath)) ? await readText(patchPath) : null;
+      const removedPatchContents = new Map<string, string>();
 
       for (const oldPatch of plan.supersededPatches) {
-        await removeFile(oldPatch.path);
-      }
-    } catch (error: unknown) {
-      // Best-effort rollback: wrap each operation so a secondary failure
-      // never masks the original failure.
-      try {
-        if (originalPatchContent === null) {
-          await removeFile(patchPath);
-        } else {
-          await writeText(patchPath, originalPatchContent);
+        if (await pathExists(oldPatch.path)) {
+          removedPatchContents.set(oldPatch.path, await readText(oldPatch.path));
         }
-      } catch (error: unknown) {
-        warn(`Rollback warning: could not restore patch file: ${toError(error).message}`);
       }
 
-      for (const [oldPatchPath, oldPatchContent] of removedPatchContents) {
+      try {
+        await writeText(patchPath, normalizePatchArtifact(input.diff));
+
+        await addPatchToManifest(
+          input.patchesDir,
+          plan.metadata,
+          plan.supersededPatches.map((p) => p.filename)
+        );
+
+        for (const oldPatch of plan.supersededPatches) {
+          await removeFile(oldPatch.path);
+        }
+      } catch (error: unknown) {
+        // Best-effort rollback: wrap each operation so a secondary failure
+        // never masks the original failure.
         try {
-          await writeText(oldPatchPath, oldPatchContent);
+          if (originalPatchContent === null) {
+            await removeFile(patchPath);
+          } else {
+            await writeText(patchPath, originalPatchContent);
+          }
         } catch (error: unknown) {
-          warn(`Rollback warning: could not restore ${oldPatchPath}: ${toError(error).message}`);
+          warn(`Rollback warning: could not restore patch file: ${toError(error).message}`);
         }
+
+        for (const [oldPatchPath, oldPatchContent] of removedPatchContents) {
+          try {
+            await writeText(oldPatchPath, oldPatchContent);
+          } catch (error: unknown) {
+            warn(`Rollback warning: could not restore ${oldPatchPath}: ${toError(error).message}`);
+          }
+        }
+
+        try {
+          if (plan.manifestBefore) {
+            await savePatchesManifest(input.patchesDir, plan.manifestBefore);
+          } else {
+            await removeFile(join(input.patchesDir, PATCHES_MANIFEST));
+          }
+        } catch (error: unknown) {
+          warn(`Rollback warning: could not restore manifest: ${toError(error).message}`);
+        }
+
+        throw error;
       }
 
-      try {
-        if (plan.manifestBefore) {
-          await savePatchesManifest(input.patchesDir, plan.manifestBefore);
-        } else {
-          await removeFile(join(input.patchesDir, PATCHES_MANIFEST));
-        }
-      } catch (error: unknown) {
-        warn(`Rollback warning: could not restore manifest: ${toError(error).message}`);
-      }
-
-      throw error;
-    }
-
-    return {
-      patchFilename: plan.patchFilename,
-      metadata: plan.metadata,
-      superseded: plan.supersededPatches,
-    };
-  });
+      return {
+        patchFilename: plan.patchFilename,
+        metadata: plan.metadata,
+        superseded: plan.supersededPatches,
+      };
+    },
+    input.lockOptions ?? {}
+  );
 }
 
 /**
@@ -311,7 +323,6 @@ export async function findExistingPatchForFile(
   patchesDir: string,
   filePath: string
 ): Promise<{ patch: PatchInfo; metadata: PatchMetadata } | null> {
-  const { findPatchesAffectingFile } = await import('./patch-manifest.js');
   const affectingPatches = await findPatchesAffectingFile(patchesDir, filePath);
 
   if (affectingPatches.length === 0) {

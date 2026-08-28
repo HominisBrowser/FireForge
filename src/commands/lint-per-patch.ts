@@ -5,14 +5,6 @@ import { getProjectPaths, loadConfig } from '../core/config.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import {
-  buildPerPatchLintCacheKey,
-  getCachedPerPatchLintIssues,
-  getPerPatchLintCacheHeadSha,
-  loadPerPatchLintCache,
-  savePerPatchLintCache,
-  setCachedPerPatchLintIssues,
-} from '../core/lint-cache.js';
-import {
   buildPatchQueueContext,
   countNonBinaryDiffLines,
   formatPatchLintIssue,
@@ -21,6 +13,14 @@ import {
   lintPatchQueue,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
+import {
+  buildPerPatchLintCacheKey,
+  getCachedPerPatchLintIssues,
+  getPerPatchLintCacheHeadSha,
+  loadPerPatchLintCache,
+  savePerPatchLintCache,
+  setCachedPerPatchLintIssues,
+} from '../core/patch-lint-cache.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
@@ -178,16 +178,12 @@ async function lintQueuedPatch(
     lintOptions.precomputedCheckJs = precomputedCheckJs;
   }
 
-  const patchIssues = await lintExportedPatch(
-    paths.engine,
-    existing,
-    diff,
-    config,
-    ctx,
-    ignore,
-    patch.tier,
-    lintOptions
-  );
+  const patchIssues = await lintExportedPatch(paths.engine, existing, diff, config, {
+    ...lintOptions,
+    patchQueueCtx: ctx,
+    ...(ignore ? { ignoreChecks: ignore } : {}),
+    ...(patch.tier ? { patchTier: patch.tier } : {}),
+  });
   const result: QueuedPatchResult = {
     status: 'linted',
     existingFiles: existing,
@@ -254,10 +250,10 @@ async function applyPerPatchResults(
     // Run-level checkJs errors are emitted once, before the first
     // non-skipped patch's own issues — matching the serial emit point.
     // Deliberately NOT gated on `result.usedCheckJs`: global findings are
-    // run-level, never cached, and an all-cache-hit run previously dropped
-    // them entirely, letting a warm run report fewer errors than a cold
-    // one (hardening). PerRunCheckJs builds its program lazily,
-    // so the cost only materialises when checkJs is configured.
+    // run-level and never cached, so gating drops them entirely on an
+    // all-cache-hit run and lets a warm run report fewer errors than a cold
+    // one. PerRunCheckJs builds its program lazily, so the cost only
+    // materialises when checkJs is configured.
     if (checkJs && !globalCheckJsEmitted) {
       globalCheckJsEmitted = true;
       issues.push(...(await checkJs.getGlobal()));
@@ -280,10 +276,10 @@ async function applyPerPatchResults(
       issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
     }
 
-    // A waived size finding still reports its MEASUREMENT:
-    // the finding stays suppressed (no exit-code / --max-warnings effect)
-    // but the current count is readable from the tool that enforces it,
-    // so a waiver's cited size can be calibrated without hand-measuring.
+    // A waived size finding still reports its MEASUREMENT: the finding stays
+    // suppressed (no exit-code / --max-warnings effect) but the current count
+    // is readable from the tool that enforces it, so a waiver's cited size
+    // can be calibrated without hand-measuring.
     for (const suppressedIssue of result.suppressedIssues) {
       if (!SUPPRESSED_SIZE_CHECKS.has(suppressedIssue.check)) continue;
       info(

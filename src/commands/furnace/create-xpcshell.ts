@@ -7,7 +7,7 @@
 
 import { join } from 'node:path';
 
-import { xpcshellTestParentDir } from '../../core/furnace-constants.js';
+import { resolveXpcshellTestDir, xpcshellTestParentDir } from '../../core/furnace-constants.js';
 import {
   recordCreatedDir,
   type RollbackJournal,
@@ -51,7 +51,7 @@ export async function scaffoldXpcshellTestFiles(
     parentRelDir.split('/').slice(-1)[0] ?? `${forgeConfig.binaryName}-xpcshell`;
   // --test-dir names the FINAL directory (no per-component segment is
   // appended) so the operator controls the exact scaffold target.
-  const testDirRel = testDirOverride ?? `${parentRelDir}/${componentName}`;
+  const testDirRel = resolveXpcshellTestDir(forgeConfig.binaryName, componentName, testDirOverride);
   const testDir = join(paths.engine, testDirRel);
   if (journal && !(await pathExists(testDir))) {
     recordCreatedDir(journal, testDir);
@@ -65,8 +65,8 @@ export async function scaffoldXpcshellTestFiles(
   const testFileName = xpcshellTestFileName(componentName);
   const testFilePath = join(testDir, testFileName);
   if (await pathExists(testFilePath)) {
-    // Never clobber an existing test implementation (0.34.0 field report:
-    // the scaffold overwrote files owned by a different patch).
+    // Never clobber an existing test implementation: the scaffold must not
+    // overwrite files owned by a different patch.
     warn(`${testDirRel}/${testFileName} already exists — keeping the existing file.`);
   } else {
     if (journal) await snapshotFile(journal, testFilePath);

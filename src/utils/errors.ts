@@ -38,9 +38,8 @@ export function toError(error: unknown): Error {
  * The check is deliberately structural rather than `error instanceof Error`:
  * a plain object carrying `.code` — exactly the shape {@link toError} exists
  * to normalise — reaches errno consumers through rejected promises and
- * cross-realm throws. Nine hand-rolled copies of this predicate existed
- * before 0.41.0, four of them (in `utils/fs.ts`) gated on `instanceof Error`
- * and so misclassified that shape as "no code".
+ * cross-realm throws, and an `instanceof Error` gate misclassifies it as "no
+ * code".
  */
 export function getNodeErrorCode(error: unknown): string | undefined {
   if (
@@ -62,11 +61,10 @@ export function getNodeErrorCode(error: unknown): string | undefined {
  * Only `ESRCH` ("no such process") means dead. **`EPERM` means ALIVE**: the
  * process exists but is owned by another uid, which happens routinely with
  * root-owned builds, `sudo`, shared CI runners and container UID mismatches.
- * Two copies of this predicate (`tree-store.ts`, `doctor-furnace.ts`) read
- * EPERM as dead before 0.41.0, and both gated a recursive delete — a live
- * build's tree clone and a live furnace lock were removed out from under
- * their owner. Any other errno is treated as "unknown, assume alive", which
- * is the safe direction for every caller: it refuses rather than destroys.
+ * Reading EPERM as dead in a predicate that gates a recursive delete removes
+ * a live build's tree clone or a live furnace lock out from under its owner.
+ * Any other errno is treated as "unknown, assume alive", the safe direction
+ * for every caller: it refuses rather than destroys.
  */
 export function isProcessAlive(pid: number): boolean {
   try {

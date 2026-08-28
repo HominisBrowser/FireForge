@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Spawned-CLI pin for the contract: the consumer's composed gate
- * keys its steps on the `FIREFORGE-VERDICT:` line of a build-less in-tree
- * run reached through `tree exec <name> -- test …`. Two subsystems that
- * were only ever tested in isolation meet here:
+ * Spawned-CLI pin for the verdict contract: a composed gate keys its steps
+ * on the `FIREFORGE-VERDICT:` line of a build-less in-tree run reached
+ * through `tree exec <name> -- test …`. Two subsystems that are otherwise
+ * only tested in isolation meet here:
  *
  * - `tree exec` hands stdout to the child with `stdio: 'inherit'`, so the
  *   child's verdict reaches the caller's stdout byte-for-byte;
- * - on a non-zero child exit the parent wraps it in a `GeneralError`. Before
- *   L2 that refusal rendered on the PARENT's stdout — after the child's
- *   verdict — breaking the "verdict is the run's last stdout write"
- *   guarantee exactly where a gate reads it. The parent now seals stdout
- *   once the child settles, so its refusal goes to stderr.
+ * - on a non-zero child exit the parent wraps it in a `GeneralError`. If
+ *   that refusal renders on the PARENT's stdout — after the child's verdict
+ *   — it breaks the "verdict is the run's last stdout write" guarantee
+ *   exactly where a gate reads it. The parent seals stdout once the child
+ *   settles, so its refusal goes to stderr.
  *
  * The child is `node <cliEntry>` with no loader of its own, so the spawn
  * carries tsx through `NODE_OPTIONS` for the TypeScript sources; a packed
@@ -81,7 +81,12 @@ function lastNonEmptyLine(stdout: string): string {
   return lines.at(-1) ?? '';
 }
 
-describe('FIREFORGE-VERDICT through tree exec', () => {
+// The whole contract runs THROUGH `tree exec`, which refuses on Windows
+// (`assertPosix` in ../commands/tree.ts) — there is no child to inherit
+// stdout from there. The refusal itself is pinned in tree.test.ts.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
+describePosix('FIREFORGE-VERDICT through tree exec', () => {
   let projectRoot: string;
 
   /**

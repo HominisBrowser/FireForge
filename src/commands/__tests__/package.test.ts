@@ -2,7 +2,8 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { makeProjectPaths } from '../../test-utils/index.js';
+import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn(),
@@ -12,24 +13,15 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/mach.js', () => ({
   hasBuildArtifacts: vi.fn(),
   buildArtifactMismatchMessage: vi.fn(),
-  // `packageCommand` now calls `machPackageCapture` so it can pass the
-  // captured stderr through `explainMachError` and surface targeted
-  // hints (Finding #12). Tests seed resolved results with the standard
-  // `{ stdout, stderr, exitCode }` shape.
+  // `packageCommand` calls `machPackageCapture` so it can pass the captured
+  // stderr through `explainMachError` and surface targeted hints. Tests seed
+  // resolved results with the standard `{ stdout, stderr, exitCode }` shape.
   machPackageCapture: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  info: vi.fn(),
-  error: vi.fn(),
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../../core/brand-validation.js', () => ({
   validateBrandOverride: vi.fn(),
@@ -145,7 +137,7 @@ describe('packageCommand', () => {
     expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'stable');
     expect(verbose).toHaveBeenCalledWith('Packaging with brand: stable');
     expect(info).toHaveBeenCalledWith('Brand: stable');
-    expect(machPackageCapture).toHaveBeenCalledWith('/project/engine');
+    expect(machPackageCapture).toHaveBeenCalledWith(nativePath('/project/engine'));
     expect(info).toHaveBeenCalledWith('\nPackage created in obj-*/dist/');
     expect(outro).toHaveBeenCalledWith(expect.stringContaining('Packaging completed in'));
   });
@@ -160,14 +152,13 @@ describe('packageCommand', () => {
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Packaging failed after'));
   });
 
-  it('surfaces the packager NoneType hint on a matching failure (Finding #12)', async () => {
-    // The evaluator hit this on a real mybrowser/ tree: `mach package`
-    // tripped an `AttributeError: 'NoneType' object has no attribute
-    // 'open'` inside packager.py, and FireForge surfaced it as a
-    // generic `Packaging failed`. With `explainMachError` wired into
-    // the package error path, the hint now lands in the thrown
-    // message so the operator sees the "run a full build first"
-    // recovery instruction without cross-referencing the traceback.
+  it('surfaces the packager NoneType hint on a matching failure', async () => {
+    // `mach package` can trip an `AttributeError: 'NoneType' object has no
+    // attribute 'open'` inside packager.py, which surfaces as a generic
+    // `Packaging failed`. With `explainMachError` wired into the package
+    // error path, the hint lands in the thrown message so the operator sees
+    // the "run a full build first" recovery without cross-referencing the
+    // traceback.
     vi.mocked(machPackageCapture).mockResolvedValue({
       stdout: '',
       stderr: [
@@ -207,6 +198,6 @@ describe('registerPackage', () => {
     await program.parseAsync(['node', 'test', 'package', '--brand', 'stable']);
 
     expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'stable');
-    expect(machPackageCapture).toHaveBeenCalledWith('/project/engine');
+    expect(machPackageCapture).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 });

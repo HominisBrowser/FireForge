@@ -123,11 +123,10 @@ export interface FurnaceConfig {
   tokenAllowlist?: string[];
   /**
    * CSS custom-property prefixes that identify upstream / platform
-   * variables the fork does not own. `token coverage` counts matches
-   * as `allowlisted` rather than `unknown` so a copied upstream
-   * baseline doesn't drag fork-owned coverage percentages down.
-   * Defaults to `['--moz-']` when unset. Pass an explicit empty array
-   * to restore the pre-0.18.0 strict contract.
+   * variables the fork does not own. `token coverage` counts matches as
+   * `allowlisted` rather than `unknown` so a copied upstream baseline does
+   * not drag fork-owned coverage percentages down. Defaults to `['--moz-']`
+   * when unset; pass an explicit empty array to count every prefix.
    */
   platformPrefixes?: string[];
   /**
@@ -183,17 +182,25 @@ export interface FurnaceConfig {
  * state before clearing authoring markers. The string is surfaced in doctor's
  * failure message verbatim, so new entries should be self-explanatory.
  */
-export type FurnacePendingRepairOperation =
-  | 'preview-teardown'
-  | 'apply-rollback'
-  | 'deploy-rollback'
-  | 'remove-rollback'
-  | 'create-rollback'
-  | 'override-rollback'
-  | 'scan-rollback'
-  | 'rename-rollback'
-  | 'refresh-rollback'
-  | 'chrome-doc-rollback';
+export const FURNACE_PENDING_REPAIR_OPERATIONS = [
+  'preview-teardown',
+  'apply-rollback',
+  'deploy-rollback',
+  'remove-rollback',
+  'create-rollback',
+  'override-rollback',
+  'scan-rollback',
+  'rename-rollback',
+  'refresh-rollback',
+  'chrome-doc-rollback',
+] as const;
+
+/**
+ * Operations that can leave a pending-repair marker when they fail to roll
+ * back cleanly. Derived from the list above so the runtime allowlist in
+ * `furnace-config.ts` cannot drift from the union.
+ */
+export type FurnacePendingRepairOperation = (typeof FURNACE_PENDING_REPAIR_OPERATIONS)[number];
 
 /**
  * Marker persisted into `.fireforge/furnace-state.json` when a furnace
@@ -242,13 +249,10 @@ export interface StepError {
   step: string;
   error: string;
   /**
-   * Advisory step errors are reported as warnings and never trigger
-   * rollback or a non-zero exit. Used by the `.ftl` helpers, whose module
-   * contract is graceful degradation: a missing locale jar.mn on a fork
-   * without a locale package must not block a working `.mjs`/`.css` from
-   * shipping. Before this flag existed the contract was contradicted in
-   * practice — any FTL step error rolled back the entire apply, so a
-   * localized component on such a fork could never be applied at all.
+   * Advisory step errors are reported as warnings and never trigger rollback
+   * or a non-zero exit. Used by the `.ftl` helpers, whose module contract is
+   * graceful degradation: a missing locale jar.mn on a fork without a locale
+   * package must not block a working `.mjs`/`.css` from shipping.
    */
   advisory?: boolean;
 }
@@ -347,3 +351,26 @@ export interface ValidationIssue {
 
 /** Resolved test-harness selection for a `furnace create` run. */
 export type ResolvedTestStyle = 'mochikit' | 'browser-chrome' | 'xpcshell' | 'none';
+
+/**
+ * The four paths and the name that every per-component apply, dry-run, FTL
+ * and drift helper needs some subset of.
+ *
+ * Passing these positionally is unsafe: they are all `string`, so any
+ * permutation typechecks against any other and a swap surfaces as a
+ * wrong-directory read at runtime. Helpers take
+ * `Pick<ComponentApplyContext, …>` of exactly the members they read, so a
+ * caller is never asked to invent a value it does not have.
+ */
+export interface ComponentApplyContext {
+  /** Project root — what registration consistency resolves against. */
+  root: string;
+  /** Firefox source directory the component deploys into. */
+  engineDir: string;
+  /** Component name as it appears in `furnace.json`. */
+  name: string;
+  /** Absolute path to the component's authoring directory. */
+  componentDir: string;
+  /** Engine-relative locale directory holding the component's `.ftl`. */
+  ftlDir: string;
+}

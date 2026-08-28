@@ -72,6 +72,19 @@ describe('countTrailingSegmentMatches', () => {
   it('returns 0 when basenames differ', () => {
     expect(countTrailingSegmentMatches('a/b/c.js', 'd/e/f.js')).toBe(0);
   });
+
+  // The candidate side is built by `join()` over a `readdir` walk, so on
+  // Windows it arrives backslash-separated. A `/`-only split makes the whole
+  // candidate ONE segment, which scores every same-basename hit identically
+  // and lets the resolver pick an arbitrary artifact.
+  it('counts segments the same when a path arrives backslash-separated', () => {
+    expect(
+      countTrailingSegmentMatches(
+        'browser/branding/mybrowser/content/aboutDialog.css',
+        'dist\\bin\\browser\\chrome\\branding\\content\\aboutDialog.css'
+      )
+    ).toBe(2);
+  });
 });
 
 describe('scoreCandidate', () => {
@@ -83,6 +96,15 @@ describe('scoreCandidate', () => {
     expect(scoreCandidate(source, correctCandidate)).toBeGreaterThan(
       scoreCandidate(source, wrongCandidate)
     );
+  });
+
+  it('ranks a backslash-separated candidate exactly as its POSIX form', () => {
+    const source = 'browser/branding/mybrowser/content/aboutDialog.css';
+    const posixCandidate = '/dist/bin/browser/chrome/browser/content/branding/aboutDialog.css';
+    const windowsCandidate =
+      '\\dist\\bin\\browser\\chrome\\browser\\content\\branding\\aboutDialog.css';
+
+    expect(scoreCandidate(source, windowsCandidate)).toBe(scoreCandidate(source, posixCandidate));
   });
 
   it('does not boost generic segments like "content" or "chrome"', () => {

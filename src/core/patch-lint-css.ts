@@ -3,11 +3,9 @@
  * CSS patch-lint rules: introduced raw color values and non-tokenized
  * custom-property references.
  *
- * Split out of `patch-lint.ts` so the per-patch and CSS rule bodies each
- * stay within the project's per-file line budget — the same separation
- * already applied to the JSDoc, observer, import, ownership, checkJs, and
- * cross-patch rule families. `patch-lint.ts` re-exports `lintPatchedCss`
- * so existing callers keep importing from the single module.
+ * Split out of `patch-lint.ts` so each rule family stays within the
+ * per-file line budget; `patch-lint.ts` re-exports `lintPatchedCss` so
+ * existing callers keep importing from the single module.
  */
 
 import { join } from 'node:path';
@@ -110,12 +108,12 @@ function checkRawColorValues(
   // Check only introduced raw color values when diff context is available.
   // Skip files on the raw-color allowlist (exact path or basename match) and
   // auto-exempt files under `browser/branding/` — those are the fork's
-  // visual identity assets (app-about dialogs, installer pages, branded
-  // CSS copied from Firefox's `unofficial` template) and belong to the
-  // design-decision layer the design-token system does not govern.
-  // Without this auto-exemption, every first-time setup's copied CSS
-  // failed `raw-color-value` with no actionable fix other than manually
-  // listing each path in `rawColorAllowlist`.
+  // visual identity assets (app-about dialogs, installer pages, branded CSS
+  // copied from Firefox's `unofficial` template) and belong to the
+  // design-decision layer the design-token system does not govern. Without
+  // the auto-exemption, every first-time setup's copied CSS fails
+  // `raw-color-value` with no actionable fix short of listing each path in
+  // `rawColorAllowlist`.
   const allowlist = config?.patchLint?.rawColorAllowlist;
   const isAllowlisted = allowlist?.some((entry) => file === entry || file.endsWith('/' + entry));
   const isBranding = file.startsWith('browser/branding/');
@@ -164,19 +162,16 @@ function checkTokenPrefixViolations(
   issues: PatchLintIssue[]
 ): void {
   // Check for non-tokenized custom properties. A variable that is both
-  // declared and consumed inside the same file is auto-exempted as a
-  // runtime state channel (see furnace.json → runtimeVariables).
+  // declared and consumed inside the same file is auto-exempted as a runtime
+  // state channel (see furnace.json → runtimeVariables).
   //
   // When diff context is available, scope the `var(...)` scan to
-  // added/modified lines only. `cssContent` (full-file) is still the
-  // source of `localDeclarations` so vars declared anywhere in the file
-  // are recognised as same-file refs regardless of where the consuming
-  // `var(...)` appears. Before this scoping change, a small edit to a
-  // Furnace override of a stock component (e.g. moz-card) produced a
-  // `token-prefix-violation` for every stock `var(--moz-card-*)` the
-  // upstream file already carried, because the scanner saw the full
-  // applied file and flagged each inherited reference as if the fork
-  // had introduced it.
+  // added/modified lines only. `cssContent` (full-file) is still the source
+  // of `localDeclarations` so vars declared anywhere in the file are
+  // recognised as same-file refs regardless of where the consuming `var(...)`
+  // appears. Without the scoping, a small edit to a Furnace override of a
+  // stock component (e.g. moz-card) produces a `token-prefix-violation` for
+  // every stock `var(--moz-card-*)` the upstream file already carried.
   if (tokenContext) {
     const declarationPattern = /(?:^|[{;,\s])(--[\w-]+)\s*:/g;
     const localDeclarations = new Set<string>();

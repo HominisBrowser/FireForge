@@ -39,19 +39,17 @@ function formatManagedDetail(counts: {
 }
 
 /**
- * Inspects the engine working tree and returns a single
- * `DoctorCheck`. Ownership-aware: patch-backed / branding / furnace
- * rows are reported as OK with an ownership summary; unmanaged drift
- * warns; cross-patch conflicts warn loudly with a pointer at
- * `fireforge status --ownership` + `fireforge verify`.
+ * Inspects the engine working tree and returns a single `DoctorCheck`.
+ * Ownership-aware: patch-backed / branding / furnace rows are reported as OK
+ * with an ownership summary; unmanaged drift warns; cross-patch conflicts
+ * warn loudly with a pointer at `fireforge status --ownership` +
+ * `fireforge verify`.
  *
- * Before 0.16.1 this check warned on every dirty row regardless of
- * ownership and told the operator to export/discard/reset — advice
- * that was actively destructive on a patch-backed import (eval
- * Finding: a correctly imported 126-file patch stack was reported as
- * unhealthy and the suggested fix would have dropped the entire
- * import). Returns `undefined` when the worktree is clean so the
- * caller can emit its own ok() row.
+ * Ownership is what makes the advice safe: warning on every dirty row and
+ * telling the operator to export/discard/reset is actively destructive on a
+ * patch-backed import, where the suggested fix would drop the entire patch
+ * stack. Returns `undefined` when the worktree is clean so the caller can
+ * emit its own ok() row.
  */
 export async function inspectEngineWorkingTree(
   ctx: DoctorCheckContext
@@ -110,12 +108,10 @@ export async function inspectEngineWorkingTree(
 
   if (counts.unmanaged === 0) {
     const managedDetail = formatManagedDetail(counts);
-    return {
-      name: 'Engine working tree',
-      passed: true,
-      severity: 'ok',
-      message: `${managedTotal} tool-managed change${managedTotal === 1 ? '' : 's'} (${managedDetail}), 0 unmanaged. Use "fireforge status --ownership" for details.`,
-    };
+    return ok(
+      'Engine working tree',
+      `${managedTotal} tool-managed change${managedTotal === 1 ? '' : 's'} (${managedDetail}), 0 unmanaged. Use "fireforge status --ownership" for details.`
+    );
   }
 
   const managedTail =

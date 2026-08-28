@@ -5,10 +5,15 @@
 
 import { ConfigError } from '../errors/config.js';
 import type { FireForgeState } from '../types/config.js';
+import { BUILD_MODES } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { isObject, isString } from '../utils/validation.js';
+import { makeEnumGuard } from '../utils/validation.js';
+
+/** Narrows an arbitrary string to a {@link BuildMode}. */
+const isBuildMode = makeEnumGuard(BUILD_MODES);
 import { getProjectPaths } from './config-paths.js';
 import { quarantineStateFile, withStateFileLock } from './state-file.js';
 
@@ -49,13 +54,16 @@ function sanitizeProjectState(data: unknown): StateValidationResult {
       continue;
     }
 
-    if (key === 'buildMode' && !['dev', 'debug', 'release'].includes(value)) {
-      issues.push('field "buildMode" must be one of: dev, debug, release');
-      continue;
-    }
-
     if (key === 'buildMode') {
-      state.buildMode = value as NonNullable<FireForgeState['buildMode']>;
+      // Validate and assign in ONE block so the predicate's narrowing reaches
+      // the assignment. Split across two `key === 'buildMode'` guards,
+      // TypeScript cannot correlate them and the assignment needed a cast —
+      // which is what let the untyped allowlist drift from the union.
+      if (!isBuildMode(value)) {
+        issues.push(`field "buildMode" must be one of: ${BUILD_MODES.join(', ')}`);
+        continue;
+      }
+      state.buildMode = value;
     } else {
       state[key] = value;
     }

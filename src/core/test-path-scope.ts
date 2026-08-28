@@ -2,22 +2,19 @@
 /**
  * Directory-argument scope analysis for `fireforge test`.
  *
- * mozbuild's test resolver matches command-line paths by STRING PREFIX,
- * so `fireforge test browser/base/content/test/hominis` silently also
- * ran the sibling directory `browser/base/content/test/hominis-tiles`
- * (152.0b7 → 153.0b8 source-refresh drill: 1224 tests instead of ~200,
- * with no indication the scope widened).
+ * mozbuild's test resolver matches command-line paths by STRING PREFIX, so
+ * `fireforge test browser/base/content/test/hominis` also runs the sibling
+ * directory `browser/base/content/test/hominis-tiles` — silently, and with
+ * no indication the scope widened.
  *
- * FireForge therefore treats a directory argument as meaning EXACTLY
- * that directory: {@link analyzeTestPathScopes} enumerates the test
- * files of exactly that directory and dispatches THAT explicit file
- * list to mach — a file list cannot prefix-match anything. (0.35.0
- * instead normalized the directory with a trailing `/`, assuming the
- * separator makes the prefix match exact; field verification on Firefox
- * 153 showed mach still swept in the prefix-named sibling, so the
- * trailing-slash mechanism was cosmetic and its exclusion echo was
- * wrong.) The prefix-matching sibling directories are still reported so
- * the command layer can tell the operator what was excluded. Note
+ * FireForge therefore treats a directory argument as meaning EXACTLY that
+ * directory: {@link analyzeTestPathScopes} enumerates the test files of
+ * exactly that directory and dispatches THAT explicit file list to mach,
+ * because a file list cannot prefix-match anything. Normalizing the
+ * directory with a trailing `/` does NOT work — mach still sweeps in the
+ * prefix-named sibling. The prefix-matching sibling directories are still
+ * reported so the command layer can tell the operator what was excluded.
+ *
  * FireForge already rejects non-existent paths up front, so raw
  * prefix-widening was never something an operator could invoke
  * deliberately — it only ever happened by accident.
@@ -177,9 +174,9 @@ export function formatScopeNotice(scope: TestPathScope): string | undefined {
     .map((s) => `${s.path}/ (${s.testFileCount} test file${s.testFileCount === 1 ? '' : 's'})`)
     .join(', ');
   if (scope.testFileCount === 0) {
-    // Fallback dispatch: with nothing to enumerate, the raw directory
-    // form goes to mach, whose prefix matching CAN sweep the siblings in.
-    // Claiming exclusion here would repeat the 0.35.0 mistake.
+    // Fallback dispatch: with nothing to enumerate, the raw directory form
+    // goes to mach, whose prefix matching CAN sweep the siblings in.
+    // Claiming exclusion here would be a lie.
     return (
       `${requestedDir}/ contains no enumerable test files, so the directory is passed to mach ` +
       `as-is — mach resolves paths by string prefix, which may also select: ${siblings}.`

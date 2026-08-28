@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock } from '../../test-utils/module-mocks.js';
 import {
   addLicenseHeaderToFile,
   containsUpstreamLicenseText,
@@ -11,10 +12,7 @@ import {
   hasUpstreamMplBlockHeader,
 } from '../license-headers.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 import { readText, writeText } from '../../utils/fs.js';
 
@@ -240,6 +238,54 @@ describe('containsUpstreamLicenseText', () => {
     expect(containsUpstreamLicenseText(content)).toBe(true);
   });
 
+  it('recognizes the CC0 public-domain dedication in every upstream comment style', () => {
+    // mozilla-central test files carry this dedication instead of the MPL
+    // header. Until it was recognized, a modified upstream test whose
+    // notice was UNCHANGED warned `modified-file-missing-header`, and the
+    // downstream workaround was to edit the upstream notice (an SPDX line
+    // above it) just to satisfy the recognizer.
+    const block =
+      '/* Any copyright is dedicated to the Public Domain.\n' +
+      '   http://creativecommons.org/publicdomain/zero/1.0/ */\n' +
+      '"use strict";\n';
+    const lineComment =
+      '// Any copyright is dedicated to the Public Domain.\n' +
+      '// https://creativecommons.org/publicdomain/zero/1.0/\n' +
+      'const x = 1;\n';
+    const hash =
+      '# Any copyright is dedicated to the Public Domain.\n' +
+      '# http://creativecommons.org/publicdomain/zero/1.0/\n' +
+      '[DEFAULT]\n';
+    const urlOnly = '/* http://creativecommons.org/publicdomain/zero/1.0/ */\n';
+    const spdx = '// SPDX-License-Identifier: CC0-1.0\nconst x = 1;\n';
+    for (const content of [block, lineComment, hash, urlOnly, spdx]) {
+      expect(containsUpstreamLicenseText(content)).toBe(true);
+    }
+  });
+
+  it('rejects malformed or unrelated public-domain-looking notices', () => {
+    // Negative controls: a different Creative Commons license, a made-up
+    // CC0 version, and a bare "public domain" mention are NOT the
+    // dedication and must not be accepted as one. (A bare SPDX tag of ANY
+    // id is accepted by this predicate by design — see the marker list —
+    // so the CC-BY SPDX control lives on hasThirdPartyPermissiveBanner.)
+    const notCc0 = [
+      '/* http://creativecommons.org/licenses/by/4.0/ */\nconst x = 1;\n',
+      '/* http://creativecommons.org/publicdomain/zero/2.0/ */\nconst x = 1;\n',
+      '// This helper is not in the public domain.\nconst x = 1;\n',
+      '// Any copyright is dedicated to the public.\nconst x = 1;\n',
+    ];
+    for (const content of notCc0) {
+      expect(containsUpstreamLicenseText(content)).toBe(false);
+    }
+  });
+
+  it('ignores a CC0 dedication past the scanned head', () => {
+    const lines = Array.from({ length: 15 }, (_, i) => `// line ${i}`);
+    lines[12] = '// Any copyright is dedicated to the Public Domain.';
+    expect(containsUpstreamLicenseText(lines.join('\n'))).toBe(false);
+  });
+
   it('returns false when no license text in the first 10 lines', () => {
     const lines = Array.from({ length: 15 }, (_, i) => `// line ${i}`);
     lines[12] = '// Mozilla Public License';
@@ -278,8 +324,31 @@ describe('hasThirdPartyPermissiveBanner', () => {
     expect(hasThirdPartyPermissiveBanner(content)).toBe(true);
   });
 
+  it('treats the CC0 public-domain dedication as vendored, in prose and SPDX form', () => {
+    // `export` uses this predicate to decide whether prepending the
+    // project's own header would mislicense the file. A test file Mozilla
+    // dedicated to the public domain is exactly that case.
+    expect(
+      hasThirdPartyPermissiveBanner(
+        '/* Any copyright is dedicated to the Public Domain.\n' +
+          '   http://creativecommons.org/publicdomain/zero/1.0/ */\n'
+      )
+    ).toBe(true);
+    expect(
+      hasThirdPartyPermissiveBanner('# https://creativecommons.org/publicdomain/zero/1.0/\n')
+    ).toBe(true);
+  });
+
+  it('rejects malformed public-domain-looking notices', () => {
+    expect(hasThirdPartyPermissiveBanner('// SPDX-License-Identifier: CC-BY-4.0\n')).toBe(false);
+    expect(
+      hasThirdPartyPermissiveBanner('/* http://creativecommons.org/publicdomain/zero/2.0/ */\n')
+    ).toBe(false);
+    expect(hasThirdPartyPermissiveBanner('// public domain helpers\nconst x = 1;\n')).toBe(false);
+  });
+
   it('recognizes bare SPDX identifiers for the permissive set', () => {
-    for (const id of ['MIT', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Apache-2.0']) {
+    for (const id of ['MIT', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Apache-2.0', 'CC0-1.0']) {
       expect(hasThirdPartyPermissiveBanner(`// SPDX-License-Identifier: ${id}\n`)).toBe(true);
     }
   });

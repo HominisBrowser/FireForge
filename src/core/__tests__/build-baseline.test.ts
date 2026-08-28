@@ -102,8 +102,8 @@ describe('build-baseline', () => {
   });
 
   it('omits testPackagingCoverage from the marker when not provided', async () => {
-    // Legacy-shape preservation: callers that never pass a coverage claim
-    // must keep producing pre-0.37.0-shaped markers.
+    // Callers that never pass a coverage claim must keep producing markers
+    // without the field.
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
     await writeBuildBaseline(projectRoot, '/engine', 'mybrowser');
     const raw = await readFile(getBuildBaselinePath(projectRoot), 'utf8');
@@ -244,14 +244,119 @@ describe('build-baseline', () => {
     expect(stored?.packageableFingerprints).toBeUndefined();
   });
 
+  describe('buildInputFingerprints', () => {
+    const JAR = 'toolkit/content/jar.mn';
+    const MOZBUILD = 'browser/base/moz.build';
+
+    async function stubDirtyBuildInputs(engineDir: string): Promise<void> {
+      vi.spyOn(git, 'getHead').mockResolvedValue('sha');
+      const gitModule = await import('../git.js');
+      const gitBase = await import('../git-base.js');
+      const gitStatus = await import('../git-status.js');
+      vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
+      vi.spyOn(gitBase, 'git').mockResolvedValue(
+        `${JAR}\n${MOZBUILD}\nbrowser/base/content/x.js\n`
+      );
+      vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
+      const { writeText, ensureDir: ensureDirLocal } = await import('../../utils/fs.js');
+      await ensureDirLocal(join(engineDir, 'toolkit/content'));
+      await ensureDirLocal(join(engineDir, 'browser/base/content'));
+      await writeText(join(engineDir, JAR), 'toolkit.jar:\n  content/global/x.css\n');
+      await writeText(join(engineDir, MOZBUILD), 'JAR_MANIFESTS += ["jar.mn"]\n');
+      await writeText(join(engineDir, 'browser/base/content/x.js'), '// x\n');
+    }
+
+    it('records every dirty build input after a full build', async () => {
+      const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
+      try {
+        await stubDirtyBuildInputs(engineDir);
+        await writeBuildBaseline(projectRoot, engineDir, 'mybrowser', 'full');
+        const stored = await readBuildBaseline(projectRoot);
+        const recorded = stored?.buildInputFingerprints ?? {};
+        expect(Object.keys(recorded).sort()).toEqual([MOZBUILD, JAR].sort());
+        expect(recorded[JAR]).toMatch(/^[0-9a-f]{64}$/);
+        // The packageable .js path belongs to packageableFingerprints.
+        expect(stored?.packageableFingerprints?.['browser/base/content/x.js']).toBeDefined();
+      } finally {
+        await rm(engineDir, { recursive: true, force: true });
+      }
+    });
+
+    it('refreshes backend inputs but carries jar.mn forward on a faster build', async () => {
+      // `mach build faster` never installs a new jar.mn destination — it is
+      // the build the escalation bypasses — so its write must not claim the
+      // live jar.mn was built. The previous record's entry stays.
+      const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
+      try {
+        await stubDirtyBuildInputs(engineDir);
+        const previous = {
+          engineHeadSha: 'sha',
+          builtAt: '2026-08-01T00:00:00.000Z',
+          binaryName: 'mybrowser',
+          buildInputFingerprints: { [JAR]: 'ab'.repeat(32), [MOZBUILD]: 'cd'.repeat(32) },
+        };
+        await writeBuildBaseline(
+          projectRoot,
+          engineDir,
+          'mybrowser',
+          'full',
+          previous,
+          'fireforge build --ui',
+          'auto',
+          'faster'
+        );
+        const stored = await readBuildBaseline(projectRoot);
+        const recorded = stored?.buildInputFingerprints ?? {};
+        expect(recorded[JAR]).toBe('ab'.repeat(32));
+        expect(recorded[MOZBUILD]).toMatch(/^[0-9a-f]{64}$/);
+        expect(recorded[MOZBUILD]).not.toBe('cd'.repeat(32));
+      } finally {
+        await rm(engineDir, { recursive: true, force: true });
+      }
+    });
+
+    it('records no jar.mn entry on a faster build with no previous record', async () => {
+      const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
+      try {
+        await stubDirtyBuildInputs(engineDir);
+        await writeBuildBaseline(
+          projectRoot,
+          engineDir,
+          'mybrowser',
+          ['browser/foo/test'],
+          undefined,
+          'fireforge test --build browser/foo/test',
+          'auto',
+          'faster'
+        );
+        const stored = await readBuildBaseline(projectRoot);
+        const recorded = stored?.buildInputFingerprints ?? {};
+        expect(Object.keys(recorded)).toEqual([MOZBUILD]);
+      } finally {
+        await rm(engineDir, { recursive: true, force: true });
+      }
+    });
+
+    it('omits the field when the dirty-path probe fails', async () => {
+      // Same contract as packageableFingerprints: a broken probe leaves the
+      // field off rather than writing `{}`, and build-prepare then falls
+      // back to the path-only comparison.
+      vi.spyOn(git, 'getHead').mockResolvedValue('sha');
+      const gitModule = await import('../git.js');
+      vi.spyOn(gitModule, 'hasChanges').mockRejectedValue(new Error('git unavailable'));
+      await writeBuildBaseline(projectRoot, '/engine-does-not-exist', 'mybrowser', 'full');
+      const raw = await readFile(getBuildBaselinePath(projectRoot), 'utf8');
+      expect(raw).not.toContain('buildInputFingerprints');
+    });
+  });
+
   it('records packageableFingerprints when the engine workdir has dirty packageable paths', async () => {
-    // Finding #18: without per-file fingerprints, a project with
-    // persistently-applied patches + furnace-applied components always
-    // shows those files as "changed since last build" on the stale
-    // check, even immediately after a successful build. `writeBuildBaseline`
-    // now captures a sha256 per dirty packageable path so the stale
-    // check can distinguish "same content as build time" from "edited
-    // since build".
+    // Without per-file fingerprints, a project with persistently-applied
+    // patches plus furnace-applied components always shows those files as
+    // "changed since last build" on the stale check, even immediately after
+    // a successful build. `writeBuildBaseline` captures a sha256 per dirty
+    // packageable path so the stale check can distinguish "same content as
+    // build time" from "edited since build".
     const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
     try {
       // Emulate a dirty-but-committed-against-HEAD packageable file by

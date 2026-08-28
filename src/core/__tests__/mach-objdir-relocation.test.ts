@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Unit tests for the post-`mach configure` relocation check (
- * I13):
- * every violation class the pure checker reports, and the clean shapes it
- * must accept — including the substring non-collision property that makes
- * the primary-path search safe against the tree's own nested path.
+ * Unit tests for the post-`mach configure` relocation check: every violation
+ * class the pure checker reports, and the clean shapes it must accept —
+ * including the substring non-collision property that makes the primary-path
+ * search safe against the tree's own nested path.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

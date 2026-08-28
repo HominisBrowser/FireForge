@@ -2,18 +2,16 @@
 /**
  * Unit tests for the patch-body registration-reference scanner.
  *
- * 2026-04-24 eval Finding 1: `export-all --exclude-furnace` produced a
- * patch whose jar.mn / customElements.js / locales jar.mn hunks added
- * references to furnace component files (moz-qa-panel.mjs / .css /
- * .ftl) the patch did NOT itself carry, yet `fireforge verify`
- * reported "Verify clean". The scanner here is the first layer of the
- * fix: it extracts the component-shaped references so the verify
- * command can cross-check them against patch bodies / engine files.
+ * `export-all --exclude-furnace` can produce a patch whose jar.mn /
+ * customElements.js / locales jar.mn hunks add references to furnace
+ * component files the patch does NOT itself carry, while `fireforge verify`
+ * reports "Verify clean". The scanner extracts the component-shaped
+ * references so verify can cross-check them against patch bodies and engine
+ * files.
  *
- * The scan is deliberately narrow — only component-shaped references
- * (widget tag names, locale FTL names) match. Unrelated edits to the
- * same files pass through silently so the check never spurious-warns
- * on ordinary patches.
+ * The scan is deliberately narrow — only component-shaped references (widget
+ * tag names, locale FTL names) match. Unrelated edits to the same files pass
+ * through silently so the check never spurious-warns on ordinary patches.
  */
 
 import { describe, expect, it } from 'vitest';

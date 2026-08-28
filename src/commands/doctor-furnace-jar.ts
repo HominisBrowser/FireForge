@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `doctor` check for stale furnace jar.mn registrations (0.34.0 field
- * report): a component-file rename left the old toolkit jar.mn line
- * pointing at the deleted file, every build failed at packaging, and
- * `doctor --repair-furnace` reported success without pruning. Split out
- * of `doctor-furnace.ts` to keep that file within the line budget.
+ * `doctor` check for stale furnace jar.mn registrations: a component-file
+ * rename can leave the old toolkit jar.mn line pointing at the deleted file,
+ * failing every build at packaging. Split out of `doctor-furnace.ts` to keep
+ * that file within the line budget.
  */
 
 import { getFurnacePaths } from '../core/furnace-config.js';
@@ -15,10 +14,9 @@ import { failure, ok, warning } from './doctor-check-core.js';
 
 /**
  * "Furnace jar.mn registrations" check: detect widget registration lines
- * pointing at component files that no longer exist in the workspace
- * (typically left by a rename under an older FireForge). These break
- * `mach build` at packaging; `--repair-furnace` prunes them (0.34.0 field
- * report: doctor --repair-furnace reported success without pruning).
+ * pointing at component files that no longer exist in the workspace,
+ * typically left by a rename. These break `mach build` at packaging;
+ * `--repair-furnace` prunes them.
  */
 export const furnaceStaleJarRegistrationCheck: DoctorCheckDefinition = {
   name: 'Furnace jar.mn registrations',

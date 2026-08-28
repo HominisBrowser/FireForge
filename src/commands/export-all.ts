@@ -3,12 +3,14 @@ import { Command } from 'commander';
 
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { stdioIsInteractive } from '../core/destructive.js';
+import { assertEngineGitReady } from '../core/engine-precondition.js';
 import {
   collectFurnaceManagedPrefixes,
   furnaceConfigExists,
   loadFurnaceConfig,
 } from '../core/furnace-config.js';
-import { hasChanges, isGitRepository } from '../core/git.js';
+import { hasChanges } from '../core/git.js';
 import { getAllDiff, getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
@@ -25,7 +27,7 @@ import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions } from '../types/commands/index.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../utils/options.js';
 import { renderDryRunPreview } from './export-flow.js';
 import {
   autoFixLicenseHeaders,
@@ -76,9 +78,7 @@ async function resolveFurnaceExclusionPolicy(
   // Expand collapsed `?? dir/` entries before matching against Furnace
   // prefixes — otherwise a Furnace-introduced directory slips past the
   // filter and later lands in the non-Furnace path list that feeds the
-  // aggregate diff, where `getDiffForFilesAgainstHead` crashes with
-  // EISDIR (eval finding: export-all unusable on a fresh project with
-  // Furnace scaffolding).
+  // aggregate diff, where `getDiffForFilesAgainstHead` crashes with EISDIR.
   const rawStatus = await getWorkingTreeStatus(paths.engine);
   const changedFiles = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
   const furnaceManagedFiles = changedFiles
@@ -103,20 +103,19 @@ async function resolveFurnaceExclusionPolicy(
 
 /**
  * Refuses the export when the resulting patch would register furnace
- * component source files it does not itself carry. 2026-04-24 eval
- * Finding 1: operators running `export-all --exclude-furnace` after
- * `furnace create --localized --with-tests` ended up with patches that
- * added `toolkit/content/widgets/moz-qa-panel/*` via jar.mn /
- * customElements.js / locale jar.mn but excluded the component source
- * files themselves. The resulting patch queue was structurally broken
- * and `fireforge verify` stayed silent. We now detect the condition
- * pre-write and ask the operator to either include the component
- * sources (skip `--exclude-furnace`) or revert the furnace changes
- * before exporting.
+ * component source files it does not itself carry.
+ *
+ * `export-all --exclude-furnace` after `furnace create --localized
+ * --with-tests` otherwise produces a patch that adds
+ * `toolkit/content/widgets/<tag>/*` via jar.mn / customElements.js / locale
+ * jar.mn while excluding the component source files themselves — a
+ * structurally broken queue that `fireforge verify` stays silent about. The
+ * operator is asked to either include the component sources (skip
+ * `--exclude-furnace`) or revert the furnace changes before exporting.
  *
  * The check runs against the synthesised patch body before
- * `commitExportedPatch` writes anything, so no broken patch is left on
- * disk when the refusal fires.
+ * `commitExportedPatch` writes anything, so no broken patch is left on disk
+ * when the refusal fires.
  */
 async function checkDanglingFurnaceRegistrations(
   projectRoot: string,
@@ -228,17 +227,7 @@ export async function exportAllCommand(
 
   const paths = getProjectPaths(projectRoot);
 
-  // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
-
-  // Check if it's a git repository
-  if (!(await isGitRepository(paths.engine))) {
-    throw new GeneralError(
-      'Engine directory is not a git repository. Run "fireforge download" to initialize.'
-    );
-  }
+  await assertEngineGitReady(paths.engine);
 
   // Check for changes
   if (!(await hasChanges(paths.engine))) {
@@ -307,14 +296,14 @@ export async function exportAllCommand(
   // the branding / furnace guards that operate on the raw status list.
   await checkDuplicateNewFileCreations(paths, diff);
 
-  // Dangling-furnace-registration preflight (Finding 1). Runs after the
-  // diff is assembled so we can inspect the exact hunks the operator is
-  // about to land; runs BEFORE any write so a refusal leaves the
-  // patches directory untouched.
+  // Dangling-furnace-registration preflight. Runs after the diff is
+  // assembled so it can inspect the exact hunks the operator is about to
+  // land, and BEFORE any write so a refusal leaves the patches directory
+  // untouched.
   await checkDanglingFurnaceRegistrations(projectRoot, diff, furnaceExcluded);
 
   // Check for non-interactive mode
-  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+  const isInteractive = stdioIsInteractive();
 
   // Auto-fix missing license headers on new files (interactive only;
   // report-only under --dry-run so the preview never mutates engine/)
@@ -401,6 +390,10 @@ export async function exportAllCommand(
       config,
       policyCommand: 'export-all',
       forceUnsafe: options.forceUnsafe === true,
+      lockOptions: {
+        waitLockSeconds: resolveWaitLockSeconds(options.waitLock),
+        command: 'export-all',
+      },
     });
 
     for (const oldPatch of superseded) {
@@ -426,7 +419,7 @@ export function registerExportAll(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const command = program
     .command('export-all')
     .description('Export all changes as a patch')
     .option('--name <name>', 'Name for the patch')
@@ -446,26 +439,27 @@ export function registerExportAll(
       '--dry-run',
       'Print the export-all plan (filename, metadata, files affected, supersede preview) without writing anything to patches/. Lint still runs so the operator sees the same lint output a real run would produce.'
     )
-    .option('--force-unsafe', 'Bypass force-mode patchPolicy refusals')
-    .action(
-      withErrorHandling(
-        async (options: {
-          name?: string;
-          category?: string;
-          description?: string;
-          supersede?: boolean;
-          skipLint?: boolean;
-          excludeFurnace?: boolean;
-          allowOverlap?: boolean;
-          dryRun?: boolean;
-          forceUnsafe?: boolean;
-        }) => {
-          const { category, ...rest } = options;
-          await exportAllCommand(getProjectRoot(), {
-            ...pickDefined(rest),
-            ...(category !== undefined ? { category } : {}),
-          });
-        }
-      )
-    );
+    .option('--force-unsafe', 'Bypass force-mode patchPolicy refusals');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (options: {
+        name?: string;
+        category?: string;
+        description?: string;
+        supersede?: boolean;
+        skipLint?: boolean;
+        excludeFurnace?: boolean;
+        allowOverlap?: boolean;
+        dryRun?: boolean;
+        forceUnsafe?: boolean;
+        waitLock?: boolean | number;
+      }) => {
+        const { category, ...rest } = options;
+        await exportAllCommand(getProjectRoot(), {
+          ...pickDefined(rest),
+          ...(category !== undefined ? { category } : {}),
+        });
+      }
+    )
+  );
 }

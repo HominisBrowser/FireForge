@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { PatchApplyError } from '../../errors/git.js';
-import { exec } from '../../utils/process.js';
+import { runGit } from '../../test-utils/index.js';
 import { applyPatchIdempotent } from '../git.js';
 
 const cleanupPaths: string[] = [];
@@ -22,9 +22,13 @@ async function createTestRepo(prefix: string): Promise<{ repoDir: string; tempDi
   cleanupPaths.push(tempDir);
   const repoDir = join(tempDir, 'engine');
   await mkdir(repoDir, { recursive: true });
-  await exec('git', ['init'], { cwd: repoDir });
-  await exec('git', ['config', 'user.email', 'test@test.com'], { cwd: repoDir });
-  await exec('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
+  await runGit(repoDir, ['init']);
+  await runGit(repoDir, ['config', 'user.email', 'test@test.com']);
+  await runGit(repoDir, ['config', 'user.name', 'FireForge Tests']);
+  // Pin line endings so patch bytes do not depend on the host's global
+  // `core.autocrlf` (true by default on Windows).
+  await runGit(repoDir, ['config', 'core.autocrlf', 'false']);
+  await runGit(repoDir, ['config', 'core.eol', 'lf']);
   return { repoDir, tempDir };
 }
 
@@ -50,13 +54,13 @@ describe('applyPatchIdempotent integration', () => {
     const { repoDir, tempDir } = await createTestRepo('double');
 
     await writeFile(join(repoDir, 'file.txt'), 'line 1\nline 2\nline 3\n');
-    await exec('git', ['add', '-A'], { cwd: repoDir });
-    await exec('git', ['commit', '-m', 'baseline'], { cwd: repoDir });
+    await runGit(repoDir, ['add', '-A']);
+    await runGit(repoDir, ['commit', '-m', 'baseline']);
 
     // Modify and capture diff
     await writeFile(join(repoDir, 'file.txt'), 'line 1\nline 2 modified\nline 3\n');
-    const { stdout: diff } = await exec('git', ['diff'], { cwd: repoDir });
-    await exec('git', ['checkout', '--', '.'], { cwd: repoDir });
+    const diff = await runGit(repoDir, ['diff']);
+    await runGit(repoDir, ['checkout', '--', '.']);
 
     const patchPath = await writePatch(tempDir, 'mod', diff);
 
@@ -76,13 +80,13 @@ describe('applyPatchIdempotent integration', () => {
 
     await writeFile(join(repoDir, 'target.txt'), 'original\n');
     await writeFile(join(repoDir, 'other.txt'), 'untouched\n');
-    await exec('git', ['add', '-A'], { cwd: repoDir });
-    await exec('git', ['commit', '-m', 'baseline'], { cwd: repoDir });
+    await runGit(repoDir, ['add', '-A']);
+    await runGit(repoDir, ['commit', '-m', 'baseline']);
 
     // Create patch that only touches target.txt
     await writeFile(join(repoDir, 'target.txt'), 'modified\n');
-    const { stdout: diff } = await exec('git', ['diff'], { cwd: repoDir });
-    await exec('git', ['checkout', '--', '.'], { cwd: repoDir });
+    const diff = await runGit(repoDir, ['diff']);
+    await runGit(repoDir, ['checkout', '--', '.']);
 
     const patchPath = await writePatch(tempDir, 'target-only', diff);
 
@@ -103,12 +107,12 @@ describe('applyPatchIdempotent integration', () => {
     const { repoDir, tempDir } = await createTestRepo('corrupted');
 
     await writeFile(join(repoDir, 'file.txt'), 'line 1\nline 2\nline 3\n');
-    await exec('git', ['add', '-A'], { cwd: repoDir });
-    await exec('git', ['commit', '-m', 'baseline'], { cwd: repoDir });
+    await runGit(repoDir, ['add', '-A']);
+    await runGit(repoDir, ['commit', '-m', 'baseline']);
 
     await writeFile(join(repoDir, 'file.txt'), 'line 1\nline 2 patched\nline 3\n');
-    const { stdout: diff } = await exec('git', ['diff'], { cwd: repoDir });
-    await exec('git', ['checkout', '--', '.'], { cwd: repoDir });
+    const diff = await runGit(repoDir, ['diff']);
+    await runGit(repoDir, ['checkout', '--', '.']);
 
     const patchPath = await writePatch(tempDir, 'mod', diff);
 
@@ -129,15 +133,15 @@ describe('applyPatchIdempotent integration', () => {
     const { repoDir, tempDir } = await createTestRepo('delete');
 
     await writeFile(join(repoDir, 'doomed.txt'), 'goodbye\n');
-    await exec('git', ['add', '-A'], { cwd: repoDir });
-    await exec('git', ['commit', '-m', 'baseline'], { cwd: repoDir });
+    await runGit(repoDir, ['add', '-A']);
+    await runGit(repoDir, ['commit', '-m', 'baseline']);
 
     // Stage removal and capture the diff
-    await exec('git', ['rm', 'doomed.txt'], { cwd: repoDir });
-    const { stdout: diff } = await exec('git', ['diff', '--cached'], { cwd: repoDir });
+    await runGit(repoDir, ['rm', 'doomed.txt']);
+    const diff = await runGit(repoDir, ['diff', '--cached']);
     // Restore
-    await exec('git', ['reset', 'HEAD', '--', '.'], { cwd: repoDir });
-    await exec('git', ['checkout', '--', '.'], { cwd: repoDir });
+    await runGit(repoDir, ['reset', 'HEAD', '--', '.']);
+    await runGit(repoDir, ['checkout', '--', '.']);
 
     const patchPath = await writePatch(tempDir, 'delete', diff);
 
@@ -155,16 +159,16 @@ describe('applyPatchIdempotent integration', () => {
 
     // Need at least one committed file for a valid repo
     await writeFile(join(repoDir, 'existing.txt'), 'base\n');
-    await exec('git', ['add', '-A'], { cwd: repoDir });
-    await exec('git', ['commit', '-m', 'baseline'], { cwd: repoDir });
+    await runGit(repoDir, ['add', '-A']);
+    await runGit(repoDir, ['commit', '-m', 'baseline']);
 
     // Create a new file and capture as staged diff
     await writeFile(join(repoDir, 'brand-new.txt'), 'fresh content\n');
-    await exec('git', ['add', 'brand-new.txt'], { cwd: repoDir });
-    const { stdout: diff } = await exec('git', ['diff', '--cached'], { cwd: repoDir });
+    await runGit(repoDir, ['add', 'brand-new.txt']);
+    const diff = await runGit(repoDir, ['diff', '--cached']);
     // Reset
-    await exec('git', ['reset', 'HEAD', '--', '.'], { cwd: repoDir });
-    await exec('git', ['clean', '-fd'], { cwd: repoDir });
+    await runGit(repoDir, ['reset', 'HEAD', '--', '.']);
+    await runGit(repoDir, ['clean', '-fd']);
 
     const patchPath = await writePatch(tempDir, 'newfile', diff);
 
@@ -181,13 +185,13 @@ describe('applyPatchIdempotent integration', () => {
     const { repoDir, tempDir } = await createTestRepo('discard');
 
     await writeFile(join(repoDir, 'shared.txt'), 'line 1\nline 2\nline 3\n');
-    await exec('git', ['add', '-A'], { cwd: repoDir });
-    await exec('git', ['commit', '-m', 'baseline'], { cwd: repoDir });
+    await runGit(repoDir, ['add', '-A']);
+    await runGit(repoDir, ['commit', '-m', 'baseline']);
 
     // Create a patch
     await writeFile(join(repoDir, 'shared.txt'), 'line 1\nline 2 patched\nline 3\n');
-    const { stdout: diff } = await exec('git', ['diff'], { cwd: repoDir });
-    await exec('git', ['checkout', '--', '.'], { cwd: repoDir });
+    const diff = await runGit(repoDir, ['diff']);
+    await runGit(repoDir, ['checkout', '--', '.']);
 
     const patchPath = await writePatch(tempDir, 'mod', diff);
 
@@ -206,8 +210,8 @@ describe('applyPatchIdempotent integration', () => {
     const { repoDir, tempDir } = await createTestRepo('malformed');
 
     await writeFile(join(repoDir, 'file.txt'), 'content\n');
-    await exec('git', ['add', '-A'], { cwd: repoDir });
-    await exec('git', ['commit', '-m', 'baseline'], { cwd: repoDir });
+    await runGit(repoDir, ['add', '-A']);
+    await runGit(repoDir, ['commit', '-m', 'baseline']);
 
     const patchPath = await writePatch(tempDir, 'garbage', 'this is not a valid patch\n');
 

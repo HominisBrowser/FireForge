@@ -3,11 +3,11 @@
  * Local ESLint rules enforcing FireForge house conventions that no published
  * plugin covers.
  *
- * Each rule here exists because the 2026-08-06 quality survey found the same
- * hand-rolled pattern repeated across dozens of files — in several cases with
- * one copy silently broken (a malformed regex character class that escaped
- * nothing, four errno checks that misclassified plain `{code}` objects). The
- * sites are fixed; these rules are what stop them coming back.
+ * Each rule here targets a hand-rolled pattern that gets repeated across
+ * dozens of files, where one copy is eventually silently broken — a malformed
+ * regex character class that escapes nothing, an errno check that
+ * misclassifies a plain `{code}` object. These rules are what stop the
+ * pattern coming back.
  *
  * Deliberately plain JS with no build step and no dependencies: this directory
  * is tooling, is excluded from `tsconfig.json`, and never ships in `dist/`.
@@ -144,8 +144,8 @@ const preferSharedRegexEscape = {
     messages: {
       inlineEscape:
         'Use `escapeRegex(value)` from src/utils/regex.ts instead of an inline escape. ' +
-        'Eight hand-written copies existed before 0.41.0 and one of them ' +
-        '(`[.*+?^${}()|[\\\\]\\\\\\\\]`) closed its character class early and escaped nothing.',
+        'Hand-written copies drift: a class like ' +
+        '`[.*+?^${}()|[\\\\]\\\\\\\\]` closes early and escapes nothing.',
       localHelper:
         'Import `escapeRegex` from src/utils/regex.ts instead of declaring a local escape helper.',
     },
@@ -307,6 +307,60 @@ const noUntypedJsonDocument = {
   },
 };
 
+/**
+ * Reports `process.stdin.isTTY && process.stdout.isTTY` in favour of the
+ * shared `stdioIsInteractive()` predicate.
+ */
+const noOpenCodedTtyCheck = {
+  meta: {
+    type: 'suggestion',
+    docs: {
+      description:
+        'Use stdioIsInteractive() from src/core/destructive.ts instead of open-coding the TTY pair check.',
+    },
+    schema: [],
+    messages: {
+      openCoded:
+        'Use `stdioIsInteractive()` (src/core/destructive.ts) instead of open-coding ' +
+        '`process.stdin.isTTY && process.stdout.isTTY`. Node types `isTTY` as `boolean` but at runtime ' +
+        'it is `true | undefined`, and the eighteen open-coded copies this replaced carried nine ' +
+        'different non-TTY refusal strings between them.',
+    },
+  },
+  create(context) {
+    /**
+     * True for `process.<handle>.isTTY`, where `handle` is the one named.
+     *
+     * Deliberately handle-specific: this rule targets the
+     * PROMPT-ANSWERABILITY check (`stdin && stdout`), not any TTY
+     * conjunction. `logger.ts`'s spinner gate is `stdout && stderr`, a
+     * different question — whether output can be redrawn — and must not be
+     * routed through a predicate about whether a prompt can be answered.
+     */
+    function isProcessIsTty(node, handle) {
+      return (
+        node.type === 'MemberExpression' &&
+        node.property.type === 'Identifier' &&
+        node.property.name === 'isTTY' &&
+        node.object.type === 'MemberExpression' &&
+        node.object.property.type === 'Identifier' &&
+        node.object.property.name === handle &&
+        node.object.object.type === 'Identifier' &&
+        node.object.object.name === 'process'
+      );
+    }
+
+    return {
+      LogicalExpression(node) {
+        if (node.operator !== '&&') return;
+        if (isProcessIsTty(node.left, 'stdin') && isProcessIsTty(node.right, 'stdout')) {
+          context.report({ node, messageId: 'openCoded' });
+        }
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     'no-open-coded-to-error': noOpenCodedToError,
@@ -314,5 +368,6 @@ export default {
     'prefer-shared-regex-escape': preferSharedRegexEscape,
     'no-empty-jsdoc': noEmptyJsdoc,
     'no-untyped-json-document': noUntypedJsonDocument,
+    'no-open-coded-tty-check': noOpenCodedTtyCheck,
   },
 };

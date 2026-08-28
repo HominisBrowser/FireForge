@@ -318,7 +318,6 @@ function validateParamsAndReturns(
  * @param fn - FunctionDeclaration AST node
  * @param comments - All Acorn comments collected from the source
  * @param source - Original source text (for line-number resolution)
- * @param issues - Output sink for JSDoc issues
  * @param lookupStart - Optional offset to use when locating the attached
  *   JSDoc (defaults to `fn.start`). Used by the export-walker so the JSDoc
  *   is found relative to the `export` keyword rather than the inner decl.
@@ -327,9 +326,9 @@ export function validateFunctionDecl(
   fn: AcornESTreeNode<FunctionDeclaration>,
   comments: acorn.Comment[],
   source: string,
-  issues: JsDocIssue[],
   lookupStart?: number
-): void {
+): JsDocIssue[] {
+  const issues: JsDocIssue[] = [];
   const name = fn.id.name;
   const start = lookupStart !== undefined ? lookupStart : fn.start;
   const line = lineAt(source, start);
@@ -341,7 +340,7 @@ export function validateFunctionDecl(
       check: 'missing-jsdoc',
       message: `Exported function "${name}" at line ${line} is missing a JSDoc comment.`,
     });
-    return;
+    return issues;
   }
 
   validateParamsAndReturns(fn, jsDoc, issues, {
@@ -350,6 +349,7 @@ export function validateFunctionDecl(
     paramCheck: 'jsdoc-param-mismatch',
     returnsCheck: 'jsdoc-missing-returns',
   });
+  return issues;
 }
 
 /**
@@ -362,9 +362,9 @@ export function validateClassDecl(
   cls: AcornESTreeNode<ClassDeclaration>,
   comments: acorn.Comment[],
   source: string,
-  issues: JsDocIssue[],
   lookupStart?: number
-): void {
+): JsDocIssue[] {
+  const issues: JsDocIssue[] = [];
   const name = cls.id.name;
   const start = lookupStart !== undefined ? lookupStart : cls.start;
   const line = lineAt(source, start);
@@ -377,18 +377,19 @@ export function validateClassDecl(
       message: `Exported class "${name}" at line ${line} is missing a JSDoc comment.`,
     });
   }
+  return issues;
 }
 
 function validateVariableDecl(
   varDecl: AcornESTreeNode<VariableDeclaration>,
   comments: acorn.Comment[],
   source: string,
-  issues: JsDocIssue[],
   lookupStart?: number
-): void {
+): JsDocIssue[] {
+  const issues: JsDocIssue[] = [];
   const start = lookupStart !== undefined ? lookupStart : varDecl.start;
   const jsDoc = findAttachedJsDoc(comments, start, source);
-  if (jsDoc) return; // has a JSDoc block — sufficient for constants
+  if (jsDoc) return issues; // has a JSDoc block — sufficient for constants
 
   for (const decl of varDecl.declarations) {
     const name = decl.id.type === 'Identifier' ? decl.id.name : '<destructured>';
@@ -399,6 +400,7 @@ function validateVariableDecl(
       message: `Exported constant "${name}" at line ${line} is missing a JSDoc comment.`,
     });
   }
+  return issues;
 }
 
 // ---------------------------------------------------------------------------
@@ -431,22 +433,22 @@ function classMethodLabel(className: string, method: MethodDefinition, name: str
 }
 
 /**
- * Walks an exported class body and emits class-method JSDoc issues per
- * the configured severity. Skip rules (in evaluation order):
+ * Walks an exported class body and emits class-method JSDoc issues per the
+ * configured severity. Skip rules (in evaluation order):
  *   1. private syntax (`#foo`) and underscore-prefixed names
  *   2. zero-parameter constructors
  *   3. methods whose JSDoc carries `@private` or `@internal`
  *
- * Pure-override skip (`super.method(...args)`-only bodies bypassing the
- * @returns check) is deferred — V1 keeps the rule simple.
+ * A pure-override skip (`super.method(...args)`-only bodies bypassing the
+ * return-tag check) is deliberately not implemented; the rule stays simple.
  */
 export function validateClassMethods(
   cls: AcornESTreeNode<ClassDeclaration>,
   comments: acorn.Comment[],
   source: string,
-  issues: JsDocIssue[],
   severity: 'warning' | 'error'
-): void {
+): JsDocIssue[] {
+  const issues: JsDocIssue[] = [];
   const className = cls.id.name;
 
   for (const member of cls.body.body) {
@@ -494,6 +496,7 @@ export function validateClassMethods(
       skipReturns,
     });
   }
+  return issues;
 }
 
 // ---------------------------------------------------------------------------
@@ -541,14 +544,14 @@ export function validateExportJsDoc(
       const decl = exportNode.declaration as AcornESTreeNode;
       const exportStart = exportNode.start;
       if (decl.type === 'FunctionDeclaration') {
-        validateFunctionDecl(decl, comments, source, issues, exportStart);
+        issues.push(...validateFunctionDecl(decl, comments, source, exportStart));
       } else if (decl.type === 'ClassDeclaration') {
-        validateClassDecl(decl, comments, source, issues, exportStart);
+        issues.push(...validateClassDecl(decl, comments, source, exportStart));
         if (classMethodMode !== 'off') {
-          validateClassMethods(decl, comments, source, issues, classMethodMode);
+          issues.push(...validateClassMethods(decl, comments, source, classMethodMode));
         }
       } else if (decl.type === 'VariableDeclaration') {
-        validateVariableDecl(decl, comments, source, issues, exportStart);
+        issues.push(...validateVariableDecl(decl, comments, source, exportStart));
       }
       continue;
     }
@@ -563,14 +566,14 @@ export function validateExportJsDoc(
         if (!localDecl) continue;
 
         if (localDecl.type === 'FunctionDeclaration') {
-          validateFunctionDecl(localDecl, comments, source, issues);
+          issues.push(...validateFunctionDecl(localDecl, comments, source));
         } else if (localDecl.type === 'ClassDeclaration') {
-          validateClassDecl(localDecl, comments, source, issues);
+          issues.push(...validateClassDecl(localDecl, comments, source));
           if (classMethodMode !== 'off') {
-            validateClassMethods(localDecl, comments, source, issues, classMethodMode);
+            issues.push(...validateClassMethods(localDecl, comments, source, classMethodMode));
           }
         } else {
-          validateVariableDecl(localDecl, comments, source, issues);
+          issues.push(...validateVariableDecl(localDecl, comments, source));
         }
       }
     }

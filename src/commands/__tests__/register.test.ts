@@ -2,29 +2,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeProjectPaths } from '../../test-utils/index.js';
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn(),
 }));
 
-vi.mock('../../core/manifest-rules.js', () => ({
+vi.mock('../../core/moz-manifest-rules.js', () => ({
   registerFile: vi.fn(),
 }));
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  success: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { getProjectPaths } from '../../core/config.js';
-import { registerFile } from '../../core/manifest-rules.js';
+import { registerFile } from '../../core/moz-manifest-rules.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
 import { registerCommand } from '../register.js';
@@ -162,11 +155,11 @@ describe('registerCommand', () => {
     );
   });
 
-  it('reports idempotency in dry-run mode when the entry is already registered (Eval 1 Finding #8)', async () => {
-    // The eval showed `register --dry-run` planning a registration for
-    // a file that was already registered; the real command then said
-    // "Already registered". Automation that trusted the dry-run was
-    // mis-planning. Dry-run now mirrors the real idempotency outcome.
+  it('reports idempotency in dry-run mode when the entry is already registered', async () => {
+    // `register --dry-run` planning a registration for a file that is
+    // already registered mis-plans automation that trusts the preview: the
+    // real command then says "Already registered". Dry-run mirrors the real
+    // idempotency outcome.
     vi.mocked(registerFile).mockResolvedValue({
       manifest: 'browser/base/jar.mn',
       entry: 'content/browser/new-widget.js',

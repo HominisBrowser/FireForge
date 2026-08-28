@@ -6,7 +6,7 @@
  * but never registered in moz.build, jar.mn, or package-manifest.in, so
  * the mach build reports success but the packaged bundle carries stale
  * or missing content. A fork-specific pref file that was never registered
- * for packaging is the motivating case.
+ * for packaging is the canonical case.
  *
  * The audit is best-effort and warn-only:
  *   - It enumerates engine files changed since the previous build baseline
@@ -34,11 +34,12 @@
  *     against an unrelated upstream file with the same basename.
  */
 
-import { stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import { pathExists } from '../utils/fs.js';
 import { info, verbose, warn } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { detectPlatformGate } from './build-audit-platform.js';
 import {
   collectSameBasenameCandidates,
@@ -75,13 +76,11 @@ const PACKAGEABLE_PATH_FRAGMENTS = ['/app/profile/', '/chrome/', '/locales/'];
 const IGNORE_PATH_FRAGMENTS = ['obj-', 'node_modules/', '.git/', '.cargo/', '.mozbuild/'];
 
 /**
- * Basenames that are build-system inputs, not packaged artifacts.
- * `jar.mn` is consumed to produce chrome registrations; `moz.build` /
- * `moz.configure` / `Makefile.in` feed the build backend; none of them
- * ship in the bundle. Auditing them produced a guaranteed false
- * positive on every edit (nothing under dist/ ever has these names),
- * and a worse failure mode when an unrelated upstream `moz.build`
- * coincidentally exists at e.g. `MyBrowser.app/Contents/moz.build` and
+ * Basenames that are build-system inputs, not packaged artifacts. `jar.mn`
+ * is consumed to produce chrome registrations; `moz.build` / `moz.configure`
+ * / `Makefile.in` feed the build backend; none ship in the bundle. Auditing
+ * them guarantees a false positive on every edit, and worse, an unrelated
+ * upstream `moz.build` sitting at e.g. `MyBrowser.app/Contents/moz.build`
  * gets matched as a "stale artifact" of an entirely different file.
  */
 const BUILD_INPUT_BASENAMES = new Set([
@@ -91,6 +90,32 @@ const BUILD_INPUT_BASENAMES = new Set([
   'Makefile.in',
   'mozbuild.in',
 ]);
+
+/**
+ * True for the build-input manifests the build consumes but never packages
+ * (`jar.mn`, `moz.build`, `moz.configure`, `Makefile.in`, `mozbuild.in`).
+ * Excluded from the packaging audit and from `packageableFingerprints`;
+ * fingerprinted separately as `buildInputFingerprints` so `build-prepare`
+ * can tell "dirty against HEAD" from "changed since the last successful
+ * build".
+ *
+ * @param sourcePath Engine-relative POSIX path.
+ */
+export function isBuildInputPath(sourcePath: string): boolean {
+  return BUILD_INPUT_BASENAMES.has(basename(sourcePath));
+}
+
+/**
+ * True for a chrome packaging manifest (`jar.mn`). Its install-manifest
+ * destinations are the one build input whose change escalates a pre-test
+ * `mach build faster` to a full build, and whose fingerprint is therefore
+ * refreshed only by a full build.
+ *
+ * @param sourcePath Engine-relative POSIX path.
+ */
+export function isJarManifestPath(sourcePath: string): boolean {
+  return sourcePath === 'jar.mn' || sourcePath.endsWith('/jar.mn');
+}
 
 /** Result of a single artifact lookup. */
 export interface AuditEntry {
@@ -134,15 +159,13 @@ export function isPackageablePath(sourcePath: string): boolean {
   for (const fragment of IGNORE_PATH_FRAGMENTS) {
     if (sourcePath.includes(fragment)) return false;
   }
-  if (BUILD_INPUT_BASENAMES.has(basename(sourcePath))) return false;
+  if (isBuildInputPath(sourcePath)) return false;
   // `.inc.xhtml` fragments are consumed via `#include` from a registered
-  // chrome document and resolved at packaging time — they never ship as
-  // a standalone packaged artifact. 2026-04-21 eval (Finding #11):
-  // `fireforge build --ui` after `wire --dom` flagged the wired
-  // `*.inc.xhtml` as "missing packaged artifact" even though
-  // `register` correctly refuses to register it and the operator
-  // followed the documented workflow. Mirror the same carve-out the
-  // register rules apply.
+  // chrome document and resolved at packaging time — they never ship as a
+  // standalone packaged artifact, so auditing them flags a wired
+  // `*.inc.xhtml` as "missing packaged artifact" even though `register`
+  // correctly refuses to register it. Mirror the carve-out the register
+  // rules apply.
   if (sourcePath.endsWith('.inc.xhtml')) return false;
   for (const ext of PACKAGEABLE_EXTENSIONS) {
     if (sourcePath.endsWith(ext)) return true;
@@ -175,7 +198,6 @@ export function isXpcomManifestPath(sourcePath: string): boolean {
  * one-or-none.
  */
 async function resolveDistRoot(engineDir: string): Promise<string | undefined> {
-  const { readdir } = await import('node:fs/promises');
   let entries: string[];
   try {
     entries = await readdir(engineDir);
@@ -199,7 +221,6 @@ async function resolveDistRoot(engineDir: string): Promise<string | undefined> {
  * Returns undefined when no obj dir exists yet.
  */
 async function resolveTestsRoot(engineDir: string): Promise<string | undefined> {
-  const { readdir } = await import('node:fs/promises');
   let entries: string[];
   try {
     entries = await readdir(engineDir);
@@ -260,18 +281,17 @@ interface AuditEvalContext {
 
 /**
  * Minimum trailing-segment overlap required for a same-basename dist/
- * candidate to count as "the packaged artifact" of a source. The
- * basename always trail-matches (count 1), so a threshold of 2 requires
- * the immediate parent directory to also agree. Candidates that only
- * share the basename are classified as missing — warning the operator
- * to check registration — rather than emitting a misleading stale
- * comparison against an unrelated file of the same name.
+ * candidate to count as "the packaged artifact" of a source. The basename
+ * always trail-matches (count 1), so a threshold of 2 requires the immediate
+ * parent directory to agree too. Candidates sharing only the basename are
+ * classified as missing — warning the operator to check registration —
+ * rather than emitting a misleading stale comparison against an unrelated
+ * file of the same name.
  *
- * Cross-tree re-rooting cases (e.g. `branding/<name>/content/foo.css`
- * landing at `chrome/<area>/content/branding/foo.css`) bypass this
- * floor because `scoreCandidate` awards a non-generic-segment bonus
- * that lifts the confidence regardless of trailing overlap; those are
- * detected below in `isConfidentMatch`.
+ * Cross-tree re-rooting (e.g. `branding/<name>/content/foo.css` landing at
+ * `chrome/<area>/content/branding/foo.css`) bypasses this floor:
+ * `scoreCandidate` awards a non-generic-segment bonus that lifts confidence
+ * regardless of trailing overlap. See `isConfidentMatch` below.
  */
 const MIN_TRAILING_SEGMENT_OVERLAP = 2;
 
@@ -290,8 +310,11 @@ function isConfidentMatch(source: string, candidate: string): boolean {
   if (countTrailingSegmentMatches(source, candidate) >= MIN_TRAILING_SEGMENT_OVERLAP) {
     return true;
   }
-  const sourceSegs = source.split('/').filter(Boolean);
-  const candSegs = candidate.split('/').filter(Boolean);
+  // The candidate is an absolute path built by `join` over a dist/ walk, so on
+  // Windows it arrives backslash-separated; a `/`-only split collapses it into
+  // one segment and the non-generic-segment bonus can never fire.
+  const sourceSegs = normalizePathSlashes(source).split('/').filter(Boolean);
+  const candSegs = normalizePathSlashes(candidate).split('/').filter(Boolean);
   const generic = GENERIC_PATH_SEGMENTS;
   // Skip the basename itself (which trail-matches by definition).
   for (let i = 0; i < sourceSegs.length - 1; i += 1) {
@@ -347,11 +370,8 @@ async function auditSinglePath(
 
   // Registration-aware resolution first: a `jar.mn` entry whose `(source)`
   // references this file is authoritative over the basename-similarity
-  // heuristic. The motivating case is a fork that adds `content/foo.js`
-  // in `browser/base/jar.mn` while an unrelated patch registers a pref
-  // file of the same basename elsewhere — the heuristic cannot
-  // distinguish them, so the audit falsely reports "missing" against the
-  // correctly-packaged file.
+  // heuristic, which cannot distinguish a fork's `content/foo.js` from an
+  // unrelated pref file of the same basename elsewhere in the tree.
   const registered = await resolveArtifactByRegistration(ctx.engineDir, source, roots);
   if (registered) {
     return evaluateArtifactMtime(source, registered.artifact, sourceMtime, { registered: true });
@@ -368,14 +388,10 @@ async function auditSinglePath(
   // source under `browser/base/content/` (or another prefix whose chrome
   // target is stable across forks) is matched against its expected
   // `chrome/...` suffix rather than whichever same-basename candidate the
-  // directory walk happened to hit first. Motivating case: a source at
-  // `engine/browser/base/content/foo.js` whose correctly-packaged artifact
-  // lives at `chrome/browser/content/browser/foo.js` but which an unrelated
-  // patch also placed under `browser/defaults/preferences/foo.js`; every
-  // intermediate segment of the source is in the scorer's generic list,
-  // so `resolveBestArtifact` picks whichever hit first and `isConfidentMatch`
-  // rejects every candidate, classifying the correctly-packaged file as
-  // "missing" even though packaging had landed it.
+  // directory walk happened to hit first. Every intermediate segment of such
+  // a source is in the scorer's generic list, so `resolveBestArtifact` picks
+  // arbitrarily and `isConfidentMatch` then rejects every candidate,
+  // classifying a correctly-packaged file as "missing".
   const byTransform = await resolveArtifactByKnownTransform(source, roots);
   if (byTransform) {
     return evaluateArtifactMtime(source, byTransform, sourceMtime, { registered: true });

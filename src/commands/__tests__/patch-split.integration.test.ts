@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Integration coverage for `fireforge patch split` (field report A4). Real
+ * Integration coverage for `fireforge patch split`. Real
  * git repo so the diff-generation path runs; exercises the one-transaction
  * contract: shrink + new-patch creation + staged-dependency owner rewrites,
  * with dry-run and rollback.

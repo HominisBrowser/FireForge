@@ -1,18 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { addToken } from '../token-manager.js';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+vi.mock('../../utils/fs.js', () => createFsMock());
 
-vi.mock('../../utils/logger.js', () => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -407,6 +401,76 @@ describe('addToken', () => {
     );
   });
 
+  it('mirrors an override into a QUALIFIED :root[data-theme="light"] block', async () => {
+    // Regression. `rootAttributeSelector` sliced the selector to the LAST
+    // `]` before the brace, so for
+    // `:root[data-theme="light"]:not([data-private])` the computed fragment
+    // was `:root[data-theme="light"]:not([data-private]` and the canonical
+    // comparison could never match. The unqualified dark block beside it
+    // matched fine, so an override wrote dark and SILENTLY skipped light —
+    // a Light choice under a dark OS then inherited the new dark token, and
+    // the operator learned about it from a theme bug rather than the tool.
+    const cssWithQualifiedLight = `${MOCK_TOKENS_CSS}
+:root[data-theme="dark"] {
+  --testbrowser-dark-override: #222;
+}
+
+:root[data-theme="light"]:not([data-private]) {
+  --testbrowser-dark-override: #eee;
+}
+`;
+    mockReadText.mockImplementation(makeReadTextImpl(cssWithQualifiedLight, MOCK_TOKENS_DOC));
+
+    await addToken('/project', {
+      tokenName: '--testbrowser-canvas-qualified-light',
+      value: '#fff',
+      category: 'Colors — Canvas',
+      mode: 'override',
+      darkValue: '#000',
+    });
+
+    const cssCall = mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'));
+    const cssContent = cssCall?.[1] ?? '';
+
+    const lightBlockIdx = cssContent.indexOf(':root[data-theme="light"]:not([data-private])');
+    expect(lightBlockIdx).toBeGreaterThan(-1);
+    expect(
+      cssContent.indexOf('--testbrowser-canvas-qualified-light: #fff', lightBlockIdx)
+    ).toBeGreaterThan(lightBlockIdx);
+
+    // The qualifier narrows where the override applies, so it is reported
+    // rather than applied silently.
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(expect.stringContaining(':not([data-private])'));
+  });
+
+  it('keeps a multi-attribute variant block matching as a whole', async () => {
+    // The last-`]` slice existed to stop a single-attribute variant from
+    // colliding with a multi-attribute selector that has it as a prefix.
+    // Consuming consecutive `[…]` groups preserves that: the block below
+    // carries TWO attributes and must not be treated as the plain
+    // `[data-theme="dark"]` block.
+    const cssWithMultiAttribute = `${MOCK_TOKENS_CSS}
+:root[data-theme="dark"][data-density="compact"] {
+  --testbrowser-dark-override: #222;
+}
+`;
+    mockReadText.mockImplementation(makeReadTextImpl(cssWithMultiAttribute, MOCK_TOKENS_DOC));
+
+    await addToken('/project', {
+      tokenName: '--testbrowser-canvas-multi-attribute',
+      value: '#fff',
+      category: 'Colors — Canvas',
+      mode: 'override',
+      darkValue: '#000',
+    });
+
+    const cssCall = mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'));
+    const cssContent = cssCall?.[1] ?? '';
+    const blockIdx = cssContent.indexOf('[data-density="compact"]');
+    expect(blockIdx).toBeGreaterThan(-1);
+    expect(cssContent.indexOf('--testbrowser-canvas-multi-attribute', blockIdx)).toBe(-1);
+  });
+
   it('leaves files without data-theme blocks unchanged in shape', async () => {
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
@@ -424,12 +488,10 @@ describe('addToken', () => {
   });
 
   it('inserts dark value inside the nested :root { } of the dark @media block', async () => {
-    // 2026-04-21 eval: `token add --mode override --dark-value ...` inserted
-    // the dark declaration after the nested `:root { }` had already closed,
-    // producing a declaration outside any rule block. This test pins the
-    // post-fix invariant: the dark declaration must live between the inner
-    // `:root {` and its matching `}`, not between the inner `}` and the
-    // outer `@media {` close.
+    // `token add --mode override --dark-value ...` must not insert the dark
+    // declaration after the nested `:root { }` has already closed, which
+    // produces a declaration outside any rule block. The declaration must
+    // live between the inner `:root {` and its matching `}`.
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
     await addToken('/project', {
@@ -688,6 +750,57 @@ describe('addToken --variant', () => {
     expect(mockWriteText).not.toHaveBeenCalled();
   });
 
+  it('reports WHERE a variant skip happened, so a no-op re-run is legible', async () => {
+    // The variant path returned a bare `{ added: false }` while the base
+    // path returned a location — so a re-run meant to CHANGE a value exited
+    // 0 having changed nothing and said nothing about where the existing
+    // declaration was.
+    mockReadText.mockImplementation(
+      makeReadTextImpl(MOCK_TOKENS_CSS_WITH_VARIANT, MOCK_TOKENS_DOC)
+    );
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-canvas-bg',
+      value: '#fff',
+      category: 'Colors — Canvas',
+      mode: 'static',
+      variant: '[data-skin=precision]',
+    });
+
+    expect(result.skipped).toBe(true);
+    expect(result.skippedExisting?.line).toBeGreaterThan(0);
+  });
+
+  it('does not require --category under --variant', async () => {
+    // `--category` was a mandatory argument that described nothing about
+    // where the token lands: a variant declaration is routed into a
+    // `:root<selector>` block and never into a category section.
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-canvas-no-category',
+      value: '#000',
+      mode: 'static',
+      variant: '[data-private]',
+    });
+
+    expect(result.cssAdded).toBe(true);
+    const css = mockWriteText.mock.calls.find((c) => c[0].includes('tokens.css'))?.[1] ?? '';
+    expect(css).toContain(':root[data-private]');
+  });
+
+  it('still requires --category for a BASE declaration, and says why', async () => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-canvas-needs-category',
+        value: '#000',
+        mode: 'static',
+      })
+    ).rejects.toThrow(/lands in a category section, so --category is required/);
+  });
+
   it('supports boolean attribute variants like [data-private]', async () => {
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
@@ -722,6 +835,71 @@ describe('addToken --variant', () => {
     expect(declared).toContain('--testbrowser-canvas-bg');
   });
 
+  it('accepts the grammar the block matcher parses: a fragment run and a pseudo-class tail', async () => {
+    // 0.44.2 widened `rootAttributeSelector` to consume consecutive `[…]`
+    // groups and stop at a pseudo-class tail, but the CLI validator kept its
+    // own single-fragment regex — so a block the tool could FIND was one it
+    // would not let you NAME, and the private-exclusion selectors this shape
+    // exists for had to be maintained by hand.
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-canvas-bg',
+      value: '#101010',
+      category: 'Colors — Canvas',
+      mode: 'static',
+      variant: "[data-skin=humanist][data-theme='dark']:not([data-private])",
+    });
+
+    expect(result.cssAdded).toBe(true);
+    const css = findTokensCssWrite();
+    // Every fragment in the run is normalized, not just the trailing one.
+    expect(css).toContain(':root[data-skin="humanist"][data-theme="dark"]:not([data-private]) {');
+  });
+
+  it('a qualified variant re-add lands in the same block rather than a second one', async () => {
+    // The matcher compares the request's qualifier against the block's, so a
+    // qualified add is idempotent. Folding the tail into the attribute run
+    // instead would match nothing and splice a duplicate block per add.
+    const qualified = MOCK_TOKENS_CSS.replace(
+      ':root {',
+      ':root[data-skin="humanist"]:not([data-private]) {\n  --testbrowser-canvas-fg: #eee;\n}\n\n:root {'
+    );
+    mockReadText.mockImplementation(makeReadTextImpl(qualified, MOCK_TOKENS_DOC));
+
+    const result = await addToken('/project', {
+      tokenName: '--testbrowser-canvas-bg',
+      value: '#101010',
+      mode: 'static',
+      variant: '[data-skin=humanist]:not([data-private])',
+    });
+
+    expect(result.cssAdded).toBe(true);
+    const css = findTokensCssWrite();
+    expect(css.split(':root[data-skin="humanist"]:not([data-private])')).toHaveLength(2);
+    expect(css).toContain('--testbrowser-canvas-bg: #101010;');
+  });
+
+  it.each([
+    ['.not-an-attr', 'not an attribute selector at all'],
+    ['[1bad]', 'attribute name is not identifier-safe'],
+    ['[data-a] [data-b]', 'a descendant combinator, not a fragment run'],
+    ['[data-a]:not(.klass)', 'pseudo-class argument is not an attribute fragment'],
+    ['[data-a', 'unclosed fragment'],
+  ])('still rejects %s (%s)', async (variant) => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-canvas-bg',
+        value: '#101010',
+        category: 'Colors — Canvas',
+        mode: 'static',
+        variant,
+      })
+    ).rejects.toThrow(/--variant/);
+  });
+
   it('rejects an invalid --variant selector', async () => {
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
@@ -754,9 +932,8 @@ describe('addToken --variant', () => {
 
 describe('addToken missing-category bypasses', () => {
   it('a TOC comment merely mentioning the category no longer satisfies the banner lookup', async () => {
-    // Bypass 1 of the 2026-07-30 silent-no-op incident: a `/* ====`-opened
-    // comment containing "Colors — Terminal" as a substring satisfied the
-    // loose lookup even though no such section exists.
+    // A `/* ====`-opened comment containing "Colors — Terminal" as a
+    // substring satisfies a loose lookup even though no such section exists.
     const cssWithToc =
       ':root {\n' +
       '  /* ================================================================\n' +

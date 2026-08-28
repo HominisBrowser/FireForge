@@ -3,8 +3,8 @@
  * Diff-scoping for `fireforge lint`.
  *
  * Pre-existing patch-state errors and errors introduced by the current task
- * print identically today, so triaging "is the diff I just produced clean?"
- * requires mentally subtracting the pre-existing noise. This module
+ * print identically, so triaging "is the diff I just produced clean?"
+ * otherwise means mentally subtracting the pre-existing noise. This module
  * classifies each lint issue as either `introduced` (the file was touched
  * since the user-supplied git revision) or `cumulative` (pre-existing
  * drift), without changing what the underlying rules emit.
@@ -76,21 +76,19 @@ export const AGGREGATE_PATCH_FILE = '(patch)';
  *
  * Issues with no file (`issue.file === ''`) — e.g. cross-patch rules that
  * describe queue-wide state — are always `cumulative` under `--since`
- * because they describe drift accumulated across many commits, not a
- * single current-task edit.
+ * because they describe drift accumulated across many commits, not a single
+ * current-task edit.
  *
- * Aggregate patch-size rules emit `issue.file === AGGREGATE_PATCH_FILE`,
- * which is a synthetic placeholder that will never appear in a real
- * `diffFiles` set. Without special-casing, `large-patch-files` /
- * `large-patch-lines` were always tagged `[cumulative]` under
- * `--only-introduced` even when the diff WAS the aggregate the rules
- * measured — the eval (Finding #4) reported a stack of 20+ imported
- * patches whose aggregate-size warnings printed as `[cumulative]` under
- * `lint --since HEAD --only-introduced`, which reads as "this pre-existed"
- * to an operator asking "what did this diff introduce?" We promote the
- * aggregate tag to `introduced` whenever the diff set has any content —
- * non-empty `diffFiles` means the operator asked about a specific diff
- * scope and the aggregate-rule finding describes exactly that scope.
+ * Aggregate patch-size rules emit `issue.file === AGGREGATE_PATCH_FILE`, a
+ * synthetic placeholder that can never appear in a real `diffFiles` set.
+ * Without special-casing, `large-patch-files` / `large-patch-lines` are
+ * always tagged `[cumulative]` under `--only-introduced` even when the diff
+ * IS the aggregate the rules measured, which reads as "this pre-existed" to
+ * an operator asking "what did this diff introduce?". The aggregate tag is
+ * therefore promoted to `introduced` whenever the diff set has any content:
+ * a non-empty `diffFiles` means the operator asked about a specific diff
+ * scope, and the aggregate finding describes exactly that scope.
+ *
  * @param issues Issues returned by the lint orchestrator.
  * @param diffFiles File paths touched since the user's revision.
  */

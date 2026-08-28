@@ -14,12 +14,13 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, notice, spinner, verbose, warn } from '../utils/logger.js';
 import { isBrandingSetup, setupBranding } from './branding.js';
+import { isBuildInputPath, isJarManifestPath } from './build-audit.js';
 import type { BuildBaseline } from './build-baseline-types.js';
 import {
   findUnexportedDriftAtRisk,
   formatUnexportedDriftWarning,
 } from './build-overwrite-guard.js';
-import { collectChangedEnginePaths } from './engine-changes.js';
+import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from './furnace-apply.js';
 import {
   furnaceConfigExists,
@@ -67,7 +68,45 @@ const BACKEND_INVALIDATING_SUFFIXES = ['moz.build', 'moz.configure', 'Makefile.i
 
 /** Packaging manifests whose graph/destination directories need a full build. */
 export function requiresFullBuildForIncrementalTest(path: string): boolean {
-  return path === 'jar.mn' || path.endsWith('/jar.mn');
+  return isJarManifestPath(path);
+}
+
+/**
+ * Build-input manifests changed since the last SUCCESSFUL build — not
+ * merely dirty against HEAD. `collectChangedEnginePaths` unions the
+ * baseline-to-HEAD diff with every worktree modification, and a fork's
+ * worktree is permanently dirty (imported patches, Furnace-applied
+ * components), so on its own it reports a patch-touched `jar.mn` or
+ * `moz.build` as changed on every run: `mach configure` re-ran and the
+ * pre-test build escalated to a full `mach build` after each full build
+ * that had already consumed exactly this content. The baseline's
+ * `buildInputFingerprints` say what the last successful build saw;
+ * anything byte-identical to that is dropped here. A baseline without the
+ * field (written before it existed) keeps every dirty input, which is the
+ * old behaviour.
+ *
+ * @param engineDir - Path to the engine directory
+ * @param baseline - Last successful build's baseline
+ * @returns Engine-relative build-input paths that still need acting on
+ */
+async function collectChangedBuildInputs(
+  engineDir: string,
+  baseline: BuildBaseline
+): Promise<string[]> {
+  const changed = await collectChangedEnginePaths(engineDir, baseline, 'Auto-configure');
+  const dirtyInputs = changed.filter(isBuildInputPath);
+  const stillChanged = await dropPathsMatchingFingerprints(
+    engineDir,
+    dirtyInputs,
+    baseline.buildInputFingerprints
+  );
+  const unchangedSinceBuild = dirtyInputs.filter((path) => !stillChanged.includes(path));
+  if (unchangedSinceBuild.length > 0) {
+    verbose(
+      `Auto-configure: ${unchangedSinceBuild.length} dirty build input(s) byte-identical to the last successful build, not treated as changed: ${unchangedSinceBuild.join(', ')}`
+    );
+  }
+  return stillChanged;
 }
 
 /**
@@ -88,8 +127,8 @@ function extractMachConfigureError(result: MachCommandResult): string {
  * Describes an exit code in the shell's 128+N signal convention. Truncated
  * configure/build logs with a signal-shaped exit (e.g. 144 = 128+16, SIGURG
  * on macOS) are environmental interruptions, not compiler failures — naming
- * that in the failure text saves the operator a fruitless log hunt
- *. Returns undefined for codes <= 128 (regular failures) and
+ * that in the failure text saves the operator a fruitless log hunt.
+ * Returns undefined for codes <= 128 (regular failures) and
  * for codes past the conventional signal range, so callers append nothing.
  */
 export function describeSignalShapedExit(exitCode: number): string | undefined {
@@ -144,10 +183,10 @@ export function isBackendInvalidatingFile(path: string): boolean {
  *
  * Every write `prepareBuildEnvironment` performs — branding, Furnace
  * components, `mozconfig` — rewrites engine files from a FireForge-owned
- * source. Content recorded in neither a patch body nor the pristine
- * baseline is destroyed by that, and on a multi-session checkout the
- * destruction is what lets a later re-export capture a half-reverted
- * hybrid that every gate then passes.
+ * source. Content recorded in neither a patch body nor the pristine baseline
+ * is destroyed by that, and on a multi-session checkout the destruction is
+ * what lets a later re-export capture a half-reverted hybrid that every gate
+ * then passes.
  *
  * @param projectRoot - Project root
  * @param config - Loaded FireForge config
@@ -212,11 +251,7 @@ export async function prepareBuildEnvironment(
   let reconfigured = false;
   let fullBuildRequired = false;
   if (options.previousBaseline) {
-    const changed = await collectChangedEnginePaths(
-      paths.engine,
-      options.previousBaseline,
-      'Auto-configure'
-    );
+    const changed = await collectChangedBuildInputs(paths.engine, options.previousBaseline);
     const invalidating = changed.filter(isBackendInvalidatingFile);
     fullBuildRequired = changed.some(requiresFullBuildForIncrementalTest);
     if (invalidating.length > 0) {
@@ -263,9 +298,8 @@ export async function prepareBuildEnvironment(
   // project license through so `buildConfigureScriptContent` /
   // `buildBrandPropertiesContent` / `buildBrandFtlContent` stamp the
   // generated files with a matching SPDX header — otherwise `patch-lint`
-  // flags them with `missing-license-header` on every subsequent export
-  // when the project is not MPL-2.0 (the eval finding: a 0BSD-licensed
-  // fork's first export failed `lint` on its own generated branding).
+  // flags them with `missing-license-header` on every subsequent export when
+  // the project is not MPL-2.0.
   const brandingConfig = {
     name: config.name,
     vendor: config.vendor,

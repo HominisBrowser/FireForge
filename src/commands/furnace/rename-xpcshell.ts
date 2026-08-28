@@ -2,18 +2,15 @@
 /**
  * xpcshell scaffold rename helper extracted from `rename.ts`.
  *
- * 2026-04-24 eval Finding 5: `furnace create --with-tests --xpcshell`
- * writes a scaffold at `browser/base/content/test/<binary>-xpcshell/
- * <name>/` and `furnace rename` did not update it. The helper below
- * renames the directory, updates the test filename, rewrites the
- * `xpcshell.toml` section header, and re-writes the test body so word-
- * boundary occurrences of the old tag / underscored name map to the new
- * ones.
+ * `furnace create --with-tests --xpcshell` writes a scaffold at
+ * `browser/base/content/test/<binary>-xpcshell/<name>/`, which a rename must
+ * follow. This helper renames the directory, updates the test filename,
+ * rewrites the `xpcshell.toml` section header, and re-writes the test body
+ * so word-boundary occurrences of the old tag / underscored name map to the
+ * new ones.
  *
- * Extracted to keep `rename.ts` under the per-file LOC budget —
- * `rename.ts` already carries mochikit + browser-mochitest + FTL
- * handling, and tacking xpcshell onto that tree pushed the file past
- * the limit.
+ * Extracted to keep `rename.ts` under the per-file LOC budget — it already
+ * carries mochikit + browser-mochitest + FTL handling.
  */
 
 import { readdir } from 'node:fs/promises';

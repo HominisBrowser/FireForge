@@ -179,12 +179,11 @@ describe('Furnace drift detection (integration)', () => {
   });
 
   it('reports patch-owned drift after deploying an edited component over its exported patch', async () => {
-    // Ground truth for 0.38.0 friction item 1: deploy the override, export
-    // a patch capturing the deployed copy, then edit the workspace source
-    // and deploy again. The engine copy now has content the owning patch's
-    // body lacks; pre-fix the furnace prefix short-circuit in the status
-    // classifier silently bucketed the path as `furnace` and the ownership
-    // table row read `owned`.
+    // Deploy the override, export a patch capturing the deployed copy, then
+    // edit the workspace source and deploy again. The engine copy now has
+    // content the owning patch's body lacks; a furnace-prefix short-circuit
+    // in the status classifier would silently bucket the path as `furnace`
+    // and the ownership table row would read `owned`.
     await furnaceDeployCommand(projectRoot, undefined, { skipValidate: true });
     expect(await readFile(engineButtonCss, 'utf8')).toBe(OVERRIDE_BUTTON_CSS);
 

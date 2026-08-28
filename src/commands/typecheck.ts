@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge typecheck` — whole-project TypeScript type checking
- * driven by user-supplied jsconfig.json paths.
+ * `fireforge typecheck` — whole-project TypeScript type checking driven by
+ * user-supplied jsconfig.json paths.
  *
- * Distinct from `patchLint.checkJs`: that pass is patch-hygiene
- * (scoped to patch-owned `.sys.mjs`, run automatically by
- * `fireforge lint`); this command is CI-grade — it runs whole
- * projects with the user's own compiler options and is intended as
- * a CI gate. The two share their Firefox-globals shim and the same
- * suppressed-diagnostic set so a file that lints clean cannot fail
- * typecheck for a reason the operator could not have inferred from
- * the docs.
+ * Distinct from `patchLint.checkJs`: that pass is patch-hygiene (scoped to
+ * patch-owned `.sys.mjs`, run automatically by `fireforge lint`); this
+ * command is CI-grade — it runs whole projects with the user's own compiler
+ * options. The two share their Firefox-globals shim and the same
+ * suppressed-diagnostic set so a file that lints clean cannot fail typecheck
+ * for a reason the operator could not have inferred from the docs.
  *
- * Exits non-zero on any error-severity diagnostic. Warnings print
- * but do not fail. Designed for CI use.
+ * Exits non-zero on any error-severity diagnostic. Warnings print but do not
+ * fail.
  */
 
 import { Command } from 'commander';
@@ -24,7 +22,7 @@ import { findJsconfigPathsDrift, syncFurnaceJsconfigPaths } from '../core/furnac
 import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import { buildPatchQueueContext } from '../core/patch-lint.js';
 import { relativeForDisplay, runTypecheck } from '../core/typecheck.js';
-import { GeneralError } from '../errors/base.js';
+import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
 import type { TypecheckConfig } from '../types/config.js';
@@ -55,7 +53,7 @@ export function resolveTypecheckProjects(
 ): TypecheckConfig {
   if (override !== undefined) {
     if (override.trim() === '') {
-      throw new GeneralError('--project requires a non-empty path');
+      throw new InvalidArgumentError('--project requires a non-empty path', '--project');
     }
     return {
       projects: [override],
@@ -98,8 +96,8 @@ export async function typecheckCommand(
 ): Promise<void> {
   intro('FireForge typecheck');
 
-  // Read-only to the operator, an index WRITER to git without this scope
-  //: the Furnace jsconfig reconciler and the project resolution
+  // Read-only to the operator, an index WRITER to git without this scope:
+  // the Furnace jsconfig reconciler and the project resolution
   // below touch `engine/`, and any git plumbing they reach would refresh
   // the primary checkout's index under a concurrent `fireforge test`.
   return withPrivateGitIndex(getProjectPaths(projectRoot).engine, () =>
@@ -121,10 +119,9 @@ async function runTypecheckCommandBody(
   const cfg = resolveTypecheckProjects(config.typecheck, options.project);
 
   // Regenerate a stale Furnace-managed jsconfig before running: the generated
-  // `compilerOptions.paths` shim drifts when components are added/renamed
+  // `compilerOptions.paths` shim drifts when components are added or renamed
   // without a re-deploy, and a stale shim reports type errors in files the
-  // session never touched (e.g. 47 phantom errors from an out-of-date
-  // chrome-module mapping). Run the same reconciler `furnace deploy`/`sync`
+  // session never touched. Run the same reconciler `furnace deploy`/`sync`
   // use so typecheck checks against the current workspace.
   await regenerateStaleGeneratedJsconfig(projectRoot);
 
@@ -136,11 +133,11 @@ async function runTypecheckCommandBody(
   // Fold the EXPORT-TIME authority into this pass. Per-patch lint runs
   // checkJs over the queue's patch-owned modules in relative isolation and
   // resolves imported typedefs differently from the whole-project pass, so
-  // `typecheck` could report 0 errors across every
-  // project while the very next `export` failed per-patch lint with
-  // `checkjs-type-error` findings. Two authorities that disagree, with the
-  // stricter one speaking only at export time, is not a usable CI gate:
-  // running both here makes `typecheck` green MEAN export-clean types.
+  // `typecheck` can report 0 errors across every project while the very next
+  // `export` fails per-patch lint with `checkjs-type-error` findings. Two
+  // authorities that disagree, with the stricter one speaking only at export
+  // time, is not a usable CI gate: running both here makes `typecheck` green
+  // MEAN export-clean types.
   const patchIssues = await collectPatchLintCheckJsIssues(projectRoot);
   reportResults(projectRoot, results, patchIssues);
 }
@@ -202,9 +199,9 @@ export function reportResults(
 ): void {
   let totalErrors = 0;
   let totalWarnings = 0;
-  // Per-patch checkJs findings are reported in the SAME tally:
-  // a split report would let an operator read "0 errors" off the project
-  // summary and still be refused at export.
+  // Per-patch checkJs findings are reported in the SAME tally: a split
+  // report would let an operator read "0 errors" off the project summary
+  // and still be refused at export.
   for (const issue of patchLintIssues) {
     if (issue.severity === 'error') totalErrors += 1;
     else totalWarnings += 1;

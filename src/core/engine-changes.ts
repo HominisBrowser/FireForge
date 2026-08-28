@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Shared collector for "what changed in the engine tree since the last
- * successful build". Three preflight/audit paths previously carried their
- * own copy of this logic (`build-audit`, `build-prepare`,
- * `test-stale-check`), differing only in the verbose-log label; they all
- * call this module now.
+ * successful build", used by `build-audit`, `build-prepare` and
+ * `test-stale-check`.
  */
 
 import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import type { BuildBaseline } from './build-baseline-types.js';
+import { hashEngineFile } from './coverage-extend.js';
 import { hasChanges, isMissingHeadError } from './git.js';
 import { git } from './git-base.js';
 import { getUntrackedFiles } from './git-status.js';
@@ -71,4 +70,40 @@ export async function collectChangedEnginePaths(
   }
 
   return [...collected].sort();
+}
+
+/**
+ * Drops every path whose live content still matches the fingerprint the
+ * last successful build recorded for it, keeping the rest. Shared by the
+ * stale-build preflight (`packageableFingerprints`) and the auto-configure /
+ * full-build escalation in `build-prepare` (`buildInputFingerprints`).
+ *
+ * A path with no recorded entry, an unreadable file, or a differing hash
+ * is kept — "cannot prove unchanged" must never turn into "unchanged".
+ * With no fingerprint set at all (a baseline written before the field
+ * existed) every path is kept, which is the path-only comparison the
+ * fingerprints refine.
+ *
+ * @param engineDir - Path to the engine directory
+ * @param paths - Candidate engine-relative POSIX paths
+ * @param fingerprints - Recorded hashes keyed by engine-relative path
+ * @returns The subset of `paths` that cannot be proven unchanged
+ */
+export async function dropPathsMatchingFingerprints(
+  engineDir: string,
+  paths: readonly string[],
+  fingerprints: Record<string, string> | undefined
+): Promise<string[]> {
+  if (!fingerprints) return [...paths];
+  const kept: string[] = [];
+  for (const path of paths) {
+    const recorded = fingerprints[path];
+    if (recorded === undefined) {
+      kept.push(path);
+      continue;
+    }
+    const live = await hashEngineFile(engineDir, path);
+    if (live === undefined || live !== recorded) kept.push(path);
+  }
+  return kept;
 }

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-}));
+import { nativePath } from '../../test-utils/index.js';
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../furnace-config.js', () => ({
   loadFurnaceConfig: vi.fn(),
@@ -34,7 +34,7 @@ describe('measureTokenCoverage', () => {
     );
 
     mockedReadText.mockImplementation((filePath) => {
-      if (filePath.endsWith('styles/a.css')) {
+      if (filePath.endsWith(nativePath('styles/a.css'))) {
         return Promise.resolve(
           [
             '/* var(--mybrowser-commented) #123456 rgb(1, 2, 3) */',
@@ -49,7 +49,7 @@ describe('measureTokenCoverage', () => {
         );
       }
 
-      if (filePath.endsWith('styles/b.css')) {
+      if (filePath.endsWith(nativePath('styles/b.css'))) {
         return Promise.resolve(
           [
             '.panel {',
@@ -96,11 +96,10 @@ describe('measureTokenCoverage', () => {
   });
 
   it('counts --moz-* platform vars as allowlisted by default, not unknown', async () => {
-    // Eval 1 Finding #5: a fork that overrides moz-button (CSS-only)
-    // declared one fork-owned token but the copied upstream baseline
-    // referenced 84 `--moz-*` platform vars; coverage reported 1%
-    // because those upstream vars counted as unknown. The default
-    // allowlist maps them to the platform bucket so fork-owned
+    // A fork that overrides moz-button (CSS-only) may declare one fork-owned
+    // token while the copied upstream baseline references ~84 `--moz-*`
+    // platform vars; counting those as unknown reports 1% coverage. The
+    // default allowlist maps them to the platform bucket so fork-owned
     // coverage is not dragged down by untouched upstream material.
     mockedLoadFurnaceConfig.mockResolvedValue({
       tokenPrefix: '--freshforge-',
@@ -158,7 +157,7 @@ describe('measureTokenCoverage', () => {
 
     const report = await measureTokenCoverage('/repo/engine', ['styles/a.css']);
 
-    expect(mockedLoadFurnaceConfig).toHaveBeenCalledWith('/repo');
+    expect(mockedLoadFurnaceConfig).toHaveBeenCalledWith(nativePath('/repo'));
     expect(report).toEqual({
       filesScanned: 1,
       tokenUsages: 0,

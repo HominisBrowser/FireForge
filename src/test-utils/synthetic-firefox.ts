@@ -116,14 +116,12 @@ const SYNTHETIC_FIREFOX_FILES: Record<string, string | Buffer> = {
     'brandShorterName=Firefox\nbrandShortName=Firefox\nbrandFullName=Firefox\n',
   'browser/branding/unofficial/locales/en-US/brand.ftl':
     '-brand-shorter-name = Firefox\n-brand-short-name = Firefox\n-brand-full-name = Firefox\n-vendor-short-name = Mozilla\n',
-  // Finding #2's preflight (`assertBrandingMozconfigAgreement`) checks
-  // that `engine/browser/branding/<binaryName>/moz.build` exists before
-  // `mach build` runs. Real Firefox branding trees always ship a
-  // `moz.build`; the fixture lacked one, so the copy performed by
-  // `setupBranding` produced a branding dir without it and every
-  // integration test that reached `prepareBuildEnvironment` tripped
-  // the new preflight. Ship a minimal moz.build so the fixture matches
-  // production layout.
+  // `assertBrandingMozconfigAgreement` requires
+  // `engine/browser/branding/<binaryName>/moz.build` before `mach build`
+  // runs. Real Firefox branding trees always ship one, so the fixture must
+  // too — otherwise `setupBranding`'s copy produces a branding dir without
+  // it and every integration test reaching `prepareBuildEnvironment` trips
+  // the preflight.
   'browser/branding/unofficial/moz.build': 'DIRS += ["content"]\n',
   'browser/base/content/browser.js': 'export const browserTitle = "baseline";\n',
   'browser/modules/moz.build': 'DIRS += ["newtab"]\n',

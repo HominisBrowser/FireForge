@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 import { ExtractionError } from '../errors/download.js';
 import { elapsedSince } from '../utils/elapsed.js';
-import { ensureDir, pathExists } from '../utils/fs.js';
+import { ensureDir, pathExists, readText } from '../utils/fs.js';
 import { exec, execStream, executableExists } from '../utils/process.js';
 
 /**
@@ -81,11 +81,8 @@ export function findUnsafeArchiveLink(verboseLines: readonly string[]): string |
  * so a date-shaped owner name could shift the column boundary and hide an
  * absolute member name from the check. Each listing pass costs one full
  * decompression, so the two run concurrently and overlap almost perfectly
- * (they are CPU-bound on separate cores). Measured on a real Firefox ESR
- * 140.9 source tarball (601 MB, bsdtar 3.5.3, macOS): -tf 21.7 s, -tvf
- * 22.1 s, both concurrent 22 s wall, extraction itself 58 s (file-creation
- * syscalls dominate it, not decompression) — so the preflight adds ~22 s
- * (~38%) to this one-time extraction step, versus ~44 s if run
+ * (CPU-bound on separate cores): on a 601 MB Firefox ESR source tarball the
+ * preflight adds ~22 s to a ~58 s extraction, versus ~44 s if run
  * sequentially.
  */
 /**
@@ -120,13 +117,13 @@ function createLineScanner(onLine: (line: string) => void): {
  * Runs one tar listing pass, streaming lines through `checkLine` and
  * returning the first unsafe finding (or null) plus the exit code.
  *
- * Streaming matters for safety, not just memory: the buffered `exec`
- * collector silently truncates at 50 MB, and a full Firefox `-tvf` listing
- * already sits in the 40–50 MB range — so the buffered implementation could
- * scan only the head of the listing while reporting the archive safe. A
- * crafted archive could exploit exactly that by padding benign entries
- * first and hiding a traversal name or absolute link target past the cap.
- * With per-line streaming EVERY entry is scanned, with bounded memory.
+ * Streaming matters for safety, not just memory: a buffered `exec` collector
+ * silently truncates at 50 MB, and a full Firefox `-tvf` listing already
+ * sits in the 40–50 MB range — so a buffered implementation scans only the
+ * head of the listing while reporting the archive safe. A crafted archive
+ * could exploit exactly that by padding benign entries first and hiding a
+ * traversal name or absolute link target past the cap. Per-line streaming
+ * scans EVERY entry with bounded memory.
  */
 async function runListingScan(
   archivePath: string,
@@ -258,8 +255,6 @@ export async function getFirefoxVersion(engineDir: string): Promise<string | und
   if (!(await pathExists(versionPath))) {
     return undefined;
   }
-
-  const { readText } = await import('../utils/fs.js');
   const version = await readText(versionPath);
   return version.trim();
 }

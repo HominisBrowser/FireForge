@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+
 const { execMock, executableExistsMock, pathExistsMock } = vi.hoisted(() => ({
   execMock: vi.fn(),
   executableExistsMock: vi.fn(() => Promise.resolve(true)),
@@ -19,9 +21,7 @@ vi.mock('../../utils/fs.js', () => ({
   removeFile: vi.fn(),
 }));
 
-vi.mock('../../utils/logger.js', () => ({
-  verbose: vi.fn(),
-}));
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 // readdir is used by stageAllFilesChunked; not exercised in these tests
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -43,6 +43,8 @@ function setupInitMocks(addResult: { exitCode: number; stdout: string; stderr: s
     .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config core.untrackedCache
     .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config core.fsmonitor
     .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config feature.manyFiles
+    .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config core.autocrlf
+    .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git config core.eol
     .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' }) // git remote add origin
     .mockResolvedValueOnce(addResult); // git add -A
 }

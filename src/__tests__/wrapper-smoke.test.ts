@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { PUBLIC_API_EXPORTS } from '../test-utils/public-api.js';
+import { escapeRegex } from '../utils/regex.js';
 
 const execFileAsync = promisify(execFile);
 type StringExecFileOptions = Omit<ExecFileOptions, 'encoding'> & { encoding?: BufferEncoding };
@@ -82,10 +83,16 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
         'dist/build-info.json',
         'dist/src/index.js',
         'templates/configs/common.mozconfig',
+        'docs/README.md',
+        'docs/exit-codes.md',
         'package.json',
       ])
     );
     expect(packedFiles.some((path) => path.startsWith('templates/configs/'))).toBe(true);
+    // The README's Documentation section links `docs/…` relatively, so a
+    // package without the tree dead-ends every one of those links exactly
+    // where the self-serve doctrine says to look — the installed package.
+    expect(packedFiles.some((path) => path.startsWith('docs/'))).toBe(true);
     expect(packedFiles.some((path) => path.startsWith('configs/'))).toBe(false);
     expect(packedFiles.some((path) => path.startsWith('src/'))).toBe(false);
     expect(packedFiles.some((path) => path.includes('__tests__'))).toBe(false);
@@ -155,6 +162,10 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     expect(shippedFiles.some((path) => path.startsWith('templates/configs/'))).toBe(true);
     expect(shippedFiles.some((path) => path.startsWith('configs/'))).toBe(false);
 
+    // docs/ is present, so the README's relative links resolve here.
+    const exitCodes = await readFile(join(installedPkgRoot, 'docs', 'exit-codes.md'), 'utf-8');
+    expect(exitCodes.length).toBeGreaterThan(0);
+
     expect(shippedFiles.some((path) => path.startsWith('src/'))).toBe(false);
     expect(shippedFiles.some((path) => path.includes('/__tests__/'))).toBe(false);
     expect(shippedFiles.some((path) => path.includes('/test-utils/'))).toBe(false);
@@ -170,7 +181,7 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     // the content hash that distinguishes it from another pack at the same
     // HEAD. A release packs clean, so CI sees the bare form.
     const versionPattern = new RegExp(
-      `^${packageVersion.replace(/\./g, '\\.')}\\+g[0-9a-f]{7,40}(\\.dirty(\\.[0-9a-f]{8})?)?$`
+      `^${escapeRegex(packageVersion)}\\+g[0-9a-f]{7,40}(\\.dirty(\\.[0-9a-f]{8})?)?$`
     );
     const { stdout: versionOutput } = await execFileAsync(process.execPath, [binPath, '--version']);
     expect(versionOutput.trim()).toMatch(versionPattern);

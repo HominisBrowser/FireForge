@@ -58,6 +58,38 @@ export function extractWithBrandingPath(mozconfigContent: string): string | unde
 }
 
 /**
+ * Matches a `MOZ_OBJDIR=<path>` declaration in a mozconfig. Both spellings
+ * mach honours are accepted (`mk_add_options MOZ_OBJDIR=…`, the documented
+ * one, and a bare `export MOZ_OBJDIR=…`), and the value may be quoted.
+ * Last-write-wins for the same reason as {@link WITH_BRANDING_PATTERN}: a
+ * mozconfig is shell.
+ */
+const MOZ_OBJDIR_PATTERN =
+  /^\s*(?:mk_add_options\s+|export\s+)?MOZ_OBJDIR\s*=\s*["']?([^"'\s#]+)/gm;
+
+/**
+ * Extracts the objdir NAME a mozconfig declares — the single trailing path
+ * segment, which is what the `obj-*` scan enumerates.
+ *
+ * `@TOPSRCDIR@` and a leading `./` are both spellings of "beside the
+ * source", which is the only arrangement FireForge's scan can see anyway;
+ * an absolute path outside the engine directory reduces to its basename and
+ * simply will not match a candidate, which is the correct outcome — a
+ * declaration that names something the scan cannot see must not select
+ * anything.
+ *
+ * Returns undefined when nothing is declared. Exported for testing.
+ */
+export function extractMozObjdirName(mozconfigContent: string): string | undefined {
+  const matches = [...mozconfigContent.matchAll(MOZ_OBJDIR_PATTERN)];
+  const raw = matches.at(-1)?.[1];
+  if (raw === undefined) return undefined;
+  const trimmed = raw.replace(/\/+$/, '');
+  const segment = trimmed.split('/').at(-1);
+  return segment !== undefined && segment.length > 0 ? segment : undefined;
+}
+
+/**
  * Preflights the just-written mozconfig against the branding tree FireForge
  * set up. A drift between the two is silent-corruption territory — the
  * build runs, `mach configure` reads the stale directory name out of

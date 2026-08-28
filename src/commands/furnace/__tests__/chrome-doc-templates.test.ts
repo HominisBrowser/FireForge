@@ -26,8 +26,8 @@ describe('chrome-doc jar.mn templates', () => {
     // (`browser/themes/osx/jar.mn`, `…/linux/jar.mn`, `…/windows/jar.mn`)
     // where every existing entry resolves paths relative to the including
     // manifest's directory. A bare `(shared/<name>-chrome.css)` source
-    // produced `obj-.../browser/themes/osx/shared/<name>-chrome.css` which
-    // doesn't exist; `../shared/` climbs out of the theme-specific
+    // resolves to `obj-.../browser/themes/osx/shared/<name>-chrome.css`,
+    // which does not exist; `../shared/` climbs out of the theme-specific
     // directory and lands on the real `browser/themes/shared/` tree.
     expect(jarIncMnEntryForChromeDoc('fresh-lab')).toBe(
       '    content/browser/fresh-lab-chrome.css           (../shared/fresh-lab-chrome.css)'
@@ -66,13 +66,13 @@ describe('chrome-doc jar.mn templates', () => {
     expect(localesFtlWildcardCapturesScaffoldedName('')).toBe(false);
   });
 
-  it('emits the locale FTL entry with a browser/ subdirectory source path (Finding #11)', () => {
-    // Pre-0.16.0 the source column was `(%${name}.ftl)`, but the
-    // scaffold writes the FTL at `engine/browser/locales/en-US/browser/<name>.ftl`.
-    // `%` resolves relative to the per-locale root (e.g. `en-US/`), so
-    // the `browser/` subdirectory MUST be part of the source path.
-    // Without it, the first post-scaffold build fails with
-    // "jar.mn: Cannot find <name>.ftl".
+  it('emits the locale FTL entry with a browser/ subdirectory source path', () => {
+    // A source column of `(%${name}.ftl)` points at `en-US/<name>.ftl`, but
+    // the scaffold writes the FTL at
+    // `engine/browser/locales/en-US/browser/<name>.ftl`. `%` resolves
+    // relative to the per-locale root, so the `browser/` subdirectory MUST
+    // be part of the source path — without it the first post-scaffold build
+    // fails with "jar.mn: Cannot find <name>.ftl".
     expect(localeJarMnEntryForChromeDoc('fresh-lab')).toBe(
       '    locale/browser/fresh-lab.ftl                    (%browser/fresh-lab.ftl)'
     );

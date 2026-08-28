@@ -18,7 +18,7 @@ describe('analyzeTestPathScopes', () => {
     await rm(engineDir, { recursive: true, force: true });
   });
 
-  /** Builds the drill's shape: hominis with a prefix-named sibling. */
+  /** A directory with a prefix-named sibling. */
   async function writeDrillFixture(): Promise<void> {
     const base = join(engineDir, 'browser/base/content/test');
     await mkdir(join(base, 'hominis/nested'), { recursive: true });
@@ -42,8 +42,8 @@ describe('analyzeTestPathScopes', () => {
       testFileCount: 2, // browser_one + nested browser_two; head.js not counted
     });
     // The explicit file list is what defeats mach's prefix matching — the
-    // 0.35.0 trailing-slash form still swept in hominis-tiles on Firefox
-    // 153. No sibling file can appear here by construction.
+    // trailing-slash form still sweeps in a prefix-named sibling. No sibling
+    // file can appear here by construction.
     expect(scope?.dispatchPaths).toEqual([
       'browser/base/content/test/hominis/browser_one.js',
       'browser/base/content/test/hominis/nested/browser_two.js',

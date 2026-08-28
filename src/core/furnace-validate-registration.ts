@@ -15,6 +15,7 @@ import { pathExists, readText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { escapeRegex, stripJsComments } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
+import { normalizeForChecksum } from './furnace-checksum-utils.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, FTL_DIR, JAR_MN } from './furnace-constants.js';
 import { expandCssFragments, listFragmentIncludes } from './furnace-css-fragments.js';
@@ -150,8 +151,12 @@ export async function checkRegistrationConsistency(
         }
       }
       const destContent = await readText(destPath);
-      const srcHash = createHash('sha256').update(srcContent).digest('hex');
-      const destHash = createHash('sha256').update(destContent).digest('hex');
+      // Same normalization the checksums written by apply use. These three
+      // comparisons hashed raw bytes, so on a CRLF checkout `furnace status`
+      // and `furnace validate` reported drift for files apply had just
+      // decided were identical.
+      const srcHash = createHash('sha256').update(normalizeForChecksum(srcContent)).digest('hex');
+      const destHash = createHash('sha256').update(normalizeForChecksum(destContent)).digest('hex');
 
       if (srcHash !== destHash) {
         status.driftedFiles.push(entry.name);
@@ -176,8 +181,10 @@ export async function checkRegistrationConsistency(
       } else {
         const srcContent = await readText(ftlSrc);
         const destContent = await readText(ftlDest);
-        const srcHash = createHash('sha256').update(srcContent).digest('hex');
-        const destHash = createHash('sha256').update(destContent).digest('hex');
+        const srcHash = createHash('sha256').update(normalizeForChecksum(srcContent)).digest('hex');
+        const destHash = createHash('sha256')
+          .update(normalizeForChecksum(destContent))
+          .digest('hex');
         if (srcHash !== destHash) {
           status.driftedFiles.push(ftlName);
           status.filesInSync = false;
@@ -270,11 +277,9 @@ export async function validateJarMnEntries(
   }
 
   // Stale registrations: lines pointing at component files that no longer
-  // exist in the workspace (left behind by a rename/delete under an older
-  // FireForge). These break `mach build` at packaging ("File ... not
-  // found"), so they are errors and `--fix` prunes them (0.34.0 field
-  // report: both validate --fix and doctor --repair-furnace reported
-  // success without pruning).
+  // exist in the workspace, left behind by a rename or delete. These break
+  // `mach build` at packaging ("File ... not found"), so they are errors and
+  // `--fix` prunes them.
   const staleEntries = await findStaleJarMnEntries(
     engineDir,
     furnacePaths.customDir,
@@ -315,48 +320,108 @@ const AUTO_DETECT_HOST_DIR = 'browser/base/content';
  * `already`, so callers can merge them with the caller-configured set
  * without producing double entries in warning output.
  *
- * Motivating case: a fork that mounts a custom element from its own
- * top-level chrome document (e.g. `mybrowser.xhtml`) without setting
- * `tokenHostDocuments`. The stock `browser.xhtml` was the only thing
- * scanned, so the tokens CSS link in the ACTUAL host document went
- * unnoticed and the warning false-fired.
+ * This catches a fork that mounts a custom element from its own top-level
+ * chrome document (e.g. `mybrowser.xhtml`) without setting
+ * `tokenHostDocuments`: scanning only the stock `browser.xhtml` would miss
+ * the tokens CSS link in the ACTUAL host document and false-fire the
+ * warning.
  *
  * @param engineDir Absolute engine root.
  * @param tagName Custom element tag the CSS belongs to.
  * @param already Paths already in the scan set (POSIX, engine-relative).
  */
+/**
+ * Per-run caches for work that is invariant across components.
+ *
+ * `validateAllComponents` walks every component, and re-parsing
+ * `fireforge.json` plus re-scanning every `.xhtml` under the chrome-document
+ * directory per component is one config parse and one full directory read
+ * PER COMPONENT, for work that depends only on the project and the engine.
+ *
+ * Keyed by root/engine dir and cleared by
+ * {@link resetRegistrationValidationCaches} at the start of each run, so a
+ * long-lived process (the test suite, `watch`) never serves a stale read.
+ */
+const tokensCssFileNameCache = new Map<string, string>();
+const chromeDocumentCache = new Map<string, Map<string, string>>();
+
+/**
+ * Whether a batch validation is in flight.
+ *
+ * The caches are consulted ONLY while this is set. Outside a batch — a direct
+ * `validateComponent` call from `furnace status`, from apply's consistency
+ * check, or from a test — every read goes to disk, so a caller that mutates
+ * the engine between calls can never be served a stale document.
+ */
+let batchInFlight = false;
+
+/**
+ * Runs `body` with the per-run caches enabled, then clears them.
+ *
+ * @param body - The batch to run
+ * @returns Whatever `body` resolves to
+ */
+export async function withRegistrationValidationCache<T>(body: () => Promise<T>): Promise<T> {
+  const outer = batchInFlight;
+  batchInFlight = true;
+  try {
+    return await body();
+  } finally {
+    batchInFlight = outer;
+    if (!outer) {
+      tokensCssFileNameCache.clear();
+      chromeDocumentCache.clear();
+    }
+  }
+}
+
+/**
+ * Reads every chrome document under the auto-detect directory once per run.
+ *
+ * @param engineDir - Absolute path to the engine checkout
+ * @returns Map of engine-relative document path to its content
+ */
+async function loadChromeDocuments(engineDir: string): Promise<Map<string, string>> {
+  const cached = batchInFlight ? chromeDocumentCache.get(engineDir) : undefined;
+  if (cached) return cached;
+
+  const documents = new Map<string, string>();
+  const contentDir = join(engineDir, AUTO_DETECT_HOST_DIR);
+  if (await pathExists(contentDir)) {
+    let entries: string[];
+    try {
+      entries = await readdir(contentDir);
+    } catch {
+      // No readable chrome-document directory means no documents reference
+      // the tag, which is the same verdict as an empty directory.
+      entries = [];
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.xhtml')) continue;
+      const rel = `${AUTO_DETECT_HOST_DIR}/${entry}`;
+      try {
+        documents.set(rel, await readText(join(contentDir, entry)));
+      } catch {
+        // Unreadable document: treated as not referencing the tag.
+      }
+    }
+  }
+  if (batchInFlight) chromeDocumentCache.set(engineDir, documents);
+  return documents;
+}
+
 async function autoDetectTokenHostDocuments(
   engineDir: string,
   tagName: string,
   already: Iterable<string>
 ): Promise<string[]> {
-  const contentDir = join(engineDir, AUTO_DETECT_HOST_DIR);
-  if (!(await pathExists(contentDir))) return [];
-
-  let entries: string[];
-  try {
-    entries = await readdir(contentDir);
-  } catch {
-    // No readable chrome-document directory means no documents reference the
-    // tag, which is the same verdict as an empty directory.
-    return [];
-  }
-
+  // Reads the directory ONCE per run rather than once per component: only the
+  // tag being searched for differs between components.
+  const documents = await loadChromeDocuments(engineDir);
   const alreadySet = new Set(already);
   const detected: string[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith('.xhtml')) continue;
-    const relPath = `${AUTO_DETECT_HOST_DIR}/${entry}`;
+  for (const [relPath, content] of documents) {
     if (alreadySet.has(relPath)) continue;
-    const absPath = join(contentDir, entry);
-    let content: string;
-    try {
-      content = await readText(absPath);
-    } catch {
-      // An unreadable chrome document cannot be searched for the tag; skip it and
-      // keep scanning the rest.
-      continue;
-    }
     if (content.includes(tagName)) {
       detected.push(relPath);
     }
@@ -402,9 +467,17 @@ export async function validateTokenLink(
 
   let tokensCssFile: string;
   try {
-    const forgeConfig = await loadConfig(root);
-    const segments = getTokensCssPath(forgeConfig.binaryName).split('/');
-    tokensCssFile = segments[segments.length - 1] ?? '';
+    // Cached per run: the filename depends on `binaryName` alone, so parsing
+    // fireforge.json once per token-using component was pure repetition.
+    const cachedName = batchInFlight ? tokensCssFileNameCache.get(root) : undefined;
+    if (cachedName !== undefined) {
+      tokensCssFile = cachedName;
+    } else {
+      const forgeConfig = await loadConfig(root);
+      const segments = getTokensCssPath(forgeConfig.binaryName).split('/');
+      tokensCssFile = segments[segments.length - 1] ?? '';
+      if (batchInFlight) tokensCssFileNameCache.set(root, tokensCssFile);
+    }
   } catch (error: unknown) {
     const reason = toError(error).message;
     warn(`Could not resolve token CSS link target for ${tagName} during validation: ${reason}`);

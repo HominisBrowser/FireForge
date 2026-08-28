@@ -18,7 +18,6 @@ export type {
   FurnaceRemoveOptions,
   FurnaceSyncOptions,
   FurnaceValidateOptions,
-  GlobalOptions,
   ImportOptions,
   LintCommandOptions,
   PackageOptions,
@@ -55,9 +54,4 @@ export type {
   PatchStagedForwardImport,
   PatchStagedRegistration,
 } from './patches.js';
-export type {
-  DoctorCheck,
-  ProjectStatus,
-  TokenCoverageFileEntry,
-  TokenCoverageReport,
-} from './project.js';
+export type { DoctorCheck, TokenCoverageFileEntry, TokenCoverageReport } from './project.js';

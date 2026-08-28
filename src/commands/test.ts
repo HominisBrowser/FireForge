@@ -2,6 +2,7 @@
 import { join, resolve } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { assertEngineExists } from '../core/engine-precondition.js';
 import {
   assertEngineGenerationUnchanged,
   snapshotEngineGeneration,
@@ -21,6 +22,8 @@ import {
   reportMarionettePreflight,
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
+import { ensureMochitestServerPortAvailable } from '../core/mochitest-server-port.js';
+import { closeActiveRunLog, openRunLog, setActiveRunLog } from '../core/run-log.js';
 import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
 import {
   analyzeTestPathScopes,
@@ -32,7 +35,7 @@ import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, notice, outro, success, verbose } from '../utils/logger.js';
+import { info, intro, notice, outro, verbose } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { runTestBuildPhase } from './test-build-phase.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
@@ -86,8 +89,8 @@ async function assertTestPathsExist(engineDir: string, testPaths: string[]): Pro
  * Picks the mach dispatch target for a (non-mixed) run. A single-suite run
  * auto-routes to the suite-specific command (`mach xpcshell-test` /
  * `mach mochitest`), which degrades a broken host resource monitor to a
- * warning instead of crashing generic `mach test` at startup (E1). Mixed runs
- * are rejected before this point; a path-less "run all" or an explicit
+ * warning instead of crashing generic `mach test` at startup. Mixed runs are
+ * rejected before this point; a path-less "run all" or an explicit
  * `--generic-mach-test` opt-out stays on the generic command.
  */
 function resolveTestSuite(classification: HarnessClassification, forceGeneric: boolean): TestSuite {
@@ -172,28 +175,30 @@ async function runDoctorPreflight(args: {
   launchablePath: string | undefined;
 }): Promise<'stop' | 'continue'> {
   const { engineDir, effectivePort, hasTestPaths, objDir, binaryName, launchablePath } = args;
-  // Write the "Running marionette preflight..." banner via
-  // `process.stdout.write` directly before `info()` so non-TTY captures
-  // always see the banner even if clack's renderer defers output in
-  // pipe mode. `info()` is still called so TTY users keep the normal
-  // clack box-drawing framing.
-  process.stdout.write('Running marionette preflight...\n');
-  info('Running marionette preflight...');
+  // Non-TTY captures need the banner even if clack's renderer defers output
+  // in pipe mode; TTY users need the clack framing. Gated rather than
+  // written twice — the unconditional pair printed the same line twice on a
+  // terminal.
+  if (process.stdout.isTTY) {
+    info('Running marionette preflight...');
+  } else {
+    process.stdout.write('Running marionette preflight...\n');
+  }
   const preflight =
     effectivePort !== undefined
       ? await runMarionettePreflight(engineDir, { port: effectivePort })
       : await runMarionettePreflight(engineDir);
-  // 2026-04-24 eval Finding 7: the pre-0.18.1 code used
-  // `success()` + `outro()` + a direct `process.stdout.write` as a
-  // belt-and-suspenders but still reproducibly dropped the PASS summary
-  // under non-TTY capture (observed: `tee`-wrapped eval output saw only
-  // the intro). The fix writes the authoritative PASS/FAIL line via
-  // `process.stdout.write` as the very first output after the probe
-  // returns, so the captured stream has an unambiguous summary no
-  // matter what clack does on top. The clack-rendered banner
-  // (`info`/`warn`) is retained so TTY users keep the visual framing.
+  // The authoritative PASS/FAIL line is written with `process.stdout.write`
+  // as the first output after the probe returns, because clack's renderer
+  // can drop the summary under non-TTY capture.
+  //
+  // Gated on non-TTY: unconditional, it stacks with the two clack renderings
+  // below and the same line appears THREE times on a terminal. Captured
+  // streams are exactly where this branch still fires.
   const directLine = formatMarionettePreflightLine(preflight);
-  process.stdout.write(`${directLine}\n`);
+  if (!process.stdout.isTTY) {
+    process.stdout.write(`${directLine}\n`);
+  }
   process.stdout.write(
     `Marionette preflight environment: objdir=${objDir ?? '(none)'}; binary=${binaryName}; app=${launchablePath ? `engine/${launchablePath}` : '(unknown)'}; port=${effectivePort ?? 2828}; elapsed=${preflight.durationMs}ms\n`
   );
@@ -203,7 +208,6 @@ async function runDoctorPreflight(args: {
       emitFailVerdict('preflight');
       throw new GeneralError('Marionette preflight reported FAIL — see output above.');
     }
-    success(directLine);
     // Doctor-only runs end here, so they carry their own verdict line
     // (reason=preflight on failure); with test paths the verdict comes
     // from the actual harness run downstream.
@@ -233,28 +237,27 @@ function appendMarionetteForwardingArgs(
   forwardedPort: number | undefined,
   xpcshellOnly = false
 ): void {
-  // Auto-forward the Marionette port to mach when `--marionette-port` is
-  // set. `--setpref=marionette.port=<n>` configures where the browser
-  // listener binds; `--marionette=127.0.0.1:<n>` tells the mochitest harness
-  // client to connect there (default client is 127.0.0.1:2828). xpcshell
-  // ignores both for browser Marionette.
+  // Auto-forward the Marionette port to mach when `--marionette-port` is set.
+  // `--setpref=marionette.port=<n>` configures where the browser listener
+  // binds; `--marionette=127.0.0.1:<n>` tells the mochitest harness client to
+  // connect there (default client is 127.0.0.1:2828). xpcshell ignores both
+  // for browser Marionette.
   //
   // Skip setpref forwarding when the operator already supplied an equivalent
-  // arg via `--mach-arg` — duplicates would be confusing without changing
-  // semantics. Skip when mach args explicitly request `--flavor=xpcshell`
-  // (or `xpcshell-tests`): the preflight still honours `--marionette-port`,
-  // but mach does not use the marionette.port pref on that harness. Any
-  // other arg shape still forwards so toolkit widget paths and mixed suites
-  // stay aligned with the probe without duplicate `--mach-arg` flags.
+  // arg via `--mach-arg` — duplicates would confuse without changing
+  // semantics. Skip when mach args explicitly request `--flavor=xpcshell` (or
+  // `xpcshell-tests`): the preflight still honours `--marionette-port`, but
+  // mach does not use the marionette.port pref on that harness. Any other arg
+  // shape still forwards so toolkit widget paths and mixed suites stay
+  // aligned with the probe without duplicate `--mach-arg` flags.
   //
   // Skip auto `--marionette=...` when `--mach-arg` already includes a client
   // `--marionette=...` (or two-token `--marionette host:port`).
   if (options.marionettePort === undefined) return;
   if (xpcshellOnly) {
     // Manifest classification says every requested path is xpcshell —
-    // xpcshell ignores the browser Marionette path entirely, and the
-    // mochitest client flags previously forwarded here made mach reject
-    // the dispatch.
+    // xpcshell ignores the browser Marionette path entirely, and forwarding
+    // the mochitest client flags here makes mach reject the dispatch.
     info(
       `--marionette-port=${options.marionettePort} applied to the preflight probe only: the requested paths are xpcshell-only, and xpcshell ignores the browser Marionette port. Not forwarding --setpref=marionette.port or --marionette to mach.`
     );
@@ -294,8 +297,8 @@ async function ensureTestMarionettePortAvailable(
   // This also recognizes a fork-branded browser via binaryName.
   if (skip.xpcshellOnly && !skip.doctor) {
     // xpcshell does not bind the browser Marionette port, so a developer's
-    // interactive browser holding 2828 must not kill an xpcshell run
-    //. --doctor keeps the preflight: its probe launches a
+    // interactive browser holding 2828 must not kill an xpcshell run.
+    // --doctor keeps the preflight: its probe launches a
     // Marionette browser regardless of the requested harness.
     const message =
       'Skipping the Marionette stale-port preflight: all requested paths are xpcshell ' +
@@ -327,6 +330,15 @@ async function ensureTestBrowserEnvironment(
   if (!xpcshellOnly && launchablePath) {
     await ensureLaunchableBrowserNotRunning(join(engineDir, launchablePath), {
       killStaleBrowser: options.killStaleMarionette === true,
+    });
+  }
+  // A zombie mochitest httpd squatting the server port makes a fresh
+  // browser connect to a server that cannot serve this run's manifest,
+  // which surfaces as a 370s "Ran 0 checks" stall naming nothing. xpcshell
+  // does not use the httpd, so an xpcshell-only run is never blocked by it.
+  if (!xpcshellOnly) {
+    await ensureMochitestServerPortAvailable(undefined, {
+      killStaleServer: options.killStaleMarionette === true,
     });
   }
   const forwardedPort = options.machArg
@@ -370,11 +382,17 @@ export async function testCommand(
 ): Promise<void> {
   intro('FireForge Test');
   resetVerdictEmission();
+  // Opened before ANY work so a preflight refusal is logged too — those are
+  // exactly the runs whose only output a `tail` throws away. Closed in
+  // `finally`, after the verdict line has already read the path.
+  setActiveRunLog(await openRunLog(projectRoot, 'test'));
   try {
     await runTestCommandBody(projectRoot, testPaths, options);
   } catch (error: unknown) {
     if (!verdictEmitted()) emitFailVerdict('preflight');
     throw error;
+  } finally {
+    await closeActiveRunLog();
   }
 }
 
@@ -405,9 +423,7 @@ async function runTestCommandBody(
   const paths = getProjectPaths(projectRoot);
 
   // Check if engine exists
-  if (!(await pathExists(paths.engine))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
+  await assertEngineExists(paths.engine);
   assertPathlessTestMode(testPaths, options);
 
   const buildCheck = await hasBuildArtifacts(paths.engine);
@@ -423,14 +439,14 @@ async function runTestCommandBody(
   const canaryPath = resolveCanaryPath(options, projectConfig);
   assertTestModeCombinations(testPaths, options, canaryPath);
 
-  // `hasBuildArtifacts` only confirms `obj-*/dist/` exists; a partial
-  // build (linker failed, packaging step interrupted, etc.) can satisfy
-  // that check without ever writing the launchable binary the marionette
-  // preflight needs to spawn. `fireforge run` already uses
-  // `hasRunnableBundle` to fail fast with a precise message; mirror that
-  // here so `test --doctor` against an incomplete build surfaces the
-  // missing-bundle path instead of a cryptic `Browser process exited
-  // during spawn (exit code 1, signal none). stderr tail: (empty)`.
+  // `hasBuildArtifacts` only confirms `obj-*/dist/` exists; a partial build
+  // (linker failed, packaging step interrupted) can satisfy that check
+  // without ever writing the launchable binary the marionette preflight
+  // needs to spawn. `fireforge run` already uses `hasRunnableBundle` to fail
+  // fast with a precise message; mirroring it here makes `test --doctor`
+  // against an incomplete build surface the missing-bundle path instead of a
+  // cryptic `Browser process exited during spawn (exit code 1, signal none).
+  // stderr tail: (empty)`.
   const launchablePath = await resolveLaunchablePathForTests(
     paths.engine,
     projectConfig.binaryName,
@@ -469,9 +485,9 @@ async function runTestCommandBody(
   //   3. fall back to `DEFAULT_MARIONETTE_PORT` semantics inside the probes
   //      (passed as `undefined`).
   // Without (2), an operator working around a stale listener via the
-  // documented `--mach-arg --marionette-port=NNNN` workaround would still
-  // hit the wrapper preflight refusing on 2828 before the forwarded arg
-  // ever reached mach.
+  // documented `--mach-arg --marionette-port=NNNN` route still hits the
+  // wrapper preflight refusing on 2828 before the forwarded arg reaches
+  // mach.
   const { forwardedPort, effectivePort } = await ensureTestBrowserEnvironment(
     paths.engine,
     launchablePath,
@@ -513,7 +529,7 @@ async function runTestCommandBody(
 
   // --mach-arg is a verbatim passthrough for upstream mach/xpcshell/mochitest
   // flags FireForge does not model directly (see the xpcshell appdir hint
-  // above for the motivating case). Appended AFTER --headless so mach sees
+  // above for why). Appended AFTER --headless so mach sees
   // the FireForge-managed flags first and the escape-valve ones last, which
   // keeps the override precedence predictable.
   if (forwardedMachArgs.length > 0) {
@@ -524,16 +540,14 @@ async function runTestCommandBody(
 
   // Directory arguments mean EXACTLY that directory: mozbuild's test
   // resolver matches paths by string prefix, so a bare directory arg
-  // silently swept in prefix-named siblings (152.0b7 → 153.0b8 drill:
-  // `…/test/hominis` also ran `…/test/hominis-tiles`, 1224 tests instead
-  // of ~200, with no indication the scope widened). Each directory
-  // argument dispatches as its enumerated explicit test-file list — a
-  // file list cannot prefix-match a sibling (0.35.0's trailing-`/`
-  // normalization turned out to be cosmetic on Firefox 153's mach; field
-  // verification showed the sibling still ran while the echo claimed it
-  // was excluded). Any prefix-siblings are echoed so the narrowed scope
-  // is visible. Classification above intentionally used the raw
-  // argument forms; only the mach dispatch needs the exact-match shape.
+  // silently sweeps in prefix-named siblings — `…/test/hominis` also running
+  // `…/test/hominis-tiles`, with no indication the scope widened. Each
+  // directory argument therefore dispatches as its enumerated explicit
+  // test-file list, which cannot prefix-match a sibling; a trailing-`/`
+  // normalization does not work, as mach still sweeps the sibling in. Any
+  // prefix-siblings are echoed so the narrowed scope is visible.
+  // Classification above intentionally used the raw argument forms; only the
+  // mach dispatch needs the exact-match shape.
   const scopes = await analyzeTestPathScopes(paths.engine, normalizedPaths);
   const dispatchGroups: ShardGroup[] = scopes.map((scope) => ({
     label: scope.requestedPath,
@@ -564,23 +578,23 @@ async function runTestCommandBody(
     baseExtraArgs: extraArgs,
     harnessRetries,
     headless: options.headless === true,
+    ...(options.fullOutput === true ? { fullOutput: true } : {}),
     ...(perfSampleEnv ? { env: perfSampleEnv } : {}),
   };
   const postRebuildContext = options.build
     ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)
     : undefined;
 
-  // Multi-argument requests shard into sequential harness runs by default
-  // (field report C3): one shared mochitest profile across files bleeds
-  // pref/media-query state into later files. Sharding is per path
-  // ARGUMENT — a directory argument keeps its enumerated files together
-  // in one invocation, preserving the one-browser-instance semantics of
-  // a directory run. --no-shard restores the combined invocation. The
-  // default must not be SILENT (drill finding: a two-file cross-file
-  // pollution repro "passed" because the headed comparison run was
-  // sharded without saying so, briefly misattributing a suite-context
-  // bug to an upstream headless regression), so a one-line notice states
-  // what sharding does and does not exercise.
+  // Multi-argument requests shard into sequential harness runs by default:
+  // one shared mochitest profile across files bleeds pref/media-query state
+  // into later files. Sharding is per path ARGUMENT — a directory argument
+  // keeps its enumerated files together in one invocation, preserving the
+  // one-browser-instance semantics of a directory run. `--no-shard` restores
+  // the combined invocation. The default must not be SILENT: a cross-file
+  // pollution repro otherwise "passes" because the comparison run was
+  // sharded without saying so, misattributing a suite-context bug upstream.
+  // Hence the one-line notice stating what sharding does and does not
+  // exercise.
   if (canaryPath === undefined && dispatchGroups.length > 1 && options.shard !== false) {
     notice(
       `Sharding: running ${dispatchGroups.length} test path arguments in isolated browser instances ` +
@@ -634,9 +648,9 @@ async function runTestCommandBody(
 }
 
 /**
- * Builds the perf-sample env contract for the harness run (field report
- * C4): `--perf-samples <path>` exports `<BINARYNAME>_PERF_SAMPLE_JSON`
- * naming the artifact file a budget checker consumes after the run.
+ * Builds the perf-sample env contract for the harness run:
+ * `--perf-samples <path>` exports `<BINARYNAME>_PERF_SAMPLE_JSON` naming the
+ * artifact file a budget checker consumes after the run.
  */
 function buildPerfSampleEnv(
   projectRoot: string,

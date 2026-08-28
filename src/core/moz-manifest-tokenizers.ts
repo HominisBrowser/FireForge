@@ -71,11 +71,9 @@ export function tokenizeJarMn(lines: string[]): JarMnToken[] {
  * Tokenizes a moz.build Python list block, returning the tokens and their
  * line range within the file.
  *
- * Supports both multi-line lists (the common shape) and single-line
- * empty lists of the form `EXTRA_JS_MODULES += []` — the eval-2 finding
- * case where a freshly-scaffolded module directory's `moz.build`
- * started with an empty list and the tokenizer returned `null`,
- * leaving `register` unable to add the first entry.
+ * Supports both multi-line lists (the common shape) and single-line empty
+ * lists of the form `EXTRA_JS_MODULES += []`, which a freshly-scaffolded
+ * module directory's `moz.build` can start with.
  */
 export function tokenizeMozBuildList(
   lines: string[],
@@ -91,16 +89,15 @@ export function tokenizeMozBuildList(
     if (startLine === -1) {
       if (listPattern.test(raw)) {
         // Single-line empty-list handling: a fresh scaffold sometimes
-        // writes `EXTRA_JS_MODULES += []` on one line. The pre-fix
-        // tokenizer returned `null` because it never saw a line
-        // starting with `]`, which stranded `register` with a "Could
-        // not find module list section" error against the documented
-        // browser/modules/<fork>/ scaffold (eval 2).
+        // writes `EXTRA_JS_MODULES += []` on one line, which a tokenizer
+        // looking for a line starting with `]` never closes — leaving
+        // `register` with a "Could not find module list section" error
+        // against the documented browser/modules/<fork>/ scaffold.
         //
         // The in-place split rewrites the single-line form into the
         // canonical multi-line shape so the caller's
-        // `lines.splice(insertIndex, 0, entry)` lands inside the list
-        // body. The tokens are emitted to mirror the new structure.
+        // `lines.splice(insertIndex, 0, entry)` lands inside the list body.
+        // The tokens are emitted to mirror the new structure.
         const singleLineMatch = /^([^[]*\[)\s*\]\s*$/.exec(raw);
         if (singleLineMatch) {
           const openPart = singleLineMatch[1] ?? '';

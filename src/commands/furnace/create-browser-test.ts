@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Browser-chrome test scaffolding for `furnace create --with-tests`,
- * including the 0.34.0 `--test-dir` redirect and collision safety
- * (existing manifests are appended to; head.js and test implementations
- * are never overwritten). Split out of `create.ts` to keep that command
- * file within the per-file line budget.
+ * including the `--test-dir` redirect and collision safety (existing
+ * manifests are appended to; head.js and test implementations are never
+ * overwritten). Split out of `create.ts` to keep that command file within
+ * the per-file line budget.
  */
 
 import { join } from 'node:path';
 
+import {
+  BROWSER_TEST_SCAFFOLD_ROOT,
+  resolveBrowserChromeTestDir,
+} from '../../core/furnace-constants.js';
 import {
   recordCreatedDir,
   type RollbackJournal,
   snapshotFile,
 } from '../../core/furnace-rollback.js';
 import { getLicenseHeader } from '../../core/license-headers.js';
-import { registerTestManifest } from '../../core/manifest-register.js';
+import { registerTestManifest } from '../../core/moz-manifest-register.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import type { ProjectLicense } from '../../types/config.js';
 import type { ResolvedTestStyle } from '../../types/furnace.js';
@@ -55,8 +59,6 @@ export function resolveValidatedTestDir(
  * @param journal - Optional rollback journal that snapshots files before writes
  * @returns Relative test filenames created or updated for the component
  */
-const TEST_SCAFFOLD_ROOT = 'browser/base/content/test/';
-
 /**
  * Normalizes and validates a `--test-dir` override: engine-relative,
  * under `browser/base/content/test/` (so manifest registration keeps
@@ -65,11 +67,11 @@ const TEST_SCAFFOLD_ROOT = 'browser/base/content/test/';
 export function resolveTestDirOverride(raw: string): string {
   const normalized = stripEnginePrefix(raw).replace(/\/+$/, '');
   if (
-    !normalized.startsWith(TEST_SCAFFOLD_ROOT) ||
-    normalized === TEST_SCAFFOLD_ROOT.slice(0, -1)
+    !normalized.startsWith(BROWSER_TEST_SCAFFOLD_ROOT) ||
+    normalized === BROWSER_TEST_SCAFFOLD_ROOT.slice(0, -1)
   ) {
     throw new InvalidArgumentError(
-      `--test-dir must be an engine-relative directory under ${TEST_SCAFFOLD_ROOT} (got "${raw}").`,
+      `--test-dir must be an engine-relative directory under ${BROWSER_TEST_SCAFFOLD_ROOT} (got "${raw}").`,
       'testDir'
     );
   }
@@ -103,12 +105,12 @@ export async function scaffoldTestFiles(
     : strippedName;
   const underscored = withoutBinaryPrefix.replace(/-/g, '_');
   const testFileName = `browser_${binaryName}_${underscored}.js`;
-  // --test-dir redirects the scaffold (0.34.0 field report: the hardcoded
-  // .../test/<binaryName>/ target collided with a test suite owned by a
-  // different patch). The manifest-registration name is the path below
+  // --test-dir redirects the scaffold: the hardcoded
+  // `.../test/<binaryName>/` target can collide with a test suite owned by a
+  // different patch. The manifest-registration name is the path below
   // browser/base/content/test/ (nested manifests are supported).
-  const testDirRel = testDirOverride ?? `${TEST_SCAFFOLD_ROOT}${binaryName}`;
-  const testDirName = testDirRel.slice(TEST_SCAFFOLD_ROOT.length);
+  const testDirRel = resolveBrowserChromeTestDir(binaryName, testDirOverride);
+  const testDirName = testDirRel.slice(BROWSER_TEST_SCAFFOLD_ROOT.length);
   const testDir = join(paths.engine, testDirRel);
   if (journal && !(await pathExists(testDir))) {
     recordCreatedDir(journal, testDir);

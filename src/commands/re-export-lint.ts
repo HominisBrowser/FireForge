@@ -2,38 +2,26 @@
 /**
  * Hoisted + cached lint context for `re-export`.
  *
- * The per-patch loop used to rebuild the whole patch-queue context AND a
- * fresh queue-wide checkJs TypeScript program for every patch — ~37 s of
- * fixed setup per patch (measured on a 290-patch consumer queue), so an
- * N-patch re-export cost N×37 s. This module:
+ * Rebuilding the whole patch-queue context AND a fresh queue-wide checkJs
+ * TypeScript program for every patch costs tens of seconds of fixed setup
+ * per patch, so an N-patch re-export pays it N times. This module:
  *
  * - builds the queue context and the {@link PerRunCheckJs} program
  *   controller ONCE per invocation (`buildReExportLintContext`) and slices
- * per-patch findings out of it (the shape `move-files`/`split`
- *   already use, plus the program-level hoist `lint --per-patch` has);
+ *   per-patch findings out of it;
  * - reuses the existing per-patch lint RESULT cache
  *   (`.fireforge/lint-cache/per-patch-v1.json`) across invocations —
- *   re-export lints the identical input `lint --per-patch` does (the
- *   fresh `git diff HEAD` of the owned files), and the key already
- *   hashes engine HEAD, per-file content, patch body, config, shims, and
- *   ownership, so a repeat single re-export is a warm hit (~4 s instead
- *   of ~41 s). `--no-cache` opts out; run-level checkJs globals are
- * never cached and are emitted once per invocation;
+ *   re-export lints the identical input `lint --per-patch` does (the fresh
+ *   `git diff HEAD` of the owned files), and the key already hashes engine
+ *   HEAD, per-file content, patch body, config, shims, and ownership, so a
+ *   repeat single re-export is a warm hit. `--no-cache` opts out; run-level
+ *   checkJs globals are never cached and are emitted once per invocation;
  * - keeps the in-memory queue context honest after each write
  *   (`refreshQueueCtxEntry`), so later iterations of an `--all` run lint
  *   against the just-refreshed body instead of the stale one.
  */
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import {
-  buildPerPatchLintCacheKey,
-  getCachedPerPatchLintIssues,
-  getPerPatchLintCacheHeadSha,
-  loadPerPatchLintCache,
-  type PerPatchLintCacheFile,
-  savePerPatchLintCache,
-  setCachedPerPatchLintIssues,
-} from '../core/lint-cache.js';
 import {
   buildPatchQueueContext,
   countNonBinaryDiffLines,
@@ -43,6 +31,15 @@ import {
   type PatchQueueContext,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
+import {
+  buildPerPatchLintCacheKey,
+  getCachedPerPatchLintIssues,
+  getPerPatchLintCacheHeadSha,
+  loadPerPatchLintCache,
+  type PerPatchLintCacheFile,
+  savePerPatchLintCache,
+  setCachedPerPatchLintIssues,
+} from '../core/patch-lint-cache.js';
 import { invalidateNewFileCreatorsCache } from '../core/patch-lint-cross.js';
 import { extractAddedLinesPerFile } from '../core/patch-lint-diff.js';
 import { resolvePatchOwnedSysMjs } from '../core/patch-lint-ownership.js';
@@ -207,16 +204,12 @@ export async function lintReExportedPatch(args: {
     lintOptions.checkJsReportScope = resolvePatchOwnedSysMjs(detectNewFilesInDiff(diffContent));
   }
 
-  const issues = await lintExportedPatch(
-    paths.engine,
-    existingFiles,
-    diffContent,
-    config,
-    patchQueueCtx,
-    args.ignoreChecks,
-    args.patchTier,
-    lintOptions
-  );
+  const issues = await lintExportedPatch(paths.engine, existingFiles, diffContent, config, {
+    ...lintOptions,
+    ...(patchQueueCtx ? { patchQueueCtx } : {}),
+    ...(args.ignoreChecks ? { ignoreChecks: args.ignoreChecks } : {}),
+    ...(args.patchTier ? { patchTier: args.patchTier } : {}),
+  });
 
   reportPatchLintOutcome([...globalIssues, ...issues], args.skipLint);
   return {

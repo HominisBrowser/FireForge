@@ -431,14 +431,13 @@ describe('patch reorder', () => {
     expect(history).toContain('patch-reorder');
   });
 
-  it('reorders a two-patch swap atomically and leaves the queue verifiable (Eval 1 Finding #7)', async () => {
-    // Reproduces the exact eval scenario: two patches at orders 1 and 2,
-    // move the second to position 1 with `--yes`. The eval saw the
-    // manifest end up with renamed filenames while the on-disk files
-    // stayed at their pre-reorder names — `verify` then failed ENOENT
-    // opening the manifest-renamed file. The postcondition assert added
-    // to `renumberPatchesInManifest` guarantees the disk and manifest
-    // stay in agreement (or the whole reorder aborts).
+  it('reorders a two-patch swap atomically and leaves the queue verifiable', async () => {
+    // Two patches at orders 1 and 2, moving the second to position 1 with
+    // `--yes`. The failure mode this guards is a manifest that ends up with
+    // renamed filenames while the on-disk files stay at their pre-reorder
+    // names — `verify` then fails ENOENT opening the manifest-renamed file.
+    // The postcondition assert in `renumberPatchesInManifest` guarantees the
+    // disk and manifest stay in agreement, or the whole reorder aborts.
     restoreTTY = setInteractiveMode(false);
     await seed(patchesDir, [
       {
@@ -466,8 +465,7 @@ describe('patch reorder', () => {
     ) as PatchesManifest;
     const filenames = manifest.patches.map((p) => p.filename).sort();
     expect(filenames).toEqual(['001-ui-furnace-override.patch', '002-infra-bindgen.patch']);
-    // Every filename recorded in the manifest must exist on disk —
-    // this is precisely the invariant the eval reported as broken.
+    // Every filename recorded in the manifest must exist on disk.
     for (const filename of filenames) {
       expect(await pathExists(join(patchesDir, filename))).toBe(true);
     }

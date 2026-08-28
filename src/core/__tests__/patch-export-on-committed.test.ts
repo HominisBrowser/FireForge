@@ -102,7 +102,7 @@ describe('updatePatchAndMetadata onCommitted hook', () => {
         { filesAffected: ['fake/a.txt', 'fake/b.txt'] },
         hook
       )
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
 
     // Patch body: the new content landed.
     const body = await readText(join(patchesDir, '001-infra-a.patch'));

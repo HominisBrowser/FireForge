@@ -7,10 +7,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setActiveRunLog } from '../../core/run-log.js';
 import { error as logError } from '../../utils/logger.js';
 import {
   emitFailVerdict,
   emitHarnessVerdict,
+  emitKilledVerdict,
   emitPassVerdict,
   resetVerdictEmission,
   verdictEmitted,
@@ -34,6 +36,7 @@ function captureStdout(): { writes: string[]; restore: () => void } {
 
 beforeEach(() => {
   resetVerdictEmission();
+  setActiveRunLog(undefined);
 });
 
 describe('verdict sink exactly-one-line guarantee', () => {
@@ -162,5 +165,81 @@ describe('verdict rendering', () => {
       capture.restore();
     }
     expect(capture.writes).toEqual(['FIREFORGE-VERDICT: PASS checks=16 unexpected=0\n']);
+  });
+});
+
+describe('emitKilledVerdict', () => {
+  it('writes the terminal line for a run killed mid-flight', () => {
+    const stdout = captureStdout();
+    try {
+      expect(emitKilledVerdict('SIGTERM')).toBe(true);
+      expect(stdout.writes.join('')).toBe('FIREFORGE-VERDICT: FAIL reason=killed signal=SIGTERM\n');
+    } finally {
+      stdout.restore();
+    }
+  });
+
+  it('does not displace a verdict the run already reached', () => {
+    const stdout = captureStdout();
+    try {
+      emitFailVerdict('test-failures');
+      expect(emitKilledVerdict('SIGINT')).toBe(false);
+      expect(stdout.writes.join('')).toBe('FIREFORGE-VERDICT: FAIL reason=test-failures\n');
+    } finally {
+      stdout.restore();
+    }
+  });
+
+  it('stays silent when no test run was in flight', async () => {
+    // A Ctrl+C during `fireforge status` must not claim a test run happened.
+    // Reload the module so `armed` is false, as it is in a fresh process.
+    vi.resetModules();
+    const fresh = await import('../test-verdict.js');
+    const stdout = captureStdout();
+    try {
+      expect(fresh.emitKilledVerdict('SIGINT')).toBe(false);
+      expect(stdout.writes).toEqual([]);
+    } finally {
+      stdout.restore();
+    }
+  });
+});
+
+describe('the run-log path rides the verdict line', () => {
+  /**
+   * The five command suites mock `run-log.js` away so their exact-string
+   * verdict assertions hold on every platform, which leaves this the only
+   * place the ` log=<path>` suffix is pinned. It has to be here rather than
+   * there: the suffix must be part of the verdict line and not a separate
+   * write, because the verdict is the run's LAST stdout write and a `tail`
+   * cuts anything printed before it.
+   */
+  it('appends log=<path> to the emitted line, once, as the final write', () => {
+    setActiveRunLog({
+      path: '/project/.fireforge/logs/test-2026-08-28T13-44-02-406Z.log',
+      write: vi.fn(),
+      close: vi.fn(() => Promise.resolve()),
+    });
+    const capture = captureStdout();
+    try {
+      emitPassVerdict();
+      emitFailVerdict('preflight');
+    } finally {
+      capture.restore();
+      setActiveRunLog(undefined);
+    }
+    expect(capture.writes).toEqual([
+      'FIREFORGE-VERDICT: PASS log=/project/.fireforge/logs/test-2026-08-28T13-44-02-406Z.log\n',
+    ]);
+  });
+
+  it('emits no suffix when no log could be opened', () => {
+    const capture = captureStdout();
+    try {
+      emitPassVerdict();
+    } finally {
+      capture.restore();
+    }
+    expect(capture.writes).toEqual(['FIREFORGE-VERDICT: PASS\n']);
   });
 });

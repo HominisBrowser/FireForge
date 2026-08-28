@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * "Furnace lock" doctor-check tests. This check had no coverage at all before
- * 0.41.0, and its liveness probe read EPERM as "owner is dead" — so
- * `doctor --repair-furnace` deleted a furnace lock held by a live process
- * running under a different uid, dropping mutual exclusion under a concurrent
- * furnace operation. The EPERM case below is the regression net for that.
+ * "Furnace lock" doctor-check tests. A liveness probe that reads EPERM as
+ * "owner is dead" makes `doctor --repair-furnace` delete a furnace lock held
+ * by a live process running under a different uid, dropping mutual exclusion
+ * under a concurrent furnace operation. The EPERM case below is the
+ * regression net for that.
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';

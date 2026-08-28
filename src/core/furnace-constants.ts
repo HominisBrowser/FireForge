@@ -5,15 +5,31 @@ export const CUSTOM_ELEMENTS_JS = 'toolkit/content/customElements.js';
 /** Path to jar.mn within the engine source tree (toolkit global) */
 export const JAR_MN = 'toolkit/content/jar.mn';
 
+/**
+ * Upstream home of the MozLitElement widget sources.
+ *
+ * The trailing slash is NOT included: `build-audit-transforms.ts` needs
+ * `${WIDGETS_DIR}/` and its ordered prefix table depends on that slash, so
+ * appending it at the one site that wants it keeps the others correct.
+ */
+export const WIDGETS_DIR = 'toolkit/content/widgets';
+
 /** Default Fluent localization directory for toolkit global components, relative to engine root */
 export const FTL_DIR = 'toolkit/locales/en-US/toolkit/global';
+
+/**
+ * Engine-relative root every browser-chrome / xpcshell test scaffold lives
+ * under, trailing slash included. A `--test-dir` override must stay below
+ * it so the `browser/base/moz.build` manifest registration keeps working.
+ */
+export const BROWSER_TEST_SCAFFOLD_ROOT = 'browser/base/content/test/';
 
 /**
  * Suffix for the per-binary xpcshell scaffold parent directory. Components
  * created with `furnace create --with-tests --xpcshell` land at
  * `browser/base/content/test/<binaryName>${XPCSHELL_TEST_DIR_SUFFIX}/<component>/`.
- * Centralised so `create` / `remove` / `rename` / `validate` all agree on
- * the path template (2026-04-24 eval Finding 5).
+ * Centralised so `create` / `remove` / `rename` / `validate` all agree on the
+ * path template.
  */
 const XPCSHELL_TEST_DIR_SUFFIX = '-xpcshell';
 
@@ -23,7 +39,32 @@ const XPCSHELL_TEST_DIR_SUFFIX = '-xpcshell';
  * path `remove.ts` / `rename.ts` / `validate.ts` must clean up.
  */
 export function xpcshellTestParentDir(binaryName: string): string {
-  return `browser/base/content/test/${binaryName}${XPCSHELL_TEST_DIR_SUFFIX}`;
+  return `${BROWSER_TEST_SCAFFOLD_ROOT}${binaryName}${XPCSHELL_TEST_DIR_SUFFIX}`;
+}
+
+/**
+ * Resolves the engine-relative directory a browser-chrome scaffold is
+ * written to: the `--test-dir` override when given, else
+ * `browser/base/content/test/<binaryName>`. The scaffolder AND the
+ * dry-run / success formatters resolve through this one function, so the
+ * printed plan cannot disagree with the files that land on disk.
+ */
+export function resolveBrowserChromeTestDir(binaryName: string, override?: string): string {
+  return override ?? `${BROWSER_TEST_SCAFFOLD_ROOT}${binaryName}`;
+}
+
+/**
+ * Resolves the engine-relative directory an xpcshell scaffold is written
+ * to. A `--test-dir` override names the FINAL directory (no per-component
+ * segment is appended); the default is
+ * `browser/base/content/test/<binaryName>-xpcshell/<componentName>`.
+ */
+export function resolveXpcshellTestDir(
+  binaryName: string,
+  componentName: string,
+  override?: string
+): string {
+  return override ?? `${xpcshellTestParentDir(binaryName)}/${componentName}`;
 }
 
 /** File extensions that constitute a Furnace component's source files. */

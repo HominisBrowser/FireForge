@@ -33,18 +33,19 @@ async function runPreTestBuild(
   projectConfig: Awaited<ReturnType<typeof loadConfig>>,
   harnessRetries: number,
   testPackagingCoverage: TestPackagingCoverage,
+  refuseUnexportedDrift: boolean,
   extend?: { requestedPaths: string[] }
 ): Promise<void> {
   await withBuildLock(projectRoot, async () => {
     // Pass the previous baseline exactly like `fireforge build` does, so
     // auto-configure runs under the same conditions on both paths. The
     // pre-test build must never invalidate more of the objdir than a plain
-    // `mach build faster` would (field incident: a failed pre-test build
-    // was followed by a ~64-minute full rebuild where an incremental one
-    // should have sufficed).
+    // `mach build faster` would — a failed pre-test build followed by a full
+    // rebuild is an hour where an incremental one would have sufficed.
     const previousBaseline = await readBuildBaseline(projectRoot);
     const preparation = await prepareBuildEnvironment(projectRoot, paths, projectConfig, {
       previousBaseline,
+      refuseUnexportedDrift,
     });
 
     // The mozconfig half of the --extend-coverage anchor can
@@ -90,14 +91,13 @@ async function runPreTestBuild(
       s.stop('Build complete');
       // Same record, same failure tolerance as `fireforge build` /
       // `build --ui` (build.ts): a green pre-test build refreshes the
-      // stale-build baseline so a later plain `fireforge test` over the
-      // same files — in any invocation shape — is not refused. A failed
-      // write never fails the run. The coverage claim is scoped to the
-      // requested test paths, since a file-scoped `test --build` only
-      // guarantees packaging for those manifests. The previous baseline is
-      // passed through so a scoped write carries the static-components
-      // anchor forward (a `mach build faster` does not rebake
-      // components.conf into the compiled table).
+      // stale-build baseline so a later plain `fireforge test` over the same
+      // files is not refused. A failed write never fails the run. The
+      // coverage claim is scoped to the requested test paths, since a
+      // file-scoped `test --build` only guarantees packaging for those
+      // manifests. The previous baseline is passed through so a scoped write
+      // carries the static-components anchor forward — `mach build faster`
+      // does not rebake components.conf into the compiled table.
       try {
         // Under --extend-coverage the claim is the UNION of the previous
         // record and this build's paths, and the static-components anchor
@@ -122,7 +122,8 @@ async function runPreTestBuild(
             ? 'refresh'
             : extend !== undefined
               ? 'carry-forward'
-              : 'auto'
+              : 'auto',
+          buildKind
         );
       } catch (baselineError: unknown) {
         verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
@@ -161,6 +162,21 @@ function assertExtendCoverageUsage(options: TestOptions, normalizedPaths: string
   }
 }
 
+/**
+ * Refuses `--refuse-unexported-drift` on a run that dispatches no build.
+ * The flag governs the PRE-TEST build only, so accepting it without
+ * `--build`/`--build-only` would arm a belt over work that never happens —
+ * exactly the silent no-op this release fixes elsewhere.
+ */
+function assertRefuseUnexportedDriftUsage(options: TestOptions): void {
+  if (options.refuseUnexportedDrift !== true) return;
+  if (options.build === true || options.buildOnly === true) return;
+  throw new InvalidArgumentError(
+    '--refuse-unexported-drift requires --build or --build-only: it guards the pre-test build, and this run dispatches none.',
+    '--refuse-unexported-drift'
+  );
+}
+
 /** Renders the `recordedBy` invocation string surfaced by `status --test-coverage`. */
 function describeBuildInvocation(extending: boolean, coverage: TestPackagingCoverage): string {
   const extendFlag = extending ? ' --extend-coverage' : '';
@@ -189,6 +205,7 @@ export async function runTestBuildPhase(
   if (extending) {
     assertExtendCoverageUsage(options, normalizedPaths);
   }
+  assertRefuseUnexportedDriftUsage(options);
   if (options.build || options.buildOnly) {
     // A path-less `test --build` runs (and packages for) the full suite;
     // a scoped invocation only vouches for the requested paths. A SCOPED
@@ -214,6 +231,7 @@ export async function runTestBuildPhase(
       projectConfig,
       harnessRetries,
       coverage,
+      options.refuseUnexportedDrift === true,
       extending ? { requestedPaths: normalizedPaths } : undefined
     );
     info('');

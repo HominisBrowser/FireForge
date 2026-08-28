@@ -19,7 +19,7 @@ import {
   parseScript,
   walkAST,
 } from './ast-utils.js';
-import { withParserFallback } from './parser-fallback.js';
+import { isInternalInvariantFailure, withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,
   findNearestTryLine,
@@ -34,9 +34,8 @@ const DEFAULT_MARKER = 'FIREFORGE:';
  * AST-based implementation: finds the last try/catch containing
  * `loadSubScript` and inserts a new try/catch block after it.
  *
- * The inserted block carries a `// <MARKER>: wire-subscript ...` comment
- * so the emitted edit satisfies `lintModificationComments` (eval 1
- * Finding #9).
+ * The inserted block carries a `// <MARKER>: wire-subscript ...` comment so
+ * the emitted edit satisfies `lintModificationComments`.
  */
 export function addSubscriptAST(
   content: string,
@@ -185,14 +184,7 @@ export async function addSubscriptToBrowserMain(
     () => addSubscriptAST(content, name, marker),
     () => legacyAddSubscript(content, name, marker),
     BROWSER_MAIN_JS,
-    // Rethrow only the internal-invariant GeneralErrors ("Unexpected empty
-    // …array"): those are programming bugs, and retrying the legacy scanner
-    // cannot fix a broken invariant — it just buries the stack. Everything
-    // else still falls back, which is load-bearing: the AST path raises a raw
-    // acorn SyntaxError on chrome sources acorn cannot parse (preprocessor
-    // directives), and BuildError when the file's shape is unexpected. Both
-    // are exactly what the legacy scanner is here to handle.
-    (error) => error instanceof GeneralError
+    isInternalInvariantFailure
   );
 
   if (usedFallback) {

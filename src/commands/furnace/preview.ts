@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join } from 'node:path';
 
-import { getProjectPaths } from '../../core/config.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
-import {
-  furnaceConfigExists,
-  loadFurnaceConfig,
-  updateFurnaceState,
-} from '../../core/furnace-config.js';
+import { updateFurnaceState } from '../../core/furnace-config.js';
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
+import { assertFurnaceReady } from '../../core/furnace-precondition.js';
 import { restoreRollbackJournal, type RollbackJournal } from '../../core/furnace-rollback.js';
 import { countEntriesWithBlockingStepErrors } from '../../core/furnace-step-errors.js';
 import { cleanStories, syncStories } from '../../core/furnace-stories.js';
@@ -62,14 +58,11 @@ async function runPreviewTeardown(
 }
 
 /**
- * Reports staging failures (component-level errors and per-step errors) to the
- * user and throws a single FurnaceError summarising the failure count.
- * Extracted from `furnacePreviewCommand` to keep that function under the
- * `max-lines-per-function` threshold and to colocate the failure-reporting
- * contract in one place.
+ * Reports staging failures (component-level errors and per-step errors) to
+ * the user and throws a single FurnaceError summarising the failure count.
  *
- * @returns The total failure count if there were any (always non-zero when
- *          this returns; the function throws after logging).
+ * Never returns: it always throws after logging, which is what the `never`
+ * return type states.
  */
 function reportPreviewStagingFailures(stageResult: ApplyAllComponentsResult): never {
   for (const err of stageResult.errors) {
@@ -92,13 +85,12 @@ function reportPreviewStagingFailures(stageResult: ApplyAllComponentsResult): ne
 /**
  * Filenames emitted by the Firefox build backend (not by Storybook's npm
  * package set) — their absence means `mach build` has not produced its
- * post-configure artifacts, which is a different failure mode from a
- * missing Storybook workspace dependency tree. The eval log for finding
- * #11 reported `FileNotFoundError: [...] chrome-map.json` *after* a
- * successful Storybook `npm install`, and the pre-0.16 heuristic
- * misdiagnosed it as a dep failure and sent the operator back to
- * `--install`. Pattern list is narrow on purpose so we only surface the
- * backend-rebuild hint when we are confident.
+ * post-configure artifacts, which is a different failure mode from a missing
+ * Storybook workspace dependency tree. A
+ * `FileNotFoundError: [...] chrome-map.json` AFTER a successful Storybook
+ * `npm install` is the case a dep-focused heuristic misdiagnoses, sending
+ * the operator back to `--install`. The pattern list is narrow on purpose so
+ * the backend-rebuild hint only fires when it is confident.
  */
 const BACKEND_ARTIFACT_PATTERNS: readonly RegExp[] = [
   /chrome-map\.json/i,
@@ -154,17 +146,14 @@ export function buildStorybookFailureMessage(output: string, installRequested: b
 
 /**
  * Preflights the Firefox build + toolchain prerequisites `mach storybook`
- * quietly assumes. Pre-0.16.0 the preview staged components and launched
- * a ~1000-package `mach storybook upgrade` npm install before the
- * backend surfaced a "missing chrome-map.json" / Cargo-config failure;
- * the preflight below refuses fast and leaves the workspace untouched.
- *
- * Extracted from `furnacePreviewCommand` so the main function stays
- * under the per-function LOC budget as the preflight list grows.
+ * quietly assumes. Without it, preview stages components and launches a
+ * ~1000-package `mach storybook upgrade` npm install before the backend
+ * surfaces a "missing chrome-map.json" / Cargo-config failure; this refuses
+ * fast and leaves the workspace untouched.
  *
  * @param engineDir - Resolved engine directory
- * @throws FurnaceError when the Firefox build hasn't produced dist/, or
- *         when `.cargo/config.toml` is absent
+ * @throws FurnaceError when the Firefox build has not produced dist/, or
+ *   when `.cargo/config.toml` is absent
  */
 async function assertPreviewPrerequisites(engineDir: string): Promise<void> {
   const buildCheck = await hasBuildArtifacts(engineDir);
@@ -179,14 +168,12 @@ async function assertPreviewPrerequisites(engineDir: string): Promise<void> {
 
   // Accept either `.cargo/config.toml` (post-configure) or
   // `.cargo/config.toml.in` (post-bootstrap template, consumed at
-  // `mach configure` time). Pre-0.16.0 the preflight insisted on the
-  // plain file, but `fireforge bootstrap` alone produces only `.in` —
-  // operators who followed the remediation instruction ("run bootstrap
-  // then rerun preview") hit the same refusal on the retry. Either name
-  // is sufficient to prove the Rust toolchain is registered; the stronger
-  // `hasBuildArtifacts` check above already guards against a completely
-  // un-configured tree, so relaxing this to an OR-check does not weaken
-  // the signal we care about.
+  // `mach configure` time). Insisting on the plain file makes operators who
+  // follow the remediation instruction ("run bootstrap then rerun preview")
+  // hit the same refusal on the retry, because `fireforge bootstrap` alone
+  // produces only `.in`. Either name is sufficient to prove the Rust
+  // toolchain is registered; the stronger `hasBuildArtifacts` check above
+  // already guards against a completely un-configured tree.
   const cargoConfigPath = join(engineDir, '.cargo', 'config.toml');
   const cargoConfigInPath = join(engineDir, '.cargo', 'config.toml.in');
   const cargoConfigPresent =
@@ -202,15 +189,14 @@ async function assertPreviewPrerequisites(engineDir: string): Promise<void> {
 }
 
 /**
- * Emits a framing banner when the Storybook workspace has not yet had
- * its npm dependencies installed. `mach storybook` will drive the
- * install internally and print ELSPROBLEMS / UNMET DEPENDENCY lines
- * verbatim; without this banner operators reliably read the npm output
- * as a failure (2026-04-24 eval Finding 13).
+ * Emits a framing banner when the Storybook workspace has not yet had its npm
+ * dependencies installed. `mach storybook` drives the install internally and
+ * prints ELSPROBLEMS / UNMET DEPENDENCY lines verbatim; without this banner
+ * operators reliably read the npm output as a failure.
  *
- * Skipped when `--install` was explicitly requested — that path already
- * runs `mach storybook upgrade` before the preview launches, so the npm
- * output for the subsequent `mach storybook` invocation is a no-op.
+ * Skipped when `--install` was explicitly requested — that path already runs
+ * `mach storybook upgrade` before the preview launches, so the npm output
+ * for the subsequent `mach storybook` invocation is a no-op.
  */
 async function announceStorybookFirstRunIfNeeded(
   engineDir: string,
@@ -255,20 +241,7 @@ export async function furnacePreviewCommand(
 ): Promise<void> {
   intro('Furnace Preview (Storybook)');
 
-  // Verify engine exists
-  const paths = getProjectPaths(projectRoot);
-  if (!(await pathExists(paths.engine))) {
-    throw new FurnaceError('Engine directory not found. Run "fireforge download" first.');
-  }
-
-  // Load furnace config
-  if (!(await furnaceConfigExists(projectRoot))) {
-    throw new FurnaceError(
-      'No furnace.json found. Run "fireforge furnace create" or "fireforge furnace override" to get started.'
-    );
-  }
-
-  const config = await loadFurnaceConfig(projectRoot);
+  const { paths, config } = await assertFurnaceReady(projectRoot);
 
   const stockCount = config.stock.length;
   const overrideCount = Object.keys(config.overrides).length;
@@ -288,8 +261,8 @@ export async function furnacePreviewCommand(
     );
   }
 
-  // Build + toolchain preflight (Finding #9). Extracted into a helper so
-  // the function below stays under the per-function LOC budget.
+  // Build + toolchain preflight, extracted into a helper so the function
+  // below stays under the per-function LOC budget.
   await assertPreviewPrerequisites(paths.engine);
 
   let previewResult:
@@ -381,10 +354,8 @@ export async function furnacePreviewCommand(
         installSpinner.stop('Storybook dependencies reinstalled');
       }
 
-      // 2026-04-24 eval Finding 13: frame the npm noise that `mach
-      // storybook` emits on first-run as expected progress rather than a
-      // failure. The banner-before / banner-after helpers are extracted
-      // so the command body stays under the per-function LOC budget.
+      // Frame the npm noise `mach storybook` emits on first run as expected
+      // progress rather than a failure.
       await announceStorybookFirstRunIfNeeded(paths.engine, options.install ?? false);
 
       // Start Storybook
@@ -399,16 +370,17 @@ export async function furnacePreviewCommand(
     }
 
     // Teardown runs unconditionally and never short-circuits: a failure in
-    // cleanStories must not prevent the journal restore, and vice versa. The
-    // previous implementation ran teardown in a `finally` block that called
-    // `restoreRollbackJournalOrThrow`, which threw synchronously — that throw
-    // bypassed the primary error and, worse, skipped downstream handling so
-    // the engine was left with staged files and the user got a teardown
-    // message with no guidance. We now collect both failures and, if anything
-    // went wrong, persist a `pendingRepair` marker that `fireforge doctor`
-    // consumes to finish the reconciliation.
-    // Teardown restores the journal itself, so the lifecycle wrapper must not
-    // restore it again when the throw below propagates out of this body.
+    // cleanStories must not prevent the journal restore, and vice versa.
+    // Running teardown in a `finally` that calls
+    // `restoreRollbackJournalOrThrow` throws synchronously, bypassing the
+    // primary error and skipping downstream handling — the engine is left
+    // with staged files and the user gets a teardown message with no
+    // guidance. Both failures are collected instead and, if anything went
+    // wrong, a `pendingRepair` marker is persisted for `fireforge doctor` to
+    // finish the reconciliation.
+    //
+    // Teardown restores the journal itself, so the lifecycle wrapper must
+    // not restore it again when the throw below propagates out of this body.
     ctx.markRolledBack();
     const teardownErrors = await runPreviewTeardown(
       paths.engine,

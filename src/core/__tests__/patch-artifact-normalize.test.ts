@@ -23,11 +23,10 @@ describe('normalizePatchArtifact', () => {
   });
 
   it('preserves whitespace-only payloads byte-for-byte', () => {
-    // Finding M2 (2026-07-05 review): Firefox sources contain
-    // whitespace-only lines. The historical normalizer truncated
-    // `- `/`+ `/`  ` to the bare marker, which broke `git apply --check`
-    // on the freshly exported patch (context/removal no longer matched
-    // the tree) or silently changed the content a `+` line produces.
+    // Firefox sources contain whitespace-only lines. Truncating
+    // `- `/`+ `/`  ` to the bare marker breaks `git apply --check` on the
+    // freshly exported patch (context/removal no longer matches the tree) or
+    // silently changes the content a `+` line produces.
     const patch = [
       'diff --git a/foo.js b/foo.js',
       '--- a/foo.js',

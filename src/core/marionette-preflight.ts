@@ -22,7 +22,9 @@ import { join } from 'node:path';
 
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info, warn } from '../utils/logger.js';
+import { info, verbose, warn } from '../utils/logger.js';
+import { installGracefulShutdownForwarder, trackChildClosure } from '../utils/process.js';
+import { killProcessTree, sweepProcessGroup } from '../utils/process-group.js';
 import { ensureMach } from './mach.js';
 import { getPython } from './mach-python.js';
 
@@ -113,7 +115,7 @@ export async function runMarionettePreflight(
   if (!(await pathExists(engineDir))) {
     return fail(
       'engine-present',
-      'Engine directory not found — run "fireforge download" first.',
+      'Engine directory not found. Run "fireforge download" first.',
       elapsed()
     );
   }
@@ -155,6 +157,19 @@ export async function runMarionettePreflight(
 
   let child: ChildProcess | undefined;
   let stderrTail = '';
+  // Shutdown contract for a child spawned outside the exec layer.
+  //
+  // This is the repo's one legitimate raw `spawn`: the preflight needs the
+  // live `ChildProcess` mid-run (`hasChildExited` gates the socket poll),
+  // returns while the browser is still running, and aborts on a TCP byte
+  // rather than on a deadline — none of which any wrapper in utils/process
+  // can express. What it does NOT get to skip is the contract every wrapper
+  // applies to a detached child: register the closure so the bin signal
+  // handler waits for it, and forward the parent's SIGINT/SIGTERM to the
+  // group. Without both, Ctrl+C during `fireforge test --doctor` left the
+  // whole mach → Firefox tree running.
+  let closure: { settle: () => void } | undefined;
+  let forwarder: { dispose: () => void } | undefined;
 
   try {
     // Layer 5: browser spawns and does not crash within the settle window.
@@ -176,13 +191,12 @@ export async function runMarionettePreflight(
           stdio: ['ignore', 'ignore', 'pipe'],
           // `detached: true` puts the child in a new process group so we can
           // signal it and every descendant (Firefox, its helpers) via
-          // `process.kill(-pid, …)` in the finally block. Without this, the
+          // `process.kill(-pid, …)` in the finally block. Without it, the
           // child is Python running mach; a SIGTERM kills Python but the
           // Firefox grandchild inherits the stderr pipe FD and keeps Node's
-          // event loop alive even after the preflight PASS log. The symptom
-          // is `fireforge test --doctor` printing `Marionette preflight:
-          // PASS` and then hanging indefinitely in `uv__io_poll` — see the
-          // eval finding.
+          // event loop alive even after the preflight PASS log, so
+          // `fireforge test --doctor` prints `Marionette preflight: PASS`
+          // and then hangs indefinitely in `uv__io_poll`.
           detached: true,
         }
       );
@@ -195,6 +209,10 @@ export async function runMarionettePreflight(
     }
 
     const spawnedChild = child;
+    closure = trackChildClosure();
+    forwarder = installGracefulShutdownForwarder(spawnedChild, 500, (signal) => {
+      killProcessGroup(spawnedChild, signal);
+    });
 
     child.stderr?.on('data', (data: Buffer) => {
       const chunk = data.toString();
@@ -249,27 +267,63 @@ export async function runMarionettePreflight(
       elapsed()
     );
   } finally {
-    if (child && !hasChildExited(child)) {
-      killProcessGroup(child, 'SIGTERM');
-      // Small escalation: if the child doesn't honour SIGTERM quickly, SIGKILL
-      // so we don't leave a ghost mach process around after a failed probe.
-      await delay(500);
-      if (!hasChildExited(child)) {
-        killProcessGroup(child, 'SIGKILL');
-      }
+    await teardownPreflightChild(child, forwarder, closure, profileDir);
+  }
+}
+
+/**
+ * Deterministic teardown for the preflight's detached child.
+ *
+ * Extracted from {@link runMarionettePreflight} so the probe body stays
+ * inside the per-function complexity budget alongside the shutdown contract
+ * (forwarder + closure tracking + group sweep) and the kill escalation.
+ *
+ * @param child - The spawned child, if the spawn got that far
+ * @param forwarder - Parent-signal forwarder to dispose
+ * @param closure - Closure registration to settle
+ * @param profileDir - Temporary profile directory to remove
+ */
+async function teardownPreflightChild(
+  child: ChildProcess | undefined,
+  forwarder: { dispose: () => void } | undefined,
+  closure: { settle: () => void } | undefined,
+  profileDir: string
+): Promise<void> {
+  // Dispose before killing: the forwarder's own escalation timer must not
+  // race the deterministic teardown below.
+  forwarder?.dispose();
+  const groupPid = child?.pid;
+  if (child && !hasChildExited(child)) {
+    killProcessGroup(child, 'SIGTERM');
+    // Small escalation: if the child doesn't honour SIGTERM quickly, SIGKILL
+    // so we don't leave a ghost mach process around after a failed probe.
+    await delay(500);
+    if (!hasChildExited(child)) {
+      killProcessGroup(child, 'SIGKILL');
     }
-    // Destroy the stderr pipe explicitly. Firefox (a grandchild of the Python
-    // mach wrapper we spawned) can inherit and hold the stderr FD even after
-    // its direct parent exits — until the pipe closes, Node's readable
-    // stream stays attached and `uv__io_poll` keeps the event loop alive.
-    // `destroy()` closes the local end regardless, so `fireforge test
-    // --doctor` exits cleanly after a passing preflight.
-    child?.stderr?.destroy();
+  }
+  // Reap anything that outlived the group signal. The file's own comments
+  // worry about exactly this — Firefox grandchildren surviving the Python
+  // mach wrapper — and every exec-layer wrapper sweeps for it.
+  if (groupPid !== undefined && process.platform !== 'win32') {
     try {
-      await rm(profileDir, { recursive: true, force: true });
+      await sweepProcessGroup(groupPid);
     } catch (error: unknown) {
-      warn(`Could not clean up marionette preflight profile: ${toError(error).message}`);
+      verbose(`Marionette preflight group sweep failed: ${toError(error).message}`);
     }
+  }
+  closure?.settle();
+  // Destroy the stderr pipe explicitly. Firefox (a grandchild of the Python
+  // mach wrapper we spawned) can inherit and hold the stderr FD even after
+  // its direct parent exits — until the pipe closes, Node's readable
+  // stream stays attached and `uv__io_poll` keeps the event loop alive.
+  // `destroy()` closes the local end regardless, so `fireforge test
+  // --doctor` exits cleanly after a passing preflight.
+  child?.stderr?.destroy();
+  try {
+    await rm(profileDir, { recursive: true, force: true });
+  } catch (error: unknown) {
+    warn(`Could not clean up marionette preflight profile: ${toError(error).message}`);
   }
 }
 
@@ -280,20 +334,11 @@ export async function runMarionettePreflight(
  * `kill(-pid, …)` is not a supported kernel primitive).
  */
 function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (child.pid !== undefined && process.platform !== 'win32') {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // ESRCH / EPERM — fall through to the narrow kill below so we at
-      // least signal the direct child.
-    }
-  }
-  try {
-    child.kill(signal);
-  } catch {
-    // Already exited — nothing to do.
-  }
+  // Delegates to the shared implementation, which is a strict superset of
+  // the hand-rolled one this replaced: same POSIX `kill(-pid)` with the same
+  // fall-through to a direct `child.kill`, plus a Windows `taskkill /T /F`
+  // branch and an already-exited early return.
+  killProcessTree(child, signal, process.platform !== 'win32');
 }
 
 function fail(layer: LayerName, message: string, durationMs: number): MarionettePreflightResult {
@@ -389,18 +434,14 @@ export function reportMarionettePreflight(result: MarionettePreflightResult): vo
 
 /**
  * Formats the PASS/FAIL banner as a plain string for direct
- * `process.stdout.write` use — bypasses the clack logger entirely so
- * operators running `fireforge test --doctor` under a non-TTY (pipe,
- * CI, `tee`-wrapped capture) always see the final line even when the
- * clack renderer swallows trailing log output just before process exit.
- *
- * 2026-04-24 eval Finding 7 reproducibly captured only the `"Running
- * marionette preflight..."` intro and no PASS line at all — the
- * `success()` + `outro()` + direct `stdout.write` belt-and-suspenders
- * we used to ship still lost the summary under some non-TTY flush
- * races. Returning the raw string here lets the caller compose a single
- * authoritative write without any clack layer between the probe and
- * the captured log.
+ * `process.stdout.write` use — bypassing the clack logger entirely so
+ * operators running `fireforge test --doctor` under a non-TTY (pipe, CI,
+ * `tee`-wrapped capture) always see the final line. Clack's renderer can
+ * swallow trailing log output just before process exit, and a
+ * `success()` + `outro()` + direct-write combination still loses the
+ * summary under some non-TTY flush races. Returning the raw string lets the
+ * caller compose a single authoritative write with no clack layer between
+ * the probe and the captured log.
  */
 export function formatMarionettePreflightLine(result: MarionettePreflightResult): string {
   const status = result.ok ? 'PASS' : 'FAIL';

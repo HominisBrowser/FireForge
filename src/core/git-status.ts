@@ -79,15 +79,14 @@ export function resolveMaxUntrackedFilesPerDir(): number {
  * Git status may report "?? dir/" instead of listing each file underneath.
  *
  * Expansion is capped per directory (FIREFORGE_MAX_UNTRACKED_FILES, default
- * 5000) with a warning on overflow. The cap used to exist only in the
- * status command's private expander; this shared one — used by reset,
- * discard, verify, lint, export-all — was unbounded, so e.g. `reset
- * --dry-run` after an interrupted download (unborn HEAD, the entire ~300k
- * file tree untracked) enumerated and printed every file.
+ * 5000) with a warning on overflow. Without the cap, `reset --dry-run` after
+ * an interrupted download — unborn HEAD, the entire ~300k file tree
+ * untracked — enumerates and prints every file.
  *
  * @param repoDir - Repository directory
  * @param entries - Parsed status entries
- * @returns Status entries with untracked directories expanded to individual files
+ * @returns Status entries with untracked directories expanded to individual
+ *   files
  */
 export async function expandUntrackedDirectoryEntries(
   repoDir: string,

@@ -2,14 +2,12 @@
 /**
  * Orphan xpcshell scaffold detection for `furnace validate`.
  *
- * 2026-04-24 eval Finding 5: `furnace create --with-tests --xpcshell`
- * writes a scaffold at `browser/base/content/test/<binary>-xpcshell/
- * <name>/`, and pre-0.18.1 versions of `furnace remove` / `rename` did
- * not touch that tree. Operators who ran create → rename → remove were
- * left with a scaffold whose `<name>` no longer matched any component
- * in furnace.json, and `furnace validate` stayed silent. The new check
- * in `validateAllComponents` scans the parent directory and reports any
- * entry whose name is not in `custom` / `overrides` / `stock`.
+ * `furnace create --with-tests --xpcshell` writes a scaffold at
+ * `browser/base/content/test/<binary>-xpcshell/<name>/`. When `furnace
+ * remove` / `rename` do not touch that tree, a create → rename → remove
+ * sequence leaves a scaffold whose `<name>` matches no component in
+ * furnace.json. `validateAllComponents` scans the parent directory and
+ * reports any entry whose name is not in `custom` / `overrides` / `stock`.
  */
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

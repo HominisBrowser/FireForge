@@ -12,8 +12,8 @@ import {
   restoreRollbackJournal,
   snapshotFile,
 } from './furnace-rollback.js';
-import type { RegisterResult } from './manifest-register.js';
-import { registerBrowserContent } from './manifest-register.js';
+import type { RegisterResult } from './moz-manifest-register.js';
+import { registerBrowserContent } from './moz-manifest-register.js';
 import { DEFAULT_DOM_TARGET } from './wire-dom-fragment.js';
 import {
   addDestroyToBrowserInit,
@@ -107,17 +107,14 @@ export async function wireSubscript(
     };
   }
 
-  // Snapshot every file the five mutation steps might touch so a mid-sequence
-  // failure (most commonly the chrome-document insertion not finding an
-  // anchor) does not leave a half-wired browser behind. Before the rollback
-  // journal landed here, a failed `wire` would still have written new
-  // `loadSubScript` calls into browser-main.js, new init/destroy expressions
-  // into browser-init.js, and a new entry into browser/base/jar.mn — the
-  // operator then had to grep the engine tree for the partial mutation and
-  // hand-revert, or re-download. The snapshots cover the targets on every
-  // code path (init/destroy/DOM are conditional, so we snapshot only when
-  // the corresponding option would fire a write) plus the two files every
-  // wire touches.
+  // Snapshot every file the five mutation steps might touch so a
+  // mid-sequence failure (most commonly the chrome-document insertion not
+  // finding an anchor) does not leave a half-wired browser behind: new
+  // `loadSubScript` calls in browser-main.js, new init/destroy expressions
+  // in browser-init.js, and a new entry in browser/base/jar.mn, with no way
+  // back but a hand-revert or a re-download. Init/destroy/DOM are
+  // conditional, so those targets are snapshotted only when the
+  // corresponding option would fire a write.
   const journal = createRollbackJournal();
   const effectiveDomTargetPath = options.domFilePath
     ? toRootRelativePath(engineDir, options.domTargetPath ?? DEFAULT_DOM_TARGET)
@@ -132,14 +129,12 @@ export async function wireSubscript(
   }
   await snapshotFile(journal, join(engineDir, 'browser/base/jar.mn'));
 
-  // Compute the project-scoped patch-lint marker (`// <BINARY>:`) so
-  // every wire mutator can stamp it into the emitted comment block.
-  // Without this, `lintModificationComments` trips
-  // `missing-modification-comment` on wire-generated edits the next
-  // time the operator exports — the same tool wrote the code and a
-  // sibling tool then rejected it (eval 1 Finding #9). A broken config
+  // Compute the project-scoped patch-lint marker (`// <BINARY>:`) so every
+  // wire mutator can stamp it into the emitted comment block. Without it,
+  // `lintModificationComments` trips `missing-modification-comment` on
+  // wire-generated edits the next time the operator exports. A broken config
   // should not block the wire, so the fallback marker keeps the
-  // previous lint-friendly default when the config cannot be loaded.
+  // lint-friendly default when the config cannot be loaded.
   let marker = 'FIREFORGE:';
   try {
     const config = await loadConfig(root);

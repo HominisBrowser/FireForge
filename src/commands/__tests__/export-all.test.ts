@@ -20,6 +20,11 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/git.js', () => ({
+  // Engine-precondition ladder (assertEngineGitReady). Stubbed to the
+  // healthy-engine answers so these suites test their own subject.
+  getHead: vi.fn(() => Promise.resolve('0'.repeat(40))),
+  isMissingHeadError: vi.fn(() => false),
+
   isGitRepository: vi.fn().mockResolvedValue(true),
   hasChanges: vi.fn().mockResolvedValue(true),
 }));
@@ -91,12 +96,15 @@ vi.mock('../../core/license-headers.js', () => ({
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
+  // The shared rollback handler records the pending-repair marker
+  // through furnace state.
+  updateFurnaceState: vi.fn(() => Promise.resolve()),
+
   collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set())),
-  // 2026-04-24 eval Finding 1: export-all now consults
-  // `furnaceConfigExists` + `loadFurnaceConfig` to refuse patches that
-  // would register furnace-managed components without carrying their
-  // source files. Default to "no furnace config" so tests that don't
-  // opt in stay on the legacy (pre-refusal) happy path.
+  // export-all consults `furnaceConfigExists` + `loadFurnaceConfig` to
+  // refuse patches that would register furnace-managed components without
+  // carrying their source files. Default to "no furnace config" so tests
+  // that do not opt in stay on the non-refusal path.
   furnaceConfigExists: vi.fn(() => Promise.resolve(false)),
   loadFurnaceConfig: vi.fn(() =>
     Promise.resolve({
@@ -110,6 +118,12 @@ vi.mock('../../core/furnace-config.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => ({
+  // Verbose + stdout-seal state: the CLI error boundary consults both
+  // before walking a cause chain or emitting a --json error envelope.
+  isVerbose: vi.fn(() => false),
+  isStdoutSealed: vi.fn(() => false),
+  setStdoutSealed: vi.fn(),
+
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
@@ -492,14 +506,13 @@ describe('exportAllCommand', () => {
     expect(commitExportedPatch).toHaveBeenCalled();
   });
 
-  it('filters Furnace-managed files out of the diff when --exclude-furnace is set (Finding #13)', async () => {
-    // Regression guard: pre-0.16.0 export-all refused outright on any
-    // Furnace-managed file, which made it unusable in realistic mixed
-    // workspaces. `--exclude-furnace` now keeps the command running on
-    // the non-Furnace subset of the diff; the Furnace-managed paths
-    // stay untouched in the working tree (they are re-deployed by
-    // `furnace apply`), and the info line reports how many paths were
-    // excluded so the operator can verify the carve-out.
+  it('filters Furnace-managed files out of the diff when --exclude-furnace is set', async () => {
+    // Refusing outright on any Furnace-managed file makes export-all
+    // unusable in realistic mixed workspaces. `--exclude-furnace` keeps the
+    // command running on the non-Furnace subset of the diff; the
+    // Furnace-managed paths stay untouched in the working tree (they are
+    // re-deployed by `furnace apply`), and the info line reports how many
+    // paths were excluded so the operator can verify the carve-out.
     const { getDiffForFilesAgainstHead } = await import('../../core/git-diff.js');
     vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue(
       'diff --git a/toolkit/modules/AppConstants.sys.mjs b/toolkit/modules/AppConstants.sys.mjs\n' +
@@ -630,9 +643,9 @@ describe('exportAllCommand', () => {
   });
 
   it('refuses to create a new file that an existing patch already creates', async () => {
-    // Simulate a queue where a previous patch owns `browser/modules/labforge/Hello.sys.mjs`
-    // as a new-file creation, then have the current aggregate diff try to
-    // newly-create the same path — the direct repro of Finding #3.
+    // A queue where a previous patch owns
+    // `browser/modules/labforge/Hello.sys.mjs` as a new-file creation, with
+    // the current aggregate diff trying to newly-create the same path.
     vi.mocked(getAllDiff).mockResolvedValue(
       'diff --git a/browser/modules/labforge/Hello.sys.mjs b/browser/modules/labforge/Hello.sys.mjs\nnew file mode 100644\n+contents\n'
     );

@@ -81,7 +81,6 @@ describe('runPostBootstrapChecks', () => {
     expect(checks).toHaveLength(1);
     expect(checks[0]).toMatchObject({
       name: 'macOS SDK download',
-      passed: true,
       severity: 'warning',
     });
   });
@@ -93,7 +92,6 @@ describe('runPostBootstrapChecks', () => {
     expect(checks).toHaveLength(1);
     expect(checks[0]).toMatchObject({
       name: 'macOS SDK',
-      passed: false,
       severity: 'error',
       fix: 'Install Xcode Command Line Tools with "xcode-select --install"',
     });
@@ -103,7 +101,7 @@ describe('runPostBootstrapChecks', () => {
     mockXcrun(null, '  \n');
 
     const checks = await runPostBootstrapChecks(['sdk-fetch-403']);
-    expect(checks[0]).toMatchObject({ name: 'macOS SDK', passed: false });
+    expect(checks[0]).toMatchObject({ name: 'macOS SDK', severity: 'error' });
   });
 
   it('reports python-traceback as a warning and missing-origin-remote as a failure', async () => {
@@ -111,12 +109,10 @@ describe('runPostBootstrapChecks', () => {
     expect(checks).toHaveLength(2);
     expect(checks[0]).toMatchObject({
       name: 'Python traceback',
-      passed: true,
       severity: 'warning',
     });
     expect(checks[1]).toMatchObject({
       name: 'Git remote',
-      passed: false,
       severity: 'error',
     });
   });

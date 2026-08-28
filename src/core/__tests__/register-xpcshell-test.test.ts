@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Tests for xpcshell test-file registration (0.34.0 field report:
- * `test_*.js` files rejected as "Unknown file pattern") and for the
- * relaxed pattern rules (nested browser.toml, xpcshell test files).
+ * Tests for xpcshell test-file registration (`test_*.js` files otherwise
+ * rejected as "Unknown file pattern") and for the relaxed pattern rules
+ * (nested browser.toml, xpcshell test files).
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,14 +11,14 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ensureDir, readText, writeText } from '../../utils/fs.js';
-import { getRules } from '../manifest-rules.js';
+import { getRules } from '../moz-manifest-rules.js';
 import {
   insertXpcshellManifestSection,
   isXpcshellTestRegistered,
   registerXpcshellTest,
 } from '../register-xpcshell-test.js';
 
-describe('pattern rules (0.34.0 additions)', () => {
+describe('pattern rules', () => {
   const patterns = getRules('mybrowser').map((r) => r.pattern);
   const matches = (path: string): boolean => patterns.some((p) => p.test(path));
 

@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * `status --json` payload rendering (schemaVersion 1). Helper module
- * consumed by status.ts (which sits at the max-lines budget); no
- * top-level registrar is exported and none is wanted.
+ * consumed by status.ts (which sits at the max-lines budget); no top-level
+ * registrar is exported and none is wanted.
  *
  * Two shapes share one counting pass:
  * - the full payload (`renderJsonStatus`) with the per-file `files[]` list;
- * - the `--summary` gate payload (`renderJsonSummaryStatus`),
- *   which omits `files[]` entirely — engine-clean gates need the verdict,
- *   per-class counts, and offender names, not a payload that grows with
- *   the queue (175 KB+ observed on a 290-patch consumer).
+ * - the `--summary` gate payload (`renderJsonSummaryStatus`), which omits
+ *   `files[]` entirely — engine-clean gates need the verdict, per-class
+ *   counts, and offender names, not a payload that grows with the queue
+ *   (175 KB+ on a large one).
  */
 import type { ClassifiedFile, FileClassification } from '../core/status-classify.js';
+import { setStdoutSealed } from '../utils/logger.js';
 import {
   collectStatusCheckOffenders,
   type StatusCheckOffender,
@@ -76,6 +77,8 @@ export function renderJsonStatus(
     ...(ownership !== undefined ? { ownership } : {}),
   };
   process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+  // Payload written: stdout is now spoken for. See docs/machine-output.md.
+  setStdoutSealed(true);
 }
 
 /**
@@ -121,4 +124,6 @@ export function renderJsonSummaryStatus(
     output.ownership = ownership;
   }
   process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+  // Payload written: stdout is now spoken for. See docs/machine-output.md.
+  setStdoutSealed(true);
 }

@@ -122,18 +122,16 @@ describe('removePatchFileAndManifest rollback', () => {
   });
 
   it('throws PatchDeleteRollbackError when both delete and rollback fail', async () => {
-    // Compound failure scenario: the file delete fails, so the helper
-    // tries to restore the manifest — and the manifest restore also
-    // fails. Previously this only produced a stderr warning alongside
-    // the original delete error, which made the compound failure
-    // invisible to programmatic callers and harder to spot in logs.
-    // The fix raises a dedicated error type that surfaces both causes.
+    // Compound failure: the file delete fails, so the helper tries to
+    // restore the manifest — and the manifest restore also fails. A stderr
+    // warning alongside the original delete error makes the compound failure
+    // invisible to programmatic callers, so a dedicated error type surfaces
+    // both causes.
     //
     // removePatchFileAndManifest writes the manifest twice: once when
-    // removePatchFromManifest commits the row removal, and a second
-    // time when the delete-failure rollback tries to restore the
-    // original. We need the first write to succeed and the second to
-    // fail, so the mock counts calls.
+    // removePatchFromManifest commits the row removal, and again when the
+    // delete-failure rollback tries to restore the original. The first write
+    // must succeed and the second must fail, so the mock counts calls.
     vi.mocked(removeFile).mockImplementation(() => {
       return Promise.reject(new Error('simulated delete failure'));
     });
@@ -160,18 +158,16 @@ describe('removePatchFileAndManifest rollback', () => {
 });
 
 describe('renumberPatchesInManifest phase-3 rollback', () => {
-  // Phase-3 regression: phase 1 (stage) and phase 2 (stage → final) both
-  // succeed, and then the final manifest save throws. Without the rollback
-  // the directory would be fully renumbered while patches.json still
-  // records the old names — the exact drift the two-phase rename is meant
-  // to prevent. The fix reverses every completed final rename back to the
-  // original filename before re-throwing, so the directory and manifest
-  // stay in agreement even though the caller sees the save failure.
+  // Phase-3: phase 1 (stage) and phase 2 (stage → final) both succeed, and
+  // then the final manifest save throws. Without the rollback the directory
+  // is fully renumbered while patches.json still records the old names — the
+  // exact drift the two-phase rename exists to prevent. Every completed
+  // final rename is reversed before re-throwing, so the directory and
+  // manifest stay in agreement even though the caller sees the save failure.
   //
   // The only way to fail the write at phase 3 specifically (and not the
   // earlier seed write) is to mock writeJson, which is why this test lives
-  // alongside the compound-failure test instead of with the mutation
-  // happy-path tests.
+  // alongside the compound-failure test rather than with the happy paths.
   let projectRoot: string;
   let patchesDir: string;
 

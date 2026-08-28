@@ -9,7 +9,7 @@ FireForge will not guess which build output to use.
 
 To fix this:
   1. Remove stale obj-* directories you no longer need
-  2. Keep only the active build output directory
+  2. Keep only the active build output directory, or name it with MOZ_OBJDIR in the mozconfig
   3. Run the command again"
 `;
 

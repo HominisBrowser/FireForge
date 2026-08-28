@@ -2,16 +2,10 @@
 /**
  * CLI registration for `fireforge re-export`.
  *
- * Split out of `re-export.ts` in 0.41.0. That file was the only one in `src/`
- * carrying a file-level `eslint-disable max-lines` — it measured 526 against
- * the 500 cap with the rule suppressed — and its own suppression comment named
- * this block as the obvious thing to move ("splitting register plumbing is
- * unrelated to this fix"). Moving it drops the file under the cap and removes
- * the suppression.
- *
- * §7 of the quality survey forbids folding `re-export-files.ts` back INTO the
- * orchestrator; this splits in the other direction, matching the existing
- * `re-export-scan.ts` / `re-export-options.ts` boundary.
+ * Split out of `re-export.ts`, which was otherwise over the per-file line
+ * cap. The split direction matches the existing `re-export-scan.ts` /
+ * `re-export-options.ts` boundary; folding `re-export-files.ts` back into
+ * the orchestrator would go the wrong way.
  */
 
 import { Command, Option } from 'commander';
@@ -68,7 +62,7 @@ export function registerReExport(
     )
     .option(
       '--expect <path>',
-      "With --refuse-foreign-drift, name an engine-relative file whose drift is this session's intended edit: drift confined to --expect files proceeds, drift anywhere else still refuses. Repeatable.",
+      "With --refuse-foreign-drift, name an engine-relative file whose drift is this session's intended edit: drift confined to --expect files proceeds, drift anywhere else still refuses. Repeatable, and the whitelist applies across EVERY patch in this invocation, not per patch — so pass all the patches and all their --expect paths in one call rather than looping one patch at a time.",
       ...stringListOption()
     )
     .option('--dry-run', 'Show what would change without writing')

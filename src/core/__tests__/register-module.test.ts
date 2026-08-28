@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => ({
-  pathExists: vi.fn(),
-  readText: vi.fn(),
-  writeText: vi.fn(),
-}));
+import { createFsMock } from '../../test-utils/module-mocks.js';
+
+vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../parser-fallback.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../parser-fallback.js')>();
@@ -101,7 +99,7 @@ describe('registerFireForgeModule', () => {
   });
 
   it('inserts case-insensitively to match mozbuild UnsortedError ordering', async () => {
-    // Field report: registering HominisAppearanceController next to
+    // Registering HominisAppearanceController next to
     // HominisAppMenuIntegration landed it AFTER (byte order: uppercase 'M'
     // < lowercase 'e') so `mach configure` aborted with UnsortedError.
     // mozbuild compares case-insensitively, where 'appe' < 'appm', so
@@ -124,12 +122,12 @@ describe('registerFireForgeModule', () => {
     expect(appearanceIdx).toBeLessThan(appMenuIdx);
   });
 
-  it('inserts into a single-line empty EXTRA_JS_MODULES list (Eval 2)', async () => {
-    // The eval-2 repro: a freshly-scaffolded browser/modules/<fork>/moz.build
-    // started with `EXTRA_JS_MODULES += []` on one line. The register
-    // command used to refuse with "Could not find EXTRA_JS_MODULES in
-    // moz.build" even though the list was clearly present. The
-    // tokenizer now expands the single-line empty form into a
+  it('inserts into a single-line empty EXTRA_JS_MODULES list', async () => {
+    // A freshly-scaffolded browser/modules/<fork>/moz.build can start with
+    // `EXTRA_JS_MODULES += []` on one line, which a tokenizer looking for a
+    // line starting with `]` never closes — so register refuses with "Could
+    // not find EXTRA_JS_MODULES in moz.build" even though the list is
+    // clearly present. The single-line empty form is expanded into the
     // canonical multi-line shape before insertion.
     mockReadText.mockResolvedValue('EXTRA_JS_MODULES += []\n');
 

@@ -9,9 +9,15 @@
  * but may change between minor versions until 1.0 is released. Pin to an
  * exact version if you depend on the programmatic API.
  *
+ * **What belongs here:** a type earns a place on this surface only if it is
+ * reachable from the signature of an exported VALUE — i.e. a consumer needs
+ * it to name an argument or a return. Everything else stays internal to
+ * `src/types/`.
+ *
  * @packageDocumentation
  */
 export { loadConfig, validateConfig } from './core/config.js';
+export type { ApplyAllComponentsResult } from './core/furnace-apply.js';
 export { applyAllComponents } from './core/furnace-apply.js';
 export {
   ensureFurnaceConfig,
@@ -41,50 +47,18 @@ export { ExitCode } from './errors/codes.js';
 export type {
   ApplyResult,
   BuildConfig,
-  BuildMode,
-  BuildOptions,
   ComponentType,
   CustomComponentConfig,
-  DiscardOptions,
-  DoctorCheck,
-  DownloadOptions,
   DryRunAction,
-  ExportOptions,
   FireForgeConfig,
-  FireForgeState,
   FirefoxConfig,
   FirefoxProduct,
   FurnaceConfig,
-  FurnaceCreateOptions,
-  FurnaceOverrideOptions,
-  FurnaceRemoveOptions,
   FurnaceState,
-  GlobalOptions,
-  ImportOptions,
-  ImportSummary,
   OverrideComponentConfig,
   OverrideType,
-  PackageOptions,
-  PatchCategory,
-  PatchesManifest,
-  PatchInfo,
-  PatchLintIssue,
-  PatchMetadata,
-  PatchResult,
   ProjectLicense,
-  ProjectPaths,
-  ProjectStatus,
-  ReExportOptions,
-  RegistrationStatus,
-  ResetOptions,
-  RunOptions,
-  ScannedComponent,
-  SetupOptions,
   StepError,
-  SyncResult,
-  TestOptions,
-  TokenCoverageFileEntry,
-  TokenCoverageReport,
   ValidationIssue,
   WireConfig,
 } from './types/index.js';

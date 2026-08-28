@@ -49,12 +49,11 @@ export async function getTargetFileFromPatch(patchPath: string): Promise<string 
  *
  * Delegates to {@link extractAffectedFiles} so `GIT binary patch` sections
  * (which have no `+++ b/…` line, only a `diff --git a/… b/…` header) are
- * included alongside text hunks. Before this delegation the custom regex
- * only matched `+++ b/…` lines, dropping every binary file from
- * `filesAffected` — verify reported `files-affected-mismatch` against
- * branding patches and `doctor --repair-patches-manifest` "repaired" the
- * manifest by rewriting it to the text-only subset, hiding the true scope
- * of the patch.
+ * included alongside text hunks. Matching only `+++ b/…` lines drops every
+ * binary file from `filesAffected`, so verify reports
+ * `files-affected-mismatch` against branding patches and
+ * `doctor --repair-patches-manifest` "repairs" the manifest by rewriting it
+ * to the text-only subset, hiding the true scope of the patch.
  */
 export async function getAllTargetFilesFromPatch(patchPath: string): Promise<string[]> {
   const content = await readText(patchPath);

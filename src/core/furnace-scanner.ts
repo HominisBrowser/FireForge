@@ -11,10 +11,9 @@ import { pathExists, readText } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
 import type { AcornESTreeNode } from './ast-utils.js';
 import { asEstree, getNodeSource, parseScript, walkAST } from './ast-utils.js';
-import { CUSTOM_ELEMENTS_JS, FTL_DIR } from './furnace-constants.js';
+import { CUSTOM_ELEMENTS_JS, FTL_DIR, WIDGETS_DIR } from './furnace-constants.js';
 
 /** Path to the widgets directory within the engine source tree */
-const WIDGETS_DIR = 'toolkit/content/widgets';
 
 /**
  * Additional Firefox source directories known to contain MozLitElement

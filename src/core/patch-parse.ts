@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { assert } from '../utils/assert.js';
 /**
- * Pure parsing functions for extracting information from patch files.
- * All functions are synchronous and operate on string content.
+ * Pure parsing functions for extracting information from patch files. All
+ * functions are synchronous and operate on string content.
  *
- * This module is the ONE unified-diff walker in the codebase. Before
- * {@link parseDiffSections} existed, six hand-rolled `diff --git` walkers
- * lived across patch-parse, patch-lint-diff, patch-registration-refs, and
- * patch-transform — with divergent CRLF handling (a CRLF-saved patch file
- * silently failed target-file matching and `\ No newline` detection on
- * Windows), no quoted-path support, and greedy path captures that
- * mis-split any path containing ` b/`. New diff-shaped parsing must build
- * on {@link parseDiffSections} rather than re-walking lines.
+ * This module is the ONE unified-diff walker in the codebase. Hand-rolled
+ * `diff --git` walkers diverge in ways that matter: CRLF handling (a
+ * CRLF-saved patch file silently fails target-file matching and
+ * `\ No newline` detection on Windows), quoted-path support, and greedy path
+ * captures that mis-split any path containing ` b/`. New diff-shaped parsing
+ * must build on {@link parseDiffSections} rather than re-walking lines.
  */
 
 /**
@@ -106,9 +104,9 @@ function unquoteGitPath(quoted: string): string {
  * (`diff --git "a/x y" "b/x y"`), and disambiguates the unquoted form for
  * paths that themselves contain ` b/`: for the overwhelmingly common
  * non-rename case the two paths are identical, so a symmetric split
- * (`a/<p> b/<p>`) is tried first — the previous greedy regex
- * (`a\/.+ b\/(.+)$`) split such lines at the LAST ` b/` and returned a
- * truncated path. Falls back to a non-greedy split for renames.
+ * (`a/<p> b/<p>`) is tried first — a greedy `a\/.+ b\/(.+)$` splits such
+ * lines at the LAST ` b/` and returns a truncated path. Falls back to a
+ * non-greedy split for renames.
  *
  * @returns null when the line is not a diff --git header.
  */
@@ -166,6 +164,19 @@ export interface DiffSection {
    * refuse them rather than treat base85 lines starting with `+` as content.
    */
   isBinary: boolean;
+  /**
+   * True ONLY for `GIT binary patch` sections — the body carries a
+   * reconstructable literal/delta payload. False for `Binary files … differ`,
+   * which records THAT the bytes changed but carries none of them and cannot
+   * be replayed by `git apply`.
+   *
+   * The distinction is not cosmetic: the stub form still carries a correct
+   * `index <old>..<new>` line, so identity checks keyed on {@link indexNewHash}
+   * alone happily conclude "the recorded bytes match the live file" for a body
+   * that can no longer produce those bytes. Consumers deciding whether a patch
+   * can RECREATE a file must read this flag, never `isBinary` plus a hash.
+   */
+  hasBinaryDelta: boolean;
   /**
    * Old-side blob hash from the section's `index <old>..<new>` line
    * (possibly abbreviated). Undefined when the metadata zone carries no
@@ -228,6 +239,7 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
         isNewFile: false,
         isDeletedFile: false,
         isBinary: false,
+        hasBinaryDelta: false,
         hunks: [],
       };
       sections.push(current);
@@ -246,7 +258,13 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
         current.isDeletedFile = true;
         continue;
       }
-      if (line === 'GIT binary patch' || /^Binary files .* differ$/.test(line)) {
+      if (line === 'GIT binary patch') {
+        current.isBinary = true;
+        current.hasBinaryDelta = true;
+        continue;
+      }
+      if (/^Binary files .* differ$/.test(line)) {
+        // Informational form: binary, but with no payload to apply.
         current.isBinary = true;
         continue;
       }

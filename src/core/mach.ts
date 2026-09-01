@@ -3,7 +3,7 @@ import { basename, join } from 'node:path';
 
 import { MachNotFoundError } from '../errors/build.js';
 import { pathExists } from '../utils/fs.js';
-import { warn } from '../utils/logger.js';
+import { info, warn } from '../utils/logger.js';
 import {
   exec,
   execInherit,
@@ -19,6 +19,8 @@ import { explainMachError } from './mach-error-hints.js';
 import {
   createKnownTeardownNoiseFilter,
   createTeardownNoiseContext,
+  hasKnownTeardownNoise,
+  KNOWN_TEARDOWN_NOISE_BUILD_NOTE,
 } from './mach-known-noise-filter.js';
 import { getPython } from './mach-python.js';
 import { installMachResourceGuard } from './mach-resource-shim.js';
@@ -67,6 +69,13 @@ export interface MachOptions {
    * stdout/stderr stay raw — the harness classifier depends on the raw
    * traceback. Unrecognized tracebacks always echo verbatim. Opted into by
    * the test dispatchers only.
+   *
+   * Consumed by {@link runMachCapture} ALONE. `runMachInheritCapture` accepts
+   * it in the type and ignores it — the inherit path has no per-chunk hook,
+   * only a mirror stream that feeds the terminal and the run log the same
+   * string, so filtering there would strip the traceback from the raw log
+   * too. The build path uses the recognition NOTE instead; see
+   * `mach-known-noise-filter.ts`.
    */
   annotateKnownTeardownNoise?: boolean;
   /**
@@ -298,6 +307,20 @@ export interface ProtectedMachBuildResult extends MachCommandResult {
 }
 
 /**
+ * Names the known mozsystemmonitor teardown traceback when a BUILD carried
+ * it. The test path collapses this signature in the echo; a build cannot
+ * (see `mach-known-noise-filter.ts`), so it reached operators as an
+ * unexplained traceback in a build log — a recognized, documented upstream
+ * defect wearing the appearance of a new one. The output is left verbatim
+ * and this one line is added beside it, so the same signature reads the same
+ * in both phases.
+ */
+function noteKnownTeardownNoiseInBuild(result: { stdout: string; stderr: string }): void {
+  if (!hasKnownTeardownNoise(`${result.stdout}\n${result.stderr}`)) return;
+  info(KNOWN_TEARDOWN_NOISE_BUILD_NOTE);
+}
+
+/**
  * The single protected path every FireForge mach build dispatch routes
  * through — `build`, `build --ui`, and the pre-test `--build` step all use
  * it, so no entry point is left unprotected with a different retry budget:
@@ -331,6 +354,7 @@ export async function runProtectedMachBuild(
     const { env } = await installMachResourceGuard(engineDir);
     const result = await runMachInheritCapture(args, engineDir, { env });
     if (result.exitCode === 0) {
+      noteKnownTeardownNoiseInBuild(result);
       return { ...result, attempts: attempt };
     }
 
@@ -346,6 +370,7 @@ export async function runProtectedMachBuild(
     }
 
     surfaceMachErrorHints(result);
+    noteKnownTeardownNoiseInBuild(result);
     return { ...result, attempts: attempt, ...(signature ? { crashSignature: signature } : {}) };
   }
 }

@@ -8,8 +8,47 @@ import {
   MachNotFoundError,
   MozconfigError,
   PythonNotFoundError,
+  TestFailureError,
 } from '../build.js';
 import { ExitCode } from '../codes.js';
+
+describe('TestFailureError', () => {
+  it('keeps exit 5, because docs/exit-codes.md documents it as a failed suite', () => {
+    // Consumers key CI on 5 for a test red; only the MESSAGE changes.
+    expect(new TestFailureError('Tests failed with exit code 5.').code).toBe(ExitCode.BUILD_ERROR);
+  });
+
+  it('reports as `test-failure` rather than `build` in machine output', () => {
+    // machineErrorCode derives the --json code from the class name, so the
+    // name is a public contract.
+    expect(new TestFailureError('x').name).toBe('TestFailureError');
+  });
+
+  it('names the failing tests, the verdict line and the run log — never obj-* or bootstrap', () => {
+    const error = new TestFailureError(
+      'Tests failed with exit code 5.',
+      'mach test',
+      'Unexpected test failures (first 1):\nTEST-UNEXPECTED-FAIL | browser_foo.js | got 1',
+      '.fireforge/logs/test-20260901.log'
+    );
+
+    const msg = error.userMessage;
+    expect(msg).toContain('Test Failure: Tests failed with exit code 5.');
+    expect(msg).toContain('TEST-UNEXPECTED-FAIL | browser_foo.js');
+    expect(msg).toContain('FIREFORGE-VERDICT');
+    expect(msg).toContain('.fireforge/logs/test-20260901.log');
+    // The whole point: none of the build remedies apply to an assertion.
+    expect(msg).not.toContain('obj-');
+    expect(msg).not.toContain('bootstrap');
+    expect(msg).not.toContain('Check the build output');
+  });
+
+  it('tells the operator to stop piping when no run log was opened', () => {
+    const msg = new TestFailureError('Tests failed with exit code 5.', 'mach test').userMessage;
+    expect(msg).toContain('without piping');
+    expect(msg).not.toContain('obj-');
+  });
+});
 
 describe('build errors', () => {
   it('formats BuildError with command', () => {

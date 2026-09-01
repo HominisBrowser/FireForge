@@ -9,6 +9,12 @@ import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
+// Ownership resolution for the audit notices. Default null = no queue, which
+// is what every pre-existing test in this file assumes.
+vi.mock('../patch-manifest-io.js', () => ({
+  loadPatchesManifest: vi.fn(() => Promise.resolve(null)),
+}));
+
 import { ensureDir, writeText } from '../../utils/fs.js';
 import { info, verbose, warn } from '../../utils/logger.js';
 import { auditBuildArtifacts, isPackageablePath } from '../build-audit.js';
@@ -16,6 +22,7 @@ import type { BuildBaseline } from '../build-baseline-types.js';
 import * as git from '../git.js';
 import * as gitBase from '../git-base.js';
 import * as gitStatus from '../git-status.js';
+import { loadPatchesManifest } from '../patch-manifest-io.js';
 
 describe('isPackageablePath', () => {
   it.each([
@@ -69,6 +76,57 @@ describe('auditBuildArtifacts', () => {
   afterEach(async () => {
     await rm(engineDir, { recursive: true, force: true });
     vi.restoreAllMocks();
+  });
+
+  /**
+   * Sets up one unpackaged source and returns its path. The audit's
+   * missing-artifact notice keys on "was touched", which on a shared
+   * checkout means ANY concurrent session's dirty file — so the notice must
+   * carry ownership or the operator has to census it by hand.
+   */
+  async function seedTouchedUnpackagedFile(): Promise<string> {
+    await ensureDir(join(engineDir, 'browser/app/profile'));
+    const source = 'browser/app/profile/unpackaged.js';
+    await writeText(join(engineDir, source), 'const y = 2;');
+    await ensureDir(join(engineDir, 'obj-debug', 'dist'));
+    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
+    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
+    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    return source;
+  }
+
+  it('names the owning patch in the missing-artifact notice', async () => {
+    const source = await seedTouchedUnpackagedFile();
+    vi.mocked(loadPatchesManifest).mockResolvedValue({
+      patches: [{ filename: '905-branding.patch', filesAffected: [source] }],
+    } as unknown as Awaited<ReturnType<typeof loadPatchesManifest>>);
+
+    await auditBuildArtifacts('/project', engineDir, undefined);
+    const message = warnMock.mock.calls.map((c) => c[0]).join('\n');
+    expect(message).toContain('Ownership: 905-branding.patch.');
+  });
+
+  it('marks a path no patch claims as unmanaged', async () => {
+    const source = await seedTouchedUnpackagedFile();
+    vi.mocked(loadPatchesManifest).mockResolvedValue({
+      patches: [{ filename: '100-other.patch', filesAffected: ['browser/other.js'] }],
+    } as unknown as Awaited<ReturnType<typeof loadPatchesManifest>>);
+
+    await auditBuildArtifacts('/project', engineDir, undefined);
+    const message = warnMock.mock.calls.map((c) => c[0]).join('\n');
+    expect(message).toContain(source);
+    expect(message).toContain('Ownership: unmanaged');
+  });
+
+  // "unmanaged" must mean "checked and unowned", never "could not check" —
+  // an empty queue renders nothing rather than libelling every path.
+  it('says nothing about ownership when there is no queue to check', async () => {
+    await seedTouchedUnpackagedFile();
+    vi.mocked(loadPatchesManifest).mockResolvedValue(null);
+
+    await auditBuildArtifacts('/project', engineDir, undefined);
+    const message = warnMock.mock.calls.map((c) => c[0]).join('\n');
+    expect(message).not.toContain('Ownership:');
   });
 
   it('returns zeroed summary when there is no dist tree', async () => {

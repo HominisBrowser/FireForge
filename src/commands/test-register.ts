@@ -102,6 +102,10 @@ export function registerTest(
       'Terminate a recognized stale browser from this objdir or one holding the Marionette port before running tests'
     )
     .option(
+      '--reap-orphans',
+      'Terminate harness helper processes (httpd, pywebsocket, ssltunnel, moz-http2) from this objdir that survived an earlier run. The census itself runs on every test dispatch and is report-only; this flag opts into the kill.'
+    )
+    .option(
       '--canary [path]',
       'Run one short browser-chrome harness canary. Uses test.canaryPath from fireforge.json when no path is supplied.'
     )

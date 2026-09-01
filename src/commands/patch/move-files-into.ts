@@ -28,7 +28,6 @@ import {
   buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
   collectForwardImportEdges,
-  detectNewFilesInDiff,
   formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueEntry,
@@ -40,7 +39,7 @@ import {
   savePatchesManifest,
   validatePatchesManifest,
 } from '../../core/patch-manifest.js';
-import { extractNewFileContentFromDiff } from '../../core/patch-transform.js';
+import { buildNewFileTextProjection } from '../../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type {
   PatchMetadata,
@@ -78,10 +77,7 @@ export interface MoveIntoPlan {
 function projectEntryBody(
   diff: string
 ): Pick<PatchQueueEntry, 'diff' | 'newFiles' | 'modifiedFileAdditions'> {
-  const newFiles = new Map<string, string>();
-  for (const path of detectNewFilesInDiff(diff)) {
-    newFiles.set(path, extractNewFileContentFromDiff(diff, path));
-  }
+  const newFiles = buildNewFileTextProjection(diff);
   return { diff, newFiles, modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff) };
 }
 

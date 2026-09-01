@@ -60,3 +60,34 @@ describe('normalizeReExportFilesPositionals', () => {
     }).not.toThrow();
   });
 });
+
+describe('--expect-unmanaged', () => {
+  it('is refused without --refuse-adjacent-unmanaged', () => {
+    // A carve-out for a refusal that was never armed is worse than an error:
+    // the operator believes an exception is in force when nothing is.
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        expectUnmanaged: ['browser/themes/shared/hominis/fonts/nebula-sans-regular.woff2'],
+      });
+    }).toThrow(/--expect-unmanaged names approved exceptions/);
+  });
+
+  it('is accepted alongside --refuse-adjacent-unmanaged', () => {
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        refuseAdjacentUnmanaged: true,
+        expectUnmanaged: ['browser/themes/shared/hominis/fonts/nebula-sans-regular.woff2'],
+      });
+    }).not.toThrow();
+  });
+
+  it('inherits the scan-less restriction from its parent flag', () => {
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        refuseAdjacentUnmanaged: true,
+        scan: true,
+        expectUnmanaged: ['browser/themes/shared/hominis/fonts/nebula-sans-regular.woff2'],
+      });
+    }).toThrow(/--refuse-adjacent-unmanaged applies to the scan-less path only/);
+  });
+});

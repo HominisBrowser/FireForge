@@ -65,7 +65,8 @@ async function runPreTestBuild(
       // keep warnings and errors only, and this is the line that explains an
       // otherwise unexplained multi-minute build.
       notice(
-        'A jar.mn registration changed since the last successful build; escalating this pre-test build to a full mach build so new install-manifest destinations are created.'
+        preparation.fullBuildReason ??
+          'A jar.mn registration changed since the last successful build; escalating this pre-test build to a full mach build so new install-manifest destinations are created.'
       );
     }
     const s = spinner(

@@ -35,6 +35,14 @@ export interface AdjacentUnmanagedContext {
   binaryName: string;
   furnacePrefixes: ReadonlySet<string>;
   refuseAdjacentUnmanaged: boolean;
+  /**
+   * Engine-relative paths named by `--expect-unmanaged`: reviewed, recorded
+   * exceptions that are reported but never refuse. Normalized once by the
+   * caller so the comparison matches git's engine-relative output.
+   */
+  approvedUnmanaged: ReadonlySet<string>;
+  /** Approved paths actually met this run, so unused ones can be surfaced. */
+  approvedSeen: Set<string>;
   refusals: { patchFilename: string; files: string[] }[];
 }
 
@@ -102,6 +110,29 @@ async function findAdjacentUnmanagedFiles(args: {
 }
 
 /**
+ * Splits the candidates into the ones that refuse and the ones a
+ * `--expect-unmanaged` carve-out admits. Approved paths are recorded as seen
+ * so an unused carve-out can be reported, and are RETURNED rather than
+ * dropped: an exception nobody can see is how a carve-out quietly widens.
+ */
+function partitionApproved(
+  files: readonly string[],
+  ctx: AdjacentUnmanagedContext
+): { refusing: string[]; approved: string[] } {
+  const refusing: string[] = [];
+  const approved: string[] = [];
+  for (const file of files) {
+    if (ctx.approvedUnmanaged.has(file)) {
+      ctx.approvedSeen.add(file);
+      approved.push(file);
+    } else {
+      refusing.push(file);
+    }
+  }
+  return { refusing, approved };
+}
+
+/**
  * Emits the scan-less advisory for one patch: missing manifest files and
  * unmanaged files adjacent to the patch's ownership. When
  * `--refuse-adjacent-unmanaged` is set and any unmanaged adjacent file
@@ -129,13 +160,21 @@ export async function reportAdjacentUnmanagedFiles(args: {
     );
   }
 
-  const unmanagedFiles = await findAdjacentUnmanagedFiles({
+  const allUnmanaged = await findAdjacentUnmanagedFiles({
     currentFilesAffected,
     engineDir: paths.engine,
     manifest,
     patchFilename: patch.filename,
     ctx,
   });
+  const { refusing: unmanagedFiles, approved } = partitionApproved(allUnmanaged, ctx);
+
+  if (approved.length > 0) {
+    info(
+      `${patch.filename}: ${String(approved.length)} adjacent unmanaged file(s) admitted by ` +
+        `--expect-unmanaged (${approved.join(', ')}) — reported, not refused.`
+    );
+  }
   if (unmanagedFiles.length === 0) return false;
 
   const firstFew = unmanagedFiles.slice(0, 3).join(', ');

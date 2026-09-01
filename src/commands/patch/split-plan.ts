@@ -16,7 +16,6 @@ import {
   buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
   collectForwardImportEdges,
-  detectNewFilesInDiff,
   formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueEntry,
@@ -25,7 +24,7 @@ import { computeProjectedLintRegressions } from '../../core/patch-lint-projectio
 import { rewriteStagedDependencyOwners } from '../../core/patch-manifest.js';
 import { applyRenameMapToManifest, buildProjectedManifest } from '../../core/patch-policy.js';
 import { buildPatchSourceMetadata } from '../../core/patch-source-metadata.js';
-import { extractNewFileContentFromDiff } from '../../core/patch-transform.js';
+import { buildNewFileTextProjection } from '../../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { PatchStagedForwardImport } from '../../types/commands/index.js';
 import type { PatchCategory, PatchMetadata } from '../../types/commands/index.js';
@@ -156,10 +155,7 @@ export function rewriteSplitOwners(
 function buildEntryProjection(
   diff: string
 ): Pick<PatchQueueEntry, 'diff' | 'newFiles' | 'modifiedFileAdditions'> {
-  const newFiles = new Map<string, string>();
-  for (const path of detectNewFilesInDiff(diff)) {
-    newFiles.set(path, extractNewFileContentFromDiff(diff, path));
-  }
+  const newFiles = buildNewFileTextProjection(diff);
   return { diff, newFiles, modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff) };
 }
 

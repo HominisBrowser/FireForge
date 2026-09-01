@@ -371,3 +371,72 @@ function refuseUnreadableBaseline(
   );
   return true;
 }
+
+/**
+ * States, verbatim in the notice, WHAT the `--expect` whitelist is compared
+ * against and WHEN. This notice is the only feedback an operator gets that
+ * the drift belt looked at the files they named, and a downstream report
+ * showed the previous copy actively misleading: it warned "showed no drift"
+ * over an edit that WAS captured correctly, and none of the causes it named
+ * held, so the operator's only recourse was `grep -c` on the written body.
+ *
+ * The measurement, stated exactly:
+ *
+ *  - COMPARED: for each file already in the patch's `filesAffected`, the
+ *    `+`/`-` payload lines the REFRESHED body carries that the OLD patch
+ *    body did not (`computeForeignDrift`). It is a content comparison, and
+ *    it is ONE-DIRECTIONAL: excess in the new body only.
+ *  - WHEN: per patch, on the body about to be written, BEFORE the write —
+ *    never against post-write state.
+ *
+ * The one-directional half is what the earlier copy hid, and it is the
+ * cause the report's first shape actually hit: deleting a line from an
+ * engine file makes the refreshed body DROP that file's `+` line. Nothing
+ * is absorbed, so by design there is no drift to see — the belt exists to
+ * catch a concurrent session's edits being silently swallowed INTO a body,
+ * not every difference between two bodies. Naming it is the fix; widening
+ * the comparison would turn every ordinary line removal into a refusal.
+ */
+const EXPECT_MEASUREMENT_NOTE =
+  '--expect is evaluated against CONTENT, before the write: for each file already in the ' +
+  "patch's filesAffected, the payload lines the refreshed body carries that the old patch " +
+  'body did not. It never looks at post-write state.';
+
+/**
+ * Names `--expect` paths that never drifted this run. A typo'd
+ * `--expect` path silently degrades the flag back to refusing the slice it
+ * was meant to admit, so surface the mismatch — but only as a warning: an
+ * expected file legitimately shows no drift in several shapes, all named
+ * below.
+ */
+export function warnUnseenExpectedDrift(driftCtx: ForeignDriftContext): void {
+  const unseen = [...driftCtx.expectedDriftFiles].filter(
+    (file) => !driftCtx.expectedSeen.has(file)
+  );
+  if (unseen.length === 0) return;
+  if (driftCtx.evaluationRuns === 0) {
+    warn(
+      `--expect path(s) were not evaluated because no selected patch reached the drift check (for example, an earlier refusal): ${unseen.join(', ')}`
+    );
+    return;
+  }
+  warn(
+    '--expect path(s) showed no drift this run: ' +
+      `${unseen.join(', ')}.\n` +
+      `${EXPECT_MEASUREMENT_NOTE}\n` +
+      'Causes, in rough order of likelihood:\n' +
+      '  1. Your edit only REMOVED lines from the body (you deleted a line from the engine ' +
+      'file). The comparison is one-directional — it reports lines ABSORBED into the body — ' +
+      'so a correctly captured deletion is not drift and never will be. Confirm the capture ' +
+      'with "grep -c" on the written patch body.\n' +
+      "  2. A typo in the path, or a path not in the patch's filesAffected (files adopted " +
+      'this run via --scan/--scan-file are excluded from the comparison by design).\n' +
+      '  3. Adoption already captured it: a "re-export <p> --scan --scan-file <f>" run also ' +
+      "captures that patch's other drifted files, so a scan-less re-export afterwards " +
+      'legitimately sees nothing left to absorb. Informational — a chain that treats this ' +
+      'warning as an error will false-red on it.\n' +
+      '  4. The slice was already captured by an earlier export in this session.\n' +
+      '  5. The engine content already matches the patch body — a concurrent session may have ' +
+      'exported the same change, so the drift converged before this run looked.'
+  );
+}

@@ -26,6 +26,20 @@
  *     echoed verbatim, always.
  *   - The hold buffer is bounded; on overflow the block is flushed verbatim
  *     and the filter returns to pass-through, so output is never lost.
+ *
+ * The COLLAPSE is test-only, deliberately, and not an oversight — the two
+ * reasons are worth stating because from outside it reads like one:
+ *   1. Recognition requires a previously-seen SUITE_END shutdown marker, and
+ *      `mach build` never prints one. Wiring the option into the build
+ *      dispatch would therefore be a silent no-op.
+ *   2. Relaxing that gate for builds would be wrong on its own terms. The
+ *      marker is what separates teardown noise from a traceback raised while
+ *      work was still happening; a build has no equivalent boundary, so
+ *      FireForge cannot tell the known-cosmetic case from a real build-time
+ *      failure and must not withhold the block.
+ * The build path instead RECOGNIZES the signature and says so beside the
+ * verbatim traceback — see {@link KNOWN_TEARDOWN_NOISE_BUILD_NOTE} and
+ * `runProtectedMachBuild`.
  */
 
 const TRACEBACK_HEADER_PATTERN = /^Traceback \(most recent call last\)/;
@@ -116,10 +130,21 @@ export function createTeardownNoiseContext(): TeardownNoiseContext {
   return { shutdownSeen: false };
 }
 
+/**
+ * Build-phase note for the SAME recognized signature. The build path does
+ * not COLLAPSE the traceback (see the module doc's "test-only" note) — it
+ * prints verbatim and this line is added beside it, so one signature reads
+ * the same in both phases without a build losing output it may need.
+ */
+export const KNOWN_TEARDOWN_NOISE_BUILD_NOTE =
+  '[FireForge] The mozsystemmonitor traceback above is the known upstream ' +
+  'SystemResourceMonitor AttributeError — cosmetic, and not a build failure. It is left ' +
+  'verbatim here (unlike a test run, which collapses it); see docs/testing.md.';
+
 /** One line replaces the whole recognized traceback block in the echo. */
 export const KNOWN_TEARDOWN_NOISE_ANNOTATION =
   '[FireForge] Known upstream mozsystemmonitor teardown noise (SystemResourceMonitor ' +
-  'AttributeError at harness shutdown) — not a test failure. See FireForge docs.\n';
+  'AttributeError at harness shutdown) — not a test failure. See docs/testing.md.\n';
 
 /** Bounds on the held traceback block before flushing verbatim. */
 const HOLD_LINE_LIMIT = 100;

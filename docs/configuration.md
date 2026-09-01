@@ -7,6 +7,24 @@
 whose behaviour needs more than a schema line, plus the environment variables
 FireForge reads.
 
+## `firefox` — the source pin
+
+`firefox.version` (with `firefox.product`, and optionally `firefox.sha256` and
+`firefox.candidate`) is the source pin `fireforge download` resolves an archive
+from. `fireforge source set` writes it.
+
+The pin lives in `fireforge.json` beside hand-maintained policy sections, which
+is worth knowing when reverting that file: `git checkout -- fireforge.json`
+after an accidental reformat also reverts an **uncommitted** pin, and the tree
+is then building a different version than the config claims.
+
+`fireforge doctor` reports the pin beside what the checkout actually is — the
+engine's own `browser/config/version.txt` and the version the last download
+recorded — and warns when they disagree. It is a report, not a lock: a tree
+may legitimately be mid-migration. `product`, `sha256` and `candidate` have no
+recorded counterpart on disk, so the check does not claim to have verified
+them.
+
 ## External toolchains
 
 Projects with generated asset prerequisites can declare opt-in
@@ -33,6 +51,35 @@ shim that tracks upstream WebIDL additions per release.
 - `patchLint.checkJsTestShim` points at a project `.d.ts` whose typed
   declarations (e.g. a real `TestUtils` interface) override the loose
   baseline, so calls to nonexistent harness members fail at export time.
+- `patchLint.prettier` (`'off'` | `'warning'` | `'error'`, default `'off'`)
+  runs the project's configured Prettier over patch-owned `.sys.mjs`
+  modules. It runs from inside `engine/`, so `engine/.prettierrc*` and
+  `engine/.prettierignore` decide — the same command run from the repo root
+  can report a false pass when the root `.prettierignore` excludes
+  `engine/`. Prettier is resolved from `engine/node_modules`, then the
+  project's, then `npx --no-install`. **Left `'off'`, formatting is out of
+  scope for the per-patch tier**; no other tier checks `.sys.mjs`
+  formatting either.
+- `patchLint.fileSizeThresholds` tunes the `file-too-large` line counts per
+  file class:
+
+  ```json
+  {
+    "patchLint": {
+      "fileSizeThresholds": {
+        "general": { "notice": 500, "warning": 800, "error": 900 },
+        "test": { "warning": 1500 }
+      }
+    }
+  }
+  ```
+
+  Every field is optional and merges over the defaults (general
+  `500/750/900`, test `1200/1400/1600`). The merged triple must satisfy
+  `notice <= warning <= error`, which is validated at config load. Note that
+  under the recommended gate posture `--max-warnings 0` the `warning` band is
+  a hard failure, not a soft limit — which is what these thresholds exist to
+  let you move.
 
 ## `patchPolicy`
 

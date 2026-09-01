@@ -77,6 +77,12 @@ vi.mock('../../core/xpcshell-appdir.js', async () =>
 // The in-tree objdir/marker cross-check is a pass-through by default; the
 // dedicated test drives its refusal. Real behavior is covered in
 // tree-store.integration.test.ts.
+// The orphan census shells out to `ps`; stub it so the command suite stays
+// hermetic (the census itself is unit-tested in harness-orphans.test.ts).
+vi.mock('../../core/harness-orphans.js', () => ({
+  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve([])),
+}));
+
 vi.mock('../../core/tree-store.js', async () =>
   (await import('./test-command-mocks.js')).treeStoreMock()
 );

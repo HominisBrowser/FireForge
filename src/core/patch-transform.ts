@@ -6,6 +6,7 @@
 
 import { PatchError } from '../errors/patch.js';
 import { readText } from '../utils/fs.js';
+import type { DiffSection } from './patch-parse.js';
 import { isNewFileInPatch, parseDiffSections, parseHunksForFile } from './patch-parse.js';
 
 /**
@@ -36,6 +37,16 @@ export function extractNewFileContentFromDiff(diff: string, targetFile?: string)
     );
   }
 
+  return contentFromSections(sections);
+}
+
+/**
+ * Walks the added (`+`) lines of already-parsed sections into file content.
+ * Shared by {@link extractNewFileContentFromDiff} and
+ * {@link buildNewFileTextProjection} so the two cannot drift on the empty-file
+ * and no-trailing-newline cases below.
+ */
+function contentFromSections(sections: readonly DiffSection[]): string {
   // An empty new file is a legitimate git diff: `new file mode` with no
   // hunks at all. It must extract as '' — the historical line-walker
   // returned '\n' for it, creating a one-byte file that failed checksum
@@ -62,6 +73,35 @@ export function extractNewFileContentFromDiff(diff: string, targetFile?: string)
   // Join lines and handle trailing newline
   const result = contentLines.join('\n');
   return hasNoNewlineMarker ? result : result + '\n';
+}
+
+/**
+ * Projects every TEXT new file a diff creates into a path → content map, for
+ * the cross-patch lint projections that build a synthetic patch-queue entry.
+ *
+ * Binary new files are SKIPPED rather than refused. The map feeds only the
+ * forward-import rule, which scans content for import statements — a binary
+ * blob authors none, so omitting it contributes exactly what including it
+ * would. Refusing instead (which is what
+ * {@link extractNewFileContentFromDiff} correctly does for a caller that
+ * named ONE file) made vendoring a new binary impossible: every projection
+ * site fed it every detected new file, so `export --order`, `re-export
+ * --scan --scan-file`, `patch move-files-into` and `patch split` all died on
+ * a file the export half had just written a valid `GIT binary patch` for.
+ * Nothing is lost by skipping: binary bodies are covered independently by the
+ * `binary-body-not-reconstructable` queue lint, and
+ * `buildPatchQueueContext` already tolerates them for real queue entries.
+ *
+ * One parse for the whole diff, rather than one per new file as the five
+ * call sites previously did.
+ */
+export function buildNewFileTextProjection(diff: string): Map<string, string> {
+  const newFiles = new Map<string, string>();
+  for (const section of parseDiffSections(diff)) {
+    if (!section.isNewFile || section.isBinary) continue;
+    newFiles.set(section.targetPath, contentFromSections([section]));
+  }
+  return newFiles;
 }
 
 /**

@@ -4,7 +4,7 @@
  * Pure parsing, content transformation, and lock management are in separate modules.
  */
 
-import { lstat, readlink, realpath } from 'node:fs/promises';
+import { lstat, readFile, readlink, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import { PatchError } from '../errors/patch.js';
@@ -15,15 +15,20 @@ import type {
   PatchResult,
 } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
+import { pathExists, readText, writeFileAtomic, writeText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { isContainedRelativePath } from '../utils/paths.js';
 import { applyPatchIdempotent, reversePatch } from './git.js';
 import { getFileContentFromHead } from './git-file-ops.js';
 import { discoverPatches } from './patch-files.js';
 import { loadPatchesManifest } from './patch-manifest.js';
-import { extractAffectedFiles, extractConflictingFiles, isNewFileInPatch } from './patch-parse.js';
-import { applyPatchTextToContent, extractNewFileContent } from './patch-transform.js';
+import {
+  extractAffectedFiles,
+  extractConflictingFiles,
+  isNewFileInPatch,
+  parseDiffSections,
+} from './patch-parse.js';
+import { applyPatchTextToContent, extractNewFileContentFromDiff } from './patch-transform.js';
 
 // Re-export from split modules so existing import sites continue working
 export { PatchError } from '../errors/patch.js';
@@ -77,27 +82,58 @@ async function applySinglePatch(
     // Check if this is a resolvable "new file" conflict
     let resolvedNewFiles = false;
 
-    // Save original content for files we might overwrite, so we can restore on failure
-    const savedContents = new Map<string, string>();
+    // Save original BYTES of files we might overwrite, so we can restore on
+    // failure. Raw buffers rather than decoded text: the same snapshot has to
+    // restore a binary target byte-for-byte, and a Buffer round-trips text
+    // losslessly where a utf-8 decode of a binary file does not.
+    const savedContents = new Map<string, Buffer>();
+    // New-file sections keyed by target, so the binary discrimination below
+    // reads the ALREADY-parsed section instead of re-scanning the body per
+    // file.
+    const newFileSections = new Map(
+      parseDiffSections(patchContent)
+        .filter((section) => section.isNewFile)
+        .map((section) => [section.targetPath, section] as const)
+    );
     try {
       for (const file of affectedFiles) {
-        if (isNewFileInPatch(patchContent, file)) {
-          const targetPath = join(engineDir, file);
-          if (await pathExists(targetPath)) {
-            savedContents.set(file, await readText(targetPath));
-            const content = await extractNewFileContent(patch.path, file);
-            await writeText(targetPath, content);
-            resolvedNewFiles = true;
+        if (!isNewFileInPatch(patchContent, file)) continue;
+        const targetPath = join(engineDir, file);
+        if (!(await pathExists(targetPath))) continue;
+        savedContents.set(file, await readFile(targetPath));
+        const section = newFileSections.get(file);
+        if (section?.isBinary === true) {
+          // A binary new file cannot be resolved by writing extracted text —
+          // the payload is base85, whose alphabet includes '+'. It does not
+          // need to be: `git apply` decodes a `GIT binary patch` itself. So
+          // the resolution is to REMOVE the blocking file and let the retry
+          // below create it from the payload, which is exactly what the
+          // text branch achieves by overwriting.
+          if (!section.hasBinaryDelta) {
+            // `Binary files … differ` records THAT the bytes changed and
+            // carries none of them, so nothing can recreate the file. Fail
+            // honestly rather than deleting a file we cannot put back.
+            throw new PatchError(
+              `Cannot resolve the new-file conflict for ${file}: the patch's binary section ` +
+                'carries no replayable payload (`Binary files … differ` rather than `GIT binary ' +
+                'patch`), so the file cannot be recreated. Re-export the patch with a binary-aware ' +
+                'diff.',
+              file
+            );
           }
+          await rm(targetPath, { force: true });
+        } else {
+          await writeText(targetPath, extractNewFileContentFromDiff(patchContent, file));
         }
+        resolvedNewFiles = true;
       }
     } catch (extractError: unknown) {
-      // extractNewFileContent threw for a LATER target (e.g. a binary
-      // section) after earlier targets were already overwritten — restore
-      // them before reporting failure, instead of letting the exception
-      // skip the restore loop entirely and crash the whole import.
+      // Resolution threw for a LATER target after earlier targets were
+      // already overwritten or removed — restore them before reporting
+      // failure, instead of letting the exception skip the restore loop
+      // entirely and crash the whole import.
       for (const [file, originalContent] of savedContents) {
-        await writeText(join(engineDir, file), originalContent);
+        await writeFileAtomic(join(engineDir, file), originalContent);
       }
       return { patch, success: false, error: toError(extractError).message };
     }
@@ -116,9 +152,9 @@ async function applySinglePatch(
         verbose(
           `Auto-resolved new-file retry failed for ${patch.filename}: ${toError(retryError).message}`
         );
-        // Restore original file content before falling through to --reject
+        // Restore original file bytes before falling through to --reject
         for (const [file, originalContent] of savedContents) {
-          await writeText(join(engineDir, file), originalContent);
+          await writeFileAtomic(join(engineDir, file), originalContent);
         }
       }
     }
@@ -164,7 +200,7 @@ async function rollbackPatches(results: PatchResult[], engineDir: string): Promi
     if (result.autoResolvedOriginals) {
       for (const [file, originalContent] of result.autoResolvedOriginals) {
         try {
-          await writeText(join(engineDir, file), originalContent);
+          await writeFileAtomic(join(engineDir, file), originalContent);
           verbose(`Restored pre-existing content of ${file} after rollback`);
         } catch (restoreError: unknown) {
           verbose(`Could not restore ${file}: ${toError(restoreError).message}`);

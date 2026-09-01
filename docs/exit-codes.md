@@ -14,7 +14,7 @@ they mean and which class produces each.
 |    2 | `CONFIG_ERROR`         | `fireforge.json` missing or invalid.                                                                                     | `ConfigError` and subclasses                                   |
 |    3 | `DOWNLOAD_ERROR`       | Could not download or extract Firefox source.                                                                            | `DownloadError` and subclasses                                 |
 |    4 | `GIT_ERROR`            | A git operation failed.                                                                                                  | `GitError` and subclasses                                      |
-|    5 | `BUILD_ERROR`          | `mach build` failed.                                                                                                     | `BuildError` and subclasses                                    |
+|    5 | `BUILD_ERROR`          | `mach build` failed, or a test suite went red.                                                                           | `BuildError` and subclasses, `TestFailureError`                |
 |    6 | `PATCH_ERROR`          | A patch failed to apply, or the patch queue could not be mutated.                                                        | `PatchError`                                                   |
 |    7 | `MISSING_DEPENDENCY`   | A required tool (python3, git, tar) was not found.                                                                       | `PythonNotFoundError`, `GitNotFoundError`, `MachNotFoundError` |
 |    8 | `INVALID_ARGUMENT`     | The flags were wrong. Usage problem, not an environment one.                                                             | `InvalidArgumentError`                                         |
@@ -35,7 +35,9 @@ change would have helped — escalate it, do not retry.
 
 **Red vs never-ran vs thrown-away.** These are three different facts and,
 before 0.44.0, two of them shared exit 1. `BUILD_ERROR` (5) is a suite that
-FAILED. `LOCK_TIMEOUT` (15) is a run that never started, because another
+FAILED — thrown as `TestFailureError` since 0.45.0, which keeps the code but
+carries test remedies rather than build ones (`--json` reports it as
+`test-failure`). `LOCK_TIMEOUT` (15) is a run that never started, because another
 FireForge process held the lock for the whole budget — nothing about the
 request was wrong, so re-queue it. `INCONCLUSIVE` (14) is a suite whose
 result was DISCARDED, because `engine/` moved underneath it — the code may

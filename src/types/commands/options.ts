@@ -334,6 +334,16 @@ export interface ReExportOptions {
    * else still refuses.
    */
   expect?: string[];
+  /**
+   * Engine-relative files that are an APPROVED unmanaged exception
+   * (`--expect-unmanaged`, repeatable; requires
+   * `--refuse-adjacent-unmanaged`). The adjacency refusal is all-or-nothing
+   * without it: a project with a reviewed, deliberately unmanaged path beside
+   * a patch's ownership has to drop the flag entirely and hand-read the
+   * notice, which is a weaker belt than the one being disarmed. Approved
+   * paths are still LISTED — they are carved out of the refusal, not hidden.
+   */
+  expectUnmanaged?: string[];
 }
 
 /**
@@ -621,6 +631,15 @@ export interface TestOptions {
   marionettePort?: number;
   /** Kill a recognized stale browser process holding the Marionette port, then continue. */
   killStaleMarionette?: boolean;
+  /**
+   * Terminate harness helper processes (`xpcshell` httpd, `pywebsocket`,
+   * `ssltunnel`, `moz-http2`) that survived an earlier run in this
+   * project's objdir. The census itself runs on EVERY test dispatch and is
+   * report-only; this flag opts into the kill. Survivors slow later runs
+   * without appearing in their output, so the visibility is the default and
+   * the termination is the choice.
+   */
+  reapOrphans?: boolean;
   /** Permit tests against packageable engine edits newer than the last successful build. */
   allowStaleBuild?: boolean;
   /**

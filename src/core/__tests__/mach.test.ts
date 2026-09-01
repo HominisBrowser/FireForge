@@ -1114,6 +1114,71 @@ describe('runProtectedMachBuild', () => {
     "AttributeError: 'SystemResourceMonitor' object has no attribute 'poll_interval'",
   ].join('\n');
 
+  /** The full recognized signature: allowlisted attribute + the frame. */
+  const RECOGNIZED_TEARDOWN = [
+    'Traceback (most recent call last):',
+    '  File "/x/mozsystemmonitor/resourcemonitor.py", line 400, in stop',
+    "AttributeError: 'SystemResourceMonitor' object has no attribute 'stop_time'",
+  ].join('\n');
+
+  it('names the known teardown traceback when a build carries it', async () => {
+    // A build cannot COLLAPSE this (no SUITE_END boundary, and the inherit
+    // path's mirror feeds the run log the same string), so it is left
+    // verbatim and named instead — otherwise a documented upstream defect
+    // reaches the operator as an unexplained build-log traceback.
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { info } = await import('../../utils/logger.js');
+    await prime();
+    vi.mocked(readdir).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(execInheritCapture).mockResolvedValue({
+      stdout: 'compiling…',
+      stderr: RECOGNIZED_TEARDOWN,
+      exitCode: 0,
+    });
+
+    await runProtectedMachBuild('full', '/engine');
+
+    expect(vi.mocked(info).mock.calls.flat().join('\n')).toContain('mozsystemmonitor');
+  });
+
+  it('says nothing about teardown noise for an ordinary build', async () => {
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { info } = await import('../../utils/logger.js');
+    await prime();
+    vi.mocked(readdir).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(execInheritCapture).mockResolvedValue({
+      stdout: 'compiling…',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    await runProtectedMachBuild('full', '/engine');
+
+    expect(vi.mocked(info).mock.calls.flat().join('\n')).not.toContain('mozsystemmonitor');
+  });
+
+  it('leaves an UNRECOGNIZED AttributeError unannotated', async () => {
+    // The allowlist is closed: a novel attribute is a new upstream defect
+    // and must not be labelled as the known cosmetic one.
+    const { execInheritCapture } = await import('../../utils/process.js');
+    const { info } = await import('../../utils/logger.js');
+    await prime();
+    vi.mocked(readdir).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(execInheritCapture).mockResolvedValue({
+      stdout: '',
+      stderr: [
+        'Traceback (most recent call last):',
+        '  File "/x/mozsystemmonitor/resourcemonitor.py", line 400, in stop',
+        "AttributeError: 'SystemResourceMonitor' object has no attribute 'brand_new'",
+      ].join('\n'),
+      exitCode: 0,
+    });
+
+    await runProtectedMachBuild('full', '/engine');
+
+    expect(vi.mocked(info).mock.calls.flat().join('\n')).not.toContain('mozsystemmonitor');
+  });
+
   it('installs the in-venv guard (.pth + module) into every discovered mach virtualenv', async () => {
     const { execInheritCapture } = await import('../../utils/process.js');
     await prime();

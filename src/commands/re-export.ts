@@ -24,6 +24,7 @@ import {
   withDryRunReExportLock,
 } from './re-export-bulk-scan.js';
 import type { ForeignDriftContext } from './re-export-drift.js';
+import { warnUnseenExpectedDrift } from './re-export-drift.js';
 import { reExportFilesInPlace } from './re-export-files.js';
 import { buildReExportLintContext, finishReExportLint } from './re-export-lint.js';
 import {
@@ -179,6 +180,12 @@ export async function reExportCommand(
     binaryName: config.binaryName,
     furnacePrefixes: await collectFurnaceManagedPrefixes(paths.root),
     refuseAdjacentUnmanaged: options.refuseAdjacentUnmanaged === true,
+    approvedUnmanaged: new Set(
+      (options.expectUnmanaged ?? []).map((file) =>
+        normalizeEngineRelativeInput(file, '--expect-unmanaged')
+      )
+    ),
+    approvedSeen: new Set(),
     refusals: [],
   };
 
@@ -235,6 +242,7 @@ export async function reExportCommand(
 
   await finishReExportLint(lintCtx);
   warnUnseenExpectedDrift(driftCtx);
+  warnUnseenApprovedUnmanaged(adjacentCtx);
   throwRunLevelRefusals(adjacentCtx, driftCtx, progress);
 
   if (reExported === 0 && selectedPatches.length > 0) {
@@ -292,30 +300,24 @@ function buildForeignDriftContext(options: ReExportOptions): ForeignDriftContext
 }
 
 /**
- * Names `--expect` paths that never drifted this run. A typo'd
- * `--expect` path silently degrades the flag back to refusing the slice it
- * was meant to admit, so surface the mismatch — but only as a warning: an
- * expected file legitimately shows no drift when the slice was already
- * captured by an earlier export.
+ * Names `--expect-unmanaged` paths that were never met this run. A typo'd
+ * carve-out silently leaves the refusal armed for the path it was meant to
+ * admit — and, worse, reads as an approval that is in force when it is not.
+ * A warning rather than a refusal: an approved path legitimately goes unmet
+ * when the reviewed file has since been adopted into a patch, which is the
+ * outcome the carve-out exists to be retired by.
  */
-function warnUnseenExpectedDrift(driftCtx: ForeignDriftContext): void {
-  const unseen = [...driftCtx.expectedDriftFiles].filter(
-    (file) => !driftCtx.expectedSeen.has(file)
+function warnUnseenApprovedUnmanaged(adjacentCtx: AdjacentUnmanagedContext): void {
+  const unseen = [...adjacentCtx.approvedUnmanaged].filter(
+    (file) => !adjacentCtx.approvedSeen.has(file)
   );
   if (unseen.length === 0) return;
-  if (driftCtx.evaluationRuns === 0) {
-    warn(
-      `--expect path(s) were not evaluated because no selected patch reached the drift check (for example, an earlier refusal): ${unseen.join(', ')}`
-    );
-    return;
-  }
   warn(
-    '--expect path(s) showed no drift this run: ' +
+    '--expect-unmanaged path(s) were not met as adjacent unmanaged files this run: ' +
       `${unseen.join(', ')}. ` +
-      'Causes, in rough order of likelihood: a typo in the path; the slice was already ' +
-      'captured by an earlier export in this session; or the engine content already matches ' +
-      'the patch body — a concurrent session may have exported the same change, so the drift ' +
-      'converged before this run looked.'
+      'Causes, in rough order of likelihood: a typo in the path; the file is now owned by a ' +
+      'patch (the carve-out can be dropped); or no selected patch is adjacent to it. The ' +
+      'refusal stayed armed for everything else either way.'
   );
 }
 

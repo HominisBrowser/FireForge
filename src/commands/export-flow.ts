@@ -24,7 +24,6 @@ import {
 import {
   buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
-  detectNewFilesInDiff,
   lintPatchQueue,
 } from '../core/patch-lint.js';
 import { withPatchDirectoryLock } from '../core/patch-lock.js';
@@ -43,7 +42,7 @@ import {
   buildProjectedManifest,
   enforcePatchPolicy,
 } from '../core/patch-policy.js';
-import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
+import { buildNewFileTextProjection } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { ExportOptions, PatchCategory, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
@@ -269,22 +268,6 @@ export async function resolvePlacementPlan(
 }
 
 /**
- * Extracts the newly-created files a diff would produce and builds the
- * `newFiles` map in the shape expected by {@link PatchQueueEntry}. Used
- * to build a faithful synthetic entry for the pending patch when
- * projecting through cross-patch lint — without this the forward-import
- * rule cannot see imports authored by the new patch itself.
- */
-function buildNewFilesFromDiff(diff: string): Map<string, string> {
-  const newFiles = new Map<string, string>();
-  const newFilePaths = detectNewFilesInDiff(diff);
-  for (const path of newFilePaths) {
-    newFiles.set(path, extractNewFileContentFromDiff(diff, path));
-  }
-  return newFiles;
-}
-
-/**
  * Projects the placement through cross-patch lint to detect forward-imports
  * the renumber would introduce *or* that the new patch itself would
  * introduce by landing earlier than one of its dependencies. Returns null
@@ -313,7 +296,7 @@ export async function projectPlacementForLint(
     order: plan.insertionOrder,
     metadata: null,
     diff,
-    newFiles: buildNewFilesFromDiff(diff),
+    newFiles: buildNewFileTextProjection(diff),
     modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff),
   });
   projectedEntries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));

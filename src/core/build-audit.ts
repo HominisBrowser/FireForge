@@ -37,6 +37,7 @@
 import { readdir, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, verbose, warn } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
@@ -55,6 +56,8 @@ import {
 import { resolveArtifactByKnownTransform } from './build-audit-transforms.js';
 import type { BuildBaseline } from './build-baseline-types.js';
 import { collectChangedEnginePaths } from './engine-changes.js';
+import { loadPatchesManifest } from './patch-manifest-io.js';
+import { buildPatchClaims } from './status-classify.js';
 
 /** Path extensions that are conventionally packaged into the Firefox bundle. */
 const PACKAGEABLE_EXTENSIONS = [
@@ -525,6 +528,38 @@ function relativeManifestPath(engineDir: string, manifest: string): string {
 }
 
 /**
+ * Path → owning patch filenames, from the patches manifest's
+ * `filesAffected`. Best-effort: a project with no queue (or an unreadable
+ * manifest) yields an empty map and the notices render exactly as before.
+ */
+async function resolveAuditOwnership(projectRoot: string): Promise<Map<string, string[]>> {
+  try {
+    const patchesDir = join(projectRoot, 'patches');
+    const manifest = await loadPatchesManifest(patchesDir);
+    if (!manifest) return new Map();
+    return buildPatchClaims(manifest.patches);
+  } catch (error: unknown) {
+    verbose(`Audit: ownership lookup unavailable (${toError(error).message}).`);
+    return new Map();
+  }
+}
+
+/**
+ * Renders the ownership suffix for one audit notice: the owning patch, or
+ * an explicit `unmanaged` mark. An empty map (no queue, unreadable
+ * manifest) renders nothing rather than claiming everything is unmanaged —
+ * "unmanaged" must mean "checked and unowned", never "could not check".
+ */
+function describeOwnership(ownersByPath: ReadonlyMap<string, string[]>, source: string): string {
+  if (ownersByPath.size === 0) return '';
+  const owners = ownersByPath.get(source);
+  if (owners === undefined || owners.length === 0) {
+    return ' Ownership: unmanaged (no patch claims this path).';
+  }
+  return ` Ownership: ${owners.join(', ')}.`;
+}
+
+/**
  * Runs the post-build audit. Emits per-file warnings for missing or
  * stale artifacts and a summary info line at the end. Always returns
  * the summary; never throws on audit failure (the audit itself must
@@ -539,7 +574,6 @@ export async function auditBuildArtifacts(
   engineDir: string,
   baseline: BuildBaseline | undefined
 ): Promise<AuditSummary> {
-  void projectRoot;
   const summary: AuditSummary = {
     updated: 0,
     stale: 0,
@@ -561,6 +595,14 @@ export async function auditBuildArtifacts(
     return summary;
   }
 
+  // Ownership, resolved once for the whole audit. The notices key on "was
+  // touched", which on a shared checkout means any concurrent session's
+  // dirty files — so an operator gets a registration-shaped warning about a
+  // file they never edited and has to census ownership by hand to dismiss
+  // it. FireForge already resolves this for `status --ownership`; carrying
+  // it here turns a three-line mystery into three dismissible lines.
+  const ownersByPath = await resolveAuditOwnership(projectRoot);
+
   const ctx: AuditEvalContext = { engineDir, distRoot, testsRoot, testsPackaged };
   for (const source of changed) {
     const result = await auditSinglePath(source, ctx);
@@ -570,7 +612,7 @@ export async function auditBuildArtifacts(
       artifact: result.artifact,
       status: result.status,
     });
-    if (result.warning) warn(result.warning);
+    if (result.warning) warn(`${result.warning}${describeOwnership(ownersByPath, result.source)}`);
   }
 
   info(

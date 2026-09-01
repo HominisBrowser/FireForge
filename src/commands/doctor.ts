@@ -30,6 +30,7 @@ import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { ORPHANED_HARNESS_DOCTOR_CHECK } from './doctor-orphaned-harness.js';
 import { PATCH_MANIFEST_CONSISTENCY_CHECK } from './doctor-patch-manifest.js';
 import { POST_REBASE_AUDIT_CHECK } from './doctor-post-rebase-audit.js';
+import { SOURCE_PIN_DOCTOR_CHECK } from './doctor-source-pin.js';
 import { inspectEngineWorkingTree } from './doctor-working-tree.js';
 import { collectPatchQueueHealth } from './verify.js';
 
@@ -274,6 +275,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
       );
     },
   },
+  SOURCE_PIN_DOCTOR_CHECK,
   {
     name: 'Engine is git repository',
     skipIf: (ctx) => !ctx.engineExists,

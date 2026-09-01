@@ -245,6 +245,37 @@ export interface PatchLintCheckJsCompilerOptions {
 }
 
 /**
+ * Line-count thresholds for one `file-too-large` tier.
+ *
+ * Every field is optional; an omitted field keeps the built-in default.
+ * The three must stay ordered `notice <= warning <= error`, which the
+ * config validator enforces — an out-of-order triple silently disables a
+ * band rather than failing anything.
+ */
+export interface PatchLintFileSizeTier {
+  notice?: number;
+  warning?: number;
+  error?: number;
+}
+
+/**
+ * Overrides for the `file-too-large` thresholds, per file class.
+ *
+ * These were module constants until 0.45.0, and nothing in `fireforge.json`
+ * could move them. That is a problem specifically because the recommended
+ * gate posture is `--max-warnings 0`: under it the `warning` band is not a
+ * soft limit at all, so a project whose controllers legitimately sit a few
+ * lines over 750 has a hard failure with no dial, at exactly the moment
+ * someone is deciding whether to restructure a file.
+ */
+export interface PatchLintFileSizeThresholds {
+  /** Non-test files. Defaults: notice 500, warning 750, error 900. */
+  general?: PatchLintFileSizeTier;
+  /** Test files. Defaults: notice 1200, warning 1400, error 1600. */
+  test?: PatchLintFileSizeTier;
+}
+
+/**
  * Configuration for patch lint rules.
  */
 export interface PatchLintConfig {
@@ -290,6 +321,18 @@ export interface PatchLintConfig {
   checkJsTestShim?: string;
   /** File paths exempt from the raw-color-value check (exact or basename match) */
   rawColorAllowlist?: string[];
+  /**
+   * Per-tier overrides for the `file-too-large` line-count thresholds.
+   * Unset fields keep the built-in defaults.
+   */
+  fileSizeThresholds?: PatchLintFileSizeThresholds;
+  /**
+   * Run the project's Prettier over patch-owned `.sys.mjs` modules, from
+   * inside `engine/` so the engine's own `.prettierrc*`/`.prettierignore`
+   * decide. Default `'off'`: when off, formatting is explicitly out of
+   * scope for the per-patch tier.
+   */
+  prettier?: PatchLintSeverityGate;
   /** Enforce JSDoc on class-method exports in patch-owned .sys.mjs files. Default: 'off'. */
   jsdocClassMethods?: PatchLintSeverityGate;
   /** Require ≥1 assertion in any patch-touched browser_*.js test file (new or modified). Default: 'off'. */

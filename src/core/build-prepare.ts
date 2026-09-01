@@ -17,6 +17,10 @@ import { isBrandingSetup, setupBranding } from './branding.js';
 import { isBuildInputPath, isJarManifestPath } from './build-audit.js';
 import type { BuildBaseline } from './build-baseline-types.js';
 import {
+  evaluateJarManifestEscalation,
+  formatJarEscalationNotice,
+} from './build-jar-escalation.js';
+import {
   findUnexportedDriftAtRisk,
   formatUnexportedDriftWarning,
 } from './build-overwrite-guard.js';
@@ -44,6 +48,11 @@ export interface BuildPreparation {
   reconfigured: boolean;
   /** A changed packaging manifest cannot be safely handled by `mach build faster`. */
   fullBuildRequired?: boolean;
+  /**
+   * Operator-facing explanation for {@link fullBuildRequired}, naming the
+   * manifest and why it still escalates. Absent when no escalation applies.
+   */
+  fullBuildReason?: string;
 }
 
 /** Options for {@link prepareBuildEnvironment}. */
@@ -66,7 +75,13 @@ export interface PrepareBuildOptions {
 /** Path fragments of files whose edits invalidate the recursive-make backend. */
 const BACKEND_INVALIDATING_SUFFIXES = ['moz.build', 'moz.configure', 'Makefile.in'];
 
-/** Packaging manifests whose graph/destination directories need a full build. */
+/**
+ * Packaging manifests whose graph/destination directories MAY need a full
+ * build. Path-shape only: {@link evaluateJarManifestEscalation} decides
+ * whether a given changed manifest actually forces one (a new manifest, or
+ * one that redirects its install base directory), so an entry added to an
+ * existing `dist/bin` manifest no longer costs a ~10-minute build.
+ */
 export function requiresFullBuildForIncrementalTest(path: string): boolean {
   return isJarManifestPath(path);
 }
@@ -168,6 +183,35 @@ function buildConfigureFailureError(captured: MachCommandResult): BuildError {
 }
 
 /**
+ * Runs the narrowed `jar.mn` escalation rule over this run's changed build
+ * inputs and returns the operator-facing reason when a full build is still
+ * required, or undefined when the narrowing cleared every changed manifest.
+ *
+ * Extracted so `prepareBuildEnvironment` stays under the complexity budget.
+ *
+ * @param engineDir - Absolute engine directory
+ * @param changed - Build inputs changed since the last successful build
+ * @param baseline - Last successful build's baseline
+ */
+async function decideJarEscalation(
+  engineDir: string,
+  changed: readonly string[],
+  baseline: BuildBaseline | undefined
+): Promise<string | undefined> {
+  const decision = await evaluateJarManifestEscalation(
+    engineDir,
+    changed.filter(requiresFullBuildForIncrementalTest),
+    baseline
+  );
+  if (decision.cleared.length > 0) {
+    verbose(
+      `jar escalation: ${String(decision.cleared.length)} changed jar.mn add entries to an existing dist/bin manifest; not escalating for ${decision.cleared.join(', ')}.`
+    );
+  }
+  return decision.escalate ? formatJarEscalationNotice(decision) : undefined;
+}
+
+/**
  * Returns true when the file path matches a pattern that forces
  * `mach configure` to regenerate the backend. Exported for testing.
  */
@@ -250,10 +294,17 @@ export async function prepareBuildEnvironment(
   // work against a stale recursive-make backend.
   let reconfigured = false;
   let fullBuildRequired = false;
+  let fullBuildReason: string | undefined;
   if (options.previousBaseline) {
     const changed = await collectChangedBuildInputs(paths.engine, options.previousBaseline);
     const invalidating = changed.filter(isBackendInvalidatingFile);
-    fullBuildRequired = changed.some(requiresFullBuildForIncrementalTest);
+    const jarEscalation = await decideJarEscalation(
+      paths.engine,
+      changed,
+      options.previousBaseline
+    );
+    fullBuildRequired = jarEscalation !== undefined;
+    fullBuildReason = jarEscalation;
     if (invalidating.length > 0) {
       // Warning severity: this is the "why is this run slow" explanation,
       // and an info-level line does not survive an agent output filter that
@@ -391,5 +442,10 @@ export async function prepareBuildEnvironment(
     throw error;
   }
 
-  return { furnaceApplied, reconfigured, fullBuildRequired };
+  return {
+    furnaceApplied,
+    reconfigured,
+    fullBuildRequired,
+    ...(fullBuildReason !== undefined ? { fullBuildReason } : {}),
+  };
 }

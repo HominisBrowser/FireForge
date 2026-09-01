@@ -901,6 +901,92 @@ describe('known teardown noise on a clean suite', () => {
     ).not.toBe('tests-ran-ok');
   });
 
+  // Every belt condition is all-or-nothing, so a rejected run's verdict is
+  // identical whichever one rejected it. A downstream report hit exactly
+  // this: recognized teardown noise, zero unexpected, and a FAIL nobody
+  // could diagnose from outside — the re-run was green and the log was
+  // gone. The verdict line now names the rejecting condition.
+  describe('rejection reasons', () => {
+    it('names a real failure line as the rejecting condition', () => {
+      const output = [
+        greenSuiteWithoutSuiteEnd,
+        'TEST-UNEXPECTED-FAIL | browser/base/content/test/test_a.js | boom',
+        TEARDOWN_TRACEBACK,
+      ].join('\n');
+      const verdict = classifyHarnessRun(1, output, ['browser/base/content/test/test_a.js']);
+      expect(verdict.kind).not.toBe('tests-ran-ok');
+      expect(verdict.note).toContain('green-teardown override rejected');
+      expect(verdict.note).toContain('matched failure line');
+    });
+
+    it('names a never-started requested file as the rejecting condition', () => {
+      const verdict = classifyHarnessRun(1, `${greenSuiteWithoutSuiteEnd}\n${TEARDOWN_TRACEBACK}`, [
+        'browser/base/content/test/test_a.js',
+        'browser/base/content/test/test_missing.js',
+      ]);
+      expect(verdict.kind).not.toBe('tests-ran-ok');
+      expect(verdict.note).toContain('never started');
+      expect(verdict.note).toContain('test_missing.js');
+    });
+
+    it('names a missing "Ran N checks" line', () => {
+      const verdict = classifyHarnessRun(
+        1,
+        [
+          'TEST_START: a.js',
+          'TEST_END: Test PASS',
+          'Unexpected results: 0',
+          TEARDOWN_TRACEBACK,
+        ].join('\n'),
+        []
+      );
+      expect(verdict.note).toContain('no "Ran N checks" line');
+    });
+
+    it('names a non-zero unexpected count from the summary', () => {
+      const verdict = classifyHarnessRun(
+        1,
+        [
+          'TEST_START: a.js',
+          'TEST_END: Test PASS',
+          'Ran 5 checks',
+          'Unexpected results: 2',
+          TEARDOWN_TRACEBACK,
+        ].join('\n'),
+        []
+      );
+      expect(verdict.note).toContain('summary reported unexpected=2');
+    });
+
+    it('names a missing "Unexpected results:" line', () => {
+      const verdict = classifyHarnessRun(
+        1,
+        ['TEST_START: a.js', 'TEST_END: Test PASS', 'Ran 5 checks', TEARDOWN_TRACEBACK].join('\n'),
+        []
+      );
+      expect(verdict.note).toContain('no "Unexpected results:" line');
+    });
+
+    it('names a missing execution signal', () => {
+      const verdict = classifyHarnessRun(1, TEARDOWN_TRACEBACK, []);
+      expect(verdict.note).toContain('no execution signal');
+    });
+
+    // A run with no recognized teardown noise was never a candidate for the
+    // belt; naming a "rejecting condition" for it would be pure noise.
+    it('says nothing when the run carried no recognized teardown noise', () => {
+      const verdict = classifyHarnessRun(
+        1,
+        [
+          greenSuiteWithoutSuiteEnd,
+          'TEST-UNEXPECTED-FAIL | browser/base/content/test/test_a.js | boom',
+        ].join('\n'),
+        ['browser/base/content/test/test_a.js']
+      );
+      expect(verdict.note ?? '').not.toContain('green-teardown override rejected');
+    });
+  });
+
   it('passes a green suite whose diagnostic contains the ordinary word "assertion"', () => {
     // Regression: the assertion arm used to be a case-INSENSITIVE word match,
     // so a test's own passing diagnostic manufactured a red run and the
@@ -1031,28 +1117,33 @@ describe('headedNoOutputTimeoutHint', () => {
     );
   });
 
-  // Cause 3 came from ONE downstream report that never root-caused the
-  // mechanism. The census must state the correlation, not assert a cause,
-  // and must carry a probe that discriminates it from (1) and (2) the way
-  // --headless does for (2).
-  it('states cause 3 as an un-root-caused correlation, not a mechanism', () => {
+  // Cause 3 is now root-caused: `CheckForBrokenChromeURL` is a printf
+  // outside automation and a MOZ_CRASH under it. The census must name the
+  // mechanism — but must NOT restore the discredited first-paint story
+  // that an earlier revision wrote on top of the correlation.
+  it('states cause 3 as the root-caused CheckForBrokenChromeURL mechanism', () => {
     const hint = headedNoOutputTimeoutHint(timeoutSignature, {
       headless: false,
       platform: 'darwin',
     });
-    expect(hint).toContain('never root-caused');
-    expect(hint).toContain('a lead, not an explanation');
-    // The discredited mechanism claim must not come back without a cause.
+    expect(hint).toContain('CheckForBrokenChromeURL');
+    expect(hint).toContain('MOZ_CRASH');
+    // The discredited mechanism claim must not come back.
     expect(hint).not.toContain('stalls first paint');
   });
 
-  it('gives cause 3 a discriminating probe', () => {
+  // Under automation the crash lands in the process that died, not in the
+  // log, so the census must name the crash-report artefact alongside the
+  // smoke probe — pointing only at the log teaches operators to conclude
+  // "nothing here" from a log that structurally cannot carry the evidence.
+  it('names both the crash-report artefact and the smoke probe for cause 3', () => {
     const hint = headedNoOutputTimeoutHint(timeoutSignature, {
       headless: false,
       platform: 'darwin',
     });
+    expect(hint).toContain('DiagnosticReports');
     expect(hint).toContain('fireforge run --smoke-exit');
-    expect(hint).toContain('OUTSIDE the test harness');
+    expect(hint).toContain('OUTSIDE automation');
   });
 
   it('states a MEASURED asleep display as fact', () => {

@@ -7,6 +7,7 @@ import {
   assertEngineGenerationUnchanged,
   snapshotEngineGeneration,
 } from '../core/engine-session-lock.js';
+import { reportOrphanedHarnessProcesses } from '../core/harness-orphans.js';
 import { hasBuildArtifacts, hasRunnableBundle } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import {
@@ -322,7 +323,8 @@ async function ensureTestBrowserEnvironment(
   launchablePath: string | undefined,
   xpcshellOnly: boolean,
   binaryName: string,
-  options: TestOptions
+  options: TestOptions,
+  objDir: string | undefined
 ): Promise<{ forwardedPort: number | undefined; effectivePort: number | undefined }> {
   // A timed-out mochitest can leave the built app alive after its Marionette
   // listener has disappeared. The port probe cannot see that case, but the
@@ -341,6 +343,12 @@ async function ensureTestBrowserEnvironment(
       killStaleServer: options.killStaleMarionette === true,
     });
   }
+  // Helpers that outlived an earlier run (httpd, pywebsocket, ssltunnel,
+  // moz-http2) slow every later run without appearing in its output. Both
+  // harnesses are affected, so this census is not gated on xpcshellOnly.
+  await reportOrphanedHarnessProcesses(objDir, {
+    reap: options.reapOrphans === true,
+  });
   const forwardedPort = options.machArg
     ? extractForwardedMarionettePort(options.machArg)
     : undefined;
@@ -493,7 +501,8 @@ async function runTestCommandBody(
     launchablePath,
     xpcshellOnly,
     projectConfig.binaryName,
-    options
+    options,
+    buildCheck.objDir
   );
 
   if (options.doctor) {

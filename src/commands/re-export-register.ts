@@ -65,6 +65,11 @@ export function registerReExport(
       "With --refuse-foreign-drift, name an engine-relative file whose drift is this session's intended edit: drift confined to --expect files proceeds, drift anywhere else still refuses. Repeatable, and the whitelist applies across EVERY patch in this invocation, not per patch — so pass all the patches and all their --expect paths in one call rather than looping one patch at a time.",
       ...stringListOption()
     )
+    .option(
+      '--expect-unmanaged <path>',
+      'With --refuse-adjacent-unmanaged, name an engine-relative file that is a REVIEWED, recorded exception to the adjacency refusal: an approved unmanaged path is still listed, but no longer refuses. Repeatable, and the carve-out applies across EVERY patch in this invocation, not per patch. Use it to keep the belt armed for everything else instead of dropping --refuse-adjacent-unmanaged entirely.',
+      ...stringListOption()
+    )
     .option('--dry-run', 'Show what would change without writing')
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
     .option('--no-cache', 'Bypass per-patch lint result cache reads and writes for this re-export')
@@ -106,6 +111,7 @@ export function registerReExport(
           refuseAdjacentUnmanaged?: boolean;
           refuseForeignDrift?: boolean;
           expect?: string[];
+          expectUnmanaged?: string[];
           dryRun?: boolean;
           skipLint?: boolean;
           yes?: boolean;
@@ -119,7 +125,8 @@ export function registerReExport(
           cache?: boolean;
         }
       ) => {
-        const { tier, lintIgnore, scanFile, scanFiles, cache, expect, ...rest } = options;
+        const { tier, lintIgnore, scanFile, scanFiles, cache, expect, expectUnmanaged, ...rest } =
+          options;
         const projectRoot = getProjectRoot();
         await withEngineSessionLock(
           projectRoot,
@@ -132,6 +139,9 @@ export function registerReExport(
               ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
               ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
               ...(expect !== undefined && expect.length > 0 ? { expect } : {}),
+              ...(expectUnmanaged !== undefined && expectUnmanaged.length > 0
+                ? { expectUnmanaged }
+                : {}),
               ...(cache === false ? { noCache: true } : {}),
             }),
           { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }

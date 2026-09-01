@@ -281,7 +281,7 @@ function createProgram(): Command {
 // number that is only true on one.
 const passedCount = (posixCount: number): number =>
   process.platform === 'win32' ? posixCount - 1 : posixCount;
-const PASSING_CHECK_COUNT = passedCount(16);
+const PASSING_CHECK_COUNT = passedCount(17);
 
 describe('doctorCommand', () => {
   beforeEach(() => {
@@ -470,7 +470,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith(`${passedCount(15)} passed, 1 warning`);
+    expect(outro).toHaveBeenCalledWith(`${passedCount(16)} passed, 1 warning`);
     expect(result.exitCode).toBe(0);
   });
 
@@ -616,7 +616,7 @@ describe('doctorCommand', () => {
     expect(
       vi.mocked(error).mock.calls.some(([message]) => message.includes('Engine state consistency'))
     ).toBe(true);
-    expect(outro).toHaveBeenCalledWith(`${passedCount(15)} passed, 1 warning, 1 failed`);
+    expect(outro).toHaveBeenCalledWith(`${passedCount(16)} passed, 1 warning, 1 failed`);
     expect(result.exitCode).toBe(1);
   });
 
@@ -634,7 +634,7 @@ describe('doctorCommand', () => {
           message.includes('Engine is detached at the recorded base commit')
         )
     ).toBe(true);
-    expect(outro).toHaveBeenCalledWith(`${passedCount(16)} passed, 1 warning`);
+    expect(outro).toHaveBeenCalledWith(`${passedCount(17)} passed, 1 warning`);
     expect(result.exitCode).toBe(0);
   });
 
@@ -2080,7 +2080,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project');
 
-    expect(outro).toHaveBeenCalledWith(`${passedCount(15)} passed, 2 warnings`);
+    expect(outro).toHaveBeenCalledWith(`${passedCount(16)} passed, 2 warnings`);
     expect(result.exitCode).toBe(0);
   });
 });
@@ -2188,6 +2188,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
       'External toolchains',
       'Engine directory exists',
       'Pending Resolution',
+      'Source pin matches engine',
       'Engine is git repository',
       'mach available',
       'Watchman available',

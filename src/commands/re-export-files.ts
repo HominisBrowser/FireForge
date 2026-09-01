@@ -16,7 +16,6 @@ import { updatePatchAndMetadata } from '../core/patch-export.js';
 import {
   buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
-  detectNewFilesInDiff,
   formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueEntry,
@@ -24,7 +23,7 @@ import {
 import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
-import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
+import { buildNewFileTextProjection } from '../core/patch-transform.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { PatchMetadata, ReExportOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
@@ -70,10 +69,7 @@ async function runProjectedCrossPatchLint(
   projectedDiff: string
 ): Promise<ConflictReport | null> {
   const baseCtx = await buildPatchQueueContext(patchesDir);
-  const projectedNewFiles = new Map<string, string>();
-  for (const path of detectNewFilesInDiff(projectedDiff)) {
-    projectedNewFiles.set(path, extractNewFileContentFromDiff(projectedDiff, path));
-  }
+  const projectedNewFiles = buildNewFileTextProjection(projectedDiff);
   const projectedModifiedFileAdditions = buildModifiedFileAdditionsFromDiff(projectedDiff);
   const projectedEntries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
     if (entry.filename !== targetFilename) return entry;

@@ -37,13 +37,24 @@ export interface PatchResult {
   /** Whether the patch was auto-resolved (new file vs existing file conflict) */
   autoResolved?: boolean;
   /**
-   * Pre-existing content of files the auto-resolve overwrote, keyed by
-   * engine-relative path. Kept for the RUN's duration (not just the retry):
-   * if a later patch fails and `rollbackPatches` reverse-applies this one,
-   * reversing a new-file patch DELETES the file — these snapshots are the
-   * only way to restore what was there before the auto-resolve.
+   * Pre-existing BYTES of files the auto-resolve overwrote (or, for a binary
+   * new file, removed), keyed by engine-relative path. Kept for the RUN's
+   * duration (not just the retry): if a later patch fails and
+   * `rollbackPatches` reverse-applies this one, reversing a new-file patch
+   * DELETES the file — these snapshots are the only way to restore what was
+   * there before the auto-resolve.
+   *
+   * Raw bytes rather than decoded text, because the same snapshot has to
+   * restore a binary target byte-for-byte.
+   *
+   * Typed `Uint8Array`, not `Buffer`: this interface is published, and the
+   * emitted `.d.ts` naming a Node global made a consumer without
+   * `@types/node` fail to compile against the package (`TS2591` in the
+   * pack smoke test). Every `Buffer` assigns to it — `Buffer` extends
+   * `Uint8Array` — and `fs.writeFile` accepts it, so nothing at the call
+   * sites changes.
    */
-  autoResolvedOriginals?: Map<string, string>;
+  autoResolvedOriginals?: Map<string, Uint8Array>;
 }
 
 /**

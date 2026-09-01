@@ -44,33 +44,51 @@ const NO_OUTPUT_STALL_CONTROL_STEP =
  *    its manifest from `server.js` on 8888, and a survivor of an
  *    interrupted run keeps the port. Its probe is exact, and the preflight
  *    in `mochitest-server-port.ts` now refuses it before a run starts.
- *  - (3) is a single downstream report (one consumer, 3/3 reproduce and 3/3
- *    restore on one variable) whose MECHANISM was never root-caused. It is
- *    stated as the correlation it is. An earlier revision asserted "stalls
- *    first paint" as fact; that was a causal story written on top of the
- *    correlation, and a doubtful one — a failed image load in Gecko fires
- *    `error` and does not gate the document load event, and the harness's
- *    browser-ready handshake does not wait on image decode. Do not restore
- *    a mechanism claim here without a root cause to cite.
+ *  - (3) is now MECHANICAL and root-caused, replacing the correlation an
+ *    earlier revision recorded. A `chrome://` (or `resource://`) URL that
+ *    resolves to nothing reaches `CheckForBrokenChromeURL`
+ *    (netwerk/base/nsNetUtil.cpp), which outside automation only
+ *    `printf_stderr`s `Missing chrome or resource URL: <uri>` — but under
+ *    `xpc::IsInAutomation()` the same condition is
+ *    `MOZ_CRASH_UNSAFE_PRINTF("Missing chrome or resource URLs: %s")`. A
+ *    downstream reproduction symbolicated the faulting frame as
+ *    `CheckForBrokenChromeURL`, which is the established diagnosis the bar
+ *    in `mach-error-hints.ts` asks for. The discredited "stalls first
+ *    paint" story an even earlier revision asserted must not come back: a
+ *    failed image load in Gecko fires `error` and does not gate the
+ *    document load event.
  *
- * Detection (a named signature, as with the module-resolution SIGSEGV) is
- * not specified for (3) because no log line is known to key on. The bar for
- * adding one is the bar `mach-error-hints.ts` states: an established
- * diagnosis, never a plausible guess.
+ * Detection by log line is deliberately NOT specified for (3), and the
+ * reason is the mechanism itself: in the reproduction the crash landed in a
+ * CONTENT process (`plugin-container`, a child of the browser) with the
+ * crash reporter compiled out, so the harness log carried neither the crash
+ * message nor a crash line — only the no-output timeout, `Ran 0 checks`,
+ * and mochitest's "Can't trigger Breakpad, just killing process". Under
+ * automation the message is in the process that DIED, not in the log, so
+ * the census points at the two artefacts that do carry it: the OS crash
+ * report (whose faulting frame names `CheckForBrokenChromeURL`) and the
+ * out-of-automation smoke probe (which prints the non-crashing spelling
+ * and, since 0.45.0, counts it as an unallowed error so the exit code
+ * agrees with the capture).
  */
 const NO_OUTPUT_STALL_TRIAGE = [
   '  1. A sleeping or locked display on an unattended HEADED run (macOS). The browser never ' +
     'paints and never reaches its first test.',
   '  2. A headless SWGL compositor failure — re-run with --headless to separate this from (1): ' +
     'if --headless passes, the stall was display/compositor-side, not product-side.',
-  '  3. Product-side startup: the browser never reaches the state the harness waits for. One ' +
-    'downstream report correlates this stall with a broken `chrome://` image URI on the ' +
-    'startup page (reproduced and un-reproduced on that one variable); the mechanism was ' +
-    'never root-caused, so treat it as a lead, not an explanation. Discriminate with ' +
+  '  3. A broken `chrome://` or `resource://` URL reached from the startup document. Under ' +
+    'automation this is a MOZ_CRASH in whichever process opened the channel ' +
+    '(CheckForBrokenChromeURL, netwerk/base/nsNetUtil.cpp), so the browser dies before the ' +
+    'harness sees anything. Expect the log to name NOTHING: with the crash in a content ' +
+    'process and the crash reporter compiled out, the only artefacts are the OS crash report ' +
+    '(macOS: ~/Library/Logs/DiagnosticReports/plugin-container-*.ips — the faulting frame ' +
+    'reads CheckForBrokenChromeURL) and the smoke probe below. Discriminate with ' +
     '"fireforge run --smoke-exit 60 --headless --capture-console <file>", which launches the ' +
-    'same browser OUTSIDE the test harness: a clean window with no unallowed console errors ' +
-    'means product-side startup is healthy and the stall is harness- or test-side; a hang, a ' +
-    'non-zero exit, or console errors in <file> put it in the startup document.',
+    'same browser OUTSIDE automation, where the same condition only PRINTS ' +
+    '"Missing chrome or resource URL: <uri>" — a line the probe counts as an unallowed ' +
+    'error, so its exit code and its capture now agree. A clean window with no unallowed ' +
+    'console errors means product-side startup is healthy and the stall is harness- or ' +
+    'test-side.',
   '  4. A stale mochitest httpd holding the harness server port (127.0.0.1:8888). A fresh ' +
     "browser connects to THAT server, which cannot serve this run's manifest, so the run " +
     'stalls before TEST_START. Probe with "lsof -nP -iTCP:8888": any listener that is not ' +

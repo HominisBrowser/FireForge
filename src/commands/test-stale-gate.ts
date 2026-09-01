@@ -12,6 +12,7 @@ import type { BuildBaseline } from '../core/build-baseline-types.js';
 import {
   checkStaleBuildForTest,
   checkStaticComponentsStale,
+  findChangedTestManifestsForPaths,
   findUncoveredRequestPaths,
   formatStaleBuildWarning,
   formatStaticComponentsRefusal,
@@ -53,10 +54,18 @@ export async function enforceStaleBuildGate(
     const recordedCoverage = stale.baseline?.testPackagingCoverage;
     const uncovered = findUncoveredRequestPaths(recordedCoverage, normalizedPaths);
     if (uncovered.length > 0) {
+      // The refusal is correct on its own; naming the manifest that gained
+      // an entry is the triage step it otherwise leaves to the reader.
+      const changedManifests = await findChangedTestManifestsForPaths(
+        engineDir,
+        stale.baseline,
+        uncovered
+      );
       throw new GeneralError(
         formatTestCoverageRefusal(
           uncovered,
-          Array.isArray(recordedCoverage) ? recordedCoverage : []
+          Array.isArray(recordedCoverage) ? recordedCoverage : [],
+          changedManifests
         )
       );
     }

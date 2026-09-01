@@ -66,6 +66,36 @@ export function applyReExportFilesPositionalFolding(
   return { patches: normalized.patches, options: normalized.options };
 }
 
+/**
+ * Each carve-out flag is inert without the refusal it modifies, and a
+ * silently-inert whitelist is the worst shape: the operator believes an
+ * exception is in force while the refusal it was meant to relax was never
+ * armed. Refuse the combination instead of ignoring it.
+ */
+function validateWhitelistFlagDependencies(options: ReExportOptions): void {
+  if (
+    options.expect !== undefined &&
+    options.expect.length > 0 &&
+    options.refuseForeignDrift !== true
+  ) {
+    throw new InvalidArgumentError(
+      '--expect names files whose drift is expected under --refuse-foreign-drift and has no effect without it. Pass --refuse-foreign-drift, or drop --expect.',
+      '--expect'
+    );
+  }
+
+  if (
+    options.expectUnmanaged !== undefined &&
+    options.expectUnmanaged.length > 0 &&
+    options.refuseAdjacentUnmanaged !== true
+  ) {
+    throw new InvalidArgumentError(
+      '--expect-unmanaged names approved exceptions to --refuse-adjacent-unmanaged and has no effect without it. Pass --refuse-adjacent-unmanaged, or drop --expect-unmanaged.',
+      '--expect-unmanaged'
+    );
+  }
+}
+
 /** Validates mutually exclusive `re-export` targeting and metadata options. */
 export function validateReExportOptionCombinations(
   patches: readonly string[],
@@ -130,16 +160,7 @@ export function validateReExportOptionCombinations(
     );
   }
 
-  if (
-    options.expect !== undefined &&
-    options.expect.length > 0 &&
-    options.refuseForeignDrift !== true
-  ) {
-    throw new InvalidArgumentError(
-      '--expect names files whose drift is expected under --refuse-foreign-drift and has no effect without it. Pass --refuse-foreign-drift, or drop --expect.',
-      '--expect'
-    );
-  }
+  validateWhitelistFlagDependencies(options);
 
   const usingTierFlag = options.tier !== undefined;
   const usingLintIgnoreFlag = options.lintIgnore !== undefined && options.lintIgnore.length > 0;

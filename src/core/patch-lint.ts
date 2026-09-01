@@ -18,6 +18,7 @@ import { lintChromeScriptJsDocForFile } from './patch-lint-chrome-jsdoc.js';
 import { lintPatchedCss } from './patch-lint-css.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
 import { AGGREGATE_PATCH_FILE } from './patch-lint-diff-tag.js';
+import { formatFileTooLargeMessage, resolveFileSizeThresholds } from './patch-lint-file-size.js';
 import { hasRelativeImport } from './patch-lint-imports.js';
 import { validateExportJsDoc } from './patch-lint-jsdoc.js';
 import { lintMozBuildSortedLists } from './patch-lint-mozbuild.js';
@@ -27,6 +28,7 @@ import {
   resolvePatchOwnedSysMjs,
   resolvePatchOwnedTestScripts,
 } from './patch-lint-ownership.js';
+import { invokePatchLintPrettier } from './patch-lint-prettier.js';
 
 // ---------------------------------------------------------------------------
 // Cross-patch lint re-exports
@@ -50,11 +52,6 @@ export { lintPatchedCss };
 // ---------------------------------------------------------------------------
 
 const JS_EXTENSIONS = ['.js', '.mjs', '.jsm'];
-
-const FILE_SIZE_THRESHOLDS = {
-  general: { notice: 500, warning: 750, error: 900 },
-  test: { notice: 1200, warning: 1400, error: 1600 },
-} as const;
 
 /**
  * Counts the lines of `content` the way `wc -l` reports them: a trailing
@@ -463,30 +460,24 @@ export async function lintPatchedJs(
     if (isNew) {
       const lineCount = countContentLines(content);
       const isTest = isTestFile(file);
-      const thresholds = isTest ? FILE_SIZE_THRESHOLDS.test : FILE_SIZE_THRESHOLDS.general;
+      const thresholds = resolveFileSizeThresholds(config.patchLint?.fileSizeThresholds, isTest);
       const label = isTest ? 'Test file' : 'New file';
       const verb = isTest ? 'splitting' : 'decomposing';
 
-      if (lineCount > thresholds.error) {
+      const band =
+        lineCount > thresholds.error
+          ? 'error'
+          : lineCount > thresholds.warning
+            ? 'warning'
+            : lineCount > thresholds.notice
+              ? 'notice'
+              : undefined;
+      if (band !== undefined) {
         issues.push({
           file,
           check: 'file-too-large',
-          message: `${label} has ${lineCount} lines (hard limit: ${thresholds.error}). Consider ${verb}.`,
-          severity: 'error',
-        });
-      } else if (lineCount > thresholds.warning) {
-        issues.push({
-          file,
-          check: 'file-too-large',
-          message: `${label} has ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider ${verb}.`,
-          severity: 'warning',
-        });
-      } else if (lineCount > thresholds.notice) {
-        issues.push({
-          file,
-          check: 'file-too-large',
-          message: `${label} has ${lineCount} lines (soft limit: ${thresholds.warning}, hard limit: ${thresholds.error}). Consider ${verb}.`,
-          severity: 'notice',
+          message: formatFileTooLargeMessage({ label, lineCount, thresholds, band, verb }),
+          severity: band,
         });
       }
     }
@@ -917,6 +908,21 @@ export async function lintExportedPatch(
         issues.push(...list);
       }
     }
+  }
+
+  // Prettier over patch-owned .sys.mjs. Deliberately NOT part of the
+  // precomputedCheckJs short-circuit: it is a separate tool with its own
+  // gate, and a queue-wide program has no equivalent to share. Scoped to
+  // the files THIS patch owns, run from engine/ so the engine's own config
+  // and ignore file decide (see `patch-lint-prettier.ts`).
+  const prettierGate = config.patchLint?.prettier ?? 'off';
+  if (prettierGate !== 'off' && patchOwnedFiles.size > 0) {
+    const scoped = [...patchOwnedFiles].filter(
+      (file) => !options?.checkJsReportScope || options.checkJsReportScope.has(file)
+    );
+    issues.push(
+      ...(await invokePatchLintPrettier(repoDir, dirname(repoDir), scoped.sort(), prettierGate))
+    );
   }
 
   // Filter out ignored checks last so every rule still runs (keeps the

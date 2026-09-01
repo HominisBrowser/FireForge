@@ -128,6 +128,9 @@ const HELPER_FILES: ReadonlySet<string> = new Set([
   // doctor.ts for the line budget. Exports a `DoctorCheckDefinition`
   // consumed by doctor.ts; no registrar is wanted.
   'doctor-patch-manifest.ts',
+  // Source-pin vs engine-checkout comparison. Exports a single
+  // `DoctorCheckDefinition` consumed by doctor.ts; no registrar is wanted.
+  'doctor-source-pin.ts',
   // Ownership-aware working-tree inspector split out of doctor.ts so
   // that file stays under max-lines. Exports an async helper that
   // `doctor.ts` calls from inside its git-checks group.

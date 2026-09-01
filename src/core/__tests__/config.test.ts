@@ -319,6 +319,64 @@ describe('validateConfig', () => {
     );
   });
 
+  // The thresholds were module constants until 0.45.0, and under the
+  // recommended `--max-warnings 0` posture the "soft" 750 band is a hard
+  // failure — so a project that needs a different number needs a dial.
+  it('accepts patchLint.fileSizeThresholds and merges partial tiers', () => {
+    const config = validateConfig(
+      makeValidConfig({
+        patchLint: {
+          fileSizeThresholds: { general: { warning: 800 }, test: { notice: 900, error: 2000 } },
+        },
+      })
+    );
+    expect(config.patchLint?.fileSizeThresholds).toEqual({
+      general: { warning: 800 },
+      test: { notice: 900, error: 2000 },
+    });
+  });
+
+  it('rejects malformed patchLint.fileSizeThresholds', () => {
+    expect(() =>
+      validateConfig(makeValidConfig({ patchLint: { fileSizeThresholds: 5 as never } }))
+    ).toThrow('Config field "patchLint.fileSizeThresholds" must be a plain object');
+
+    expect(() =>
+      validateConfig(makeValidConfig({ patchLint: { fileSizeThresholds: { nope: {} } as never } }))
+    ).toThrow('has unknown key "nope"');
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({ patchLint: { fileSizeThresholds: { general: 3 } as never } })
+      )
+    ).toThrow('Config field "patchLint.fileSizeThresholds.general" must be a plain object');
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({ patchLint: { fileSizeThresholds: { general: { warning: 0 } } } })
+      )
+    ).toThrow(
+      'Config field "patchLint.fileSizeThresholds.general.warning" must be a positive integer'
+    );
+
+    expect(() =>
+      validateConfig(
+        makeValidConfig({ patchLint: { fileSizeThresholds: { general: { nope: 5 } } as never } })
+      )
+    ).toThrow('Config field "patchLint.fileSizeThresholds.general" has unknown key "nope"');
+  });
+
+  // Ordering is checked against the MERGED triple, so setting only one
+  // field cannot silently land it below the default beneath it — which
+  // would disable a band rather than fail anything.
+  it('rejects an override that lands out of order against the defaults', () => {
+    expect(() =>
+      validateConfig(
+        makeValidConfig({ patchLint: { fileSizeThresholds: { general: { warning: 400 } } } })
+      )
+    ).toThrow(/notice <= warning <= error \(resolved: 500\/400\/900\)/);
+  });
+
   it('accepts patchLint.checkJsExtraShim and rejects malformed shim paths', () => {
     expect(
       validateConfig(

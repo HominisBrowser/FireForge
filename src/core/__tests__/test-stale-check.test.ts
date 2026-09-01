@@ -31,6 +31,7 @@ import { getUntrackedFiles } from '../git-status.js';
 import {
   checkStaleBuildForTest,
   checkStaticComponentsStale,
+  findChangedTestManifestsForPaths,
   findUncoveredRequestPaths,
   formatPostMutationStaticComponentsWarning,
   formatStaleBuildWarning,
@@ -379,6 +380,24 @@ describe('formatTestCoverageRefusal', () => {
     expect(message).toContain('engine/mozconfig');
   });
 
+  // The refusal was already correct; what it left to the reader was WHY
+  // this run needs coverage. A manifest that gained an entry is the fact
+  // that explains it, and FireForge already holds it.
+  it('names the changed manifest that explains the uncovered path', () => {
+    const message = formatTestCoverageRefusal(
+      ['browser/modules/hominis/test/unit/test_Protection.js'],
+      ['browser/base/content/test/browser/browser_a.js'],
+      ['browser/modules/hominis/test/unit/xpcshell.toml']
+    );
+    expect(message).toContain('browser/modules/hominis/test/unit/xpcshell.toml');
+    expect(message).toContain('a test manifest changed since it');
+  });
+
+  it('renders nothing extra when no manifest explains the refusal', () => {
+    const message = formatTestCoverageRefusal(['browser/a/test_x.js'], ['browser/b/test']);
+    expect(message).not.toContain('test manifest changed');
+  });
+
   it('omits the --extend-coverage hint when there is no scoped rebuild to attach it to', () => {
     const message = formatTestCoverageRefusal([FULL_SUITE_REQUEST], ['browser/foo/test']);
     expect(message).not.toContain('--extend-coverage');
@@ -628,5 +647,53 @@ describe('formatStaticComponentsRefusal', () => {
     );
     const message = formatStaticComponentsRefusal(manifests);
     expect(message).toContain('(+3 more)');
+  });
+});
+
+describe('findChangedTestManifestsForPaths', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+  });
+
+  const baseline: BuildBaseline = {
+    engineHeadSha: 'abc',
+    builtAt: new Date().toISOString(),
+    binaryName: 'testbrowser',
+  };
+
+  it('names a changed manifest sitting above an uncovered request path', async () => {
+    vi.mocked(git).mockResolvedValue(
+      'browser/modules/hominis/test/unit/xpcshell.toml\nbrowser/base/content/foo.js\n'
+    );
+    const found = await findChangedTestManifestsForPaths('/engine', baseline, [
+      'browser/modules/hominis/test/unit/test_Protection.js',
+    ]);
+    expect(found).toEqual(['browser/modules/hominis/test/unit/xpcshell.toml']);
+  });
+
+  it('ignores a manifest in an unrelated directory', async () => {
+    vi.mocked(git).mockResolvedValue('browser/elsewhere/xpcshell.toml\n');
+    expect(
+      await findChangedTestManifestsForPaths('/engine', baseline, ['browser/modules/x/test_a.js'])
+    ).toEqual([]);
+  });
+
+  it('ignores a full-suite request, which no manifest explains', async () => {
+    vi.mocked(git).mockResolvedValue('browser/modules/x/xpcshell.toml\n');
+    expect(
+      await findChangedTestManifestsForPaths('/engine', baseline, [FULL_SUITE_REQUEST])
+    ).toEqual([]);
+  });
+
+  // Best-effort: a broken probe must degrade the refusal to its previous
+  // text, never fail the run differently.
+  it('returns nothing when the probe throws', async () => {
+    vi.mocked(hasChanges).mockRejectedValue(new Error('no git'));
+    vi.mocked(git).mockRejectedValue(new Error('no git'));
+    expect(
+      await findChangedTestManifestsForPaths('/engine', baseline, ['browser/x/test_a.js'])
+    ).toEqual([]);
   });
 });

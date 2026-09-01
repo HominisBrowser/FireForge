@@ -201,7 +201,83 @@ function normalizeCoveragePath(path: string): string {
  * separate from the matcher so tests can pin structure and copy
  * independently (same split as {@link formatStaleBuildWarning}).
  */
-export function formatTestCoverageRefusal(uncovered: string[], coverage: string[]): string {
+/**
+ * Basenames of the test manifests whose entries decide what a packaged test
+ * runtime stages. A manifest that gained an entry is the single most common
+ * reason a run needs coverage the last build never claimed — and it is a
+ * fact FireForge already holds but never said, leaving the operator to
+ * rediscover it after a correct refusal.
+ */
+const TEST_MANIFEST_BASENAMES = new Set([
+  'xpcshell.toml',
+  'xpcshell.ini',
+  'browser.toml',
+  'browser.ini',
+  'mochitest.toml',
+  'mochitest.ini',
+  'chrome.toml',
+  'chrome.ini',
+  'a11y.toml',
+  'a11y.ini',
+]);
+
+/** True for a test manifest path (by basename). */
+function isTestManifestPath(path: string): boolean {
+  const base = path.slice(path.lastIndexOf('/') + 1);
+  return TEST_MANIFEST_BASENAMES.has(base);
+}
+
+/**
+ * Test manifests changed since the recorded build that sit in (or above)
+ * the directory of an uncovered request path — i.e. the manifests that
+ * EXPLAIN why this run needs coverage the build never claimed.
+ *
+ * Best-effort: a probe failure returns an empty list, so the refusal
+ * degrades to exactly its previous text rather than failing differently.
+ *
+ * @param engineDir - Absolute engine directory
+ * @param baseline - Last successful build's baseline
+ * @param uncovered - Uncovered request paths from
+ *   {@link findUncoveredRequestPaths}
+ * @returns Engine-relative manifest paths, capped at
+ *   {@link STALE_PATHS_LIMIT}
+ */
+export async function findChangedTestManifestsForPaths(
+  engineDir: string,
+  baseline: BuildBaseline | undefined,
+  uncovered: readonly string[]
+): Promise<string[]> {
+  let changed: string[];
+  try {
+    changed = await collectChangedEnginePaths(engineDir, baseline, 'Coverage refusal');
+  } catch (error: unknown) {
+    verbose(`Coverage refusal: manifest probe failed — ${toError(error).message}`);
+    return [];
+  }
+  const requestDirs = uncovered
+    .filter((p) => p !== FULL_SUITE_REQUEST)
+    .map((p) => toManifestGranule(normalizeCoveragePath(p)));
+  const hits = changed.filter((path) => {
+    if (!isTestManifestPath(path)) return false;
+    const dir = path.slice(0, Math.max(0, path.lastIndexOf('/')));
+    return requestDirs.some((req) => req === dir || req.startsWith(`${dir}/`));
+  });
+  return hits.slice(0, STALE_PATHS_LIMIT);
+}
+
+/**
+ * @param uncovered - Request paths the recorded packaging does not cover
+ * @param coverage - The recorded scoped coverage claim
+ * @param changedManifests - Test manifests changed since the recorded
+ *   build that explain an uncovered path (from
+ *   {@link findChangedTestManifestsForPaths}); omitted or empty renders
+ *   nothing
+ */
+export function formatTestCoverageRefusal(
+  uncovered: string[],
+  coverage: string[],
+  changedManifests: readonly string[] = []
+): string {
   const cap = (paths: string[]): string => {
     const head = paths.slice(0, STALE_PATHS_LIMIT);
     const truncated = paths.length - head.length;
@@ -222,11 +298,18 @@ export function formatTestCoverageRefusal(uncovered: string[], coverage: string[
     rebuildTargets.length > 0
       ? `Rerun "fireforge test --build ${rebuildTargets.slice(0, STALE_PATHS_LIMIT).join(' ')}" to package them, or run "fireforge build" for full coverage.${extendHint}`
       : 'Run "fireforge build" (or a path-less "fireforge test --build") for full coverage first.';
+  // Why THIS run needs new coverage, when a changed manifest explains it: a
+  // manifest that gained an entry is not covered by a build claim recorded
+  // for other paths, and a browser-chrome claim never covers xpcshell.
+  const manifestLine =
+    changedManifests.length > 0
+      ? ` This run needs coverage the recorded build never claimed because a test manifest changed since it: ${changedManifests.map((m) => `engine/${m}`).join(', ')} — a manifest that gained an entry stages new support fixtures, and a claim recorded for other paths (or another harness) does not cover them.`
+      : '';
   return (
     `The packaged test runtime was produced by a scoped "fireforge test --build" covering only: ${cap(coverage)}.\n` +
     `The requested run needs ${cap(uncovered)}, which that packaging does not cover — support ` +
     'fixtures for those manifests may be missing from obj-*/_tests/, and the run can hang ' +
-    `rather than fail. ${rebuildHint} ` +
+    `rather than fail.${manifestLine} ${rebuildHint} ` +
     '(--allow-stale-build does not bypass this check — it accepts stale content, not missing coverage.)'
   );
 }

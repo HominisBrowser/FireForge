@@ -31,6 +31,18 @@ export const SMOKE_ERROR_PATTERNS: readonly RegExp[] = [
   /^\s*\[JavaScript (Error|Warning)\]/i,
   // IPC-layer fatal assertions — Firefox prints `###!!! [Parent] Error: …` on content-process crashes.
   /^\s*###!!! \[Parent\]/,
+  // A chrome:// or resource:// URL that resolves to nothing. Outside
+  // automation Gecko only PRINTS this (printf_stderr in
+  // `CheckForBrokenChromeURL`, netwerk/base/nsNetUtil.cpp); under
+  // `xpc::IsInAutomation()` the same condition is a
+  // `MOZ_CRASH_UNSAFE_PRINTF` in whichever process opened the channel. So
+  // the smoke probe — which runs OUTSIDE automation — sees the printed
+  // line for the same defect that hard-crashes every harness run, and a
+  // probe that exits 0 on it reports "startup is healthy" for a build that
+  // hangs at "Waiting for browser…". Both spellings are matched: the
+  // non-automation singular `URL:` and the automation plural `URLs:`.
+  // Allowlistable through `--console-allow` like any other pattern.
+  /^\s*Missing chrome or resource URLs?:/,
 ];
 
 /**

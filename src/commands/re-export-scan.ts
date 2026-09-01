@@ -10,12 +10,11 @@ import { extractAffectedFiles } from '../core/patch-apply.js';
 import {
   buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
-  detectNewFilesInDiff,
   lintPatchQueue,
 } from '../core/patch-lint.js';
 import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { getClaimedFiles } from '../core/patch-manifest.js';
-import { extractNewFileContentFromDiff } from '../core/patch-transform.js';
+import { buildNewFileTextProjection } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { PatchesManifest } from '../types/commands/index.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
@@ -268,10 +267,7 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
   const candidateDiff = await getDiffForFilesAgainstHead(engineDir, [...added]);
   if (!candidateDiff.trim()) return;
 
-  const candidateNewFiles = new Map<string, string>();
-  for (const path of detectNewFilesInDiff(candidateDiff)) {
-    candidateNewFiles.set(path, extractNewFileContentFromDiff(candidateDiff, path));
-  }
+  const candidateNewFiles = buildNewFileTextProjection(candidateDiff);
   const candidateAdditions = buildModifiedFileAdditionsFromDiff(candidateDiff);
 
   const baseCtx = await buildPatchQueueContext(patchesDir);

@@ -196,9 +196,11 @@ export async function writeTextIfChanged(path: string, content: string): Promise
  * Writes content atomically using a temp-file-and-rename strategy.
  * Temp files are created in the destination directory so rename stays atomic.
  * @param path - Destination file path
- * @param content - Content to write
+ * @param content - Content to write. `Uint8Array` rather than `Buffer` so
+ *   published types never name a Node global (every `Buffer` still assigns
+ *   to it, and `fs.writeFile` accepts both).
  */
-export async function writeFileAtomic(path: string, content: string | Buffer): Promise<void> {
+export async function writeFileAtomic(path: string, content: string | Uint8Array): Promise<void> {
   await ensureParentDir(path);
 
   let existingMode: number | undefined;

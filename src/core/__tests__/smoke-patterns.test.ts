@@ -9,6 +9,36 @@ import {
   SMOKE_ERROR_PATTERNS,
 } from '../smoke-patterns.js';
 
+// A chrome:// URL that resolves to nothing is a printf outside automation
+// and a MOZ_CRASH under it. The probe runs outside automation, so counting
+// the printed line is the only way its exit code can agree with its own
+// capture — a downstream build hung EVERY harness run on this while the
+// probe reported "Unallowed errors: 0".
+describe('missing chrome or resource URL', () => {
+  it('counts the non-automation spelling as an error', () => {
+    expect(
+      matchesSmokeError(
+        'Missing chrome or resource URL: chrome://global/skin/hominis/mascot/NEUTERED.svg'
+      )
+    ).toBe(true);
+  });
+
+  it('counts the automation plural spelling too', () => {
+    expect(matchesSmokeError('Missing chrome or resource URLs: chrome://x/y.svg')).toBe(true);
+  });
+
+  // Anchored at column zero like every other pattern: an embedded mention
+  // inside an unrelated line is not a hit.
+  it('does not match an embedded mention', () => {
+    expect(matchesSmokeError('note: Missing chrome or resource URL: x')).toBe(false);
+  });
+
+  it('stays allowlistable through --console-allow', () => {
+    const allow = compileAllowlistFromStrings(['^Missing chrome or resource URL: chrome://x/']);
+    expect(matchAllowlist('Missing chrome or resource URL: chrome://x/y.svg', allow)).toBe(0);
+  });
+});
+
 describe('matchesSmokeError', () => {
   it('flags a vanilla Firefox JavaScript error prefix', () => {
     const line =

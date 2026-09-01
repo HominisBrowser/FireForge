@@ -8,7 +8,9 @@
  * `test.ts` to keep both files within the per-file line budget.
  */
 
+import { getActiveRunLogPath } from '../core/run-log.js';
 import { describeChangedPrefNoise } from '../core/test-changed-prefs.js';
+import type { HarnessRunVerdict } from '../core/test-harness-crash.js';
 import {
   buildGreenSummaryRejectedMessage,
   buildHarnessCrashMessage,
@@ -25,7 +27,7 @@ import {
   prependPostRebuildFailureContext,
 } from '../core/test-harness-output.js';
 import { GeneralError } from '../errors/base.js';
-import { BuildError } from '../errors/build.js';
+import { TestFailureError } from '../errors/build.js';
 import { toError } from '../utils/errors.js';
 import { info } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
@@ -183,7 +185,13 @@ function handleNonZeroTestExit(
   normalizedPaths: string[],
   appdirInjectionAttempted: boolean,
   binaryName: string,
-  postRebuildContext: PostRebuildFailureContext | undefined
+  postRebuildContext: PostRebuildFailureContext | undefined,
+  /**
+   * The classified verdict, when one was reached. Carries the failing-test
+   * evidence the final throw names; every branch ABOVE that throw is a
+   * different diagnosis and does not use it.
+   */
+  verdict?: HarnessRunVerdict
 ): void {
   if (result.exitCode === 0 || result.exitCode === 130) return;
   const combinedOutput = `${result.stdout}\n${result.stderr}`;
@@ -250,12 +258,16 @@ function handleNonZeroTestExit(
   // fail (exit code stays 5), so this only says WHICH KIND of failure it is.
   // Every branch above is a different diagnosis and outranks it.
   const changedPrefNoise = describeChangedPrefNoise(combinedOutput);
-  throw new BuildError(
+  const failureBlocks = formatFailureBlocks(verdict?.realFailureBlocks);
+  const logPath = getActiveRunLogPath();
+  throw new TestFailureError(
     withContext(
-      `Tests failed with exit code ${result.exitCode}. Check the output above for details.` +
+      `Tests failed with exit code ${result.exitCode}.` +
         (changedPrefNoise !== undefined ? `\n\n${changedPrefNoise}` : '')
     ),
-    'mach test'
+    'mach test',
+    failureBlocks,
+    logPath
   );
 }
 
@@ -347,7 +359,8 @@ function applySingleRunOutcome(
     normalizedPaths,
     outcome.appdirInjectionAttempted,
     binaryName,
-    postRebuildContext
+    postRebuildContext,
+    outcome.verdict
   );
 }
 

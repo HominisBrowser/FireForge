@@ -25,6 +25,7 @@ import {
   PROJECT_LICENSES,
 } from '../utils/validation.js';
 import { SUPPORTED_CONFIG_ROOT_KEYS } from './config-paths.js';
+import { parsePatchLintFileSizeThresholds } from './config-validate-file-size.js';
 import { parsePatchPolicyBlock } from './config-validate-patch-policy.js';
 import { parseExternalToolchainsBlock, parseTestBlock } from './config-validate-test-toolchains.js';
 
@@ -416,6 +417,7 @@ function optionalPatchLintBoolean(
 
 /** Severity-gate fields, each parsed and assigned identically. */
 const PATCH_LINT_SEVERITY_GATE_KEYS = [
+  'prettier',
   'jsdocClassMethods',
   'testAssertionFloor',
   'chromeScriptJsDoc',
@@ -462,6 +464,11 @@ function parsePatchLintBlock(
       );
     }
     out.rawColorAllowlist = rawColorAllowlist as string[];
+  }
+
+  const fileSizeThresholds = rec.raw('fileSizeThresholds');
+  if (fileSizeThresholds !== undefined) {
+    out.fileSizeThresholds = parsePatchLintFileSizeThresholds(fileSizeThresholds);
   }
 
   for (const key of PATCH_LINT_SEVERITY_GATE_KEYS) {

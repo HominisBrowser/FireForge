@@ -18,6 +18,7 @@ import {
   testWithOutput,
   xpcshellTestWithOutput,
 } from '../core/mach.js';
+import { getActiveRunLogPath } from '../core/run-log.js';
 import { changedPrefNoiseVerdictNote } from '../core/test-changed-prefs.js';
 import {
   buildHarnessCrashMessage,
@@ -29,7 +30,7 @@ import {
 } from '../core/test-harness-crash.js';
 import { retryAfterXpcshellSymlinkRepair, type TestDispatch } from '../core/test-xpcshell-retry.js';
 import { withXpcshellProfileDir } from '../core/xpcshell-profile-dir.js';
-import { BuildError } from '../errors/build.js';
+import { TestFailureError } from '../errors/build.js';
 import { info, note, warn } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { maybeInjectAppdirArg } from './test-appdir.js';
@@ -321,11 +322,13 @@ export function finalizeShardedOutcome(summary: ShardedRunSummary): void {
   emitHarnessVerdict(summary.aggregate, { passed: summary.passed, total: summary.total });
   if (summary.passed < summary.total) {
     const failing = summary.shards.filter(({ outcome }) => outcome.verdict.kind !== 'tests-ran-ok');
-    throw new BuildError(
+    throw new TestFailureError(
       `${failing.length} of ${summary.total} sharded test run(s) did not pass: ` +
         `${failing.map(({ label }) => label).join(', ')}. ` +
         'See the per-shard diagnosis above. Use --no-shard to reproduce the combined single-invocation behaviour.',
-      'mach test'
+      'mach test',
+      undefined,
+      getActiveRunLogPath()
     );
   }
 }

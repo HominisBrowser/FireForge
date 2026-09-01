@@ -24,6 +24,11 @@
  */
 
 import { hasKnownTeardownNoise } from './mach-known-noise-filter.js';
+import {
+  type GreenTeardownOverride,
+  truncateEvidence,
+  unmarkedFailureEvidenceNote,
+} from './test-harness-verdict-notes.js';
 // Defined in a leaf module so this file and `test-stall-triage.ts` can both
 // name it without forming an import cycle; re-exported here because the
 // command layer imports its harness diagnostics from this module.
@@ -598,13 +603,29 @@ export function classifyHarnessRun(
   // shutdown-re-entry shape, or a requested file that never started keeps
   // the run failing. Only the missing shutdown marker is forgiven, and only
   // when the recognized teardown traceback explains it.
-  if (isGreenSuiteEndedByKnownTeardownNoise(output, counts, realFailures, requestedPaths)) {
+  const teardownOverride = evaluateGreenTeardownOverride(
+    output,
+    counts,
+    realFailures,
+    requestedPaths
+  );
+  if (teardownOverride.accepted) {
     return { kind: 'tests-ran-ok', note: 'harness teardown noise ignored', ...counts };
   }
+  // A run that carried the recognized teardown noise and still failed says
+  // WHICH condition rejected the override, on the one greppable line.
+  const teardownNote =
+    teardownOverride.rejectedBy !== undefined
+      ? `green-teardown override rejected: ${teardownOverride.rejectedBy}`
+      : undefined;
+  const withNotes = <T extends HarnessRunVerdict>(verdict: T, extra?: string): T => {
+    const notes = [teardownNote, extra].filter((n): n is string => n !== undefined);
+    return notes.length > 0 ? { ...verdict, note: notes.join('; ') } : verdict;
+  };
 
   const signature = detectHarnessCrashSignature(output);
   if (signature) {
-    return { kind: 'harness-crash', signature, ...counts };
+    return withNotes({ kind: 'harness-crash', signature, ...counts });
   }
 
   const ranTests = hasExecutionSignal(output);
@@ -634,7 +655,7 @@ export function classifyHarnessRun(
       completeness.neverStarted.length > 0 ||
       completeness.neverEnded.length > 0
     ) {
-      return {
+      return withNotes({
         kind: 'test-failures',
         ...counts,
         ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
@@ -645,44 +666,21 @@ export function classifyHarnessRun(
           neverStarted: completeness.neverStarted,
           neverEnded: completeness.neverEnded,
         },
-      };
+      });
     }
     return { kind: 'tests-ran-ok', greenSummaryOverride: true, ...counts };
   }
   const wordMatchNote = unmarkedFailureEvidenceNote(counts, realFailures);
-  return {
-    kind: 'test-failures',
-    ...counts,
-    ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
-    ...(failureBlocks.length > 0 ? { realFailureBlocks: failureBlocks } : {}),
-    ...(secondaryHarnessSignature !== undefined ? { secondaryHarnessSignature } : {}),
-    ...(wordMatchNote !== undefined ? { note: wordMatchNote } : {}),
-  };
-}
-
-/**
- * Belt for the residual case the tightened {@link FAIL_LINE_PATTERN} /
- * {@link ASSERTION_LINE_PATTERN} cannot reach: the summary reported
- * `Unexpected results: 0`, yet the run is still classified `test-failures`
- * on evidence lines that carry NO `TEST-UNEXPECTED-*` marker.
- *
- * `unexpected=0` printed beside `reason=test-failures` is the tell that the
- * verdict rests on pattern matching rather than on a harness result, and a
- * reader who cannot see that spends hours attributing a red run to the
- * change under test. The note says so on the verdict line itself.
- *
- * Deliberately a NOTE and not a reclassification: a non-zero exit with no
- * green-shaped summary is still a failing run, and inventing a new `reason`
- * would break the `FIREFORGE-VERDICT:` contract its consumers parse.
- */
-function unmarkedFailureEvidenceNote(
-  counts: HarnessSummaryCounts,
-  realFailures: readonly string[]
-): string | undefined {
-  if (counts.unexpected !== 0) return undefined;
-  if (realFailures.length === 0) return undefined;
-  if (realFailures.some((line) => UNEXPECTED_LINE_SINGLE.test(line))) return undefined;
-  return 'summary reported 0 unexpected; no TEST-UNEXPECTED marker in the matched evidence';
+  return withNotes(
+    {
+      kind: 'test-failures',
+      ...counts,
+      ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
+      ...(failureBlocks.length > 0 ? { realFailureBlocks: failureBlocks } : {}),
+      ...(secondaryHarnessSignature !== undefined ? { secondaryHarnessSignature } : {}),
+    },
+    wordMatchNote
+  );
 }
 
 /**
@@ -695,26 +693,61 @@ function unmarkedFailureEvidenceNote(
  * unexpected count anywhere; no real `TEST-UNEXPECTED-*`/assertion line;
  * no crash marker; every requested test file both started and ended; and
  * the recognized teardown traceback is present. Anything short of that
- * falls through to the normal (failing) chain.
+ * falls through to the normal (failing) chain — with the failing condition
+ * NAMED, so the next occurrence is a filed bug rather than another
+ * undiagnosable re-run.
+ *
+ * The conditions are evaluated in a fixed order and the FIRST failing one
+ * is reported; a run can violate several, and reporting one deterministic
+ * condition beats an unordered list of everything that happened to be true.
  */
-function isGreenSuiteEndedByKnownTeardownNoise(
+function evaluateGreenTeardownOverride(
   output: string,
   counts: HarnessSummaryCounts,
   realFailures: readonly string[],
   requestedPaths: readonly string[]
-): boolean {
-  if (!hasKnownTeardownNoise(output)) return false;
-  if (!hasExecutionSignal(output)) return false;
-  if (counts.checks === undefined || counts.unexpected !== 0) return false;
-  if (!GREEN_UNEXPECTED_SUMMARY_PATTERN.test(output)) return false;
-  if (NONZERO_UNEXPECTED_SUMMARY_PATTERN.test(output)) return false;
-  if (realFailures.length > 0) return false;
-  if (findCrashMarkerLine(output) !== undefined) return false;
+): GreenTeardownOverride {
+  if (!hasKnownTeardownNoise(output)) return { accepted: false };
+  const reject = (rejectedBy: string): GreenTeardownOverride => ({ accepted: false, rejectedBy });
+
+  if (!hasExecutionSignal(output)) return reject('no execution signal (no TEST-START/TEST_START)');
+  if (counts.checks === undefined) return reject('summary printed no "Ran N checks" line');
+  // `counts.unexpected === 0` IS the explicit-`Unexpected results: 0` test
+  // the previous revision spelled a second time with
+  // GREEN_UNEXPECTED_SUMMARY_PATTERN: the count is parsed from the same
+  // line and an absent line leaves it undefined. The two are kept apart in
+  // the message because "printed no such line" and "printed a non-zero one"
+  // are different findings for the reader.
+  if (counts.unexpected === undefined) {
+    return reject('summary printed no "Unexpected results:" line');
+  }
+  if (counts.unexpected !== 0) {
+    return reject(`summary reported unexpected=${String(counts.unexpected)}`);
+  }
+  if (NONZERO_UNEXPECTED_SUMMARY_PATTERN.test(output)) {
+    return reject('a non-zero "Unexpected results:" line is present somewhere in the output');
+  }
+  if (realFailures.length > 0) {
+    return reject(
+      `${String(realFailures.length)} matched failure line(s), first: ${truncateEvidence(realFailures[0] ?? '')}`
+    );
+  }
+  const crashLine = findCrashMarkerLine(output);
+  if (crashLine !== undefined)
+    return reject(`crash marker present: ${truncateEvidence(crashLine)}`);
   // The post-green shutdown re-entry shape is deliberately a crash verdict
   // on an otherwise-green log; it must not be swept up here.
-  if (SHUTDOWN_REENTRY_PATTERN.test(output)) return false;
+  if (SHUTDOWN_REENTRY_PATTERN.test(output)) {
+    return reject('post-green shutdown re-entry shape present');
+  }
   const completeness = analyzeTestCompleteness(output, requestedPaths);
-  return completeness.neverStarted.length === 0 && completeness.neverEnded.length === 0;
+  if (completeness.neverStarted.length > 0) {
+    return reject(`requested file(s) never started: ${completeness.neverStarted.join(', ')}`);
+  }
+  if (completeness.neverEnded.length > 0) {
+    return reject(`requested file(s) never ended: ${completeness.neverEnded.join(', ')}`);
+  }
+  return { accepted: true };
 }
 
 /**

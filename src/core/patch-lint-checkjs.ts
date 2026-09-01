@@ -39,6 +39,10 @@ import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import {
+  collectUnmanagedCompanions,
+  retargetUnmanagedCompanionHints,
+} from './patch-lint-unmanaged-companion.js';
+import {
   composeShimSource,
   SHIM_FILENAME,
   SUPPRESSED_DIAGNOSTIC_CODES,
@@ -567,6 +571,7 @@ export async function runCheckJsTestFilesGrouped(
   const mode = modeFromPatchLintConfig(patchLint);
   const seenGlobal = new Set<string>();
   const files = [...testFiles].sort((a, b) => a.localeCompare(b));
+  const companions = await collectUnmanagedCompanions(repoDir, files, testFiles);
   for (const file of files) {
     // Under a rootScope only the scoped files get their own program, but
     // head.js helper discovery still spans the full owned set so a scoped
@@ -591,7 +596,10 @@ export async function runCheckJsTestFilesGrouped(
     );
     const own = result.byFile.get(file);
     if (own && own.length > 0) {
-      merged.byFile.set(file, [...(merged.byFile.get(file) ?? []), ...own]);
+      merged.byFile.set(file, [
+        ...(merged.byFile.get(file) ?? []),
+        ...retargetUnmanagedCompanionHints(own, companions),
+      ]);
     }
     for (const globalIssue of result.global) {
       if (seenGlobal.has(globalIssue.message)) continue;
